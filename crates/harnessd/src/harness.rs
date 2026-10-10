@@ -2500,7 +2500,7 @@ impl Harness {
         }
         let backend = backend.with_scratch_dir(&scratch);
         // One boxed backend from here on, whichever substrate: the host one built
-        // above, or a firecode VM booted on a copy of the workspace.
+        // above, or a firecode VM booted on a copy of the tree `Config::vm_copy_source` names.
         let (backend, backend_described, backend_writable, monitors): (
             Box<dyn letibot_tools::backend::ExecBackend>,
             String,
@@ -2509,12 +2509,14 @@ impl Harness {
         ) = if in_vm {
             // **The tree the VM is booted on, and it is NOT always the workspace.**
             // `Config::vm_copy_source` is the one spelling of the decision: the session's own
-            // `vm_source` where the caller that knows named one, the workspace otherwise. The
-            // reviewer is that caller (`serve_reviews`), and it names the entry's repository —
-            // because a session may be seated a level above its repositories, and booting a VM on
-            // the level is what put 72.8 GiB through `copy_tree` and got it refused, three times
-            // in one night, for two branches. See `crates/tools/src/firecode.rs`'s
-            // `FirecodeSpec::source`.
+            // `vm_source` where the caller that knows named one, the REPOSITORY its workspace is
+            // about otherwise — and the workspace itself only when there is no repository to name.
+            // The reviewer is that caller (`serve_reviews`), and it names the entry's repository;
+            // the resolution is what covers every other opener, because a session may be seated a
+            // level above its repositories and booting a VM on the level is what put 72.8 GiB
+            // through `copy_tree` and got it refused, three times in one night, for two branches.
+            // See `crates/tools/src/firecode.rs`'s `FirecodeSpec::source`, and
+            // `mergequeue::repo_of_workspace` for the resolution itself.
             let mut spec =
                 letibot_tools::firecode::FirecodeSpec::new(cfg.vm_copy_source(), &cfg.session_id);
             spec.writable = may_write;
@@ -7504,10 +7506,11 @@ impl Harness {
                 role: "gatekeeper".into(),
                 placement,
                 // **The tree the VM is booted on: the ENTRY's repository.** `None` for an entry
-                // the queue can find no repository for — and for a workspace that is itself in
-                // none — which is *copy the child's workspace*, the behaviour every build before
-                // this field had. See `mergequeue::review_copy_source` for the resolution and for
-                // the 72.8 GiB it exists to stop copying.
+                // the queue can find no repository for — and for a workspace that is itself in none
+                // — which is *the child's own copy source*: `Config::vm_copy_source` resolves the
+                // child's workspace by the same rule and falls back to the workspace only when
+                // there is no repository to name. See `mergequeue::review_copy_source` for the
+                // resolution and for the 72.8 GiB it exists to stop copying.
                 vm_source: crate::mergequeue::review_copy_source(&self.cfg.workspace, &entry),
                 ..Default::default()
             };
@@ -15082,26 +15085,6 @@ impl HarnessTaskRunner {
             parent: parent.clone(),
         });
         publish("opening", &title, None);
-        // **And say which wall the child plans against**, in the line a person is already
-        // reading. `config.rs` records the other half of this bug in its own words — *"the
-        // silent half of this bug was that nobody could tell which window was in force"* —
-        // and for a child, until now, NOTHING recorded it: not the store, not the log, not
-        // this line. It is also what would have made the three dead children legible in one
-        // glance instead of after a query against the store.
-        let on_window = match sub_window {
-            Some(Some(w)) => format!(" on {sub_model} ({w} token window)"),
-            _ => format!(" on {sub_model}"),
-        };
-        progress(&match placement {
-            Placement::Firecode => format!(
-                "opening subagent {} in a firecode VM: copying the workspace, booting{on_window}",
-                letibot_sessionlog::registry::short_id(&sub_id)
-            ),
-            _ => format!(
-                "opening subagent {}{on_window}",
-                letibot_sessionlog::registry::short_id(&sub_id)
-            ),
-        });
         // **Every early return from here on records the failure rather than leaving a
         // "running" row forever** — and it settles the child's slot as it does, because this
         // function no longer returns to a caller that settles for it (see [`AnswerOnce`]).
@@ -15233,6 +15216,36 @@ impl HarnessTaskRunner {
         // touch `sampling` and nothing else — least of all the window set one statement
         // above, which belongs to the box that answers this child.
         apply_spawn_parameters(&mut sub_cfg, &self.base.leticode, seat.as_str());
+
+        // **And say which wall the child plans against, and WHICH TREE its VM is booted on**, in
+        // the line a person is already reading. `config.rs` records the other half of this bug in
+        // its own words — *"the silent half of this bug was that nobody could tell which window was
+        // in force"* — and for a child, until now, NOTHING recorded it: not the store, not the log,
+        // not this line. It is also what would have made the three dead children legible in one
+        // glance instead of after a query against the store.
+        //
+        // **The tree is read off the child's OWN config, by the same resolution the copy uses**
+        // ([`Config::vm_copy_source`]), which is why this line is published HERE rather than beside
+        // the `opening` row: the sentence used to say *copying the workspace*, which was a lie the
+        // moment a session was seated a level above its repository — the reviewer's copy is the
+        // ENTRY's repository and a folder-seated session's is the repository below it. A copy that
+        // is refused at the ceiling is a failure this line is the first word of, so it has to name
+        // the tree the copy is actually made from.
+        let on_window = match sub_window {
+            Some(Some(w)) => format!(" on {sub_model} ({w} token window)"),
+            _ => format!(" on {sub_model}"),
+        };
+        progress(&match placement {
+            Placement::Firecode => format!(
+                "opening subagent {} in a firecode VM: copying {}, booting{on_window}",
+                letibot_sessionlog::registry::short_id(&sub_id),
+                sub_cfg.vm_copy_source().display()
+            ),
+            _ => format!(
+                "opening subagent {}{on_window}",
+                letibot_sessionlog::registry::short_id(&sub_id)
+            ),
+        });
 
         // Reassemble the shared parts so the sub harness can borrow them for the
         // duration of this call. Cheap: the vocabs and the wiring are already `Arc`.

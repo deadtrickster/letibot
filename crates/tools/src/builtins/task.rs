@@ -141,22 +141,27 @@ pub struct TaskSpec {
     /// thing the caller remembers to say. See [`WorktreePlacement`] for why the field
     /// rides the spec rather than a second argument.
     pub worktree: Option<WorktreePlacement>,
-    /// **The tree a `firecode` placement COPIES**, when that is not the child's workspace.
+    /// **The tree a `firecode` placement COPIES**, when the caller knows a tree the resolution
+    /// below would not name.
     ///
-    /// `None` — every `task` and `task_start` call — is *copy the child's workspace*, which is
-    /// what every earlier build did and is right whenever the workspace is the repository. It is
-    /// wrong when a session is seated a level ABOVE its repositories (the operator's box:
+    /// `None` — every `task` and `task_start` call — is *the child's own copy source*:
+    /// `Config::vm_copy_source` resolves the child's workspace to the repository it is about, and
+    /// only falls back to the workspace itself when there is no repository to name. That resolution
+    /// is the fix for the shape this field was added for, so a caller with nothing better to say
+    /// should say nothing: a session seated a level ABOVE its repositories (the operator's box:
     /// `--workspace /home/dead/Projects/letibot`, whose repository is
-    /// `/home/dead/Projects/letibot/letibot`), and then the VM is booted on a copy of every
-    /// sibling of the repository — 72.8 GiB, refused by the ceiling, measured 2026-10-10.
+    /// `/home/dead/Projects/letibot/letibot`) now copies the repository, where every build before
+    /// this field copied the folder — 72.8 GiB of siblings, refused by the ceiling, measured
+    /// 2026-10-10.
     ///
-    /// The caller that KNOWS which repository the work is in says so here, and the review queue
-    /// is that caller: a reviewer reads a branch (`git diff <base>...<branch>`), so it is booted
-    /// on a copy of the entry's own repository (`mergequeue::review_copy_source`) and not on the
-    /// folder the daemon happens to be seated in. It rides the spec for the reason
-    /// [`TaskSpec::worktree`] does: the spawn is the one place that turns a spec into a session,
-    /// and a child whose VM copied one tree while the caller's record says another is the same
-    /// silent-provenance defect as a model name that does not match.
+    /// The caller that knows BETTER says so here, and the review queue is that caller: a reviewer
+    /// reads a branch (`git diff <base>...<branch>`), so it is booted on a copy of the entry's own
+    /// repository (`mergequeue::review_copy_source`) and not on the folder the daemon happens to be
+    /// seated in — and not necessarily on the repository the session hosting the review is seated
+    /// in either, since one queue serves every repository under its workspace. It rides the spec for
+    /// the reason [`TaskSpec::worktree`] does: the spawn is the one place that turns a spec into a
+    /// session, and a child whose VM copied one tree while the caller's record says another is the
+    /// same silent-provenance defect as a model name that does not match.
     pub vm_source: Option<PathBuf>,
 }
 
@@ -720,10 +725,11 @@ impl Tool for TaskTool {
                 .filter(|m| !m.is_empty()),
             // A plain `task` works in the parent's workspace: no worktree is arranged.
             worktree: None,
-            // And a VM placement copies that workspace, which is the repository whenever the
-            // session was opened in one. The one caller that knows better sets it itself
-            // (`Harness::serve_reviews`); a model's `where: firecode` has no way to name a
-            // tree it has not looked at.
+            // And a VM placement copies that workspace's own copy source, which is the repository
+            // it is about whenever there is one to name (`Config::vm_copy_source`). The one caller
+            // that knows a tree the resolution would not name sets it itself
+            // (`Harness::serve_reviews`); a model's `where: firecode` has no way to name a tree it
+            // has not looked at.
             vm_source: None,
         };
         let handle = match self.runner.start(prompt, &spec) {

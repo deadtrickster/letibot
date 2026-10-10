@@ -577,6 +577,79 @@ pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
     }
 }
 
+/// **The repository a session's WORKSPACE is about** — the tree a VM placement seated there has
+/// to copy, and `None` when the workspace is in no repository and holds none.
+///
+/// # The layout this exists for, and why git alone cannot answer it
+///
+/// The operator's box is a folder holding repositories: the daemon's `--workspace` is
+/// `/home/dead/Projects/letibot`, and the repository the queue serves is
+/// `/home/dead/Projects/letibot/letibot`. [`repo_root`] is git's own answer and it is the FIRST arm
+/// here — it covers every session seated in a repository, at its root, in a subdirectory of it, or
+/// in one of its linked worktrees — but it **fails** on the operator's box: `git rev-parse
+/// --show-toplevel` in a folder that is in no repository names nothing, which is why the queue's
+/// own log says `serving /home/dead/Projects/letibot toward main`. So the nested layout is resolved
+/// by name after git has had its say.
+///
+/// # The rule, in order
+///
+/// 1. **[`repo_root`]**, when git can name a top level for the workspace at all — *the workspace
+///    is IN a repository*, which is every ordinary daemon and needs no convention to read. A
+///    workspace that is a subdirectory of a repository resolves to the repository and not to the
+///    subdirectory, deliberately: a copy of a subdirectory is a tree with no `.git` and no
+///    repository around it, so a VM-placed session could run no git command in its own world, and
+///    `crates/tools`' ceiling is argued as *room for one repository* rather than as a budget for
+///    a subtree;
+/// 2. **the same-named child** (`<workspace>/<basename>`) when that is a repository — the nested
+///    naming the operator's own box uses (`Projects/letibot/letibot`), and the arm tonight's
+///    refusal needed. It comes BEFORE the one-child arm on purpose: this box's folder holds five
+///    repository children (`letibot` and the sibling worktrees `wt-drill`, `wt-jobs`,
+///    `wt-visibility`, `wt-yellow` — measured 2026-10-10), so there is no single repository child
+///    to pick and the NAME is what says which one the folder is about;
+/// 3. **the one repository child**, when exactly one child is one. A parent holding two
+///    repositories is a parent nobody chose between, and a guess here is the one kind of
+///    wrongness a copy cannot show: a VM booted on the wrong repository looks exactly like a VM
+///    booted on the right one;
+/// 4. otherwise **`None`**, and the caller decides what nothing means. For a VM placement that is
+///    *copy the workspace* — the copy is attempted and, when it is over the ceiling, refused with
+///    its own size in the sentence (`letibot_tools::firecode::DEFAULT_COPY_MAX`). A loud refusal
+///    naming the tree, and not a silent guess at a sibling.
+///
+/// **This is `letibot_tui::gitfield::project_dir`'s rule, applied to the copy instead of to the
+/// head's reading of the same layout**, and the two are written out separately because the head is
+/// not below the daemon: `letibot-tui` and `letibot-harnessd` are siblings and neither may depend
+/// on the other. The one difference is `project_dir`'s `TODO.md` arm, which is about what the head
+/// DRAWS and has nothing to say about what a VM copies.
+///
+/// **The cost is one `git` per question asked**, which is once per VM-placed session at its open
+/// (`Config::vm_copy_source`) and once per reviewer started — and a reviewer asks
+/// [`repo_of_worktree`] first, so the fork that decides is usually that one.
+pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
+    if let Ok(top) = repo_root(workspace) {
+        return Some(top);
+    }
+    let is_repo = |d: &Path| d.join(".git").exists();
+    if let Some(name) = workspace.file_name() {
+        let same_named = workspace.join(name);
+        if is_repo(&same_named) {
+            return Some(same_named);
+        }
+    }
+    let children: Vec<PathBuf> = workspace
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| is_repo(p))
+        .collect();
+    match children.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
 /// **The tree a review of `entry` is COPIED from** — the one repository the branch is in, and
 /// never the directory the daemon was started in.
 ///
@@ -601,11 +674,13 @@ pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
 /// # The order of the two answers
 ///
 /// The ENTRY's repository first, because that is the branch's own repository whatever this
-/// daemon's workspace happens to be. [`repo_root`] of the workspace second, which is the same
-/// answer whenever the workspace IS the repository (every ordinary daemon) and the only answer
-/// available for an entry with no worktree the queue can read. `None` — a workspace that is in
-/// no repository either — is *copy the workspace*, which is what every build did before this
-/// function existed and is the honest fallback for a session with nothing better to name.
+/// daemon's workspace happens to be. [`repo_of_workspace`] second, which is the same answer
+/// whenever the workspace IS the repository (every ordinary daemon), the nested layout when the
+/// session is seated above it, and nothing at all when the workspace is in no repository and holds
+/// none. `None` — nothing here can name a repository — is *the child's own copy source*, which
+/// `Config::vm_copy_source` resolves by the same function and then falls back to the workspace for;
+/// so a reviewer for an entry with no worktree on the operator's box copies the repository, and not
+/// the folder above it.
 ///
 /// **The cost is one `git` per reviewer started**, and only for a row that is actually about to
 /// be spawned: `Harness::serve_reviews` asks this inside the loop, after the row has passed both
@@ -617,7 +692,7 @@ pub fn review_copy_source(workspace: &Path, entry: &MergeEntry) -> Option<PathBu
     {
         return Some(repo);
     }
-    repo_root(workspace).ok()
+    repo_of_workspace(workspace)
 }
 
 /// **Whether a daemon serving `workspace` owns this entry** — [`MergeQueueDaemon::serves`]'s one
@@ -5469,16 +5544,23 @@ mod tests {
     /// ceiling, three times in one night for two branches. A reviewer that cannot start is a
     /// failed attempt on its row, so nothing landed.
     ///
-    /// All three arms, because each is a different fact and only one of them is the box's own
+    /// All four arms, because each is a different fact and only one of them is the box's own
     /// shape: the ENTRY's repository (what the work is in), the workspace's own repository (a
-    /// session opened in the repository — every ordinary daemon), and `None` (nothing here can
-    /// name a repository, so the caller keeps the old behaviour and copies the workspace).
+    /// session opened in the repository — every ordinary daemon), the nested layout (the session
+    /// seated ABOVE its repository, which is the operator's own box and the shape the queue's
+    /// refusal came from), and `None` (nothing here can name a repository, so the caller copies the
+    /// child's own copy source, which `Config::vm_copy_source` resolves the same way and then falls
+    /// back to the workspace for).
     #[test]
     fn a_review_is_copied_from_the_entries_repository() {
         // A folder that is NOT a repository, holding one — the operator's box in miniature.
         let folder =
             std::env::temp_dir().join(format!("letibot-mq-copy-src-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        // Canonical from here on, so a path this test CONSTRUCTS and a path git or the resolution
+        // NAMES are comparable — `/tmp` is not always the same spelling twice.
+        let folder = std::fs::canonicalize(&folder).expect("the folder canonicalizes");
         let repo = folder.join("the-repo");
         std::fs::create_dir_all(&repo).expect("mkdir");
         git(&repo, &["init", "-q", "-b", "main"]);
@@ -5519,12 +5601,38 @@ mod tests {
             Some(repo.clone()),
             "a session seated IN the repository still names it"
         );
-        // (3) Nothing to name: a folder that is in no repository, and an entry with no worktree.
+        // (3) The nested layout, which is tonight's box: a workspace named the same as the
+        // repository inside it — `Projects/letibot/letibot`. The folder's only repository child is
+        // one level further down, so nothing but the NAME can point at it.
+        let nested = folder.join("nested").join("letibot");
+        let nested_repo = nested.join("letibot");
+        std::fs::create_dir_all(&nested_repo).expect("mkdir");
+        git(&nested_repo, &["init", "-q", "-b", "main"]);
+        let nested_repo =
+            std::fs::canonicalize(&nested_repo).expect("the repository canonicalizes");
+        assert_eq!(
+            review_copy_source(&nested, &entry(None)),
+            Some(nested_repo.clone()),
+            "a session seated a level ABOVE its repository names the repository — the same-named \
+             child — and not the folder, which is the 72.8 GiB copy the ceiling refuses"
+        );
+        // (4) The folder's own answer, with no name to go on: exactly ONE repository child is a
+        // parent with exactly one thing to be about, and it is named. Two would be a choice this
+        // function does not make.
         assert_eq!(
             review_copy_source(&folder, &entry(None)),
+            Some(repo.clone()),
+            "one repository child is the repository the folder is about"
+        );
+        // (5) Nothing to name: a directory that is in no repository and holds none.
+        let nowhere = folder.join("scratch");
+        std::fs::create_dir_all(&nowhere).expect("mkdir");
+        assert_eq!(
+            review_copy_source(&nowhere, &entry(None)),
             None,
-            "nothing here can name a repository, so the caller copies the child's own workspace \
-             — the behaviour every build before this field had"
+            "nothing here can name a repository, so the caller copies the child's own copy \
+             source — which resolves to the workspace, the behaviour every build before this field \
+             had"
         );
         let _ = std::fs::remove_dir_all(&folder);
     }

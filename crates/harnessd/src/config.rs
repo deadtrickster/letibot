@@ -536,21 +536,24 @@ pub struct Config {
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
     /// VM under this session.
     pub vm_args: Vec<String>,
-    /// **The tree a `firecode` placement copies**, when that is not
-    /// [`Config::workspace`] — and it is the ONE REPOSITORY the work is in.
+    /// **The tree a `firecode` placement copies**, when the caller that KNOWS names one — and it
+    /// is the ONE REPOSITORY the work is in.
     ///
-    /// `None` is *copy the workspace*, which is what every build did before this field and is
-    /// right whenever the workspace is the repository. It is wrong whenever a session is seated a
-    /// level above its repositories, and the operator's own box is exactly that: the daemon's
-    /// `--workspace` is `/home/dead/Projects/letibot` — a folder holding `letibot`, some
-    /// worktrees, probes and scratch — while the repository the queue serves is
-    /// `/home/dead/Projects/letibot/letibot`. A VM placed on the folder copies **72.8 GiB** of
-    /// siblings, worktrees and build output, and `crates/tools/src/firecode.rs`'s ceiling refuses
-    /// it (measured 2026-10-10, three times, for two branches — the queue could land nothing).
+    /// `None` is *this session's own copy source*, which is not the same thing as its workspace:
+    /// [`Config::vm_copy_source`] resolves the workspace to the repository it is about, because a
+    /// session is seated where a person put it and that is not always a repository. The operator's
+    /// own box is exactly that: the daemon's `--workspace` is `/home/dead/Projects/letibot` — a
+    /// folder holding `letibot`, some worktrees, probes and scratch — while the repository the
+    /// queue serves is `/home/dead/Projects/letibot/letibot`. A VM placed on the folder copies
+    /// **72.8 GiB** of siblings, worktrees and build output, and `crates/tools/src/firecode.rs`'s
+    /// ceiling refuses it (measured 2026-10-10, three times, for two branches — the queue could
+    /// land nothing).
     ///
-    /// So the field exists to let the one caller that KNOWS say so: `Harness::serve_reviews` sets
-    /// it on a reviewer from the entry's own repository (`mergequeue::review_copy_source`), because
-    /// a reviewer reads a branch and the branch is in that repository. It travels the same route
+    /// So the field exists to let the one caller that knows BETTER than the resolution say so:
+    /// `Harness::serve_reviews` sets it on a reviewer from the entry's own repository
+    /// (`mergequeue::review_copy_source`), because a reviewer reads a branch and the branch is in
+    /// that repository — which is not necessarily the repository the queue's own session is seated
+    /// in, since one queue serves every repository under its workspace. It travels the same route
     /// [`letibot_tools::builtins::task::TaskSpec::worktree`] does — the caller's word on the spec,
     /// applied to the child's config at the spawn — and [`Config::vm_copy_source`] is the single
     /// spelling of the decision, read by `Harness::open` when it boots the VM.
@@ -1396,21 +1399,56 @@ impl Config {
     }
 
     /// **The tree a `firecode` placement copies, as one answer** — the session's own
-    /// [`Config::vm_source`] when it has one, and the workspace otherwise.
+    /// [`Config::vm_source`] when the caller that knows named one, the REPOSITORY its workspace is
+    /// about when it did not, and the workspace itself when there is no repository to name.
     ///
     /// One spelling of the decision, because two places have to agree about it: `Harness::open`
-    /// boots the VM on what this returns, and a test that asserts *which tree a VM-placed child
+    /// boots the VM on what this returns, and a test that asserts *which tree a VM-placed session
     /// was copied from* has nothing else to read on a box it must not boot a VM on. A second
     /// spelling at the call site — `cfg.vm_source.clone().unwrap_or_else(|| cfg.workspace.clone())`
     /// — is exactly the kind of fact this tree keeps finding written twice and agreeing only by
     /// luck.
     ///
-    /// The workspace is the right fallback and it is not a guess: a session the operator opened
-    /// IN a repository has `workspace == vm_source` for every purpose, so `None` and
-    /// `Some(workspace)` mean the same thing and the default is byte-identical to what every
-    /// build before this field did.
-    pub fn vm_copy_source(&self) -> &Path {
-        self.vm_source.as_deref().unwrap_or(&self.workspace)
+    /// # Why the repository and not the workspace, and it is not the same thing
+    ///
+    /// A session is seated where a person put it, and that is not always a repository: the
+    /// operator's daemon serves `/home/dead/Projects/letibot`, a folder holding `letibot` (the
+    /// repository), its sibling worktrees and scratch — and the DAEMON's own session is seated
+    /// there on purpose, because *"the daemon's workspace"* is a real tree a session may work in.
+    /// What the folder is not is a thing to COPY. A `firecode` placement copies a tree into a VM,
+    /// the copy is the guest's whole world, and a copy of that folder measures **72.8 GiB** against
+    /// a ceiling of 8 GiB — so every VM placed on it was refused, three times in one night for two
+    /// branches, and a reviewer that cannot start is written as a failed attempt on its row: the
+    /// queue could land nothing at all (measured 2026-10-10).
+    ///
+    /// [`crate::mergequeue::repo_of_workspace`] is that resolution — the workspace itself when it
+    /// is in a repository, the nested layout the head already reads the same way
+    /// (`gitfield::project_dir`) when it is not — and THIS is the one place it is applied, which is
+    /// what makes it apply to every opener at once. Every session the daemon starts reaches this
+    /// line through `Harness::open`, and they do not all come through the same door: the daemon's
+    /// eagerly-opened first session (`Sessions::open_first_with_seat`), a head's `ResumeSession`
+    /// and the merge queue's project session (both `Sessions::harness_as`), the review queue's own
+    /// session (`Sessions::ensure_gatekeeper`, whose `open_as` is `harness_as` one arm over), and
+    /// every `task` child (the spawn in `HarnessTaskRunner`). Each builds its config from the
+    /// daemon's command line and reads it here, so a fix written into one opener would be three
+    /// openers behind — and the one that matters is whichever one is placed in a VM, which is a
+    /// fact about `--where` and about `gatekeeper_vm` rather than about the door.
+    ///
+    /// # What nothing to name means
+    ///
+    /// A workspace that is in no repository and holds none — `/tmp`, a scratch directory —
+    /// resolves to nothing, and this answers the WORKSPACE, which is what every build before
+    /// `vm_source` did. The copy is then attempted and, if it is over the ceiling, refused with its
+    /// own size in the sentence: a loud failure naming the tree, and not a silent guess at a
+    /// sibling. The daemon's own box is NOT that case, and the difference is worth reading twice:
+    /// `repo_root("/home/dead/Projects/letibot")` fails — the queue's own log says `serving
+    /// /home/dead/Projects/letibot toward main` — and the same-named child below it is what this
+    /// resolves, which is why the queue's own session no longer copies the folder.
+    pub fn vm_copy_source(&self) -> PathBuf {
+        self.vm_source
+            .clone()
+            .or_else(|| crate::mergequeue::repo_of_workspace(&self.workspace))
+            .unwrap_or_else(|| self.workspace.clone())
     }
 }
 
@@ -2677,9 +2715,12 @@ impl Config {
         if self.placement == letibot_tools::builtins::task::Placement::Firecode {
             out.push(Disclosure::on(
                 "placement",
-                "a firecode VM holding a copy of the workspace: the VM is the boundary, the \
-                 mode inside is allow-all, and what this session writes lands in a sibling \
-                 directory when it ends",
+                format!(
+                    "a firecode VM holding a copy of {}: the VM is the boundary, the mode inside \
+                     is allow-all, and what this session writes lands in a sibling directory when \
+                     it ends",
+                    self.vm_copy_source().display()
+                ),
             ));
         }
         // **The room.** Whether anybody said anywhere reaches this session, and as
@@ -2914,26 +2955,27 @@ pub fn now_ns() -> u128 {
 mod tests {
 
     /// **The tree a VM placement copies is the session's own copy source where it has one, and the
-    /// workspace otherwise** — the one spelling `Harness::open` reads when it boots the VM.
+    /// repository it is about otherwise** — the one spelling `Harness::open` reads when it boots
+    /// the VM.
     ///
     /// Two callers have to agree about this and neither can see the other: `Harness::open` fills
-    /// `FirecodeSpec::source` from it, and a test that asks *which tree was a VM-placed child
+    /// `FirecodeSpec::source` from it, and a test that asks *which tree a VM-placed child was
     /// copied from* has nothing else to read on a box it must not boot a VM on. A second spelling
     /// at the call site — `vm_source.clone().unwrap_or_else(|| workspace.clone())` — is exactly the
     /// kind of fact this tree keeps finding written twice and agreeing only by luck.
     ///
-    /// The default is asserted as well as the override, because it is the behaviour every build
-    /// before this field had: a session the operator opened IN a repository has
-    /// `workspace == vm_source` for every purpose, so `None` must mean the workspace and nothing
-    /// else.
+    /// The default is asserted on a path that does not exist, which is the one case that has
+    /// nothing to resolve: no repository names `/tmp/the-workspace` and none is named inside it, so
+    /// `None` must mean the workspace and nothing else — the behaviour every build before
+    /// `vm_source` had. The repository that IS there to name is the next test's.
     #[test]
     fn a_vm_placement_copies_the_sessions_own_source_when_it_has_one() {
         let mut cfg = Config::for_this_box("/tmp/the-workspace");
         assert_eq!(
             cfg.vm_copy_source(),
             std::path::Path::new("/tmp/the-workspace"),
-            "with no copy source of its own, a VM is booted on the session's workspace — what \
-             every build before `vm_source` did"
+            "with no copy source of its own and no repository to name, a VM is booted on the \
+             session's workspace — what every build before `vm_source` did"
         );
         cfg.vm_source = Some(PathBuf::from("/tmp/the-workspace/the-repo"));
         assert_eq!(
@@ -2942,6 +2984,78 @@ mod tests {
             "and a session told which repository the work is in copies THAT, which is the whole \
              of what the review queue sets on a reviewer"
         );
+    }
+
+    /// **A box whose daemon serves a FOLDER of repositories boots a VM on the one repository** —
+    /// tonight's refusal, and the reason the copy source is not the workspace.
+    ///
+    /// MEASURED 2026-10-10, the operator's own box: the daemon's `--workspace` is
+    /// `/home/dead/Projects/letibot`, a folder holding the repository `letibot/letibot` and the
+    /// sibling worktrees `wt-drill`, `wt-jobs`, `wt-visibility`, `wt-yellow`; `repo_root` of the
+    /// folder FAILS (the queue's log says `serving /home/dead/Projects/letibot toward main`), and
+    /// a VM placed on the folder was refused at the ceiling — *"it weighs 72.8 GiB after excluding
+    /// [target, .claude/worktrees, node_modules, .git/worktrees], and the ceiling is 8.0 GiB"* —
+    /// three times, for two branches, so the review queue landed nothing.
+    ///
+    /// The fixture is that box in miniature, and it is built so that the arm which answers is the
+    /// one that has to: the daemon's workspace is a folder NAMED after the repository inside it
+    /// (`letibot` holding `letibot`), the folder is in no repository of its own, and it holds
+    /// SEVERAL repositories — so neither git nor *the one repository child* can name the repository
+    /// and the same-named child is the answer.
+    #[test]
+    fn a_vm_placement_on_a_folder_of_repositories_copies_the_one_repository() {
+        let parent = std::env::temp_dir().join(format!("letibot-vm-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        // The daemon's workspace — a folder named after the repository inside it — and two sibling
+        // worktrees beside that repository, which is what makes the folder a FOLDER of them.
+        let ws = parent.join("letibot");
+        let repo = ws.join("letibot");
+        a_repository(&repo);
+        for wt in ["wt-drill", "wt-jobs"] {
+            a_repository(&ws.join(wt));
+        }
+
+        let mut cfg = Config::for_this_box(&ws);
+        assert_eq!(
+            cfg.vm_copy_source(),
+            repo,
+            "the folder is not what a VM is booted on: the repository is, and the same-named \
+             child is what names it — a folder holding the repository AND its worktrees has no \
+             single repository child to pick"
+        );
+        // **And the caller's own word still beats the resolution**, which is what the review queue
+        // relies on: a reviewer is booted on the ENTRY's repository, which need not be this one.
+        cfg.vm_source = Some(PathBuf::from("/tmp/the-entries-repo"));
+        assert_eq!(
+            cfg.vm_copy_source(),
+            std::path::Path::new("/tmp/the-entries-repo"),
+            "a session told which repository the work is in copies THAT"
+        );
+
+        // **And a workspace with nothing to name answers the workspace** — the honest fallback,
+        // whose refusal at the ceiling is loud and names the tree rather than booting a VM on some
+        // sibling that happens to be a repository.
+        let nowhere = parent.join("scratch");
+        std::fs::create_dir_all(&nowhere).expect("mkdir");
+        assert_eq!(
+            Config::for_this_box(&nowhere).vm_copy_source(),
+            nowhere,
+            "a workspace in no repository and holding none resolves to itself"
+        );
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// A real repository at `at`, with `git` itself. [`crate::mergequeue::repo_of_workspace`] asks
+    /// git first, so a fixture that only made a `.git` directory would be testing its second arm by
+    /// accident and this one on purpose.
+    fn a_repository(at: &Path) {
+        std::fs::create_dir_all(at).expect("mkdir");
+        let ok = std::process::Command::new("git")
+            .current_dir(at)
+            .args(["init", "-q", "-b", "main"])
+            .status()
+            .expect("git");
+        assert!(ok.success(), "git init in {}", at.display());
     }
 
     /// **Every declared local model reaches the picker's row.**

@@ -295,10 +295,15 @@ pub struct FirecodeSpec {
     /// siblings, worktrees and build output that [`copy_tree`] refused three times on 2026-10-10
     /// for two different branches. The siblings are not the work and no reviewer reads them.
     ///
-    /// So this is the caller's decision and not a default: `Config::vm_source`
-    /// (`TaskSpec::vm_source` for a child) names it, and the review queue sets it from the
-    /// entry's own repository — `mergequeue::review_copy_source` is that resolution, and the
-    /// one caller that has to get it right.
+    /// **It is filled by `Config::vm_copy_source`, which is the ONE resolution of *what this
+    /// session's VM copies*** — the caller's own `Config::vm_source` where the caller that knows
+    /// named one, the repository the session's workspace is about otherwise
+    /// (`mergequeue::repo_of_workspace`: git's answer, then the nested layout), and the workspace
+    /// itself only when there is no repository to name at all. `Harness::open` is the only reader,
+    /// so the resolution covers every session the daemon opens at once rather than one opener at a
+    /// time — and the review queue, which is the caller that knows better, names the ENTRY's
+    /// repository on the child's spec (`mergequeue::review_copy_source`) because a reviewer's
+    /// branch is in that repository and not necessarily in the one the queue's session sits in.
     pub source: PathBuf,
     /// Copies live under here — `~/.cache/letibot/firecode` by default.
     pub cache: PathBuf,
@@ -1132,7 +1137,7 @@ fn measure_copy(from: &Path, to: &Path, exclude: &[String]) -> Result<u64, Backe
         .output()
         .map_err(|e| {
             BackendError::Io(format!(
-                "rsync: {e} (rsync is required to copy the workspace)"
+                "rsync: {e} (rsync is required to copy the tree a VM is booted on)"
             ))
         })?;
     if !out.status.success() {
@@ -1183,9 +1188,10 @@ fn copy_tree(from: &Path, to: &Path, exclude: &[String], max: u64) -> Result<(),
             "refusing to copy {}: it weighs {} after excluding [{}], and the ceiling is {}. \
              A source this size is a folder of repositories or a tree with build output under \
              an unexpected name, and neither is the thing a VM is for: the copy source should be \
-             the ONE repository the work is in (`Config::vm_source`), not the directory the \
-             session was started in. Raise LETIBOT_FIRECODE_COPY_MAX on purpose only for a \
-             repository that genuinely weighs more than {}.",
+             the ONE repository the work is in — `Config::vm_copy_source`, where the session's own \
+             `vm_source` and the repository its workspace is about are resolved — and not the \
+             directory the session was started in. Raise LETIBOT_FIRECODE_COPY_MAX on purpose only \
+             for a repository that genuinely weighs more than {}.",
             from.display(),
             human(size),
             exclude.join(", "),
@@ -1195,7 +1201,7 @@ fn copy_tree(from: &Path, to: &Path, exclude: &[String], max: u64) -> Result<(),
     }
     let out = rsync_cmd(from, to, exclude).output().map_err(|e| {
         BackendError::Io(format!(
-            "rsync: {e} (rsync is required to copy the workspace)"
+            "rsync: {e} (rsync is required to copy the tree a VM is booted on)"
         ))
     })?;
     if !out.status.success() {
