@@ -1317,6 +1317,24 @@ fn queue_entry(
     }
 }
 
+/// **One gate step, as the landing records it** — `af2144b`'s row, one per step `main`
+/// declared, and what the pane's merge half is drawn from.
+fn gate_step(
+    command: &str,
+    outcome: letibot_sessionlog::event::MergeGateOutcome,
+    output: &str,
+    elapsed_ms: u64,
+) -> letibot_sessionlog::event::MergeGateStep {
+    letibot_sessionlog::event::MergeGateStep {
+        command: command.into(),
+        outcome,
+        output: output.into(),
+        // A step that ran: the landing stamps every row it ran with the clock it started on.
+        started_ms: 1_000,
+        elapsed_ms,
+    }
+}
+
 fn queue_review(entry_id: &str, decision: Option<&str>) -> letibot_sessionlog::event::MergeReview {
     letibot_sessionlog::event::MergeReview {
         entry_id: entry_id.into(),

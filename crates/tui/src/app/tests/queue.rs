@@ -634,3 +634,260 @@ fn a_removed_entry_leaves_the_pane_and_its_verdict_with_it() {
     )));
     assert_eq!(a.merge.len(), 1, "nothing was added");
 }
+
+// ===== The merge half: the gate's steps =====
+
+/// **The gate's steps draw in order, with their marks, and the landing under them** — the merge
+/// half of the queue, which is the half that can be drawn well because *"a thing that is being run
+/// can be drawn well"*, and the operator's complaint: *"it doesnt show me review queue state
+/// transitions"*.
+#[test]
+fn the_gates_steps_draw_in_order_with_their_marks() {
+    use letibot_sessionlog::event::{MergeGateOutcome, MergeState};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut e = queue_entry("c1", MergeState::Landed);
+    e.gate_steps = vec![
+        gate_step(
+            "sh scripts/check-fmt.sh main",
+            MergeGateOutcome::Passed,
+            "all formatted",
+            1_200,
+        ),
+        gate_step(
+            "cargo clippy --all-targets",
+            MergeGateOutcome::Passed,
+            "",
+            4_000,
+        ),
+        gate_step(
+            "cargo test --workspace --no-fail-fast",
+            MergeGateOutcome::Passed,
+            "test result: ok",
+            61_000,
+        ),
+    ];
+    e.landed_sha = Some("deadbee".into());
+    a.apply(queue_frame(vec![e], Vec::new()));
+    let rows = a.screen(140, 40);
+    let at = |needle: &str| {
+        rows.iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row for {needle:?}: {rows:#?}"))
+    };
+    let first = at("sh scripts/check-fmt.sh main");
+    let second = at("cargo clippy --all-targets");
+    let third = at("cargo test --workspace --no-fail-fast");
+    assert!(
+        first < second && second < third,
+        "the steps are drawn in the order `main` declared them: {rows:#?}"
+    );
+    // The mark is on the step's own row, and a step that ran green carries the tick.
+    for needle in [
+        "sh scripts/check-fmt.sh main",
+        "cargo clippy --all-targets",
+        "cargo test --workspace --no-fail-fast",
+    ] {
+        assert!(
+            rows[at(needle)].contains('✓'),
+            "{needle} is not marked green: {:?}",
+            rows[at(needle)]
+        );
+    }
+    // **The machine's own clock**, which is what tells a step that took a minute from one that
+    // took a second — and, with the outcome, a real `0 ms` from a step that never ran.
+    assert!(rows[first].contains("1.2s"), "{:?}", rows[first]);
+    // **Where the branch ended up**, on the row the merge half is drawn on.
+    assert!(
+        rows.iter().any(|l| l.contains("landed deadbee")),
+        "{rows:#?}"
+    );
+    // And the one sentence this entry must NOT carry: its gate has run.
+    assert!(
+        !rows.iter().any(|l| l.contains("the gate has not run")),
+        "{rows:#?}"
+    );
+}
+
+/// **A failing step shows its own output tail, and the steps the gate never reached say so** —
+/// the step, what it printed and where it stopped, and the row that must not read as green: a
+/// gate that stopped at the first failure is not a gate that ran everything.
+#[test]
+fn a_failing_step_shows_its_output_and_the_steps_after_it_did_not_run() {
+    use letibot_sessionlog::event::{MergeGateOutcome, MergeState};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut e = queue_entry("c1", MergeState::Failed);
+    e.evidence = "the gate stopped at the second step".into();
+    e.gate_steps = vec![
+        gate_step(
+            "sh scripts/check-fmt.sh main",
+            MergeGateOutcome::Passed,
+            "all formatted",
+            1_200,
+        ),
+        gate_step(
+            "cargo test --workspace --no-fail-fast",
+            MergeGateOutcome::Failed,
+            "… [4096 byte(s) dropped from the front]\nrunning 3 tests\n\
+             thread 'a' panicked at src/lib.rs:9:\nassertion failed: 2 == 3\ntest result: FAILED",
+            30_000,
+        ),
+        gate_step(
+            "cargo build --release --bins",
+            MergeGateOutcome::NotRun,
+            "",
+            0,
+        ),
+    ];
+    a.apply(queue_frame(vec![e], Vec::new()));
+    let rows = a.screen(140, 40);
+    let failed = rows
+        .iter()
+        .position(|l| l.contains("cargo test --workspace --no-fail-fast"))
+        .expect("the red step's row");
+    assert!(rows[failed].contains('✗'), "{:?}", rows[failed]);
+    // **The step's own words, and the END of them** — the last line is where it stopped.
+    assert!(
+        rows.iter()
+            .any(|l| l.contains("thread 'a' panicked at src/lib.rs:9")),
+        "the output is not drawn: {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|l| l.contains("test result: FAILED")),
+        "and not its end: {rows:#?}"
+    );
+    // **The step the gate never reached is drawn, in order, and it is not green.**
+    let skipped = rows
+        .iter()
+        .position(|l| l.contains("cargo build --release --bins"))
+        .expect("a step that never ran is still on the entry");
+    assert!(skipped > failed, "the steps are in order: {rows:#?}");
+    assert!(rows[skipped].contains("not run"), "{:?}", rows[skipped]);
+    assert!(
+        !rows[skipped].contains('✓'),
+        "a step that never ran is not a step that was green: {:?}",
+        rows[skipped]
+    );
+}
+
+/// **An empty step list is *the gate has not run on this entry*** — what a daemon from before the
+/// field sends, what an entry still waiting for its reviewer carries, and what a vetoed one
+/// carries — and it must never read as *all steps passed*: a blank checklist under an entry is the
+/// lie the empty list is drawn as a sentence to prevent.
+#[test]
+fn an_empty_step_list_reads_as_the_gate_has_not_run() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(
+        vec![queue_entry("c1", MergeState::Waiting)],
+        Vec::new(),
+    ));
+    let rows = a.screen(120, 40);
+    assert!(
+        rows.iter()
+            .any(|l| l.contains("the gate has not run on this entry")),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains('✓')),
+        "an empty list is not a green gate: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains(" · not run")),
+        "and it is not *a step that did not run* either — nothing was declared: {rows:#?}"
+    );
+
+    // **An entry the queue has taken says the merge is RUNNING.** The rows are written by the move
+    // that ENDS a run, so a `taken` entry has none of this run's, and *running* is the honest
+    // reading of the empty list there rather than *the gate has not run*.
+    a.apply(queue_frame(
+        vec![queue_entry("c2", MergeState::Taken)],
+        Vec::new(),
+    ));
+    let rows = a.screen(120, 40);
+    assert!(
+        rows.iter().any(|l| l.contains("the merge is running")),
+        "{rows:#?}"
+    );
+    assert!(!rows.iter().any(|l| l.contains('✓')), "{rows:#?}");
+}
+
+/// **A `no_gate` row is a repository with no gate declared** — one row rather than an empty list,
+/// because *the gate declared nothing to run* and *the gate has not run* are different facts. It is
+/// the honest and actionable case (the queue holds the branch until somebody writes the section),
+/// so the queue's own sentence is on it, and it is never a step that passed.
+#[test]
+fn a_no_gate_row_reads_as_no_gate_declared() {
+    use letibot_sessionlog::event::{MergeGateOutcome, MergeState};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut e = queue_entry("c1", MergeState::Waiting);
+    e.gate_steps = vec![gate_step(
+        "",
+        MergeGateOutcome::NoGate,
+        "`main` has no `Merge gate` section in AGENTS.md, so there is no step to run",
+        0,
+    )];
+    a.apply(queue_frame(vec![e], Vec::new()));
+    let rows = a.screen(160, 40);
+    assert!(
+        rows.iter().any(|l| l.contains("no gate declared")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|l| l.contains("no `Merge gate` section in AGENTS.md")),
+        "the queue's own sentence is on the row: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains('✓') || l.contains('✗')),
+        "a repository with no gate is not a gate that passed everything: {rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains("the gate has not run")),
+        "and it is a row rather than the empty list: {rows:#?}"
+    );
+}
+
+/// **The overlay is where the run is readable whole** — rano's overlay draws the entry, the ask
+/// and the reviewer's verdict; the gate's steps and every line of the red step's output are under
+/// them, wrapped rather than cut, because an overlay is read and scrolled rather than glanced at.
+#[test]
+fn the_overlay_draws_the_gates_steps_and_the_whole_output() {
+    use letibot_sessionlog::event::{MergeGateOutcome, MergeState};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut e = queue_entry("c1", MergeState::Failed);
+    e.gate_steps = vec![
+        gate_step(
+            "sh scripts/check-fmt.sh main",
+            MergeGateOutcome::Passed,
+            "all formatted",
+            1_000,
+        ),
+        gate_step(
+            "cargo test --workspace",
+            MergeGateOutcome::Failed,
+            "first line of the tail\nsecond line\nthird line\nfourth line\nfifth line — where it stopped",
+            9_000,
+        ),
+    ];
+    a.apply(queue_frame(vec![e], Vec::new()));
+    assert_eq!(a.key(Key::Enter), None);
+    let screen = a.screen(120, 60).join("\n");
+    assert!(screen.contains("the gate's steps"), "{screen}");
+    assert!(
+        screen.contains("✓ sh scripts/check-fmt.sh main"),
+        "{screen}"
+    );
+    // **The lines the pane's own window cuts away** — the overlay draws all of the tail.
+    assert!(screen.contains("first line of the tail"), "{screen}");
+    assert!(screen.contains("fifth line — where it stopped"), "{screen}");
+}

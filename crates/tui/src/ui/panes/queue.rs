@@ -1,11 +1,34 @@
 //! **The merge queue**: what is waiting to land, and a review's output — drawn by
 //! `rano::agent::queue` from the queue and the reviews this head holds.
+//!
+//! # The merge half is this file's
+//!
+//! rano draws the review half of an entry — what the reviewer said, and the queue's own words
+//! for why it is where it is. The merge half is here: the gate's steps, in the order `main`
+//! declared them, spliced under the entry they belong to ([`with_gate_rows`]) and drawn whole in
+//! the overlay ([`gate_section`]). The design note's argument for why this half can be drawn
+//! well at all is that *"the merge queue is a machine. Rebase, then the gate's steps, then land.
+//! Nothing is being decided; something is being run. And a thing that is being run can be drawn
+//! well."* A head handed only `failed` can only ever draw `failed`, which is why the landing
+//! records one row per step rather than a verdict.
+//!
+//! # What is not here
+//!
+//! **One view, not two.** The operator's other half of the complaint — *"nor there are separate
+//! views for review and merge queues"* — is not built: this pane draws the review half and the
+//! merge half of every entry in one list, which is where both halves were already drawn from.
+//! The merge half being legible at all is this change; two views of one queue is a pane of its
+//! own, and is not pretended at here.
 
 use crate::app::*;
-use crate::ui::render::{dur_human, row_strings};
+use crate::ui::render::{dur_human, row_strings, trim_to, wrap};
+use letibot_sessionlog::event::{MergeEntry, MergeGateOutcome, MergeGateStep};
+use rano::agent::pane::PaneLines;
 use rano::agent::queue::{
     MergeMark, OpenedEntry, QueueEntry, QueueEntryView, QueuePane, ReviewRecord, ReviewState,
 };
+use rano::agent::text::{clean_line, one};
+use rano::render::{Line, Span};
 use rano::style::Role;
 
 impl App {
@@ -56,6 +79,10 @@ impl App {
     /// Two lines an entry, like the jobs pane's rows and for the same reason: the facts a
     /// reader needs are (what is it) and (why is it where it is), and a single line would
     /// truncate the second to make room for the first.
+    ///
+    /// **And then the entry's merge half**, spliced under it ([`with_gate_rows`]): the gate's
+    /// steps in the order `main` declared them, the red step's own output, and where a landed
+    /// branch ended up. rano draws the review half; this is the half that is a machine.
     ///
     /// **The order is the daemon's** and is not sorted here. The queue is the queue's own
     /// scheduling (`created_ms`, then the priority), and a head that re-sorted it would be a
@@ -125,8 +152,13 @@ impl App {
             selected: self.queue_sel,
         };
         let content = pane.content(w);
-        self.queue_stop_rows = content.stop_rows;
-        row_strings(&content.lines, self.cfg.palette())
+        // **The merge half, spliced in under each entry.** rano draws the review half; the
+        // gate's steps belong between an entry's own two rows and the next entry's stop.
+        let PaneLines { lines, stop_rows } = with_gate_rows(content, &self.merge, w);
+        // **The record, rebuilt rather than patched** — the arrows and a click read the rows the
+        // last draw wrote, so the stop rows move with the rows that were inserted.
+        self.queue_stop_rows = stop_rows;
+        row_strings(&lines, self.cfg.palette())
     }
 
     /// **One entry, whole** — the overlay the queue pane's Enter opens.
@@ -144,7 +176,8 @@ impl App {
         let Some(id) = self.queue_open.as_deref() else {
             return Vec::new();
         };
-        let entry = self.merge.iter().find(|e| e.id == id).map(|e| OpenedEntry {
+        let held = self.merge.iter().find(|e| e.id == id);
+        let entry = held.map(|e| OpenedEntry {
             branch: e.branch.clone(),
             state: merge_state_word(e.state).to_string(),
             priority: merge_priority_word(e.priority).to_string(),
@@ -168,7 +201,15 @@ impl App {
             id: id.to_string(),
             entry,
         };
-        row_strings(&view.lines(w), self.cfg.palette())
+        let mut lines = view.lines(w);
+        // **The merge half goes under rano's overlay** — the entry's fields, the ask and the
+        // reviewer's verdict are rano's, and the gate's steps are appended where a reader who
+        // opened the entry scrolls to. Nothing is read again here, so a `MergeEntryMoved`
+        // arriving under an open overlay shows the new state (see this method's docstring).
+        if let Some(e) = held {
+            lines.extend(gate_section(e, w));
+        }
+        row_strings(&lines, self.cfg.palette())
     }
 }
 
@@ -255,4 +296,228 @@ pub(crate) fn merge_priority_word(
         P::Urgent => "urgent",
         P::Subagent => "subagent",
     }
+}
+
+// ===== The merge half: the gate's steps, drawn =====
+
+/// **How the gate's rows are drawn in the two places they appear.** A pane row is a glance at a
+/// fixed width; an overlay is read and scrolled, so it gets every line the row carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateRows {
+    /// The pane: one row a step, and a failing step's last [`FAILURE_LINES`] output lines, each
+    /// cut to the width.
+    Pane,
+    /// The overlay: every line of the output, wrapped.
+    Whole,
+}
+
+/// The column an entry's own detail row is indented to — rano draws two rows an entry, the second
+/// under the first — so a step lines up under the entry it belongs to.
+const STEP_AT: &str = "         ";
+
+/// A step's output, one level further in than the step.
+const OUTPUT_AT: &str = "             ";
+
+/// **How much of a failing step's output the PANE draws.** The row carries up to four kilobytes
+/// of it (`mergequeue::EVIDENCE_BYTES`) and a list is a glance, so the pane draws the last few
+/// lines — the failure is at the end, which is the end `mergequeue::tail` keeps. The overlay
+/// draws all of it.
+const FAILURE_LINES: usize = 4;
+
+/// **The pane's rows with each entry's gate steps spliced in under it.**
+///
+/// rano draws an entry as two rows — the stop the cursor rests on, and the detail under it — and
+/// the merge half belongs between one entry's detail and the next entry's stop. The stop rows are
+/// REBUILT rather than patched: they are the record the arrows and a click read, and they are
+/// indices into the rows that were drawn, so inserting rows without moving the record would leave
+/// the cursor on a row belonging to somebody else's entry — the defect the record exists to
+/// prevent (`rano::agent::pane`'s own header, and the operator's *"mouse doesnt click"*).
+fn with_gate_rows(content: PaneLines, entries: &[MergeEntry], w: usize) -> PaneLines {
+    let mut out = PaneLines::new();
+    let mut k = 0usize;
+    for (i, line) in content.lines.into_iter().enumerate() {
+        if content.stop_rows.get(k) == Some(&i) {
+            out.push_stop(line);
+        } else {
+            out.push(line);
+        }
+        // **The row after an entry's stop is the entry's own detail** (rano's shape: two rows an
+        // entry), so the gate goes after that row and before the next entry's stop.
+        if i > 0 && content.stop_rows.get(k) == Some(&(i - 1)) {
+            if let Some(e) = entries.get(k) {
+                for l in gate_lines(e, w, GateRows::Pane) {
+                    out.push(l);
+                }
+            }
+            k += 1;
+        }
+    }
+    out
+}
+
+/// **The merge half of one entry: the gate's steps, in the order `main` declared them.**
+///
+/// The design note's argument, and the reason `af2144b` records a row per step rather than a
+/// verdict: *"the merge queue is a machine. Rebase, then the gate's steps, then land. Nothing is
+/// being decided; something is being run. And a thing that is being run can be drawn well."*
+///
+/// # The two edges the rows were built with, and why neither reads as *all steps passed*
+///
+/// **An empty list is *the gate has not run on this entry*** — what a daemon from before
+/// `gate_steps` sends (`#[serde(default)]`), what an entry still waiting for its reviewer carries,
+/// and what a vetoed or conflicted entry carries. It is drawn as that sentence and never as
+/// nothing: a blank checklist under an entry reads as *the gate declared no steps*, and a gate
+/// that declared no steps reads as green. Neither is what an empty list says.
+///
+/// **A [`MergeGateOutcome::NoGate`] row is a repository whose `main` declares no gate at all** —
+/// one row, an empty command, the queue's own sentence in `output`. It is the honest and
+/// actionable case (the queue holds the branch until somebody writes the section), so it is drawn
+/// as that sentence with `⚠` beside it, and never as a step with a tick.
+///
+/// # An entry the queue has taken
+///
+/// The rows are written by the move that ENDS a run, so a `taken` entry holds none of this run's
+/// — and it keeps the previous run's, because a move with nothing to say about the gate leaves
+/// them alone (`mergequeue::Daemon::move_to`; the no-gate hold is the reachable case). So a
+/// `taken` entry is drawn as *running*, and rows under it are labelled as the last run's, rather
+/// than a previous run's outcome being drawn as the state of this one.
+fn gate_lines(e: &MergeEntry, w: usize, how: GateRows) -> Vec<Line> {
+    use letibot_sessionlog::event::MergeState as S;
+    let running = e.state == S::Taken;
+    let mut out = Vec::new();
+    if e.gate_steps.is_empty() {
+        out.push(if running {
+            note(
+                "…",
+                Role::Pending,
+                "the gate has not run on this entry yet — the merge is running",
+                w,
+            )
+        } else {
+            note("·", Role::Faint, "the gate has not run on this entry", w)
+        });
+        return out;
+    }
+    if running {
+        out.push(note(
+            "…",
+            Role::Pending,
+            "the merge is running — the rows below are the last run's",
+            w,
+        ));
+    }
+    for step in &e.gate_steps {
+        out.extend(step_lines(step, w, how));
+    }
+    // **Where the branch ended up**, on the row the merge half is drawn on. The overlay draws
+    // `landed <tip>` among the entry's own fields already, so this is the pane's.
+    if how == GateRows::Pane
+        && let Some(tip) = &e.landed_sha
+    {
+        out.push(note("→", Role::Success, &format!("landed {tip}"), w));
+    }
+    out
+}
+
+/// **One step's rows: the command, its mark, and — when it is the red one — what it printed.**
+fn step_lines(step: &MergeGateStep, w: usize, how: GateRows) -> Vec<Line> {
+    use MergeGateOutcome as O;
+    // **A `no_gate` row is not a step.** It has no command because there was none to run, and it
+    // is the repository's fact rather than a step's outcome — see [`gate_lines`].
+    if step.outcome == O::NoGate {
+        return vec![note(
+            "⚠",
+            Role::Attention,
+            &format!("no gate declared — {}", step.output),
+            w,
+        )];
+    }
+    let (mark, role) = match step.outcome {
+        O::Passed => ("✓", Role::Success),
+        O::Failed => ("✗", Role::Failure),
+        O::NotRun => ("·", Role::Faint),
+        O::NoGate => unreachable!("the no-gate row is drawn above"),
+    };
+    let mut said = clean_line(&step.command);
+    match step.outcome {
+        // **The machine's own clock**, which is the row's other half: a step that took a minute
+        // and a step that took a millisecond are the same `✓` without it.
+        O::Passed | O::Failed => said.push_str(&format!(" · {}", dur_human(step.elapsed_ms))),
+        // **Not `passed`.** A step the gate never reached because an earlier one was red is not a
+        // step that was green, and drawing the two the same way is how a gate that stopped at the
+        // first failure comes to look like a gate that ran everything.
+        O::NotRun => said.push_str(" · not run"),
+        O::NoGate => {}
+    }
+    let mut out = vec![Line::new(vec![
+        Span::raw(STEP_AT),
+        Span::role(mark, role),
+        Span::raw(" "),
+        Span::raw(trim_to(&said, w.saturating_sub(STEP_AT.len() + 2))),
+    ])];
+    // **What it printed, and where it stopped** — the step's own words rather than a sentence
+    // about the failure, and the END of them, which is where a failure is.
+    if step.outcome == O::Failed {
+        out.extend(output_lines(&step.output, w, how));
+    }
+    out
+}
+
+/// **A failing step's own output**, drawn under the step that printed it.
+///
+/// The pane draws the last [`FAILURE_LINES`] of it, one row a line and cut to the width, because
+/// a row in a list is a glance and the last lines are the failure. The overlay wraps every line
+/// and draws all of them, because that is the only place the run is readable in full — rano's
+/// overlay says the same about the entry's evidence, which is why it wraps rather than elides.
+fn output_lines(output: &str, w: usize, how: GateRows) -> Vec<Line> {
+    let lines: Vec<&str> = output.lines().collect();
+    let from = match how {
+        GateRows::Pane => lines.len().saturating_sub(FAILURE_LINES),
+        GateRows::Whole => 0,
+    };
+    let room = w.saturating_sub(OUTPUT_AT.len());
+    let mut out = Vec::new();
+    for l in &lines[from..] {
+        let text = clean_line(l);
+        match how {
+            GateRows::Pane => out.push(Line::new(vec![
+                Span::raw(OUTPUT_AT),
+                Span::raw(trim_to(&text, room)),
+            ])),
+            GateRows::Whole => {
+                for wrapped in wrap(&text, room) {
+                    out.push(Line::new(vec![Span::raw(OUTPUT_AT), Span::raw(wrapped)]));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// **A sentence row under an entry** — the gate's state when there are no steps to draw, and
+/// where a landed branch ended up. `mark` is the one-column reading beside it and the role is the
+/// mark's; the sentence is cut to the width like the entry's own detail row.
+fn note(mark: &str, role: Role, text: &str, w: usize) -> Line {
+    Line::new(vec![
+        Span::raw(STEP_AT),
+        Span::role(mark, role),
+        Span::raw(" "),
+        Span::raw(trim_to(
+            &clean_line(text),
+            w.saturating_sub(STEP_AT.len() + 2),
+        )),
+    ])
+}
+
+/// **The gate's steps, as the overlay's last section** — the pane's rows one width up: every line
+/// of a failing step's output, wrapped rather than cut, because an overlay is read and scrolled
+/// rather than glanced at.
+fn gate_section(e: &MergeEntry, w: usize) -> Vec<Line> {
+    let mut out = vec![
+        Line::default(),
+        one("  the gate's steps", Role::Strong),
+        Line::default(),
+    ];
+    out.extend(gate_lines(e, w, GateRows::Whole));
+    out
 }
