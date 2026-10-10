@@ -112,8 +112,9 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "the notes the harness reads into the prompt — one row each, with the form the \
              budget gave it: `verbatim` when the prompt carries the note whole, `indexed` when \
              it did not fit and the prompt carries its headings and line ranges instead. \
-             enter reads a note; a path in a conversation is reachable here. This is NOT \
-             /notes, which is what this head has shown",
+             enter opens the note's file in the editor pane (rano) — the whole of it, editable, \
+             which is the only place an `indexed` note's text is; a path in a conversation is \
+             reachable here. This is NOT /notes, which is what this head has shown",
         ),
         (
             "/notes",

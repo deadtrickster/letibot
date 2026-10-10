@@ -167,13 +167,6 @@ impl App {
             return r;
         }
 
-        // **The note the pane's Enter opened**, above the block that closes every pane on Esc:
-        // its Esc means *back to the list*, and below that block it would close the pane and
-        // leave the note standing over an empty screen. See `key_note_open`.
-        if let ControlFlow::Break(r) = self.key_note_open(&k) {
-            return r;
-        }
-
         if let ControlFlow::Break(r) = self.key_overlays(&k) {
             return r;
         }

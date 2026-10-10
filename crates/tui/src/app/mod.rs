@@ -857,6 +857,10 @@ pub struct App {
     /// as an index because they did not fit the budget — a fact that was, until this, visible
     /// nowhere outside the model's own prompt.
     ///
+    /// **Its Enter opens a note in the editor pane**, which is the same rano every other file in
+    /// this head opens in — see [`App::open_note`] — and the list stays open under it, so leaving
+    /// rano lands back on these rows.
+    ///
     /// **No chord, for the queue pane's reason one field up**, and one more of its own: the word
     /// this pane needs is *standing*, and every chord that could spell it is spent — `ctrl-n` and
     /// `/notes` are this head's own disclosures (`Note::Warned`, numbered for `/notes dismiss N`)
@@ -873,15 +877,12 @@ pub struct App {
     /// index names a note the disk no longer has* can be seen at all. See `ui/panes/standing.rs`.
     pub(crate) standing: Vec<letibot_sessionlog::protocol::NoteEntry>,
     /// Which note row the cursor is on — an index into [`App::standing`], the same list the
-    /// drawn `▸`, the arrows and Enter read.
+    /// drawn `▸`, the arrows and Enter read. Kept across a close, so reopening the pane lands on
+    /// the note the reader left.
     pub(crate) standing_sel: usize,
     /// **The pane row each note was DRAWN on** — the record the arrows scroll by, never
     /// arithmetic over the list. See `jobs_stop_rows` for the defect this avoids.
     pub(crate) standing_stop_rows: Vec<usize>,
-    /// **The note the pane's Enter opened, until Esc.** Read from disk at the keypress — the
-    /// same read the row's size and age come from — and held as the text, so Esc back to the
-    /// list does not read it again.
-    pub(crate) note_open: Option<standing::NoteOpen>,
     /// **What the corpus looked like on the last draw**, so a note edited while the pane is
     /// open is a change the pane can notice and answer for. `None` until the first draw after
     /// the rows land, which is the baseline rather than a change. See [`standing::Corpus`].
@@ -1682,7 +1683,6 @@ impl App {
             standing: Vec::new(),
             standing_sel: 0,
             standing_stop_rows: Vec::new(),
-            note_open: None,
             standing_corpus: None,
             merge: Vec::new(),
             merge_reviews: Vec::new(),

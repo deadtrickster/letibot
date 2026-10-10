@@ -68,7 +68,19 @@ impl App {
             intra_line: true,
             max_rows: usize::MAX,
         };
-        let c = &f.change;
+        // **A popup is opened only on a row that carries a change** — `file_rows` is built from
+        // finished edits and writes, and every `FileRef` in it has one — so a place with no
+        // change is not a state this head reaches. It says so rather than drawing a file diffed
+        // against nothing.
+        let Some(c) = &f.change else {
+            return Layout {
+                width,
+                split,
+                rows: Vec::new(),
+                first: 0,
+                note: Some("nothing to review here: this is a file, not a change".to_string()),
+            };
+        };
         let on_disk = std::fs::read_to_string(self.resolve_path(&f.path)).ok();
         let whole = on_disk
             .as_deref()

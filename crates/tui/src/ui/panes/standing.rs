@@ -18,6 +18,17 @@
 //! one row that must never be drawn as a row that looks fine, because the prompt is still
 //! carrying that note's entry.
 //!
+//! # Enter
+//!
+//! **Enter opens the row's FILE, in the editor pane** — rano, the pane every other file in
+//! this head opens in, through the door they all come through (`App::open_in_editor`; see
+//! [`App::open_note`]). It is not a reader of this pane's own, and that is deliberate: a note
+//! the budget gave `indexed` is one the prompt does NOT carry whole, so anything drawn from
+//! what the daemon sent would be the index of a note shown as the note. The file is where all
+//! of it is, and it is editable, which is what a reader who came here from a path in a
+//! conversation wants. The list stays open under the pane, so leaving rano lands back on these
+//! rows with the cursor where it was.
+//!
 //! # The words
 //!
 //! `verbatim` and `indexed` are the section's own — a file the budget could not fit arrives
@@ -27,7 +38,7 @@
 
 use crate::app::standing::{Corpus, OnDisk};
 use crate::app::*;
-use crate::ui::render::{path_span, row_strings, wrap};
+use crate::ui::render::{path_span, row_strings};
 use letibot_sessionlog::protocol::NoteForm;
 use rano::agent::pane::{self, PaneLines};
 use rano::agent::text::{bytes_human, clean_line};
@@ -160,58 +171,17 @@ impl App {
         }
         // **The legend, only when it has something to say.** The whole point of the form
         // column is that the budget's effect was invisible; one line saying what `indexed`
-        // means is what turns a word into a fact a reader can act on.
+        // means is what turns a word into a fact a reader can act on — and the act is Enter,
+        // which opens the file these rows are about.
         if indexed > 0 {
             out.blank();
             out.push(pane::faint(format!(
                 "    {indexed} of {n} indexed: they did not fit what was left of the notes \
                  budget, so the prompt carries their headings and line ranges rather than \
-                 their text — `read` the path for the rest"
+                 their text — enter opens the file, which has all of it"
             )));
         }
         (out, corpus)
-    }
-
-    /// **One note, open: the text the row's Enter read.** Until Esc, which goes back to the
-    /// list rather than out of the pane — the jobs pane's overlay rule, one pane along.
-    pub(crate) fn note_open_lines(&mut self, w: usize) -> Vec<String> {
-        let Some(v) = self.note_open.as_ref() else {
-            return Vec::new();
-        };
-        let mut lines = vec![
-            pane::title(format!("standing note — {}", clean_line(&v.path))),
-            // The same disk facts the row carried, read again: a note deleted while it is
-            // open says so on the next frame rather than at the next key.
-            pane::faint(match OnDisk::read(&v.path) {
-                Some(d) => format!(
-                    "    {} · last written {}",
-                    bytes_human(d.bytes),
-                    age_of(d.mtime_ms, self.now_ms)
-                ),
-                None => "    gone — the file is not there".to_string(),
-            }),
-            Line::default(),
-        ];
-        match &v.body {
-            Ok(text) => {
-                for l in text.lines() {
-                    // Wrapped, not truncated: a note is prose, and the reader opened it to
-                    // read it. `wrap` is the head's own column arithmetic, so the rows this
-                    // produces are what the painter measures.
-                    for one in wrap(&clean_line(l), w) {
-                        lines.push(Line::raw(one));
-                    }
-                }
-            }
-            Err(why) => {
-                for one in wrap(&clean_line(why), w) {
-                    lines.push(Line::styled(one, Role::Attention));
-                }
-            }
-        }
-        lines.push(Line::default());
-        lines.push(pane::faint("    esc goes back to the list"));
-        row_strings(&lines, self.cfg.palette())
     }
 }
 

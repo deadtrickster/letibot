@@ -1,5 +1,5 @@
-//! **The standing-notes pane's state**: which row the cursor is on, the note Enter opened,
-//! and the disk facts the rows are drawn from.
+//! **The standing-notes pane's state**: which row the cursor is on, and the disk facts the rows
+//! are drawn from.
 //!
 //! The rows themselves come from the daemon (`ListNotes`), because the two fields that make
 //! the pane worth having — the abstract the index shows and the FORM the budget gave each
@@ -12,21 +12,13 @@
 //! there are not the index's facts: they change while the pane is open, and the one case that
 //! must never be drawn as a row that looks fine — **the index names a note the disk no longer
 //! has** — is a comparison between the two that only a fresh `stat` can make.
+//!
+//! **And the row's Enter, which is not a read of this head's own.** A note opens in the editor
+//! pane, on its file, through the door every other file opens through (`App::open_in_editor`) —
+//! see [`App::open_note`] for why the file rather than the text.
 
+use super::editor::FileRef;
 use super::*;
-
-/// **One note's text, open in the pane until Esc** — what Enter on a row reads.
-///
-/// Read at the keypress and held, so going back to the list and in again is not a second read
-/// of a file the reader may be editing; and `Err` is a first-class outcome rather than an
-/// empty body, because *the file went between the draw and the key* is exactly the case the
-/// pane exists to say out loud.
-pub(crate) struct NoteOpen {
-    /// The path the row named, as the index spells it.
-    pub(crate) path: String,
-    /// The file's text, or the sentence saying why there is none.
-    pub(crate) body: Result<String, String>,
-}
 
 /// **A note's disk facts, read at draw time** — and `None` from [`OnDisk::read`] is the file
 /// being gone, which is the one answer the row must never dress up.
@@ -132,7 +124,6 @@ impl App {
     /// the honest reading of *verbatim or indexed right now*.
     pub(crate) fn toggle_standing(&mut self) -> Option<Action> {
         self.standing_pane = !self.standing_pane;
-        self.note_open = None;
         self.pane_scroll = 0;
         // The watch starts again from whatever the next answer says: the baseline is the
         // first draw after the rows land, and holding the closed pane's corpus would make
@@ -154,26 +145,36 @@ impl App {
         self.standing_stop_rows.get(at).copied().unwrap_or(0)
     }
 
-    /// **Enter: read the note the cursor is on**, or say why it cannot be read.
+    /// **Enter: open the note the cursor is on, in the editor pane** — rano, the same pane a
+    /// click on an edit row and `ctrl-]` open, through the same door
+    /// ([`App::open_in_editor`]).
     ///
-    /// The read is this head's own, from the same disk the row's size and age come from —
-    /// `repo_todos_map`'s precedent, and right for the same reason: the standing notes are
-    /// **host-side by construction** (the `notes` tool says why: a session placed in a VM must
-    /// still land its notes where the harness that injects them can read them). So there is no
-    /// daemon round trip here, and the answer to *is it still there* is the same answer the row
-    /// already gave.
+    /// **It opens the FILE, and that is the point of the key.** A note the budget gave
+    /// `indexed` is one the prompt does NOT carry whole — its headings and line ranges are all
+    /// the model was given — so a pane drawing what the prompt has would be showing the index
+    /// of a note and calling it the note. The file is where all of it is, for both forms, and
+    /// rano is where a reader reads and edits a file in this head.
+    ///
+    /// **A file that is gone is SAID, and nothing is opened.** The row already draws `gone —
+    /// the file is not there` for it; this turns rano's own refusal to open it into a sentence
+    /// and leaves the list exactly where it was, on the row that said it, so the reader is not
+    /// left looking at a conversation wondering what happened to their note.
+    ///
+    /// **Already open on another file.** The editor pane is made once and kept, so this is
+    /// rano switching to the note — or to the buffer that already shows it — with whatever
+    /// else was open left as it was. The one way a reader can be here with the pane already up
+    /// is a pane put away with `ctrl-e`: while the editor is on the screen it has the keyboard
+    /// and this list does not (see [`App::key_standing_pane`]), so the list under it is not
+    /// what is being looked at.
+    ///
+    /// **And the list stays open under the pane**, which is what makes leaving rano (`^X`,
+    /// `ctrl-q`) land back on the rows with the cursor where it was — the same round trip the
+    /// diff popup and the editor already have.
     pub(crate) fn open_note(&mut self) {
         let Some(entry) = self.standing.get(self.standing_sel) else {
             return;
         };
-        let path = entry.path.clone();
-        let body = std::fs::read_to_string(&path).map_err(|e| {
-            format!(
-                "{path} could not be read: {e}. The index still names it — it was there when \
-                 the harness last read the corpus — so the note was moved or deleted since."
-            )
-        });
-        self.note_open = Some(NoteOpen { path, body });
+        self.open_in_editor(&FileRef::file(&entry.path));
         self.redraw = true;
     }
 }

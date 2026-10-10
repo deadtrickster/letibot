@@ -1,5 +1,5 @@
 //! **The standing-notes pane** — one row per note the harness reads into the prompt, with the
-//! form the budget gave each, and Enter to read one.
+//! form the budget gave each, and Enter to open one in the editor pane.
 //!
 //! The rows come from the daemon and the disk facts are read here at draw time, so the
 //! fixtures are two halves and this file asserts both: a `StandingNotes` frame built by hand
@@ -7,6 +7,8 @@
 
 use super::*;
 use letibot_sessionlog::protocol::{NoteEntry, NoteForm};
+use rano::term::{Event, KeyCode, KeyEvent, Mods};
+use std::time::Instant;
 
 /// A directory to put notes in, emptied first. Its own name per test, so two of these cannot
 /// collide on a parallel run.
@@ -37,6 +39,45 @@ fn frame(notes: Vec<NoteEntry>) -> ServerFrame {
         session_id: "s1".into(),
         notes,
     }
+}
+
+/// rano's ticks until the file it opened has arrived — the loop's job, done here by hand.
+///
+/// The editor pane reads a file **asynchronously** (`App::editor_tick` is where the rows land),
+/// so a test that looked at the pane straight after the key would be asking it about a buffer
+/// that is still coming.
+fn settle(a: &mut App) {
+    for _ in 0..1000 {
+        a.editor_tick(Instant::now());
+        if !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    a.editor_tick(Instant::now());
+}
+
+/// Where rano is: the file it is holding and the 1-based line — read out of the pane's own
+/// answer, never out of the row a test handed in, so a pane that opened the wrong note fails.
+fn place(a: &App) -> (String, usize) {
+    let e = a
+        .edit_pane
+        .as_ref()
+        .expect("the pane is open")
+        .ed
+        .send_event();
+    (
+        e.path.expect("a named file").display().to_string(),
+        e.cursor.line,
+    )
+}
+
+/// The screen row that names `needle`, which is where a mark on a note's row would be.
+fn row_naming<'a>(screen: &'a str, needle: &str) -> &'a str {
+    screen
+        .lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no row names {needle:?}: {screen}"))
 }
 
 /// **`/standing` asks the daemon and draws what comes back** — the index's abstract, the
@@ -124,56 +165,202 @@ fn a_note_whose_file_is_gone_says_so() {
         screen.contains("gone — the file is not there"),
         "the row says what happened: {screen}"
     );
-    // And Enter on it says so too, rather than opening an empty note.
+    // And Enter on it says so too, rather than opening an empty pane.
     a.key(Key::Down);
     a.key(Key::Enter);
-    let screen = a.screen(120, 24).join("\n");
+    assert!(a.edit_pane.is_none(), "nothing was opened");
+    assert!(!a.editor_drawn());
+    let notice = a.notice.clone().unwrap_or_default();
     assert!(
-        screen.contains("could not be read") && screen.contains("moved or deleted"),
-        "{screen}"
+        notice.contains("gone.md") && notice.contains("cannot open"),
+        "the key says why, and names the file: {notice:?}"
+    );
+    // **And the list stays where it was**, on the row that said it: a key that failed has not
+    // earned taking the reader's screen away.
+    let screen = a.screen(120, 24).join("\n");
+    assert!(screen.contains("gone — the file is not there"), "{screen}");
+    assert!(screen.contains("standing notes"), "{screen}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// **Enter opens the selected note's FILE in the editor pane** — rano, the same pane a click on
+/// an edit row and `ctrl-]` open — and it opens the row the cursor is on, not its neighbour.
+///
+/// The path is read back from rano rather than compared with the string this test passed in, and
+/// the line is the note's own first: a note is opened to be read from the top, because there is
+/// no change to place a cursor on (see `FileRef::file`).
+#[test]
+fn enter_opens_the_selected_note_in_the_editor_pane() {
+    let d = corpus("open");
+    let first = d.join("first.md");
+    std::fs::write(&first, "# First\n\nthe first note\n").unwrap();
+    let second = d.join("second.md");
+    std::fs::write(&second, "# Second\n\nthe second note\n").unwrap();
+
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.wiring.workspace = d.display().to_string();
+    a.command("standing");
+    a.apply(frame(vec![
+        note(&first, Some("the first"), true, NoteForm::Verbatim),
+        note(&second, Some("the second"), true, NoteForm::Indexed),
+    ]));
+    // A frame first, so the pane has a rectangle to be opened into.
+    a.screen(120, 24);
+    a.key(Key::Down);
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(a.editor_focused(), "enter hands the keyboard to the editor");
+    settle(&mut a);
+
+    let (path, line) = place(&a);
+    assert!(
+        path.ends_with("second.md"),
+        "the row under the cursor, not the one above it: {path}"
+    );
+    assert_eq!(line, 1, "a note is read from its first line");
+    // The whole file is what is on the screen — for an `indexed` note this is the point: the
+    // prompt carries its headings and line ranges, and the text is only here.
+    let screen = a.screen(120, 24).join("\n");
+    assert!(screen.contains("the second note"), "{screen}");
+    assert!(
+        !screen.contains("the first note"),
+        "the neighbour's text is on the screen: {screen}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// **Enter reads the note; Esc goes back to the list; Esc again closes the pane.**
+/// **Leaving rano lands back on the list**, with the cursor where it was — the list stays open
+/// under the pane, so a note is not a one-way trip out of the pane it was opened from.
 ///
-/// The overlay's own Esc must not close the pane under it — the jobs pane's rule, and the
-/// reason `key_note_open` sits above the block that closes every pane.
+/// The exit goes through the router as `ctrl-q` does, because that is rano's own key while it
+/// has the keyboard: from the composer the same byte is this head's jobs pane.
 #[test]
-fn enter_reads_the_note_and_esc_comes_back_to_the_list() {
-    let d = corpus("read");
-    let p = d.join("a-note.md");
-    std::fs::write(&p, "# Title\n\nthe note's own text\n").unwrap();
+fn leaving_rano_lands_back_on_the_notes_list() {
+    let d = corpus("leave");
+    let first = d.join("first.md");
+    std::fs::write(&first, "the first note\n").unwrap();
+    let second = d.join("second.md");
+    std::fs::write(&second, "the second note\n").unwrap();
+
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.wiring.workspace = d.display().to_string();
+    a.command("standing");
+    a.apply(frame(vec![
+        note(&first, Some("the first"), true, NoteForm::Verbatim),
+        note(&second, Some("the second"), true, NoteForm::Verbatim),
+    ]));
+    a.screen(120, 24);
+    assert!(
+        a.hint_bar(160)
+            .contains("enter opens the note in the editor"),
+        "the bar names where the key goes: {:?}",
+        a.hint_bar(160)
+    );
+    a.key(Key::Down);
+    a.key(Key::Enter);
+    settle(&mut a);
+    assert!(a.editor_drawn(), "the note took the screen");
+    assert!(
+        !a.screen(120, 24).join("\n").contains("standing notes"),
+        "and the list is under it, not beside it"
+    );
+    // **And the list's keys are off while rano is over it**: a bar naming keys that do nothing
+    // would be advertising a pane the reader cannot see.
+    assert!(
+        !a.hint_bar(160).contains("↑↓ moves"),
+        "the list's keys are not advertised under the editor: {:?}",
+        a.hint_bar(160)
+    );
+
+    a.route(vec![Event::Key(KeyEvent::new(
+        KeyCode::Char('q'),
+        Mods::CTRL,
+    ))]);
+    a.editor_tick(Instant::now());
+    assert!(a.edit_pane.is_none(), "rano's exit closed the pane");
+    assert!(a.standing_pane, "and the list is what was under it");
+    let screen = a.screen(120, 24).join("\n");
+    assert!(screen.contains("standing notes"), "{screen}");
+    assert_eq!(a.standing_sel, 1, "the cursor is where the reader left it");
+    assert!(
+        row_naming(&screen, "second.md").contains('▸'),
+        "and the mark is on that row: {screen}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// **The arrows move the selection and touch nothing else** — the pane owns Up and Down while
+/// it is open (the rule every list pane keeps), and the composer's half-typed line is not
+/// theirs. The mark the frame draws is asserted with the state, so a key that moved a cursor
+/// nobody could see would fail here.
+#[test]
+fn the_arrows_move_the_selection_without_touching_the_composer_draft() {
+    let d = corpus("keys");
+    let first = d.join("a.md");
+    std::fs::write(&first, "a note\n").unwrap();
+    let second = d.join("b.md");
+    std::fs::write(&second, "another note\n").unwrap();
 
     let mut a = app();
     a.session_id = "s1".into();
     a.command("standing");
-    a.apply(frame(vec![note(
-        &p,
-        Some("the note's own text"),
-        false,
-        NoteForm::Verbatim,
-    )]));
-    assert_eq!(a.key(Key::Enter), None);
-    assert!(a.note_open.is_some(), "enter opens the note");
-    let screen = a.screen(120, 24).join("\n");
-    assert!(screen.contains("standing note — "), "{screen}");
-    assert!(screen.contains("# Title"), "{screen}");
-    assert!(screen.contains("the note's own text"), "{screen}");
+    a.apply(frame(vec![
+        note(&first, Some("a note"), true, NoteForm::Verbatim),
+        note(&second, Some("another note"), true, NoteForm::Verbatim),
+    ]));
+    typed(&mut a, "half a thought");
+    assert_eq!(a.standing_sel, 0);
 
-    a.key(Key::Esc);
-    assert!(a.note_open.is_none(), "esc leaves the note");
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(a.standing_sel, 1, "down moved the selection");
+    assert_eq!(a.editor.text(), "half a thought", "and not the draft");
+    let screen = a.screen(120, 24).join("\n");
     assert!(
-        a.standing_pane,
-        "esc goes back to the list, not out of everything"
+        row_naming(&screen, "b.md").contains('▸'),
+        "the mark follows the cursor: {screen}"
     );
-    let screen = a.screen(120, 24).join("\n");
-    assert!(!screen.contains("standing note — "), "{screen}");
-    assert!(screen.contains("a-note.md"), "{screen}");
+    assert!(
+        !row_naming(&screen, "a.md").contains('▸'),
+        "and only one row is marked: {screen}"
+    );
 
-    a.key(Key::Esc);
-    assert!(!a.standing_pane, "and the second esc closes the pane");
-    assert!(!a.screen(120, 24).join("\n").contains("standing notes"));
+    assert_eq!(a.key(Key::Up), None);
+    assert_eq!(a.standing_sel, 0, "and up comes back");
+    assert_eq!(a.editor.text(), "half a thought");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// **The rows are what `ListNotes` said, not a listing of the notes directory.**
+///
+/// The paths, the abstracts and the forms are the daemon's — decided where the section is
+/// assembled, with the session's token counter — so a `.md` file sitting beside the ones the
+/// daemon sent is not a row, and this head cannot invent one by reading the directory its own
+/// rows happen to come from.
+#[test]
+fn the_rows_are_what_list_notes_said() {
+    let d = corpus("from-daemon");
+    let sent = d.join("sent.md");
+    std::fs::write(&sent, "the sent one\n").unwrap();
+    let unsent = d.join("unsent.md");
+    std::fs::write(&unsent, "the daemon never sent this\n").unwrap();
+
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.wiring.workspace = d.display().to_string();
+    a.command("standing");
+    let entries = vec![note(&sent, Some("the sent one"), true, NoteForm::Verbatim)];
+    a.apply(frame(entries.clone()));
+    assert_eq!(a.standing, entries, "the daemon's rows, unchanged");
+
+    let screen = a.screen(120, 24).join("\n");
+    assert!(screen.contains("1 note(s)"), "{screen}");
+    assert!(screen.contains("sent.md"), "{screen}");
+    assert!(screen.contains("the sent one"), "{screen}");
+    assert!(
+        !screen.contains("unsent.md"),
+        "a file the daemon did not name is not a row: {screen}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 

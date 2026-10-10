@@ -216,7 +216,6 @@ impl App {
             self.jobs_pane = false;
             self.queue_pane = false;
             self.standing_pane = false;
-            self.note_open = None;
             self.config_pane = false;
             self.sub_out_pending = None;
             self.redraw = true;
@@ -514,52 +513,28 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **The note the pane's Enter opened owns the keys while it is open.** Arrows, the page
-    /// keys and the wheel scroll it; Esc goes back to the LIST, which is still behind it —
-    /// the jobs pane's overlay rule, one pane along.
+    /// **An open standing-notes pane owns Up and Down, and Enter opens the note it is on in the
+    /// editor pane.**
     ///
-    /// **It sits ABOVE the block that closes every pane on Esc**, like `key_queue_review` and
-    /// for the same reason: below it, the first Esc would close the PANE and leave the note
-    /// standing over an empty screen, and the second would close the note.
-    pub(crate) fn key_note_open(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.note_open.is_some() {
-            if matches!(k, Key::Esc | Key::CtrlC) {
-                self.note_open = None;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                return ControlFlow::Break(None);
-            }
-            if matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
-                let page = self.pane_room.max(1);
-                match k {
-                    Key::Up => self.pane_scroll = self.pane_scroll.saturating_sub(1),
-                    Key::Down => self.pane_scroll += 1,
-                    Key::PageUp => self.pane_scroll = self.pane_scroll.saturating_sub(page),
-                    _ => self.pane_scroll += page,
-                }
-                // Clamped against the last draw's own numbers: the key handler has no width
-                // and no height, and a scroll clamped against a guess walks past the end.
-                let max = self.pane_len.saturating_sub(self.pane_room);
-                self.pane_scroll = self.pane_scroll.min(max);
-                self.redraw = true;
-                return ControlFlow::Break(None);
-            }
-        }
-        ControlFlow::Continue(())
-    }
-
-    /// **An open standing-notes pane owns Up and Down, and Enter reads the note it is on.**
-    ///
-    /// The rows are ONE list ([`App::notes`], in the order the section carries them), so the
+    /// The rows are ONE list ([`App::standing`], in the order the section carries them), so the
     /// drawn cursor, the arrows and Enter cannot disagree — and the arrows scroll the cursor
     /// into view, so a note below the fold is reachable.
     ///
-    /// **Enter reads the note here, in the head, and not through the daemon.** The standing
-    /// notes are host-side files by construction (see `ui/panes/standing.rs`), and the read is
-    /// the same one the row's size and age come from — so *the file is gone* is the same answer
-    /// in both places, and no round trip is spent on a file this head can open.
+    /// **Enter goes through the editor's own door, not a reader of this head's.**
+    /// [`App::open_note`] builds a [`FileRef`](super::super::editor::FileRef) for the row and
+    /// hands it to `App::open_in_editor`, which is what a click on an edit row and `ctrl-]`
+    /// already do — so a note opens in the same rano, with the same keys, the same `alt-s` send
+    /// and the same way out, and the whole file is what the reader gets (`indexed` notes are
+    /// carried by the prompt as headings and line ranges alone). A file that is gone is said by
+    /// that door's own sentence and nothing is opened; see [`App::open_note`].
+    ///
+    /// **And not while the editor pane is drawn over it.** Opening a note takes this list's
+    /// rectangle — rano is what the reader is looking at — so the arrows must not go on moving
+    /// a cursor nobody can see: they are the editor's while it has the keyboard, and the
+    /// composer's once `ctrl-]` crosses. Leaving rano puts the list back with its cursor where
+    /// it was, which is the round trip the key is for.
     pub(crate) fn key_standing_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.standing_pane && self.note_open.is_none() {
+        if self.standing_pane && !self.editor_drawn() {
             if !self.standing.is_empty() {
                 let n = self.standing.len();
                 let at = self.standing_sel.min(n - 1);
@@ -578,7 +553,6 @@ impl App {
                     }
                     Key::Enter => {
                         self.open_note();
-                        self.pane_scroll = 0;
                         return ControlFlow::Break(None);
                     }
                     _ => {}

@@ -61,8 +61,8 @@ impl App {
             // **`Reading` and not a mode of its own.** rano keeps the bar's tail sentences and
             // is pinned by tag, so a new pane has no `HintMode` to take; the head's half of the
             // bar is where this pane's own keys go, exactly as the queue pane's verbs do a few
-            // lines down. `Reading`'s tail — `esc closes this` — is true of the note that Enter
-            // opened and of the list alike, and the keys that matter are named on the left.
+            // lines down. `Reading`'s tail — `esc closes this` — is true of the list, and the
+            // keys that matter are named on the left.
             HintMode::Reading
         } else if !self.open.is_empty() {
             HintMode::Deciding
@@ -79,10 +79,16 @@ impl App {
             Line::styled(self.todos_hint(), Role::Faint)
         } else if self.queue_pane && self.queue_open.is_none() {
             Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
-        } else if self.note_open.is_some() {
-            Line::styled("↑↓ scrolls", Role::Faint)
-        } else if self.standing_pane {
-            Line::styled("↑↓ moves · enter reads the note", Role::Faint)
+        } else if self.standing_pane && !self.editor_drawn() {
+            // **Where Enter goes, said on the bar.** The key opens the note in rano, which is a
+            // different place from this list, and a reader who pressed it looking for an
+            // overlay of this head's would otherwise be surprised by the whole screen changing.
+            //
+            // **And not while rano is drawn over the list**, which is the state Enter leaves
+            // behind: these keys are off then (`App::key_standing_pane`), and the bar must not
+            // name keys that do nothing — the editor's own half is what the left of the row is
+            // for then.
+            Line::styled("↑↓ moves · enter opens the note in the editor", Role::Faint)
         } else {
             editor
         };

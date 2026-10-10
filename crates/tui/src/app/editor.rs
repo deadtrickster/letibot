@@ -7,7 +7,8 @@
 //! - **Going there.** A click on an edit or write row of the conversation, or `ctrl-]` for the
 //!   newest one, opens rano on that file — on the change, with the change drawn over the text
 //!   as rano's own review view ([`rano::editor::Editor::open_review`]). See [`FileRef`] for
-//!   what a row has to carry to be one you can click.
+//!   what a row has to carry to be one you can click. **The standing-notes pane's Enter comes in
+//!   through the same door** — the note's file, with no change on it, opened on the text.
 //! - **Reading and editing there.** The pane takes the conversation's rectangle — the header,
 //!   the composer and the hint bar keep their rows, exactly as a `!term` pane leaves them — and
 //!   while it has the keyboard every key, paste and mouse report inside it is rano's.
@@ -58,22 +59,29 @@ const CLOSE: &str = "C-q";
 /// The pane polls first when rano wants to be ticked sooner than this.
 pub(crate) const READ_PACE: Duration = Duration::from_millis(100);
 
-/// **A place in a file that a row of the conversation is about** — what a click on that row,
-/// or `ctrl-]`, opens.
+/// **A place in a file that a row is about** — what a click on that row, or `ctrl-]`, opens.
 ///
-/// Only rows that carry the change itself are places: a finished `edit` or `write` whose
-/// before/after excerpt reached this head (`ToolEditExcerpt`). That excerpt is what makes the
-/// open a *review* rather than a bare jump — it is the change, at the file's own line numbers —
-/// and it is also what names the file and the line. A row without one is not a place, and a
-/// click on it does what a click on it always did.
+/// Only rows of the conversation that carry the change itself are places: a finished `edit` or
+/// `write` whose before/after excerpt reached this head (`ToolEditExcerpt`). That excerpt is what
+/// makes the open a *review* rather than a bare jump — it is the change, at the file's own line
+/// numbers — and it is also what names the file and the line. A row without one is not a place,
+/// and a click on it does what a click on it always did.
+///
+/// **A place does not have to be a change.** The standing-notes pane's Enter opens a note's file
+/// through this same door with no change on it ([`FileRef::file`]), because a note is read rather
+/// than reviewed — and the pane that opens, the keyboard it takes and the way back out are the
+/// same pane, key and way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileRef {
     /// As the row names it: relative to the session's workspace, or absolute.
     pub(crate) path: String,
-    /// The first changed line of the new file, 1-based.
+    /// The line to put the reader on, 1-based: the first changed line of an edit's new file, or
+    /// the first line of a file opened to be read.
     pub(crate) line: usize,
-    /// The change, for rano's review view.
-    pub(crate) change: Change,
+    /// **The change, when the row is about one.** `None` is a row that names a file and nothing
+    /// else, and it is what decides the view: a change opens on rano's review, no change opens
+    /// on the text itself, from the top.
+    pub(crate) change: Option<Change>,
 }
 
 impl FileRef {
@@ -88,7 +96,21 @@ impl FileRef {
         FileRef {
             path: e.path.clone(),
             line: change.first_changed_line(),
-            change,
+            change: Some(change),
+        }
+    }
+
+    /// **A file with no change on it**: its first line, to be read rather than reviewed — what
+    /// the standing-notes pane's Enter opens.
+    ///
+    /// Nothing places the cursor beyond the top, because there is nothing in particular to look
+    /// at: a note is prose, the reader wants it from the beginning, and a `line` invented here
+    /// would be this head guessing which part of somebody's note matters.
+    pub(crate) fn file(path: &str) -> FileRef {
+        FileRef {
+            path: path.to_string(),
+            line: 1,
+            change: None,
         }
     }
 }
@@ -193,11 +215,14 @@ impl App {
         }
     }
 
-    /// **Open the pane on `f`**, on its change, with the keyboard.
+    /// **Open the pane on `f`** — on its change, or on the file itself when the row carries no
+    /// change — with the keyboard.
     ///
     /// The pane is made on first use and kept: a second open is rano switching to that file
-    /// (or to the buffer that already shows it), with whatever else is open left as it was.
-    /// A file that cannot be opened is said, and a pane made only for it is not left standing.
+    /// (or to the buffer that already shows it), with whatever else is open left as it was — so
+    /// a note opened while the pane is already on another file costs nobody the file they were
+    /// reading. A file that cannot be opened is said, and a pane made only for it is not left
+    /// standing: nothing is opened, and the caller's own surface stays where it was.
     pub(crate) fn open_in_editor(&mut self, f: &FileRef) {
         let path = self.resolve_path(&f.path);
         let fresh = self.edit_pane.is_none();
@@ -209,7 +234,15 @@ impl App {
         if !area.is_empty() {
             pane.set_area(area);
         }
-        match pane.ed.open_review(&path, f.change.clone()) {
+        // **Two kinds of place, one door.** A row that carries a change opens on rano's review
+        // view; a row that only names a file opens on the text, from its own first line. What a
+        // reader gets either way is the FILE — the whole of it, editable — which is the reason
+        // the note pane comes through here rather than rendering what the index carries.
+        let opened = match &f.change {
+            Some(change) => pane.ed.open_review(&path, change.clone()),
+            None => pane.ed.open_at(&path, f.line, None),
+        };
+        match opened {
             Ok(()) => {
                 pane.hidden = false;
                 pane.focused = true;
