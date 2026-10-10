@@ -1,47 +1,89 @@
-the landing half records one row per gate step, so a landing can be drawn
+FetchRow answers from the store for a row the view has trimmed
 
-The operator, tonight: *"it doesnt show me review queue state transitions"* and
-*"nor there are separate views for review and merge queues"*. The design's
-argument for the merge half is that the queue is a machine — rebase, the gate's
-steps, land — and a thing that is being RUN can be drawn well. But a landing
-that records only `failed` can only ever draw `failed`: the niceness was
-impossible by construction, not by taste. The rows were not there.
+The four steps `R19.2b-fetchrow-and-the-gate-loop.md` wrote down, done — this is the item
+the gate loop had deferred, and the loop is gone.
 
-## What is recorded
+## What was wrong
 
-`MergeEntry.gate_steps` — one `MergeGateStep` per command `main`'s `AGENTS.md`
-declared, in order: the command, its outcome (`passed`, `failed`, `not_run`,
-`no_gate`), the tail of its output, when it started and how long it took. The
-rows ride the move that ends the landing, so the entry reaches `landed_sha` with
-them attached; a red step parks the entry `failed` with them too, and the steps
-the run never reached are marked `not_run` rather than passed — a list that
-stopped at the red step cannot be told from a shorter gate that was all green.
+`FetchRow` exists so a head can read a row its daemon is not holding. It could not: the
+server answered through `hub.row_body_at`, which reads the **bounded view** — 2,000 rows,
+8 MB of bodies — and a snapshot's `items` *is* that same vector. So a trimmed ordinal
+answered `null` and a carried one was a row the head already had. leticl measured it; the
+seam already draws three states and one of them, *"the daemon does not hold them any more"*,
+was unreachable and had nothing true to say.
 
-## Where they live, and why there
+The protocol's own doc had already settled the shape it should have: *"the daemon is a
+**proxy** for anything its own caches do not hold… so a head asks once and never learns
+which tier answered."*
 
-A column on `merge_queue` (`gate_steps_json`, v22) — not a table, not the
-evidence blob. `evidence` is overwritten by every move, including the `Landed`
-sentence the landing itself writes, so rows put there would be destroyed by the
-write that records them. A table of its own would be a join on the queue's
-whole-queue read to answer a question that is always asked as a whole. The
-review half already keeps `commands_json` on its own row; this is that shape one
-table along. What a reader can tell is on the column's own comment, including
-what it cannot: the list is the LAST run, not a history of attempts.
+## The seam, and it is the `SessionSource` pattern rather than a new one
 
-## The steps are DATA
+- **`registry::RowSource`** — `fn row_body(&self, session_id, row) -> Option<String>` —
+  beside `SessionSource`, set by `Registry::set_row_source` exactly as `source` is set by
+  `set_source` (*"set once at startup by the daemon"*), and `None` in every head and every
+  test that predates it, where behaviour is exactly what it was.
+- **On the registry and not on each hub.** The server's `FetchRow` arm already holds the
+  registry, and the registry is what knows whether there is a store — so no hub grows a
+  field, no hub-construction site changes, and there is no fourth place for a hub to be
+  built without it.
+- **`Registry::row_body_from_store`** clones the `Arc` out before calling it, so the lock
+  is not held across a SQLite read: a head paging a trimmed row cannot block a listing.
+- **The server asks the view first, then the store** — one lock and a `Vec` index for the
+  fast path, and the store only for a row the view has trimmed. The clamping, the cap and
+  the character-boundary arithmetic are untouched.
 
-`repo_gate` already read them from the entry's OWN repository's `AGENTS.md` on
-`main`; it now returns a `GateRun` — the rows and the failure's words — instead
-of a bare verdict, so the rows cannot be dropped on the failing path. A
-repository with NO gate is one `no_gate` row carrying the queue's sentence, not
-an empty list: `[]` is the entry's word for *the gate has not run*, and a blank
-checklist reads as *every step passed*, which is the reading a repository nobody
-has configured must not be able to produce.
+## The store's reads, which are one indexed lookup each
 
-The wire carries the rows as an added, defaulted field on `MergeEntry`, so no
-`PROTOCOL_VERSION` bump — this protocol's own test for whether one is owed.
+- `Store::row_json_at(transcript_id, seq)` — `transcript_item`'s primary key is
+  `(transcript_id, seq)`, so this is **not** a scan and **not** `load_transcript`, which
+  reads every row of the session to return one. That is the whole difference the frame
+  needs.
+- `Store::current_transcript_id(session_id)` — the **newest** transcript, ordered
+  `created_at DESC, rowid DESC` (the rowid because a fork is written in the same
+  millisecond as the row that caused it). After a compaction, ordinal 3 is a row of the
+  *new* base; reading the old transcript's row 3 would answer with a row nobody asked
+  about.
 
-## Gap, named
+`harnessd`'s `StoreSessions` implements `RowSource` — **the same instance** it already
+gives `set_source`, because that is one store asked two questions and a third connection
+would be a third thing in WAL's reader set. The wiring is two lines in `bin/harnessd.rs`,
+beside the `set_source` it mirrors.
 
-The head does not DRAW them yet. The rows are in the store and on the wire, and
-the pane still shows the verdict alone; that is the next change, not this one.
+## `body_of`, one definition
+
+A row's body is a match over the item kind (a payload, a text, a user row's text parts
+joined, a segment mark's nothing) and it now lives **once**, in
+`letibot_sessionlog::body_of`, called by the view's reader *and* by the store's. Two copies
+is how the two tiers would come to disagree about what `body` means. The *windowing* is
+deliberately not in it: the cap and the boundary arithmetic belong to whoever answers the
+frame.
+
+## Tests
+
+- `store::a_row_is_readable_by_ordinal_without_loading_its_transcript` — the row by
+  ordinal through the same serde form the wire carries; `None` (not `""`) for an ordinal
+  the transcript does not have; the session→current-transcript mapping the glue depends on;
+  and `None` for a session nothing was written for.
+- `store::an_ordinal_follows_the_fork_to_the_new_base` — after `put_fork`, the *new* base
+  is what an ordinal is relative to, and its row 0 is not the old transcript's.
+- `view::a_rows_body_is_its_own_kind_of_text` — the shared definition pinned per variant,
+  rather than inferred from whichever tier a test happened to exercise.
+- The existing `sessionlog/tests/fetch_row.rs` (8 tests) is unchanged and still passes: with
+  no row source installed, the behaviour is exactly what it was.
+
+```
+cargo test -p letibot-tools       613 passed, 0 failed
+cargo test -p letibot-tui         317 passed, 0 failed, 4 ignored
+cargo test -p letibot-harnessd --lib 114 passed, 0 failed
+cargo test -p letibot-ui          103 passed, 0 failed
+cargo test -p letibot-sessionlog   96 passed, 0 failed
+cargo test -p letibot-tokencore    61 passed, 0 failed
+```
+
+**Not verified, and it is the same limit as `da4a576`:** the daemon running this session
+was built before this commit, so **no head has yet fetched a trimmed row through it**. What
+is proven is the unit — the store read, the registry's second tier, and the server's arm
+asking the view first. The end-to-end proof is on the next restart, and the head half
+already draws the state it will then have something true to say in.
+
+`rustfmt --check` still cannot run (it writes a temp file, which the gate blocks).
