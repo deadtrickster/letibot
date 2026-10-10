@@ -536,6 +536,25 @@ pub struct Config {
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
     /// VM under this session.
     pub vm_args: Vec<String>,
+    /// **The tree a `firecode` placement copies**, when that is not
+    /// [`Config::workspace`] — and it is the ONE REPOSITORY the work is in.
+    ///
+    /// `None` is *copy the workspace*, which is what every build did before this field and is
+    /// right whenever the workspace is the repository. It is wrong whenever a session is seated a
+    /// level above its repositories, and the operator's own box is exactly that: the daemon's
+    /// `--workspace` is `/home/dead/Projects/letibot` — a folder holding `letibot`, some
+    /// worktrees, probes and scratch — while the repository the queue serves is
+    /// `/home/dead/Projects/letibot/letibot`. A VM placed on the folder copies **72.8 GiB** of
+    /// siblings, worktrees and build output, and `crates/tools/src/firecode.rs`'s ceiling refuses
+    /// it (measured 2026-10-10, three times, for two branches — the queue could land nothing).
+    ///
+    /// So the field exists to let the one caller that KNOWS say so: `Harness::serve_reviews` sets
+    /// it on a reviewer from the entry's own repository (`mergequeue::review_copy_source`), because
+    /// a reviewer reads a branch and the branch is in that repository. It travels the same route
+    /// [`letibot_tools::builtins::task::TaskSpec::worktree`] does — the caller's word on the spec,
+    /// applied to the child's config at the spawn — and [`Config::vm_copy_source`] is the single
+    /// spelling of the decision, read by `Harness::open` when it boots the VM.
+    pub vm_source: Option<PathBuf>,
     /// **Whether the review queue's reviewers may be placed in a firecode VM** — the one child
     /// whose placement is decided FOR it rather than by the call that spawns it
     /// (`Harness::serve_reviews`, and see `crate::sessions::gatekeeper::reviewer_placement` for the
@@ -1375,6 +1394,24 @@ impl Config {
             None => false,
         }
     }
+
+    /// **The tree a `firecode` placement copies, as one answer** — the session's own
+    /// [`Config::vm_source`] when it has one, and the workspace otherwise.
+    ///
+    /// One spelling of the decision, because two places have to agree about it: `Harness::open`
+    /// boots the VM on what this returns, and a test that asserts *which tree a VM-placed child
+    /// was copied from* has nothing else to read on a box it must not boot a VM on. A second
+    /// spelling at the call site — `cfg.vm_source.clone().unwrap_or_else(|| cfg.workspace.clone())`
+    /// — is exactly the kind of fact this tree keeps finding written twice and agreeing only by
+    /// luck.
+    ///
+    /// The workspace is the right fallback and it is not a guess: a session the operator opened
+    /// IN a repository has `workspace == vm_source` for every purpose, so `None` and
+    /// `Some(workspace)` mean the same thing and the default is byte-identical to what every
+    /// build before this field did.
+    pub fn vm_copy_source(&self) -> &Path {
+        self.vm_source.as_deref().unwrap_or(&self.workspace)
+    }
 }
 
 /// Which search provider `web_search` gets, when the operator has not said.
@@ -1500,6 +1537,7 @@ impl Config {
             auto_compact_stood_down: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
+            vm_source: None,
             gatekeeper_vm: true,
             provider: None,
             fabric: None,
@@ -2874,6 +2912,37 @@ pub fn now_ns() -> u128 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The tree a VM placement copies is the session's own copy source where it has one, and the
+    /// workspace otherwise** — the one spelling `Harness::open` reads when it boots the VM.
+    ///
+    /// Two callers have to agree about this and neither can see the other: `Harness::open` fills
+    /// `FirecodeSpec::source` from it, and a test that asks *which tree was a VM-placed child
+    /// copied from* has nothing else to read on a box it must not boot a VM on. A second spelling
+    /// at the call site — `vm_source.clone().unwrap_or_else(|| workspace.clone())` — is exactly the
+    /// kind of fact this tree keeps finding written twice and agreeing only by luck.
+    ///
+    /// The default is asserted as well as the override, because it is the behaviour every build
+    /// before this field had: a session the operator opened IN a repository has
+    /// `workspace == vm_source` for every purpose, so `None` must mean the workspace and nothing
+    /// else.
+    #[test]
+    fn a_vm_placement_copies_the_sessions_own_source_when_it_has_one() {
+        let mut cfg = Config::for_this_box("/tmp/the-workspace");
+        assert_eq!(
+            cfg.vm_copy_source(),
+            std::path::Path::new("/tmp/the-workspace"),
+            "with no copy source of its own, a VM is booted on the session's workspace — what \
+             every build before `vm_source` did"
+        );
+        cfg.vm_source = Some(PathBuf::from("/tmp/the-workspace/the-repo"));
+        assert_eq!(
+            cfg.vm_copy_source(),
+            std::path::Path::new("/tmp/the-workspace/the-repo"),
+            "and a session told which repository the work is in copies THAT, which is the whole \
+             of what the review queue sets on a reviewer"
+        );
+    }
 
     /// **Every declared local model reaches the picker's row.**
     ///

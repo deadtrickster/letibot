@@ -48,6 +48,11 @@
 //! the workspace to copy and the directory to copy it under — never `/tmp`,
 //! which is tmpfs and evaporates — and the guest's path is the copy's path.
 //!
+//! **The tree it takes is the one repository the work is in**, not the directory a session was
+//! started in: a session may be seated a level above its repositories, and copying the level is
+//! how 72.8 GiB of siblings reached this door (see [`FirecodeSpec::source`]). The caller decides
+//! it; the ceiling refuses the wrong answer rather than copying it slowly.
+//!
 //! # Cold boots only, for now
 //!
 //! Checkpoint/restore is not dependable on the host that measured it (a
@@ -279,7 +284,21 @@ impl std::fmt::Debug for FirecodeBackend {
 /// What to boot.
 #[derive(Debug, Clone)]
 pub struct FirecodeSpec {
-    /// The workspace to copy.
+    /// **The tree to copy** — the one repository the work is in, and NOT the directory a session
+    /// was started in when the two are different.
+    ///
+    /// The copy is the guest's whole world, so what it holds decides whether the VM can do the
+    /// job at all: a reviewer runs `git diff <base>...<branch>` in it, which needs the repository
+    /// the branch is in. A session seated a level above its repositories — the operator's own
+    /// box: `--workspace /home/dead/Projects/letibot`, whose repository is
+    /// `/home/dead/Projects/letibot/letibot` — put the FOLDER here, and the copy was 72.8 GiB of
+    /// siblings, worktrees and build output that [`copy_tree`] refused three times on 2026-10-10
+    /// for two different branches. The siblings are not the work and no reviewer reads them.
+    ///
+    /// So this is the caller's decision and not a default: `Config::vm_source`
+    /// (`TaskSpec::vm_source` for a child) names it, and the review queue sets it from the
+    /// entry's own repository — `mergequeue::review_copy_source` is that resolution, and the
+    /// one caller that has to get it right.
     pub source: PathBuf,
     /// Copies live under here — `~/.cache/letibot/firecode` by default.
     pub cache: PathBuf,
@@ -355,7 +374,17 @@ impl FirecodeSpec {
     }
 }
 
-/// 8 GiB: room for any source tree, none for a build directory.
+/// **8 GiB: room for one repository, and none for a folder of them.**
+///
+/// The number is argued against the thing being copied, and the thing is the one repository the
+/// work is in — see [`FirecodeSpec::source`]. This repository's own tree measures **1.2 GiB**
+/// after the excludes (measured 2026-10-10, with `target`, `.claude/worktrees`, `node_modules`
+/// and `.git/worktrees` out), so 8 GiB is roughly six times the largest copy any repository of
+/// this shape needs; the FOLDER above it measures **72.8 GiB**, nine times the ceiling, and that
+/// is the shape the ceiling exists to refuse. It is not a budget for a copy that is going to
+/// succeed: a source over it is a source that is the wrong thing, and
+/// `LETIBOT_FIRECODE_COPY_MAX` is the operator's deliberate override for a repository that
+/// genuinely weighs more — not a way to make a folder of repositories copy.
 pub const DEFAULT_COPY_MAX: u64 = 8 * 1024 * 1024 * 1024;
 
 impl FirecodeBackend {
@@ -1152,13 +1181,16 @@ fn copy_tree(from: &Path, to: &Path, exclude: &[String], max: u64) -> Result<(),
     if size > max {
         return Err(BackendError::Io(format!(
             "refusing to copy {}: it weighs {} after excluding [{}], and the ceiling is {}. \
-             A workspace this size is a folder of repositories or a tree with build output \
-             under an unexpected name; point the session at the one repository, or raise \
-             LETIBOT_FIRECODE_COPY_MAX on purpose",
+             A source this size is a folder of repositories or a tree with build output under \
+             an unexpected name, and neither is the thing a VM is for: the copy source should be \
+             the ONE repository the work is in (`Config::vm_source`), not the directory the \
+             session was started in. Raise LETIBOT_FIRECODE_COPY_MAX on purpose only for a \
+             repository that genuinely weighs more than {}.",
             from.display(),
             human(size),
             exclude.join(", "),
-            human(max)
+            human(max),
+            human(DEFAULT_COPY_MAX)
         )));
     }
     let out = rsync_cmd(from, to, exclude).output().map_err(|e| {

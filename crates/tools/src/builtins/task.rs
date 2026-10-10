@@ -23,6 +23,7 @@
 //! a build without that backend refuses by name rather than running on the host
 //! and calling it a VM.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -140,6 +141,23 @@ pub struct TaskSpec {
     /// thing the caller remembers to say. See [`WorktreePlacement`] for why the field
     /// rides the spec rather than a second argument.
     pub worktree: Option<WorktreePlacement>,
+    /// **The tree a `firecode` placement COPIES**, when that is not the child's workspace.
+    ///
+    /// `None` — every `task` and `task_start` call — is *copy the child's workspace*, which is
+    /// what every earlier build did and is right whenever the workspace is the repository. It is
+    /// wrong when a session is seated a level ABOVE its repositories (the operator's box:
+    /// `--workspace /home/dead/Projects/letibot`, whose repository is
+    /// `/home/dead/Projects/letibot/letibot`), and then the VM is booted on a copy of every
+    /// sibling of the repository — 72.8 GiB, refused by the ceiling, measured 2026-10-10.
+    ///
+    /// The caller that KNOWS which repository the work is in says so here, and the review queue
+    /// is that caller: a reviewer reads a branch (`git diff <base>...<branch>`), so it is booted
+    /// on a copy of the entry's own repository (`mergequeue::review_copy_source`) and not on the
+    /// folder the daemon happens to be seated in. It rides the spec for the reason
+    /// [`TaskSpec::worktree`] does: the spawn is the one place that turns a spec into a session,
+    /// and a child whose VM copied one tree while the caller's record says another is the same
+    /// silent-provenance defect as a model name that does not match.
+    pub vm_source: Option<PathBuf>,
 }
 
 /// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
@@ -702,6 +720,11 @@ impl Tool for TaskTool {
                 .filter(|m| !m.is_empty()),
             // A plain `task` works in the parent's workspace: no worktree is arranged.
             worktree: None,
+            // And a VM placement copies that workspace, which is the repository whenever the
+            // session was opened in one. The one caller that knows better sets it itself
+            // (`Harness::serve_reviews`); a model's `where: firecode` has no way to name a
+            // tree it has not looked at.
+            vm_source: None,
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
@@ -954,6 +977,9 @@ impl Tool for TaskStartTool {
             // The runner fills this after the git work: the placement is a fact the
             // spawn carries, and the tool does not invent one the runner did not make.
             worktree: None,
+            // A `task_start` works in the worktree it just arranged, so a VM placement copies
+            // that — the child's own workspace, which is what `None` means.
+            vm_source: None,
         };
         let worktree_spec = WorktreeSpec {
             slug,

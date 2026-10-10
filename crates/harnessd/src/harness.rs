@@ -2507,8 +2507,16 @@ impl Harness {
             bool,
             Option<Arc<Monitors>>,
         ) = if in_vm {
+            // **The tree the VM is booted on, and it is NOT always the workspace.**
+            // `Config::vm_copy_source` is the one spelling of the decision: the session's own
+            // `vm_source` where the caller that knows named one, the workspace otherwise. The
+            // reviewer is that caller (`serve_reviews`), and it names the entry's repository —
+            // because a session may be seated a level above its repositories, and booting a VM on
+            // the level is what put 72.8 GiB through `copy_tree` and got it refused, three times
+            // in one night, for two branches. See `crates/tools/src/firecode.rs`'s
+            // `FirecodeSpec::source`.
             let mut spec =
-                letibot_tools::firecode::FirecodeSpec::new(&cfg.workspace, &cfg.session_id);
+                letibot_tools::firecode::FirecodeSpec::new(cfg.vm_copy_source(), &cfg.session_id);
             spec.writable = may_write;
             spec.exec = may_exec;
             spec.up_args = cfg.vm_args.clone();
@@ -7411,6 +7419,18 @@ impl Harness {
     /// prompt is composed from the SAME function (`Sessions::ensure_gatekeeper`), so what it was
     /// told and where its children go cannot drift apart.
     ///
+    /// **And the spec carries WHICH TREE that VM is booted on**, which is the other half of the
+    /// same decision and the one that had no answer at all: `TaskSpec::vm_source` is the entry's
+    /// repository, not this session's workspace — see `mergequeue::review_copy_source`. Without
+    /// it the reviewer's copy was the daemon's workspace, and on a workspace that is a folder of
+    /// repositories the copy is refused by the ceiling and the review never starts. **A
+    /// VM-placed reviewer had never been exercised end to end on this box**, which is why this
+    /// surfaced only when the queue tried to review rather than when the placement landed: the
+    /// tests that start a real reviewer say `gatekeeper_vm = false` in as many words, and
+    /// `review_pass` records what the pass ASKED FOR without opening a VM. The `firecode`
+    /// backend itself is exercised — `tools/tests/firecode_live.rs`, and only when
+    /// `FIRECODE_LIVE=1` is set — and it was never handed a reviewer's tree.
+    ///
     /// **Returns how many gatekeepers it started**, so a caller that is looking at a log can say
     /// so; the writing-back half of this function is not counted.
     /// After a daemon restart the children are gone and the rows are not, and the next pass
@@ -7444,6 +7464,17 @@ impl Harness {
         // for why the box's own answer cannot be overridden into a VM it cannot boot, and for what
         // the session's own prompt says about it (the same function, so the two cannot disagree).
         // Read here rather than in the loop because `firecode_available()` walks `$PATH`.
+        //
+        // **And WHICH TREE it is booted on is the second half of that decision, and the half that
+        // was missing.** A `Firecode` placement copies a tree into the VM, and until this the tree
+        // was always the session's own workspace — which for the review queue is the daemon's
+        // workspace, and the daemon's workspace is not always the repository: on the operator's
+        // box it is a FOLDER holding the repository, some worktrees and a pile of scratch, 72.8
+        // GiB of it. The copy was refused at `crates/tools`' 8 GiB ceiling three times in one
+        // night, for two branches, and every reviewer that could not start was written as a
+        // FAILED ATTEMPT on its row — so the queue could land nothing at all. The source is
+        // therefore the entry's own repository (`mergequeue::review_copy_source`), and it is read
+        // per row because the answer is a fact about the BRANCH.
         let placement = crate::sessions::gatekeeper::reviewer_placement(
             self.cfg.gatekeeper_vm,
             letibot_tools::firecode::firecode_available(),
@@ -7472,6 +7503,12 @@ impl Harness {
             let spec = letibot_tools::builtins::task::TaskSpec {
                 role: "gatekeeper".into(),
                 placement,
+                // **The tree the VM is booted on: the ENTRY's repository.** `None` for an entry
+                // the queue can find no repository for — and for a workspace that is itself in
+                // none — which is *copy the child's workspace*, the behaviour every build before
+                // this field had. See `mergequeue::review_copy_source` for the resolution and for
+                // the 72.8 GiB it exists to stop copying.
+                vm_source: crate::mergequeue::review_copy_source(&self.cfg.workspace, &entry),
                 ..Default::default()
             };
             match self
@@ -13872,6 +13909,12 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             // The worktree `task_start` arranged, when it did: the child's workspace is
             // the worktree, not the parent's tree. `None` for a plain `task`.
             worktree: spec.worktree.clone(),
+            // **And the tree a VM placement copies, which the caller decided** — `None` for every
+            // caller but the review queue, which names the entry's repository so a reviewer is not
+            // booted on a copy of the folder the daemon happens to sit in. Carried through
+            // verbatim: this is the layer that must not invent a value, because the value IS the
+            // caller's word about where the work is.
+            vm_source: spec.vm_source.clone(),
         };
         let id = sub_id.clone();
         let spawned = std::thread::Builder::new()
@@ -15143,6 +15186,16 @@ impl HarnessTaskRunner {
         // its own. `None` is a plain `task`, which keeps the parent's workspace.
         if let Some(wt) = &spec.worktree {
             sub_cfg.workspace = std::path::PathBuf::from(&wt.path);
+        }
+        // **And the tree a VM placement copies**, when the caller named one that is not the child's
+        // workspace — the same route, and the same reason: the spawn is the one place that turns a
+        // spec into a session, and a child whose VM copied a different tree from the one the
+        // caller asked for is a record that does not match what happened. `Harness::open` reads it
+        // through `Config::vm_copy_source`. `None` is every other caller, and it leaves the field
+        // as the parent had it — which for a plain `task` is nothing at all, so the child copies
+        // its own workspace exactly as it did before this field existed.
+        if let Some(src) = &spec.vm_source {
+            sub_cfg.vm_source = Some(src.clone());
         }
         // **And the local model's own address, alias and sampling**, after the spread,
         // because `..self.base.clone()` would otherwise put the parent's back.

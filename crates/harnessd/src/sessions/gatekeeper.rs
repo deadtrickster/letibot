@@ -194,7 +194,13 @@ pub const SEAT: crate::config::Seat = crate::config::Seat::Orchestrator;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewerPlacement {
     /// **A firecode VM.** The VM is the boundary, so a reviewer's `bash` asks nobody: there is no
-    /// card for this session's head or the operator to answer.
+    /// card for this session's head or the operator to answer. **The tree it is booted on is the
+    /// entry's own REPOSITORY** ([`Harness::serve_reviews`] sets `TaskSpec::vm_source` from
+    /// `mergequeue::review_copy_source`), not this session's workspace — a session may be seated a
+    /// level above its repositories, and copying the level is 72.8 GiB of siblings that the
+    /// ceiling refuses.
+    ///
+    /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
     Vm,
     /// **This machine, because the session states no VM** ([`crate::config::Config::gatekeeper_vm`])
     /// — the arm a caller that must not boot one takes, and the behaviour every review had before
@@ -231,11 +237,12 @@ impl ReviewerPlacement {
         match self {
             ReviewerPlacement::Vm => "\n\
 Where your reviewers run: **in a firecode VM**. Each review child is booted in one, on a COPY of \
-this workspace, and the VM is the boundary — so a reviewer's `bash` asks nobody, and no permission \
-card reaches your head or the operator's. Its commands run in that copy, and `.git` travels with it \
-(only `.git/worktrees` is excluded), so `git diff <base>...<branch>` reads the branch the row names. \
-Nothing of the reviewer's tree comes back as a branch: what comes back is a VERDICT, and that is what \
-you write.\n"
+the REPOSITORY the entry's branch is in — not of this session's workspace, which on a session \
+seated above its repositories is a folder holding that repository and its siblings — and the VM \
+is the boundary, so a reviewer's `bash` asks nobody, and no permission card reaches your head or \
+the operator's. Its commands run in that copy, and `.git` travels with it (only `.git/worktrees` \
+is excluded), so `git diff <base>...<branch>` reads the branch the row names. Nothing of the \
+reviewer's tree comes back as a branch: what comes back is a VERDICT, and that is what you write.\n"
                 .to_string(),
             ReviewerPlacement::Host => "\n\
 Where your reviewers run: **on this machine**, inside this session's own boundary — this session \
@@ -298,6 +305,25 @@ that come to YOUR head. The operator's remedy is a `firecode` on the daemon's PA
 /// <base>...<branch>`, `rg PATTERN PATH`, and the advice to hand `bash` a `cwd` rather than
 /// `cd`-ing are all relative, and relative is what a copy preserves — so a reviewer reads the same
 /// words wherever it runs. See [`ReviewerPlacement::said`] for what THIS session is told instead.
+///
+/// # The other half of the decision: WHICH TREE the VM is booted on
+///
+/// A `Firecode` placement copies a tree, and this function answers only *where*, not *what*. The
+/// what is [`Harness::serve_reviews`]'s next line — `TaskSpec::vm_source`, from
+/// `mergequeue::review_copy_source` — and it is the half that was missing for the whole life of
+/// the placement: the copy source was the session's own workspace, which for the review queue is
+/// the daemon's workspace, which is not always the repository. On the operator's box it is a
+/// folder of repositories and the copy is 72.8 GiB, refused at `crates/tools`' ceiling, so no
+/// reviewer started and the queue landed nothing (measured 2026-10-10, three refusals for two
+/// branches).
+///
+/// **A VM-placed reviewer had never been exercised end to end on this box, and that is the larger
+/// finding of that night.** The placement itself is asserted (`review_pass` records what the pass
+/// asked for; `gatekeeper`'s own tests are pure arms), the real-spawn tests set
+/// `gatekeeper_vm = false` in as many words (`session_channel`), and the `firecode` backend's own
+/// live test is behind `FIRECODE_LIVE=1` and never had a reviewer's tree put through it. So the
+/// first time a reviewer was actually booted was the first time the queue tried to review — and
+/// the thing that failed was not the placement but the tree under it.
 ///
 /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
 pub fn reviewer_placement(

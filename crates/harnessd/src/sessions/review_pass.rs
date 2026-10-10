@@ -112,13 +112,17 @@ impl Drop for TempDir {
 ///
 /// The placement is here because it is a decision the pass makes FOR a reviewer and for no other
 /// child — see `gatekeeper::reviewer_placement` — so *what the pass asked for* is not the whole
-/// answer without it. Every other field of the [`TaskSpec`] is the caller's and has its own test;
-/// this one is the pass's own.
+/// answer without it. **And `vm_source` is here because it is the other half of that same
+/// decision**: a `firecode` placement copies a tree, and which tree it copies is the pass's word
+/// (`mergequeue::review_copy_source`) and not the caller's. Every other field of the [`TaskSpec`]
+/// is the caller's and has its own test; these two are the pass's own.
 #[derive(Debug, Clone)]
 struct Asked {
     prompt: String,
     role: String,
     placement: Placement,
+    /// The tree a `firecode` placement would copy — `None` is *the child's own workspace*.
+    vm_source: Option<PathBuf>,
 }
 
 /// **A runner that records what it was asked to start and answers `Running` for ever.**
@@ -137,6 +141,7 @@ impl TaskRunner for Recording {
             prompt: prompt.to_string(),
             role: spec.role.clone(),
             placement: spec.placement,
+            vm_source: spec.vm_source.clone(),
         });
         Ok(format!("sub-{}", g.len()))
     }
@@ -169,6 +174,7 @@ impl TaskRunner for Answered {
             prompt: prompt.to_string(),
             role: spec.role.clone(),
             placement: spec.placement,
+            vm_source: spec.vm_source.clone(),
         });
         Ok(format!("sub-{}", g.len()))
     }
@@ -196,6 +202,7 @@ impl TaskRunner for Gone {
             prompt: prompt.to_string(),
             role: spec.role.clone(),
             placement: spec.placement,
+            vm_source: spec.vm_source.clone(),
         });
         Ok(format!("sub-{}", g.len()))
     }
@@ -272,6 +279,13 @@ impl Fixture {
 
     /// One queue entry, `Waiting`, with the brief the reviewer is given.
     fn entry(&self, id: &str, brief: &str) {
+        self.entry_working_in(id, brief, None)
+    }
+
+    /// **The same row, with the worktree the branch is checked out in** — which is what says
+    /// which repository the review is about: `mergequeue::review_copy_source` reads it, so a
+    /// reviewer's VM is booted on the repository rather than on the daemon's workspace.
+    fn entry_working_in(&self, id: &str, brief: &str, worktree: Option<&std::path::Path>) {
         let now = (crate::config::now_ns() / 1_000_000) as u64;
         self.store()
             .put_merge_entry(&MergeEntry {
@@ -286,11 +300,40 @@ impl Fixture {
                 evidence: String::new(),
                 created_ms: now,
                 updated_ms: now,
-                worktree: None,
+                worktree: worktree.map(|w| w.display().to_string()),
                 landed_sha: None,
                 gate_steps: Vec::new(),
             })
             .expect("the entry row");
+    }
+
+    /// **A repository UNDER this daemon's workspace**, and its path back.
+    ///
+    /// The fixture's workspace is deliberately not a repository — it is the temp dir — so this is
+    /// what makes *the workspace* and *the repository* two different directories, which is the
+    /// shape of the operator's own box (`--workspace /home/dead/Projects/letibot`, whose
+    /// repository is `/home/dead/Projects/letibot/letibot`) and the whole of what a copy source
+    /// has to get right.
+    ///
+    /// Canonicalized on the way back, because that is what `git rev-parse
+    /// --path-format=absolute` reports and the assertion is about the path rather than about a
+    /// symlinked `/tmp`.
+    fn a_repository_under_the_workspace(&self, name: &str) -> PathBuf {
+        let repo = self.cfg.workspace.join(name);
+        std::fs::create_dir_all(&repo).expect("the repository's directory");
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["init", "-q", "-b", "main"])
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git init in {}: {}",
+            repo.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::canonicalize(&repo).expect("the repository canonicalizes")
     }
 
     /// The request row `mergequeue::GatekeeperDoor` writes: naming the HOST, with no verdict on it.
@@ -478,6 +521,49 @@ fn a_review_already_being_served_is_not_spawned_twice() {
     assert!(row.failure.is_empty(), "and there is no failure to read");
 }
 
+/// **The reviewer's VM is booted on the ENTRY's repository, and not on this session's
+/// workspace.**
+///
+/// The defect this is written against is the one that stopped the queue: a session may be seated
+/// a level ABOVE its repositories — the operator's own daemon is (`--workspace
+/// /home/dead/Projects/letibot`, whose repository is `/home/dead/Projects/letibot/letibot`) — and
+/// the copy source was filled from the session's workspace, so a reviewer's VM was booted on a
+/// copy of the whole folder: 72.8 GiB of siblings, worktrees and build output, refused by
+/// `copy_tree`'s 8 GiB ceiling three times in one night for two branches. A reviewer that cannot
+/// start is written as a FAILED ATTEMPT on its row, so nothing in the queue could land.
+///
+/// **The path is asserted and not the words.** `vm_source` is exactly what `Harness::open` hands
+/// `FirecodeSpec::new` (`Config::vm_copy_source`), so this is the value the copy is made from;
+/// and the repository is a different directory from the workspace here by construction, because
+/// the fixture's workspace is a temp dir that is in no repository at all.
+#[test]
+fn a_reviewer_copies_the_entries_repository_and_not_the_workspace() {
+    let Some(f) = Fixture::new("copy-source") else {
+        return;
+    };
+    let repo = f.a_repository_under_the_workspace("the-repo");
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.entry_working_in("m-in-repo", "keep the last record", Some(&repo));
+    f.review("m-in-repo", &f.host, 0, None);
+
+    let mut sessions = f.sessions(&parts);
+    assert_eq!(sessions.serve_reviews(), 1, "the pass asks");
+    let asked = f.asked();
+    assert_eq!(asked.len(), 1, "one row, one reviewer: {asked:?}");
+    assert_eq!(
+        asked[0].vm_source.as_deref(),
+        Some(repo.as_path()),
+        "a reviewer reads a branch, so the tree its VM is booted on is the entry's own \
+         repository — the one `mergequeue::review_copy_source` resolves from the worktree"
+    );
+    assert_ne!(
+        asked[0].vm_source.as_deref(),
+        Some(f.cfg.workspace.as_path()),
+        "and NOT the daemon's workspace, which is the folder that repository sits in: copying it \
+         is the 72.8 GiB the ceiling refuses, and the review then never starts"
+    );
+}
+
 /// **The reviewer is placed where this box can place one, and the state is DECLARED where it
 /// cannot — never a silent fallback to the machine the session asked to leave.**
 ///
@@ -506,6 +592,15 @@ fn a_review_child_is_placed_where_the_box_can_place_one() {
     assert_eq!(sessions.serve_reviews(), 1, "the pass asks");
     let asked = f.asked();
     assert_eq!(asked.len(), 1, "one row, one reviewer: {asked:?}");
+    // **And the copy source is the child's own workspace here, which is what every build before
+    // `vm_source` did.** The entry carries no worktree and the fixture's workspace is in no
+    // repository, so nothing better can be named — and the small workspace is exactly the case
+    // the old behaviour was right for.
+    assert!(
+        asked[0].vm_source.is_none(),
+        "an entry with no worktree to read a repository from keeps the old copy source — the \
+         child's own workspace: {asked:?}"
+    );
     match letibot_tools::firecode::firecode_available() {
         Ok(bin) => assert_eq!(
             asked[0].placement,
@@ -541,6 +636,12 @@ fn a_review_child_is_placed_where_the_box_can_place_one() {
         asked[0].placement,
         Placement::Host,
         "a session that states `gatekeeper_vm = false` keeps its reviewer on this machine"
+    );
+    assert!(
+        asked[0].vm_source.is_none(),
+        "and the same small workspace still places as it did: with no repository to name, the \
+         copy source stays the child's own workspace — which for a host placement is not used at \
+         all: {asked:?}"
     );
 }
 

@@ -577,6 +577,49 @@ pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
     }
 }
 
+/// **The tree a review of `entry` is COPIED from** — the one repository the branch is in, and
+/// never the directory the daemon was started in.
+///
+/// A reviewer reads a branch: `git diff <base>...<branch>` runs in the copy, so the copy has to
+/// be the repository that holds the branch. The entry's own worktree is what says which that is
+/// ([`repo_of_worktree`]), which is the same resolution [`MergeQueueDaemon::repo_for`] makes for
+/// the landing — one rule, so a review and the landing it gates cannot be about two different
+/// repositories.
+///
+/// # Why this exists at all, and what it costs when it does not
+///
+/// A session may be seated a level ABOVE its repositories, and the operator's own box is: the
+/// daemon's `--workspace` is `/home/dead/Projects/letibot` — a folder holding `letibot`, some
+/// worktrees, probes and scratch — while every entry's repository is
+/// `/home/dead/Projects/letibot/letibot`. A reviewer placed in a VM was booted on a copy of the
+/// WORKSPACE, which is 72.8 GiB of siblings, worktrees and build output; `crates/tools`'
+/// `copy_tree` refused it at its 8 GiB ceiling, three times in one night for two branches, and
+/// **the queue could land nothing** — a reviewer that cannot start is written as a failed
+/// attempt on the row. So this is not a tidiness fix: it is the difference between a review
+/// queue that reviews and one that does not.
+///
+/// # The order of the two answers
+///
+/// The ENTRY's repository first, because that is the branch's own repository whatever this
+/// daemon's workspace happens to be. [`repo_root`] of the workspace second, which is the same
+/// answer whenever the workspace IS the repository (every ordinary daemon) and the only answer
+/// available for an entry with no worktree the queue can read. `None` — a workspace that is in
+/// no repository either — is *copy the workspace*, which is what every build did before this
+/// function existed and is the honest fallback for a session with nothing better to name.
+///
+/// **The cost is one `git` per reviewer started**, and only for a row that is actually about to
+/// be spawned: `Harness::serve_reviews` asks this inside the loop, after the row has passed both
+/// the store's bound and the desk's in-flight check. `MergeQueueDaemon::repos` caches the same
+/// lookup for the landing, which asks every second; this asks once per review.
+pub fn review_copy_source(workspace: &Path, entry: &MergeEntry) -> Option<PathBuf> {
+    if let Some(wt) = entry.worktree.as_deref()
+        && let Some(repo) = repo_of_worktree(Path::new(wt))
+    {
+        return Some(repo);
+    }
+    repo_root(workspace).ok()
+}
+
 /// **Whether a daemon serving `workspace` owns this entry** — [`MergeQueueDaemon::serves`]'s one
 /// rule, as a function.
 ///
@@ -5414,6 +5457,76 @@ mod tests {
             entry_for_finished("s-1-sub-7", "s-1-sub-7", "do the work", &placement, 1).is_none(),
             "the main checkout has no branch of its own to land"
         );
+    }
+
+    /// **The tree a review is copied from: the entry's repository, and never the directory the
+    /// session was started in.**
+    ///
+    /// This is the resolution that stopped the queue when it was missing. The operator's daemon
+    /// is seated a level above its repositories (`--workspace /home/dead/Projects/letibot`, whose
+    /// repository is `/home/dead/Projects/letibot/letibot`), and a reviewer's VM was booted on a
+    /// copy of the WORKSPACE: 72.8 GiB of siblings, worktrees and build output, refused at the
+    /// ceiling, three times in one night for two branches. A reviewer that cannot start is a
+    /// failed attempt on its row, so nothing landed.
+    ///
+    /// All three arms, because each is a different fact and only one of them is the box's own
+    /// shape: the ENTRY's repository (what the work is in), the workspace's own repository (a
+    /// session opened in the repository — every ordinary daemon), and `None` (nothing here can
+    /// name a repository, so the caller keeps the old behaviour and copies the workspace).
+    #[test]
+    fn a_review_is_copied_from_the_entries_repository() {
+        // A folder that is NOT a repository, holding one — the operator's box in miniature.
+        let folder =
+            std::env::temp_dir().join(format!("letibot-mq-copy-src-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let repo = folder.join("the-repo");
+        std::fs::create_dir_all(&repo).expect("mkdir");
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let wt = repo.join("worktrees").join("feature");
+        std::fs::create_dir_all(&wt).expect("mkdir");
+        let repo = std::fs::canonicalize(&repo).expect("the repository canonicalizes");
+        let wt = repo.join("worktrees").join("feature");
+
+        let entry = |worktree: Option<&Path>| MergeEntry {
+            id: "m-copy".into(),
+            session_id: "s-1".into(),
+            branch: "agent/x".into(),
+            base_sha: "base".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "keep the last record".into(),
+            evidence: String::new(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: worktree.map(|w| w.display().to_string()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+
+        // (1) An entry whose branch is checked out in a worktree of that repository: the review
+        // is about THAT repository, whatever the daemon's workspace is.
+        assert_eq!(
+            review_copy_source(&folder, &entry(Some(&wt))),
+            Some(repo.clone()),
+            "the copy source is the repository the branch is in — not the folder above it, which \
+             is the copy the ceiling refuses"
+        );
+        // (2) An entry with no worktree the queue can read: the workspace's own repository, which
+        // for a session opened inside the repository is the same answer.
+        assert_eq!(
+            review_copy_source(&repo, &entry(None)),
+            Some(repo.clone()),
+            "a session seated IN the repository still names it"
+        );
+        // (3) Nothing to name: a folder that is in no repository, and an entry with no worktree.
+        assert_eq!(
+            review_copy_source(&folder, &entry(None)),
+            None,
+            "nothing here can name a repository, so the caller copies the child's own workspace \
+             — the behaviour every build before this field had"
+        );
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// **The same child enqueued twice is one entry.** The id is the handle, so the second
