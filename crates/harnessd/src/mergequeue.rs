@@ -53,6 +53,14 @@ use letibot_tokencore::store::{
     MergeEntry, MergeGateOutcome, MergeGateStep, MergePriority, MergeState, Store,
 };
 
+// **The question vocabulary, for the third door.** A `cannot-decide` is a question and not an
+// adjudication, so it goes through the questioner the tree already has and not through the gate —
+// `crate::answers` says why those two must not be able to settle each other.
+use letibot_tools::builtins::intent::{AskError, Question, QuestionAnswer};
+// **The gatekeeper's closed set, for the doors.** One word, three doors, and the mapping lives in
+// [`Door::of`] so that a STORED word and a reported one go through the same one.
+use letibot_tools::gatekeeper::Decision;
+
 // ===== The pure core: the state machine, with no store, no git and no thread =====
 
 /// **What cleanup a state owns** — the answer to *what happens to the worktree and the
@@ -1908,10 +1916,10 @@ fn read_entry(store: &Store, entry_id: &str) -> Result<MergeEntry, String> {
 /// **Approve one entry** — the person's verdict, the git the landing needs, and the sentence it
 /// answers with.
 ///
-/// The whole of the act is [`Store::approve_entry`]'s two writes (the verdict, then the move back
-/// to `waiting`) plus the sweep above when the branch has nothing on it yet. What is here is the
-/// DECISION ([`approvable`]), the sentences, and the announcement, so the verb that calls it holds
-/// no rule of its own.
+/// The whole of the act is [`hand_over`] — the one path into the queue, which a reviewer's own
+/// `accept` takes as well (see the doors at the foot of this module). What is HERE is the DECISION
+/// ([`approvable`]) and what was overridden, so the verb holds no rule of its own and the door
+/// that is the same act does not have to restate one.
 ///
 /// **The gate is not bypassed and the sentence says so.** An approval overrides the reviewer's
 /// judgement; the queue then rebases, gates and lands exactly as it would for a verdict it was
@@ -1934,43 +1942,6 @@ pub fn approve(
         .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
     approvable(&entry, review.as_ref())?;
 
-    // **The work, before the verdict.** A branch with 0 commits over its base is a branch the
-    // gate would run on nothing, and the operator's ruling is that the queue absorbs this rather
-    // than the person: the worktree's work becomes one commit, and then the ordinary landing runs.
-    // The sweep goes FIRST so that a store write that loses a race leaves a commit and an
-    // unapproved entry rather than an approved entry the gate cannot land — and a second press
-    // finds the work committed (`Sweep::Already`) and commits nothing twice.
-    let swept = match entry.worktree.as_deref().map(Path::new) {
-        Some(wt) if wt.is_dir() => {
-            let (commits, changed) = worktree_facts(wt, &entry.base_sha)?;
-            match sweep_for(commits, &changed) {
-                Sweep::Already => None,
-                Sweep::Nothing => {
-                    return Err(format!(
-                        "`{}` has nothing to land — its branch is 0 commits over its base (`{}`) \
-                         and its worktree at `{}` is clean, so there is no work for the queue to \
-                         commit and nothing for the gate to run on. That is what its reviewer \
-                         said, and approving it would land nothing. Nothing was approved. If the \
-                         work exists somewhere else, it is not in this entry's worktree; \
-                         `/queue rm {entry_id}` drops the entry.",
-                        entry.branch,
-                        entry.base_sha,
-                        wt.display()
-                    ));
-                }
-                Sweep::Commit { paths, redirect } => {
-                    Some(sweep_worktree(wt, entry_id, &paths, redirect)?)
-                }
-            }
-        }
-        // **No worktree, so nothing to sweep and nothing to say about it.** The queue cannot
-        // rebase a branch that is not checked out either, and its own row says so
-        // (`"no worktree: the branch is not checked out"`); the person's verdict is still theirs
-        // to give, so the approval goes through rather than being refused for a reason that is
-        // the queue's to report.
-        _ => None,
-    };
-
     // **What was overridden, in the row's own words.** A verdict, an attempt that failed and a
     // person's own earlier veto are three different things to name, and naming the wrong one
     // would send a reader looking for a judgement nobody made.
@@ -1988,28 +1959,158 @@ pub fn approve(
         (_, Some(_)) => "nobody had answered the review".to_string(),
         (_, None) => "nobody had asked for a verdict".to_string(),
     };
+    hand_over(
+        store,
+        &entry,
+        by,
+        Handed::ByTheOperator,
+        &was,
+        "",
+        now_ms,
+        events,
+    )
+}
+
+/// **Who is handing the entry over** — the two callers of [`hand_over`], and the three clauses
+/// that differ between them.
+///
+/// One enum rather than three `&str` parameters because those clauses are ONE fact about the
+/// caller: with them separate, the way to write *the operator approved it* into a reviewer's row
+/// is to pass the wrong string in one of three places and get the other two right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handed {
+    /// The operator's `/queue approve`.
+    ByTheOperator,
+    /// **The reviewer's own reported `accept`** — the first of the three doors.
+    ByTheReview,
+}
+
+impl Handed {
+    /// What the entry's `evidence` opens with, and what a reader sees first.
+    fn lead(&self) -> &'static str {
+        match self {
+            Handed::ByTheOperator => "approved by the operator",
+            Handed::ByTheReview => "accepted by the reviewer",
+        }
+    }
+
+    /// The verb, for the sentences and the refusals.
+    fn verb(&self) -> &'static str {
+        match self {
+            Handed::ByTheOperator => "approved",
+            Handed::ByTheReview => "accepted",
+        }
+    }
+
+    /// The act as a noun, for the sentences about a write that did not happen.
+    fn noun(&self) -> &'static str {
+        match self {
+            Handed::ByTheOperator => "approval",
+            Handed::ByTheReview => "acceptance",
+        }
+    }
+
+    /// The last clause, which is the one that must never read as *the gate was skipped*.
+    fn tail(&self) -> &'static str {
+        match self {
+            Handed::ByTheOperator => "an approval overrides the judgement, never the landing.",
+            Handed::ByTheReview => "a verdict hands the entry over; it never skips the landing.",
+        }
+    }
+}
+
+/// **The one path into the queue** — an entry back to `waiting` with an accepting verdict on its
+/// review, which is the state the queue's own pass takes ([`next_takeable`]).
+///
+/// **One function because `/queue approve` and a reviewer's `accept` are the same act said two
+/// ways.** The person's verb is this path with the operator's rules in front of it
+/// ([`approvable`]); the reviewer's door is this path with the reviewer's reasons attached. A
+/// second copy would be a second answer to *what makes an entry takeable*, and the answer includes
+/// the sweep below — the half a copy would silently drop.
+///
+/// **The verdict is written HERE and not by the caller**, which is why the accept door does not
+/// write one first: [`Store::approve_entry`] is guarded on the verdict row (a row that already
+/// carries an accepting verdict is not overwritten), so a door that wrote `accept` itself would
+/// find its own write refusing the move.
+///
+/// **What a reviewer's `reasons` do here.** They go into the entry's `evidence`, through `extra`,
+/// rather than onto the review row: the accepting row `approve_entry` writes is the OVERRIDE
+/// shape — its `reasons` column is empty by construction, because the argument that matters after
+/// a person's approval is the person's. The entry's `evidence` is where a reader looks for why an
+/// entry moved, so the reviewer's reasons land there, beside the verdict that moved it.
+fn hand_over(
+    store: &Store,
+    entry: &MergeEntry,
+    by: &str,
+    who: Handed,
+    was: &str,
+    extra: &str,
+    now_ms: u64,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    let entry_id = entry.id.as_str();
+    // **The work, before the verdict.** A branch with 0 commits over its base is a branch the
+    // gate would run on nothing, and the operator's ruling is that the queue absorbs this rather
+    // than the person: the worktree's work becomes one commit, and then the ordinary landing runs.
+    // The sweep goes FIRST so that a store write that loses a race leaves a commit and an
+    // unapproved entry rather than an approved entry the gate cannot land — and a second press
+    // finds the work committed (`Sweep::Already`) and commits nothing twice.
+    let swept = match entry.worktree.as_deref().map(Path::new) {
+        Some(wt) if wt.is_dir() => {
+            let (commits, changed) = worktree_facts(wt, &entry.base_sha)?;
+            match sweep_for(commits, &changed) {
+                Sweep::Already => None,
+                Sweep::Nothing => {
+                    return Err(format!(
+                        "`{}` has nothing to land — its branch is 0 commits over its base (`{}`) \
+                         and its worktree at `{}` is clean, so there is no work for the queue to \
+                         commit and nothing for the gate to run on. That is what its reviewer \
+                         said. Nothing was {} — an entry with no work is not one the queue can \
+                         land, whoever asks for it. If the work exists somewhere else, it is not \
+                         in this entry's worktree; `/queue rm {entry_id}` drops the entry.",
+                        entry.branch,
+                        entry.base_sha,
+                        wt.display(),
+                        who.verb(),
+                    ));
+                }
+                Sweep::Commit { paths, redirect } => {
+                    Some(sweep_worktree(wt, entry_id, &paths, redirect)?)
+                }
+            }
+        }
+        // **No worktree, so nothing to sweep and nothing to say about it.** The queue cannot
+        // rebase a branch that is not checked out either, and its own row says so
+        // (`"no worktree: the branch is not checked out"`); the verdict is still somebody's to
+        // give, so it goes through rather than being refused for a reason that is the queue's to
+        // report.
+        _ => None,
+    };
     let evidence = format!(
-        "approved by the operator: {was}. {}The queue takes it again and the gate still runs — \
-         nothing lands until it is green.",
+        "{}: {was}. {extra}{}The queue takes it again and the gate still runs — nothing lands \
+         until it is green.",
+        who.lead(),
         swept.as_deref().unwrap_or_default()
     );
     if !store
-        .approve_entry(&entry, by, &evidence, now_ms)
-        .map_err(|e| format!("the approval of `{entry_id}` could not be written: {e}"))?
+        .approve_entry(entry, by, &evidence, now_ms)
+        .map_err(|e| {
+            format!(
+                "the {} of `{entry_id}` could not be written: {e}",
+                who.noun()
+            )
+        })?
     {
         // The row moved under us between the read and the write — a second press, the daemon
         // claiming it, or a landing. Refused rather than reported as done, because an approval
         // that did not happen and one that did are the two facts a person acts on.
-        let now = store
-            .merge_entry(entry_id)
-            .ok()
-            .flatten()
-            .map(|e| e.state.as_str().to_string())
-            .unwrap_or_else(|| "gone".into());
+        let now = state_now(store, entry_id);
         return Err(format!(
-            "nothing was approved: `{entry_id}` is `{now}` and an approval moves an entry that \
-             is waiting or parked, never one the queue has taken or landed. If you have just \
-             asked once, this is the second ask — the verdict already accepts it.{} ",
+            "nothing was {}: `{entry_id}` is `{now}` and an {} moves an entry that is waiting or \
+             parked, never one the queue has taken or landed. If you have just asked once, this \
+             is the second ask — the verdict already accepts it.{} ",
+            who.verb(),
+            who.noun(),
             match &swept {
                 Some(what) => format!(" The work was committed, once: {what}"),
                 None => String::new(),
@@ -2022,12 +2123,13 @@ pub fn approve(
         evidence: evidence.clone(),
     });
     Ok(format!(
-        "approved `{}` (`{entry_id}`): {was}. {}\
+        "{} `{}` (`{entry_id}`): {was}. {extra}{}\
          The entry is back to `waiting` — the queue rebases it at the tip of main, runs the gate \
-         and lands it, and the gate is not skipped: an approval overrides the judgement, never \
-         the landing.",
+         and lands it, and the gate is not skipped: {}",
+        who.verb(),
         entry.branch,
-        swept.as_deref().unwrap_or_default()
+        swept.as_deref().unwrap_or_default(),
+        who.tail()
     ))
 }
 
@@ -3378,6 +3480,397 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
         }
         self.bell.ring_wake(&root);
         Ok(())
+    }
+}
+
+// ===== The three doors: what a REPORTED verdict does =====
+//
+// The design note's own three, and there are exactly three because the gatekeeper's closed set has
+// exactly three words. A verdict used to be read by the session that spawned the reviewer, out of
+// the reviewer's own closing block (`Harness::review_outcome`); the submission moving into the
+// child's own hands is the slice this one follows, and what it needs is the half that was implicit
+// while the parent read the answer: **what the verdict DOES**.
+//
+// * **`accept` → the entry goes to the merge queue.** Through [`hand_over`] — the SAME path
+//   `/queue approve` takes, so there is one answer to *what makes an entry takeable* rather than
+//   two. The person's verb is that path with the operator's rules in front of it ([`approvable`]),
+//   and a reviewer's `accept` is that path with the reviewer's reasons on the row.
+// * **`reject` → the reviewer's complaints go back to the child that wrote the branch**, as a
+//   message to that live session, through the same door `task_message` and [`veto`] use. A child
+//   whose session has closed cannot be sent anything, and then the complaints are still SOMEWHERE:
+//   [`complaints_instead`] is that answer, once.
+// * **`needs_human` → a question goes to the head**, through the one door a question has
+//   (`letibot_tools::builtins::intent::Questioner`, the rendezvous `ask_user_question` already
+//   rides). An abstention is not a park in silence: the entry does not land, and the person is
+//   ASKED rather than left to notice.
+//
+// **The doors move the VERDICT; the queue moves the ENTRY.** An `accept` has to move the entry
+// itself, because an accepted branch is only taken if its row is `waiting` — and that is exactly
+// what the person's own path does, which is why it is the one reused. A `reject` does not: the
+// queue's own pass parks a refused entry `Failed` with the verdict on its row
+// ([`StepOutcome::Refused`], [`ReviewGate::Refused`]), and a second writer of that state would be
+// two answers to *where is this entry*. What the refuse door owns is the MESSAGE, which nothing
+// else sends — and what the cannot-decide door owns is the QUESTION, which nothing else asks.
+
+/// **Which of the three doors a verdict's word goes through.**
+///
+/// The mapping is `Decision`'s closed set and nothing else — `accept`, `reject`, `needs_human` —
+/// and a word outside it opens NO door (`None`). That is [`review_gate`]'s own rule one step
+/// earlier: a verdict nobody can read is not permission, and it is not a refusal either, so it is
+/// not a door — the caller says so rather than picking one for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Door {
+    /// **Accept** — the entry goes to the merge queue.
+    Accept,
+    /// **Refuse** — the complaints go back to the child that wrote the branch.
+    Refuse,
+    /// **Cannot-decide** — a question goes to the head.
+    CannotDecide,
+}
+
+impl Door {
+    /// **The door a verdict's word opens**, or `None` for a word that is not a verdict.
+    ///
+    /// One mapping, and it is the one a STORED word goes through as well as a reported one: the
+    /// review row keeps the word and not the enum (`ReviewRecord::decision`), so a reader that has
+    /// the row and a caller that has a report ask the same question here rather than each spelling
+    /// the three words out again.
+    pub fn of(word: &str) -> Option<Door> {
+        match Decision::parse(word)? {
+            Decision::Accept => Some(Door::Accept),
+            Decision::Reject => Some(Door::Refuse),
+            Decision::NeedsHuman => Some(Door::CannotDecide),
+        }
+    }
+
+    /// The word this door is the door of.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Door::Accept => "accept",
+            Door::Refuse => "reject",
+            Door::CannotDecide => "needs_human",
+        }
+    }
+}
+
+/// **A verdict as the child reported it** — the judgement, its reasons, and what it looked at.
+///
+/// The four fields are the four the reviewer's closing block carries and the four the review row
+/// holds, so a report is the row's own shape one hop earlier: what arrives at the daemon is what
+/// will be written, and nothing here has to guess at a fifth thing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reported {
+    /// The judgement, out of the gatekeeper's closed set — a `Decision` and not a word, so a
+    /// verdict that reached this type is one the queue can act on.
+    pub decision: Decision,
+    /// Why, one per line, exactly as the reviewer wrote them.
+    pub reasons: Vec<String>,
+    /// The files it read.
+    pub files: Vec<String>,
+    /// The commands it ran.
+    pub commands: Vec<String>,
+}
+
+/// **What one door did** — the three endings, and each carries the fact its name promises.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Done {
+    /// **Accept** — the entry is in the queue: back to `waiting` with an accepting verdict on its
+    /// review, which is the state the queue's own pass takes.
+    Queued(String),
+    /// **Refuse** — the complaints, and where they went.
+    ///
+    /// **`child` is named whether or not the delivery landed.** *Who the complaints are for* is a
+    /// fact about the verdict — the entry's own id, which is the child's session (`entry_for_finished`
+    /// mints the id from the handle) — and not about this attempt to deliver them; a report that
+    /// dropped the id when the session had closed would be a refusal nobody could trace back.
+    /// `delivered` is the delivery's own answer, and `said` carries where the complaints are
+    /// instead when it is false ([`complaints_instead`]).
+    Refused {
+        child: String,
+        delivered: bool,
+        said: String,
+    },
+    /// **Cannot-decide** — a question was raised at the head.
+    ///
+    /// `answered_by` is `None` when nobody could take it (no head attached, or the deadline
+    /// passed): the question was still RAISED, which is the door's act, and `said` carries why it
+    /// went unanswered. An abstention is not a park in silence either way.
+    Asked {
+        question: Question,
+        answered_by: Option<String>,
+        said: String,
+    },
+}
+
+/// **What a reported verdict does** — the three doors, from the verdict and the entry.
+///
+/// `by` is the session the verdict came from, and it is written on the review row: the pane draws
+/// that column as *attach to it to read the argument*, and after a verdict the argument is the
+/// reviewer's.
+///
+/// # The seams
+///
+/// `deliver` and `ask` are seams, [`veto`]'s own shape and for its reason: the act is a function of
+/// a store and two callbacks, so a test drives all three doors with no socket, no child and no
+/// head. `deliver(child, text)` is the daemon's `task_message` door (`TaskRunner::send`, the
+/// `CommandKind::Message` a child's own reader answers by starting a turn); `ask(&Question)` is the
+/// questioner the session already has (`crate::answers::HeadQuestioner`), and it is the caller's
+/// business whether it blocks — this function asks and reports.
+///
+/// # A delivery that failed does not undo a refusal
+///
+/// The refusal is written on the review row FIRST and the message is sent after, so a child whose
+/// session has closed leaves a verdict that stands and a message that did not go. That is
+/// [`Done::Refused`] with `delivered: false`, not an `Err`: the entry is refused either way, and
+/// what a person needs is where the complaints are instead — [`complaints_instead`].
+///
+/// # The word that opens no door
+///
+/// `Reported::decision` is the closed set, so the `None` arm below cannot be reached from a
+/// `Reported` — and it is written out rather than `expect`ed because [`Door::of`] is also the
+/// mapping a STORED word goes through, and a `panic` in the daemon is not how a word nobody knows
+/// should end.
+pub fn report_verdict(
+    store: &Store,
+    entry_id: &str,
+    reported: &Reported,
+    by: &str,
+    now_ms: u64,
+    deliver: &dyn Fn(&str, &str) -> Result<String, String>,
+    ask: &dyn Fn(&Question) -> Result<(QuestionAnswer, String), AskError>,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<Done, String> {
+    let entry = read_entry(store, entry_id)?;
+    let door = Door::of(reported.decision.as_str()).ok_or_else(|| {
+        format!(
+            "`{}` is not a verdict on `{}`: the words are {}, and a word outside the closed set \
+             opens no door. Nothing was moved.",
+            reported.decision.as_str(),
+            entry.branch,
+            Decision::ALL
+                .iter()
+                .map(|d| d.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    match door {
+        // **The entry goes to the merge queue** — the same path `/queue approve` takes, with the
+        // reviewer's reasons on the entry's evidence and no operator in the sentence at all.
+        Door::Accept => {
+            let said = hand_over(
+                store,
+                &entry,
+                by,
+                Handed::ByTheReview,
+                "the verdict on it is `accept`, from the reviewer that judged it",
+                &reasons_block(&reported.reasons),
+                now_ms,
+                events,
+            )?;
+            Ok(Done::Queued(said))
+        }
+        // **The complaints go back to the child that wrote the branch.** The row first, so the
+        // verdict is durable before anything is sent — and so [`refusal_message`] has the review to
+        // quote.
+        Door::Refuse => {
+            let rec = record_the_verdict(store, &entry, reported, by, now_ms)?;
+            let complaints = refusal_message(&entry, Some(&rec));
+            // **The delivery's own answer, and not a reading of the sentence.** A refusal is not
+            // undone by a message that did not go, so a failure here is a REPORT and not an `Err`:
+            // the verdict is on the row either way, and what a person needs is where the complaints
+            // are instead ([`complaints_instead`]).
+            let (delivered, said) = match deliver(&entry.id, &complaints) {
+                Ok(how) => (
+                    true,
+                    format!(
+                        "The complaints went to `{}`, the child that wrote `{}`: {how}",
+                        entry.id, entry.branch
+                    ),
+                ),
+                Err(why) => (false, complaints_instead(&entry, &why)),
+            };
+            Ok(Done::Refused {
+                child: entry.id.clone(),
+                delivered,
+                said,
+            })
+        }
+        // **A question at the head, and the entry does not land on an abstention.** The verdict is
+        // written first for the same reason a refusal is: the queue's own gate reads the row, and a
+        // `needs_human` is a refusal to it ([`ReviewGate::Refused`]) — so the question is the
+        // person's, and the entry's state is already the queue's answer.
+        Door::CannotDecide => {
+            // The row first, so the queue's own gate refuses it before anybody is asked.
+            record_the_verdict(store, &entry, reported, by, now_ms)?;
+            let question = question_for(&entry, reported);
+            let (answered_by, said) = match ask(&question) {
+                Ok((answer, who)) => (
+                    Some(who.clone()),
+                    format!(
+                        "`{}` did not decide, so `{}` does not land on it — the question was \
+                         raised at the head and `{who}` answered it: {}",
+                        reported.decision.as_str(),
+                        entry.branch,
+                        answer.render(&question).trim()
+                    ),
+                ),
+                Err(why) => (
+                    None,
+                    format!(
+                        "`{}` did not decide, so `{}` does not land on it. The question WAS \
+                         raised at the head and nobody answered it: {why} The entry is not parked \
+                         in silence: its review row says `{}`, with the reviewer's reasons on it, \
+                         and `/queue restart {}` asks the reviewer again, `/queue approve {}` \
+                         overrides the verdict, and `/queue rm {}` drops the entry.",
+                        reported.decision.as_str(),
+                        entry.branch,
+                        reported.decision.as_str(),
+                        letibot_sessionlog::registry::short_id(&entry.id),
+                        entry.id,
+                        entry.id,
+                    ),
+                ),
+            };
+            Ok(Done::Asked {
+                question,
+                answered_by,
+                said,
+            })
+        }
+    }
+}
+
+/// **Where a refusal's complaints go when the child that wrote the branch is gone.**
+///
+/// The operator's model of this queue, in their words: *"if it is not happy - it sends a message
+/// with complaints to original subagent"* — and a subagent whose session has closed cannot be sent
+/// anything. That is not a reason to drop the complaints, and it is not a reason to call the refusal
+/// a failure: the verdict is already written on the review row, and the entry does not land on it.
+/// So this names, once, the three places the complaints ARE:
+///
+/// * **the review row** (`merge_review`), with the reviewer's reasons, the files it read and the
+///   commands it ran — which `/queue` and the merge-queue pane draw, and which a person reads by
+///   attaching to the session that reviewed it;
+/// * **the entry's own `evidence`**, where the move is recorded;
+/// * **the operator**, who moves the entry by hand.
+///
+/// A function rather than a sentence built at the call site so the two cannot drift: the `Err` a
+/// caller would otherwise get, the warning a session publishes and this paragraph are one answer to
+/// one question, and the child's id is in all three.
+pub fn complaints_instead(entry: &MergeEntry, why: &str) -> String {
+    let short = letibot_sessionlog::registry::short_id(&entry.id);
+    format!(
+        "The complaints did NOT reach `{}` — {why} That session is gone, and a refusal is not a \
+         delivery: the verdict stands. Where the complaints are instead: on the review row of \
+         `{}`, with the reviewer's reasons, the files it read and the commands it ran — which \
+         `/queue` and the merge-queue pane draw, and which a person reads by attaching to the \
+         session that reviewed it; on the entry's own evidence; and with the operator, who moves \
+         the entry by hand — `/queue restart {short}` asks the reviewer again about the branch as \
+         it is now, `/queue approve {}` overrides the verdict and lets the queue land it, and \
+         `/queue rm {}` drops the entry.",
+        entry.id, entry.id, entry.id, entry.id
+    )
+}
+
+/// **A reviewer's reasons, as a paragraph for the entry's `evidence`** — one per line, indented,
+/// and empty when the reviewer wrote none.
+///
+/// Empty rather than a placeholder sentence, because the evidence's own tail already says what
+/// happened: *the reviewer wrote no reasons down* is a fact the review row carries (an empty
+/// `reasons` beside a decision), and prose invented here would be this code writing the reviewer's
+/// half for it.
+fn reasons_block(reasons: &[String]) -> String {
+    if reasons.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("The review's reasons:\n");
+    for reason in reasons {
+        out.push_str(&format!("\n  - {reason}"));
+    }
+    out.push('\n');
+    out
+}
+
+/// **The verdict, onto the entry's review row** — the row the queue's own gate reads
+/// ([`review_gate`]), and the row a person reads by attaching to the session that reviewed it.
+///
+/// `asked_ms` is the row's own and is NOT restamped (`Harness::write_outcome`'s rule, one host
+/// over): it is when the review was first asked for, which is a fact about the review rather than
+/// about the verdict, and a restart is the one thing that restamps it (`Store::restart_review`).
+///
+/// **The write is unconditional and the row is the arbiter of nothing here**, which is the
+/// difference between this and a person's verb: the reviewer IS the live writer `approvable`
+/// protects a row from, so the door has no guard to keep — it is the answer arriving.
+fn record_the_verdict(
+    store: &Store,
+    entry: &MergeEntry,
+    reported: &Reported,
+    by: &str,
+    now_ms: u64,
+) -> Result<letibot_tokencore::store::ReviewRecord, String> {
+    let asked_ms = store
+        .merge_review(&entry.id)
+        .ok()
+        .flatten()
+        .map(|r| r.asked_ms)
+        .unwrap_or(now_ms);
+    let rec = letibot_tokencore::store::ReviewRecord {
+        entry_id: entry.id.clone(),
+        session_id: by.to_string(),
+        branch: entry.branch.clone(),
+        base_sha: entry.base_sha.clone(),
+        asked_ms,
+        answered_ms: Some(now_ms),
+        decision: Some(reported.decision.as_str().to_string()),
+        // **A verdict clears the last attempt's failure**, `write_outcome`'s own rule: leaving a
+        // failure beside a decision would make a reader ask which of the two the queue acted on.
+        attempts: 0,
+        failed_ms: None,
+        failure: String::new(),
+        reasons: reported.reasons.clone(),
+        files: reported.files.clone(),
+        commands: reported.commands.clone(),
+    };
+    store
+        .put_review(&rec)
+        .map_err(|e| format!("the verdict on `{}` could not be written: {e}", entry.id))?;
+    Ok(rec)
+}
+
+/// **The question a `cannot-decide` raises** — the entry, what the reviewer said, and the three
+/// moves a person has.
+///
+/// The options are the operator's own verbs rather than a paraphrase of them, because the person
+/// answering this card is answering it to move an entry: accept it and let the queue land it, send
+/// it back to the child with the reviewer's complaints, or drop it. `because` carries the
+/// reviewer's reasons verbatim — a question whose *why* is a summary of the reviewer is a question
+/// the person has to go and check.
+fn question_for(entry: &MergeEntry, reported: &Reported) -> Question {
+    Question {
+        text: format!(
+            "The review of `{}` (entry `{}`) cannot decide, so nothing lands. The branch is `{}`, \
+             cut from `{}`, and the ask it was written for was: {}",
+            entry.branch,
+            entry.id,
+            entry.branch,
+            entry.base_sha,
+            first_line(&entry.brief)
+        ),
+        options: vec![
+            "accept it — the queue lands it".into(),
+            "send it back to the child with the reviewer's complaints".into(),
+            "drop the entry from the queue".into(),
+        ],
+        because: if reported.reasons.is_empty() {
+            format!(
+                "the reviewer answered `{}` and wrote no reasons down; its review row is the whole \
+                 of what it said",
+                reported.decision.as_str()
+            )
+        } else {
+            format!("the reviewer said: {}", reported.reasons.join("; "))
+        },
     }
 }
 
@@ -7798,6 +8291,406 @@ mod person {
         assert_eq!(
             store_at(&db2).merge_entry(&id2).unwrap().unwrap().state,
             MergeState::Taken
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root2);
+    }
+
+    // ===== The three doors: what a REPORTED verdict does =====
+
+    /// **The live ask a verdict is the answer to** — a review row that is neither answered nor
+    /// failed, which is the state a reported verdict arrives in.
+    ///
+    /// It is a fixture rather than a convenience: `approvable` refuses exactly this row, so a door
+    /// that went through the person's guard instead of the person's PATH would fail here and
+    /// nowhere else.
+    fn asking(db: &Path, id: &str) {
+        let e = store_at(db)
+            .merge_entry(id)
+            .expect("reads")
+            .expect("the entry");
+        store_at(db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: id.to_string(),
+                session_id: crate::sessions::gatekeeper::SESSION.to_string(),
+                branch: e.branch,
+                base_sha: e.base_sha,
+                asked_ms: 1,
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the live ask");
+    }
+
+    /// **A delivery that always lands** — the child is live, so the complaints go.
+    fn delivers(
+        into: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    ) -> impl Fn(&str, &str) -> Result<String, String> {
+        move |to: &str, text: &str| {
+            into.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((to.to_string(), text.to_string()));
+            Ok("the message started a turn in that session".into())
+        }
+    }
+
+    /// **A head that cannot be reached** — the `ask` seam for the doors that are not about it.
+    fn no_head(_: &Question) -> Result<(QuestionAnswer, String), AskError> {
+        Err(AskError::NoHead("no head is attached".into()))
+    }
+
+    /// **The door mapping IS the gatekeeper's closed set** — three words, three doors, and a word
+    /// outside the set opens none.
+    ///
+    /// The last clause is the one worth pinning: `review_gate` reads an unknown word as a refusal,
+    /// and a door for it would be this module choosing a door for a word nobody can interpret.
+    #[test]
+    fn the_three_doors_are_the_gatekeepers_three_words() {
+        assert_eq!(Door::of("accept"), Some(Door::Accept));
+        assert_eq!(Door::of("reject"), Some(Door::Refuse));
+        assert_eq!(Door::of("needs_human"), Some(Door::CannotDecide));
+        assert_eq!(Door::of("probably"), None, "a word outside the set");
+        assert_eq!(Door::of("Accept"), None, "the words are exact");
+        assert_eq!(Door::of(""), None);
+        // And each door names its own word back, so a sentence about a door cannot drift from the
+        // word that opened it.
+        for word in Decision::ALL {
+            let door = Door::of(word.as_str()).expect("a closed-set word is a door");
+            assert_eq!(door.as_str(), word.as_str());
+        }
+    }
+
+    /// **`accept` hands the entry to the merge queue** — through the same path `/queue approve`
+    /// takes, measured by the QUEUE's own two predicates rather than by this module's word for it.
+    ///
+    /// The entry starts parked, so the door has something to move; the review row is the live ask,
+    /// so the person's guard would refuse it and only the shared PATH can pass.
+    #[test]
+    fn the_accept_door_hands_the_entry_to_the_queue() {
+        let (root, db, id) = parked("door-accept", MergeState::Failed);
+        asking(&db, &id);
+        let events = RecordingEvents::default();
+
+        let done = report_verdict(
+            &store_at(&db),
+            &id,
+            &Reported {
+                decision: Decision::Accept,
+                reasons: vec!["the branch does what the brief asked".into()],
+                files: vec!["crates/widget.rs".into()],
+                commands: vec!["git diff base...branch".into()],
+            },
+            crate::sessions::gatekeeper::SESSION,
+            5_000,
+            &|_, _| Ok(String::new()),
+            &no_head,
+            &events.sink(),
+        )
+        .expect("the accept");
+
+        let Done::Queued(said) = &done else {
+            panic!("an accept goes to the queue: {done:?}")
+        };
+        assert!(said.contains("accepted `b-m-1`"), "{said}");
+        assert!(
+            said.contains("the gate is not skipped"),
+            "an accept hands the entry over; it never skips the landing: {said}"
+        );
+
+        // **The entry is in the queue** — back to `waiting`, and the queue's OWN answer to *what
+        // may land* is the one that says so.
+        let store = store_at(&db);
+        let back = store.merge_entry(&id).unwrap().expect("the entry");
+        assert_eq!(back.state, MergeState::Waiting, "handed to the queue");
+        assert!(
+            back.evidence.starts_with("accepted by the reviewer"),
+            "the row says who handed it over, and it is not the operator: {back:?}"
+        );
+        assert!(
+            back.evidence
+                .contains("the branch does what the brief asked"),
+            "and it carries the reviewer's reasons, which the accepting row cannot: {back:?}"
+        );
+        assert!(
+            !back.evidence.contains("the operator"),
+            "no operator in a reviewer's row: {back:?}"
+        );
+        let ruled = store.merge_review(&id).unwrap().expect("the verdict");
+        assert_eq!(ruled.decision.as_deref(), Some("accept"));
+        assert_eq!(
+            ruled.session_id,
+            crate::sessions::gatekeeper::SESSION,
+            "the decider on the row is the session the verdict came from"
+        );
+        assert_eq!(ruled.asked_ms, 1, "the ask's own stamp is not restamped");
+        let entries = store.merge_entries().unwrap();
+        assert_eq!(
+            next_takeable(&entries, &store.reviews().unwrap()),
+            Some(0),
+            "the queue may take it now, which is what *handed to the merge queue* means"
+        );
+        assert_eq!(events.moves().len(), 1, "every head is told it moved");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **`reject` sends the reviewer's complaints to the child that wrote the branch**, as a
+    /// message to that live session — and the entry does not land on it.
+    ///
+    /// The recipient is the ENTRY's id, which is the child's session (`entry_for_finished` mints
+    /// the id from the handle), and it is asserted as such: a refusal that reached the REVIEWER
+    /// would be the reviewer being sent its own verdict.
+    #[test]
+    fn the_refuse_door_sends_the_complaints_to_the_child_that_wrote_the_branch() {
+        let (root, db, id) = parked("door-refuse", MergeState::Waiting);
+        // The entry's id IS the child that did the work — the shape `entry_for_finished` writes.
+        let mut e = store_at(&db).merge_entry(&id).unwrap().expect("the entry");
+        e.session_id = id.clone();
+        enqueue(&db, &e);
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let done = report_verdict(
+            &store_at(&db),
+            &id,
+            &Reported {
+                decision: Decision::Reject,
+                reasons: vec!["the retry is not bounded".into()],
+                files: vec!["crates/widget.rs".into()],
+                commands: vec!["git diff base...branch".into()],
+            },
+            crate::sessions::gatekeeper::SESSION,
+            5_000,
+            &delivers(sent.clone()),
+            &no_head,
+            &quiet_events(),
+        )
+        .expect("the refusal");
+
+        let Done::Refused {
+            child,
+            delivered,
+            said,
+        } = &done
+        else {
+            panic!("a reject is a refusal: {done:?}")
+        };
+        assert_eq!(child, &id, "a refusal names the child it was sent to");
+        assert!(
+            delivered,
+            "the child is live, so the complaints went: {said}"
+        );
+        let went = sent.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(went.len(), 1, "one message, to one child: {went:?}");
+        assert_eq!(went[0].0, id, "and to the child, not to the reviewer");
+        assert!(
+            went[0].1.contains("the retry is not bounded"),
+            "the complaints are the reviewer's own reasons: {}",
+            went[0].1
+        );
+        assert!(
+            went[0].1.contains("b-m-1") && went[0].1.contains("was taken out of the merge queue"),
+            "and they name the branch and what happens next: {}",
+            went[0].1
+        );
+
+        // **The verdict is on the row, so the queue's own gate refuses it** — the door moved the
+        // VERDICT, and the queue's own pass is what parks the entry on it.
+        let store = store_at(&db);
+        let ruled = store.merge_review(&id).unwrap().expect("the verdict");
+        assert_eq!(ruled.decision.as_deref(), Some("reject"));
+        assert_eq!(ruled.reasons, vec!["the retry is not bounded"]);
+        let back = store.merge_entry(&id).unwrap().expect("the entry");
+        assert!(
+            matches!(review_gate(&back, Some(&ruled)), ReviewGate::Refused(_)),
+            "the queue refuses it on the row the door wrote"
+        );
+        let entries = store.merge_entries().unwrap();
+        assert_eq!(
+            next_takeable(&entries, &store.reviews().unwrap()),
+            None,
+            "a refusal does not land it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A child whose session is gone does not lose the complaints** — the refusal stands, and the
+    /// door names where the complaints ARE instead.
+    ///
+    /// This is the half the brief asks for by name, and it is a REPORT rather than an `Err`: the
+    /// verdict is already written and the entry does not land either way, so what a person needs is
+    /// the three places the complaints went to instead of a delivery that did not happen.
+    #[test]
+    fn a_refusal_names_where_the_complaints_go_when_the_child_is_gone() {
+        let (root, db, id) = parked("door-gone", MergeState::Waiting);
+        let done = report_verdict(
+            &store_at(&db),
+            &id,
+            &Reported {
+                decision: Decision::Reject,
+                reasons: vec!["the test it added does not assert anything".into()],
+                files: vec![],
+                commands: vec![],
+            },
+            crate::sessions::gatekeeper::SESSION,
+            5_000,
+            &|_, _| Err("no live session `m-1` is registered".into()),
+            &no_head,
+            &quiet_events(),
+        )
+        .expect("the refusal is still a report and not a failure");
+
+        let Done::Refused {
+            child,
+            delivered,
+            said,
+        } = &done
+        else {
+            panic!("a reject is a refusal: {done:?}")
+        };
+        assert_eq!(child, &id, "the child is named even though it is gone");
+        assert!(!delivered, "the delivery did not land");
+        for asked in [
+            "The complaints did NOT reach `m-1`",
+            "no live session `m-1` is registered",
+            "the verdict stands",
+            "the review row of `m-1`",
+            "on the entry's own evidence",
+            "/queue restart",
+            "/queue approve m-1",
+            "/queue rm m-1",
+        ] {
+            assert!(said.contains(asked), "`{asked}` is missing from: {said}");
+        }
+
+        // **And the refusal stands** — a message that did not go does not undo a judgement.
+        let store = store_at(&db);
+        let ruled = store.merge_review(&id).unwrap().expect("the verdict");
+        assert_eq!(ruled.decision.as_deref(), Some("reject"));
+        assert_eq!(
+            ruled.reasons,
+            vec!["the test it added does not assert anything"]
+        );
+        let entries = store.merge_entries().unwrap();
+        assert_eq!(next_takeable(&entries, &store.reviews().unwrap()), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **`needs_human` raises a question at the head** — and the entry does not land on an
+    /// abstention, whether or not anybody answered.
+    ///
+    /// The two halves are one test because they are one door: a question nobody could take is still
+    /// a question RAISED, which is the door's act, and *parked in silence* is the outcome neither
+    /// half may produce.
+    #[test]
+    fn a_cannot_decide_raises_a_question_rather_than_parking_in_silence() {
+        let (root, db, id) = parked("door-human", MergeState::Waiting);
+        let asked: Arc<std::sync::Mutex<Vec<Question>>> = Default::default();
+        let seen = asked.clone();
+
+        let done = report_verdict(
+            &store_at(&db),
+            &id,
+            &Reported {
+                decision: Decision::NeedsHuman,
+                reasons: vec!["the spec is ambiguous about the retry".into()],
+                files: vec!["docs/spec.md".into()],
+                commands: vec![],
+            },
+            crate::sessions::gatekeeper::SESSION,
+            5_000,
+            &|_, _| Ok(String::new()),
+            &move |q: &Question| {
+                seen.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(q.clone());
+                Ok((QuestionAnswer::choosing(0), "deadtrickster".into()))
+            },
+            &quiet_events(),
+        )
+        .expect("the question");
+
+        let Done::Asked {
+            question,
+            answered_by,
+            said,
+        } = &done
+        else {
+            panic!("needs_human raises a question: {done:?}")
+        };
+        assert_eq!(answered_by.as_deref(), Some("deadtrickster"));
+        assert!(
+            question.text.contains("b-m-1") && question.text.contains("m-1"),
+            "the question names the branch and the entry: {question:?}"
+        );
+        assert!(
+            question
+                .because
+                .contains("the spec is ambiguous about the retry"),
+            "and carries the reviewer's own why: {question:?}"
+        );
+        assert_eq!(
+            question.options.len(),
+            3,
+            "the three moves a person has: {question:?}"
+        );
+        assert!(said.contains("does not land on it"), "{said}");
+        assert_eq!(
+            asked.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            1,
+            "the head was asked exactly once"
+        );
+
+        // **And the row the queue reads says the entry does not land on it.**
+        let store = store_at(&db);
+        let ruled = store.merge_review(&id).unwrap().expect("the verdict");
+        assert_eq!(ruled.decision.as_deref(), Some("needs_human"));
+        let back = store.merge_entry(&id).unwrap().expect("the entry");
+        assert!(matches!(
+            review_gate(&back, Some(&ruled)),
+            ReviewGate::Refused(_)
+        ));
+        let entries = store.merge_entries().unwrap();
+        assert_eq!(next_takeable(&entries, &store.reviews().unwrap()), None);
+
+        // **And a question nobody can take is still raised and still said.** A door that went quiet
+        // here would be the *parked in silence* this test is named against.
+        let (root2, db2, id2) = parked("door-human-none", MergeState::Waiting);
+        let done = report_verdict(
+            &store_at(&db2),
+            &id2,
+            &Reported {
+                decision: Decision::NeedsHuman,
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            },
+            crate::sessions::gatekeeper::SESSION,
+            5_000,
+            &|_, _| Ok(String::new()),
+            &no_head,
+            &quiet_events(),
+        )
+        .expect("the question, raised and unanswered");
+        let Done::Asked {
+            answered_by, said, ..
+        } = &done
+        else {
+            panic!("needs_human raises a question: {done:?}")
+        };
+        assert_eq!(*answered_by, None, "nobody could take it");
+        assert!(
+            said.contains("The question WAS raised at the head")
+                && said.contains("no head is attached"),
+            "and the door says so rather than going quiet: {said}"
+        );
+        assert!(
+            said.contains("is not parked in silence"),
+            "which is the one thing this door must not do: {said}"
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&root2);
