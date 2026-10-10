@@ -1015,6 +1015,12 @@ impl App {
     /// the moment its body lands. Only when every announced row has its body and the words
     /// are still nowhere is the row honestly gone.
     ///
+    /// **A live fork's carry gets the same answer from a weaker fact.** Nothing announces a
+    /// live append — a fork's rows arrive one at a time and no event says the carry is over —
+    /// so a carry whose rows have not arrived at all ([`Carry::arriving`]) is **placed if its
+    /// words turn up and never concluded otherwise**. The tail is a move, and a move made on
+    /// a row that may still be coming is the defect rather than the disclosure.
+    ///
     /// Emitted as a note with its own code rather than a notice: the reader has to be able to
     /// find it again, `/notes` lists it, and `/status` counts it. `Failure`, by R29 part
     /// two's own test — it is not the reader's act, and what is at risk is their orientation:
@@ -1071,6 +1077,13 @@ impl App {
         // anchor waits, and the frame holds the line rather than counting from a bottom that
         // has moved. See the docstring.
         if self.bulk.is_some() {
+            return;
+        }
+        // **And the live half of the same rule, where there is nothing to wait on.** A fork
+        // stated before its rows has no announcement to be complete against — a snapshot has
+        // [`Bulk`], a live append has nothing — so such a carry is placed and never concluded.
+        // See [`Carry::arriving`].
+        if self.carry.as_ref().is_some_and(|c| c.arriving) {
             return;
         }
         // **Not carried.** The tail is the only place left that is true, and the reader is
@@ -1384,10 +1397,33 @@ pub(crate) struct Held {
 /// snapshot whose rows have no bodies yet ([`Bulk`]); this is the reader's place taken at
 /// the moment such a snapshot landed, and it is `Some` only until [`App::repair_anchor`]
 /// has placed the row or given up on it.
+///
+/// **Two doors onto a replacement, and a boundary is not one of them.** `App::load` takes a
+/// carry for a snapshot — a `resync`, a `Hello` — and [`App::rows_replaced`] takes one for a
+/// **fork**, whose rows travel as [`SessionEvent::TranscriptAppended`] and never reach `load`
+/// at all. A live `/reseat` is the second door: the operator, scrolled up and reading, typed
+/// it and the rows were replaced under them, so a carry taken only in `load` is a carry a
+/// live fork never takes — and the reader is left to main's ordinal fallback, which is an
+/// offset measured in the transcript that just went. One row off, with a sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Carry {
     pub(crate) words: Option<String>,
     pub(crate) line: usize,
+    /// **Whether the rows that replace these are still to come.**
+    ///
+    /// The daemon publishes a fork's rows and THEN states the boundary (`harness.rs`'s
+    /// `republish_after`: `append_items`, then `TranscriptForked`), so the ordinary carry is
+    /// taken with its rows already here and is spent on the next frame. Stated *before* its
+    /// rows — a head that resumed inside the carry, and every fixture that writes the
+    /// statement first — there is nothing to match yet, and there will never be a signal that
+    /// the carry is complete: a snapshot announces its rows ([`Bulk`]) and a live append
+    /// announces nothing at all.
+    ///
+    /// So such a carry is **placed and never concluded**. The row is found the moment its
+    /// body lands, and until then the anchor waits and the window holds the line — the same
+    /// answer a half-arrived snapshot gets from the other side. Saying *the row is gone*
+    /// about a row that has not arrived is the one thing this must not do.
+    pub(crate) arriving: bool,
 }
 
 /// **A row's own words** — what [`Carry::words`] is taken from.

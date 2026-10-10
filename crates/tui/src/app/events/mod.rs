@@ -263,6 +263,10 @@ impl App {
         self.carry = same_session.then(|| Carry {
             words: self.held_row_words(),
             line: self.held_line(),
+            // A snapshot carries its rows in the same breath as the replacement, so there is
+            // nothing left to wait for — unlike a fork, whose rows follow the statement on the
+            // wire. See [`Carry::arriving`].
+            arriving: false,
         });
         self.items = s.items;
         // A snapshot replaces the rows, so everything derived from them — the `!`
@@ -656,10 +660,13 @@ impl App {
     ///
     /// # What it does NOT do, and why each is named rather than left out
     ///
-    /// * **The reader's place.** Where the viewport goes when the row under it stops existing is
-    ///   `App::repair_anchor`'s question and `App::carry`'s — taken at a boundary and spent on the
-    ///   other side of it. Dropping the rows here is what makes the boundary real; what the reader
-    ///   is shown across it is that half's, and it is not duplicated here.
+    /// * **The reader's place, and this is where it is TAKEN.** Where the viewport goes when the
+    ///   row under it stops existing is `App::repair_anchor`'s question, and the `App::carry` it
+    ///   spends is taken here — the live half of what `load` does for a snapshot. It has to be
+    ///   here: this statement is the only thing that says a boundary happened, and after the
+    ///   `retain` below the row the reader was on is not there to be asked for its words. A
+    ///   carry taken only in `load` is one a fork never takes, and the reader is then left to an
+    ///   ordinal measured in the transcript that just went — one row off, with a sentence.
     /// * **The echoes.** A prompt this head queued is still owed a row, and a fork carries the
     ///   conversation rather than dropping it — so the echo retires the ordinary way, when the
     ///   carried row's body lands and `retire_pending` matches it by its words. A compaction that
@@ -672,9 +679,50 @@ impl App {
     ///   would be a worse lie than the one it fixes. A seam past the end of the rows is not drawn,
     ///   so nothing on the screen depends on this; what is left is a place `/notes` still names.
     ///   Recorded rather than guessed at.
-    pub(crate) fn rows_replaced(&mut self, parent_id: &str) {
+    pub(crate) fn rows_replaced(&mut self, transcript_id: &str, parent_id: &str) {
         let gone = format!("{parent_id}.");
+        // **The reader's place, taken BEFORE the rows go** (R36).
+        //
+        // The live door onto a replacement, and the one `load` cannot answer: a fork's rows
+        // travel as appends, so there is no snapshot to load and `load`'s carry is never taken.
+        // What the reader is holding is a row of the transcript this statement replaces, and
+        // after the line below it is not there to be asked for its words — so the two things
+        // that cross a boundary, the row's own WORDS and the LINE the reader was at, are taken
+        // here. See [`App::carry`] and [`App::repair_anchor`], which spends it: the row is
+        // placed again under its new id, or the tail is where the reader goes and the sentence
+        // says so.
+        //
+        // `arriving` is the one thing a snapshot knows and a fork does not: a snapshot's rows
+        // come with it, and a fork's follow the statement on the wire — so a head that hears the
+        // statement first (a resume inside the carry, and every fixture that writes it first)
+        // takes a carry that can only ever be PLACED, never concluded. See [`Carry::arriving`].
+        let arriving = {
+            let here = format!("{transcript_id}.");
+            !self
+                .items
+                .iter()
+                .any(|r| r.item_id.starts_with(here.as_str()))
+        };
+        self.carry = Some(Carry {
+            words: self.held_row_words(),
+            line: self.held_line(),
+            arriving,
+        });
         self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        // **And the offset goes with the rows it was measured against.**
+        //
+        // `scroll` is lines hidden below the window, so it is the barest offset this head keeps
+        // — and it was measured from the bottom of the transcript that just went. A replacement
+        // that shortens (a compaction) leaves it too large, and one that lengthens leaves it
+        // pointing at a different row; either way the reader is placed by a number that means
+        // nothing here. `load` has always zeroed it at the end (its own last two lines), which
+        // is why the snapshot path lands on the tail when the row is not carried; the live door
+        // did not, so a `/reseat` left the reader on the old count — *"it also broke my scroll -
+        // i was scrolled up and it showed me thousands of lines 'below'"*. Zero is *following*,
+        // which is what the window falls back to when the carry concludes the row is gone; when
+        // it does not, the frame places the window from the row instead ([`App::repair_anchor`])
+        // or holds the line while the carry lands.
+        self.scroll = 0;
         // A row went, so everything derived from the rows — the `!` candidates and the model's
         // suggestions — is stale, by the same rule the live append follows.
         self.the_rows_moved();

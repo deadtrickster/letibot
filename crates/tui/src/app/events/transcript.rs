@@ -114,9 +114,14 @@ impl App {
             // and `load` is what the first two go through because both of those carry a
             // snapshot. A fork cannot: the rows are published as appends, and a snapshot taken
             // at the fork would be the old transcript's rows — which is why the daemon states
-            // the replacement and the rows follow it.
-            SessionEvent::TranscriptForked { parent_id, .. } => {
-                self.rows_replaced(&parent_id);
+            // the replacement and the rows follow it. **And that is why the reader's place is
+            // taken below rather than in `load`**: a carry taken only there is one a live
+            // `/reseat` never takes, which is the operator's *one row off, with a sentence*.
+            SessionEvent::TranscriptForked {
+                transcript_id,
+                parent_id,
+            } => {
+                self.rows_replaced(&transcript_id, &parent_id);
                 Disposition::Rendered
             }
             _ => unreachable!("on_transcript_event was handed an event it does not handle"),

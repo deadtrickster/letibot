@@ -3394,3 +3394,267 @@ fn a_carry_whose_bodies_are_still_coming_holds_the_window_and_then_the_row() {
         "and the row is on the screen"
     );
 }
+
+// ─────────────── a LIVE fork: the rows are replaced under an ATTACHED head ───────────────
+//
+// **The snapshot path is not the live path, and the difference is a door.**
+//
+// A `/reseat` on a session a head is attached to sends no snapshot: the daemon forks the
+// transcript, publishes the carried rows as `TranscriptAppended` under the new transcript's
+// ids, and *then* states the boundary (`harness.rs`'s `republish_after`: `append_items`, then
+// `TranscriptForked`). So `App::load` never runs — and a carry taken only there is a carry a
+// live fork never takes. What is left is main's ordinal fallback: the row the reader was on is
+// gone, the integer they held was measured in the transcript that just went, and a re-seat's
+// carry puts the note that says what happened in FRONT of the conversation it carried — so that
+// integer names a different row here. The fixture below uses two preamble rows, so the reader's
+// row sits two places further down and the fallback would land them **one row off, with a
+// sentence**, which is the operator's report exactly.
+//
+// What these pin is the live door: the row is found by its own words, or the tail is where the
+// reader goes and the sentence says so. Underneath both is the rule the snapshot tests above
+// already state — **a bare offset must never cross a transcript boundary.**
+
+/// The carried rows, published the way the daemon publishes them: an announcement, and then
+/// its body, under the **new** transcript's ids.
+fn carried_appends(a: &mut App, seq: u64, ids: &[String], text: impl Fn(usize) -> String) {
+    for (i, id) in ids.iter().enumerate() {
+        a.apply(ServerFrame::Event(env(
+            seq + (i as u64) * 2,
+            testing::appended(id, "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + (i as u64) * 2 + 1,
+            SessionEvent::TranscriptContent {
+                item_id: id.clone(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: text(i),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+    }
+}
+
+/// **A fork as an ATTACHED head receives one**: the rows, and then the statement that names
+/// the boundary — `harness.rs`'s own order, which is the one a live `/reseat` is.
+fn fork_live(
+    a: &mut App,
+    seq: u64,
+    parent: &str,
+    new: &str,
+    ids: &[String],
+    text: impl Fn(usize) -> String,
+) {
+    carried_appends(a, seq, ids, text);
+    a.apply(ServerFrame::Event(env(
+        seq + (ids.len() as u64) * 2,
+        testing::forked(new, parent),
+    )));
+}
+
+/// **A LIVE fork leaves the reader on the ROW they were on**, not on their index.
+///
+/// The row survives the carry — it is the same conversation, carried across — so the only
+/// question is how the head finds it again. Its id is gone (the new transcript numbers its
+/// rows its own way), its ordinal names a different row (the re-seat's note is in front of the
+/// conversation), and the two things left are its **own words**, which is what a carry takes
+/// and what this places it by. The old fallback held the ordinal: an offset measured in the
+/// transcript that just went, landing the reader one row off, with a sentence.
+#[test]
+fn a_live_fork_leaves_the_reader_on_the_row_they_were_on() {
+    let mut a = scrolled_up(40);
+    let held = a.anchor.clone().expect("a held row");
+    let was = words_at(&a, held.ordinal);
+    assert_eq!(was, "row 19 says a thing", "the fixture's held row moved");
+
+    // The carry: the same conversation under the new transcript's ids, with the re-seat's own
+    // note in front of it — so the integer the viewport holds names a different row.
+    let ids: Vec<String> = (0..62).map(|i| format!("t.{i}")).collect();
+    fork_live(&mut a, 1000, "s", "t", &ids, |i| match i {
+        0 => "This conversation was re-seated onto a new prompt.".to_string(),
+        1 => "The tool list was rebuilt.".to_string(),
+        _ if i < 42 => format!("row {} says a thing", i - 2),
+        _ => format!("row {} arrived after the re-seat", i - 2),
+    });
+    let frame = a.screen(100, 30);
+
+    // **The index is not the place.** Row `held.ordinal` in the transcript that arrived is two
+    // above the reader's and says something else — which is what the old fallback would have
+    // held, silently, as though nothing had happened.
+    assert_ne!(
+        words_at(&a, held.ordinal),
+        was,
+        "the fixture does not shift the rows, so this test could not tell a row from an index"
+    );
+    // **The row is**, two down, under the new transcript's id, saying what it said.
+    let now = a.anchor.clone().expect("the reader is still holding a row");
+    assert_eq!(
+        now.ordinal,
+        held.ordinal + 2,
+        "a live fork moved the viewport off the row the reader was on"
+    );
+    assert_eq!(now.item_id, "t.21", "and it holds the new transcript's id");
+    assert_eq!(
+        words_at(&a, now.ordinal),
+        was,
+        "and the row it holds says the same thing"
+    );
+    // **And the reader is looking at it.** The frame is the contract, not the field.
+    let screen = frame.join("\n");
+    assert!(
+        screen.contains(&was),
+        "the row the reader was reading is not on the screen: {screen}"
+    );
+    // **Nothing was said, because nothing was lost.** A row that is found again is not a row
+    // that went missing, and the ordinal fallback announced it as lost on the way past.
+    assert!(
+        a.notice.is_none(),
+        "a row that was carried across is not news: {:?}",
+        a.notice
+    );
+    assert!(
+        !a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
+        "and it is not filed as lost either"
+    );
+}
+
+/// **A LIVE fork that does NOT carry the row goes to the TAIL, and SAYS so.**
+///
+/// A compaction's shape: a note in place of the old head, the newest rows carried as
+/// themselves, every row under a new id — and the reader's row in the part that was
+/// summarised, so it is nowhere in what arrives. The head must not keep the reader's place by
+/// counting, and it must not move them in silence: a reader who was reading is told, and the
+/// tail is the one place in the new transcript that is true of the whole of it.
+#[test]
+fn a_live_fork_that_does_not_carry_the_row_follows_the_tail_and_says_so() {
+    let mut a = scrolled_up(40);
+    let held = a.anchor.clone().expect("a held row");
+    let was = words_at(&a, held.ordinal);
+
+    // The carry: the note, then the newest twenty rows. The reader's row is in the part that
+    // was summarised.
+    let ids: Vec<String> = (0..20).map(|i| format!("t.{i}")).collect();
+    fork_live(&mut a, 1000, "s", "t", &ids, |i| match i {
+        0 => "This conversation was compacted: what was said before this point is replaced by \
+              the summary below."
+            .to_string(),
+        _ => format!("row {} says a thing", i + 19),
+    });
+    let frame = a.screen(100, 30);
+
+    // **The reader's row is not in the new transcript**, and the fixture says so rather than
+    // leaving it to the code: no row here says `was`.
+    assert!(
+        !a.items.iter().any(|it| row_says(it, &was)),
+        "the fixture carries the reader's row, so this test is not about a lost one"
+    );
+    assert!(
+        a.anchor.is_none(),
+        "a row that is not in the transcript must not be held by index: {:?}",
+        a.anchor
+    );
+    assert!(
+        a.following(),
+        "and the view follows the tail, which is where it went"
+    );
+
+    // **And it is SAID** — on the screen, where the reader is looking, and named for the row.
+    let said = a
+        .notice
+        .as_deref()
+        .expect("a reader who was moved must be told, not moved in silence");
+    assert!(
+        said.contains("not in the transcript that replaced it"),
+        "the sentence says what happened, and not that the row had no body — a live fork's \
+         rows have arrived: {said}"
+    );
+    assert!(
+        said.contains("follows the tail again"),
+        "and where the reader is now: {said}"
+    );
+    assert!(
+        said.contains(&held.item_id),
+        "and names the row that was not carried: {said}"
+    );
+    // **The durable half too**, so `/notes` can answer *why did my view move* afterwards.
+    let noted = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| match n {
+            Note::Warned(w) if w.code == "anchor_lost" => Some(w.detail.clone()),
+            _ => None,
+        })
+        .expect("a row that is gone is filed as well as said");
+    assert!(
+        noted.contains(&held.item_id),
+        "the note names the row: {noted}"
+    );
+
+    // **And the tail is what is on the screen**: the last row the new transcript carries.
+    let screen = frame.join("\n");
+    assert!(
+        screen.contains("row 38 says a thing"),
+        "the view did not go to the tail: {screen}"
+    );
+    assert!(
+        !screen.contains(&was),
+        "and it is not showing a row the new transcript does not have: {screen}"
+    );
+}
+
+/// **A fork STATED BEFORE ITS ROWS has not lost the reader's row, and does not say it has.**
+///
+/// The wire allows both orders and a head does not choose one: a snapshot's rows come with it,
+/// a fork's follow the statement, and a head that hears the statement first has **nothing to
+/// match and no announcement to be complete against**. Saying *the row is gone* there would be
+/// a sentence about a row that has not arrived — the same lie the ordinal fallback told, one
+/// step earlier — so such a carry waits, and the row is placed the moment its body lands.
+#[test]
+fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
+    let mut a = scrolled_up(40);
+    let held = a.anchor.clone().expect("a held row");
+    let was = words_at(&a, held.ordinal);
+
+    // The statement, and then a frame — with not one row of the carry here yet.
+    a.apply(ServerFrame::Event(env(1000, testing::forked("t", "s"))));
+    a.screen(100, 30);
+    assert!(
+        a.carry.as_ref().is_some_and(|c| c.arriving),
+        "a fork stated before its rows must take a carry that knows they are coming"
+    );
+    assert!(
+        a.notice.is_none(),
+        "nothing may be said about a row that has not arrived: {:?}",
+        a.notice
+    );
+    assert!(
+        !a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
+        "and nothing may be filed as lost either"
+    );
+
+    // The rows, and the reader is placed on the row they were on.
+    let ids: Vec<String> = (0..60).map(|i| format!("t.{i}")).collect();
+    carried_appends(&mut a, 1001, &ids, |i| format!("row {i} says a thing"));
+    a.screen(100, 30);
+    let now = a
+        .anchor
+        .clone()
+        .expect("the reader is holding the row again");
+    assert_eq!(now.item_id, "t.19", "placed under the new transcript's id");
+    assert_eq!(
+        words_at(&a, now.ordinal),
+        was,
+        "and it is the row they were on"
+    );
+    assert!(a.carry.is_none(), "and the carry is spent");
+    assert!(
+        a.notice.is_none(),
+        "the row was carried, so there is nothing to say: {:?}",
+        a.notice
+    );
+}
