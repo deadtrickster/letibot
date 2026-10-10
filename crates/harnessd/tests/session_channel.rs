@@ -1168,6 +1168,11 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
 /// entry's child (a row and no hub — gone), the peer that enqueued the branch (live), and the
 /// session hosting the review (this one, standing in for the gatekeeper). A door that stopped at
 /// the child would publish `refusal_undelivered` and the peer would hear nothing at all.
+///
+/// **The reviewer is a real `task` child of the hosting session**, spawned by `serve_reviews`
+/// through the session's own runner and answered by the stub — so the verdict on the row is a
+/// `review_verdict` call the child itself made, not markup this test wrote into a reply. The walk
+/// is therefore measured from the child's own act to the peer's own queue.
 #[test]
 fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
@@ -1180,12 +1185,33 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     let lost = "s-the-child-that-left";
 
     let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
-    // **One turn, and it is the gatekeeper's verdict.** No work child is spawned: the branch's
-    // child is gone, which is the state this test is about.
-    let verdict = a_plain_answer_turn(&parts.vocab, "reviewing", &a_refusing_verdict_call(), 30);
-    let stub = Stub::answering(vec![verdict], 1);
+    // **The reviewer's own turn, and no other** — the branch's child is gone, which is the state
+    // this test is about, so the only child in this fixture is the one `serve_reviews` starts.
+    //
+    // **It takes TWO rounds, and the first one is a CALL.** A verdict is HANDED IN by the reviewer
+    // itself — `review_verdict`, the one tool the `gatekeeper` seat seats for a decision
+    // (`crates/tools/src/builtins/verdict.rs`) — and the prose the prompt asks for afterwards is
+    // the second round of the same turn. This stub used to answer ONE request with a plain answer
+    // whose text WAS the call markup, which is what the parent did before the verdict became a
+    // submission: it parsed the closing block out of the reply. Nothing parses it now, so that
+    // stub produced no `review_verdict` call, `ReviewDesk::take_verdict` answered `None` for ever,
+    // and `send_a_refusal_back` was never reached — the walk was never wrong, it never started.
+    // The two rounds are the same pair the sibling test
+    // (`a_refusing_verdict_goes_back_to_the_child_that_did_the_work`) gives its reviewer.
+    let verdict = a_tool_call_turn(&parts.vocab, &a_refusing_verdict_call(), 30);
+    let after = a_plain_answer_turn(
+        &parts.vocab,
+        "reviewing",
+        &a_refusing_verdict_afterword(),
+        30,
+    );
+    let stub = Stub::answering(vec![verdict, after], 2);
 
-    let cfg = config(main_id, stub.endpoint.clone(), &path);
+    // **The reviewer stays on this machine**, the sibling test's own reason: the fixture's
+    // workspace is `/tmp`, so a VM placement here would measure and copy it and boot firecracker,
+    // while what this test is about is the channel a refusing verdict comes back on.
+    let mut cfg = config(main_id, stub.endpoint.clone(), &path);
+    cfg.gatekeeper_vm = false;
     let registry = Registry::new();
     let mut father = a_session(main_id, &parts, &cfg, registry.clone());
     // **The session that enqueued the work** — a session in its own right, live, with no tree edge
