@@ -588,8 +588,34 @@ impl App {
     /// **An open queue pane owns Up and Down, and Enter opens the row it is on.** The rows
     /// are ONE enumeration (`merge`, in the daemon's own order), so the drawn cursor, the
     /// arrows and Enter cannot disagree.
+    ///
+    /// **And `tab` owns the VIEW.** The two halves of one queue are two views of the same list
+    /// (`ui::panes::queue::QueueView`): the list, its order and its cursor are one, and only the
+    /// row under each entry changes. So the switch moves nothing a reader has to find again —
+    /// which is why it is a key on the pane rather than a second pane.
     pub(crate) fn key_queue_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.queue_pane && self.queue_open.is_none() {
+            // **`tab` moves between the two views**, and the strip the pane draws is what says
+            // so (`ui::panes::queue::tab_row`). It is deliberately not behind the entries: the
+            // strip is drawn for an empty queue too — the pane still says which half you are
+            // looking at — and a key that stopped working when the queue emptied would be a key
+            // that failed exactly where the pane says `none`.
+            if matches!(k, Key::Tab) {
+                self.queue_view = self.queue_view.other();
+                self.redraw = true;
+                return ControlFlow::Break(None);
+            }
+            // **A click on the strip is the same move**, read from the frame's record
+            // ([`App::queue_tab_at`]) so the hit test and the drawing cannot disagree. It comes
+            // before the stop rows because the strip is drawn above them, and a click that
+            // landed on a label must not be answered as a click on the row under it.
+            if let Key::Click { x, y } = k
+                && let Some(view) = self.queue_tab_at(*x, *y)
+            {
+                self.queue_view = view;
+                self.redraw = true;
+                return ControlFlow::Break(None);
+            }
             if !self.merge.is_empty() {
                 let n = self.merge.len();
                 let at = self.queue_sel.min(n - 1);
@@ -630,9 +656,14 @@ impl App {
                     // frame the daemon refuses, and a head that sent it anyway would be a head
                     // that made the operator wait for a round trip to be told no.
                     Key::Char('r') => {
-                        use letibot_sessionlog::event::MergeState as S;
                         let e = &self.merge[at];
-                        if !matches!(e.state, S::Failed | S::Conflict | S::Stale | S::Vetoed) {
+                        // **The same predicate the review view's verb row draws**
+                        // (`ui::panes::queue::verb_moves`): a row that says what `r` would do and
+                        // a key that does something else is the drift one predicate prevents.
+                        if !crate::ui::panes::queue::verb_moves(
+                            crate::ui::panes::queue::Verb::Restart,
+                            e.state,
+                        ) {
                             self.say(&format!(
                                 "`{}` is `{}` — only a parked entry (failed, conflict, stale, \
                                  vetoed) is restarted by hand; a waiting one is what the queue's \
@@ -659,17 +690,17 @@ impl App {
                     // a row a person may answer, and what the DAEMON says about it (a live
                     // review attempt, a verdict that already accepts) is the daemon's to say.
                     Key::Char('a') | Key::Char('v') | Key::Char('d') => {
-                        use letibot_sessionlog::event::MergeState as S;
+                        use crate::ui::panes::queue::{Verb, verb_moves};
                         let e = &self.merge[at];
+                        // **The verb's own letter and word**, so the key that was pressed and
+                        // the verb it sends come from one entry ([`Verb`]) rather than from a
+                        // `match` here and a `format!` below that can drift apart.
                         let verb = match k {
-                            Key::Char('a') => "approve",
-                            Key::Char('v') => "veto",
-                            _ => "rm",
+                            Key::Char('a') => Verb::Approve,
+                            Key::Char('v') => Verb::Veto,
+                            _ => Verb::Rm,
                         };
-                        if !matches!(
-                            e.state,
-                            S::Waiting | S::Failed | S::Conflict | S::Stale | S::Vetoed
-                        ) {
+                        if !verb_moves(verb, e.state) {
                             self.say(&format!(
                                 "`{}` is `{}` — a person's verb moves an entry that is waiting or \
                                  parked, never one the queue has taken (it is mid-merge) or landed \
@@ -680,7 +711,7 @@ impl App {
                             self.redraw = true;
                             return ControlFlow::Break(None);
                         }
-                        let line = format!("queue {verb} {}", e.id);
+                        let line = format!("queue {} {}", verb.word(), e.id);
                         return ControlFlow::Break(Some(Action::Slash { line }));
                     }
                     // **A click moves the cursor, and Enter still opens the entry** — the same

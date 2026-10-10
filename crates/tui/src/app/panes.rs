@@ -339,6 +339,32 @@ impl App {
         self.queue_stop_rows.iter().position(|r| *r == pane_row)
     }
 
+    /// **Which view a click on the strip asked for, or nothing** — read off the record the last
+    /// frame made ([`App::queue_tabs`]) and nothing else: no arithmetic about where a tab
+    /// "should" sit, because only the frame knows where it landed. `x`/`y` are the click's
+    /// terminal cells; the record keeps the label's columns in the pane's own, so the gutter
+    /// comes off here — the same two coordinates [`App::box_top_label_at`] joins.
+    ///
+    /// The guards are [`App::queue_stop_at_row`]'s, and for the same reason: a strip the window
+    /// has scrolled away from, or one below the rows the pane drew, is a strip nobody is looking
+    /// at, and a click against it is a click against a frame that is not on the glass.
+    pub(crate) fn queue_tab_at(&self, x: u16, y: u16) -> Option<QueueView> {
+        let tabs = self.queue_tabs.as_ref()?;
+        let row = usize::from(y).checked_sub(self.queue_pane_top)?;
+        if row >= self.pane_room || row + self.pane_scroll != tabs.row {
+            return None;
+        }
+        let x = usize::from(x).checked_sub(Self::gutter(self.term_cols))?;
+        let on = |(from, to): (usize, usize)| x >= from && x < to;
+        if on(tabs.review) {
+            Some(QueueView::Review)
+        } else if on(tabs.merge) {
+            Some(QueueView::Merge)
+        } else {
+            None
+        }
+    }
+
     /// **The verdict on one entry, as the wire spells it**, or `None` when nobody has asked.
     ///
     /// `None` is *no review row at all* and `Some` with `decision: None` is *asked and not

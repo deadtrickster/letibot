@@ -647,6 +647,8 @@ fn the_gates_steps_draw_in_order_with_their_marks() {
     let mut a = app();
     a.session_id = "s1".into();
     a.command("queue");
+    // **The merge half is its own view now** — `tab` moves to it, and this is the machine's.
+    a.key(Key::Tab);
     let mut e = queue_entry("c1", MergeState::Landed);
     e.gate_steps = vec![
         gate_step(
@@ -719,6 +721,8 @@ fn a_failing_step_shows_its_output_and_the_steps_after_it_did_not_run() {
     let mut a = app();
     a.session_id = "s1".into();
     a.command("queue");
+    // The merge view, where the gate's rows are (`tab`).
+    a.key(Key::Tab);
     let mut e = queue_entry("c1", MergeState::Failed);
     e.evidence = "the gate stopped at the second step".into();
     e.gate_steps = vec![
@@ -783,6 +787,9 @@ fn an_empty_step_list_reads_as_the_gate_has_not_run() {
     let mut a = app();
     a.session_id = "s1".into();
     a.command("queue");
+    // The merge view: *the gate has not run* is a sentence about the gate, and the review view
+    // draws none of those.
+    a.key(Key::Tab);
     a.apply(queue_frame(
         vec![queue_entry("c1", MergeState::Waiting)],
         Vec::new(),
@@ -827,6 +834,8 @@ fn a_no_gate_row_reads_as_no_gate_declared() {
     let mut a = app();
     a.session_id = "s1".into();
     a.command("queue");
+    // The merge view, where a `no_gate` row is drawn.
+    a.key(Key::Tab);
     let mut e = queue_entry("c1", MergeState::Waiting);
     e.gate_steps = vec![gate_step(
         "",
@@ -890,4 +899,217 @@ fn the_overlay_draws_the_gates_steps_and_the_whole_output() {
     // **The lines the pane's own window cuts away** — the overlay draws all of the tail.
     assert!(screen.contains("first line of the tail"), "{screen}");
     assert!(screen.contains("fifth line — where it stopped"), "{screen}");
+}
+
+// ===== The two views: the review queue and the merge queue =====
+
+/// **The merge view draws only the gate's rows** — the operator's ask, verbatim: *"nor there are
+/// separate views for review and merge queues"*. The list is the same list (one entry, its branch
+/// and its state word), and the row under it is the machine's: the steps, their marks, and where
+/// the branch landed. **The tutor's row is not there** — it is the review view's, and the entry's
+/// evidence under a gate row is the one list the operator asked to have split.
+#[test]
+fn the_merge_view_draws_only_the_gates_rows() {
+    use letibot_sessionlog::event::{MergeGateOutcome, MergeState};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut e = queue_entry("c1", MergeState::Landed);
+    e.evidence = "the queue's own words".into();
+    e.gate_steps = vec![gate_step(
+        "sh scripts/check-fmt.sh main",
+        MergeGateOutcome::Passed,
+        "all formatted",
+        1_200,
+    )];
+    e.landed_sha = Some("deadbee".into());
+    a.apply(queue_frame(
+        vec![e],
+        vec![queue_review("c1", Some("accept"))],
+    ));
+    // Where the pane opens: the review view, and the tutor's row is on it.
+    let review = a.screen(120, 40).join("\n");
+    assert!(review.contains("reviewer: accept"), "{review}");
+    assert!(
+        !review.contains('✓'),
+        "the review view drew a gate step: {review}"
+    );
+    // `tab` moves to the machine's half.
+    assert_eq!(
+        a.key(Key::Tab),
+        None,
+        "`tab` is the pane's, not the composer's"
+    );
+    let merge = a.screen(120, 40).join("\n");
+    assert!(merge.contains("✓ sh scripts/check-fmt.sh main"), "{merge}");
+    assert!(merge.contains("landed deadbee"), "{merge}");
+    // The same list either side of the switch: the entry's own state word is still on it.
+    assert!(merge.contains("· landed ·"), "{merge}");
+    assert!(
+        !merge.contains("reviewer: accept") && !merge.contains("the queue's own words"),
+        "the merge view drew the tutor's row: {merge}"
+    );
+}
+
+/// **The review view draws only the tutor's** — the verdict rano draws, the ask it was asked
+/// against, and the four verbs a person has on the entry under the cursor, each with what it would
+/// do. **No gate row**: not a step, not `not run`, and not the sentence an empty list draws. A view
+/// that leaked the machine's rows would be the one list the operator asked to have split.
+#[test]
+fn the_review_view_draws_only_the_tutors() {
+    use letibot_sessionlog::event::{MergeGateOutcome, MergeState};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut e = queue_entry("c1", MergeState::Waiting);
+    e.gate_steps = vec![gate_step(
+        "cargo clippy --all-targets",
+        MergeGateOutcome::Passed,
+        "",
+        4_000,
+    )];
+    a.apply(queue_frame(
+        vec![e],
+        vec![queue_review("c1", Some("accept"))],
+    ));
+    let screen = a.screen(120, 40).join("\n");
+    assert!(screen.contains("reviewer: accept"), "{screen}");
+    // **The ask the verdict was asked against**, which is what the verdict is a verdict ON.
+    assert!(screen.contains("ask   make the widget blue"), "{screen}");
+    for verb in ["a approve", "v veto", "r restart", "d rm"] {
+        assert!(
+            screen.contains(verb),
+            "the row does not name `{verb}`: {screen}"
+        );
+    }
+    // **What each would do**, read across the wrap the row is drawn with: the verbs are one
+    // paragraph and the sentences break at spaces, so the words are joined before they are matched.
+    let flat = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("the gate still runs"),
+        "`a approve` does not say the gate still runs: {screen}"
+    );
+    assert!(
+        flat.contains("the child is sent back"),
+        "`v veto` does not say where the ball goes: {screen}"
+    );
+    for machine in ["✓", "✗", " · not run", "the gate has not run"] {
+        assert!(
+            !screen.contains(machine),
+            "the review view drew the machine's `{machine}`: {screen}"
+        );
+    }
+}
+
+/// **An entry whose state has no merge half says so rather than showing an empty column** — a
+/// `waiting` entry has no gate rows, so the merge view says *the gate has not run on this entry*
+/// rather than drawing nothing under the entry, which is what reads as *all steps passed*. The
+/// list above it is unchanged: the entry is still there with its state word.
+#[test]
+fn the_merge_view_says_when_an_entry_has_no_merge_half() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(
+        vec![queue_entry("c1", MergeState::Waiting)],
+        Vec::new(),
+    ));
+    a.key(Key::Tab);
+    let rows = a.screen(120, 40);
+    let screen = rows.join("\n");
+    assert!(
+        screen.contains("the gate has not run on this entry"),
+        "{screen}"
+    );
+    assert!(
+        rows.iter().any(|l| l.contains("· waiting ·")),
+        "the list is the same list: {rows:#?}"
+    );
+    assert!(
+        !screen.contains('✓') && !screen.contains('✗'),
+        "an empty merge half is not a green gate: {screen}"
+    );
+    // **And an entry the queue has TAKEN is running**, not *has not run*: the rows ride the move
+    // that ends a run, so an empty list under a `taken` entry is this run's.
+    a.apply(queue_frame(
+        vec![queue_entry("c2", MergeState::Taken)],
+        Vec::new(),
+    ));
+    let taken = a.screen(120, 40).join("\n");
+    assert!(taken.contains("the merge is running"), "{taken}");
+}
+
+/// **The thing that moves between the views does what its label says** — the strip names both
+/// views, brackets the one that is on, and `tab` moves to the other; a click on a label is the
+/// same move. **And the cursor does not move**: the two views are one list, so a reader who was on
+/// the second entry is still on it — the defect the stop-row record exists to prevent, one view
+/// over.
+#[test]
+fn the_strip_says_which_view_is_on_and_moves_between_them() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut second = queue_entry("c2", MergeState::Waiting);
+    second.branch = "agent/child-two".into();
+    a.apply(queue_frame(
+        vec![queue_entry("c1", MergeState::Waiting), second],
+        Vec::new(),
+    ));
+    let strip = |rows: &[String]| {
+        rows.iter()
+            .find(|l| l.contains("tab switches"))
+            .cloned()
+            .expect("the pane draws the switch")
+    };
+    let rows = a.screen(120, 40);
+    assert!(
+        strip(&rows).contains("[review] merge"),
+        "{:?}",
+        strip(&rows)
+    );
+    assert!(rows.iter().any(|l| l.contains("nobody has reviewed it")));
+
+    // The cursor on the second entry; `tab` moves the view and leaves the cursor where it was.
+    a.key(Key::Down);
+    assert!(
+        a.screen(120, 40)
+            .iter()
+            .any(|l| l.contains('▸') && l.contains("agent/child-two")),
+        "the cursor did not reach the second entry"
+    );
+    assert_eq!(a.key(Key::Tab), None);
+    let rows = a.screen(120, 40);
+    assert!(
+        strip(&rows).contains("review [merge]"),
+        "{:?}",
+        strip(&rows)
+    );
+    assert!(
+        rows.iter()
+            .any(|l| l.contains('▸') && l.contains("agent/child-two")),
+        "the switch moved the cursor off its entry: {rows:#?}"
+    );
+
+    // **And the label is a control**: a click on `review` is the move the key makes. The row is
+    // the frame's own record, and `x` is a terminal cell — the gutter is two columns at this
+    // width, so the label starts at four.
+    let at = rows
+        .iter()
+        .position(|l| l.contains("tab switches"))
+        .expect("the strip row") as u16;
+    a.key(Key::Click { x: 5, y: at });
+    let rows = a.screen(120, 40);
+    assert!(
+        strip(&rows).contains("[review] merge"),
+        "{:?}",
+        strip(&rows)
+    );
+    assert!(rows.iter().any(|l| l.contains("nobody has reviewed it")));
+    assert!(
+        rows.iter()
+            .any(|l| l.contains('▸') && l.contains("agent/child-two")),
+        "a click on the strip is not a click on an entry: {rows:#?}"
+    );
 }

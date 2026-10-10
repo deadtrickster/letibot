@@ -33,6 +33,7 @@ use letibot_sessionlog::view::{OpenDecision, SnapshotItem};
 use letibot_ui::editor::Editor;
 use rano::agent::card;
 
+use crate::ui::panes::queue::{QueueTabs, QueueView};
 use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 
@@ -905,6 +906,14 @@ pub struct App {
     /// when the frame is tall enough to have one. Recorded rather than assumed because a
     /// click's `y` is in absolute screen coordinates; see [`App::queue_stop_at_row`].
     pub(crate) queue_pane_top: usize,
+    /// **Which half of the queue the pane is showing** — the operator's second ask, *"nor there
+    /// are separate views for review and merge queues"*. The list is the same either way; what
+    /// changes is the row under each entry. See [`QueueView`].
+    pub(crate) queue_view: QueueView,
+    /// **Where the two tabs were drawn on the last frame**, in the pane's own columns — the
+    /// record a click reads, because only the frame knows where a label landed. See
+    /// [`App::queue_tab_at`].
+    pub(crate) queue_tabs: Option<QueueTabs>,
     /// **The entry whose detail overlay is open, by id**, until Esc. By ID and not by index:
     /// a `MergeEntryMoved` event can move the queue under the overlay while it is up, and an
     /// index would then point at whichever entry slid into that slot.
@@ -1680,6 +1689,8 @@ impl App {
             queue_sel: 0,
             queue_stop_rows: Vec::new(),
             queue_pane_top: 0,
+            queue_view: QueueView::default(),
+            queue_tabs: None,
             queue_open: None,
             jobs_sel: 0,
             jobs_finished_open: false,
