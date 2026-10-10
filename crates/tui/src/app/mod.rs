@@ -847,6 +847,44 @@ pub struct App {
     /// decision — so a sixth pane takes the verb, which every pane already has and which a head
     /// driven over a pipe can reach.
     pub(crate) queue_pane: bool,
+    /// **The standing-notes pane** — the notes the harness reads into the system prompt, one row
+    /// each, in the order the section carries them. `/standing`.
+    ///
+    /// The operator, handed a note's path in a conversation: *"yeah you gave md name but it is
+    /// not clickable"*, then *"i mean do the usual - notes pane"*. This is that pane, and the
+    /// field it exists for is the FORM: which notes the prompt was given whole and which arrived
+    /// as an index because they did not fit the budget — a fact that was, until this, visible
+    /// nowhere outside the model's own prompt.
+    ///
+    /// **No chord, for the queue pane's reason one field up**, and one more of its own: the word
+    /// this pane needs is *standing*, and every chord that could spell it is spent — `ctrl-n` and
+    /// `/notes` are this head's own disclosures (`Note::Warned`, numbered for `/notes dismiss N`)
+    /// and must keep meaning that, the readline keys own `a`–`z`, and the two control bytes the
+    /// C0 tail had spare went to the editor crossing and `attach anyway`. A seventh pane takes
+    /// the verb.
+    pub(crate) standing_pane: bool,
+    /// **The standing notes, as the daemon last answered `ListNotes`** — the index's own rows.
+    ///
+    /// The path, the abstract and the form are the daemon's (decided with the session's token
+    /// counter, which this head does not have and must not grow). What is NOT here is the file's
+    /// size, its mtime and whether it is still on disk: those are the disk's facts, they change
+    /// while the pane is open, and they are read at draw time — which is also the only way *the
+    /// index names a note the disk no longer has* can be seen at all. See `ui/panes/standing.rs`.
+    pub(crate) standing: Vec<letibot_sessionlog::protocol::NoteEntry>,
+    /// Which note row the cursor is on — an index into [`App::standing`], the same list the
+    /// drawn `▸`, the arrows and Enter read.
+    pub(crate) standing_sel: usize,
+    /// **The pane row each note was DRAWN on** — the record the arrows scroll by, never
+    /// arithmetic over the list. See `jobs_stop_rows` for the defect this avoids.
+    pub(crate) standing_stop_rows: Vec<usize>,
+    /// **The note the pane's Enter opened, until Esc.** Read from disk at the keypress — the
+    /// same read the row's size and age come from — and held as the text, so Esc back to the
+    /// list does not read it again.
+    pub(crate) note_open: Option<standing::NoteOpen>,
+    /// **What the corpus looked like on the last draw**, so a note edited while the pane is
+    /// open is a change the pane can notice and answer for. `None` until the first draw after
+    /// the rows land, which is the baseline rather than a change. See [`standing::Corpus`].
+    pub(crate) standing_corpus: Option<standing::Corpus>,
     /// **The merge queue, as the daemon last answered `ListMergeQueue`** — the daemon's own
     /// rows, never this head's reconstruction, for the reason `jobs` is: the queue is the
     /// daemon's and a head that folded its own version out of the events would draw a stale one
@@ -1608,6 +1646,12 @@ impl App {
             subagents_pane: false,
             jobs_pane: false,
             queue_pane: false,
+            standing_pane: false,
+            standing: Vec::new(),
+            standing_sel: 0,
+            standing_stop_rows: Vec::new(),
+            note_open: None,
+            standing_corpus: None,
             merge: Vec::new(),
             merge_reviews: Vec::new(),
             queue_sel: 0,
@@ -1882,6 +1926,7 @@ mod pick;
 mod prefs;
 mod scroll;
 mod session;
+pub(crate) mod standing;
 mod term_pane;
 mod todos;
 mod turn;

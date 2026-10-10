@@ -1466,6 +1466,15 @@ pub struct Harness {
     /// the daemon's flag/default. Decided at open and not kept by `Config`.
     mode_source: String,
     engine: TurnEngine,
+    /// **The counter this session's standing notes are measured with** — the section's own,
+    /// and a field rather than a read of `self.engine` because the notes pane's read happens
+    /// on the SERVER's thread while the engine lives on this one. It tracks the engine: set at
+    /// open from `Parts`, and reassigned wherever `self.engine` is, so a session that moved
+    /// weights measures its notes with the vocabulary it is now speaking — which is the same
+    /// counter `reseat_target` assembles the next section with.
+    ///
+    /// See [`Harness::install_notes_source`], the only reader.
+    note_vocab: Arc<Vocab>,
     session: Session,
     /// **Shared, because the operator's run does not run on this harness's thread.**
     ///
@@ -3919,6 +3928,7 @@ impl Harness {
             wiring,
             cfg,
             engine,
+            note_vocab: parts.vocab.clone(),
             session,
             runtime: std::sync::Arc::new(runtime),
             hub,
@@ -3974,6 +3984,10 @@ impl Harness {
         };
         h.publish_settings();
         h.publish_jobs();
+        // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
+        // is answered from it, so it has to be installed before a head can attach. See
+        // `Harness::install_notes_source`.
+        h.install_notes_source();
         if h.resumed.is_some() {
             // **The RESUME's own sentence, and it is not the carry's.** The operator read the
             // carry's wording here and asked the obvious question — *"why it was decided to carry
@@ -5595,6 +5609,12 @@ impl Harness {
         // cheaply, so by the time it runs, everything it renders with is already
         // the pair the next turn will use.
         self.engine = engine;
+        // **And the counter the notes pane measures with moves with it.** The section is
+        // assembled with the engine's own vocabulary, so a pane that went on measuring with
+        // the one this session OPENED on would disagree with the prompt about which notes are
+        // whole — the one thing the pane exists to show. See `Harness::install_notes_source`,
+        // whose closure reads this field.
+        self.note_vocab = vocab.clone();
         self.render = wiring.clone();
         self.cfg.dialect = dialect;
         self.cfg.vocab_gguf = Some(gguf.clone());
@@ -6121,6 +6141,10 @@ impl Harness {
             .map_err(|e| HarnessError::Store(e.to_string()))?;
 
         self.engine = engine;
+        // The same assignment as the switch's, in the other direction: the session is back on
+        // the vocabulary it opened on and the notes source measures with what the section
+        // will. See `Harness::install_notes_source`.
+        self.note_vocab = own.vocab.clone();
         self.render = own.wiring.clone();
         self.cfg.dialect = own.dialect;
         self.cfg.vocab_gguf = own.vocab_gguf.clone();
@@ -6315,6 +6339,38 @@ impl Harness {
                 .as_millis()
                 .min(u64::MAX as u128) as u64,
         }
+    }
+
+    /// **Install this session's standing-notes source**, which is what a head's `ListNotes`
+    /// is answered from.
+    ///
+    /// A closure rather than a mailbox, and the vocabulary is the whole of why: the form each
+    /// note has — verbatim, or an index because it did not fit what was left of the budget —
+    /// is decided with [`Harness::note_vocab`], and the server thread that answers the frame holds
+    /// no counter at all. So this hands the registry something that *can* measure
+    /// (`letibot_sessionlog::registry::NotesSource`) and the read happens on the ask.
+    ///
+    /// **On the ask and not at a moment of our choosing**, because the notes are the
+    /// operator's own files, edited in another window with nothing to tell this daemon: a
+    /// mailbox refilled at session open would answer *what the corpus was when the section
+    /// was last assembled*, which is a fact about the prompt, and a note written while the
+    /// session sat idle would be missing from a pane that claims one row per note.
+    ///
+    /// Cheap enough to run per pane-open: a readdir, one read per note and one pass of the
+    /// counter — the same work [`crate::standing_notes::section`] does at every base rebuild,
+    /// and a person opens this pane rarely.
+    fn install_notes_source(&self) {
+        let workspace = self.cfg.workspace.clone();
+        let global = crate::standing_notes::global_dir();
+        // **The vocabulary the section itself is measured with**, and a field of its own
+        // rather than the engine's — see `Harness::note_vocab`, which tracks the engine
+        // wherever it moves so the pane cannot measure with the vocabulary the session
+        // *opened* on.
+        let vocab = self.note_vocab.clone();
+        self.session_registry.set_notes_source(
+            &self.cfg.session_id,
+            std::sync::Arc::new(move || crate::standing_notes::rows(&workspace, &global, &vocab)),
+        );
     }
 
     /// Push the job table to the registry, where a head's `ListJobs` is answered

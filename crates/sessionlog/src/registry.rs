@@ -731,6 +731,30 @@ pub trait PromptDriver: Send + Sync {
 /// *it ended nothing because nothing was running* are different answers.
 pub type RunEnder = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
+/// **A session's standing notes, as rows — computed where the vocabulary is.**
+///
+/// A boxed closure rather than a mailbox, and the layering is why: the *form* each note has
+/// (verbatim, or an index because it did not fit what was left of the budget) is decided with
+/// the session's own token counter, and a counter is a loaded vocabulary. This crate holds
+/// none and must not start — it is the log, the protocol and the wire, and every head links
+/// it. So the harness installs a closure that does have one
+/// ([`Registry::set_notes_source`]), exactly as it installs a [`RunEnder`] for the runs it
+/// owns, and the server thread asks it.
+///
+/// **A read and not a mailbox, and that is the difference from `settings` and `jobs`.** Those
+/// two are snapshots of something that changes for its own reasons; the notes are the
+/// operator's own files, edited in another window with nothing to tell the daemon about it. A
+/// mailbox would answer *what the corpus was when the section was last assembled* — which is
+/// a fact about the prompt and not about the corpus — and a note written while the session sat
+/// idle would be missing from a pane that claims one row per note. So the corpus is read on
+/// the ask, which is the same rule `letibot_harnessd::notes_offer` keeps for the same list.
+///
+/// **It must not block and it must not fail.** Called on a head's connection thread, so a
+/// source that waited for the harness thread would stop this head's acks; the harness's own
+/// implementation is `gather` plus one pass of token counting, and a corpus that cannot be
+/// read is no rows rather than an error — see `standing_notes::rows`.
+pub type NotesSource = Arc<dyn Fn() -> Vec<crate::protocol::NoteEntry> + Send + Sync>;
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -738,6 +762,9 @@ pub struct Registry {
     /// See [`RunEnder`] for why a stop has to reach the runs and why the daemon is the half
     /// that owns them.
     runs: Mutex<std::collections::HashMap<String, RunEnder>>,
+    /// **One per session**, installed by the session's own harness at open — the half that
+    /// owns the token counter — and never removed. See [`NotesSource`].
+    notes: Mutex<std::collections::HashMap<String, NotesSource>>,
     /// **`close` is not idempotent where the enders are concerned.** It is called by the
     /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending
     /// every run three times would be three reap records for one decision.
@@ -821,6 +848,7 @@ impl Registry {
             }),
             bell: Bell::new(),
             runs: Mutex::new(std::collections::HashMap::new()),
+            notes: Mutex::new(std::collections::HashMap::new()),
             ended_runs: std::sync::atomic::AtomicBool::new(false),
             source: Mutex::new(None),
             rows: Mutex::new(None),
@@ -1190,6 +1218,43 @@ impl Registry {
             .find(|(k, _)| k == session_id)
             .map(|(_, e)| e.jobs.clone())
             .unwrap_or_default()
+    }
+
+    /// **Install a session's standing-notes source.** Called by the session's own harness at
+    /// open — it is the half that owns the token counter, which is what decides the form each
+    /// note has — and never removed: a session this registry holds lives for the daemon's
+    /// life. See [`NotesSource`] for why this is a closure and a live read.
+    pub fn set_notes_source(&self, session_id: &str, source: NotesSource) {
+        self.notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), source);
+    }
+
+    /// **The standing notes a session's harness reads, one row each, read NOW.**
+    ///
+    /// The sibling of [`Registry::jobs`] one screen up and deliberately NOT its shape: the
+    /// notes are the operator's own files, edited in another window with nothing to tell the
+    /// daemon about it, so a mailbox would answer *what the corpus was when the section was
+    /// last assembled* — a fact about the prompt and not about the corpus — and a note written
+    /// while the session sat idle would be missing from a pane that claims one row per note.
+    /// The source reads on the ask. See [`NotesSource`].
+    ///
+    /// **Empty is a real answer and it is not a silence**: a session whose harness has not
+    /// opened has no source, and an empty corpus has no rows, and from out here those look
+    /// alike. The pane says *the harness is reading none for this session*, which is true of
+    /// both.
+    pub fn notes(&self, session_id: &str) -> Vec<crate::protocol::NoteEntry> {
+        // The closure is cloned out before it is called, so the lock is not held across a
+        // readdir, a file read and a pass of token counting — the same rule
+        // `row_body_from_store` keeps one screen up.
+        let source = self
+            .notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned();
+        source.map(|s| s()).unwrap_or_default()
     }
 
     /// What a session's harness last published. Empty for a session whose
@@ -1962,6 +2027,49 @@ mod tests {
         r.next_command().unwrap();
         assert_eq!(r.default_id(), "s-b");
         let _ = a;
+    }
+
+    /// **The notes source is read on the ASK, not remembered** — the one thing that
+    /// separates it from the job table's mailbox.
+    ///
+    /// The notes are the operator's own files, edited in another window with nothing to tell
+    /// the daemon, so a mailbox refilled at session open would answer *what the corpus was
+    /// when the section was last assembled* — and a note written while the session sat idle
+    /// would be missing from a pane that claims one row per note. The closure is called per
+    /// read, and this pins that: a source whose answer moves between two reads must be seen
+    /// to move, or the pane is a snapshot wearing a read's name.
+    #[test]
+    fn the_notes_source_is_read_on_the_ask_and_a_session_without_one_has_none() {
+        let r = reg();
+        r.create("s1", "", SessionWiring::default()).unwrap();
+        // A session whose harness has not opened has no source, and that is no rows — the
+        // same answer an empty corpus gives, which the pane says out loud.
+        assert!(r.notes("s1").is_empty());
+        assert!(r.notes("nobody").is_empty());
+
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = reads.clone();
+        r.set_notes_source(
+            "s1",
+            Arc::new(move || {
+                let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (0..=n)
+                    .map(|i| crate::protocol::NoteEntry {
+                        path: format!("/tmp/note-{i}.md"),
+                        abstract_line: Some(format!("note {i}")),
+                        abstract_written: false,
+                        form: crate::protocol::NoteForm::Verbatim,
+                    })
+                    .collect()
+            }),
+        );
+        assert_eq!(r.notes("s1").len(), 1);
+        assert_eq!(
+            r.notes("s1").len(),
+            2,
+            "the source is called again, not replayed"
+        );
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }
 

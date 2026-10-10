@@ -65,6 +65,20 @@ impl App {
                 }
                 Disposition::Control
             }
+            // **The standing notes, whole.** The pane's bootstrap read, and the rows are the
+            // daemon's own reading of the corpus — the abstract the index shows and the FORM
+            // the budget gave each file — so a head draws what the model was given rather than
+            // a second opinion about it. Only the file's size, its age and whether it is still
+            // there are the head's own, read at DRAW time; see `ui/panes/standing.rs`.
+            ServerFrame::StandingNotes { session_id, notes } => {
+                if session_id == self.session_id {
+                    self.standing = notes;
+                    self.standing_sel =
+                        self.standing_sel.min(self.standing.len().saturating_sub(1));
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             // **The merge queue, whole, and the reviewer's verdicts beside it.** The queue is
             // daemon-level, so there is no `session_id` to check against this head's — the
             // `session_id` on an entry is its origin and not a filter, which is why the same

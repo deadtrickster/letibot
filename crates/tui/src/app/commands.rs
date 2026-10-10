@@ -703,6 +703,15 @@ impl App {
                 self.redraw = true;
                 self.queue_pane.then_some(Action::ListMergeQueue)
             }
+            // **`/standing` — the standing notes, and it is not `/notes`.**
+            //
+            // The word is the module's own: `standing_notes` is what the harness reads into
+            // the system prompt, and the module says why it needs its own name — *"the word
+            // 'notes' is already spent in this crate: `Harness::open_notes` is the resume
+            // side's observations, and the TUI broadcasts head notices under the same name."*
+            // `/notes` is the head's own disclosures, numbered for `/notes dismiss N`, and it
+            // keeps meaning that. A pane over the corpus takes the corpus's word.
+            "standing" => self.toggle_standing(),
             // **§6: the panes and the promote, reachable as verbs.**
             //
             // Each of these had a chord and no word, which is two problems: a head
@@ -1148,6 +1157,11 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "queue",
         "open or close the merge-queue pane: what is landing on main, and why it is not",
+    ),
+    (
+        "standing",
+        "open or close the standing-notes pane: every note the harness reads into the prompt, \
+         with the form the budget gave each one — verbatim, or an index over it",
     ),
     // **§6's verbs, and §7's C14 ruling that the table is the UNION.** Five of these
     // had a chord and no word, so they were unreachable from a pipe and `/help` had no

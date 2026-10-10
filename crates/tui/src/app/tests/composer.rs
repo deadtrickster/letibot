@@ -1199,6 +1199,10 @@ fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
     // **A §6 verb joined the cycle**, which is the point of listing it: `/s` reaches
     // `subagents` by Tab now, and the expectation has to name it or the test is
     // pinning a list that no longer exists.
+    // **And `/standing`**, which joined the same way and for the same reason: the pane's
+    // verb is in the table, so `/s` reaches it and this cycle names it.
+    a.key(Key::Tab);
+    assert_eq!(a.input(), "/standing");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/subagents");
     // **And R32's two**, which this test caught the moment they were listed — the

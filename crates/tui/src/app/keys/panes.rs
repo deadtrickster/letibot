@@ -202,6 +202,7 @@ impl App {
             || self.subagents_pane
             || self.jobs_pane
             || self.queue_pane
+            || self.standing_pane
             || self.config_pane)
             && matches!(k, Key::Esc | Key::CtrlC)
         {
@@ -214,6 +215,8 @@ impl App {
             self.subagents_pane = false;
             self.jobs_pane = false;
             self.queue_pane = false;
+            self.standing_pane = false;
+            self.note_open = None;
             self.config_pane = false;
             self.sub_out_pending = None;
             self.redraw = true;
@@ -503,6 +506,80 @@ impl App {
                     }
                 },
                 _ => {}
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// **The note the pane's Enter opened owns the keys while it is open.** Arrows, the page
+    /// keys and the wheel scroll it; Esc goes back to the LIST, which is still behind it —
+    /// the jobs pane's overlay rule, one pane along.
+    ///
+    /// **It sits ABOVE the block that closes every pane on Esc**, like `key_queue_review` and
+    /// for the same reason: below it, the first Esc would close the PANE and leave the note
+    /// standing over an empty screen, and the second would close the note.
+    pub(crate) fn key_note_open(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        if self.note_open.is_some() {
+            if matches!(k, Key::Esc | Key::CtrlC) {
+                self.note_open = None;
+                self.pane_scroll = 0;
+                self.redraw = true;
+                return ControlFlow::Break(None);
+            }
+            if matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
+                let page = self.pane_room.max(1);
+                match k {
+                    Key::Up => self.pane_scroll = self.pane_scroll.saturating_sub(1),
+                    Key::Down => self.pane_scroll += 1,
+                    Key::PageUp => self.pane_scroll = self.pane_scroll.saturating_sub(page),
+                    _ => self.pane_scroll += page,
+                }
+                // Clamped against the last draw's own numbers: the key handler has no width
+                // and no height, and a scroll clamped against a guess walks past the end.
+                let max = self.pane_len.saturating_sub(self.pane_room);
+                self.pane_scroll = self.pane_scroll.min(max);
+                self.redraw = true;
+                return ControlFlow::Break(None);
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// **An open standing-notes pane owns Up and Down, and Enter reads the note it is on.**
+    ///
+    /// The rows are ONE list ([`App::notes`], in the order the section carries them), so the
+    /// drawn cursor, the arrows and Enter cannot disagree — and the arrows scroll the cursor
+    /// into view, so a note below the fold is reachable.
+    ///
+    /// **Enter reads the note here, in the head, and not through the daemon.** The standing
+    /// notes are host-side files by construction (see `ui/panes/standing.rs`), and the read is
+    /// the same one the row's size and age come from — so *the file is gone* is the same answer
+    /// in both places, and no round trip is spent on a file this head can open.
+    pub(crate) fn key_standing_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        if self.standing_pane && self.note_open.is_none() {
+            if !self.standing.is_empty() {
+                let n = self.standing.len();
+                let at = self.standing_sel.min(n - 1);
+                match k {
+                    Key::Up => {
+                        self.standing_sel = if at == 0 { n - 1 } else { at - 1 };
+                        self.scroll_into_view(self.standing_row_of());
+                        self.redraw = true;
+                        return ControlFlow::Break(None);
+                    }
+                    Key::Down => {
+                        self.standing_sel = (at + 1) % n;
+                        self.scroll_into_view(self.standing_row_of());
+                        self.redraw = true;
+                        return ControlFlow::Break(None);
+                    }
+                    Key::Enter => {
+                        self.open_note();
+                        self.pane_scroll = 0;
+                        return ControlFlow::Break(None);
+                    }
+                    _ => {}
+                }
             }
         }
         ControlFlow::Continue(())

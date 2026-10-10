@@ -714,6 +714,12 @@ impl Link {
                     Action::ListJobs => {
                         self.client.list_jobs()?;
                     }
+                    // The standing-notes pane's bootstrap read. The jobs pane's shape: a read
+                    // whose answer arrives as a `StandingNotes` frame on the pump, and the
+                    // head draws what comes back rather than deciding what is in it.
+                    Action::ListNotes => {
+                        self.client.list_notes()?;
+                    }
                     Action::ListTodos => {
                         self.client.list_todos()?;
                     }

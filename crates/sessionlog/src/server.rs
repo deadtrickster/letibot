@@ -889,6 +889,18 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            // **The standing-notes pane's bootstrap read.** The rows are the harness's own
+            // — published into the registry wherever the section can have changed, the way
+            // the job table and the settings are — because the form each note has is decided
+            // with the session's token counter and this thread holds no vocabulary. See
+            // `ClientFrame::ListNotes` and `Registry::notes`.
+            Ok(ClientFrame::ListNotes) => {
+                let f = ServerFrame::StandingNotes {
+                    session_id: seat.hub.session_id().to_string(),
+                    notes: registry.notes(&seat.hub.session_id()),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::ListTodos) => {
                 // The bootstrap read: the snapshot carries items, not events, so
                 // a head attaching fresh has nothing to replay. From here the

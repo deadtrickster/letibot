@@ -108,6 +108,23 @@
 //! note the model could neither recognise nor address, which is the one thing an
 //! index must not be.
 //!
+//! # The pane, which is the fourth consumer of these fields
+//!
+//! The index is passive *inside the prompt*; outside it, a person could not see it
+//! at all. The operator, on being handed a path in a conversation: *"yeah you gave md
+//! name but it is not clickable"*, then *"i mean do the usual - notes pane"*. The
+//! standing-notes pane is that, and this module is where its rows come from: [`rows`]
+//! is [`gather`] plus the one budget walk ([`plan`]), so **the pane cannot disagree
+//! with the prompt about which notes arrived whole** — which is the only place that
+//! fact was ever invisible, since a file that did not fit is summarised inside the
+//! system prompt where only the model reads it.
+//!
+//! One shape, four consumers: the digest in the prompt, the offer's score
+//! (`crate::notes_offer`), the keeper's report, and this — path, abstract, size,
+//! verbatim-or-indexed, offered, taken. The size, the mtime and *is it still on disk*
+//! are deliberately NOT here: they are the disk's facts, they change while a pane is
+//! open, and the head reads them where it draws. See [`NoteEntry`].
+//!
 //! # The offering half, which lives in `crate::notes_offer`
 //!
 //! The index is passive: it says what the notes are, and the model has to think
@@ -159,6 +176,7 @@
 
 use std::path::{Path, PathBuf};
 
+use letibot_sessionlog::protocol::{NoteEntry, NoteForm};
 use letibot_tokencore::Vocab;
 // **The writer's conventions, used by the reader.** The abstract's marker, its
 // derivation and the order a notes directory is assembled in live with the
@@ -283,32 +301,100 @@ pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String>
 /// The body: each file whole if it fits what is left of the budget, indexed if it
 /// does not — decided **per file**, in [`gather`]'s order.
 ///
-/// The join between two entries is not counted. The budget is what the operator's
-/// material costs; the two bytes that separate two files are the harness's own
-/// glue, like the envelope's sentence.
+/// The decision itself is [`plan`]'s and is made once: this renders what that decided,
+/// so the section and the pane's rows cannot disagree about which notes are whole. The
+/// join between two entries is not counted. The budget is what the operator's material
+/// costs; the two bytes that separate two files are the harness's own glue, like the
+/// envelope's sentence.
 fn body(files: &[(PathBuf, String)], vocab: &Vocab) -> String {
     let mut out = String::new();
+    for ((path, text), form) in files.iter().zip(plan(files, vocab)) {
+        match form {
+            NoteForm::Verbatim => push(&mut out, &whole_entry(path, text)),
+            // Either it does not fit, or the counter refused the text outright — in
+            // which case the index is what this file gets, because the index is bounded
+            // by construction and the verbatim form is not.
+            NoteForm::Indexed => push(&mut out, &index_entry(path, text)),
+        }
+    }
+    out
+}
+
+/// One file, whole, as the section carries it: its path as the heading and its own text
+/// under it.
+///
+/// **The string [`plan`] measures and the string [`body`] emits**, one function, so the
+/// budget cannot be spent on a rendering nobody is given.
+fn whole_entry(path: &Path, text: &str) -> String {
+    format!("### {}\n{}", path.display(), text.trim_end())
+}
+
+/// **The budget walk: each file's form, in order — the ONE place the per-file rule is
+/// applied.**
+///
+/// [`body`] renders what this decides, and [`rows`] reports it to the pane. That is not
+/// tidiness: *whether a note is verbatim or indexed* is the whole of what the pane exists
+/// to make visible, and a second implementation of the walk in the pane would be a pane
+/// that can disagree with the prompt about the one thing it is showing.
+///
+/// Each file in [`gather`]'s order is injected VERBATIM when it fits what is left of
+/// [`NOTES_BUDGET_TOKENS`]; when it does not — or when the counter refuses its text
+/// outright, which is a fact about the text and not a zero — it is an INDEX, and the index
+/// it falls back to is counted against the budget too, because the budget bounds the
+/// section and not the verbatim part of it.
+fn plan(files: &[(PathBuf, String)], vocab: &Vocab) -> Vec<NoteForm> {
     let mut used = 0usize;
+    let mut out = Vec::with_capacity(files.len());
     for (path, text) in files {
-        let whole = format!("### {}\n{}", path.display(), text.trim_end());
-        // The session's own counter, not an estimate: the ledger is counted with
-        // this encoder and a budget in another encoder's tokens is not a budget.
+        let whole = whole_entry(path, text);
+        // The session's own counter, not an estimate: the ledger is counted with this
+        // encoder and a budget in another encoder's tokens is not a budget.
         match tokens(vocab, &whole) {
             Some(n) if used + n <= NOTES_BUDGET_TOKENS => {
                 used += n;
-                push(&mut out, &whole);
+                out.push(NoteForm::Verbatim);
             }
-            // Either it does not fit, or the counter refused the text outright —
-            // in which case the index is what this file gets, because the index is
-            // bounded by construction and the verbatim form is not.
             _ => {
-                let index = index_entry(path, text);
-                used += tokens(vocab, &index).unwrap_or(0);
-                push(&mut out, &index);
+                used += tokens(vocab, &index_entry(path, text)).unwrap_or(0);
+                out.push(NoteForm::Indexed);
             }
         }
     }
     out
+}
+
+/// **One row per note, in the section's order — the standing-notes pane's whole input.**
+///
+/// The fields are the index's own: the **path** the section's heading carries, the
+/// **abstract** ([`abstract_of`], the author's line or the note's first proper sentence)
+/// and the **form** the budget gave the file. Nothing here is a second reading of the
+/// corpus: it is [`gather`] and [`plan`], which is what [`section`] itself is built from.
+///
+/// **What is deliberately absent**: the file's size, its mtime, and whether it is still
+/// there. Those are the disk's facts rather than the index's, they change while a pane is
+/// open, and a reader that wants them has to look now — which is also the only way *the
+/// index names a note the disk no longer has* can ever be seen. The head reads them where
+/// it draws; see [`crate::protocol::NoteEntry`].
+///
+/// The corpus is read here rather than remembered, the same rule `crate::notes_offer`
+/// keeps for the same list: a session that has written a note since its last base rebuild
+/// gets a row for it at the next read, and nothing has to be invalidated.
+pub fn rows(workspace: &Path, global: &Path, vocab: &Vocab) -> Vec<NoteEntry> {
+    let files = gather(workspace, global);
+    let forms = plan(&files, vocab);
+    files
+        .iter()
+        .zip(forms)
+        .map(|((path, text), form)| {
+            let abstract_ = abstract_of(text);
+            NoteEntry {
+                path: path.display().to_string(),
+                abstract_line: abstract_.as_ref().map(|a| a.text.clone()),
+                abstract_written: abstract_.is_some_and(|a| a.written),
+                form,
+            }
+        })
+        .collect()
 }
 
 fn push(out: &mut String, entry: &str) {

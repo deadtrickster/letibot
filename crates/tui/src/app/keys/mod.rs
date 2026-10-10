@@ -167,6 +167,13 @@ impl App {
             return r;
         }
 
+        // **The note the pane's Enter opened**, above the block that closes every pane on Esc:
+        // its Esc means *back to the list*, and below that block it would close the pane and
+        // leave the note standing over an empty screen. See `key_note_open`.
+        if let ControlFlow::Break(r) = self.key_note_open(&k) {
+            return r;
+        }
+
         if let ControlFlow::Break(r) = self.key_overlays(&k) {
             return r;
         }
@@ -213,6 +220,10 @@ impl App {
         }
 
         if let ControlFlow::Break(r) = self.key_jobs_pane(&k) {
+            return r;
+        }
+
+        if let ControlFlow::Break(r) = self.key_standing_pane(&k) {
             return r;
         }
         // **A click on a count label opens the pane its count names** — the operator's ask:
@@ -382,6 +393,7 @@ impl App {
                 || self.stats
                 || self.jobs_pane
                 || self.subagents_pane
+                || self.standing_pane
                 || self.slash_out.is_some())
         {
             return None;
