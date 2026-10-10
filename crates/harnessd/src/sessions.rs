@@ -221,16 +221,19 @@ pub(crate) fn status_from_the_wire(
 /// a while opening (a VM copy, a harness load) reads younger than it is, and the room it gets is
 /// that much longer than thirty minutes of wall clock.
 ///
-/// **And the child's own HUB says what it last showed**, which is the half that lets the notice tell
-/// a working child from a wedged one: `SessionStatus::last_ms` is the timestamp of the last event on
-/// that session's log — a turn starting, a delta, a tool call, a tool's progress note — and
-/// `running` is whether a turn is in flight in it. Both are read under the hub's own lock, which is
-/// one uncontended mutex, and this whole function runs once per idle window per session.
+/// **And the child's own HUB says what it last showed** — `SessionStatus::last_ms` is the timestamp
+/// of the last event on that session's log — which is the half that moves while a child generates
+/// and while a tool writes. It is read under the hub's own lock, which is one uncontended mutex,
+/// and this whole function runs once per idle window per session.
 ///
 /// **What the daemon does NOT record, and this cannot invent**: nothing timestamps the child's last
 /// TOOL CALL or its round, and `TaskSlot`'s note is written only while the child is opening (the
-/// progress callback `run_to_completion` takes is called three times, all before the child's turn).
-/// So the two facts above are the whole of what observable progress this box has — see
+/// progress callback `run_to_completion` takes is called three times, all before the child's turn)
+/// — which is why `task_result` no longer prints that note as the child's last word (see
+/// [`child_reading`]). And a tool call *in flight* is not in `Registry::jobs` either, because
+/// `publish_jobs` runs at the END of a round: the smallest honest change there is to publish a
+/// child's jobs when a job STARTS, which needs a hook from the process host into the session's
+/// registry mailbox and is the gap this change names rather than closes. See
 /// `CHILD_QUIET_ENOUGH_TO_LOOK` for what that leaves a reader to judge.
 pub(crate) fn child_sessions(
     registry: &Registry,
@@ -242,33 +245,70 @@ pub(crate) fn child_sessions(
         if !matches!(entry.state.as_str(), "opening" | "running") {
             continue;
         }
-        let age = registry
-            .created_ms(&entry.name)
-            .map(|born| Duration::from_millis(now_ms.saturating_sub(born)))
-            .unwrap_or_default();
-        // A child in `opening` has no hub yet — it is a session this daemon has not adopted — and
-        // that is said as *no evidence* rather than as *no progress*: `None` and `working: false`.
-        let (quiet_for, working) = match registry.get(&entry.name) {
-            Some(hub) => {
-                let status = hub.status();
-                (
-                    (status.last_ms > 0)
-                        .then(|| Duration::from_millis(now_ms.saturating_sub(status.last_ms))),
-                    status.running,
-                )
-            }
-            None => (None, false),
-        };
+        // **The journal's `running` IS the daemon's record that a turn is in flight** — the record
+        // is written just before the child's first prompt is submitted and replaced at the turn's
+        // end — so it is what fills `working` here, and NOT `SessionStatus::running`. That flag is
+        // the ROUND's, and a child executing a ten-minute tool call would read as *no turn in
+        // flight* for ten minutes. See [`child_reading`].
+        let turn_started = entry.state == "running";
         out = out.running(
             entry.name.clone(),
-            RunningChild {
-                age,
-                quiet_for,
-                working,
-            },
+            child_reading(registry, &entry.name, turn_started, now_ms),
         );
     }
     out
+}
+
+/// **One live child, as the daemon can see it** — the ONE place a [`RunningChild`] is filled, so
+/// the idle check's snapshot and `task_result` cannot come to different answers about one child.
+///
+/// **Why one place.** The operator's complaint is that a parent holding a row open on a child could
+/// not tell *working* from *idle* from *wedged*, and the two doors that could tell it — the idle
+/// plan-check's notice and `task_result` — each had a piece of the reading. A second fill would be
+/// the two-answers failure this tree refuses, one layer below the sentences that describe it.
+///
+/// **`turn_started` is the caller's own record of the turn, and the caller is the one that has
+/// it.** For the check that is the journal's `running` state; for `task_result` it is
+/// `TaskSlot::Running`, which is the same fact one layer down (the slot settles when the child's
+/// turn ends). It is a parameter rather than a read because the two callers hold different records
+/// of one fact and neither is a second copy of the other.
+///
+/// **`working` is `turn_started` OR [`Hub::turn_in_flight`]** — the union of the daemon's record
+/// and the hub's view, and each covers what the other cannot: the record spans the whole of the
+/// child's FIRST turn (including the round-boundary window between a round's last call finishing
+/// and the next round's `TurnStarted`), while the hub's view is the only thing that sees a turn the
+/// child runs AFTER its first — the second turn a `task_message` starts, when the slot has already
+/// settled and the journal says `done`.
+///
+/// **`quiet_for` is the age of the last event on the child's own log**, or `None` for one that has
+/// published nothing at all — `None` is *no evidence*, which is a different fact from *no progress*
+/// and is why `ChildDoing` has a state of its own for it.
+pub(crate) fn child_reading(
+    registry: &Registry,
+    name: &str,
+    turn_started: bool,
+    now_ms: u64,
+) -> RunningChild {
+    let age = registry
+        .created_ms(name)
+        .map(|born| Duration::from_millis(now_ms.saturating_sub(born)))
+        .unwrap_or_default();
+    // A child in `opening` has no hub yet — it is a session this daemon has not adopted — and that
+    // is said as *no evidence* rather than as *no progress*: `None` and no turn.
+    let Some(hub) = registry.get(name) else {
+        return RunningChild {
+            age,
+            quiet_for: None,
+            working: turn_started,
+        };
+    };
+    let status = hub.status();
+    RunningChild {
+        age,
+        quiet_for: (status.last_ms > 0)
+            .then(|| Duration::from_millis(now_ms.saturating_sub(status.last_ms))),
+        working: turn_started || hub.turn_in_flight(),
+    }
 }
 
 /// **The plan as the idle check reads it** — every row, minus the ones it may not speak about.
@@ -4098,9 +4138,13 @@ mod idle_nag {
             "a five-minute-old child's row is due the moment the child turns thirty"
         );
 
-        // **Forty-five minutes old, and gone quiet**: talkable, and what it says is *check the
-        // child* — with the child named, its age given, and the two mechanisms that act on it.
-        let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), false));
+        // **Forty-five minutes old, and gone quiet WITH A TURN IN FLIGHT**: talkable, and what it
+        // says is *check the child* — with the child named, its age given, and the two mechanisms
+        // that act on it. **A turn in flight is what makes it the *stuck* case**: the same silence
+        // with no turn in flight is a child between turns, whose sentence sends its reader to
+        // `task_message` instead (the tools crate's
+        // `a_child_between_turns_is_told_to_be_asked_and_not_killed` is that state's own).
+        let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
         assert!(
             nag_should_arm(&plan, None, &old),
             "past the room to breathe, the check speaks"
@@ -4947,6 +4991,261 @@ mod the_subagent_exit_wait {
         assert!(
             said.contains("SIGSEGV") && said.contains("not clean"),
             "the sentence says what giving up costs, rather than claiming a clean exit: {said}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod a_childs_state_is_read_from_the_right_facts {
+    //! **The two facts `working` is filled from, and the one it is NOT.**
+    //!
+    //! The defect these hold shut, measured: `working` used to be
+    //! `SessionStatus::running`, which the engine publishes **once per ROUND** — so it is false for
+    //! the whole of a round's tool calls and for the boundary between two rounds, which is where a
+    //! child spends most of its wall clock. A child executing a ten-minute build therefore read as
+    //! *no turn in flight* for ten minutes, and the idle plan-check told its reader to go and look
+    //! at a child that was working. `child_reading` fills it from the daemon's own record of the
+    //! turn, OR the hub's corrected view, and the cases below are those two halves.
+    //!
+    //! **Everything here is constructed**: a registry, one hub, a handful of events and a journal
+    //! entry. No child, no model, no clock — the reading is a value, which is what makes the three
+    //! states assertable at all.
+    use super::{child_reading, child_sessions};
+    use crate::tasks::{TaskEntry, TaskJournal};
+    use letibot_sessionlog::SessionEvent;
+    use letibot_sessionlog::event::{FinishReason, Timings, Usage};
+    use letibot_sessionlog::hub::Hub;
+    use letibot_sessionlog::registry::{Registry, SessionWiring};
+    use letibot_tools::builtins::todo::{ChildDoing, child_doing};
+    use std::sync::Arc;
+
+    /// A registry holding one session, so a reading has a hub to read.
+    fn registry_with(id: &str) -> (Arc<Registry>, Arc<Hub>) {
+        let r = Registry::new();
+        let hub = r.new_hub(id);
+        r.adopt(
+            hub.clone(),
+            "a child",
+            SessionWiring::default(),
+            Some("s-parent".into()),
+        )
+        .expect("the child adopts");
+        (r, hub)
+    }
+
+    /// A round of a turn opening, as the engine publishes it — once per round, which is the whole
+    /// reason `status().running` is the wrong fact.
+    fn a_round_opens(hub: &Hub, turn: &str) {
+        hub.publish(SessionEvent::TurnStarted {
+            turn_id: turn.into(),
+            model: "m".into(),
+            ledger_head: "ab".into(),
+            began_ms: None,
+        });
+    }
+
+    /// The round's generation ending, with its calls still to run.
+    fn the_round_generates_out(hub: &Hub, turn: &str) {
+        hub.publish(SessionEvent::TurnFinished {
+            turn_id: turn.into(),
+            finish_reason: FinishReason::Eos,
+            usage: Usage::default(),
+            timings: Timings::default(),
+        });
+    }
+
+    /// A call of that round starting to execute — the window `status().running` cannot see.
+    fn a_call_starts(hub: &Hub, turn: &str, call: &str) {
+        hub.publish(SessionEvent::ToolStarted {
+            turn_id: turn.into(),
+            call_id: call.into(),
+            name: "bash".into(),
+            access: "exec".into(),
+        });
+    }
+
+    /// **A child in its tool calls is WORKING, and the round-level flag says it is not.**
+    ///
+    /// This is the case that made the check send its reader to `job_kill` about a child that was
+    /// building, and the two assertions are the two halves of the fix: the old fact is still false
+    /// (so nothing about `SessionStatus::running` has been changed for the heads that read it), and
+    /// the reading says working anyway.
+    #[test]
+    fn a_child_executing_a_tool_call_is_working_though_no_round_is_generating() {
+        let (r, hub) = registry_with("s-1-sub-1");
+        a_round_opens(&hub, "t1");
+        the_round_generates_out(&hub, "t1");
+        a_call_starts(&hub, "t1", "c1");
+
+        assert!(
+            !hub.status().running,
+            "the round's own flag is false here — that is the fact this change stops reading"
+        );
+        assert!(
+            hub.turn_in_flight(),
+            "and the turn IS in flight: its call has not finished"
+        );
+
+        // The journal's `running` record is the other half, and it is true for the whole of the
+        // child's first turn — including this window, which the hub's view only sees because of
+        // the unfinished call.
+        let now = letibot_sessionlog::registry::now_ms();
+        let reading = child_reading(&r, "s-1-sub-1", true, now);
+        assert!(
+            reading.working,
+            "a child inside its tool calls is working: {reading:?}"
+        );
+        assert_eq!(
+            child_doing(&reading),
+            ChildDoing::Working,
+            "and the state follows from the reading, not from a judgement: {reading:?}"
+        );
+
+        // **The record alone is enough** — the same hub, read as a child whose slot is Running but
+        // whose first round has not even opened (the opening window, where the journal says
+        // `running` and the hub has no turn at all).
+        let (r2, _hub2) = registry_with("s-2-sub-1");
+        assert!(
+            child_reading(&r2, "s-2-sub-1", true, now).working,
+            "the daemon's own record of the turn is a fact on its own"
+        );
+        assert!(
+            !child_reading(&r2, "s-2-sub-1", false, now).working,
+            "and with neither the record nor a turn in the hub, nothing is in flight"
+        );
+    }
+
+    /// **A child that answered and is parked is BETWEEN TURNS, and that is the fact the parent
+    /// could not get** — the state whose only door is a message.
+    #[test]
+    fn a_child_that_answered_and_parked_is_between_turns() {
+        let (r, hub) = registry_with("s-1-sub-2");
+        a_round_opens(&hub, "t1");
+        a_call_starts(&hub, "t1", "c1");
+        the_round_generates_out(&hub, "t1");
+        // The call finishes, the model answers, the turn ends: the child parks. The slot has
+        // settled by then, which is what `false` is here — the same fact the journal's `done` and
+        // `TaskSlot::Done` carry.
+        hub.publish(SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "d".into(),
+            inline_bytes: 1,
+            full_bytes: 1,
+            spill: None,
+            repairs: 0,
+            edit: None,
+        });
+
+        let now = letibot_sessionlog::registry::now_ms();
+        let reading = child_reading(&r, "s-1-sub-2", false, now);
+        assert!(!reading.working, "no turn is in flight: {reading:?}");
+        assert!(
+            reading.quiet_for.is_some(),
+            "and something HAS been published in it, which is what tells a parked child from one              that has not started: {reading:?}"
+        );
+        assert_eq!(
+            child_doing(&reading),
+            ChildDoing::BetweenTurns,
+            "the state a parent can act on: {reading:?}"
+        );
+    }
+
+    /// **A second turn is seen, and that is what the hub's half is for.** The slot has already
+    /// settled and the journal says `done` — so the daemon's own record of *the* turn cannot see
+    /// it — while the child is running the turn a `task_message` started.
+    #[test]
+    fn a_later_turn_is_in_flight_even_though_the_slot_has_settled() {
+        let (r, hub) = registry_with("s-1-sub-3");
+        a_round_opens(&hub, "t1");
+        the_round_generates_out(&hub, "t1");
+        a_round_opens(&hub, "t2");
+
+        let now = letibot_sessionlog::registry::now_ms();
+        // `false` is the settled slot and the journal's `done`: everything the daemon recorded
+        // about the FIRST turn says the child is finished with it.
+        let reading = child_reading(&r, "s-1-sub-3", false, now);
+        assert!(
+            reading.working,
+            "the hub is the only thing that can see a turn the child runs after its first:              {reading:?}"
+        );
+        assert_eq!(child_doing(&reading), ChildDoing::Working, "{reading:?}");
+    }
+
+    /// **A child with no hub at all reads as NO EVIDENCE, not as no progress** — and the caller's
+    /// own record still travels, because that is a fact about the spawn rather than about the
+    /// child's log.
+    #[test]
+    fn a_child_this_daemon_holds_no_session_for_reads_as_no_evidence() {
+        let r = Registry::new();
+        let now = letibot_sessionlog::registry::now_ms();
+        let reading = child_reading(&r, "s-nobody-sub-1", false, now);
+        assert!(reading.quiet_for.is_none(), "{reading:?}");
+        assert!(!reading.working, "{reading:?}");
+        assert_eq!(
+            child_doing(&reading),
+            ChildDoing::NoEvidence,
+            "nothing has been published in it, which is not the same fact as silence: {reading:?}"
+        );
+        assert!(
+            child_reading(&r, "s-nobody-sub-1", true, now).working,
+            "and a spawn the journal has recorded as running is still that: {reading:?}"
+        );
+    }
+
+    /// **`child_sessions` is the same reading, keyed by the journal's own state** — so the notice
+    /// and `task_result` cannot disagree about one child, and a `done` child is not in the snapshot
+    /// at all (which is what resolves a row's need the ordinary way).
+    #[test]
+    fn the_snapshot_is_the_journal_gated_and_the_reading_shared() {
+        let (r, hub) = registry_with("s-1-sub-4");
+        a_round_opens(&hub, "t1");
+        let journal = TaskJournal::new(
+            None,
+            Arc::new(letibot_tools::builtins::lsp::LspConfig::default()),
+            Arc::new(letibot_tools::builtins::skill::SkillRegistry::default()),
+        );
+        for (name, state) in [
+            ("s-1-sub-4", "running"),
+            ("s-1-sub-5", "opening"),
+            ("s-1-sub-6", "done"),
+        ] {
+            journal.record(TaskEntry {
+                name: name.into(),
+                role: "coder".into(),
+                state: state.into(),
+                tokens: 0,
+                elapsed: 0.0,
+                prompt: "a child".into(),
+                parent: "s-parent".into(),
+            });
+        }
+        let now = letibot_sessionlog::registry::now_ms();
+        let children = child_sessions(&r, &journal, now);
+
+        let running = children.child("s-1-sub-4").expect("a running child");
+        assert!(
+            running.working,
+            "the journal's `running` IS the daemon's record that a turn is in flight: {running:?}"
+        );
+        assert_eq!(
+            child_doing(running),
+            ChildDoing::Working,
+            "and with a fresh log it is working: {running:?}"
+        );
+
+        let opening = children.child("s-1-sub-5").expect("an opening child");
+        assert!(!opening.working, "{opening:?}");
+        assert_eq!(
+            child_doing(opening),
+            ChildDoing::NoEvidence,
+            "a spawn that has not opened has no hub and nothing published: {opening:?}"
+        );
+
+        assert!(
+            children.child("s-1-sub-6").is_none(),
+            "a child the journal says `done` is not in the snapshot, which is how a row that              waits on it is released"
         );
     }
 }

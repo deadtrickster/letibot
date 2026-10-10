@@ -1543,6 +1543,48 @@ impl Hub {
         }
     }
 
+    /// **Whether a TURN is in flight in this session — which is not what
+    /// [`SessionStatus::running`] answers.**
+    ///
+    /// `running` is read off the view's `TurnState`, and the engine publishes `TurnStarted` and
+    /// `TurnFinished` **once per ROUND** (`harness.rs`'s `begin_turn_clock` says so in as many
+    /// words: *"Called once per prompt, never per round"* — the stamp is the prompt's, the events
+    /// are the round's). So `running` is `false` for the whole of a round's tool calls and for the
+    /// boundary between two rounds, which is where a turn spends most of its wall clock: a child
+    /// executing a ten-minute build reads as *no turn in flight*, and every reader that means *is
+    /// a turn in flight* by it is wrong for the whole of that window.
+    ///
+    /// A turn IS in flight when the round that produced the calls has finished and a call of it has
+    /// not — which is the fact the view already holds (`TurnView::calls` with its `CallState`), so
+    /// this is a second reading of the same instant's state and not a second record of it. The
+    /// terminal states are the exception and are named rather than folded: an interrupted or failed
+    /// turn is over, and the calls it abandoned are not a turn in flight.
+    ///
+    /// **What this still cannot see is the boundary between a round's last call finishing and the
+    /// next round's `TurnStarted`** — a real window, seconds long, in which the daemon is appending
+    /// results, persisting and publishing. A reader that needs *is this prompt still going* rather
+    /// than *is work in flight* is asking the question the round-level events cannot answer at all;
+    /// see the `TurnEnded` row in `TODO.md`.
+    pub fn turn_in_flight(&self) -> bool {
+        let g = self.lock();
+        match g.view.turn() {
+            Some(t) => match t.state {
+                crate::view::TurnState::Running => true,
+                // The round's generation ended and its calls are being run: this is the window the
+                // round-level `running` flag cannot see.
+                crate::view::TurnState::Finished { .. } => t
+                    .calls
+                    .iter()
+                    .any(|c| !matches!(c.state, crate::view::CallState::Finished { .. })),
+                // A turn that was interrupted or failed is over, whatever its calls were left as.
+                crate::view::TurnState::Interrupted { .. }
+                | crate::view::TurnState::Failed { .. } => false,
+            },
+            // Nothing has run here yet, or the turn in view is gone: no turn is in flight.
+            None => false,
+        }
+    }
+
     /// Take the next thing for the session's single reader. Blocks. `Closed` once
     /// the hub is closed.
     ///

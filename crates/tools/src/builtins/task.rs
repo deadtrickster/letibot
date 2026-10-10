@@ -27,6 +27,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 
+// **The child's state and its evidence, from the one place that judges them** — the idle
+// plan-check's `todo.rs` (`child_doing`, `ChildDoing`, `child_evidence`), so `task_result` and the
+// check's own sentence about the same child cannot come to two different answers. `RunningChild` is
+// the reading itself, which this tool carries and does not build.
+use crate::builtins::todo::{ChildDoing, RunningChild, child_doing, child_evidence};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 pub use crate::schema::Downgrade;
 use crate::schema::{Access, ToolSchema};
@@ -278,17 +283,99 @@ pub fn worktree_branch(slug: &str) -> String {
 }
 
 /// Where a spawned subagent has got to.
+///
+/// **The reading is the child's PRESENT, and the variant is its turn's record** — two facts, and
+/// the whole of the defect this shape fixes is that they are not the same one. `Running`/`Done`
+/// are what the daemon's slot holds about the child's FIRST turn (it settles when that turn ends);
+/// `child` is what the daemon can see about the child *now*, from the same builder the idle
+/// plan-check reads (`harnessd`'s `sessions::child_reading`).
+///
+/// **Why the present had to be carried at all.** A parent holding a row open on a child could ask
+/// `task_result` three times and get one sentence — *"still working"* — about a child that might be
+/// working, might have finished its turn and be parked waiting for a word, or might be wedged
+/// mid-call. The three are tellable apart ([`ChildDoing`]) and the
+/// first of them needs no judgement at all, only a fact: a child with **no turn in flight** is
+/// between turns, and the one thing that moves it is `task_message`.
+///
+/// **`None` is not "nothing is happening"** — it is *this runner keeps no such record*, which is
+/// every fake and `NoTaskRunner`, and it renders exactly as it did before this field existed. A
+/// reading is only ever attached for a child whose thread is still alive: a thread that has ended
+/// has no present to report, and the answer is what the parent wanted anyway.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStatus {
-    /// Still working. `note` is the child's own last word about what it is doing,
-    /// when it has said one.
-    Running { note: Option<String> },
-    /// Finished, with its final answer.
-    Done { answer: String },
+    /// Still working — the child's turn has not ended. `note` is the daemon's own progress line
+    /// from the child's opening phase (see [`TaskRunner::collect`] and `TaskSlot::note`), which is
+    /// what it is called: it is NOT the child's last word, and nothing prints it as one.
+    Running {
+        note: Option<String>,
+        /// What the daemon can see about the child right now, or `None` when it keeps no record.
+        child: Option<RunningChild>,
+    },
+    /// Its turn ended, with this answer.
+    Done {
+        answer: String,
+        /// **The child's present, which the answer is not.** `Some` with `working == false` is a
+        /// child that is still HERE and between turns — the state whose only door is a message, and
+        /// the one a parent could not see before this field.
+        child: Option<RunningChild>,
+    },
     /// It did not finish, and this is why.
     Failed { why: String },
     /// No subagent by that name was ever spawned here.
     Unknown,
+}
+
+impl TaskStatus {
+    /// **Which of the states the child is in**, or `None` when this runner keeps no reading — the
+    /// one word a listing row and the full sentence both start from.
+    pub fn doing(&self) -> Option<ChildDoing> {
+        match self {
+            TaskStatus::Running { child, .. } | TaskStatus::Done { child, .. } => {
+                child.as_ref().map(child_doing)
+            }
+            TaskStatus::Failed { .. } | TaskStatus::Unknown => None,
+        }
+    }
+
+    /// **The child's present as one clause** — the state, the evidence, and the move that state
+    /// asks for — or `None` when there is no reading to give.
+    ///
+    /// The state and its evidence come from the tools crate's ONE judgement
+    /// (`todo::child_doing` / `todo::child_evidence`), so a parent that has read the idle
+    /// plan-check's sentence about this child and then calls `task_result` reads the same state in
+    /// the same words. What differs is only the MOVE, because the reader is holding a different
+    /// tool: the check names `task_result` (it has no child of its own to steer), and this names
+    /// `task_message` — which is the whole of the idle fix.
+    pub fn child_now(&self) -> Option<String> {
+        let doing = self.doing()?;
+        let child = match self {
+            TaskStatus::Running { child, .. } | TaskStatus::Done { child, .. } => child.as_ref()?,
+            TaskStatus::Failed { .. } | TaskStatus::Unknown => return None,
+        };
+        let next = match doing {
+            // Nothing to do but let it work: this is the sentence that was printed about every
+            // child, and it is only true of this one.
+            ChildDoing::Working => "it is alive and working, and its answer reaches you on its own",
+            // **The idle fix.** A parked child is not stuck and not working; the one door that
+            // reaches it is the parent's own message, and before this the parent had to guess that
+            // by sending one.
+            ChildDoing::BetweenTurns => {
+                "nothing is running in it, so `task_message` is what starts a turn for it — a \
+                 message reaches a parked child, and it hears it as its parent's words"
+            }
+            // A turn in flight that has published nothing for the window: the one state a reader
+            // is sent to LOOK at, and the one `job_kill` answers.
+            ChildDoing::Quiet | ChildDoing::NoEvidence => {
+                "check whether it is stuck: `job_kill` stops a child that is wedged, and its own \
+                 transcript is on the board under its handle"
+            }
+        };
+        Some(format!(
+            "it is {} ({}) — {next}",
+            doing.said(),
+            child_evidence(child)
+        ))
+    }
 }
 
 /// **What a finished `task_start` child's branch became** — the answer to
@@ -955,9 +1042,14 @@ impl Tool for TaskResultTool {
              answer: that is delivered to you on its own, as a turn, when it finishes. \
              Give `task` (the handle `task` returned) to see where it has got to. \
              `timeout_ms` blocks only for a child this session is not already being \
-             told about. The \
-             three endings are three different outcomes: it answered, it failed, or \
-             it is still working. Call with no `task` to list the subagents this \
+             told about. \
+             The three endings are three different outcomes: it answered, it failed, or \
+             its turn has not ended — and in that third case the answer says WHICH state \
+             the child is in, because *still working* was printed about a child that was \
+             working, one that was between turns and one that had wedged: `working` (leave \
+             it), `between turns` (nothing is running in it — `task_message` starts a turn \
+             for it), `quiet` (a turn is in flight and nothing has come out of it — check \
+             whether it is stuck). Call with no `task` to list the subagents this \
              session started.",
             json!({
                 "type": "object",
@@ -984,9 +1076,18 @@ impl Tool for TaskResultTool {
             }
             let mut out = format!("{} subagent(s) started here:\n", started.len());
             for h in &started {
-                let state = match self.runner.collect(h, std::time::Duration::ZERO) {
-                    TaskStatus::Running { note: Some(n) } => format!("running — {n}"),
-                    TaskStatus::Running { note: None } => "running".into(),
+                let status = self.runner.collect(h, std::time::Duration::ZERO);
+                // **The listing says the STATE, not liveness** — a row that says `running` about a
+                // child between turns is the sentence this change exists to stop printing, and the
+                // word comes from the same judgement the single-handle answer uses
+                // (`ChildDoing::said`). A runner that keeps no reading keeps the old words.
+                let state = match &status {
+                    TaskStatus::Running { note, .. } => match (status.doing(), note) {
+                        (Some(doing), Some(n)) => format!("{} — {n}", doing.said()),
+                        (Some(doing), None) => doing.said().to_string(),
+                        (None, Some(n)) => format!("running — {n}"),
+                        (None, None) => "running".into(),
+                    },
                     TaskStatus::Done { .. } => "answered".into(),
                     TaskStatus::Failed { .. } => "failed".into(),
                     TaskStatus::Unknown => "unknown".into(),
@@ -1013,16 +1114,30 @@ impl Tool for TaskResultTool {
         // reported as such at once. Unwatched handles — another session's, a runtime with no
         // watcher — keep the blocking wait they asked for.
         let timeout = if !timeout.is_zero() && ctx.completion_delivered(handle) {
-            match self.runner.collect(handle, std::time::Duration::ZERO) {
-                TaskStatus::Running { note } => {
+            let status = self.runner.collect(handle, std::time::Duration::ZERO);
+            match &status {
+                TaskStatus::Running { note, .. } => {
+                    // **The steering clause, in a value rather than inside the `format!`**: the
+                    // reading's own sentence when the daemon has one, and the pair of tools that
+                    // have always been named when it has none (every fake, and `NoTaskRunner`).
+                    let next = status.child_now().unwrap_or_else(|| {
+                        "`task_message` steers it and `job_kill` stops it".into()
+                    });
                     return Invocation::ok(format!(
-                        "nothing to wait for: `{handle}` is still working{}, and its answer \
-                         reaches you on its own when it finishes — the daemon is watching it \
-                         and will hand you the result unprompted, as a turn of its own. \
-                         Waiting here would hold the floor while the answer is already on its \
-                         way. Carry on with something else; `task_message` steers it and \
-                         `job_kill` stops it.",
-                        note.map(|n| format!(" (last: {n})")).unwrap_or_default()
+                        "nothing to wait for: {}, and its answer reaches you on its own when it \
+                         finishes — the daemon is watching it and will hand you the result \
+                         unprompted, as a turn of its own. Waiting here would hold the floor \
+                         while the answer is already on its way. Carry on with something \
+                         else; {next}.{}",
+                        running_said(handle, &status),
+                        // **The spawn's own line, and it is named as the spawn's.** It used to
+                        // print as *`(last: …)`* — the child's last word — and it is not one: the
+                        // note is written by the progress callback during the child's OPENING
+                        // phase and never again. The child's actual last word is in the reading
+                        // above, so the note is labelled with what it really is.
+                        note.as_ref()
+                            .map(|n| format!(" (the spawn reported: {n})"))
+                            .unwrap_or_default()
                     ));
                 }
                 _ => std::time::Duration::ZERO,
@@ -1030,8 +1145,9 @@ impl Tool for TaskResultTool {
         } else {
             timeout
         };
-        match self.runner.collect(handle, timeout) {
-            TaskStatus::Done { answer } => {
+        let status = self.runner.collect(handle, timeout);
+        match status {
+            TaskStatus::Done { ref answer, .. } => {
                 // **The child has finished, so its branch goes to be landed.** This is the one
                 // door the tool layer has onto a child's finish, and `task_start`'s own answer
                 // already sends the model here (*"call `task_result` with task=…"*), so the
@@ -1042,21 +1158,33 @@ impl Tool for TaskResultTool {
                 //
                 // **The answer comes first and the queue line after it**, because the answer
                 // is what the model asked for and the queue line is news about it.
+                //
+                // **And the child's PRESENT comes after both, when the daemon has one.** An
+                // answer is the child's first turn's record: a child that answered and is still
+                // here is a child that is parked, and the only door onto a parked child is its
+                // parent's message. That is the sentence the operator had to learn by sending one
+                // — *"it was between turns … a turn has been started for it"* — and it belongs
+                // where the parent is already reading.
+                let now = status.child_now().map(|said| format!("\n\n[child] {said}"));
                 match self.runner.finished(handle) {
                     Ok(Finished::Queued { id, branch }) => Invocation::ok(format!(
                         "{answer}\n\n[merge queue] `{branch}` is enqueued as `{id}` and is \
                          waiting to be landed: the gatekeeper reviews it against the brief it \
                          was given, then the queue rebases it at the tip of main and runs the \
-                         gate. The worktree stays until it lands."
+                         gate. The worktree stays until it lands.{}",
+                        now.unwrap_or_default()
                     )),
-                    Ok(Finished::NoBranch { .. }) => Invocation::ok(answer),
+                    Ok(Finished::NoBranch { .. }) => {
+                        Invocation::ok(format!("{answer}{}", now.unwrap_or_default()))
+                    }
                     // **A failure is said, not swallowed.** The branch is not pushed and nobody
                     // else carries it, so a parent told nothing would believe the work was on
                     // its way to main when it is sitting on a branch in a worktree.
                     Err(why) => Invocation::ok(format!(
                         "{answer}\n\n[merge queue] the branch of `{handle}` was NOT enqueued: \
                          {why} It is still on its branch in its worktree, and nothing has been \
-                         lost — but nothing will land it until it is enqueued."
+                         lost — but nothing will land it until it is enqueued.{}",
+                        now.unwrap_or_default()
                     )),
                 }
             }
@@ -1067,14 +1195,26 @@ impl Tool for TaskResultTool {
                          and its transcript is on the board under `{handle}`."
                 ),
             ),
-            TaskStatus::Running { note } => Invocation::abstained(
-                format!("subagent `{handle}` is still working"),
+            // **The sentence that said one thing about three states.** *"Still working"* was
+            // printed about a child that was working, about one whose turn had ended and was
+            // parked waiting for a word, and about one that had wedged mid-call — the operator's
+            // own measurement, three asks and one sentence. The headline now names the state, and
+            // the body carries what the daemon can see and the move that state asks for. A runner
+            // that keeps no reading gets the old words, byte for byte.
+            TaskStatus::Running { ref note, .. } => Invocation::abstained(
+                format!("subagent `{handle}` is {}", doing_word(&status)),
                 format!(
-                    "the deadline passed and `{handle}` has not answered yet{}. This is \
+                    "the deadline passed and `{handle}` has not answered yet{}. {} This is \
                      the wait ending, not the subagent ending — call `task_result` again \
                      with a longer `timeout_ms`, or do something else and collect it \
                      later.",
-                    note.map(|n| format!(" (last: {n})")).unwrap_or_default()
+                    note.as_ref()
+                        .map(|n| format!(" (the spawn reported: {n})"))
+                        .unwrap_or_default(),
+                    status
+                        .child_now()
+                        .map(|said| format!("Right now {said}."))
+                        .unwrap_or_default()
                 ),
             ),
             TaskStatus::Unknown => Invocation::failed(
@@ -1083,6 +1223,26 @@ impl Tool for TaskResultTool {
             ),
         }
     }
+}
+
+/// **The state of a child whose turn has not ended, in words** — `working`, `between turns`,
+/// `quiet` or `showing nothing yet` when the daemon has a reading, and `still working` when it has
+/// none (every fake, and `NoTaskRunner`).
+///
+/// One function, because the R23 sentence and the deadline sentence are two doors onto one child
+/// and must not disagree about which state it is in — the same rule [`TaskStatus::child_now`]
+/// follows for the body.
+fn doing_word(status: &TaskStatus) -> String {
+    match status.doing() {
+        Some(doing) => doing.said().to_string(),
+        None => "still working".to_string(),
+    }
+}
+
+/// **`task_result`'s half of the child's state, with the name attached** — the state word and the
+/// child's handle, for a sentence that has to say which child it is about.
+fn running_said(handle: &str, status: &TaskStatus) -> String {
+    format!("`{handle}` is {}", doing_word(status))
 }
 
 /// `task_message` — say something to a session, running or not.
@@ -1202,6 +1362,7 @@ mod tests {
             {
                 Some((_, answer)) => TaskStatus::Done {
                     answer: answer.clone(),
+                    child: None,
                 },
                 None => TaskStatus::Unknown,
             }
@@ -1353,10 +1514,14 @@ mod tests {
                     if self.done.load(Ordering::SeqCst) {
                         return TaskStatus::Done {
                             answer: "the child's answer".into(),
+                            child: None,
                         };
                     }
                     if std::time::Instant::now() >= deadline {
-                        return TaskStatus::Running { note: None };
+                        return TaskStatus::Running {
+                            note: None,
+                            child: None,
+                        };
                     }
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -1410,6 +1575,138 @@ mod tests {
         assert!(r.payload.contains("has not answered yet"), "{}", r.payload);
     }
 
+    /// **THE THREE STATES, THROUGH THE DOOR THE PARENT HAS** — a working child, an idle one and a
+    /// wedged one must be tellable apart by what `task_result` answers, and the idle one is the
+    /// case this change is for.
+    ///
+    /// The operator's measurement, in their words: three asks about one child produced the
+    /// identical sentence, *"still working"* — *"which tells me it has not died and nothing at all
+    /// about whether it is stuck"*. And the state that had no sentence anywhere: a child whose turn
+    /// ended and which sits parked, *"between turns"*, which the parent learned only by sending a
+    /// message nothing said to send.
+    ///
+    /// **Constructed, not waited for**: the reading is a value the runner hands back
+    /// ([`RunningChild`]), so the three cases are three literals and no child, no model and no
+    /// clock. The one thing this cannot construct is a runner that keeps no reading — that is the
+    /// last case, and it must read exactly as it did before this field existed.
+    #[test]
+    fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
+        use crate::runtime::{Registry, ToolRuntime};
+        use std::time::Duration;
+
+        /// A runner that answers with one reading for as long as it is asked. `None` is the
+        /// runner that keeps no record at all, which is every fake and `NoTaskRunner`.
+        struct OneReading(Option<RunningChild>);
+        impl TaskRunner for OneReading {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-r".into())
+            }
+            fn collect(&self, _h: &str, _t: Duration) -> TaskStatus {
+                TaskStatus::Running {
+                    note: None,
+                    child: self.0,
+                }
+            }
+            fn started(&self) -> Vec<String> {
+                vec!["sub-r".into()]
+            }
+        }
+
+        let ask = |child: Option<RunningChild>| {
+            let runner: Arc<dyn TaskRunner> = Arc::new(OneReading(child));
+            let d = crate::backend::tempdir::TempDir::new();
+            let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+            let mut reg = Registry::new();
+            reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
+            let mut rt = ToolRuntime::new(reg, Box::new(backend));
+            rt.invoke(
+                "t1",
+                &letibot_transcript::ToolCall {
+                    id: "c0".into(),
+                    name: "task_result".into(),
+                    arguments: r#"{"task": "sub-r"}"#.into(),
+                },
+                &mut crate::NullToolSink,
+            )
+        };
+        // Forty-five minutes old in every case, so the AGE decides nothing and the difference
+        // between the answers is only what the child last showed — the whole point.
+        let at = |quiet: u64, working: bool| RunningChild {
+            age: Duration::from_secs(45 * 60),
+            quiet_for: Some(Duration::from_secs(quiet)),
+            working,
+        };
+        let summary = |r: &crate::ToolResult| match &r.outcome {
+            letibot_transcript::ToolOutcome::Abstained { reason } => reason.clone(),
+            other => panic!("a child whose turn has not ended abstains: {other:?}"),
+        };
+
+        // **1. WORKING** — a turn in flight and the child's own log moved eight seconds ago.
+        let working = ask(Some(at(8, true)));
+        assert_eq!(summary(&working), "subagent `sub-r` is working");
+        assert!(
+            working.payload.contains("a turn is in flight"),
+            "{}",
+            working.payload
+        );
+        assert!(
+            !working.payload.contains("check whether it is stuck"),
+            "a child that is moving is not sent to be looked at: {}",
+            working.payload
+        );
+
+        // **2. IDLE, which is the case that had no sentence.** No turn is in flight and the child
+        // is still there: the one door that reaches it is its parent's message, and the answer must
+        // say so instead of the sentence that was printed about every child.
+        let idle = ask(Some(at(12 * 60, false)));
+        assert_eq!(
+            summary(&idle),
+            "subagent `sub-r` is between turns",
+            "the state is named, and it is not *still working*: the whole defect is here"
+        );
+        assert!(
+            idle.payload.contains("between turns") && idle.payload.contains("`task_message`"),
+            "and the move a parked child needs is named: {}",
+            idle.payload
+        );
+        assert!(
+            !idle.payload.contains("still working"),
+            "the sentence this replaces, and the one the operator got three times: {}",
+            idle.payload
+        );
+        assert!(
+            !idle.payload.contains("`job_kill`"),
+            "a child waiting to be asked is not stuck, and stopping it is not the move: {}",
+            idle.payload
+        );
+
+        // **3. WEDGED** — a turn in flight and nothing out of it for twelve minutes. The same
+        // silence as the idle child, and the opposite move: this is the one `job_kill` answers.
+        let wedged = ask(Some(at(12 * 60, true)));
+        assert_eq!(summary(&wedged), "subagent `sub-r` is quiet");
+        assert!(
+            wedged.payload.contains("check whether it is stuck")
+                && wedged.payload.contains("`job_kill`"),
+            "a turn in flight with nothing coming out of it is what a reader is sent to look at: {}",
+            wedged.payload
+        );
+        assert_ne!(
+            idle.payload, wedged.payload,
+            "idle and wedged must not read the same — they are the two states this whole change is \
+             about"
+        );
+
+        // **And a runner that keeps no reading reads exactly as it did before.** This is the tree's
+        // rule for a defaulted field: every existing fake, and `NoTaskRunner`, is this case.
+        let none = ask(None);
+        assert_eq!(summary(&none), "subagent `sub-r` is still working");
+        assert!(
+            !none.payload.contains("between turns") && !none.payload.contains("`task_message`"),
+            "a runner with no reading must not be made to claim one: {}",
+            none.payload
+        );
+    }
+
     #[test]
     fn starting_a_subagent_does_not_wait_for_it() {
         use std::sync::Arc as StdArc;
@@ -1432,11 +1729,13 @@ mod tests {
                     if self.release.load(Ordering::SeqCst) {
                         return TaskStatus::Done {
                             answer: "the child answered".into(),
+                            child: None,
                         };
                     }
                     if std::time::Instant::now() >= deadline {
                         return TaskStatus::Running {
                             note: Some("still going".into()),
+                            child: None,
                         };
                     }
                     std::thread::yield_now();
@@ -1559,6 +1858,7 @@ mod tests {
             fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
                 TaskStatus::Done {
                     answer: "the child answered".into(),
+                    child: None,
                 }
             }
             fn start_worktree(
@@ -1686,7 +1986,8 @@ mod tests {
         assert_eq!(
             e.collect(&h, std::time::Duration::ZERO),
             TaskStatus::Done {
-                answer: "coder [none] @host: find the bug".into()
+                answer: "coder [none] @host: find the bug".into(),
+                child: None,
             }
         );
         assert!(

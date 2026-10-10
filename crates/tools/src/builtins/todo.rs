@@ -652,9 +652,22 @@ pub struct RunningChild {
     pub quiet_for: Option<Duration>,
     /// **Whether a turn is in flight in it at this instant.**
     ///
+    /// **Filled from the daemon's own record of the turn, not from `SessionStatus::running`.**
+    /// That flag is the ROUND's (`TurnStarted`/`TurnFinished` are published once per round, so it
+    /// is false for the whole of a round's tool calls and for the boundary between two rounds),
+    /// and a child executing a ten-minute build read as *no turn in flight* for ten minutes — which
+    /// is the lie that made the check send its reader to `job_kill` about a child that was working.
+    /// What fills this instead is `harnessd`'s `sessions::child_reading`: the journal's `running`
+    /// state (or `TaskSlot::Running`), which is the daemon's record that this child's turn has
+    /// started and has not settled, OR `Hub::turn_in_flight`, which sees the tool calls of a round
+    /// whose generation has finished — the half the record cannot see for a turn that is not the
+    /// child's first.
+    ///
     /// Deliberately not called `stuck`: a turn in flight is true of a child that is generating,
     /// of one inside a tool call, and of one that has wedged mid-call, so on its own it decides
-    /// nothing — it is the other half of the evidence, and `quiet_for` is what moves.
+    /// nothing — it is the other half of the evidence, and `quiet_for` is what moves. What it does
+    /// decide is the difference between a child that needs LOOKING at and a child that needs
+    /// ASKING: see [`ChildDoing`].
     pub working: bool,
 }
 
@@ -1148,6 +1161,99 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
     format!("`{}` waits on {}", row.content.trim(), waits.join(", "))
 }
 
+/// **What a live child is DOING, as the daemon can see it** — the three states the operator's
+/// directive asks to be told apart, NAMED rather than left as evidence for a reader to judge.
+///
+/// The operator's table, 2026-10-10, and the reason the two booleans were not enough:
+///
+/// * **working** — a turn is in flight and the child's own log has moved inside
+///   [`CHILD_QUIET_ENOUGH_TO_LOOK`]. Nothing to do but let it work.
+/// * **between turns** — **no turn is in flight and the child is still here.** Its turn ended
+///   (or none has started) and it is parked; the one thing that moves it is a word from its
+///   parent, so the steering is `task_message` and NOT `job_kill`. This is the state the operator
+///   measured and could not see: *"it was between turns … a turn has been started for it"* was
+///   learned only by sending a message nothing said to send.
+/// * **quiet** — a turn IS in flight and nothing has been published for longer than the window.
+///   This is the only state the check may send a reader to *look* at, and the one `job_kill`
+///   answers.
+/// * **showing nothing yet** — no turn in flight and **nothing ever published in it**: the
+///   daemon's honest answer for a child it has not heard from at all, which is not the same fact
+///   as a child that has gone quiet. The tree's rule is to say that rather than fold it into one
+///   of the two above.
+///
+/// **One judgement, so two doors cannot disagree about one child**: the idle plan-check's sentence
+/// (`child_said`) and `task_result`'s (`builtins::task`) both read this, and the enum is the
+/// vocabulary they share. Before it, the check said *"no turn is in flight"* about a child
+/// mid-tool-call and sent its reader to `job_kill` about a child that only needed asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildDoing {
+    /// A turn is in flight and the child's own log moved inside the window.
+    Working,
+    /// **No turn is in flight and the child is still here** — parked, and reachable by a message.
+    BetweenTurns,
+    /// A turn is in flight and nothing has been published for longer than the window.
+    Quiet,
+    /// Nothing has been published in it at all, so the daemon has no evidence either way.
+    NoEvidence,
+}
+
+impl ChildDoing {
+    /// **The state in the words both doors use** — one spelling, so a reader who has read the
+    /// notice and then called `task_result` reads the same state and not two paraphrases of it.
+    pub fn said(self) -> &'static str {
+        match self {
+            ChildDoing::Working => "working",
+            ChildDoing::BetweenTurns => "between turns",
+            ChildDoing::Quiet => "quiet",
+            ChildDoing::NoEvidence => "showing nothing yet",
+        }
+    }
+}
+
+/// **Which of those states this reading is** — the whole judgement, in one place.
+///
+/// `working` is the daemon's own record that a turn is in flight in the child (see
+/// [`RunningChild::working`]) and `quiet_for` is the age of the last event on the child's own log,
+/// so the two axes are *is anything running* and *has anything moved* — the operator's table, and
+/// nothing else. A reader that wants the evidence rather than the name takes [`child_evidence`].
+pub fn child_doing(child: &RunningChild) -> ChildDoing {
+    match (child.working, child.quiet_for) {
+        // Moving: this is the state the check must NOT speak about.
+        (true, Some(gap)) if gap < CHILD_QUIET_ENOUGH_TO_LOOK => ChildDoing::Working,
+        // A turn is in flight and nothing has come out of it for longer than the window.
+        (true, _) => ChildDoing::Quiet,
+        // No turn in flight, and something HAS been published: the turn ended and the child is
+        // parked. A child still opening reads the same way here, and the difference is the
+        // journal's own state (`opening` versus `running`), which the caller that needs it holds —
+        // what this can honestly say is that nothing is running in it.
+        (false, Some(_)) => ChildDoing::BetweenTurns,
+        (false, None) => ChildDoing::NoEvidence,
+    }
+}
+
+/// **The evidence under the name** — what the daemon saw, in the one clause both doors print.
+///
+/// One function, because the notice's parenthesis and `task_result`'s sentence are the same
+/// reading and a second rendering of it would be a second answer about one child.
+pub fn child_evidence(child: &RunningChild) -> String {
+    let turn = if child.working {
+        "a turn is in flight"
+    } else {
+        "no turn is in flight"
+    };
+    let moved = match child.quiet_for {
+        Some(gap) => format!("its last event was {} ago", human_gap(gap)),
+        None => "nothing has been published in it".to_string(),
+    };
+    // The working arm reads as one parenthetical (`a turn is in flight, its last event …`), the
+    // others as two clauses joined by `and`. Same facts, and the sentence keeps its shape.
+    if child.working {
+        format!("{turn}, {moved}")
+    } else {
+        format!("{turn} and {moved}")
+    }
+}
+
 /// **What the check says about a child it is waiting on** — the evidence and the steering, in one
 /// clause, because the operator's directive has both halves in one breath: *"you must be give a
 /// room to breath yet be steared to check the child is not stuck"*.
@@ -1159,39 +1265,36 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
 /// the child's own session, and whether a turn is in flight in it — and they are what moves when
 /// a child works and stops when it stops.
 ///
-/// **The steering follows the evidence, and that is the second half of the same fix.** A child
-/// whose own log moved inside [`CHILD_QUIET_ENOUGH_TO_LOOK`] is called WORKING, and the reader is
-/// told it is alive rather than sent to look: the nag the operator reported four times in twenty
-/// minutes was exactly a check asked for about a child that was fine. Anything else — including a
-/// child with no evidence at all, which is what a caller that knows only an age hands in — is
-/// *"check whether it is stuck"*, with both mechanisms named, because a model that has to guess a
-/// mechanism guesses wrong.
+/// **The steering follows the state, and there are three of them** ([`ChildDoing`]): a child whose
+/// own log moved inside [`CHILD_QUIET_ENOUGH_TO_LOOK`] is called WORKING and the reader is told it
+/// is alive rather than sent to look; a child with **no turn in flight** is BETWEEN TURNS, and the
+/// move for that one is a word — `task_message` starts a turn for it, and `job_kill` would stop a
+/// child that is doing nothing wrong; and only a child with a turn in flight and nothing published
+/// for the window is *"check whether it is stuck"*, with both mechanisms named, because a model
+/// that has to guess a mechanism guesses wrong.
 ///
 /// **What this cannot tell apart is said rather than hidden**: a child inside a long tool call
 /// that writes nothing publishes nothing while the call runs, so it reads as quiet. The evidence
 /// beside the sentence is what a reader judges that by, and [`CHILD_QUIET_ENOUGH_TO_LOOK`] carries
 /// the whole of the reasoning.
 fn child_said(child: &RunningChild) -> String {
-    let turn = if child.working {
-        "a turn is in flight"
-    } else {
-        "no turn is in flight"
-    };
-    let moved = match child.quiet_for {
-        Some(gap) => format!("its last event was {} ago", human_gap(gap)),
-        None => "nothing has been published in it".to_string(),
-    };
-    if child.working
-        && child
-            .quiet_for
-            .is_some_and(|gap| gap < CHILD_QUIET_ENOUGH_TO_LOOK)
-    {
-        format!("it is working ({turn}, {moved})")
-    } else {
-        format!(
-            "{turn} and {moved} — check whether it is stuck: `task_result` with its id says where \
-             it got to, and `job_kill` stops a child that is wedged"
-        )
+    match child_doing(child) {
+        ChildDoing::Working => format!("it is working ({})", child_evidence(child)),
+        // **The state that had no sentence.** A child whose turn has ended is not stuck and is not
+        // working: it is parked, and the one door that reaches a parked child is the parent's
+        // message. Sending its reader to `job_kill` was the defect — that stops a child that is
+        // waiting to be asked, and the ask is one call.
+        ChildDoing::BetweenTurns => format!(
+            "{} — nothing is running in it, so it is between turns, and a word from you is what \
+             starts one: `task_message` reaches a parked child, and `task_result` reads what it \
+             answered last",
+            child_evidence(child)
+        ),
+        ChildDoing::Quiet | ChildDoing::NoEvidence => format!(
+            "{} — check whether it is stuck: `task_result` with its id says where it got to, and \
+             `job_kill` stops a child that is wedged",
+            child_evidence(child)
+        ),
     }
 }
 
@@ -3996,9 +4099,12 @@ mod tests {
         );
 
         // **Forty-five minutes old: it is talkable, and what it says is *check the child*.** The
-        // child has gone quiet — nothing out of it for twelve minutes, no turn in flight — which is
-        // the state the operator wants the model steered to.
-        let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), false));
+        // child has gone quiet — a turn is in flight and nothing has come out of it for twelve
+        // minutes — which is the state the operator wants the model steered to. **A turn in flight
+        // is what makes this the *stuck* case**: the same silence with NO turn in flight is a child
+        // between turns, and `a_child_between_turns_is_told_to_be_asked_and_not_killed` below is
+        // that state's own sentence.
+        let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
         assert!(
             !waits_on_a_child_with_room_to_breathe(&plan[0], &old),
             "past the room to breathe, the check may speak"
@@ -4017,7 +4123,7 @@ mod tests {
             "the one sentence it must not say is the one that tells the model nothing: {msg}"
         );
         assert!(
-            msg.contains("no turn is in flight") && msg.contains("12 minutes"),
+            msg.contains("a turn is in flight") && msg.contains("12 minutes"),
             "and it carries the evidence the verdict was made of: {msg}"
         );
         assert!(
@@ -4053,14 +4159,54 @@ mod tests {
 
         // **The same age, nothing moving.** The two notices differ, and that difference is the
         // whole of what the operator asked for.
-        let quiet =
-            ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), false));
+        let quiet = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
         let quiet_msg = nag_with(&plan, &quiet).expect("a stuck plan speaks");
         assert_ne!(msg, quiet_msg, "working and quiet must not read the same");
         assert!(
             quiet_msg.contains("check whether it is stuck"),
             "{quiet_msg}"
         );
+    }
+
+    /// **An IDLE child is told to be ASKED, and not to be killed** — the third state, and the one
+    /// that had no sentence at all.
+    ///
+    /// The operator's own measurement: *"it was between turns … a turn has been started for it"*
+    /// was learned only by sending a message nothing said to send. The reading is one fact — **no
+    /// turn is in flight and the child is still there** — and the move it asks for is
+    /// `task_message`, which is the only door that reaches a parked child.
+    ///
+    /// **What it must NOT say is `job_kill`**, and that is the assertion with teeth: the old
+    /// sentence sent its reader to stop a child that was doing nothing wrong, waiting to be asked.
+    #[test]
+    fn a_child_between_turns_is_told_to_be_asked_and_not_killed() {
+        let plan = vec![waiting_on_a_child(
+            "collect the child's answer",
+            "s-1-sub-2",
+        )];
+        // Forty-five minutes old, nothing for twelve minutes, and **no turn in flight**: the child
+        // finished the turn it was running and is parked, waiting for a word.
+        let idle = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), false));
+        let msg = nag_with(&plan, &idle).expect("an old child is spoken about");
+        assert!(
+            msg.contains("no turn is in flight") && msg.contains("12 minutes"),
+            "the evidence is printed, because a reader judges by it: {msg}"
+        );
+        assert!(
+            msg.contains("between turns") && msg.contains("`task_message`"),
+            "and the move for a parked child is the one door that reaches it: {msg}"
+        );
+        assert!(
+            !msg.contains("`job_kill`") && !msg.contains("check whether it is stuck"),
+            "a child waiting to be asked is not stuck, and stopping it is not the move: {msg}"
+        );
+
+        // **And the state is the reading's own**, so the same child with a turn in flight keeps the
+        // check sentence — the two states cannot be told apart by anything but the fact.
+        let working =
+            ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+        let other = nag_with(&plan, &working).expect("a stuck plan speaks");
+        assert_ne!(msg, other, "idle and wedged must not read the same");
     }
 
     /// **A child that has FINISHED resolves the need, and the row stops being about the child.**

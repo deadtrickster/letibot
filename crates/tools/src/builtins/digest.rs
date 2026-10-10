@@ -132,7 +132,7 @@ impl DigestRunner for SubagentDigest {
         };
         let handle = self.runner.start(&prompt, &spec)?;
         match self.runner.collect(&handle, self.per_chunk) {
-            TaskStatus::Done { answer } => Ok(answer),
+            TaskStatus::Done { answer, .. } => Ok(answer),
             TaskStatus::Failed { why } => Err(format!("part {n} of {of}: {why}")),
             TaskStatus::Running { .. } => Err(format!(
                 "part {n} of {of} was still running after {}s",

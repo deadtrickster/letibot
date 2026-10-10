@@ -1064,7 +1064,7 @@ fn review_outcome(
 ) -> Option<ReviewOutcome> {
     use letibot_tools::builtins::task::TaskStatus;
     match status {
-        TaskStatus::Done { answer } => Some(
+        TaskStatus::Done { answer, .. } => Some(
             match letibot_tools::gatekeeper::parse_verdict(req, &answer) {
                 Ok(v) => ReviewOutcome::Verdict {
                     decision: v.decision.as_str().to_string(),
@@ -12055,6 +12055,10 @@ impl TaskSlot {
         TaskSlot {
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
+                // **The reading is attached where it is ASKED for, not settled here.** A value
+                // written once would be stale the moment the child was asked something more; see
+                // [`HarnessTaskRunner::collect`].
+                child: None,
             }),
             settled: std::sync::Condvar::new(),
             killed: std::sync::atomic::AtomicBool::new(false),
@@ -12102,11 +12106,18 @@ impl TaskSlot {
         self.has_exited()
     }
 
-    /// The child's own last word about what it is doing. Kept only while it is
+    /// The daemon's own progress line for this child, kept while it is still
     /// running: a note on a settled subagent would overwrite its answer.
+    ///
+    /// **Not the child's last word, and named so.** The callback `run_to_completion` takes is
+    /// called three times, all of them during the child's OPENING phase — *"subagent … open
+    /// after 1.2s"* — so this is the spawn's account of itself and nothing about the turn that
+    /// follows. It is labelled `the spawn reported:` wherever it is printed, and what a reader
+    /// wants instead (what the child is doing NOW) is `child_reading`'s, attached at the moment
+    /// it is asked for by [`HarnessTaskRunner::collect`].
     fn note(&self, text: &str) {
         let mut g = self.state.lock().expect("task slot");
-        if let letibot_tools::builtins::task::TaskStatus::Running { note } = &mut *g {
+        if let letibot_tools::builtins::task::TaskStatus::Running { note, .. } = &mut *g {
             *note = Some(text.to_string());
         }
     }
@@ -13798,7 +13809,15 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // **Which of the two deliveries this is, read before the submit.** Both are real and
         // they are told apart by the child's state at the moment the parent spoke — a running
         // turn hears it at its next round boundary, a child between turns has a turn started.
-        let running = hub.status().running;
+        //
+        // **And it is the SAME reading the rest of this change uses** — `Hub::turn_in_flight`,
+        // not `SessionStatus::running`. That flag is the ROUND's (see `turn_in_flight`'s own doc),
+        // so this door said *"it was between turns, so a turn has been started for it"* about a
+        // child whose turn was very much running — mid-tool-call — while `task_result` and the
+        // idle plan-check, reading the corrected fact, said it was working. Two doors, one child,
+        // two answers is the failure this whole change is against, and this line is where the
+        // third door (a parent's message) joins the other two.
+        let running = hub.turn_in_flight();
         let f = hub.submit(
             letibot_sessionlog::hub::DAEMON_SUBMITTER,
             &format!(
@@ -13870,23 +13889,50 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         }
     }
 
+    /// **Where the child has got to, which is two facts and not one.**
+    ///
+    /// The SLOT is the record of the child's first turn: `Running` until that turn ends, then
+    /// `Done` with its answer or `Failed` with why. The READING is the child's present, taken at
+    /// the moment it is asked for — a child that answered and is parked, one running the second
+    /// turn a `task_message` started, and one that has wedged mid-call all read `Done` or
+    /// `Running` in the slot and are three different states NOW.
+    ///
+    /// **So the reading is attached here rather than settled into the slot**, which is the whole
+    /// reason this is not one line of `g.clone()` any more: a value written once at the turn's
+    /// end would describe the child as it was then, for ever, which is exactly what *"still
+    /// working"* was — the same sentence for a working child, an idle one and a wedged one.
     fn collect(
         &self,
         handle: &str,
         timeout: std::time::Duration,
     ) -> letibot_tools::builtins::task::TaskStatus {
+        use letibot_tools::builtins::task::TaskStatus;
         let slot = self.slot(handle);
         let Some(slot) = slot else {
-            return letibot_tools::builtins::task::TaskStatus::Unknown;
+            return TaskStatus::Unknown;
         };
-        let g = slot.state.lock().expect("task slot");
-        let (g, _) = slot
-            .settled
-            .wait_timeout_while(g, timeout, |s| {
-                matches!(s, letibot_tools::builtins::task::TaskStatus::Running { .. })
-            })
-            .expect("task slot");
-        g.clone()
+        let status = {
+            let g = slot.state.lock().expect("task slot");
+            let (g, _) = slot
+                .settled
+                .wait_timeout_while(g, timeout, |s| matches!(s, TaskStatus::Running { .. }))
+                .expect("task slot");
+            g.clone()
+        };
+        let Some(child) = self.live_reading(handle, &status, &slot) else {
+            return status;
+        };
+        match status {
+            TaskStatus::Running { note, .. } => TaskStatus::Running {
+                note,
+                child: Some(child),
+            },
+            TaskStatus::Done { answer, .. } => TaskStatus::Done {
+                answer,
+                child: Some(child),
+            },
+            other => other,
+        }
     }
 
     fn started(&self) -> Vec<String> {
@@ -14140,6 +14186,42 @@ impl HarnessTaskRunner {
             placed: Arc::new(std::sync::Mutex::new(placed)),
             merge_store: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// **What the daemon can see about one child RIGHT NOW**, or `None` when it has nothing to
+    /// report — a handle this daemon holds no session for, or a child whose own thread has ended
+    /// (a thread that is gone has no present; what the parent wants from it is its answer, which
+    /// is what the slot already carries).
+    ///
+    /// `turn_started` is the SLOT's own record: a `Running` slot is a child whose first turn has
+    /// not settled, which is the daemon's record that a turn is in flight. The hub's half of the
+    /// same fact (`Hub::turn_in_flight`) is the only thing that sees a turn the child runs AFTER
+    /// its first — the second turn a `task_message` starts, when the slot has already settled and
+    /// the journal says `done` — and `crate::sessions::child_reading` is where the two are ORed.
+    /// **This is that function and not a second fill**, so `task_result` and the idle plan-check's
+    /// sentence about one child cannot come to different answers.
+    fn live_reading(
+        &self,
+        handle: &str,
+        status: &letibot_tools::builtins::task::TaskStatus,
+        slot: &TaskSlot,
+    ) -> Option<letibot_tools::builtins::todo::RunningChild> {
+        if slot.has_exited() {
+            return None;
+        }
+        // No session, no reading: a child this daemon has not adopted yet is still opening, and
+        // *nothing to say about it* is the honest answer rather than *nothing is happening*.
+        self.registry.get(handle)?;
+        let turn_started = matches!(
+            status,
+            letibot_tools::builtins::task::TaskStatus::Running { .. }
+        );
+        Some(crate::sessions::child_reading(
+            &self.registry,
+            handle,
+            turn_started,
+            letibot_sessionlog::registry::now_ms(),
+        ))
     }
 
     /// **This session's point, as it stands now** — see the field.
@@ -14822,6 +14904,9 @@ impl HarnessTaskRunner {
             };
             answer.say(letibot_tools::builtins::task::TaskStatus::Done {
                 answer: said.clone(),
+                // **No reading for a VM child**: its substrate is closed with its turn, so the
+                // child is not reachable and there is no present to report. See `collect`.
+                child: None,
             });
             // **The child has finished, so its branch goes to the queue** — the runner's own
             // half of `task_start`'s door, taken here because THIS is the finish. See
@@ -14837,6 +14922,11 @@ impl HarnessTaskRunner {
         // the life of the daemon — `task_result` would simply never answer.
         answer.say(letibot_tools::builtins::task::TaskStatus::Done {
             answer: reply.text.clone(),
+            // **No reading here either, and for a reason that is the whole design.** This is
+            // where the answer is given, and the reading is taken where it is ASKED for
+            // (`collect`): a child that answers and then parks would otherwise be described as
+            // it was at the moment it answered, for ever.
+            child: None,
         });
         // **The child has finished, so its branch goes to the queue.** Here rather than at the
         // thread's exit, and the difference is the whole reason `AnswerOnce` exists: a host
@@ -17019,6 +17109,7 @@ mod tests {
         let plain = TaskSlot::new("s-parent");
         plain.settle(TaskStatus::Done {
             answer: "half a sentence".into(),
+            child: None,
         });
         assert!(matches!(
             &*plain.state.lock().expect("slot"),
@@ -17029,6 +17120,7 @@ mod tests {
         killed.kill();
         killed.settle(TaskStatus::Done {
             answer: "half a sentence".into(),
+            child: None,
         });
         match &*killed.state.lock().expect("slot") {
             TaskStatus::Failed { why } => assert!(
@@ -17108,10 +17200,11 @@ mod tests {
         let answered = TaskSlot::new("s-parent");
         answered.settle(TaskStatus::Done {
             answer: "the child's own answer".into(),
+            child: None,
         });
         finish_child_thread(&answered, Err("a later error".into()));
         assert!(
-            matches!(answered.status(), TaskStatus::Done { ref answer } if answer == "the child's own answer"),
+            matches!(answered.status(), TaskStatus::Done { ref answer, .. } if answer == "the child's own answer"),
             "{:?}",
             answered.status()
         );
@@ -17152,6 +17245,7 @@ mod tests {
         let mine_answered = Arc::new(TaskSlot::new("s-child"));
         mine_answered.settle(letibot_tools::builtins::task::TaskStatus::Done {
             answer: "done, and still here".into(),
+            child: None,
         });
         let mine_and_gone = Arc::new(TaskSlot::new("s-child"));
         mine_and_gone.mark_exited();
@@ -18153,12 +18247,14 @@ mod tests {
             let answer = AnswerOnce::new(&slot);
             answer.say(TaskStatus::Done {
                 answer: "the child's answer".into(),
+                child: None,
             });
         }
         assert_eq!(
             slot.status(),
             TaskStatus::Done {
-                answer: "the child's answer".into()
+                answer: "the child's answer".into(),
+                child: None,
             }
         );
 
@@ -18180,6 +18276,7 @@ mod tests {
             let answer = AnswerOnce::new(&slot);
             answer.say(TaskStatus::Done {
                 answer: "said".into(),
+                child: None,
             });
             answer.say(TaskStatus::Failed {
                 why: "the park ended oddly".into(),
@@ -18188,7 +18285,8 @@ mod tests {
         assert_eq!(
             slot.status(),
             TaskStatus::Done {
-                answer: "said".into()
+                answer: "said".into(),
+                child: None,
             },
             "a later path out overwrote what the child said"
         );
@@ -19687,6 +19785,7 @@ mod gatekeeper_reviews {
                 answer: "Read the diff.\n\nverdict: accept\nreasons: - the test covers it\n\
                          files: src/reader.rs\ncommands: git diff abc123...agent/reader"
                     .into(),
+                child: None,
             },
         )
         .expect("settled");
@@ -19705,7 +19804,13 @@ mod gatekeeper_reviews {
         }
 
         assert_eq!(
-            review_outcome(&req(), TaskStatus::Running { note: None }),
+            review_outcome(
+                &req(),
+                TaskStatus::Running {
+                    note: None,
+                    child: None,
+                }
+            ),
             None
         );
         assert_eq!(review_outcome(&req(), TaskStatus::Unknown), None);
@@ -19736,6 +19841,7 @@ mod gatekeeper_reviews {
             },
             TaskStatus::Done {
                 answer: "looks fine to me".into(),
+                child: None,
             },
         ] {
             let outcome = review_outcome(&req(), status).expect("settled");
@@ -19826,6 +19932,7 @@ mod gatekeeper_reviews {
             &req(),
             TaskStatus::Done {
                 answer: "verdict: accept\nreasons: - the test covers it".into(),
+                child: None,
             },
         )
         .expect("settled");

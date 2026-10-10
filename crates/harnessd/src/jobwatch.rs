@@ -946,7 +946,7 @@ fn watch_task(
             // Settled, one way or the other. Both are the model's business: a subagent
             // that failed is the thing the parent is blocked on just as much as one
             // that answered.
-            TaskStatus::Done { answer } => {
+            TaskStatus::Done { answer, .. } => {
                 settled_here("done", first_line(&answer), &job, &queue, &settled);
                 break;
             }
@@ -2022,8 +2022,14 @@ mod tests {
                 .wait_timeout_while(g, timeout, |a| a.is_none())
                 .expect("fake task");
             match &*g {
-                Some(a) => TaskStatus::Done { answer: a.clone() },
-                None => TaskStatus::Running { note: None },
+                Some(a) => TaskStatus::Done {
+                    answer: a.clone(),
+                    child: None,
+                },
+                None => TaskStatus::Running {
+                    note: None,
+                    child: None,
+                },
             }
         }
     }
