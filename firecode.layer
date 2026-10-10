@@ -2,105 +2,70 @@
 #
 # The cookbook names this file as owed: "a firecode.layer for this project waiting to be written
 # (llama.cpp fork, libsqlite3-dev, the Rust toolchain), and until it exists every Rust run in a VM
-# pays ten minutes to rediscover it." Three probes paid it on 2026-10-10; this is the receipt.
+# pays ten minutes to rediscover it."
 #
-# Applied by scripts/apply-layer.sh --project <dir> BEFORE anybody is told the VM is up, once per
-# hash: an unchanged file costs one exec and runs nothing. A line that fails names itself, leaves no
-# stamp, and is retried at the next boot — and it does NOT kill the VM, which is what makes a wrong
-# guess here cheap and self-correcting rather than fatal. No FROM and no COPY: the base is the
-# firecode image, and the project is already mounted at the same absolute path, so a COPY would be a
-# second and staler way to say what a path already says.
+# THE FORMAT IS ONE DIRECTIVE PER LINE. There is no backslash continuation — scripts/apply-layer.sh
+# parses line by line and refuses the WHOLE FILE on the first line that is not ENV, RUN or a comment.
+# Measured the hard way: a first version of this file wrapped its RUNs with trailing backslashes, so
+# its continuation lines were neither, the file was rejected at the first of them, and two probes
+# found a bare guest. The failure is legible ("apply-layer: <file>:N is not ENV, RUN or a comment")
+# but only if somebody reads the host-side output — which the daemon captured and dropped, because
+# firecode does not fail `up` when a layer fails.
+#
+# So: ENV KEY=value, or RUN <one shell command on ONE line>, or # a comment. No FROM (the base is
+# the firecode image) and no COPY (the project is already mounted at the same absolute path).
+# A RUN line is executed as `sudo -n bash -c 'set -euo pipefail; cd <project>; <cmd>'`, so avoid
+# single quotes inside it — they would close that quote and change the meaning of everything after.
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ── The toolchain, made reachable where it is looked for ─────────────────────────────────────────
+# ── The Rust toolchain ───────────────────────────────────────────────────────────────────────────
 #
-# MEASURED 2026-10-10, and the first probe got this wrong in an instructive way: the image carries a
-# Rust toolchain, but in ROOT'S HOME. A probe running as the guest's uid 1000 reported "no toolchain
-# anywhere in the VM" — truthfully, of the user it ran as: `command -v cargo` was empty, `$HOME/.cargo`
-# did not exist, and `/root/.cargo` answered Permission denied. A later probe with root found
-# `cargo 1.98.0` immediately.
+# MEASURED 2026-10-10, and this cost two probes: THIS IMAGE HAS NO RUST ANYWHERE. An earlier probe
+# reported cargo 1.98.0 "in root's home", and that was wrong — the child that ran it had CREATED
+# /root/.rustup and /usr/local/bin/cargo itself. A later probe with passwordless sudo searched the
+# whole filesystem (`find / -xdev -type f \( -name cargo -o -name rustc -o -name rustup \) -perm
+# -u+x`) and found nothing, and /root/.cargo does not exist.
 #
-# So this is DISCOVERY rather than an assertion — and MEASURED, on the second attempt, that a fixed list
-# of candidate paths is not discovery either. The first version walked three paths it had guessed and
-# found none of them: `/usr/local/bin/cargo` does not exist, `/opt/rust` does not exist, and
-# `/root/.cargo` exists but is unreadable to the uid a probe runs as. The loop found nothing, the
-# `cargo --version` beneath it failed, and the layer stopped at its FIRST line — leaving the VM up and
-# unprovisioned, which is this design working and the reason the failure was legible at all.
+# So the install branch below is not a fallback: it is the path. And it installs SYSTEM-WIDE, under
+# /usr/local, because the layer runs as root and a toolchain in root's home is invisible to uid 1000,
+# which is who the work runs as. Rustup's own documented recipe, with RUSTUP_HOME and CARGO_HOME
+# moved out of $HOME.
 #
-# So: SEARCH for what the image has, and if it has none, INSTALL one — system-wide, under /usr/local,
-# because the layer runs as root and a toolchain in root's home is invisible to the uid the work runs
-# as. Rustup's own documented recipe, with RUSTUP_HOME and CARGO_HOME moved out of $HOME.
-RUN set -eux; \
-    found=""; \
-    command -v cargo >/dev/null 2>&1 && found=$(command -v cargo); \
-    if [ -z "$found" ]; then \
-      found=$(find / -xdev -maxdepth 6 -type f -name cargo -perm -u+x 2>/dev/null | head -1); \
-    fi; \
-    if [ -n "$found" ]; then \
-      ln -sfn "$found" /usr/local/bin/cargo; \
-      ln -sfn "$(dirname "$found")/rustc" /usr/local/bin/rustc 2>/dev/null || true; \
-    else \
-      export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo; \
-      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-        sh -s -- -y --no-modify-path --default-toolchain stable; \
-      ln -sfn /usr/local/cargo/bin/cargo /usr/local/bin/cargo; \
-      ln -sfn /usr/local/cargo/bin/rustc /usr/local/bin/rustc; \
-      ln -sfn /usr/local/cargo/bin/rustup /usr/local/bin/rustup; \
-    fi; \
-    cargo --version; \
-    rustc --version
+# The search first anyway, so that an image which DOES ship one is used rather than duplicated —
+# remembering /usr/lib/cargo, which exists on this image and holds only bin/fd: a search that matched
+# a DIRECTORY named cargo would be fooled, so this matches a regular executable file.
+RUN set -eux; found=""; command -v cargo >/dev/null 2>&1 && found=$(command -v cargo); if [ -z "$found" ]; then found=$(find / -xdev -maxdepth 6 -type f -name cargo -perm -u+x 2>/dev/null | head -1); fi; if [ -n "$found" ]; then ln -sfn "$found" /usr/local/bin/cargo; ln -sfn "$(dirname "$found")/rustc" /usr/local/bin/rustc 2>/dev/null || true; else export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo; curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable; ln -sfn /usr/local/cargo/bin/cargo /usr/local/bin/cargo; ln -sfn /usr/local/cargo/bin/rustc /usr/local/bin/rustc; ln -sfn /usr/local/cargo/bin/rustup /usr/local/bin/rustup; fi; cargo --version; rustc --version
 
-# ── What the build needs from apt ────────────────────────────────────────────────────────────────
+# ── The dev packages the build scripts need ──────────────────────────────────────────────────────
 #
-# libsqlite3-dev is the cookbook's own word for it: the guest has no libsqlite3.so dev symlink, so a
-# crate's build script fails. pkg-config and cc are cheap and are what such a script looks for.
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends libsqlite3-dev pkg-config cc; \
-    rm -rf /var/lib/apt/lists/*
+# The guest has the RUNTIME libsqlite3.so.0 and no sqlite3.pc and no /usr/include/sqlite3.h, which is
+# the dev package's absence stated three ways. cmake and ninja are for the library below.
+RUN set -eux; apt-get update; apt-get install -y --no-install-recommends libsqlite3-dev pkg-config cc cmake ninja-build; rm -rf /var/lib/apt/lists/*
 
 # ── The llama.cpp checkout crates/llama/build.rs insists on ──────────────────────────────────────
 #
-# The FORK — `deadtrickster/llama.cpp` — because letibot-llama links that one's libllama. Cloned to
-# the absolute path the build reads by default, which is why no LETIBOT_LLAMA_DIR is set anywhere
-# here: the path IS the default, and recreating it is a smaller thing to say than an override.
+# The FORK — deadtrickster/llama.cpp — because letibot-llama links that one's libllama. Cloned to
+# the absolute path the build reads BY DEFAULT (DEFAULT_LLAMA_DIR in crates/llama/build.rs), which is
+# why nothing here sets LETIBOT_LLAMA_DIR: the path IS the default, and recreating it says less than
+# an override. /home/dead/Projects does not exist in the guest at all, so the mkdir is load-bearing.
 #
-# `/home/dead/Projects` does not exist in the guest at all (measured), so the mkdir is load-bearing.
-#
-# **GUARDED, because a layer's lines must be RE-RUNNABLE.** The stamp is per FILE, not per line: any
-# edit to this file re-runs EVERY line below the change, so a bare `git clone` would fail on the
-# second apply and take the whole layer down with it — the exact failure the stamp discipline exists
-# to make visible, arriving for a reason that has nothing to do with the change being made.
-RUN set -eux; \
-    mkdir -p /home/dead/Projects; \
-    if [ ! -d /home/dead/Projects/llama.cpp/.git ]; then \
-      git clone --depth 1 https://github.com/deadtrickster/llama.cpp.git /home/dead/Projects/llama.cpp; \
-    fi; \
-    test -f /home/dead/Projects/llama.cpp/include/llama.h
+# GUARDED, because a layer's lines must be RE-RUNNABLE: the stamp is per FILE, not per line, so any
+# edit to this file re-runs every line below it — and a bare git clone fails the second time.
+RUN set -eux; mkdir -p /home/dead/Projects; if [ ! -d /home/dead/Projects/llama.cpp/.git ]; then git clone --depth 1 https://github.com/deadtrickster/llama.cpp.git /home/dead/Projects/llama.cpp; fi; test -f /home/dead/Projects/llama.cpp/include/llama.h
 
-# ── The real library, built once and cached ─────────────────────────────────────────────────────
+# ── The real library, built once and cached ──────────────────────────────────────────────────────
 #
-# This was a LINK-ONLY stub in the first draft, and the operator's correction is why it is not:
-# **"and firecode caches layers."** The stub was justified by the cost of a build — and a cached
-# layer pays that cost ONCE, on the first boot, and then every VM over this project has it. With the
-# cost no longer per-VM, the stub buys nothing and gives up something real: a reviewer that can only
-# run the tests which do not call into llama, and a build that would deny the whole repository to
-# anything that does.
+# A LINK-ONLY stub was the first draft, justified by the cost of a build — and the operator's
+# correction is why it is not: "and firecode caches layers." A cached layer pays that cost ONCE, so
+# the stub bought nothing and gave up the tests that call into llama. CPU-only (the guest has no GPU
+# to pass through), tests/examples/server off because nothing under test runs them.
+RUN set -eux; cd /home/dead/Projects/llama.cpp; cmake -B build-glm -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF; cmake --build build-glm --target llama --parallel $(nproc); ls -l /home/dead/Projects/llama.cpp/build-glm/bin/libllama.so
+
+# ── The crates.io index and the 230 locked packages ──────────────────────────────────────────────
 #
-# CPU-only, and deliberately so — the guest has no GPU to pass through, GGML_CUDA would be a
-# toolchain nobody here has, and a reviewer is checking whether a branch COMPILES AND PASSES, not how
-# fast it infers. Tests, examples and the server are off because nothing under test runs them.
-#
-# Idempotent: cmake re-uses `build-glm`'s own cache and --build re-links only what changed, so a
-# re-run is cheap rather than repeated work.
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends cmake ninja-build; \
-    rm -rf /var/lib/apt/lists/*
-RUN set -eux; \
-    cd /home/dead/Projects/llama.cpp; \
-    cmake -B build-glm -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DLLAMA_CURL=OFF \
-          -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF; \
-    cmake --build build-glm --target llama --parallel "$(nproc)"; \
-    ls -l /home/dead/Projects/llama.cpp/build-glm/bin/libllama.so
+# The project is mounted at this same absolute path — the script cds into it before each line — so
+# this fetches what Cargo.lock names, into the layer, where every later VM inherits it. Without it
+# the first cargo check in every fresh VM pays a cold registry fetch; a probe measured exactly that
+# (no ~/.cargo, no vendor/, no .cargo/config.toml in the guest).
+RUN set -eux; CARGO_HOME=/usr/local/cargo cargo fetch
