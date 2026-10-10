@@ -3167,6 +3167,93 @@ pub fn refusal_undelivered_message(entry: &MergeEntry) -> String {
     )
 }
 
+/// **What the daemon calls the work IT starts** — the gate run for an entry, and the review of
+/// one.
+///
+/// # Why the daemon needs a name at all
+///
+/// `j57` is a counter and `s-1789…-sub-1791…` is a timestamp: a person looking at the work in
+/// flight cannot tell one of the daemon's own runs from another. A job the MODEL starts carries
+/// a name it stated (`bash(slug: "release-build")`, [`letibot_tools::exec::job_name`]); the two
+/// pieces of work the daemon starts on its own account — the **gate run** it does for an entry
+/// ([`MergeQueueDaemon::step`]) and the **review** it asks for ([`crate::harness::Harness::serve_reviews`]) —
+/// carried none, so they were the only rows a reader could not tell apart. The operator's word
+/// for it: *"and no slugs for jobs / sad"*.
+///
+/// # What a name is made of
+///
+/// **One word for the KIND, a separator, then the branch it is about**: `gate-agent/foo` and
+/// `review-agent/foo`. The kind is first because it is the part that has to survive a cap, and
+/// because *a gate run for `agent/foo`* and *a review of `agent/foo`* are two different jobs —
+/// they are even, for one entry, two different runs of the queue.
+///
+/// **And the separator is `-` and not a space, deliberately**: a name is ONE word — that is what
+/// [`letibot_tools::exec::job_name`] makes of any space — and a daemon that spelled its own
+/// names the other way would be a second rule for the same field. The slash in a branch is kept:
+/// it is not whitespace, it is what the branch is called, and `gate-agent/foo` is the branch a
+/// person typed.
+///
+/// **The branch, and the entry id only when there is no branch.** A branch is what a person
+/// recognises (`agent/a-row-can-wait-on-a-job`); an entry id is what they act with (`/queue
+/// approve <id>`), and a `task_start` entry's id is forty characters of session id that would
+/// spend the whole name. So the id is the FALLBACK — an entry with no branch (a plain `task`
+/// child's work, or a row written by a shape this build does not know) is still nameable, and a
+/// name is never empty: `gate` alone is the last resort, and it still says what KIND of job this
+/// is.
+///
+/// # Bounded and sanitised exactly as a tool's slug is, and by the same code
+///
+/// The words go through [`letibot_tools::exec::job_name`] — the ONE rule, not a second spelling
+/// of it: whitespace and control characters become `-` and the result is capped at
+/// [`letibot_tools::exec::MAX_JOB_NAME`]. Two flattenings of *what a name is* is how a row comes
+/// to be drawn one way in the pane and another in the transcript.
+///
+/// **The sanitising is a formality here and the cap is not.** These words are this module's own
+/// — a branch name git accepted and an id this tree minted — so there is no control character to
+/// flatten; but a branch is a human's sentence and can be longer than a row, so the cap bites
+/// and it bites the TAIL (`gate-agent/some-very-long-…` reads as the branch it is; the end of it
+/// is on the entry's own row, beside this name).
+fn daemon_job_name(what: &str, entry: &MergeEntry) -> String {
+    let about = if entry.branch.trim().is_empty() {
+        entry.id.trim()
+    } else {
+        entry.branch.trim()
+    };
+    letibot_tools::exec::job_name(&format!("{what}-{about}")).unwrap_or_else(|| what.to_string())
+}
+
+/// **The name the daemon's gate run for `entry` goes under** — `gate-agent/foo`.
+///
+/// Written on the entry's own row while the run is going ([`MergeQueueDaemon::step`]), which is
+/// where the queue's words for a move are read: a `Taken` row said *"rebasing at the tip"* for
+/// the whole of a `cargo test` that takes minutes, and a reader could not tell a gate run from a
+/// rebase or from the entry sitting still. See [`daemon_job_name`] for what a name is made of.
+pub fn gate_job_name(entry: &MergeEntry) -> String {
+    daemon_job_name("gate", entry)
+}
+
+/// **The name the daemon's review of `entry` goes under** — `review-agent/foo`.
+///
+/// Written on the queue session's own board row ([`crate::sessions::gatekeeper::row`]), which is
+/// where a review is read: that row is what the todos pane draws, what the idle check nags about,
+/// and what says which child is working it. The row spelled its name itself before this —
+/// `review \`agent/foo\` (entry …)` — and that was a second spelling of a fact the daemon has one
+/// rule for.
+///
+/// **And the reviewer's own prompt is deliberately NOT named by this**, which is worth writing
+/// down because it is the tempting place: a `task` child's name is the first line of its task, and
+/// a gatekeeper child is not a row the operator sees — the head drops it by its role
+/// (`crate::harness::Harness::serve_reviews` sets `gatekeeper`) and by
+/// `letibot_sessionlog::GATEKEEPER_TITLE_PREFIX` for a row rebuilt from the session list, because
+/// the operator's ruling is *"it shouldnt be visible in 'normal' agents count"*. A name line in
+/// front of that prompt would be a name no pane draws AND would break the mark, so the prompt is
+/// left as it is and the name goes where a review is actually read.
+///
+/// See [`daemon_job_name`] for what a name is made of.
+pub fn review_job_name(entry: &MergeEntry) -> String {
+    daemon_job_name("review", entry)
+}
+
 /// **The daemon thread's half of the merge queue** — the thing that takes the next entry and
 /// serves it toward main.
 ///
@@ -3646,6 +3733,21 @@ impl MergeQueueDaemon {
             self.move_to(&entry, MergeState::Conflict, e, None, None)?;
             return Ok(StepOutcome::Conflict);
         }
+
+        // **And the row says what the daemon is running while it runs it** — the gate job's own
+        // name ([`gate_job_name`]), written before the gate is entered and not after, because the
+        // run is the minutes-long half: until this move, a `Taken` row said *rebasing at the tip*
+        // for the whole of a `cargo test --workspace`, which is the one thing it was not doing.
+        //
+        // The move is a write and an announcement like every other — the queue's row IS how it
+        // talks, and a run nobody can see is the defect the name answers.
+        self.move_to(
+            &entry,
+            MergeState::Taken,
+            format!("{}: main's steps at the tip", gate_job_name(&entry)),
+            None,
+            None,
+        )?;
 
         // **Run the gate**, at the tip, on the rebased branch — and the run's rows ride the
         // move that ends it, whichever way it ends. This is the whole of the change: the
@@ -6157,6 +6259,208 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **The daemon's own two runs have names, and they name the entry they are about.**
+    ///
+    /// `j57` is a counter and a session id is a timestamp; the two pieces of work the daemon
+    /// starts on its own account — the gate run for an entry and the review of one — were the
+    /// only rows a reader could not tell apart, and *a gate run for `agent/foo`* and *a review of
+    /// `agent/foo`* are two different jobs. The operator's word for the gap: *"and no slugs for
+    /// jobs / sad"*.
+    ///
+    /// The three things this pins: the KIND is first and it is what tells the two apart; the
+    /// branch is what the name is about; and the id is only the FALLBACK — an entry with no
+    /// branch is still nameable, and a name is never empty, because an empty name is the one
+    /// rendering this rule must not produce.
+    #[test]
+    fn a_daemon_job_is_named_by_its_kind_and_the_branch_it_is_about() {
+        let mut entry = MergeEntry {
+            id: "m-1234".into(),
+            session_id: "s".into(),
+            branch: "agent/a-row-can-wait-on-a-job".into(),
+            base_sha: String::new(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: String::new(),
+            evidence: String::new(),
+            created_ms: 0,
+            updated_ms: 0,
+            worktree: None,
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        assert_eq!(gate_job_name(&entry), "gate-agent/a-row-can-wait-on-a-job");
+        assert_eq!(
+            review_job_name(&entry),
+            "review-agent/a-row-can-wait-on-a-job"
+        );
+        assert_ne!(
+            gate_job_name(&entry),
+            review_job_name(&entry),
+            "a gate run for a branch and a review of it are two different jobs"
+        );
+
+        // **No branch, and the id is the fallback** — a plain `task` child's work, or a row
+        // written by a shape this build does not know, is still nameable.
+        entry.branch = String::new();
+        assert_eq!(gate_job_name(&entry), "gate-m-1234");
+        // **And a name is never empty**, even for a row with nothing to be about: the kind alone
+        // still says what sort of job this is, which is more than an id says.
+        entry.id = String::new();
+        assert_eq!(gate_job_name(&entry), "gate");
+        assert_eq!(review_job_name(&entry), "review");
+
+        // **Bounded and sanitised by the SAME code a tool's slug is** — one rule, not two. A
+        // branch longer than a row is cut to the bound and keeps its head (the part that names
+        // the work), and the words never carry a control character into a row.
+        entry.id = "m-1234".into();
+        entry.branch = format!("agent/{}", "x".repeat(200));
+        let long = gate_job_name(&entry);
+        assert_eq!(long.chars().count(), letibot_tools::exec::MAX_JOB_NAME);
+        assert!(long.starts_with("gate-agent/xxx"), "{long}");
+        entry.branch = "agent/two\nwords".into();
+        assert_eq!(gate_job_name(&entry), "gate-agent/two-words");
+
+        // **And an ordinary job nobody named still draws as its id rather than as an empty
+        // name** — the rule the daemon's names must not disturb: the label's fallback IS the id,
+        // for a name that is absent and for one that is blank, which the wire spells the same
+        // way.
+        assert_eq!(letibot_tools::exec::job_label(None, "j65"), "j65");
+        assert_eq!(letibot_tools::exec::job_label(Some(""), "j65"), "j65");
+        assert_eq!(
+            letibot_tools::exec::job_label(Some("release-build"), "j65"),
+            "release-build · j65"
+        );
+    }
+
+    /// **The daemon's name for a review is the name the queue's board carries.**
+    ///
+    /// A review is a piece of work the daemon starts, and it is read in exactly one place: the
+    /// queue session's board row ([`crate::sessions::gatekeeper::row`]), which is what the todos
+    /// pane draws and what the idle check nags about. So the row's name IS
+    /// [`review_job_name`] — one rule, one spelling, rather than a hand-written `review
+    /// \`branch\`` here and a second name there.
+    ///
+    /// **And the child is deliberately NOT named by it**, which is worth asserting because it is
+    /// the tempting place: a `task` child's name is the first line of its task, and a gatekeeper
+    /// child is filtered out of the operator's panes by its role and by
+    /// `GATEKEEPER_TITLE_PREFIX` (*"it shouldnt be visible in 'normal' agents count"*). A name
+    /// line in front of the reviewer's prompt would be a name nothing draws AND would break that
+    /// mark, so the prompt is left alone.
+    #[test]
+    fn a_review_is_named_by_the_entry_it_is_about() {
+        let entry = MergeEntry {
+            id: "m-1234".into(),
+            session_id: "s".into(),
+            branch: "agent/foo".into(),
+            base_sha: "abc123".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the thing".into(),
+            evidence: String::new(),
+            created_ms: 0,
+            updated_ms: 0,
+            worktree: None,
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        let name = review_job_name(&entry);
+        assert_eq!(name, "review-agent/foo");
+        let row = crate::sessions::gatekeeper::row(&entry, None);
+        assert!(
+            row.content.starts_with(&name),
+            "the board row is named by the daemon's name for the run: {:?}",
+            row.content
+        );
+        assert!(
+            row.content.contains("m-1234") && row.content.contains("do the thing"),
+            "and it still carries the entry and the ask, which is what a verdict is about: {:?}",
+            row.content
+        );
+        // The reviewer's prompt is untouched: its first line is still the mark the head reads.
+        let req = letibot_tools::gatekeeper::ReviewRequest {
+            brief: entry.brief.clone(),
+            branch: entry.branch.clone(),
+            base_sha: entry.base_sha.clone(),
+        };
+        assert!(
+            letibot_tools::gatekeeper::review_prompt(&req)
+                .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
+            "a gatekeeper child stays hidden by the mark its title is cut from"
+        );
+    }
+
+    /// **The gate run's name is on the entry's row while the run is going.**
+    ///
+    /// A `Taken` row said *rebasing at the tip* for the whole of a `cargo test --workspace` —
+    /// minutes of a run the row denied was happening, and a reader who could not tell a gate run
+    /// from a rebase or from an entry sitting still. The name is [`gate_job_name`]'s, and this
+    /// pins it where a reader meets it: the store is read from INSIDE the gate, so the row is
+    /// asserted while the run is in flight rather than after the landing has replaced its words.
+    #[test]
+    fn the_gate_run_is_named_on_the_row_while_it_runs() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("gate-name");
+        let db = root.join("sessions.db");
+        let entry = MergeEntry {
+            id: "m-named".into(),
+            session_id: "s".into(),
+            branch: "feature".into(),
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: String::new(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        enqueue(&db, &entry);
+        approve(&db, "m-named");
+
+        // What the row said while the gate was running, read by the gate itself — the same store
+        // the daemon writes through, and a third connection like every other fixture's.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let read = seen.clone();
+        let path = db.clone();
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(move |_| {
+                let row = store_at(&path)
+                    .merge_entry("m-named")
+                    .expect("reads")
+                    .expect("the entry");
+                read.lock().expect("seen").push((row.state, row.evidence));
+                GateRun::green()
+            }),
+            quiet_reviewer(),
+            quiet_events(),
+        );
+        let outcome = daemon.step().expect("the pass");
+        assert!(
+            matches!(outcome, StepOutcome::Landed(_)),
+            "a green gate lands the entry: {outcome:?}"
+        );
+
+        let seen = seen.lock().expect("seen");
+        assert_eq!(seen.len(), 1, "the gate ran once");
+        assert_eq!(
+            seen[0].0,
+            MergeState::Taken,
+            "the row is taken while the gate runs"
+        );
+        assert_eq!(
+            seen[0].1, "gate-feature: main's steps at the tip",
+            "the row names the daemon's run, and the name is the branch it is about"
+        );
+        assert_eq!(gate_job_name(&entry), "gate-feature");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// **A gate failure is reported and the worktree stays** — the gate fails, the entry is
     /// `Failed` with the gate's words on the row, and the worktree stays. Removing a tree
     /// after a failed test destroys the evidence, and the worktree is where the failure is.
@@ -6996,6 +7300,12 @@ mod tests {
     /// The ORDER is asserted as well as the content, and it is the load-bearing half: an event
     /// folded before the row was on disk would let a head re-read the queue and find the state
     /// it just heard was over — the one way the snapshot and the events can disagree.
+    ///
+    /// **Three moves for a landing, and the middle one is the gate run's own.** A take says
+    /// *rebasing at the tip*, then — because the rebase and the gate are minutes apart and the row
+    /// said the first while the second ran — the run names itself (`gate-feature: main's steps at
+    /// the tip`), and the landing ends it. A move nobody announced would be a row that changed
+    /// under a head that was watching.
     #[test]
     fn every_move_is_announced_after_the_row() {
         let (root, wt, main_sha, _feature_sha) = repo_with_branch("events");
@@ -7040,9 +7350,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("m-events", letibot_sessionlog::event::MergeState::Taken),
+                ("m-events", letibot_sessionlog::event::MergeState::Taken),
                 ("m-events", letibot_sessionlog::event::MergeState::Landed),
             ],
-            "the take and the landing are both announced, in that order"
+            "the take, the gate run's own name and the landing are announced, in that order"
+        );
+        // **The middle move is the run's name**, which is the whole of why it is a move at all:
+        // a reader watching the queue sees which run is going while it goes.
+        assert_eq!(
+            moves[1].2, "gate-feature: main's steps at the tip",
+            "the gate run names itself on the row while it runs"
         );
         // **The reason travels with the move.** A state without its reason is a row the pane
         // draws and the operator cannot read — and the event carries the same words the row

@@ -138,10 +138,11 @@ fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Opti
 /// blank means no slug** — absent is the honest answer when nobody said one, and the command
 /// is already on the row, so a guessed name earns nothing.
 ///
-/// A name and not a sentence: runs of whitespace **and control characters** become `-`, and the
-/// result is capped at [`MAX_SLUG`], so one stated name is one row in the listing and one cell in
-/// the pane whatever the caller typed. Nothing else is touched — no case change, no derivation,
-/// no fallback word for a blank argument.
+/// A name and not a sentence: the rule itself is [`crate::exec::job_name`] — runs of
+/// whitespace **and control characters** become `-` and the result is capped at
+/// [`crate::exec::MAX_JOB_NAME`] — so one stated name is one row in the listing and one cell
+/// in the pane whatever the caller typed. Nothing else is touched — no case change, no
+/// derivation, no fallback word for a blank argument.
 ///
 /// **And the transcript is where it is actually read.** The pane was the origin of the ask, but
 /// the operator's correction was *"i was look at the transcript actually, not jobs pane"* — so
@@ -151,32 +152,8 @@ fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Opti
 /// unchanged in both places, because the rule's fallback is the id.
 fn slug_arg(args: &Value) -> Option<String> {
     let raw = args.get("slug").and_then(|v| v.as_str())?;
-    let mut out = String::new();
-    for c in raw.chars() {
-        if c.is_control() || c.is_whitespace() {
-            if !out.is_empty() && !out.ends_with('-') {
-                out.push('-');
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    if out.chars().count() > MAX_SLUG {
-        out = out.chars().take(MAX_SLUG).collect();
-        while out.ends_with('-') {
-            out.pop();
-        }
-    }
-    (!out.is_empty()).then_some(out)
+    crate::exec::job_name(raw)
 }
-
-/// The longest a job's name may be. The same number `task_start` caps a worktree's
-/// slug at, and for the same reason: it has to read in a row that is already carrying an
-/// id, a state, a byte count and a command.
-const MAX_SLUG: usize = 40;
 
 /// **How long a foreground run may go before the daemon says it is the wrong
 /// shape** — one minute.
@@ -1294,13 +1271,40 @@ mod tests {
         );
         let long = "x".repeat(200);
         let capped = slug_arg(&args(&long)).unwrap();
-        assert_eq!(capped.chars().count(), MAX_SLUG);
+        assert_eq!(capped.chars().count(), crate::exec::MAX_JOB_NAME);
         assert!(capped.chars().all(|c| c == 'x'));
         // And the cap does not leave a dangling separator behind.
         let words = format!("{} tail", "word ".repeat(20));
         let capped = slug_arg(&args(&words)).unwrap();
         assert!(!capped.ends_with('-'), "{capped:?}");
-        assert!(capped.chars().count() <= MAX_SLUG);
+        assert!(capped.chars().count() <= crate::exec::MAX_JOB_NAME);
+    }
+
+    /// **The rule is [`crate::exec::job_name`]'s and this argument is a reader of it.**
+    ///
+    /// The rule moved out of this file so the daemon's own names for the work it starts
+    /// (`mergequeue::gate_job_name`, `review_job_name`) could be the same rule rather than a
+    /// second spelling of one — a name has to read the same in the pane, in `/job` and in the
+    /// transcript, and two flattenings is how it stops doing that. This pins the wiring: what
+    /// `slug_arg` answers IS what `job_name` answers, for every shape.
+    #[test]
+    fn the_slug_argument_reads_the_shared_rule_and_does_not_re_spell_it() {
+        for raw in [
+            "release-build",
+            "  Release Build  ",
+            "fold\ntests",
+            "a\u{7}b",
+            "",
+            "   \t ",
+            &"x".repeat(200),
+            &format!("{} tail", "word ".repeat(20)),
+        ] {
+            assert_eq!(
+                slug_arg(&serde_json::json!({"command": "cargo test", "slug": raw})),
+                crate::exec::job_name(raw),
+                "{raw:?}"
+            );
+        }
     }
 
     #[test]

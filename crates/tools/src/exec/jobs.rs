@@ -54,6 +54,62 @@ impl std::fmt::Display for JobId {
     }
 }
 
+/// **How long a job's name may be** — one bound, because a name is one cell wherever it is
+/// read.
+///
+/// 40, the number this rule has always carried: it is the same bound `task_start` caps a
+/// worktree's slug at, and for the same reason — it has to read in a row that is already
+/// carrying an id, a state, a byte count and a command.
+///
+/// **The cap can cut a long name, and that is the trade the number makes.** A name is the
+/// first word of a row, not the record: what a reader needs from it is *which of these is
+/// the release build*, and a name long enough to spell a whole branch would push the id and
+/// the state off the line. Nothing is lost that the row does not already carry beside it.
+pub const MAX_JOB_NAME: usize = 40;
+
+/// **The one rule that turns stated words into a job's name**, or `None` when there is no
+/// name in them.
+///
+/// `j57` is a counter: a person watching the jobs pane cannot tell which running job is the
+/// release build and which is the fold's tests, and a name is what makes a row ring a bell.
+/// **The words are the caller's own claim about the work** — `bash(slug: "release-build")`,
+/// and the daemon's own for the work IT starts — and never a parse of a command line: a name
+/// derived from `W=…; cd /tmp && cargo test …` is the machine inventing an intent, which is
+/// the defect this tree refuses everywhere else.
+///
+/// A name and not a sentence: runs of whitespace **and control characters** become `-`, and
+/// the result is capped at [`MAX_JOB_NAME`], so one stated name is one row in the listing and
+/// one cell in the pane whatever was typed. Nothing else is touched — no case change, no
+/// derivation, no fallback word for blank words: **blank is `None`**, which is the honest
+/// answer when nobody named the job, and the command is already on the row.
+///
+/// **One rule and not two.** It lives here rather than at either caller because both callers
+/// are the same act — `bash`'s `slug` argument and the daemon's name for the work it starts
+/// (`mergequeue::gate_job_name` / `review_job_name`) — and a second spelling of *what a name
+/// is* is how a row comes to be drawn one way in the pane and another in the transcript.
+pub fn job_name(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in raw.chars() {
+        if c.is_control() || c.is_whitespace() {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.chars().count() > MAX_JOB_NAME {
+        out = out.chars().take(MAX_JOB_NAME).collect();
+        while out.ends_with('-') {
+            out.pop();
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// **What `by` says when the run's own deadline ended it.**
 ///
 /// A named constant rather than a literal in two places, because it is read back: the
@@ -717,6 +773,39 @@ impl Job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A name is one line, capped, and blank words are no name at all.**
+    ///
+    /// The rule's own tests, at its own home — `bash`'s tests pin that its `slug` argument
+    /// reads THIS function and not a copy of it, and this pins what the function answers.
+    ///
+    /// The three claims: nothing is invented (blank is `None`, not a placeholder word), a name
+    /// is a name and not a sentence (whitespace and control characters break it, and a break is
+    /// never doubled or left dangling), and the bound is [`MAX_JOB_NAME`] — the number a row's
+    /// first cell can spend without pushing the id and the state off the line.
+    #[test]
+    fn a_job_name_is_one_capped_line_and_blank_words_are_no_name() {
+        // Nobody named it: every spelling of *no words* is the same answer, and it is `None`
+        // rather than an empty string, because the caller's fallback is the id.
+        for raw in ["", "   ", "\t\n", "- -"] {
+            assert_eq!(job_name(raw), None, "{raw:?}");
+        }
+        assert_eq!(job_name("release-build").as_deref(), Some("release-build"));
+        // One line however it was typed, and no doubled or trailing separator.
+        assert_eq!(
+            job_name("  fold\n\t tests  ").as_deref(),
+            Some("fold-tests")
+        );
+        assert_eq!(job_name("a\u{7}b").as_deref(), Some("a-b"));
+        // The cap, and it takes the HEAD — the words a caller stated are in the order they
+        // stated them, so the front is the part that names the work.
+        let long = job_name(&"x".repeat(200)).unwrap();
+        assert_eq!(long.chars().count(), MAX_JOB_NAME);
+        // And a cap that lands on a separator does not leave one dangling.
+        let words = job_name(&format!("{} tail", "word ".repeat(20))).unwrap();
+        assert!(!words.ends_with('-'), "{words:?}");
+        assert!(words.chars().count() <= MAX_JOB_NAME);
+    }
 
     #[test]
     fn a_slice_of_nothing_says_so_rather_than_returning_zero() {

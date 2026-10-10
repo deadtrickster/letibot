@@ -537,9 +537,14 @@ fn repo_for(entry: &MergeEntry, serving: &Path) -> std::path::PathBuf {
 /// has.
 pub fn row(entry: &MergeEntry, child: Option<&str>) -> TodoItem {
     TodoItem {
+        // **The row's name is the daemon's name for the run** — `review-agent/foo (entry m-1234)`
+        // — and not a second spelling of it written here. One rule
+        // (`mergequeue::review_job_name`), because the queue's board and the queue's own words for
+        // a move have to be the same name for the same run; the entry id stays on the row because
+        // it is what `/queue approve|veto|restart` are given.
         content: format!(
-            "review `{}` (entry {}): {}",
-            entry.branch,
+            "{} (entry {}): {}",
+            crate::mergequeue::review_job_name(entry),
             entry.id,
             first_line(&entry.brief),
         ),
@@ -725,8 +730,11 @@ mod tests {
 
     /// **One row per entry waiting for a verdict, and the row says which entry it is.**
     ///
-    /// The queue's own three words are on it — the branch, the entry id and the first line of the
-    /// brief — because the board has no id column and the words ARE the name.
+    /// The queue's own words are on it — the branch, the entry id and the first line of the brief
+    /// — because the board has no id column and the words ARE the name. And the first of those is
+    /// **the daemon's own name for the run** ([`crate::mergequeue::review_job_name`]): a review is
+    /// a piece of work the daemon starts, and the board and the queue's own words for a move have
+    /// to spell it one way rather than two.
     #[test]
     fn one_row_per_entry_waiting_for_a_verdict() {
         let (_dir, store, ws) = store_with("rows");
@@ -765,7 +773,7 @@ mod tests {
         );
         assert_eq!(
             rows[1].content,
-            "review `agent/m-two` (entry m-two): the other branch"
+            "review-agent/m-two (entry m-two): the other branch"
         );
     }
 

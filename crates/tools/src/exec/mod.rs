@@ -102,7 +102,7 @@ pub use host::{
     DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion, Protected,
     SpawnRequest, Waited, job_label,
 };
-pub use jobs::{DEADLINE_KILL, JobId, JobState, OutputSlice, Stdin};
+pub use jobs::{DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, OutputSlice, Stdin, job_name};
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,
