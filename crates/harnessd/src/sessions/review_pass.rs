@@ -155,8 +155,8 @@ impl TaskRunner for Recording {
 /// `review_verdict`, and the queue must record an ATTEMPT rather than read a decision out of what
 /// it wrote. `collect` answers `Done` for ever, which is what the settled slot holds.
 struct Answered {
-    /// `(prompt, role)` per `start`, in order.
-    started: Arc<Mutex<Vec<(String, String)>>>,
+    /// One entry per `start`, in order.
+    started: Arc<Mutex<Vec<Asked>>>,
     /// What the child "said". Prose, and deliberately carrying the words the old closing block
     /// would have been parsed for — so a build that still read it would pass a weaker test.
     answer: String,
@@ -165,7 +165,11 @@ struct Answered {
 impl TaskRunner for Answered {
     fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
         let mut g = self.started.lock().unwrap_or_else(|e| e.into_inner());
-        g.push((prompt.to_string(), spec.role.clone()));
+        g.push(Asked {
+            prompt: prompt.to_string(),
+            role: spec.role.clone(),
+            placement: spec.placement,
+        });
         Ok(format!("sub-{}", g.len()))
     }
 
@@ -181,14 +185,18 @@ impl TaskRunner for Answered {
 /// without a word. `Unknown` is the handle-this-runner-never-minted answer, and it is the fourth
 /// ending a review can have: nothing was written, and the row stays for the queue to ask again.
 struct Gone {
-    /// `(prompt, role)` per `start`, in order.
-    started: Arc<Mutex<Vec<(String, String)>>>,
+    /// One entry per `start`, in order.
+    started: Arc<Mutex<Vec<Asked>>>,
 }
 
 impl TaskRunner for Gone {
     fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
         let mut g = self.started.lock().unwrap_or_else(|e| e.into_inner());
-        g.push((prompt.to_string(), spec.role.clone()));
+        g.push(Asked {
+            prompt: prompt.to_string(),
+            role: spec.role.clone(),
+            placement: spec.placement,
+        });
         Ok(format!("sub-{}", g.len()))
     }
 
