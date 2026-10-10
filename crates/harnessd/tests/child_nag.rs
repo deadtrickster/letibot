@@ -310,11 +310,26 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     let first = a_plain_answer_turn(&parts.vocab, "planning", "the task is done", 30);
     let check = a_plain_answer_turn(&parts.vocab, "checking", "on it now", 30);
     let check_again = a_plain_answer_turn(&parts.vocab, "checking", "on that one too", 30);
+    // **A repeat is another TURN, so it needs its own frames** — `Frame` is not `Clone`, which is
+    // the tripwire's other half: the schedule is not allowed to reuse an answer.
+    let repeat = a_plain_answer_turn(&parts.vocab, "checking", "still on the first one", 30);
+    let repeat_again = a_plain_answer_turn(&parts.vocab, "checking", "and the second", 30);
+    // **A generous pantry, and the RATE is the tripwire.** The child's first turn, then the checks
+    // and their repeats (the operator's ruling — *"hmm, yes obviously it should be a repeated nag"*
+    // — which a child shares because a child is a session). The ladder doubles the gap per
+    // delivery, so the number of turns this test's few seconds can hold is small; the assertions
+    // below bound it, and a metronome would blow past both the bound and the pantry.
+    let mut scripts = vec![first, check, check_again, repeat, repeat_again];
+    for i in 0..35 {
+        scripts.push(a_plain_answer_turn(
+            &parts.vocab,
+            "checking",
+            &format!("and again {i}"),
+            30,
+        ));
+    }
+    let canned = canned::Canned::serve_each(scripts, 40);
     drop(parts);
-    // Three answers: the child's first turn, then one plan-check per write. The count is a
-    // tripwire of its own — a fourth request is a nag the schedule did not owe, and it
-    // would be answered by nobody.
-    let canned = canned::Canned::serve_each(vec![first, check, check_again], 3);
 
     let kid = park_a_child(parent, child, canned, &path);
 
@@ -353,16 +368,20 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         "the item is a plan-check, not a prompt somebody typed: {found}"
     );
 
-    // **And once, not on a metronome.** The check has been said and the plan has not
-    // moved — three windows of silence is the schedule holding, exactly as it does for a
-    // session the daemon holds (`deliver_due_nags` disarms via `nagged`).
+    // **And the repeat, at the interval the schedule owes rather than on a metronome.** The same
+    // notice comes back — the operator's ruling, and a child is a session — but it comes back at
+    // TWICE the window: `TodoNagClock` doubles the gap per delivery, so three windows hold a check
+    // and its repeat and not three checks. The clock's own unit tests pin the ladder with the times
+    // injected; what is asserted here is that the child's thread runs the same schedule.
     sleep_for(WINDOW * 3);
     let said = checks_on(&kid.hub);
+    assert!(
+        (2..=3).contains(&said.len()),
+        "a check and its repeat inside three windows — not one per window: {said:#?}"
+    );
     assert_eq!(
-        said.len(),
-        1,
-        "said once and the plan unmoved, so said again is the overkill the operator \
-         named — the log holds: {said:#?}"
+        said[0], said[1],
+        "the repeat is the same sentence, because the plan has not moved"
     );
 
     // **THE WAKE ITSELF, which one write cannot prove.** By now the first check has been
@@ -372,9 +391,13 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     kid.parent(parent)
         .upsert_child(child, &[(SECOND_ROW.into(), TodoStatus::Pending)])
         .expect("the parent's second write is accepted");
+    // The second notice is found by its OWN words and not by the second row's: a check names the
+    // head of the plan and COUNTS the rest (`unfinished_plan`), so the row the parent added is the
+    // "(1 more open)" and not a line — which is also what tells the two notices apart.
     let second = wait_for(&kid.hub, |hub| {
-        let checks = checks_on(hub);
-        (checks.len() >= 2).then(|| checks[1].clone())
+        checks_on(hub)
+            .into_iter()
+            .find(|t| t.contains("(1 more open)"))
     });
     assert_ne!(
         second, found,
@@ -390,13 +413,19 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         "the second check knows about both rows: {second}"
     );
 
-    // And the second saying is as once-only as the first.
-    sleep_for(WINDOW * 3);
+    // And the second plan's saying is as repeated-not-metronomic as the first's: its own check and
+    // its own repeats, and the first plan's ladder was reset by the move — so the last two entries
+    // are two deliveries of ONE sentence rather than a fresh sentence each time.
+    sleep_for(WINDOW * 4);
     let said = checks_on(&kid.hub);
+    assert!(
+        said.len() >= 4,
+        "the second plan was said and repeated: {said:#?}"
+    );
     assert_eq!(
-        said.len(),
-        2,
-        "one check per plan, and the second plan unmoved too — the log holds: {said:#?}"
+        said[said.len() - 1],
+        said[said.len() - 2],
+        "the last two are repeats of one notice"
     );
 
     kid.release();
