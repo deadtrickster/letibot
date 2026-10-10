@@ -6860,7 +6860,21 @@ impl Harness {
             // ring starts a new gatekeeper for the row that is still waiting.
             let gone = status == TaskStatus::Unknown;
             match review_outcome(&req, status) {
-                Some(o) => write_outcome(store, row, o),
+                Some(o) => {
+                    // **A refusal is the ball going back, and this is where it goes.** The
+                    // operator's model of this queue, in their words: *"gatekeeper reviews and
+                    // drives subagents to completion by nagging them via messages. so it gets queue
+                    // item - reviews if ok - puts into merge queue ... and if it is not happy - it
+                    // sends a message with complaints to original subagent"*. The complaints are
+                    // the reviewer's own reasons, which the write below puts on the review row; the
+                    // recipient is `entry.id`, the child that did the work. Whether this is a
+                    // refusal is read off the outcome because the write consumes it.
+                    let refused = matches!(&o, ReviewOutcome::Verdict { decision, .. } if decision != "accept");
+                    write_outcome(store, row, o);
+                    if refused {
+                        self.send_a_refusal_back(store, &entry_id);
+                    }
+                }
                 None if !gone => still.push((entry_id, handle, req)),
                 None => {}
             }
@@ -6883,6 +6897,68 @@ impl Harness {
         runner: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
     ) {
         self.subagents = runner;
+    }
+
+    /// **A refusing verdict, back to the child that did the work** — the complaints, through the
+    /// same door every message goes through.
+    ///
+    /// **The recipient is `entry.id` and not `merge_review.session_id`.** The review row's
+    /// `session_id` is the session that HOSTED the review — the one whose agent was told to judge,
+    /// and the one a person attaches to when they want to read the argument — while the entry's
+    /// `id` is the session that did the work. Delivery uses the second, which is also the key
+    /// `veto` uses; the first would send the reviewer its own verdict.
+    ///
+    /// **A delivery that failed is said, and it does not undo the verdict.** The row is the durable
+    /// fact and it is already written; what a person needs is not a retry but to know that the ball
+    /// did NOT go back — a child whose session has closed cannot be sent to work, and the entry then
+    /// waits for a person (`/queue approve`, `/queue restart`, `/queue rm`) with the reason on the
+    /// session's own log rather than only in the store.
+    ///
+    /// `store` is passed rather than read from `self` because the caller already holds it: the
+    /// review row's own write is the half this follows.
+    fn send_a_refusal_back(&self, store: &Store, entry_id: &str) {
+        let entry = match store.merge_entry(entry_id) {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                self.hub.publish(SessionEvent::Warning {
+                    code: "refusal_undelivered".into(),
+                    detail: format!(
+                        "the review of `{entry_id}` refused it, and the entry left the queue \
+                         before the complaints could be sent: there is no row left to name the \
+                         branch or the worktree the child would go back to. Nothing was sent."
+                    ),
+                    compaction: None,
+                });
+                return;
+            }
+            Err(e) => {
+                self.hub.publish(SessionEvent::Warning {
+                    code: "refusal_undelivered".into(),
+                    detail: format!(
+                        "the review of `{entry_id}` refused it, and the entry could not be read \
+                         back ({e}), so the complaints were not sent. Nothing was sent."
+                    ),
+                    compaction: None,
+                });
+                return;
+            }
+        };
+        let review = store.merge_review(entry_id).ok().flatten();
+        let said = crate::mergequeue::refusal_message(&entry, review.as_ref());
+        let runner = self.subagents.clone();
+        if let Err(why) = letibot_tools::builtins::task::TaskRunner::send(&*runner, entry_id, &said)
+        {
+            self.hub.publish(SessionEvent::Warning {
+                code: "refusal_undelivered".into(),
+                detail: format!(
+                    "the review of `{entry_id}` refused it, and the complaints did NOT reach the \
+                     child: {why} The verdict stands — the entry does not land until a review \
+                     accepts it — and a person has to move it: `/queue restart {entry_id}`, \
+                     `/queue approve {entry_id}`, or `/queue rm {entry_id}`."
+                ),
+                compaction: None,
+            });
+        }
     }
 
     /// **Re-attempt one merge-queue entry's review** — `/queue restart ENTRY-ID`, and the key on
@@ -13072,19 +13148,29 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         }
     }
 
-    /// **Say something to a child that is still working** — the operator's ruling, 2026-10-06:
+    /// **Say something to a session that is still working** — the operator's ruling, 2026-10-06:
     /// *"in the tree all subagents must be addressable by their parents. that is how live
     /// corrections delivered."*
     ///
-    /// The door is the child's own hub, exactly as [`Self::kill`]'s is, and the address is
-    /// `DAEMON_SUBMITTER` for the same reason: the parent is seated in another session's hub
-    /// entirely. What it submits is a [`letibot_sessionlog::CommandKind::Message`] rather than a
-    /// `Prompt`, and that difference is the feature — the child hears an agent's correction at
-    /// its next round boundary, recorded as an agent's, instead of something the operator is
-    /// supposed to have typed.
+    /// **The door is a session's own hub, and it is NOT parent-shaped.** The registry is the
+    /// daemon's, keyed by session id, so `handle` may name **any live session**: a subagent this
+    /// session started, or a peer — the operator's correction to the whole framing of this
+    /// channel, verbatim: *"well gatekeeper is not a child so we are not doing up"*. A peer is a
+    /// session in its own right, one session sends another session a message, and
+    /// [`letibot_sessionlog::CommandKind::Message`] — a sender and a text, addressed at a session
+    /// — is already exactly that. So the refusal below is for a session that DOES NOT EXIST and
+    /// for nothing else; a live session that is not this session's child is delivered to, and the
+    /// `from` it carries is what lets the recipient judge provenance.
     ///
-    /// **REFUSED BY NAME WHEN THE CHILD'S THREAD IS GONE, and the answer says WHICH delivery the
-    /// parent got.** What this door used to do was refuse anything that was not a running turn,
+    /// The address is `DAEMON_SUBMITTER` for the same reason it is for [`Self::kill`]: the sender
+    /// is seated in another session's hub entirely. What it submits is a
+    /// [`letibot_sessionlog::CommandKind::Message`] rather than a `Prompt`, and that difference is
+    /// the feature — the recipient hears an agent's utterance at its next round boundary, recorded
+    /// as an agent's (`from`, never the daemon: `Hub::submit`'s relayed-message arm keeps the
+    /// author), instead of something the operator is supposed to have typed.
+    ///
+    /// **REFUSED BY NAME WHEN THE SESSION'S THREAD IS GONE, and the answer says WHICH delivery the
+    /// sender got.** What this door used to do was refuse anything that was not a running turn,
     /// and its reason was a measurement rather than caution: a message rides the same queue as
     /// every other command, so a submission against a child whose turn had ended answered
     /// `Accepted` and then sat there, because *nothing drains a child's queue between turns* —
@@ -13093,38 +13179,49 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// restart you"*, and then ruled on it: *"fix task_message - it should enqueue"*.
     ///
     /// **What changed is the sentence in the middle, and it changed by being made false rather
-    /// than by being deleted.** A child's queue now HAS a between-turns reader: the message is
-    /// put on it, and [`Hub::wake_its_own_reader`] wakes the thread that owns the child — the
-    /// same door a subagent's settlement takes through `Sessions::wake` — whose own loop answers
-    /// it by running the turn ([`serve_child`]'s `ChildCommand::Hear`, which submits through
-    /// [`Harness::submit_a_parents_message`]). So there are two deliveries and they are not the
-    /// same sentence:
+    /// than by being deleted.** A session's queue now HAS a between-turns reader, whichever kind
+    /// of session it is: a subagent's own thread (`serve_child`'s `ChildCommand::Hear`, which
+    /// submits through [`Harness::submit_a_parents_message`]), and — for a session the daemon
+    /// itself holds, the main session — the daemon's worker, whose `Message` arm appends the row
+    /// and starts the turn (`Sessions::dispatch`). So there are two deliveries and they are not
+    /// the same sentence:
     ///
-    ///   * **the child's turn is running** — it hears the message at its next round boundary,
+    ///   * **the recipient's turn is running** — it hears the message at its next round boundary,
     ///     as an agent's utterance, and keeps working;
-    ///   * **the child is between turns** — a turn is STARTED for it, and the message is what
-    ///     that turn is about.
+    ///   * **it is between turns** — a turn is STARTED for it, and the message is what that turn
+    ///     is about.
     ///
     /// **The order is the race handling: durable first, wake second.** The message is on the
     /// queue before the wake is sent, so a wake that is missed, or a turn that ends in the window
-    /// between the state read below and the child's next look at its queue, still finds work
+    /// between the state read below and the recipient's next look at its queue, still finds work
     /// waiting — the message is never `Accepted` into a queue that nothing will look at. The
-    /// window is genuinely narrow and genuinely there (the child can end its turn between the
-    /// read and the drain) and it is CLOSED by the wake rather than named and left: whichever of
-    /// the two states the child was in, the queue entry and the wake are both delivered.
+    /// window is genuinely narrow and genuinely there (the turn can end between the read and the
+    /// drain) and it is CLOSED by the wake rather than named and left: whichever of the two states
+    /// the recipient was in, the queue entry and the wake are both delivered.
     ///
-    /// **The two failures stay failures, by name.** A handle the registry does not hold is the
-    /// refusal it always was. A child whose own thread has ENDED is refused too, because a thread
-    /// that has ended takes no wake — [`TaskSlot::has_exited`] is the same fact `stop_all` reads
-    /// before submitting an interrupt nothing would answer — and that check happens BEFORE the
-    /// submit, so "nothing was sent" is true when it is said. The one residual window is a hub
+    /// **The two failures stay failures, by name.** A handle no session in the daemon answers to
+    /// is refused: nothing was sent, and the sentence says which of the two kinds of handle this
+    /// door takes. A child of THIS session whose own thread has ENDED is refused too, because a
+    /// thread that has ended takes no wake — [`TaskSlot::has_exited`] is the same fact `stop_all`
+    /// reads before submitting an interrupt nothing would answer — and that check happens BEFORE
+    /// the submit, so "nothing was sent" is true when it is said. The one residual window is a hub
     /// that closes between the submit and the wake: then the message really is on a queue with no
     /// reader, and the answer says exactly that instead of claiming a delivery.
     fn send(&self, handle: &str, text: &str) -> Result<String, String> {
+        // **A session that does not exist is the refusal; a peer is not.** `Registry::get`
+        // answers for the whole daemon, keyed by session id, so a handle naming a live session
+        // resolves here whichever session started it. What this sentence used to say — *"no
+        // subagent `{handle}` in this session, or its session is gone"* — described the door as a
+        // parent's list of its children, which is the framing the operator struck (*"well
+        // gatekeeper is not a child so we are not doing up"*): it named a peer as something this
+        // session does not have, and it said *gone* about a session that is very much there.
         let Some(hub) = self.registry.get(handle) else {
             return Err(format!(
-                "no subagent `{handle}` in this session, or its session is gone. `task_result` \
-                 with no argument lists the ones there are."
+                "no session `{handle}` is live in this daemon, so there is nothing to say it to: \
+                 a message is delivered to a session's own queue, and a session that has closed \
+                 has no queue left. Nothing was sent. A message may name any live session — a \
+                 subagent this session started, or a peer — and `task_result` with no argument \
+                 lists the subagents this session still holds."
             ));
         };
         // **A thread that has ended takes no wake, and a message nobody reads is the lie this

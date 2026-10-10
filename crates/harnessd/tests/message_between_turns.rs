@@ -912,8 +912,9 @@ fn a_second_message_does_not_start_a_second_turn_for_the_first() {
 
 /// **A genuine failure is still refused by name, and never claims to have queued.**
 ///
-/// Three of them, and they are three different facts. A handle this session never minted is
-/// the refusal it always was. A child whose own THREAD has ended — a session that is over —
+/// Three of them, and they are three different facts. A handle no session in this daemon
+/// answers to is the refusal it always was, said about the session rather than about the
+/// caller's children. A child whose own THREAD has ended — a session that is over —
 /// takes no wake, so a message queued for it would be read by nobody; that is the one
 /// refusal this change adds, and it is checked BEFORE the submit so that *"nothing was
 /// sent"* is true when it is said. And a session that goes away with the message already on
@@ -946,13 +947,17 @@ fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
     let cfg = config(parent_id, stub.endpoint.clone(), &path);
     let parent = a_parent(parent_id, &parts, &cfg);
 
-    // **No such handle.** Nothing was sent and the refusal says which ones there are.
+    // **No such handle.** Nothing was sent and the refusal says which ones there are. It is a
+    // refusal for a SESSION that does not exist — a peer this daemon does hold is deliverable
+    // to (`session_channel.rs`), and the sentence says so rather than naming the caller's
+    // children as the only addressees.
     let said = parent
         .message("sub-never-existed", MESSAGE)
         .expect_err("a handle this session never minted is refused");
     assert!(
-        said.contains("no subagent") && said.contains("task_result"),
-        "the refusal names the handle and where the list is: {said}"
+        said.contains("no session `sub-never-existed`") && said.contains("Nothing was sent"),
+        "the refusal names the session that is not there and does not claim to have sent \
+         anything: {said}"
     );
 
     // **A session that is over.** A stop reaching a child BETWEEN turns ends its thread

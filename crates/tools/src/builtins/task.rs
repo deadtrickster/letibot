@@ -432,23 +432,29 @@ pub trait TaskRunner: Send + Sync {
              can do. Nothing was stopped."
         ))
     }
-    /// **Say something to a subagent that is still working** — the operator's ruling,
+    /// **Say something to a session that is still working** — the operator's ruling,
     /// 2026-10-06: *"in the tree all subagents must be addressable by their parents. that is
     /// how live corrections delivered."*
     ///
     /// `Ok` is what was done, in the words the operator gets; `Err` is why it could not be,
     /// said rather than swallowed — the rule [`TaskRunner::kill`] follows, and for the same
     /// reason: a message reported as delivered that nobody heard is worse than one refused,
-    /// because the parent then believes its child was corrected.
+    /// because the sender then believes the session was corrected.
     ///
     /// **A message is not a second prompt.** It is recorded as an agent's utterance rather
     /// than the operator's, so it can neither authorise the act it races nor be read as
-    /// something a person typed. **Both states of a child are reachable, and they are
-    /// different deliveries**: a child with a turn RUNNING hears it at its next round
-    /// boundary, and a child BETWEEN turns has a turn started for it with this message as
-    /// what the turn is about (the operator's ruling, *"fix task_message - it should
-    /// enqueue"*). The one thing a runner must not do is accept a message nothing will read:
-    /// a handle whose session is gone, or whose thread has ended, is refused by name.
+    /// something a person typed. **Both states of a session are reachable, and they are
+    /// different deliveries**: one with a turn RUNNING hears it at its next round boundary,
+    /// and one BETWEEN turns has a turn started for it with this message as what the turn is
+    /// about (the operator's ruling, *"fix task_message - it should enqueue"*). The one thing
+    /// a runner must not do is accept a message nothing will read: a handle whose session is
+    /// gone, or whose thread has ended, is refused by name.
+    ///
+    /// **The handle may name a peer, and that is not a widening of this door's job.** The
+    /// operator struck the parent-shaped framing of it — *"well gatekeeper is not a child so we
+    /// are not doing up"* — so one session sending another session a message is the ordinary
+    /// case, and the refusal is for a session that does not exist rather than for one that is
+    /// not this session's child.
     fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
         Err(format!(
             "this session's runner cannot message `{handle}`: a subagent is reached through \
@@ -1057,13 +1063,19 @@ impl Tool for TaskResultTool {
     }
 }
 
-/// `task_message` — correct a subagent, running or not.
+/// `task_message` — say something to a session, running or not.
 ///
 /// The third thing a parent does to work it handed off: `task` starts a child,
 /// `task_result` reads it, `job_kill` stops it, and this **steers** it. Sibling by shape and
-/// by reason — see [`TaskRunner::send`] for why a correction is not a second prompt in the
-/// child's session, for the two deliveries (a running turn and a child between turns), and
-/// for why a child whose session is gone is refused rather than queued.
+/// by reason — see [`TaskRunner::send`] for why a message is not a second prompt in the
+/// recipient's session, for the two deliveries (a running turn and a session between turns),
+/// and for why a session that is gone is refused rather than queued.
+///
+/// **And it is not only for children.** The operator's correction to this channel, verbatim:
+/// *"well gatekeeper is not a child so we are not doing up"* — a session sends another session
+/// a message, laterally, and the handle may name **any live session**: a subagent this one
+/// started, or a peer (the session a review is hosted by, the session that queued the work).
+/// That is the same door and the same act; only the wording of the refusal was child-shaped.
 pub struct TaskMessageTool {
     runner: Arc<dyn TaskRunner>,
 }
@@ -1078,18 +1090,18 @@ impl Tool for TaskMessageTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "task_message",
-            "Say something to a subagent you started — a live correction. Give \
-             `task` (the handle `task` returned) and `text` (what to say). It is not a \
-             second prompt: the child hears it as your message and carries on. A child \
-             whose turn is running hears it at its next round boundary; a child that has \
-             answered and is waiting is woken and runs a turn for it. Refused by name if \
-             the child's session is gone. Read a child with `task_result`; \
-             stop one with `job_kill`.",
+            "Say something to a session — a live correction. Give \
+             `task` (the handle `task` returned, or the id of any live session) and `text` \
+             (what to say). It is not a second prompt: the session hears it as your message \
+             and carries on. A session whose turn is running hears it at its next round \
+             boundary; a session that has answered and is waiting is woken and runs a turn \
+             for it. Refused by name if no session of that id is live. Read a subagent with \
+             `task_result`; stop one with `job_kill`.",
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "The handle `task` returned."},
-                    "text": {"type": "string", "description": "What to say to the subagent. It keeps working; this steers what it does next."}
+                    "task": {"type": "string", "description": "The handle `task` returned, or the id of a live session to address."},
+                    "text": {"type": "string", "description": "What to say to the session. It keeps working; this steers what it does next."}
                 },
                 "required": ["task", "text"]
             }),

@@ -1763,7 +1763,11 @@ pub fn approve(
 /// puts into merge queue ... and if it is not happy - it sends a message with complaints to
 /// original subagent"*. **A function rather than a string built at the call site** for exactly that
 /// reason: the nagging half is a gatekeeper sending the same message with its own complaints where
-/// a person's words go, and this is the shape it will carry.
+/// a person's words go — [`refusal_message`], which is that half — and this is the shape it carries.
+///
+/// The words are the SENDER's, and the two senders are not interchangeable: a person's veto is an
+/// override that has to be quoted verbatim, and the gatekeeper's refusal is the review itself. What
+/// they share is [`back_to_work`], which is the part a child acts on.
 pub fn veto_message(
     entry: &MergeEntry,
     why: &str,
@@ -1773,6 +1777,70 @@ pub fn veto_message(
         "" => "The operator vetoed it and gave no reason.".to_string(),
         w => format!("This is what the operator said:\n\n  {w}"),
     };
+    back_to_work(entry, &said, &review_half(review))
+}
+
+/// **What the child is told when the GATEKEEPER refused it** — the complaints, back to the session
+/// that did the work, with no person in the sentence at all.
+///
+/// The other half of [`veto_message`]'s own reason: the operator's model is *"if it is not happy -
+/// it sends a message with complaints to original subagent"*, and the complaints a reviewer has are
+/// the ones it wrote on the review row. So this is the same act — the ball goes back — with the
+/// reviewer's verdict where a person's words go, and the same [`back_to_work`] tail, which is the
+/// part the child acts on: which branch, which entry, which worktree, and what has to happen
+/// before anything lands.
+///
+/// **A refusal with no reasons is said as that, not as a silence.** A reviewer that answered
+/// `reject` and wrote no `reasons:` has still refused; the child is told the verdict word and told
+/// where the rest of it is (the review row and the entry's evidence), rather than being handed a
+/// sentence that reads like nobody judged the branch.
+pub fn refusal_message(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> String {
+    let said = match review {
+        Some(r) if r.decision.is_some() => format!(
+            "The gatekeeper refused it: its verdict on this branch is `{}`, and the review is what \
+             refused it — nobody has overridden it.",
+            r.decision.as_deref().unwrap_or("no verdict")
+        ),
+        // A refusal whose row is gone is not a refusal anybody can act on with a reason, and the
+        // child is told exactly that rather than left to infer a judgement from a silence.
+        _ => {
+            "The gatekeeper refused it: the branch does not land as it stands, and the review row \
+              it was refused on is no longer in the queue."
+                .to_string()
+        }
+    };
+    back_to_work(entry, &said, &review_half(review))
+}
+
+/// **The tail both sentences carry** — the part a child acts on, and the reason they are one
+/// function: which branch, which entry, which worktree, and what has to happen before anything
+/// lands. Two copies of this would be two answers to *what do I do now*.
+fn back_to_work(entry: &MergeEntry, said: &str, reviewed: &str) -> String {
+    format!(
+        "Your branch `{}` was taken out of the merge queue: it is NOT landing as it stands, and \
+         the entry `{}` is back with you.\n\n{said}\n\n{reviewed}\n\nCarry on in the worktree at \
+         `{}` — the work you do there is what the entry is reviewed against next. Nothing lands \
+         until a review accepts it and the gate is green.",
+        entry.branch,
+        entry.id,
+        entry
+            .worktree
+            .as_deref()
+            .unwrap_or("(none — the branch is not checked out)")
+    )
+}
+
+/// **The review's own half of a sentence that goes back to a child** — the reviewer's reasons when
+/// it wrote any, the attempt's failure when the gatekeeper could not be asked, and *nobody has
+/// judged* only when the row holds neither.
+///
+/// One function because both [`veto_message`] and [`refusal_message`] carry it: a person's veto of
+/// a branch the gatekeeper already refused must quote the refusal, and a gatekeeper's own refusal
+/// is that same paragraph.
+fn review_half(review: Option<&letibot_tokencore::store::ReviewRecord>) -> String {
     let reviewed = match review {
         Some(r) if !r.reasons.is_empty() => {
             let mut out = format!(
@@ -1790,20 +1858,17 @@ pub fn veto_message(
             "The gatekeeper could not be asked — {} — so nothing has judged the branch.",
             first_line(&r.failure)
         ),
+        // **A verdict with no reasons is still a verdict.** `reject` and an empty `reasons:` line
+        // is a reviewer that judged and wrote nothing down, and the row is the whole of what it
+        // said — *nobody has judged* would be the one sentence that is false about it.
+        Some(r) if r.decision.is_some() => format!(
+            "The review's verdict was `{}`, and it wrote no reasons down: the review row is the \
+             whole of what it said.",
+            r.decision.as_deref().unwrap_or("no verdict")
+        ),
         _ => "Nobody has judged the branch yet.".to_string(),
     };
-    format!(
-        "Your branch `{}` was taken out of the merge queue: it is NOT landing as it stands, and \
-         the entry `{}` is back with you.\n\n{said}\n\n{reviewed}\n\nCarry on in the worktree at \
-         `{}` — the work you do there is what the entry is reviewed against next. Nothing lands \
-         until a review accepts it and the gate is green.",
-        entry.branch,
-        entry.id,
-        entry
-            .worktree
-            .as_deref()
-            .unwrap_or("(none — the branch is not checked out)")
-    )
+    reviewed
 }
 
 /// **Veto one entry** — the person's rejection, delivered to the child that did the work.
@@ -6541,13 +6606,66 @@ mod person {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **A refusing verdict's own sentence, back to the child** — the gatekeeper's half of the
+    /// same act a person's veto is, and the complaints are the review's.
+    ///
+    /// The second caller of the session channel, at the level of the words: `serve_reviews`
+    /// delivers exactly this through `TaskRunner::send`. What it must carry is the verdict word,
+    /// the reviewer's reasons, which branch and entry are back with the child, and where to carry
+    /// on — and it must NOT carry a person's voice, which is the one thing that would make a
+    /// gatekeeper's refusal read as an override.
+    #[test]
+    fn a_refusal_message_carries_the_reviewers_complaints_and_no_persons_words() {
+        let (root, db, id) = parked("refusal-message", MergeState::Waiting);
+        refused(&db, &id);
+        let entry = store_at(&db).merge_entry(&id).unwrap().unwrap();
+        let review = store_at(&db).merge_review(&id).unwrap();
+        let said = refusal_message(&entry, review.as_ref());
+        assert!(
+            said.contains("The gatekeeper refused it"),
+            "the sender is named: {said}"
+        );
+        assert!(said.contains("`reject`"), "and its verdict: {said}");
+        assert!(
+            said.contains("the branch is 0 commits over its base"),
+            "and the complaints, verbatim: {said}"
+        );
+        assert!(
+            said.contains(&format!("`{id}`")),
+            "and which entry is back with the child: {said}"
+        );
+        assert!(
+            said.contains("Carry on in the worktree"),
+            "and what to do next: {said}"
+        );
+        assert!(
+            !said.contains("operator"),
+            "nothing in it may read as a person's override: {said}"
+        );
+        // **A refusal with no reasons written down is still a refusal.** `reject` and an empty
+        // `reasons:` is a reviewer that judged and wrote nothing; the one sentence that is false
+        // about it is *nobody has judged the branch*.
+        let mut bare = store_at(&db).merge_review(&id).unwrap().unwrap();
+        bare.reasons.clear();
+        let said = refusal_message(&entry, Some(&bare));
+        assert!(!said.contains("Nobody has judged"), "{said}");
+        assert!(
+            said.contains("wrote no reasons down"),
+            "the row is said to be the whole of what it said: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// **A child that is gone is refused, and NOTHING is moved** — the ball cannot go back to a
     /// session that is not there, and the act must not report a delivery that did not happen.
     #[test]
     fn a_veto_whose_child_is_gone_moves_nothing() {
         let (root, db, id) = parked("gone", MergeState::Failed);
         let gone = |_: &str, _: &str| {
-            Err("no subagent `m-1` in this session, or its session is gone.".to_string())
+            Err(
+                "no session `m-1` is live in this daemon, so there is nothing to say it to."
+                    .to_string(),
+            )
         };
         let events = RecordingEvents::default();
         let why =
