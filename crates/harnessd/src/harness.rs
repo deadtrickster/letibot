@@ -53,7 +53,7 @@ use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
-use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan};
+use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan_for};
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role, Tool,
@@ -1557,6 +1557,10 @@ pub struct Harness {
     todos: Arc<TodoBoard>,
     /// The board version this harness last persisted and announced.
     todos_version: u64,
+    /// **The row the last plan-check named**, so the check keeps asking about THAT row rather than
+    /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
+    /// this is the one field that remembers it.
+    nag_choice: Option<String>,
     /// T21.3's encoder and error signal. Always constructed and always attached —
     /// measuring costs nothing and `Verification::NoEncoder` is a state whose
     /// reason is ours rather than the model's.
@@ -3931,6 +3935,7 @@ impl Harness {
             asked,
             todos: todo_board,
             todos_version: 0,
+            nag_choice: None,
             intent,
             injected,
             monitors,
@@ -4496,19 +4501,17 @@ impl Harness {
     /// into the composer can. Before this it could not — the answer was a tool payload and
     /// nothing else, and no `User` row of theirs existed to cite.
     fn settle_asked(&mut self, result: &mut TranscriptItem) -> Vec<TranscriptItem> {
-        let Some(asked) = self
-            .asked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        else {
+        let Some(asked) = self.asked.lock().unwrap_or_else(|e| e.into_inner()).take() else {
             return Vec::new();
         };
         // **Only an answer the tool ACCEPTED.** `ask_user_question` reports an abstention as
         // `Abstained` — a real answer — and everything it refused (an empty answer, an option
         // index nobody offered, a note qualifying nothing) as `not_run`. Writing a person's
         // row for one of those would attribute to them a sentence the harness rejected.
-        let TranscriptItem::ToolResult { outcome, origin, .. } = result else {
+        let TranscriptItem::ToolResult {
+            outcome, origin, ..
+        } = result
+        else {
             return Vec::new();
         };
         if !matches!(
@@ -4524,7 +4527,8 @@ impl Harness {
             who: asked.by.clone(),
         });
         let at = Some(Instant::now());
-        self.trail.say(Speaker::Agent, &question_row_text(&asked), at);
+        self.trail
+            .say(Speaker::Agent, &question_row_text(&asked), at);
         self.trail.say(Speaker::Operator, &said, at);
         asked_rows(&asked, &said).to_vec()
     }
@@ -6632,10 +6636,18 @@ impl Harness {
     /// before the row was postponed** — which is the one way a postponed row could still be
     /// nagged about, and the reason this is filtered here rather than left to the arming alone.
     /// One predicate, so the clock and the sentence cannot disagree about what the plan is.
-    pub fn nag_notice(&self) -> Option<String> {
-        unfinished_plan(&crate::sessions::the_plan_as_checked(
-            &self.todos.snapshot(),
-        ))
+    ///
+    /// **And the row this names is remembered, so the question does not wander.** The check picks a
+    /// row once and names it again until it stops being askable — a row the operator adds elsewhere
+    /// on the plan cannot change which row the model is being held to — and a row that becomes
+    /// `InProgress` changes the QUESTION rather than the choice (`unfinished_plan_for`'s own words).
+    /// The clock keeps the TEXT, which is what the ladder counts repeats of; the row itself is this
+    /// harness's to remember, because the text cannot say which row it named.
+    pub fn nag_notice(&mut self) -> Option<String> {
+        let askable = crate::sessions::the_plan_as_checked(&self.todos.snapshot());
+        let (text, named) = unfinished_plan_for(&askable, self.nag_choice.as_deref())?;
+        self.nag_choice = Some(named);
+        Some(text)
     }
 
     /// **The plan's nudge as a turn of its own, when nothing else is happening.**
@@ -11745,7 +11757,7 @@ pub fn serve_child_under(
                 // notice and the plan has not moved.
                 let turned = !matches!(out, Ok(None));
                 if turned {
-                    nag.said(notice);
+                    nag.said(notice, std::time::Instant::now());
                 }
                 if let Err(e) = out {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -15142,10 +15154,8 @@ mod tests {
         );
         // Typed words are the whole answer.
         assert_eq!(
-            operator_answer_text(&asked(QuestionAnswer::free(
-                "neither — split it in two"
-            )))
-            .as_deref(),
+            operator_answer_text(&asked(QuestionAnswer::free("neither — split it in two")))
+                .as_deref(),
             Some("neither — split it in two")
         );
         // And an abstention is the act, in the only word the wire carries for it.
@@ -15156,7 +15166,10 @@ mod tests {
         // **An index nobody offered has nothing of theirs in it.** The tool refuses one of
         // those, so this is the belt to that pair of braces rather than a state a session
         // reaches — and returning words here would be inventing a sentence for them.
-        assert_eq!(operator_answer_text(&asked(QuestionAnswer::choosing(7))), None);
+        assert_eq!(
+            operator_answer_text(&asked(QuestionAnswer::choosing(7))),
+            None
+        );
     }
 
     /// **The two rows: the question is the session's, the answer is the operator's.**

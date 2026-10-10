@@ -100,7 +100,26 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 /// exists to avoid. The window is measured from the end of the last turn, and ANY turn re-arms
 /// it — a monitor's wake or a background job's completion is work too, and the model being busy
 /// with something else is not idle.
+///
+/// **The first check of a plan, and the base of every later one**: a notice the plan has already
+/// been sent comes due again at [`TodoNagClock::interval`], which doubles from here and stops at
+/// [`NAG_REPEAT_CAP`].
 const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
+
+/// **The ceiling on the repeat's interval** — how long a stalled plan may go unmentioned.
+///
+/// The operator's ruling on the once-per-plan rule, verbatim: *"hmm, yes obviously it should be a
+/// repeated nag."* What stays right about the old rule is the RATE: every check is a real turn and
+/// therefore a real model call, so a plan stalled for nine hours must not cost 540 of them. So the
+/// interval between repeats doubles per delivery of the same notice and stops here.
+///
+/// Thirty minutes is the working-night number: with the one-minute window, the deliveries of an
+/// unchanged plan land at roughly 1, 2, 4, 8, 16, 30, 30, … minutes after it was last touched —
+/// about twenty in nine hours, which is a session that keeps being reminded rather than one that is
+/// shouted at or one that is left alone. Lower is a metronome again and higher is a plan that can
+/// stall unnoticed for an afternoon, so this is a number to tune rather than a property of the
+/// mechanism.
+pub(crate) const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 
 /// **Whether a row is work the idle plan-check may speak about.**
 ///
@@ -138,12 +157,15 @@ pub(crate) fn the_plan_as_checked(rows: &[TodoItem]) -> Vec<TodoItem> {
 
 /// Should the idle check be armed for a plan of these ROWS, given what it was last NAGGED with?
 ///
-/// **The whole schedule's decision, as one predicate, and it exists so the rule can be
-/// tested without a daemon.** Both halves are load-bearing: a finished (or absent) plan has
-/// nothing to check, and an UNCHANGED one has already been said — re-sending it is the nagging
-/// the operator called overkill, at a slower rate instead of a faster one. A model that ignores
-/// the check therefore gets silence rather than a metronome, while any real work on the plan
-/// earns a fresh check at the next idle period.
+/// **The `moved` half of the schedule, as one predicate, and it exists so the rule can be tested
+/// without a daemon.** Both halves are load-bearing: a finished (or absent) plan has nothing to
+/// check, and an UNCHANGED one has already been said — sending it again at the window would be the
+/// nagging the operator called overkill, at a slower rate instead of a faster one. What an
+/// unchanged plan earns instead is the REPEAT, at the doubled-and-capped interval
+/// [`TodoNagClock::rearm`] keeps — the operator's ruling, *"hmm, yes obviously it should be a
+/// repeated nag"*, against the same objection the old rule was written for: a check is a real
+/// turn, so it is the RATE that has to be bounded rather than the number of times a plan may be
+/// mentioned at all.
 ///
 /// **It takes the ROWS and not a rendered notice**, and that is what makes the third half of the
 /// rule — *a postponed row does not arm this* — assertable as a predicate instead of through a
@@ -157,7 +179,8 @@ fn nag_should_arm(todos: &[TodoItem], nagged: Option<&str>) -> bool {
     }
 }
 
-/// **One session's idle plan-check clock: the deadline, and the notice that disarmed it.**
+/// **One session's idle plan-check clock: the deadline, the notice that disarmed it, and the
+/// backoff that decides when that same notice may be sent again.**
 ///
 /// The operator's ruling that put a child on this clock too, verbatim: *"childs being just a
 /// session should get nags"*. A session the daemon holds runs its clock here in `Sessions`
@@ -172,6 +195,14 @@ fn nag_should_arm(todos: &[TodoItem], nagged: Option<&str>) -> bool {
 /// injects its due times: a test that waited a real minute would not be a test, so the clock
 /// takes the window at construction and the production constructors — both of them — pass
 /// [`TODO_NAG_AFTER`].
+///
+/// **And the schedule is not "once per plan".** A check is a TURN — a real model call — so a plan
+/// nobody acts on must not be re-asked every window; that is the metronome the operator called
+/// overkill, and it is why the interval between two deliveries of the same notice doubles. Silence
+/// for ever is the other failure and the one the operator ruled on — *"hmm, yes obviously it
+/// should be a repeated nag"* — so the interval is capped at [`NAG_REPEAT_CAP`] and measured from
+/// the last DELIVERY rather than from the last turn: a session that keeps waking for reasons of its
+/// own must not push its own reminder back for ever.
 pub struct TodoNagClock {
     /// How long after the last turn or board move the check comes due.
     window: Duration,
@@ -179,14 +210,21 @@ pub struct TodoNagClock {
     /// the common case, and the one that keeps the waiter's sleep unbounded (the worker's
     /// `next_nag_at` returns NIL; a child's `take_own_work_until` gets `None`).
     due: Option<Instant>,
-    /// **The plan notice this session was last nagged with** — the anti-metronome half.
+    /// **The plan notice this session was last nagged with** — the identity the backoff counts
+    /// repeats of.
     ///
-    /// This is what makes it once per idle period rather than every minute. A check that
-    /// was sent and not acted on must not be sent again — the model has been told, and
-    /// telling it the same unchanged list again is the nagging the operator called overkill.
-    /// So a re-arm compares the plan against what was last sent: unchanged means silence,
-    /// and any change at all (an item added, one closed, one started) is a new thing to say.
+    /// A re-arm compares the plan against this: a different notice is a new thing to say, at the
+    /// base window, and the same one is a repeat, at [`Self::interval`]. It is not the whole of
+    /// the rate any more — the interval is — because the model has been told and telling it the
+    /// same unchanged list again a minute later is still the nagging the operator called overkill.
     nagged: Option<String>,
+    /// **When `nagged` was sent** — the anchor the repeat's interval is measured from. Written and
+    /// cleared with `nagged`, so the two cannot disagree about whether a notice is outstanding.
+    nagged_at: Option<Instant>,
+    /// **How many times in a row that same notice has been delivered** — the backoff's exponent,
+    /// one-based: the first delivery is what makes the next gap twice the window. A different
+    /// notice, and the operator speaking (which clears the notice), start the ladder over.
+    repeats: u32,
 }
 
 impl TodoNagClock {
@@ -204,34 +242,80 @@ impl TodoNagClock {
             window,
             due: None,
             nagged: None,
+            nagged_at: None,
+            repeats: 0,
         }
     }
 
     /// **Start (or stand down) the check, as of `now`** — the body of
     /// [`Sessions::rearm_todo_nag`], and of `serve_child`'s re-arm, so the two owners
-    /// cannot drift. Armed only when the plan is unfinished AND different from the one
-    /// last sent; both halves are `nag_should_arm`'s, taken together.
+    /// cannot drift.
+    ///
+    /// Three answers, and the third is the operator's ruling:
+    ///
+    /// * **nothing to ask about** — a finished plan, or one whose only open row is postponed: no
+    ///   deadline at all;
+    /// * **the plan moved** — a new thing to say, one base [`Self::window`] from `now`;
+    /// * **the same plan, already said** — the repeat, one [`Self::interval`] after the last
+    ///   DELIVERY, so a turn that changes nothing does not postpone the check it owes.
     pub fn rearm(&mut self, todos: &[TodoItem], now: Instant) {
         self.due = if nag_should_arm(todos, self.nagged.as_deref()) {
             Some(now + self.window)
+        } else if unfinished_plan(&the_plan_as_checked(todos)).is_some() {
+            // `nagged_at` is written with `nagged` and cleared with it, and this arm is reached only
+            // with a notice outstanding — so the anchor is there, and a missing one would be a
+            // clock that armed nothing rather than one that fired at the wrong moment.
+            self.nagged_at.map(|at| at + self.interval())
         } else {
             None
         };
+    }
+
+    /// **How long after the last delivery the same notice may be sent again** — the base window
+    /// doubled once per delivery of it, and capped at [`NAG_REPEAT_CAP`].
+    ///
+    /// Doubled from the gap just used and not from the first one, because what the ladder is for is
+    /// a rate that decays; capped because a reminder that has retreated into an hour is a plan that
+    /// can stall unnoticed for an afternoon.
+    fn interval(&self) -> Duration {
+        let mut interval = self.window;
+        for _ in 0..self.repeats {
+            interval = (interval * 2).min(NAG_REPEAT_CAP);
+        }
+        interval
     }
 
     /// **The operator has spoken: a new idle period, and the check may be made again.**
     /// [`Sessions::note_operator_prompt`]'s half — *"but certainly not after my message"*
     /// has this as its complement: whatever they said may have changed what the plan
     /// should be, so the once-per-saying is earned back rather than spent for ever.
+    ///
+    /// **And the backoff goes with the notice**, which is a decision rather than tidying: what the
+    /// ladder counts is REPEATS of one notice, and a message clears the notice, so there is nothing
+    /// left being repeated. The next check is due one base window after the message rather than at
+    /// whatever gap the old notice had grown to — which is the same rule read the other way: the
+    /// person's turn earns the check back at the base rate, and *"certainly not after my message"*
+    /// is about the moment it must not arrive, not about how long they must wait for it.
     pub fn prompt_arrived(&mut self) {
         self.nagged = None;
+        self.nagged_at = None;
+        self.repeats = 0;
     }
 
-    /// **Record the notice a delivery just sent** — before the outcome is known, which
-    /// is deliberate: a check whose turn failed still counts as said, or the same
-    /// notice would come back every window, which is the metronome at a slower rate.
-    pub fn said(&mut self, notice: Option<String>) {
+    /// **Record the notice a delivery just sent, as of `now`** — before the outcome is known, which
+    /// is deliberate: a check whose turn failed still counts as said, or the same notice would come
+    /// back every window, which is the metronome at a slower rate.
+    ///
+    /// **The same text again is a REPEAT and the ladder counts it**; a different text is a new thing
+    /// to say, and the interval starts over — one delivery of THIS notice is what makes the next gap
+    /// twice the window, and the gap before the first one is the window itself.
+    pub fn said(&mut self, notice: Option<String>, now: Instant) {
+        self.repeats = match (&self.nagged, &notice) {
+            (Some(was), Some(is)) if was == is => self.repeats.saturating_add(1),
+            _ => 1,
+        };
         self.nagged = notice;
+        self.nagged_at = Some(now);
     }
 
     /// **The deadline for whoever waits on this clock** — the worker's blocking wait for
@@ -1426,11 +1510,12 @@ impl<'a> Sessions<'a> {
 
     /// Start (or stand down) the idle plan-check for SESSION, as of NOW.
     ///
-    /// **Armed only when the plan is unfinished AND different from the one last sent.** Both
-    /// halves are load-bearing: a finished plan has nothing to check, and an unchanged one has
-    /// already been said — re-sending it is the nagging the operator called overkill, just at a
-    /// slower rate. So a model that ignores the check gets silence rather than a metronome, while
-    /// any real work on the plan earns a fresh check at the next idle period.
+    /// **An unfinished plan is always armed.** A notice the plan has not been sent comes due one
+    /// window after the turn that armed it; a notice it HAS been sent comes due again at the
+    /// doubled-and-capped interval [`TodoNagClock::rearm`] keeps — the operator's ruling,
+    /// *"hmm, yes obviously it should be a repeated nag"*. A finished plan, and a plan whose only
+    /// unfinished row is postponed, arm nothing: that is `nag_should_arm`'s reading and the
+    /// operator's `[p]` staying theirs.
     ///
     /// **The rows are handed over whole and `nag_should_arm` does the reading**, so the decision
     /// about what the check may ask about — a postponed row is not it — lives in one place rather
@@ -1545,7 +1630,7 @@ impl<'a> Sessions<'a> {
                 Err(e) => Err(e),
             };
             if let Some(clock) = self.nags.get_mut(&session_id) {
-                clock.said(notice);
+                clock.said(notice, Instant::now());
             }
             self.publish_title(&session_id);
             let out = self.after_turn(&session_id, &hub, out);
@@ -3514,15 +3599,17 @@ mod idle_nag {
         assert!(nag_should_arm(&[row("open", TodoStatus::Pending)], None));
     }
 
-    /// **And silence after that, while the plan says the same thing.** This is the difference
-    /// between a schedule and a metronome: a model that has been told and has not acted must not
-    /// be told again every minute.
+    /// **An unchanged plan is not a NEW notice** — the `moved` half of the schedule, which is what
+    /// this predicate is. It is no longer the whole of the arming decision: an unchanged plan comes
+    /// back at the clock's doubled-and-capped interval (the operator's *"hmm, yes obviously it
+    /// should be a repeated nag"*), which is `TodoNagClock`'s own test below. What is pinned here is
+    /// that the COMPARISON is about the notice and not about the clock's state.
     ///
     /// The last-sent text is taken from the plan itself rather than written by hand, because that
     /// is what the schedule actually stores — a hand-written string would test the comparison
     /// against something this plan could never produce.
     #[test]
-    fn an_unchanged_plan_is_not_armed_again() {
+    fn an_unchanged_plan_is_not_a_new_notice() {
         let plan = [row("open", TodoStatus::Pending)];
         let sent = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
         assert!(!nag_should_arm(&plan, Some(&sent)));
@@ -3629,47 +3716,172 @@ mod idle_nag {
         );
     }
 
-    /// **The anti-metronome, through the clock**: a delivered check spends the plan it
-    /// named, and only a plan that MOVED earns a fresh one. This is the schedule the
-    /// operator asked for rather than the per-turn nudge they called overkill.
+    /// **The operator's ruling, through the clock**: *"hmm, yes obviously it should be a repeated
+    /// nag."* A delivered check is not silence for ever — the same notice comes back at an interval
+    /// that doubles per delivery — and a plan that MOVED is a new thing to say, one base window
+    /// from the re-arm.
+    ///
+    /// **This is the test that fails on the once-per-plan rule**: there, the second `rearm` below
+    /// armed nothing at all.
     #[test]
-    fn a_said_check_disarms_until_the_plan_moves_or_somebody_speaks() {
+    fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
         use std::time::{Duration, Instant};
 
         let t0 = Instant::now();
         let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
         let plan = [row("open", TodoStatus::Pending)];
-        clock.rearm(&plan, t0);
         let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
 
-        // Delivered: the notice is recorded and the deadline is spent.
+        // The first check of a plan is one base window after the turn that armed it.
+        clock.rearm(&plan, t0);
+        assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
+
+        // Delivered: the notice is recorded, the deadline is spent — and the REPEAT is armed, one
+        // doubled interval after the DELIVERY.
         assert!(clock.due_now(t0 + Duration::from_secs(60)));
-        clock.said(Some(said.clone()));
+        clock.said(Some(said.clone()), t0 + Duration::from_secs(60));
         clock.rearm(&plan, t0 + Duration::from_secs(60));
-        assert!(
-            clock.due_at().is_none(),
-            "the same plan, already said, arms nothing — silence, not a slower metronome"
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(60 + 120)),
+            "the same notice comes back at the doubled interval, measured from its delivery"
         );
 
-        // **A plan that moved is a new thing to say** — one row closed, one added: either.
-        let moved = [row("open", TodoStatus::InProgress)];
-        clock.rearm(&moved, t0 + Duration::from_secs(120));
+        // **And a turn that changes nothing does not postpone it.** The anchor is the delivery, so
+        // a wake-driven turn in between arms the SAME moment rather than a fresh window — which is
+        // what keeps a session that keeps waking from pushing its own reminder back for ever.
+        clock.rearm(&plan, t0 + Duration::from_secs(100));
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(180)),
-            "the anchor is the moment of the re-arm, not the old deadline"
+            "unchanged by the turn"
         );
 
-        // **And a speaker earns the check back** — `note_operator_prompt`'s rule, which a
-        // parent steering a child now exercises too (`serve_child_under`'s prompt arm).
-        clock.said(Some(said.clone()));
+        // Delivered again: the ladder doubles again.
+        assert!(clock.due_now(t0 + Duration::from_secs(180)));
+        clock.said(Some(said.clone()), t0 + Duration::from_secs(180));
         clock.rearm(&plan, t0 + Duration::from_secs(180));
-        assert!(clock.due_at().is_none(), "spent again");
+        assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
+
+        // **A plan that moved is a new thing to say** — one row started — and the ladder starts
+        // over at the base window, however long the old notice stood.
+        let moved = [row("open", TodoStatus::InProgress)];
+        clock.rearm(&moved, t0 + Duration::from_secs(400));
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(460)),
+            "a moved plan is armed one base window from the re-arm"
+        );
+
+        // **And a speaker earns the check back** — `note_operator_prompt`'s rule, which a parent
+        // steering a child exercises too (`serve_child_under`'s prompt arm) — at the base rate and
+        // not at whatever gap the ladder had grown to.
+        let moved_said =
+            super::unfinished_plan(&super::the_plan_as_checked(&moved)).expect("open work");
+        clock.said(Some(moved_said), t0 + Duration::from_secs(400));
+        clock.rearm(&moved, t0 + Duration::from_secs(400));
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(520)),
+            "the moved plan's own notice repeats at its doubled interval"
+        );
         clock.prompt_arrived();
-        clock.rearm(&plan, t0 + Duration::from_secs(240));
+        clock.rearm(&moved, t0 + Duration::from_secs(430));
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(490)),
+            "whoever prompts the session earns the check back one base window away"
+        );
+    }
+
+    /// **The ladder stops growing**, and that is what keeps a nine-hour stall a working night
+    /// rather than a retreat into silence: the interval doubles per delivery and holds at
+    /// [`super::NAG_REPEAT_CAP`].
+    ///
+    /// A one-second window rather than the production minute, so the ladder reaches the cap in a
+    /// handful of deliveries; the SHAPE is the production one, because the interval is computed
+    /// from the window the clock was built with.
+    #[test]
+    fn the_repeat_stops_growing_at_the_cap() {
+        use std::time::{Duration, Instant};
+
+        let window = Duration::from_secs(1);
+        let mut clock = super::TodoNagClock::with_window(window);
+        let plan = [row("open", TodoStatus::Pending)];
+        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        let mut at = Instant::now();
+        let mut gaps: Vec<Duration> = Vec::new();
+        clock.rearm(&plan, at);
+        for _ in 0..40 {
+            let due = clock.due_at().expect("an unfinished plan is always armed");
+            gaps.push(due - at);
+            assert!(clock.due_now(due), "the deadline's own instant is due");
+            clock.said(Some(said.clone()), due);
+            at = due;
+            clock.rearm(&plan, at);
+        }
+
+        // Every gap is the one before it doubled, or the cap — never more than both.
+        for pair in gaps.windows(2) {
+            assert!(
+                pair[1] <= (pair[0] * 2).min(super::NAG_REPEAT_CAP),
+                "the gap may double or hit the cap and nothing else: {pair:?}"
+            );
+        }
+        assert!(
+            gaps.contains(&(window * 2)),
+            "the ladder really did double before it capped: {gaps:?}"
+        );
+        assert_eq!(
+            gaps.last(),
+            Some(&super::NAG_REPEAT_CAP),
+            "and it holds at the cap: {gaps:?}"
+        );
+    }
+
+    /// **A plan with nothing to ask about never repeats**, whatever the ladder has counted — the
+    /// disarm is the plan's own reading and not the clock's state.
+    #[test]
+    fn a_plan_with_nothing_to_ask_about_never_repeats() {
+        use std::time::{Duration, Instant};
+
+        let t0 = Instant::now();
+        let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+        let plan = [row("open", TodoStatus::Pending)];
+        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        clock.rearm(&plan, t0);
+        assert!(clock.due_now(t0 + Duration::from_secs(60)));
+        clock.said(Some(said), t0 + Duration::from_secs(60));
+        clock.rearm(&plan, t0 + Duration::from_secs(60));
         assert!(
             clock.due_at().is_some(),
-            "whoever prompts the session — operator or parent — earns the check back"
+            "the repeat is armed for the unfinished plan"
+        );
+
+        // The operator sets the only row aside: nothing to ask about, however long the ladder has
+        // been running.
+        clock.rearm(
+            &[row("open", TodoStatus::Postponed)],
+            t0 + Duration::from_secs(70),
+        );
+        assert!(
+            clock.due_at().is_none(),
+            "a postponed-only plan arms nothing: the operator's `[p]` stays theirs"
+        );
+        // And every row answered: the same.
+        clock.rearm(
+            &[row("open", TodoStatus::Completed)],
+            t0 + Duration::from_secs(80),
+        );
+        assert!(clock.due_at().is_none(), "a finished plan arms nothing");
+
+        // The row comes back unfinished, and the notice is the one already sent: the repeat is
+        // armed at the ladder's own gap (the delivery plus two windows), not at a fresh window.
+        clock.rearm(&plan, t0 + Duration::from_secs(90));
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(180)),
+            "the clock holds the plan and the notice, not a grudge about the interlude"
         );
     }
 

@@ -406,9 +406,31 @@ pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
 /// decision reads through as well) rather than inside this function, which would then be two
 /// answers to one question about what a plan is.
 pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
+    unfinished_plan_for(todos, None).map(|(text, _)| text)
+}
+
+/// **The check's sentence, and the row it named** — the row handed back so the caller can remember
+/// the CHOICE, which is what makes the question sticky.
+///
+/// **The choice must not drift under the agent.** The row is picked once and named again until it
+/// stops being askable (done, or postponed by the operator) — so a row the operator adds elsewhere
+/// on the plan cannot change which row this check is about. What a row becoming `InProgress` changes
+/// is the QUESTION rather than the choice: *you were asked about this and it has not been started*
+/// becomes *it is marked in progress and still open*, which is the model's own claim about itself
+/// and the thing holding it to one row is for. That is also why the answer is a PAIR: the text alone
+/// cannot tell the next caller which row to stick to.
+///
+/// `chosen` is the content of the row the last check named, or `None` for a plan's first check.
+pub fn unfinished_plan_for(todos: &[TodoItem], chosen: Option<&str>) -> Option<(String, String)> {
     // **THE QUEUE, served one at a time** — see `open_priority` for the order and why it is one.
     let open = open_priority(todos);
-    let next = open.first()?;
+    // **AND THE ONE ALREADY ASKED ABOUT COMES FIRST**, while it is still in the queue. A row that
+    // has left the queue — done, or set aside by the operator — is no longer a choice, and the head
+    // of the queue is; `the_check_may_ask_about` is what decided that, so this agrees with the
+    // clock by construction rather than by a second rule.
+    let next = chosen
+        .and_then(|content| open.iter().copied().find(|row| row.content == content))
+        .or_else(|| open.first().copied())?;
     let left = open.len() - 1;
     // The count of what is BEHIND this one, because the model is entitled to know the plan is bigger
     // than the row it is being asked about — and that is exactly the fact that must not become a list.
@@ -430,9 +452,19 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
         TodoBy::Parent(author) => author.as_str(),
         TodoBy::Model => "yours",
     };
-    let state = match next.status {
-        TodoStatus::InProgress => format!(" — {who}, and you had it in progress"),
-        _ => format!(" — {who}"),
+    let state = match (next.status, chosen == Some(next.content.as_str())) {
+        // **A row the model marked in progress is a claim it made**, and the check holds it to that
+        // claim rather than asking the same question it asked before the mark existed.
+        (TodoStatus::InProgress, true) => {
+            format!(" — {who}, and it is marked in progress and still open")
+        }
+        (TodoStatus::InProgress, false) => format!(" — {who}, and you had it in progress"),
+        // The row this check already named, still not started: the question is the same one, and it
+        // says so — which is what makes the repeat legible as a repeat rather than a new demand.
+        (_, true) => format!(
+            " — {who}, and you were asked about this one already and it has not been started"
+        ),
+        (_, false) => format!(" — {who}"),
     };
     // **AND THE VERBS DIFFER BY AUTHOR, for the same reason.** The model may drop its OWN row — that
     // is what `drop` is for — and may not drop the operator's: their row is their words, so the model
@@ -459,9 +491,12 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
              following. If you are stopping here deliberately, say why in your reply."
         }
     };
-    Some(format!(
-        "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{advice}",
-        next.content.trim(),
+    Some((
+        format!(
+            "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{advice}",
+            next.content.trim(),
+        ),
+        next.content.clone(),
     ))
 }
 
@@ -1763,6 +1798,108 @@ mod tests {
             .is_none(),
             "a finished plan is not a finding, it is the answer"
         );
+    }
+
+    /// **THE CHOICE IS STICKY, and this is the test for it.** The check names a row once; a row
+    /// added elsewhere on the plan must not change which row the agent is being held to. Without
+    /// the choice, `open_priority`'s head would move to the new row and the question would wander
+    /// with it.
+    #[test]
+    fn the_check_keeps_asking_about_the_row_it_named() {
+        let plan = vec![
+            item("first", TodoStatus::Pending),
+            item("second", TodoStatus::Pending),
+        ];
+        let (text, named) = unfinished_plan_for(&plan, None).expect("open work");
+        assert_eq!(named, "first", "the queue's head is named first");
+        assert!(text.contains("first"), "{text}");
+
+        // **A row arrives AHEAD of it**, which is the ordinary case: the operator's half of the
+        // board is theirs to rewrite, and the model rewrites its own list at any time.
+        let grown = vec![
+            item("something else", TodoStatus::Pending),
+            item("first", TodoStatus::Pending),
+            item("second", TodoStatus::Pending),
+        ];
+        let (text, named) = unfinished_plan_for(&grown, Some(&named)).expect("open work");
+        assert_eq!(
+            named, "first",
+            "the row already named is the row asked about"
+        );
+        assert!(
+            text.contains("first") && !text.contains("something else"),
+            "the question did not wander: {text}"
+        );
+        // And the count is still the plan's, so the model learns the plan is bigger than the row.
+        assert!(text.contains("(2 more open)"), "{text}");
+    }
+
+    /// **The choice moves on when the named row leaves the queue** — done, or set aside by the
+    /// operator — and then the head of the queue is the new choice. That is the difference between
+    /// a sticky choice and a sticky QUESTION: the row is held only while it is still askable.
+    #[test]
+    fn the_choice_moves_on_when_the_named_row_leaves_the_queue() {
+        let plan = vec![
+            item("first", TodoStatus::Pending),
+            item("second", TodoStatus::Pending),
+        ];
+        let (_, named) = unfinished_plan_for(&plan, None).expect("open work");
+        assert_eq!(named, "first");
+
+        let first_done = vec![
+            item("first", TodoStatus::Completed),
+            item("second", TodoStatus::Pending),
+        ];
+        let (text, named) = unfinished_plan_for(&first_done, Some("first")).expect("open work");
+        assert_eq!(named, "second", "the answered row is not a choice any more");
+        assert!(text.contains("second"), "{text}");
+
+        // The same for a row the operator set aside, seen from the one place the narrowing
+        // happens: `the_plan_as_checked` is the CALLER's filter (a postponed row is not work this
+        // check may speak about), so by the time this function is handed the plan the row the last
+        // check named is simply not in it and the head of the queue is the new choice.
+        let after_a_postponement = vec![item("second", TodoStatus::Pending)];
+        let (_, named) =
+            unfinished_plan_for(&after_a_postponement, Some("first")).expect("open work");
+        assert_eq!(named, "second");
+
+        // And with nothing askable left there is no sentence at all.
+        assert!(
+            unfinished_plan_for(&[item("first", TodoStatus::Completed)], Some("first")).is_none(),
+            "a finished plan is silence, whatever the last check named"
+        );
+    }
+
+    /// **A row the model marked in progress is asked about in its own words** — the operator:
+    /// *"deliberate in progress so nag can be specific … and then it keeps naggin while it is in
+    /// progress."* The two sentences are different questions: one is *you were asked and have not
+    /// started*, the other is *you claimed this and it is still open*.
+    #[test]
+    fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
+        let plan = vec![item("the migration", TodoStatus::InProgress)];
+        let (fresh, _) = unfinished_plan_for(&plan, None).expect("open work");
+        assert!(
+            fresh.contains("you had it in progress"),
+            "a row already in progress at the first check: {fresh}"
+        );
+
+        let (sticky, _) = unfinished_plan_for(&plan, Some("the migration")).expect("open work");
+        assert!(
+            sticky.contains("marked in progress and still open"),
+            "the model's own claim, said back to it: {sticky}"
+        );
+        assert_ne!(fresh, sticky, "the question changed with the mark");
+
+        // And a PENDING row that was already asked about says so, rather than repeating the first
+        // check's sentence verbatim — which is what makes the repeat legible as a repeat.
+        let pending = vec![item("the migration", TodoStatus::Pending)];
+        let (first, _) = unfinished_plan_for(&pending, None).expect("open work");
+        let (repeat, _) = unfinished_plan_for(&pending, Some("the migration")).expect("open work");
+        assert!(
+            repeat.contains("asked about this one already"),
+            "the repeat says it is a repeat: {repeat}"
+        );
+        assert_ne!(first, repeat);
     }
 
     /// **The queue's ORDER, asserted as an order.** The operator: *"priority queues - in progress

@@ -49,6 +49,18 @@ use letibot_sessionlog::registry::{Work, WorkOrIdle};
 
 use crate::sessions::{Outcome, Sessions};
 
+/// **How long after a turn the idle arm looks for a tool call nothing answered.**
+///
+/// A grace and not zero, for the reason [`Sessions::arm_sweep`] gives: the turn has returned, and a
+/// sweep in the same instant would be looking at a transcript whose last append may not be
+/// published yet.
+///
+/// Named because TWO arms pass it, and they are the two arms that run a turn on this thread: the
+/// command arm and the wake arm. It used to be a literal at the command's call site alone, which is
+/// how a wake-driven turn came to leave no deadline behind at all — see the comment on the wake arm
+/// in [`Daemon::run`].
+const SWEEP_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The write end of the self-pipe, for the signal handler. An `AtomicI32` because
 /// that is what a handler may touch; `-1` means no handler is installed.
 static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
@@ -221,40 +233,60 @@ impl Daemon {
                         // pass. Without this deadline the worker would sleep until the next command
                         // and the stranded call would sit in the head exactly as it did for the
                         // operator: eight minutes of a spinner with `esc esc` dead.
-                        sessions.arm_sweep(std::time::Duration::from_secs(2));
+                        sessions.arm_sweep(SWEEP_AFTER);
                         let outcome = sessions.dispatch(&session_id, &cmd);
                         on_reply(&session_id, &cmd, outcome);
                     }
-                    // **A monitor fired while nothing was running.** T24's *"wakes the
-                    // loop when it fires"*, which until now had no caller: a firing was
-                    // visible in `job_list` and nothing acted on it, which is a poll.
-                    //
-                    // It is served on the worker like everything else — one
-                    // authoritative reader (§13.2) — and it is served **after** every
-                    // queued command, because the bell drains wakes last and a head
-                    // that pressed enter is waiting while a monitor is not.
-                    //
-                    // `Ignored` is a real outcome here and the common one under load: a
-                    // firing the running turn already picked up through steering has
-                    // been delivered, and the shared cursor is what stops the wake
-                    // telling the model the same thing twice.
-                    Work::Woken(session_id) => match sessions.wake(&session_id) {
-                        Outcome::Replied(r) => eprintln!(
-                            "  {session_id} · monitor -> {} round(s), {} tool call(s)",
-                            r.rounds, r.tool_calls
-                        ),
-                        // A wake never compacts; the arm exists because the outcome is
-                        // the worker's one vocabulary.
-                        Outcome::Compacted(_) => {}
-                        Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
-                        Outcome::Ignored => {}
-                        // **Said out loud in the outcome and silent in the log.** The daemon
-                        // served this wake by handing it to the thread that owns the session
-                        // (`Sessions::wake`), which is what a subagent's settlement needs — and
-                        // a tree churning is ordinary, so a line per settlement would bury the
-                        // lines that are not.
-                        Outcome::HandedOn => {}
-                    },
+                    Work::Woken(session_id) => {
+                        // **A monitor fired while nothing was running.** T24's *"wakes the
+                        // loop when it fires"*, which until now had no caller: a firing was
+                        // visible in `job_list` and nothing acted on it, which is a poll.
+                        //
+                        // It is served on the worker like everything else — one
+                        // authoritative reader (§13.2) — and it is served **after** every
+                        // queued command, because the bell drains wakes last and a head
+                        // that pressed enter is waiting while a monitor is not.
+                        //
+                        // `Ignored` is a real outcome here and the common one under load: a
+                        // firing the running turn already picked up through steering has
+                        // been delivered, and the shared cursor is what stops the wake
+                        // telling the model the same thing twice.
+                        //
+                        // **AND A WAKE ARMS THE SWEEP TOO, WHICH IT DID NOT.** A wake runs a turn
+                        // whenever it has anything to say — a child's settlement, a background job's
+                        // completion, a merge-queue ring that finds an entry waiting for a gate —
+                        // and that turn dispatches tool calls exactly as a prompt's does, so it can
+                        // strand one exactly as a prompt's does. Only the command arm above armed
+                        // this deadline, so a call stranded by a WAKE-driven turn was never looked
+                        // at: the worker went back to a wait with no clock in it at all.
+                        //
+                        // MEASURED 2026-10-10, and it is why this line is here: the last three
+                        // turns before a nine-hour silence were all `monitor -> …` — wake-driven,
+                        // every one — and the daemon was woken only by the operator's command the
+                        // next morning. The nag is not this deadline and cannot be: `nag_should_arm`
+                        // stands a session down for an unchanged plan BY DESIGN, and a wake-driven
+                        // turn over an unchanged plan leaves the worker nothing to wake for. The
+                        // sweep is the clock that exists for exactly this — a call nothing
+                        // answered — and a turn that ends is what arms it.
+                        sessions.arm_sweep(SWEEP_AFTER);
+                        match sessions.wake(&session_id) {
+                            Outcome::Replied(r) => eprintln!(
+                                "  {session_id} · monitor -> {} round(s), {} tool call(s)",
+                                r.rounds, r.tool_calls
+                            ),
+                            // A wake never compacts; the arm exists because the outcome is
+                            // the worker's one vocabulary.
+                            Outcome::Compacted(_) => {}
+                            Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
+                            Outcome::Ignored => {}
+                            // **Said out loud in the outcome and silent in the log.** The daemon
+                            // served this wake by handing it to the thread that owns the session
+                            // (`Sessions::wake`), which is what a subagent's settlement needs — and
+                            // a tree churning is ordinary, so a line per settlement would bury the
+                            // lines that are not.
+                            Outcome::HandedOn => {}
+                        }
+                    }
                 },
             }
         }
