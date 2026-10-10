@@ -2286,6 +2286,8 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
     assert!(
         !screen.contains("THE MODEL'S OWN RECORD"),
         "the compaction beside it is still one line:\n{screen}"
+    );
+}
 
 /// **The stale-prefix notice lands where the operator already looks.**
 ///
