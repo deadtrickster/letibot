@@ -7340,6 +7340,52 @@ impl Harness {
         started
     }
 
+    /// **The queue, as THIS session's board — one row per entry waiting for a verdict.**
+    ///
+    /// The operator's design, in their words: *"reviews are subagents managed by the main gatekeeper
+    /// session which is hardcoded … it is a normal auto-driving session that treats review queue as
+    /// todo list - so nags and all"*, and *"parents with children sending their homework to the
+    /// teachers. School administration doesnt teach or checks homework. it just makes sure pencils
+    /// are here and rooms are warm"*. So the daemon is the ADMINISTRATION: it fills the queue, keeps
+    /// the worktrees and runs the gates and the landing. The teacher is a session, and this is the
+    /// filling.
+    ///
+    /// # Where each half lives, because the two must not be confused
+    ///
+    /// The **ROW** is on this session's board, on its own half (`TodoBy::Queue`), and it is a
+    /// **view**: `set_queue` REPLACES that half whole, so a row is on the board exactly while its
+    /// entry is waiting for a verdict and is gone the moment the verdict arrives — wherever it was
+    /// written, by whomever.
+    ///
+    /// The **STATE** is `MergeEntry::state` and `ReviewRecord::decision` in the store and nowhere
+    /// else. Nothing here writes either, and nothing that COUNTS the queue — the status line, the
+    /// merge-queue pane, a head attached to another daemon — reads this board. That is the
+    /// operator's boundary: *"there is a mechanical review queue with well defined states. it is
+    /// just not me moving between them but gatekeeper subagent"* — the states do not move, only who
+    /// moves an entry between them.
+    ///
+    /// # Which entries, and only this daemon's
+    ///
+    /// `gatekeeper::queue_rows` decides it out of the queue's own two functions (`is_ready`,
+    /// `review_gate`) and the queue's own serving rule (`mergequeue::served_by`) — one answer rather
+    /// than a second opinion about what "waiting for a verdict" is.
+    ///
+    /// Returns how many rows the board holds afterwards. A flush failure is printed rather than
+    /// swallowed, the way `set_operator_todos` prints its own: the rows are on the board either way.
+    pub fn fill_queue_board(&mut self, serving: &std::path::Path) -> usize {
+        let Some(store) = self.store.as_ref() else {
+            return 0;
+        };
+        let rows = crate::sessions::gatekeeper::queue_rows(store, serving);
+        let n = self.todos.set_queue(rows);
+        // Version-gated: the board only publishes and persists when the queue actually MOVED, so a
+        // queue standing still costs nothing on every pass.
+        if let Err(e) = self.flush_todos() {
+            eprintln!("  todos: could not publish the review queue's rows: {e}");
+        }
+        n
+    }
+
     /// **Install the runner a test owns**, so the host's half of a review can be measured without
     /// a model, a provider or a real child.
     ///
@@ -10681,6 +10727,10 @@ impl Harness {
                 letibot_tokencore::store::TodoBy::Parent(who) => {
                     letibot_sessionlog::event::TodoBy::Parent(who)
                 }
+                // **The queue's own word, and it is the same word on both sides** — the fourth
+                // author is a name and not a string, so there is nothing to carry. A head that
+                // predates it cannot decode it, which is what moved `PROTOCOL_VERSION` to 42.
+                letibot_tokencore::store::TodoBy::Queue => letibot_sessionlog::event::TodoBy::Queue,
             },
             status: match t.status {
                 letibot_tokencore::store::TodoStatus::Pending => WireTodoStatus::Pending,

@@ -56,6 +56,10 @@ use std::sync::{Arc, Mutex};
 use crate::config::Config;
 use crate::harness::{CompactReport, Harness, HarnessError, Parts, Reply, WallWhy};
 
+/// **The review queue's own session** — one, hardcoded, whose todo board is the queue. See the
+/// module's own docs for the design and for where the rows live versus where the STATES live.
+pub mod gatekeeper;
+
 /// How long a monitor waiter blocks before re-checking whether the daemon is
 /// shutting down.
 ///
@@ -667,6 +671,19 @@ pub struct Sessions<'a> {
     /// could not, because it also has to stand down while the forced door still
     /// has work to do. See `compact_because_refused` and `WallWhy`.
     wall_gave_up: std::collections::HashSet<String>,
+}
+
+/// **The two facts a session the DAEMON ITSELF starts has, which the daemon's command line cannot
+/// supply.** One caller today — [`Sessions::ensure_gatekeeper`] — and a struct rather than two
+/// parameters because they are one decision: *this session is not the conversation the operator
+/// described on the command line*. The seat decides what it may do; the title is the name its own
+/// store row carries, which is what `letibot --sessions` prints.
+struct OwnSession {
+    seat: crate::config::Seat,
+    /// The name the session is opened under — the hardcoded one when it is being made, and the name
+    /// its own row already holds when it is being RESUMED, so a session the operator renamed does
+    /// not come back with the hardcoded name on the config and the renamed one in the store.
+    title: String,
 }
 
 /// Which sessions attach to the seat, and how the attachment is wired.
@@ -1392,11 +1409,18 @@ impl<'a> Sessions<'a> {
     /// Reported rather than swallowed so the caller does not print the resume banner
     /// twice for one session.
     pub fn open(&mut self, session_id: &str) -> Result<bool, HarnessError> {
+        self.open_as(session_id, None)
+    }
+
+    /// [`Sessions::open`] with the two facts a session the DAEMON ITSELF starts needs — the door
+    /// [`Sessions::ensure_gatekeeper`] uses, because the daemon's own `--role` and `--title` are the
+    /// OPERATOR's conversation's and the review queue's session is not that conversation.
+    fn open_as(&mut self, session_id: &str, own: Option<OwnSession>) -> Result<bool, HarnessError> {
         if self.open.contains_key(session_id) {
             return Ok(false);
         }
         let hub = self.registry.get(session_id);
-        match self.harness(session_id) {
+        match self.harness_as(session_id, own) {
             Ok(h) => {
                 if let Some(r) = h.resumed() {
                     let r = r.clone();
@@ -1494,6 +1518,16 @@ impl<'a> Sessions<'a> {
     /// that session's log rather than taking the daemon down, because every other
     /// session is still fine.
     fn harness(&mut self, session_id: &str) -> Result<&mut Harness, HarnessError> {
+        self.harness_as(session_id, None)
+    }
+
+    /// [`Sessions::harness`] with the two facts of [`OwnSession`], for the one caller that opens a
+    /// session the daemon itself owns rather than one the operator described.
+    fn harness_as(
+        &mut self,
+        session_id: &str,
+        own: Option<OwnSession>,
+    ) -> Result<&mut Harness, HarnessError> {
         if !self.open.contains_key(session_id) {
             let hub = self.registry.get(session_id).ok_or_else(|| {
                 HarnessError::Setup(format!("no session {session_id} in this daemon"))
@@ -1521,6 +1555,18 @@ impl<'a> Sessions<'a> {
                 },
                 ..self.base.clone()
             };
+            // **And the two facts of a session the DAEMON owns**, when the caller named one. Set on
+            // the SESSION's config and never on `self.base`: one session opening on a seat and a
+            // name of its own must not re-seat or rename the daemon's other sessions, and the two
+            // are the same struct one clone apart.
+            if let Some(own) = own {
+                cfg.seat = own.seat;
+                // **The title is on the config and not only in the registry**, which is what makes
+                // the session's own STORE row carry it: `Harness::open` writes that row from `cfg`,
+                // and a name that lived only in memory would come back `(unnamed)` in
+                // `letibot --sessions` after every restart.
+                cfg.title = own.title;
+            }
             let (tool, cond) = self.seat_tool(session_id);
             // Compose the system prompt from `prompts.toml` and the standing
             // notes, once, at open — the same rule as the first session:
@@ -2056,6 +2102,109 @@ impl<'a> Sessions<'a> {
             }
         }
         started
+    }
+
+    /// **The review queue's own session, started once** — the daemon's hardcoded gatekeeper
+    /// session, whose board is the queue. `Ok(true)` is the pass that started it.
+    ///
+    /// # Once, and what makes it once
+    ///
+    /// Two checks, and they answer two different questions:
+    ///
+    /// * **this daemon** — `self.open` holds it, so the pass does nothing. Every idle pass calls
+    ///   this, and a pass is not an event: without this check a second pass would build a second
+    ///   harness for one session id.
+    /// * **this box** — the REGISTRY, and behind it the STORE. A session this daemon does not hold
+    ///   but the store knows is **resumed** ([`Registry::resumable`], the same door
+    ///   `mergequeue::GatekeeperDoor` uses to resume a host that has closed) rather than created
+    ///   fresh — so a daemon restarted, or a second daemon on the same store, comes back to the
+    ///   SAME conversation under the same id instead of making a twin. [`gatekeeper::SESSION`]'s
+    ///   own doc says why that id is fixed rather than minted.
+    ///
+    /// # The seat, and why it is not the daemon's
+    ///
+    /// [`gatekeeper::SEAT`] — see it for why the session that will spawn the reviews cannot be
+    /// seated on a seat with a gated tool: the daemon starts it at startup, with nobody attached,
+    /// and `Harness::open` refuses an exec seat whose adjudicator reaches nobody.
+    ///
+    /// # No store, no session
+    ///
+    /// The queue lives in the store and so does the board filled from it, so a daemon with no
+    /// `--store` has no queue to be a session for. That is the line the reviewer door draws
+    /// (`NoReviewer`), drawn here rather than opening a session that could never hold a row.
+    pub fn ensure_gatekeeper(&mut self) -> Result<bool, HarnessError> {
+        if self.base.store.is_none() || self.open.contains_key(gatekeeper::SESSION) {
+            return Ok(false);
+        }
+        if self.registry.get(gatekeeper::SESSION).is_none() {
+            // **Resumed, or made, and the store is what decides which.** The stored row carries the
+            // title a person may have renamed; a session nobody has ever opened gets the hardcoded
+            // one.
+            let (title, wiring) = match self.registry.resumable(gatekeeper::SESSION) {
+                Some(brief) => (brief.title, brief.wiring),
+                None => (gatekeeper::TITLE.to_string(), Sessions::wiring(&self.base)),
+            };
+            self.registry
+                .create(gatekeeper::SESSION, &title, wiring)
+                .map_err(|e| {
+                    HarnessError::Setup(format!(
+                        "the review queue's session `{}` could not be created: {e}",
+                        gatekeeper::SESSION
+                    ))
+                })?;
+            return self.open_as(
+                gatekeeper::SESSION,
+                Some(OwnSession {
+                    seat: gatekeeper::SEAT,
+                    title,
+                }),
+            );
+        }
+        // **Already in the registry** — a head opened it, or a previous pass did — so the name is the
+        // one it already carries.
+        let title = self
+            .registry
+            .list()
+            .iter()
+            .find(|b| b.session_id == gatekeeper::SESSION)
+            .map(|b| b.title.clone())
+            .unwrap_or_else(|| gatekeeper::TITLE.to_string());
+        self.open_as(
+            gatekeeper::SESSION,
+            Some(OwnSession {
+                seat: gatekeeper::SEAT,
+                title,
+            }),
+        )
+    }
+
+    /// **The queue, onto the gatekeeper session's board** — one row per entry waiting for a verdict,
+    /// read from the store and SET (not merged) on the session's own half.
+    ///
+    /// **The board is a VIEW and the states stay in the store**: [`gatekeeper`]'s module docs carry
+    /// the boundary, and `TodoBoard::set_queue` carries why the half is replaced rather than upserted.
+    /// Nothing here decides what a row is — `gatekeeper::queue_rows` does, out of the queue's own
+    /// `is_ready`/`review_gate` — and nothing here arms a clock by itself: the re-arm below is the
+    /// ordinary one, because a board that MOVED is a board worth checking. That is the rule
+    /// `CommandKind::SetOperatorTodos` keeps, and for its reason: the clock reads the rows when it
+    /// is armed, so a row written onto a board nobody re-armed is a row nothing will ever ask about.
+    ///
+    /// Returns how many rows the board holds, which is what a caller's log line counts.
+    pub fn fill_gatekeeper_board(&mut self) -> usize {
+        // **Canonical, because `served_by` compares canonical forms.** The rule the queue's own
+        // daemon applies to the workspace it serves (`MergeQueueDaemon::serving`), applied here for
+        // the same reason: a session's `workspace_root` is stored as the head typed it and an entry
+        // is this daemon's when the two name the same directory, not the same string.
+        let ws = std::fs::canonicalize(&self.base.workspace)
+            .unwrap_or_else(|_| self.base.workspace.clone());
+        let rows = match self.open.get_mut(gatekeeper::SESSION) {
+            Some(h) => h.fill_queue_board(&ws),
+            // The session did not open — said on the daemon's log by the caller of
+            // `ensure_gatekeeper`. Nothing is lost: the next pass fills the board.
+            None => return 0,
+        };
+        self.rearm_todo_nag(gatekeeper::SESSION);
+        rows
     }
 
     /// Ask for a sweep a moment from now, so the idle arm gets a chance to look.

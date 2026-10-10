@@ -544,6 +544,37 @@ pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
     }
 }
 
+/// **Whether a daemon serving `workspace` owns this entry** — [`MergeQueueDaemon::serves`]'s one
+/// rule, as a function.
+///
+/// One store holds every daemon's queue, and each session is served by the daemon for its
+/// workspace — so this is the predicate that keeps two daemons from reviewing, resuming or landing
+/// the same entry. The root of the session that queued the entry is what is compared: an entry a
+/// SUBAGENT finished belongs to its tree's root, which is the session a person attaches to.
+///
+/// **It is a free function because the gatekeeper session's board asks the same question.** The
+/// daemon fills that board from the store ([`crate::sessions::gatekeeper`]) and a board carrying
+/// another daemon's entries would be a session nagged about work it must not touch — so the board
+/// reads this, and there is one spelling of the rule rather than two that can drift.
+///
+/// `repo` is the entry's repository, consulted only when the store has no row for the root session:
+/// then where the entry's WORKTREE is decides it, and the caller is the one that can find that out
+/// (`MergeQueueDaemon::repo_for` caches it; a caller that has no repository passes the workspace it
+/// serves).
+pub fn served_by(store: &Store, workspace: Option<&Path>, entry: &MergeEntry, repo: &Path) -> bool {
+    let Some(ws) = workspace else {
+        return true;
+    };
+    let root = root_session(store, &entry.session_id);
+    match store.session(&root).ok().flatten() {
+        Some(s) => {
+            let at = Path::new(&s.workspace_root);
+            std::fs::canonicalize(at).unwrap_or(at.to_path_buf()) == *ws
+        }
+        None => repo.starts_with(ws),
+    }
+}
+
 /// **The repository's merge gate, as `main` says it is** — the steps of the `Merge gate`
 /// section of `main`'s `AGENTS.md` ([`letibot_tools::gatekeeper::parse_merge_gate`]), or `None`
 /// when there is no such file or section.
@@ -2575,18 +2606,17 @@ impl MergeQueueDaemon {
     /// session is served by the daemon for its workspace — so this is the rule that keeps two
     /// daemons from reviewing, resuming or landing the same entry. A root the store does not
     /// know falls back to where the entry's repository is: under this workspace, or not.
+    ///
+    /// The rule itself is [`served_by`], because the gatekeeper session's board reads the same
+    /// question — *is this entry this daemon's to work* — and two spellings of it would let a
+    /// daemon nag a session about another daemon's entry.
     fn serves(&self, entry: &MergeEntry) -> bool {
-        let Some(ws) = &self.serving else {
-            return true;
-        };
-        let root = root_session(&self.store, &entry.session_id);
-        match self.store.session(&root).ok().flatten() {
-            Some(s) => {
-                let at = Path::new(&s.workspace_root);
-                std::fs::canonicalize(at).unwrap_or(at.to_path_buf()) == *ws
-            }
-            None => self.repo_for(entry).starts_with(ws),
-        }
+        served_by(
+            &self.store,
+            self.serving.as_deref(),
+            entry,
+            &self.repo_for(entry),
+        )
     }
 
     /// **Hold entries until the repository has a gate** — see [`Self::gate_ready`].

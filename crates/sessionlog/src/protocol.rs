@@ -650,7 +650,7 @@ use crate::view::Snapshot;
 /// the model's very next write — the words it can spell do not include that one. `TodoBoard::replace`
 /// therefore keeps a status the model cannot spell, which is what makes the operator's silence
 /// survive the plan's next revision.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2824,8 +2824,22 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 41,
-            "the match above was last reconciled with the frame list at 41 — `TodoStatus::Cancelled`, a \
+            PROTOCOL_VERSION, 42,
+            "the match above was last reconciled with the frame list at 42 — `TodoBy::Queue`, a \
+             NEW VARIANT on an existing enum: **no frame is added and the number still has to move**, \
+             because a version-41 head cannot DECODE `\"by\":\"queue\"` and the failure takes the \
+             whole `TodosUpdated`/`Todos` frame down with it (the version-36 argument, at the level \
+             of a variant again — and the version-37 argument, one author over). The operator's \
+             design is what it is for: *\"reviews are subagents managed by the main gatekeeper \
+             session which is hardcoded … it is a normal auto-driving session that treats review \
+             queue as todo list - so nags and all\"*. So the merge queue fills a SESSION's board — \
+             one row per entry waiting for a verdict — and a row's author is the queue, which is \
+             neither the model (which may not strike a queue row off), nor the operator (whose half \
+             the head replaces wholesale), nor a `Parent <session-id>` (the daemon is not that \
+             session, and an author string says what is true). The rows are a VIEW and are replaced \
+             from the store every pass: `MergeEntry::state` and `ReviewRecord::decision` stay the \
+             only place a state lives. 41 was \
+             `TodoStatus::Cancelled`, a \
              NEW VARIANT on an existing enum: **no frame is added and the number still has to move**, \
              because a version-40 head cannot DECODE `\"cancelled\"` and the failure takes the whole \
              `TodosUpdated`/`Todos` frame down with it (the version-36 argument, one word over). The \

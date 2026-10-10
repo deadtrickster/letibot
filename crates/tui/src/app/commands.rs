@@ -1052,6 +1052,19 @@ impl App {
                             ));
                             return None;
                         }
+                        // **A queue row is the merge queue's, and it is not a state anybody sets.**
+                        // The row is a view of an entry in the mechanical review queue: it comes off
+                        // when that entry's review is answered, and the daemon replaces the half from
+                        // the store on its next pass — so a `[p]` here would be a silence that
+                        // evaporates. Said rather than dropped, like the parent's.
+                        TodoBy::Queue => {
+                            self.say(
+                                "that row is the merge queue's — it is one entry of this daemon's \
+                                 review queue, shown on this session's board, and it comes off when \
+                                 the entry's review is answered. Nothing here moves it.",
+                            );
+                            return None;
+                        }
                     }
                     if set_aside {
                         self.say(&format!(

@@ -69,6 +69,28 @@ pub struct TodoBoard {
     /// `by` itself from the calling session's id, and only a child's own parent reaches it — so the
     /// half holds rows by exactly one `Parent <id>` string.
     parent: Mutex<Vec<TodoItem>>,
+    /// **The merge queue's rows on THIS board — the fourth half, and the only one that is a VIEW.**
+    ///
+    /// The operator's design: *"reviews are subagents managed by the main gatekeeper session which
+    /// is hardcoded … it is a normal auto-driving session that treats review queue as todo list - so
+    /// nags and all"*, and *"parents with children sending their homework to the teachers. School
+    /// administration doesnt teach or checks homework. it just makes sure pencils are here and rooms
+    /// are warm"*. So the daemon is the ADMINISTRATION — it fills the queue and keeps the worktrees
+    /// — and the teacher is a session whose board is the queue. This half is that queue.
+    ///
+    /// **It is REPLACED, never accumulated, and that is the difference between it and the other
+    /// three.** A row here is written from the store's own queue tables every pass and the whole
+    /// half is set at once ([`TodoBoard::set_queue`]), so a row leaves the board when its entry
+    /// leaves the queue — which is what *"an entry that reaches a verdict elsewhere takes its row
+    /// off"* means, and something no UPSERT on the other three halves can express. It also means a
+    /// write to this half is corrected by the next pass rather than becoming a second opinion.
+    ///
+    /// **AND THE STATE IS NOT HERE.** `MergeEntry::state` and `ReviewRecord::decision` in the store
+    /// are the only place an entry's state lives; this half is what a SESSION can be nagged about.
+    /// Anything that COUNTS the queue — a status line, the merge-queue pane, a head that is not this
+    /// daemon — counts the store, and a reader that counted these rows would be counting a
+    /// projection that is up to one pass old.
+    queue: Mutex<Vec<TodoItem>>,
     version: AtomicU64,
 }
 
@@ -89,17 +111,23 @@ impl TodoBoard {
         let mut mine = Vec::new();
         let mut told = Vec::new();
         let mut theirs = Vec::new();
+        let mut queued = Vec::new();
         for t in initial {
             match t.by {
                 TodoBy::Model => mine.push(t),
                 TodoBy::Parent(_) => told.push(t),
                 TodoBy::Operator => theirs.push(t),
+                // **The queue's rows are restored like any other**, and that is safe precisely
+                // because they are a view: whatever the store's todo table held survives a restart
+                // until the daemon's next pass replaces the half from the queue's own tables.
+                TodoBy::Queue => queued.push(t),
             }
         }
         TodoBoard {
             todos: Mutex::new(mine),
             parent: Mutex::new(told),
             operator: Mutex::new(theirs),
+            queue: Mutex::new(queued),
             version: AtomicU64::new(0),
         }
     }
@@ -258,6 +286,47 @@ impl TodoBoard {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// **The merge queue's rows on this board, as they stand** — the fourth half, read on its own.
+    ///
+    /// The half a caller reads when it wants *the queue* rather than *the board*: the daemon that
+    /// filled it does not need this (it has the rows it wrote), and what does is a test or a reader
+    /// asking whether a session is being nagged about the queue, and about what.
+    pub fn queue_snapshot(&self) -> Vec<TodoItem> {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// **The queue's half, SET rather than merged — the one writer of the fourth half, and the one
+    /// door on this board that can take a row off.**
+    ///
+    /// The operator's ruling for the other three halves is *"only i should be able to delete todo
+    /// items. as a rule everything that ever created stays in history"*, and this is not an
+    /// exception to it: a queue row is not a record of work somebody decided to do, it is the queue
+    /// SEEN from a session, and the record of it — the entry, its states, its verdict, its history —
+    /// is the store's own tables. So the half is replaced wholesale from the store, and a row that
+    /// leaves the queue leaves the board.
+    ///
+    /// **It is not the model's, the operator's or a parent's to write**, which is why this is a door
+    /// of its own and not a fourth arm of `upsert_model`: a session that could add, drop or restate a
+    /// queue row could close a review nobody made. `todo_write` has no field that reaches this half,
+    /// `/todo rm N` numbers the operator's own rows, and a head never sends it — the only caller is
+    /// the daemon that just read the queue.
+    ///
+    /// Returns how many rows the half now holds, and bumps the version only when the rows actually
+    /// CHANGED — the rule every other writer here keeps, so a queue that has not moved does not cost
+    /// the store a write or the pane a publish on every pass.
+    pub fn set_queue(&self, rows: Vec<TodoItem>) -> usize {
+        let n = rows.len();
+        let mut half = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        // **Same rows, same order, same states: not an event.** The daemon writes this half on every
+        // pass, and a publish per pass would put a `TodosUpdated` on every head twice a minute for a
+        // queue that is standing still. `TodoItem` is `PartialEq`, so this is the whole reading.
+        if *half != rows {
+            *half = rows;
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        n
     }
 
     /// **A PARENT's write: an UPSERT scoped to the parent's own authorship** — the shape the model's
@@ -448,12 +517,24 @@ impl TodoBoard {
     /// **THE UNION, and it is the whole of the feature.** Everything downstream reads this one
     /// getter — the pane's `Todos` reply, the model's own view of the plan, and the idle nag
     /// (`harness.rs`'s `nag_notice`, which asks `unfinished_plan` of exactly this) — so nothing
-    /// else had to learn that the operator or a parent can write a row too. The model's list comes
-    /// first because it is the list the model has been working from; then what it was TOLD, parent
-    /// before operator — the caller nearest first, the human last and on top — and each block is
-    /// contiguous, the property `the_union_is_two_contiguous_blocks…` asserts for its two.
+    /// else had to learn that the operator or a parent or the queue can write a row too.
+    ///
+    /// **The QUEUE's rows come first**, and that is a decision rather than an accident of the order
+    /// the halves were added in: the nag asks about ONE row, drawn from the ready set in
+    /// `open_priority`'s order (in progress first, then list order), and a session started to work
+    /// the queue must not be able to bury a review nobody has judged under a plan of its own. Then
+    /// the model's list, because it is the list the model has been working from; then what it was
+    /// TOLD, parent before operator — the caller nearest first, the human last and on top — and each
+    /// block is contiguous, the property `the_union_is_two_contiguous_blocks…` asserts for its two.
     pub fn snapshot(&self) -> Vec<TodoItem> {
-        let mut out = self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut out = self.queue.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        out.extend(
+            self.todos
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .cloned(),
+        );
         let told = self.parent.lock().unwrap_or_else(|e| e.into_inner());
         out.extend(told.iter().cloned());
         let operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
@@ -1018,6 +1099,10 @@ pub fn unfinished_plan_for(
         // The author string itself (`Parent <session id>`), verbatim: a child reading its own
         // board must be able to tell what it decided from what it was told, and by whom.
         TodoBy::Parent(author) => author.as_str(),
+        // **The queue is named as the queue**, because that is what it is: not a session, not the
+        // person, and not the model's own plan. The row's state is the store's and the verdict is
+        // what takes it off — which is the advice below, one line down.
+        TodoBy::Queue => "the merge queue's",
         TodoBy::Model => "yours",
     };
     let state = match (next.status, chosen == Some(next.content.as_str())) {
@@ -1054,6 +1139,18 @@ pub fn unfinished_plan_for(
              they retire the row themselves when they read you. You cannot remove or restate \
              their row: it is theirs, and if you think it should not be done, say why in your \
              reply."
+        }
+        // **The queue's rows are the one kind whose disposal is not a tool call at all**, and the
+        // advice says so rather than naming a verb that does not exist: the verdict is what takes a
+        // row off, and the row is replaced from the store on the daemon's next pass. It states the
+        // row and what moves it, and commands nothing — a model told to *do this one* would reach
+        // for a verb that has no door.
+        TodoBy::Queue => {
+            "this row is the merge queue's, not your plan's: it is one entry of this daemon's \
+             review queue, written onto your board from the store, and it comes off when that \
+             entry's review is ANSWERED. No field of `todo_write` reaches it — `update`, `todos` \
+             and `operator` do not move it — and neither does anything you say in your reply: the \
+             verdict is what takes it off."
         }
         TodoBy::Model => {
             // **"or drop it" was the old contract's verb and it went with it.** A row left out of a
@@ -2283,6 +2380,9 @@ fn render(todos: &[TodoItem]) -> String {
             // child reading its own board has to be able to tell what it decided from what it
             // was told, and by whom.
             TodoBy::Parent(who) => who.clone(),
+            // **The queue's own word.** A row of the merge queue's is one no field of this tool
+            // disposes of: the verdict takes it off, and the daemon replaces the half from the store.
+            TodoBy::Queue => "the merge queue's".to_string(),
             TodoBy::Model => "yours".to_string(),
         };
         out.push_str(&format!(

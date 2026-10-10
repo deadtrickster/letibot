@@ -119,10 +119,11 @@ pub enum TodoStatus {
 /// board.
 ///
 /// **`Parent` carries the author string, so `by` is a bare string on the wire** — `"model"`,
-/// `"operator"`, `"Parent s-…"` — spelled by custom impls on both copies, and **adding the variant
-/// moved `PROTOCOL_VERSION` to 37** for the reason `TodoStatus::Postponed`'s own doc gives: no frame
-/// is added, and the number still moves, because a head built before it cannot decode the word —
-/// and the failure is the whole `TodosUpdated`/`Todos` frame, not the row.
+/// `"operator"`, `"queue"`, `"Parent s-…"` — spelled by custom impls on both copies, and **adding
+/// the variant moved `PROTOCOL_VERSION` to 37** for the reason `TodoStatus::Postponed`'s own doc
+/// gives: no frame is added, and the number still moves, because a head built before it cannot
+/// decode the word — and the failure is the whole `TodosUpdated`/`Todos` frame, not the row.
+/// **`Queue` is the same case again and moved it to 42.**
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TodoBy {
     #[default]
@@ -132,6 +133,15 @@ pub enum TodoBy {
     /// operator specified — `Parent <full parent session id>` — so a child reading its own board
     /// can tell what it decided from what it was told, and by whom.
     Parent(String),
+    /// **The merge queue wrote it on the gatekeeper session's board** — the fourth author, and the
+    /// one that is not a session. The daemon's queue fills the board from the store every pass and
+    /// replaces this half, so a row leaves when its entry's verdict arrives; the STATE of an entry
+    /// is `MergeEntry::state`/`ReviewRecord::decision` in the store and never this row.
+    ///
+    /// See `letibot_tokencore::store::TodoBy::Queue` for the whole of the argument. On the wire it
+    /// is the one word `queue`, and a head that predates it cannot decode it — which is why the
+    /// number moved rather than the frame growing a field.
+    Queue,
 }
 
 impl TodoBy {
@@ -148,6 +158,7 @@ impl Serialize for TodoBy {
             TodoBy::Operator => s.serialize_str("operator"),
             // The variant CARRIES the author string, so the wire form is the string itself.
             TodoBy::Parent(author) => s.serialize_str(author),
+            TodoBy::Queue => s.serialize_str("queue"),
         }
     }
 }
@@ -158,11 +169,12 @@ impl<'de> Deserialize<'de> for TodoBy {
         match word.as_str() {
             "model" => Ok(TodoBy::Model),
             "operator" => Ok(TodoBy::Operator),
+            "queue" => Ok(TodoBy::Queue),
             // `Parent …` is the one open spelling; anything else is a word this reader does not
             // know, refused by name rather than read as the model's the way a catch-all would.
             other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
             other => Err(serde::de::Error::custom(format!(
-                "`{other}` is not a todo author: model, operator, or `Parent <session-id>`"
+                "`{other}` is not a todo author: model, operator, queue, or `Parent <session-id>`"
             ))),
         }
     }

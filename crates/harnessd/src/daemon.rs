@@ -200,6 +200,27 @@ impl Daemon {
                     // this pass's, because this arm is also entered for a nag or a sweep. See
                     // `Sessions::serve_reviews` for why the store and not the ring.
                     if sessions.reviews_due() {
+                        // **The review queue's own SESSION, started once and then nagged like any
+                        // other.** The operator's design: *"reviews are subagents managed by the
+                        // main gatekeeper session which is hardcoded … it is a normal auto-driving
+                        // session that treats review queue as todo list - so nags and all"*. So the
+                        // session exists first and its BOARD is the queue — one row per entry
+                        // waiting for a verdict, filled from the store on this same clock.
+                        //
+                        // Silence is the ordinary case: `Ok(false)` is every pass after the first
+                        // (the session is already open), and the rows say nothing of their own — a
+                        // session's board is read by attaching to it or by the pane. Only a session
+                        // that was STARTED and one that could not open are worth a line.
+                        match sessions.ensure_gatekeeper() {
+                            Ok(true) => eprintln!(
+                                "  the review queue is session {} — attach to it and its board is the \
+                                 queue",
+                                crate::sessions::gatekeeper::SESSION
+                            ),
+                            Ok(false) => {}
+                            Err(e) => eprintln!("  the review queue's session did not open: {e}"),
+                        }
+                        sessions.fill_gatekeeper_board();
                         let served = sessions.serve_reviews();
                         if served > 0 {
                             eprintln!("  reviews -> {served} gatekeeper(s)");

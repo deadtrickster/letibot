@@ -1817,6 +1817,41 @@ pub enum TodoBy {
     /// by exact text), and it reaches neither the child's rows nor the operator's — see
     /// `TodoBoard::upsert_parent`.
     Parent(String),
+    /// **The merge queue wrote it on the GATEKEEPER SESSION's board.** The fourth author, and it
+    /// is not a session at all: the daemon's queue is the object the operator's merge-queue pane
+    /// already draws, and its rows on a session's board are that queue seen as work.
+    ///
+    /// # The design this comes from, in the operator's words
+    ///
+    /// *"reviews are subagents managed by the main gatekeeper session which is hardcoded … it is a
+    /// normal auto-driving session that treats review queue as todo list - so nags and all"*, and
+    /// *"parents with children sending their homework to the teachers. School administration doesnt
+    /// teach or checks homework. it just makes sure pencils are here and rooms are warm"*. So the
+    /// daemon is the ADMINISTRATION: it fills the queue, keeps the worktrees and runs the gates —
+    /// and the teacher is a session, whose board is the queue.
+    ///
+    /// # Why it is its own word and not one of the three
+    ///
+    /// * **Not the model's.** A row of the model's is a row the model wrote about its own plan, and
+    ///   `todo_write` disposes of it. A queue row is not the session's to strike off: the VERDICT
+    ///   takes it off, and a session that could close its own queue row could close a review nobody
+    ///   made.
+    /// * **Not the operator's.** That half is replaced wholesale by the head on every push
+    ///   (`TodoBoard::set_operator`), so a daemon writing queue rows there would have them erased by
+    ///   the next `HELLO` and would erase the operator's own rows in between.
+    /// * **Not a `Parent`'s.** `Parent <session-id>` is a claim about a session that wrote a child's
+    ///   board. The daemon is not that session and does not write on its behalf, and the house rule
+    ///   for an author string is that it says what is TRUE.
+    ///
+    /// # The rows are a VIEW, and the STATE is not here
+    ///
+    /// A queue row is written from the store's own queue tables every pass and the half is
+    /// REPLACED, not accumulated — so a row leaves the board when its entry leaves the queue, and
+    /// any write to it is corrected by the next pass. **The state of an entry is `MergeEntry::state`
+    /// and `ReviewRecord::decision` in the store and nowhere else**: the board is a projection a
+    /// session can be nagged about, never a second place a state can be read from. What counts the
+    /// queue — a status line, a pane, a head that is not this daemon — counts the store.
+    Queue,
 }
 
 impl TodoBy {
@@ -1833,6 +1868,7 @@ impl serde::Serialize for TodoBy {
             TodoBy::Operator => s.serialize_str("operator"),
             // The variant CARRIES the author string, so the wire form is the string itself.
             TodoBy::Parent(author) => s.serialize_str(author),
+            TodoBy::Queue => s.serialize_str("queue"),
         }
     }
 }
@@ -1843,12 +1879,13 @@ impl<'de> serde::Deserialize<'de> for TodoBy {
         match word.as_str() {
             "model" => Ok(TodoBy::Model),
             "operator" => Ok(TodoBy::Operator),
+            "queue" => Ok(TodoBy::Queue),
             // `Parent …` is the one open spelling, and the prefix is the author's own marker:
             // anything else is a word this reader does not know, refused by name rather than
             // read as the model's the way a catch-all would.
             other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
             other => Err(serde::de::Error::custom(format!(
-                "`{other}` is not a todo author: model, operator, or `Parent <session-id>`"
+                "`{other}` is not a todo author: model, operator, queue, or `Parent <session-id>`"
             ))),
         }
     }
@@ -6264,9 +6301,27 @@ mod tests {
             .to_string();
         assert!(
             err.starts_with(
-                "`the cat` is not a todo author: model, operator, or `Parent <session-id>`"
+                "`the cat` is not a todo author: model, operator, queue, or `Parent <session-id>`"
             ),
             "the refusal names the word it did not understand: {err}"
+        );
+    }
+
+    /// **The queue's word round-trips too** — the fourth author, and the one that is not a session.
+    ///
+    /// It is a bare name on the wire (`"queue"`), so this is the pair of custom impls agreeing; the
+    /// rows it stamps are written by the daemon (`TodoBoard::set_queue`) and are a view of the merge
+    /// queue rather than anything a session wrote.
+    #[test]
+    fn the_queues_word_round_trips_and_is_not_read_as_anybody_elses() {
+        let raw = r#"[{"content":"review `agent/m-1` (entry m-1): keep the record","status":"pending","by":"queue"}]"#;
+        let rows: Vec<TodoItem> = serde_json::from_str(raw).expect("the queue's word is known");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].by, TodoBy::Queue);
+        assert_eq!(
+            serde_json::to_string(&rows[0].by).expect("serialises"),
+            r#""queue""#,
+            "one word, the same on both sides"
         );
     }
 
