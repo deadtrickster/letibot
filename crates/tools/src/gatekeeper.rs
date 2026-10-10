@@ -456,15 +456,20 @@ pub fn parse_verdict(req: &ReviewRequest, said: &str) -> Result<Verdict, String>
 /// The value on a line that begins with `label:`, or `None`. Case-insensitive on the label and
 /// anchored at the start of the line, so a mention of the word `verdict` in the reviewer's own
 /// prose is not mistaken for the field.
-fn label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
+///
+/// **Shared with the notes keeper** ([`crate::notes_keeper::parse_report`]), which reads a
+/// closing block of exactly this shape. One reader for one shape: a second implementation one
+/// module over would be a second answer to *is this line the label*, and the two would drift the
+/// first time either grew a case.
+pub(crate) fn label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
     let t = line.trim_start();
     let (head, tail) = t.split_once(':')?;
     head.trim().eq_ignore_ascii_case(label).then(|| tail.trim())
 }
 
 /// One field's worth of bullets: a single line that carries several `- ` items, or one — and
-/// `none` means nothing, on [`commas`]' rule.
-fn bullets(v: &str) -> Vec<String> {
+/// `none` means nothing, on [`commas`]' rule. Shared with [`crate::notes_keeper`].
+pub(crate) fn bullets(v: &str) -> Vec<String> {
     let t = v.trim();
     if t.is_empty() || t.eq_ignore_ascii_case("none") {
         return Vec::new();
@@ -480,8 +485,9 @@ fn bullets(v: &str) -> Vec<String> {
 }
 
 /// A comma-separated list, with `none` meaning nothing — which the prompt names as the way to
-/// say *I looked at nothing*, and which must not become a file called `none`.
-fn commas(v: &str) -> Vec<String> {
+/// say *I looked at nothing*, and which must not become a file called `none`. Shared with
+/// [`crate::notes_keeper`].
+pub(crate) fn commas(v: &str) -> Vec<String> {
     let t = v.trim();
     if t.is_empty() || t.eq_ignore_ascii_case("none") {
         return Vec::new();
