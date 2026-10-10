@@ -419,7 +419,12 @@ const SUBAGENT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(
 
 pub fn run(args: &[String]) -> Result<i32, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let mut cfg = Config::for_this_box(cwd);
+    // **`for_the_daemon`, and not `for_this_box`.** The daemon is the one caller that is a live
+    // operator's box running the review queue, so this is where the reviewer VM is armed — every
+    // fixture builds its `Config` with `for_this_box`, which states no VM, and a test that means to
+    // exercise a VM placement asks for one by name (`Config::allow_vm_reviewers`). See
+    // `Config::gatekeeper_vm` for the whole of the reason.
+    let mut cfg = Config::for_the_daemon(cwd);
     // **The guard model comes from config, not from a flag.**
     //
     // `[gatekeeper] endpoint = "HOST:PORT"` in `~/.config/letibot/providers.toml`,
@@ -2582,6 +2587,25 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// **The daemon's config is the one with the reviewer VM armed, and the fixture constructor is
+    /// not** — the two halves of the property `Config::gatekeeper_vm` states.
+    ///
+    /// Both halves are asserted because either alone is a lie: a `for_this_box` that armed the VM
+    /// would put a microVM under every test that built a fixture, and a `for_the_daemon` that did
+    /// not would quietly take the queue's reviewers off the boundary the placement exists for —
+    /// every `bash` call of theirs a permission card, which is the thing a VM placement is for.
+    #[test]
+    fn the_daemon_arms_the_reviewer_vm_and_a_fixture_does_not() {
+        assert!(
+            !Config::for_this_box("/tmp").gatekeeper_vm,
+            "a fixture built the ordinary way must state no VM, or a test boots one by accident"
+        );
+        assert!(
+            Config::for_the_daemon("/tmp").gatekeeper_vm,
+            "the daemon is the caller that may place a reviewer in a VM"
+        );
     }
 
     /// **A `main_model` from a file lands on the right `cfg` field.** A

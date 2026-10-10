@@ -7428,8 +7428,10 @@ impl Harness {
     /// repositories the copy is refused by the ceiling and the review never starts. **A
     /// VM-placed reviewer had never been exercised end to end on this box**, which is why this
     /// surfaced only when the queue tried to review rather than when the placement landed: the
-    /// tests that start a real reviewer say `gatekeeper_vm = false` in as many words, and
-    /// `review_pass` records what the pass ASKED FOR without opening a VM. The `firecode`
+    /// tests that start a real reviewer build a fixture, and a fixture states no VM —
+    /// `Config::for_this_box`'s default, so a test cannot boot one by forgetting a line, and the
+    /// test that means to exercise a VM placement asks for one by name — while `review_pass`
+    /// records what the pass ASKED FOR without opening a VM. The `firecode`
     /// backend itself is exercised — `tools/tests/firecode_live.rs`, and only when
     /// `FIRECODE_LIVE=1` is set — and it was never handed a reviewer's tree.
     ///

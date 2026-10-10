@@ -1049,14 +1049,13 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let hearing = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PEER, 30);
     let stub = Stub::answering(vec![work, verdict, after, hearing], 4);
 
-    // **The reviewer stays on this machine.** `Harness::serve_reviews` places a reviewer in a
-    // firecode VM where the box can boot one, and this box can — which this test must not do: the
-    // fixture's workspace is `/tmp`, so a VM here would measure and copy it and boot firecracker,
-    // while what this test is about is the channel a refusing verdict comes back on. Stated as a
-    // VALUE rather than by racing `$FIRECODE_BIN` — `wired.rs`'s discipline, and the reason the
-    // veto is a `Config` field instead of something read off the machine.
-    let mut cfg = config(main_id, stub.endpoint.clone(), &path);
-    cfg.gatekeeper_vm = false;
+    // **The reviewer stays on this machine, and this test says nothing to get that.** A config
+    // built the ordinary way — `config` above is `Config::for_this_box` — states no VM, so a
+    // reviewer spawned here is a HOST child. The line that used to stand here (`gatekeeper_vm =
+    // false`) is gone because the constructor now carries it for every fixture in the tree: a VM
+    // over this fixture's `/tmp` workspace would measure and copy it and boot firecracker, and what
+    // this test is about is the channel a refusing verdict comes back on.
+    let cfg = config(main_id, stub.endpoint.clone(), &path);
     let registry = Registry::new();
     let mut father = a_session(main_id, &parts, &cfg, registry.clone());
 
@@ -1207,11 +1206,11 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     );
     let stub = Stub::answering(vec![verdict, after], 2);
 
-    // **The reviewer stays on this machine**, the sibling test's own reason: the fixture's
+    // **The reviewer stays on this machine**, the sibling test's own reason — the fixture's
     // workspace is `/tmp`, so a VM placement here would measure and copy it and boot firecracker,
-    // while what this test is about is the channel a refusing verdict comes back on.
-    let mut cfg = config(main_id, stub.endpoint.clone(), &path);
-    cfg.gatekeeper_vm = false;
+    // while what this test is about is the channel a refusing verdict comes back on. No line asks
+    // for one: a config built the ordinary way (`Config::for_this_box`) states no VM.
+    let cfg = config(main_id, stub.endpoint.clone(), &path);
     let registry = Registry::new();
     let mut father = a_session(main_id, &parts, &cfg, registry.clone());
     // **The session that enqueued the work** — a session in its own right, live, with no tree edge

@@ -319,11 +319,11 @@ that come to YOUR head. The operator's remedy is a `firecode` on the daemon's PA
 ///
 /// **A VM-placed reviewer had never been exercised end to end on this box, and that is the larger
 /// finding of that night.** The placement itself is asserted (`review_pass` records what the pass
-/// asked for; `gatekeeper`'s own tests are pure arms), the real-spawn tests set
-/// `gatekeeper_vm = false` in as many words (`session_channel`), and the `firecode` backend's own
-/// live test is behind `FIRECODE_LIVE=1` and never had a reviewer's tree put through it. So the
-/// first time a reviewer was actually booted was the first time the queue tried to review — and
-/// the thing that failed was not the placement but the tree under it.
+/// asked for; `gatekeeper`'s own tests are pure arms), the real-spawn tests state no VM — a fixture
+/// built the ordinary way does, and that is `Config::for_this_box`'s default — and the `firecode`
+/// backend's own live test is behind `FIRECODE_LIVE=1` and never had a reviewer's tree put through
+/// it. So the first time a reviewer was actually booted was the first time the queue tried to
+/// review — and the thing that failed was not the placement but the tree under it.
 ///
 /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
 pub fn reviewer_placement(
@@ -1157,16 +1157,17 @@ mod tests {
     /// session in on ANY box, because `gatekeeper_vm = false` is the answer whatever
     /// `firecode_available()` says. The other two arms are the pure function's, above.
     ///
-    /// The veto is stated as a VALUE rather than by racing `$FIRECODE_BIN`, and this is the same
-    /// thing `session_channel`'s refusing-verdict test does for the same reason: a VM on a box that
-    /// has one would copy the fixture's workspace and boot firecracker to answer a question this
-    /// test is not asking.
+    /// **The fixture says nothing to get this.** It is built the ordinary way
+    /// (`Config::for_this_box`), which states no VM — so this is also the assertion that a session a
+    /// test opens cannot boot a microVM over its workspace by forgetting a line. A test that means
+    /// to exercise the VM arm asks for one by name (`Config::allow_vm_reviewers`), and the VM arm's
+    /// own words are asserted on the pure function above, where the box is an argument rather than a
+    /// `$FIRECODE_BIN` race.
     #[test]
     fn a_session_that_states_no_vm_is_told_its_reviewers_run_here() {
-        let Some(mut f) = Fixture::new("prompt-host") else {
+        let Some(f) = Fixture::new("prompt-host") else {
             return;
         };
-        f.cfg.gatekeeper_vm = false;
         let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
         let sessions = f.opened(&parts);
         let said = f.prompt(&sessions);

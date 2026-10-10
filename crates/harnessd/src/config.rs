@@ -564,12 +564,26 @@ pub struct Config {
     /// whole of the decision).
     ///
     /// `true` is *may*, not *will*: the box still has to be able to boot one, so this is a VM where
-    /// `firecode` is installed and this machine where it is not. `false` is the one thing a caller
-    /// can add — keep the reviewer here — and it is a **value** rather than something read off the
-    /// machine, which is what a test that drives a review through the real spawner needs:
-    /// `session_channel`'s refusing-verdict test starts a real gatekeeper and its workspace is
-    /// `/tmp`, so a VM there would measure and copy it and boot firecracker to answer a question
-    /// that test is not asking.
+    /// `firecode` is installed and this machine where it is not. It is a **value** rather than
+    /// something read off the machine, so a caller that must not boot one states it instead of
+    /// racing `$FIRECODE_BIN`.
+    ///
+    /// # `false` is the default, and that is a fact about who builds a `Config`
+    ///
+    /// **A session built the ordinary way — [`Config::for_this_box`], which is the constructor every
+    /// fixture in this tree is built from — states no VM.** So a test that drives a real review
+    /// through the real spawner cannot boot a firecracker microVM over its workspace by forgetting a
+    /// line: it would have to ask, by name, with [`Config::allow_vm_reviewers`]. That is the one
+    /// thing the placement's own arms cannot give a test — `cfg(test)` never reaches an integration
+    /// test (`session_channel` is one, and it is the case that was measured), and a constructor that
+    /// defaults to a VM is armed the moment a fixture exists, which is the shape of a test nobody
+    /// has remembered to fix booting one on `/tmp` to answer a question it is not asking.
+    ///
+    /// **The daemon arms it** — [`Config::for_the_daemon`], the one caller that is a live operator's
+    /// box running the review queue — so a reviewer there goes in a VM wherever this box can boot
+    /// one, which is the whole reason the placement exists. `letibot-m1` does not call that
+    /// constructor: it is a measurement script over one session and takes the posture every review
+    /// had before the placement existed, the reviewer on the host.
     ///
     /// **And the box's own answer cannot be overridden into a VM it cannot boot.** A reviewer that
     /// cannot start is written as a FAILED ATTEMPT on the review's row
@@ -1511,6 +1525,12 @@ impl Config {
     /// Named `for_this_box` rather than `default` because that is what it is: the
     /// endpoint, the model alias and the GGUF path are this machine's, and a
     /// `Default` impl would let them travel silently.
+    ///
+    /// **It is also the constructor every fixture in this tree is built from**, so the one field
+    /// that would put a microVM under a test is left at the safe end here: `gatekeeper_vm` is
+    /// `false`. The daemon — the one caller that is a live operator's box — arms it through
+    /// [`Config::for_the_daemon`]; the field carries the whole reason, and the short of it is that a
+    /// test must not boot firecracker by forgetting a line.
     pub fn for_this_box(workspace: impl Into<PathBuf>) -> Config {
         Config {
             dialect: Dialect::Qwen,
@@ -1576,7 +1596,10 @@ impl Config {
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             vm_source: None,
-            gatekeeper_vm: true,
+            // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**
+            // `for_this_box` is what every test in this tree builds from, and the daemon — the one
+            // caller that is a live operator's box — arms it in `for_the_daemon`. See the field.
+            gatekeeper_vm: false,
             provider: None,
             fabric: None,
             allow_bash: false,
@@ -1600,6 +1623,29 @@ impl Config {
             http_retries: crate::harness::MAX_HTTP_RETRIES,
             stall_rounds: 5,
         }
+    }
+
+    /// **The daemon's own configuration: [`Config::for_this_box`] with the reviewer VM armed.**
+    ///
+    /// One function rather than a line at the daemon's entry point, so *who may place a reviewer in
+    /// a VM* is one thing to read, one thing to call and one thing to test — the daemon's entry is
+    /// `cli::run`, and it is the only caller. See [`Config::gatekeeper_vm`] for why the default is
+    /// the other way round.
+    pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
+        let mut cfg = Config::for_this_box(workspace);
+        cfg.allow_vm_reviewers();
+        cfg
+    }
+
+    /// **Arm this session's review-queue reviewers for a VM** — the one named way the value behind
+    /// [`Config::gatekeeper_vm`] becomes `true`.
+    ///
+    /// The daemon calls it ([`Config::for_the_daemon`]); a test that MEANS to exercise a VM
+    /// placement calls it by name, which is the difference between a test asking for a microVM and
+    /// a test that got one because a fixture was built. Nothing else may be the reason, which is
+    /// why this is a function and not four lines that each say the same thing in reverse.
+    pub fn allow_vm_reviewers(&mut self) {
+        self.gatekeeper_vm = true;
     }
 
     /// **The model name the prompt lookup runs on**: `provider/model` for a metered

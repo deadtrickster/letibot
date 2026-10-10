@@ -571,19 +571,27 @@ fn a_reviewer_copies_the_entries_repository_and_not_the_workspace() {
 /// a detail: a reviewer on this machine seats `bash`, so every call it makes is a permission card,
 /// and a card with no head attached times out and FAILS the review. So the assertion is that what
 /// the pass asked for follows the box — `Firecode` here where firecode is installed, `Host` where
-/// it is not — and that a session which says *no VM* gets none.
+/// it is not — and that a session which states no VM gets none.
 ///
-/// **The two arms are stated differently on purpose.** The veto is a VALUE the test sets, so that
-/// arm holds on any machine; the box's own answer is read from `firecode_available()`, the same
-/// call the pass makes, so the assertion follows the box rather than `$FIRECODE_BIN` being raced
-/// with a guess about what is installed. The three-way state itself — including *asked for a VM,
-/// box cannot give one* — is asserted as pure arms in `gatekeeper`'s own tests, where the box is an
-/// argument.
+/// **The two arms are the two answers a test can give, and the order is the point.** The first
+/// fixture ASKS for a VM, by name (`Config::allow_vm_reviewers`), and follows the box's own answer
+/// read from `firecode_available()` — the same call the pass makes, so nothing here races
+/// `$FIRECODE_BIN` with a guess about what is installed. The second is a fixture built the ORDINARY
+/// way, with no line asking for anything, and it must come out `Host` even on a box that could boot
+/// a VM: that is the property `Config::for_this_box` carries, and it is what stops a test that
+/// drives a real review from booting firecracker over its workspace. The three-way state itself —
+/// including *asked for a VM, box cannot give one* — is asserted as pure arms in `gatekeeper`'s own
+/// tests, where the box is an argument.
 #[test]
 fn a_review_child_is_placed_where_the_box_can_place_one() {
-    let Some(f) = Fixture::new("placed") else {
+    let Some(mut f) = Fixture::new("placed") else {
         return;
     };
+    // **This test ASKS for the VM, by name.** A fixture built the ordinary way states no VM, so
+    // this is the half that says *a test which means to exercise a VM placement still can*; the
+    // other half below is the ordinary fixture, which must come out `Host` whatever this box can
+    // boot.
+    f.cfg.allow_vm_reviewers();
     let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
     f.entry("m-placed", "keep the last record");
     f.review("m-placed", &f.host, 0, None);
@@ -617,13 +625,13 @@ fn a_review_child_is_placed_where_the_box_can_place_one() {
         ),
     }
 
-    // **And a session that states no VM keeps its reviewer here**, whatever the box can do — the
-    // behaviour every review had before the placement existed, stated as a value so this arm is
-    // asserted on a box with firecode and on one without.
-    let Some(mut f) = Fixture::new("placed-host") else {
+    // **And the ORDINARY fixture — no line asking for a VM — keeps its reviewer here**, whatever
+    // this box can do. That is the property the constructor carries: `Config::for_this_box` is what
+    // every fixture in this tree is built from, and it states no VM, so a test that drives a real
+    // review cannot boot firecracker over its workspace by forgetting a line.
+    let Some(f) = Fixture::new("placed-host") else {
         return;
     };
-    f.cfg.gatekeeper_vm = false;
     let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
     f.entry("m-here", "keep the last record");
     f.review("m-here", &f.host, 0, None);
@@ -635,7 +643,7 @@ fn a_review_child_is_placed_where_the_box_can_place_one() {
     assert_eq!(
         asked[0].placement,
         Placement::Host,
-        "a session that states `gatekeeper_vm = false` keeps its reviewer on this machine"
+        "a fixture built the ordinary way states no VM, so its reviewer stays on this machine"
     );
     assert!(
         asked[0].vm_source.is_none(),

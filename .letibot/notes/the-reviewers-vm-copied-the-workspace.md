@@ -73,3 +73,12 @@ down) — and then the nested layout by NAME: the same-named child, then the one
 Measured on this box: the folder has FIVE repository children (`letibot` + `wt-drill`, `wt-jobs`,
 `wt-visibility`, `wt-yellow`), so the one-child arm cannot answer here and the same-named child
 (`letibot/letibot`) is what does.
+
+## UPDATE 2026-10-12 — the evidence clause above is stale
+
+Finding 2's evidence ("the tests that spawn a REAL reviewer say `gatekeeper_vm = false` in as many
+words") no longer holds: those four hand-written sites are gone. `Config::for_this_box` — the
+constructor every fixture is built from — now states no VM, the daemon arms it through
+`Config::for_the_daemon`, and a test that means to exercise a VM placement calls
+`Config::allow_vm_reviewers` by name. The finding itself stands: no test had booted a reviewer's VM
+before the queue did. See the note `a-fixture-must-not-be-able-to-boot-a-vm`.
