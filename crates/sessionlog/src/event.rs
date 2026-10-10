@@ -1383,6 +1383,78 @@ pub enum SessionEvent {
         item_id: String,
         item: Box<letibot_transcript::TranscriptItem>,
     },
+    /// **The transcript this session speaks is not the one the rows you hold belong to.**
+    ///
+    /// A fork — a `/reseat`, a `/compact`, a re-seat onto a rebuilt prompt — opens a NEW
+    /// transcript and carries the conversation into it, so every carried row is published
+    /// under the new transcript's ids (`{transcript_id}.{n}`, `engine.rs`).
+    /// [`SessionEvent::TranscriptAppended`] alone cannot say that: a row arriving under an id
+    /// no reader has seen is indistinguishable from one arriving under an id it has, and
+    /// **nothing in the events themselves clears the rows already held** — so every reader
+    /// folded both conversations into one list.
+    ///
+    /// MEASURED, in the head's own fixtures: a 40-row conversation plus a 60-row carry leaves
+    /// `items.len() == 100`, the reader still anchored on a row of the transcript that went,
+    /// and the banner reading `144 line(s) below`. The operator, scrolled up and reading, typed
+    /// `/reseat` and was left with *"thousands of lines 'below'"* — the anchor half of that is
+    /// `agent/carry-reanchors-the-view`'s, and this is the other half.
+    ///
+    /// # Why the daemon states it, and not the reader
+    ///
+    /// The daemon is the one that forked: `fork_to_summary` is the single place that opens the
+    /// new transcript and swaps the session for it. A reader can only *infer* it — from an id
+    /// whose ordinal restarts at zero, which is the engine's minting rule read backwards, and
+    /// which would then be a second copy of a rule that has one owner. `Filling`'s ruling is the
+    /// precedent, one carry earlier: *"only the daemon knows which operation is running, because
+    /// it is the one running it"* — and the fix there was the same: **let the layer that owns
+    /// the fact state it.**
+    ///
+    /// # What a reader of this event does
+    ///
+    /// Drops the rows it holds **that are numbered in `parent_id`** — the transcript that went —
+    /// and only those. Two readers, one rule: the daemon's own [`crate::view::SessionView`],
+    /// which would otherwise hand a late-attaching head *both* conversations (the same defect one
+    /// attach later), and a head.
+    ///
+    /// **The rows of any other transcript stay, and that is not a detail.** A reader can hold
+    /// rows of more than one transcript on purpose: a resume republishes the tail of the
+    /// transcripts a compaction put behind the current one, so that a reader can scroll above the
+    /// summary they resumed onto. A fork replaces the transcript the session is speaking and
+    /// nothing else, so the event names it and a reader drops exactly that — a rule that dropped
+    /// everything would take the restored history with it.
+    ///
+    /// **And the rows are REPLACED, not trimmed.** They are not missing from a window, so a
+    /// reader must not count them as `items_dropped` and go looking for them: the transcript they
+    /// belong to is gone from the session, not from this reader's view of it.
+    ///
+    /// # Where it is published, and why the order is free
+    ///
+    /// After the fork's rows, because it names the transcript it replaces rather than a count —
+    /// so a reader drops exactly those rows whenever it hears the statement, whether it arrives
+    /// before them or after. That leaves the order to be chosen for what it costs: a statement
+    /// published first would strand a head that reconnected into the one-seq window between the
+    /// two (it would replay the rows and not the boundary), and would leave every reader emptied
+    /// by a fork whose `append_items` then failed, while the session still speaks the transcript
+    /// it was told it had left.
+    ///
+    /// # Why this moves the number
+    ///
+    /// A new VARIANT, so `PROTOCOL_VERSION` moves: `serde` has no catch-all on this enum,
+    /// deliberately, so a head built before it cannot decode the frame at all — and the two sides
+    /// refuse the mismatch by name at ATTACH rather than a head meeting one mid-session. An
+    /// added, defaulted *field* would have been the zero-bump route and it is the wrong one here:
+    /// an older head ignores an unknown field and renders exactly what it rendered before, which
+    /// for this fact is **the conversation drawn twice** — the defect itself, kept in silence,
+    /// which is precisely what the no-catch-all rule exists to refuse.
+    TranscriptForked {
+        /// The transcript that replaced it — the one every row that follows is numbered in.
+        transcript_id: String,
+        /// The transcript it replaced: the one the rows a reader is holding belong to. Carried
+        /// for the log, which is the durable record of where a session's conversation went —
+        /// `ForkReport::parent_id` keeps it for the same reason — rather than for a reader that
+        /// acts on it.
+        parent_id: String,
+    },
     HeadAttached {
         head_id: String,
         kind: String,
@@ -1977,6 +2049,7 @@ impl SessionEvent {
             SessionEvent::TurnFailed { .. } => "TurnFailed",
             SessionEvent::TranscriptAppended { .. } => "TranscriptAppended",
             SessionEvent::TranscriptContent { .. } => "TranscriptContent",
+            SessionEvent::TranscriptForked { .. } => "TranscriptForked",
             SessionEvent::HeadAttached { .. } => "HeadAttached",
             SessionEvent::HeadDetached { .. } => "HeadDetached",
             SessionEvent::SessionRenamed { .. } => "SessionRenamed",

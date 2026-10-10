@@ -750,6 +750,35 @@ impl SessionView {
                     row.item = Some((**item).clone());
                 }
             }
+            // **A fork replaces the rows of the transcript it replaced, and the daemon says
+            // which one that is.**
+            //
+            // This is the daemon's OWN record of the session, and it is the one a late head
+            // is handed: `Hub::snapshot` cuts `self.items`, so without this a head that
+            // attached after a fork would be given the conversation twice — the same defect
+            // the live head had, one attach later, and with no event to blame it on because
+            // the head never saw the fork.
+            //
+            // **Only the parent's rows go, and that is not a detail.** A row's id names the
+            // transcript it is numbered in (`{transcript_id}.{n}`, `engine.rs`), and this
+            // view can hold rows of more than one: a resume republishes the tail of the
+            // transcripts a compaction put behind the current one (`ancestor_tail`), on
+            // purpose, so that a head can scroll above the summary it resumed onto. Those
+            // rows are NOT what the fork replaced — the new transcript does not carry them —
+            // so dropping them would lose the history the resume went to the trouble of
+            // restoring, which is the *"conversation was gone — only a small recent portion
+            // was displayed"* defect this view's chain-walking exists to fix.
+            //
+            // **`items_dropped` is NOT touched, and that is the whole of the difference
+            // between a replacement and a window.** A row trimmed by `trim` is missing from
+            // this view and the head is told how many so it can go and ask for them; these
+            // rows are gone from the SESSION — the transcript they were numbered in is not
+            // this session's any more — and a head that counted them as missing would ask
+            // for rows that no longer exist anywhere.
+            SessionEvent::TranscriptForked { parent_id, .. } => {
+                let gone = format!("{parent_id}.");
+                self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+            }
             SessionEvent::HeadAttached {
                 head_id,
                 kind,
@@ -1457,6 +1486,116 @@ mod tests {
         let json = serde_json::to_string(&v.snapshot(0, 0)).unwrap();
         assert!(json.contains(r#""dropped":0"#), "{json}");
         assert!(json.contains(r#""items_dropped":0"#), "{json}");
+    }
+
+    /// **A fork replaces this view's rows, so a LATE head is not handed both conversations.**
+    ///
+    /// This view is the daemon's own record of the session, and `Hub::snapshot` cuts its rows
+    /// for every head that attaches. So the doubling the operator saw in a live head is here
+    /// too, one attach later: a head that arrives after a `/reseat` is handed the rows of the
+    /// transcript that went plus the rows of the one that arrived — with no event to blame it
+    /// on, because the head never saw the fork.
+    ///
+    /// The fixture is the shape `fork_to_summary` publishes, in its own order: the statement,
+    /// then every carried row under the new transcript's ids.
+    #[test]
+    fn a_fork_replaces_the_rows_this_view_holds() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        for i in 0..40u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "ab".into(),
+            });
+        }
+        assert_eq!(
+            fold(&log).snapshot(40, 0).items.len(),
+            40,
+            "the fixture's premise: a 40-row conversation"
+        );
+
+        log.append(forked("s#t1", "s"));
+        for i in 0..60u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s#t1.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "cd".into(),
+            });
+        }
+
+        let snap = fold(&log).snapshot(101, 0);
+        // **60, and not 100.** A fork replaces the conversation rather than adding to it.
+        assert_eq!(
+            snap.items.len(),
+            60,
+            "the fork's rows were appended to the ones they replace"
+        );
+        assert!(
+            snap.items.iter().all(|r| r.item_id.starts_with("s#t1.")),
+            "a row of the transcript that went is still in the snapshot: {:?}",
+            snap.items
+                .iter()
+                .map(|r| &r.item_id)
+                .take(3)
+                .collect::<Vec<_>>()
+        );
+        // **And the rows are REPLACED, not missing.** `items_dropped` says a head is short of
+        // a window and can ask for what it lost; these rows are gone from the session, and a
+        // head told to count them would ask for rows that exist nowhere.
+        assert_eq!(
+            snap.items_dropped, 0,
+            "a replacement is not a window: nothing here fell out of one"
+        );
+    }
+
+    /// **A fork drops the replaced transcript's rows and NO OTHERS.**
+    ///
+    /// This view holds rows of more than one transcript on purpose: a resume republishes the
+    /// tail of the transcripts a compaction put behind the current one (`ancestor_tail`), so a
+    /// head can scroll above the summary it resumed onto. Those rows are not what a fork
+    /// replaces — the transcript that arrives does not carry them — and a rule that cleared
+    /// everything the view held would lose them, which is the operator's *"conversation was
+    /// gone — only a small recent portion was displayed"* arriving one verb later.
+    #[test]
+    fn a_fork_leaves_the_rows_of_the_transcripts_it_did_not_replace() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        // The chain a resume leaves behind, oldest transcript first.
+        for i in 0..5u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s#t1.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "ab".into(),
+            });
+        }
+        for i in 0..40u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s#t2.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "cd".into(),
+            });
+        }
+        // The fork replaces the transcript the session is speaking, and not the one behind it.
+        log.append(forked("s#t3", "s#t2"));
+        for i in 0..20u64 {
+            log.append(SessionEvent::TranscriptAppended {
+                item_id: format!("s#t3.{i}"),
+                kind: "assistant".into(),
+                ledger_head: "ef".into(),
+            });
+        }
+
+        let snap = fold(&log).snapshot(100, 0);
+        let ids: Vec<&str> = snap.items.iter().map(|r| r.item_id.as_str()).collect();
+        assert_eq!(ids.len(), 25, "5 ancestors plus 20 carried: {ids:?}");
+        assert!(
+            !ids.iter().any(|id| id.starts_with("s#t2.")),
+            "a row of the transcript the fork replaced is still held: {ids:?}"
+        );
+        assert_eq!(
+            ids.iter().filter(|id| id.starts_with("s#t1.")).count(),
+            5,
+            "a fork took the rows of a transcript it did not replace: {ids:?}"
+        );
     }
 
     #[test]

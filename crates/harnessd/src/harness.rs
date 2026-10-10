@@ -8937,6 +8937,42 @@ impl Harness {
         self.transcript_id = new_id.clone();
         self.persisted = 0;
         self.reconcile(&mut sink, &body);
+        // **AND EVERY ROW THAT WAS JUST PUBLISHED REPLACED THE ONES EVERY READER IS HOLDING.**
+        //
+        // `append_items` above publishes them under `new_id`, so every row a reader is now being
+        // sent is numbered in a transcript that is not the one the rows it already holds belong
+        // to. Nothing in the stream said so, and a reader can only fold what it is told:
+        // MEASURED in the head's fixtures, a 40-row conversation plus a 60-row carry left
+        // `items.len() == 100` — the conversation drawn twice, the reader anchored on a row of the
+        // transcript that went. The operator, scrolled up and reading, typed `/reseat` and was
+        // left with *"thousands of lines 'below'"*.
+        //
+        // **Two readers, and the daemon's own is the one that would have been missed.** A head
+        // folds this into its rows; the hub's view folds it into the rows a LATE head is handed,
+        // and without it a head that attached after the fork would be given both conversations —
+        // the same defect one attach later, with no event to blame it on.
+        //
+        // **After the rows, and the order is not what makes it correct** — which is the reason it
+        // can be chosen for what it costs instead. The event names the transcript it replaces
+        // rather than a count, so a reader drops exactly those rows whenever it hears the
+        // statement: a reader that gets the statement first clears and fills, and one that gets
+        // the rows first holds both for an instant and then drops the right ones. Two things then
+        // decide the order, and both point the same way:
+        //
+        //  * **A reconnect that missed the statement is not stranded.** A head acks what it has
+        //    written and resumes from that seq, so a statement published BEFORE the rows leaves a
+        //    one-seq window in which a resuming head replays the rows and not the boundary between
+        //    them — and holds both conversations with nothing left to tell it. Published after,
+        //    the same window replays the statement alone, which is the half that is enough.
+        //  * **A fork that FAILS must not have already emptied every reader.** `append_items`
+        //    returns `Result` and the session is swapped only if it succeeds; a statement
+        //    published first would leave every reader with nothing while the session still speaks
+        //    the transcript it was told it had left.
+        self.hub
+            .publish(letibot_sessionlog::SessionEvent::TranscriptForked {
+                transcript_id: new_id.clone(),
+                parent_id: old_id.clone(),
+            });
         self.persist()?;
         // **The stored context size is about the OLD conversation.** It is the
         // last prompt the provider measured, and that prompt no longer exists:

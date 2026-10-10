@@ -203,6 +203,14 @@ pub fn content(item_id: &str, text: &str) -> SessionEvent {
     }
 }
 
+/// The daemon saying that a fork replaced the transcript — the event a carry is preceded by.
+pub fn forked(transcript_id: &str, parent_id: &str) -> SessionEvent {
+    SessionEvent::TranscriptForked {
+        transcript_id: transcript_id.into(),
+        parent_id: parent_id.into(),
+    }
+}
+
 /// One of every variant, so an exhaustiveness assertion has something to walk.
 pub fn one_of_each() -> Vec<SessionEvent> {
     vec![
@@ -239,6 +247,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
         },
         appended("s.0", "user"),
         content("s.0", "hi"),
+        forked("s#t1", "s#t0"),
         SessionEvent::HeadAttached {
             head_id: "h1".into(),
             kind: "tui".into(),

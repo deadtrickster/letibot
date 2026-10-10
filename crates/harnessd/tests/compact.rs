@@ -1394,3 +1394,138 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
         "the child's transcript forked onto the compaction's base"
     );
 }
+
+/// **A fork's rows REPLACE the ones the session's own view holds, and the statement that says so
+/// is on the log.**
+///
+/// The head is the reader the operator watched; the hub's view is the reader nobody watches and
+/// everybody gets. `Hub::snapshot` cuts that view's rows for every head that attaches, so a view
+/// that keeps both transcripts hands the conversation to a late head TWICE — the same defect one
+/// attach later, with no event to blame it on, because that head never saw the fork.
+///
+/// **The fixture forks twice, and the second fork is the measurement.** One fork would leave a
+/// view that agrees with the session for the wrong reason: the session had no rows before it, so
+/// there is nothing for the carry to be appended to. The first fork's rows ARE in the view when
+/// the second fork lands, which is exactly the state a live session is in when the operator types
+/// `/reseat`.
+#[test]
+fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-fork-replaces");
+    let path = dir.path().join("sessions.db");
+    let session_id = "fork-replaces-test";
+    let cfg = config(&path, session_id);
+    let parts = load_parts(&cfg);
+    // The hub is kept, because the view it holds is what a late head is handed.
+    let hub = Hub::new(session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
+
+    let tail = vec![
+        letibot_transcript::TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![letibot_transcript::UserPart::Text {
+                text: "the turn in progress".into(),
+            }],
+        },
+        letibot_transcript::TranscriptItem::Assistant {
+            text: "working on it".into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+    ];
+    let carry = || ForkTail {
+        items: &tail,
+        split: None,
+        because: "",
+    };
+    let first = h
+        .fork_to_summary(&outcome("the first summary"), None, None, carry())
+        .expect("the first fork lands");
+
+    // The view holds what the fork put there and nothing else: the note and the rows carried.
+    assert_eq!(
+        hub.snapshot().items.len(),
+        h.items().len(),
+        "the view is the session's rows, or a late head reads a different conversation"
+    );
+    assert_eq!(
+        hub.snapshot().items.len(),
+        3,
+        "the note and two carried rows"
+    );
+
+    // **The order, and what it is for.** The statement comes AFTER the rows it is about, and the
+    // rule does not depend on that: the event names the transcript it replaces rather than a
+    // count, so a reader drops exactly those rows whenever it hears it. What the order buys is
+    // the two cases a statement published first would break — a head that reconnects into the
+    // one-seq window between them (it would replay the rows and not the boundary), and a fork
+    // whose `append_items` fails (every reader emptied while the session still speaks the
+    // transcript it was told it had left).
+    let events: Vec<letibot_sessionlog::SessionEvent> =
+        hub.retained().iter().map(|e| e.event.clone()).collect();
+    let said = events
+        .iter()
+        .position(|e| matches!(e, letibot_sessionlog::SessionEvent::TranscriptForked { .. }))
+        .expect("the fork is on the log");
+    let rows = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                letibot_sessionlog::SessionEvent::TranscriptAppended { .. }
+            )
+        })
+        .expect("the fork's rows are on the log");
+    assert!(
+        rows < said,
+        "the statement must come after the rows it is about: rows at {rows}, statement at {said}"
+    );
+    match &events[said] {
+        letibot_sessionlog::SessionEvent::TranscriptForked {
+            transcript_id,
+            parent_id,
+        } => {
+            assert_eq!(
+                transcript_id, &first.transcript_id,
+                "the transcript it opened"
+            );
+            assert_eq!(parent_id, &first.parent_id, "and the one it replaced");
+        }
+        other => panic!("the statement is not a fork: {other:?}"),
+    }
+
+    // **The second fork, and this is the doubling.** The first fork's three rows are in the view;
+    // a view that folds the second fork as a pile of appends holds six and a late head draws the
+    // conversation twice.
+    let second = h
+        .fork_to_summary(&outcome("the second summary"), None, None, carry())
+        .expect("the second fork lands");
+    assert_ne!(
+        second.transcript_id, first.transcript_id,
+        "a second transcript"
+    );
+    assert_eq!(
+        hub.snapshot().items.len(),
+        h.items().len(),
+        "the fork's rows were APPENDED to the ones they replace"
+    );
+    assert_eq!(
+        hub.snapshot().items.len(),
+        3,
+        "the view holds both conversations after the second fork"
+    );
+    assert!(
+        hub.snapshot()
+            .items
+            .iter()
+            .all(|r| r.item_id.starts_with(&second.transcript_id)),
+        "a row of the transcript that went is still in the view: {:?}",
+        hub.snapshot()
+            .items
+            .iter()
+            .map(|r| &r.item_id)
+            .collect::<Vec<_>>()
+    );
+}

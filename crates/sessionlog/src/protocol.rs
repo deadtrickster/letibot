@@ -584,7 +584,35 @@ use crate::view::Snapshot;
 /// is decided by the module that decides the budget
 /// (`letibot_harnessd::standing_notes`), travels here, and is drawn — never re-derived in
 /// the head, which has no token counter and no business having one.
-pub const PROTOCOL_VERSION: u32 = 39;
+///
+/// # 40: a fork replaces the transcript, and the wire says so
+///
+/// [`crate::SessionEvent::TranscriptForked`] is a new event, so a version-39 head receiving
+/// one mid-session would fail to decode it — the version-4 argument, and the same ATTACH-time
+/// refusal.
+///
+/// **It exists because a fork reached a head as a pile of appends.** `fork_to_summary` opens a
+/// new transcript and publishes every carried row under its ids
+/// (`{transcript_id}.{n}`, `engine.rs`), and nothing in the stream said the rows already held
+/// belonged to a transcript the session had left. MEASURED in the head's fixtures: a 40-row
+/// conversation plus a 60-row carry left `items.len() == 100`, the reader anchored on a row of
+/// the transcript that went, and the banner reading `144 line(s) below`. The operator, scrolled
+/// up and reading, typed `/reseat` and was left with *"thousands of lines 'below'"*.
+///
+/// **A zero-bump field was the other route and it is refused by name.** `TranscriptAppended`
+/// could have grown a `#[serde(default)]` marker on the first carried row, and that is the
+/// precedent every added field in this file follows. It is the wrong shape for this fact: an
+/// older head ignores an unknown field and renders exactly what it rendered before — which
+/// here is the conversation drawn TWICE, silently, which is the defect itself. The rule that
+/// the number moves for a new variant exists so that a head cannot silently skip a fact it
+/// does not understand; this is a fact it must not skip, so the number moves.
+///
+/// **And it is the daemon's fact to state.** A head could infer a fork from an id whose
+/// ordinal restarts at zero — the engine's minting rule read backwards — but the daemon's own
+/// view of the session needs the same answer, and two readers inferring one rule from a
+/// string is the drift `Filling` was written to end: *only the daemon knows which operation is
+/// running, because it is the one running it.*
+pub const PROTOCOL_VERSION: u32 = 40;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2695,6 +2723,7 @@ mod tests {
                 | crate::SessionEvent::ToolStarted { .. }
                 | crate::SessionEvent::TranscriptAppended { .. }
                 | crate::SessionEvent::TranscriptContent { .. }
+                | crate::SessionEvent::TranscriptForked { .. }
                 | crate::SessionEvent::TurnFailed { .. }
                 | crate::SessionEvent::TurnFinished { .. }
                 | crate::SessionEvent::TurnInterrupted { .. }
@@ -2740,8 +2769,18 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 39,
-            "the match above was last reconciled with the frame list at 39 — `ListNotes` and \
+            PROTOCOL_VERSION, 40,
+            "the match above was last reconciled with the frame list at 40 — `TranscriptForked`, one \
+             NEW event (a version-39 head would fail to decode it mid-session, the version-25 \
+             argument), and the bump is owed because the fact it carries is one a head MUST NOT \
+             skip: an added, defaulted field would have been the zero-bump route and an older head \
+             would have rendered exactly what it rendered before, which here is the conversation \
+             drawn TWICE. A fork — `/reseat`, `/compact`, a re-seat onto a rebuilt prompt — opens a \
+             new transcript and publishes every carried row under its ids; nothing said the rows a \
+             reader already held belonged to a transcript the session had left, so every reader \
+             folded both conversations into one list (MEASURED in the head's fixtures: 40 rows plus \
+             a 60-row carry left 100). 39 was \
+             `ListNotes` and \
              `StandingNotes`, one NEW client frame and one NEW server frame carrying `NoteEntry`, \
              the row the standing-notes pane draws (a version-38 daemon would fail to parse the \
              first, a version-38 head would fail to decode the second mid-session — the version-34 \

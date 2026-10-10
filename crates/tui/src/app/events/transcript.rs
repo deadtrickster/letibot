@@ -100,6 +100,25 @@ impl App {
                 self.record_item(&item_id, *item);
                 Disposition::Rendered
             }
+            // **The daemon has forked the transcript, so the rows this head holds are not
+            // this session's rows any more.**
+            //
+            // The rows that follow are the carried conversation under the new transcript's
+            // ids, so a head that keeps what it has folds two conversations into one list —
+            // MEASURED: 40 rows plus a 60-row carry left 100, and the reader was left looking
+            // at the whole of it twice. The clear is the whole of this head's half; the rows
+            // arrive a moment later on the same log.
+            //
+            // **This is the third door onto "the rows were replaced", and the other two are
+            // `load`.** A `resync`, a `Hello` and now a fork all replace the transcript whole,
+            // and `load` is what the first two go through because both of those carry a
+            // snapshot. A fork cannot: the rows are published as appends, and a snapshot taken
+            // at the fork would be the old transcript's rows — which is why the daemon states
+            // the replacement and the rows follow it.
+            SessionEvent::TranscriptForked { parent_id, .. } => {
+                self.rows_replaced(&parent_id);
+                Disposition::Rendered
+            }
             _ => unreachable!("on_transcript_event was handed an event it does not handle"),
         }
     }

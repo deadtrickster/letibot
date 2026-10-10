@@ -114,6 +114,12 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // stored projection of the stream contains the conversation. Stripping it
         // would put back the hole it was added to close.
         | SessionEvent::TranscriptContent { .. }
+        // **Durable, and it has to be.** A head that reconnects replays the gap it missed
+        // rather than taking a snapshot (`Hub::attach`, `since_seq != 0`), and a fork it
+        // does not see replayed is a fork it folds as a pile of appends — the conversation
+        // drawn twice, which is the defect this event exists to end. Scrubbing it would
+        // leave the replay with the rows and without the boundary between them.
+        | SessionEvent::TranscriptForked { .. }
         | SessionEvent::HeadAttached { .. }
         | SessionEvent::HeadDetached { .. }
         | SessionEvent::Warning { .. }

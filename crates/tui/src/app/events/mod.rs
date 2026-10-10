@@ -268,43 +268,9 @@ impl App {
         // unconditionally), and the fact here is that the head was just told its queue was
         // thrown away.
         self.filling = None;
-        // **A snapshot records the bulk announcement; a live append never does.**
-        //
-        // The rows a snapshot carries without bodies are a *carry* — a fork, a reseat, a
-        // resume, an import, or an attach to a daemon mid-carry. The rows a live
-        // `TranscriptAppended` adds are the R2 window of an ordinary message, and putting
-        // them here is exactly the defect this replaces: a trigger built on "some row
-        // lacks a body" fires on every healthy turn.
-        self.bulk = {
-            let ids: std::collections::HashSet<String> = self
-                .items
-                .iter()
-                .filter(|i| i.item.is_none())
-                .map(|i| i.item_id.clone())
-                .collect();
-            (!ids.is_empty()).then(|| Bulk {
-                ids,
-                at_ms: self.now_ms,
-            })
-        };
-        // **A snapshot replaced every row, so the bindings are pruned to what is
-        // still there and still body-less.** Pruned rather than cleared: a resync
-        // mid-prompt is exactly when the reply is racing the prompt, and dropping
-        // the binding for one frame would put the echo back at the tail and take it
-        // away again on the next `TranscriptContent`. An id that is gone, or whose
-        // row now has its body, has nothing left for a binding to stand for — the
-        // row renders from its content, and the echo at the tail is the echo's own
-        // business again.
-        {
-            let bodyless: std::collections::HashSet<&str> = self
-                .items
-                .iter()
-                .filter(|it| it.item.is_none())
-                .map(|it| it.item_id.as_str())
-                .collect();
-            self.bound_prompts
-                .retain(|id, _| bodyless.contains(id.as_str()));
-        }
+        // **The two maps keyed by a row's id are pruned to the rows that are still here.**
+        // One rule, two doors onto a replacement — this one and [`App::rows_replaced`].
+        self.prune_to_the_rows();
         // The snapshot's turn carries its calls **with their edit excerpts**, and
         // the rows it appended in order — the same two facts the live hand-off
         // used when it moved a card's excerpt into `call_edits` as the row landed.
@@ -543,7 +509,8 @@ impl App {
             | SessionEvent::Explain { .. }
             | SessionEvent::DenialRaised { .. }) => self.on_ask_event(e, ts),
             e @ (SessionEvent::TranscriptAppended { .. }
-            | SessionEvent::TranscriptContent { .. }) => self.on_transcript_event(e, ts),
+            | SessionEvent::TranscriptContent { .. }
+            | SessionEvent::TranscriptForked { .. }) => self.on_transcript_event(e, ts),
             e @ SessionEvent::Warning { .. } => self.on_warning(e, ts),
         }
     }
@@ -596,6 +563,107 @@ impl App {
     /// no help from this, and one still waiting does.
     pub(crate) fn mark_fork(&mut self) {
         self.fork_pending = self.pending_prompts.clone();
+    }
+
+    /// **The two maps keyed by a row's id, pruned to the rows that are still here.**
+    ///
+    /// Both are promises about a row — `bulk` is *the daemon announced this id and has not
+    /// sent its body*, `bound_prompts` is *this echo is drawn on this row* — and a row that is
+    /// gone, or whose body has landed, has nothing left for either to stand for.
+    ///
+    /// **Pruned rather than cleared**, which is the whole of the rule and the reason this is a
+    /// method: a replacement that carries the same rows back under the same ids (a resync
+    /// mid-prompt, where the reply is racing the prompt) must not drop a binding for one frame
+    /// and put the echo back at the tail, and must not forget an announcement it is still owed
+    /// bodies for. One rule, two doors: [`App::load`] and [`App::rows_replaced`].
+    ///
+    /// **A snapshot records the bulk announcement; a live append never does.** The rows a
+    /// snapshot carries without bodies are a *carry* — a fork, a reseat, a resume, an import,
+    /// or an attach to a daemon mid-carry. The rows a live `TranscriptAppended` adds are the R2
+    /// window of an ordinary message, and putting them here is exactly the defect this
+    /// replaces: a trigger built on "some row lacks a body" fires on every healthy turn.
+    pub(crate) fn prune_to_the_rows(&mut self) {
+        self.bulk = {
+            let ids: std::collections::HashSet<String> = self
+                .items
+                .iter()
+                .filter(|i| i.item.is_none())
+                .map(|i| i.item_id.clone())
+                .collect();
+            (!ids.is_empty()).then(|| Bulk {
+                ids,
+                at_ms: self.now_ms,
+            })
+        };
+        let bodyless: std::collections::HashSet<&str> = self
+            .items
+            .iter()
+            .filter(|it| it.item.is_none())
+            .map(|it| it.item_id.as_str())
+            .collect();
+        self.bound_prompts
+            .retain(|id, _| bodyless.contains(id.as_str()));
+    }
+
+    /// **The rows this head holds that are numbered in a transcript the session has left** —
+    /// the head's half of [`SessionEvent::TranscriptForked`].
+    ///
+    /// A fork — a `/reseat`, a `/compact`, a re-seat onto a rebuilt prompt — opens a new
+    /// transcript and carries the conversation into it, so every carried row is published under
+    /// new ids (`{transcript_id}.{n}`, `engine.rs`) and **not one of the ids the replaced
+    /// transcript's rows are held under is in the carry**. The daemon names that transcript; this
+    /// is what a head does with it, and it is deliberately the smallest thing that makes the rule
+    /// true: the rows that went, gone, and the rows that follow are the whole of the conversation.
+    ///
+    /// # Why only the parent's rows, and not every row held
+    ///
+    /// A row's id names the transcript it is numbered in, and a head can hold rows of **more than
+    /// one**. A resume republishes the tail of the transcripts a compaction put behind the current
+    /// one (`Harness::ancestor_tail`) — on purpose, so that a reader can scroll above the summary
+    /// they resumed onto, and `TODO.md`'s R19.1 is the rest of that story. Those rows are *not*
+    /// what the fork replaced, and the transcript that arrives does not carry them: dropping them
+    /// would lose the history the resume went to the trouble of restoring — the operator's
+    /// *"conversation was gone — only a small recent portion was displayed"*, arriving one verb
+    /// later. What a fork replaces is named on the event, so this drops exactly that.
+    ///
+    /// # Why this is not `load`
+    ///
+    /// `load` is the other door onto a replacement, and it takes a `Snapshot` — a resync and a
+    /// `Hello` carry one, and it is why those two are the same path. A fork cannot: its rows travel
+    /// as [`SessionEvent::TranscriptAppended`], so there is no snapshot to load, and a snapshot cut
+    /// at the fork would be the OLD transcript's rows. So the replacement is stated, and this is
+    /// the head's side of it.
+    ///
+    /// # What it does NOT do, and why each is named rather than left out
+    ///
+    /// * **The reader's place.** Where the viewport goes when the row under it stops existing is
+    ///   `App::repair_anchor`'s question and `App::carry`'s — taken at a boundary and spent on the
+    ///   other side of it. Dropping the rows here is what makes the boundary real; what the reader
+    ///   is shown across it is that half's, and it is not duplicated here.
+    /// * **The echoes.** A prompt this head queued is still owed a row, and a fork carries the
+    ///   conversation rather than dropping it — so the echo retires the ordinary way, when the
+    ///   carried row's body lands and `retire_pending` matches it by its words. A compaction that
+    ///   really did drop the row is answered by `resolve_fork`, on the warning that says so; a head
+    ///   that retired echoes here would take a sentence off the screen that is still coming.
+    /// * **The notes' seams.** A note is filed at the row count of its moment ([`App::file_note`]),
+    ///   and `load` re-places a seam the new transcript is too short for. It cannot be done here:
+    ///   the new transcript's rows have not arrived, so every seam would be re-placed to `Before` —
+    ///   and on a lossless re-seat, where the conversation and therefore every seam survives, that
+    ///   would be a worse lie than the one it fixes. A seam past the end of the rows is not drawn,
+    ///   so nothing on the screen depends on this; what is left is a place `/notes` still names.
+    ///   Recorded rather than guessed at.
+    pub(crate) fn rows_replaced(&mut self, parent_id: &str) {
+        let gone = format!("{parent_id}.");
+        self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        // A row went, so everything derived from the rows — the `!` candidates and the model's
+        // suggestions — is stale, by the same rule the live append follows.
+        self.the_rows_moved();
+        // The rendered history is of rows that are not here: dropped whole rather than from a row,
+        // because the row indices themselves are about to mean something else.
+        self.invalidate_history();
+        // **And the two maps keyed by a row's id go with the rows that left.** The same rule
+        // `load` applies to a replacement it can see the whole of.
+        self.prune_to_the_rows();
     }
 
     /// **The fork happened** (R16): retire the echoes that were waiting on a

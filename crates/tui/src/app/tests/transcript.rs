@@ -7513,3 +7513,266 @@ fn the_jobs_pane_shows_the_running_ones_first_and_folds_the_finished_ones() {
     assert!(joined.contains("cargo build"), "{joined}");
     assert!(joined.contains("sleep 9"), "{joined}");
 }
+
+// ─────────────────── a fork REPLACES the rows; it does not add to them ───────────────────
+//
+// **The measurement, and the rule it earns.**
+//
+// `fork_to_summary` opens a new transcript and carries the conversation into it, so every
+// carried row is published under the new transcript's ids (`{transcript_id}.{n}`, `engine.rs`)
+// — and until `TranscriptForked` nothing in the stream said the rows a head already held
+// belonged to a transcript the session had left. So the head folded both conversations into one
+// list. MEASURED in this fixture before the fix: a 40-row conversation plus a 60-row carry left
+// `items.len() == 100`, the reader anchored on `s.19`, and the banner reading
+// `144 line(s) below`. The operator, scrolled up and reading, typed `/reseat` and was left with
+// *"thousands of lines 'below'"*.
+//
+// **Both halves are asserted, and the screen is not decoration.** A count can be right while the
+// pane draws the conversation twice — a row left in `spans`, a history not invalidated, a fold
+// re-drawn — and a count that agreed with a wrong screen would be the same defect with a number
+// on it. So every test here asserts the count AND that every row it counts is drawn exactly once.
+
+/// **`n` rows of the transcript `t`**, each saying `row {i} says a thing`.
+///
+/// One line per row, so a screen tall enough to hold the transcript draws every row — which is
+/// what makes a row drawn twice a row whose words appear twice on the frame.
+fn rows_of(a: &mut App, seq: u64, t: &str, n: u64) {
+    for i in 0..n {
+        a.apply(ServerFrame::Event(env(
+            seq + i * 2 + 1,
+            testing::appended(&format!("{t}.{i}"), "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + i * 2 + 2,
+            testing::content(&format!("{t}.{i}"), &format!("row {i} says a thing")),
+        )));
+    }
+}
+
+/// The conversation the fork fixtures start from: 40 rows of the transcript `s`.
+fn conversation(a: &mut App, n: u64) {
+    rows_of(a, 0, "s", n);
+}
+
+/// **A fork, exactly as the daemon publishes one**: the statement naming the transcript that was
+/// replaced and the one that replaces it, and then every carried row under the NEW transcript's
+/// ids, bodies and all.
+///
+/// The ids are the fixture's whole point: not one of the ids the replaced transcript's rows are
+/// held under is in the carry, so a head that keeps what it has ends up holding two
+/// conversations.
+fn fork(
+    a: &mut App,
+    seq: u64,
+    parent: &str,
+    new: &str,
+    ids: &[String],
+    says: impl Fn(usize) -> String,
+) {
+    a.apply(ServerFrame::Event(env(seq, testing::forked(new, parent))));
+    for (i, id) in ids.iter().enumerate() {
+        a.apply(ServerFrame::Event(env(
+            seq + 1 + (i as u64) * 2,
+            testing::appended(id, "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 2 + (i as u64) * 2,
+            testing::content(id, &says(i)),
+        )));
+    }
+}
+
+/// **How many times the frame draws a row saying exactly this.**
+///
+/// The screen is the second half of every assertion below: the number `items.len()` reports can
+/// be right while the pane shows the conversation twice, and this is what makes the two agree.
+fn drawn(frame: &str, words: &str) -> usize {
+    frame.matches(words).count()
+}
+
+/// **A fork of a 40-row conversation carrying 60 rows leaves the head holding 60, not 100.**
+///
+/// A live `/reseat` is exactly this: the conversation carried across onto a rebuilt prompt,
+/// published as appends under the new transcript's ids. It is a *replacement* — the carried rows
+/// are the whole of the conversation the session now has — and a head that appends them to what
+/// it holds draws every one of them twice.
+#[test]
+fn a_fork_of_a_forty_row_conversation_carrying_sixty_leaves_sixty_rows() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    conversation(&mut a, 40);
+    assert_eq!(
+        a.items.len(),
+        40,
+        "the fixture's premise: a 40-row conversation"
+    );
+    let before = a.screen(100, 400).join("\n");
+    assert_eq!(
+        drawn(&before, "row 39 says a thing"),
+        1,
+        "the fixture's premise: the head draws the conversation it holds"
+    );
+
+    // The carry: the same conversation, whole, under the new transcript's ids.
+    let ids: Vec<String> = (0..60).map(|i| format!("s#t1.{i}")).collect();
+    fork(&mut a, 1_000, "s", "s#t1", &ids, |i| {
+        format!("row {i} says a thing")
+    });
+
+    // **60, and not 100.** A fork replaces the conversation; it does not add a second copy.
+    assert_eq!(
+        a.items.len(),
+        60,
+        "the fork's rows were APPENDED to the ones they replace"
+    );
+    // And the count is right for the right reason: every row the head holds is the new
+    // transcript's, and not one of the ids it was holding survived.
+    assert!(
+        a.items.iter().all(|r| r.item_id.starts_with("s#t1.")),
+        "a row of the transcript that went is still held: {:?}",
+        a.items
+            .iter()
+            .map(|r| &r.item_id)
+            .take(3)
+            .collect::<Vec<_>>()
+    );
+
+    // **And the screen agrees with the count**: every row of the carried conversation drawn,
+    // every one of them exactly once.
+    let frame = a.screen(100, 400).join("\n");
+    for i in 0..60u64 {
+        let words = format!("row {i} says a thing");
+        assert_eq!(
+            drawn(&frame, &words),
+            1,
+            "`{words}` is drawn {} time(s) on a 60-row transcript",
+            drawn(&frame, &words)
+        );
+    }
+}
+
+/// **A compaction fork has the same shape, and it is the one that SHORTENS.**
+///
+/// Only `/reseat` was measured — a lossless carry, the same conversation with a note in front of
+/// it — but every fork publishes its rows this way, and a compaction is where getting it wrong
+/// is most visible: the summary replaces a history that would otherwise still be drawn
+/// underneath it. So the same rule is asserted on a fork whose carry is the note plus a short
+/// tail, and the rows the summary replaced are asserted **not** to be on the screen at all.
+#[test]
+fn a_compaction_fork_leaves_the_summary_and_the_tail_and_nothing_it_replaced() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    conversation(&mut a, 40);
+
+    // The compaction's carry, in `fork_to_summary`'s own order: the note that says what
+    // happened, then the newest twenty rows verbatim. The note is kept to one line so the
+    // frame assertion below reads the whole of it rather than a wrap of it.
+    let ids: Vec<String> = (0..21).map(|i| format!("s#t1.{i}")).collect();
+    fork(&mut a, 1_000, "s", "s#t1", &ids, |i| match i {
+        0 => "This conversation was compacted: the summary is below.".to_string(),
+        _ => format!("row {} says a thing", i + 19),
+    });
+
+    assert_eq!(
+        a.items.len(),
+        21,
+        "the fork's rows were APPENDED to the forty the summary replaced"
+    );
+    let frame = a.screen(100, 400).join("\n");
+    // The summary, and the tail it carried: drawn, once each.
+    assert_eq!(
+        drawn(&frame, "This conversation was compacted"),
+        1,
+        "the note that says what happened is not on the screen"
+    );
+    for i in 20..40u64 {
+        let words = format!("row {i} says a thing");
+        assert_eq!(drawn(&frame, &words), 1, "`{words}` is not drawn");
+    }
+    // **And nothing the summary replaced is drawn.** This is the half a count cannot see: a
+    // head holding 21 rows with 40 of the old ones still on the screen under them would pass
+    // the assertion above and fail the reader.
+    for i in 0..20u64 {
+        let words = format!("row {i} says a thing");
+        assert_eq!(
+            drawn(&frame, &words),
+            0,
+            "a row the summary replaced is still drawn: `{words}`"
+        );
+    }
+}
+
+/// **A fork drops the replaced transcript's rows and NO OTHERS.**
+///
+/// A head can hold rows of more than one transcript, and on purpose: a resume republishes the
+/// tail of the transcripts a compaction put behind the current one (`Harness::ancestor_tail`) so
+/// that a reader can scroll above the summary they resumed onto — `TODO.md`'s R19.1 is the rest
+/// of that story. Those rows are not what a fork replaces; the transcript that arrives does not
+/// carry them. A rule that dropped every row the head held would take that history with it, which
+/// is the operator's *"conversation was gone — only a small recent portion was displayed"*
+/// arriving one verb later. So the fork names the transcript it replaced, and this pins that the
+/// name is what decides — the count alone cannot see the difference between 25 rows and 25 of the
+/// right ones.
+#[test]
+fn a_fork_drops_the_rows_of_the_transcript_it_replaced_and_no_others() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // The chain a resume leaves on the screen: an older transcript's tail, then the current
+    // transcript's rows — the shape `ancestor_tail` republishes, in order.
+    rows_of(&mut a, 0, "s#t1", 5);
+    rows_of(&mut a, 1_000, "s#t2", 40);
+    assert_eq!(
+        a.items.len(),
+        45,
+        "the fixture's premise: two transcripts held"
+    );
+
+    // The fork replaces `s#t2` — the transcript the session is speaking — and not `s#t1`. The
+    // carry says something of its own, so a row of the older transcript and a row of the carry
+    // are never the same words and the counts below cannot be satisfied by the wrong row.
+    let ids: Vec<String> = (0..20).map(|i| format!("s#t3.{i}")).collect();
+    fork(&mut a, 2_000, "s#t2", "s#t3", &ids, |i| {
+        format!("carried {i} says a thing")
+    });
+
+    // 5 ancestors + 20 carried, and not one row of the transcript that was replaced.
+    assert_eq!(
+        a.items.len(),
+        25,
+        "the fork took rows it did not replace, or left the ones it did"
+    );
+    assert!(
+        !a.items.iter().any(|r| r.item_id.starts_with("s#t2.")),
+        "a row of the transcript the fork replaced is still held"
+    );
+    // **And the older transcript's rows are still here** — in the list and on the screen.
+    let frame = a.screen(100, 400).join("\n");
+    for i in 0..5u64 {
+        let words = format!("row {i} says a thing");
+        assert_eq!(
+            drawn(&frame, &words),
+            1,
+            "a row of a transcript the fork did not replace was dropped: `{words}`"
+        );
+    }
+    for i in 0..20u64 {
+        let words = format!("carried {i} says a thing");
+        assert_eq!(
+            drawn(&frame, &words),
+            1,
+            "the carry is not drawn: `{words}`"
+        );
+    }
+}
