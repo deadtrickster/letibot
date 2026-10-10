@@ -3,8 +3,12 @@
 //! reader, the counts and which row the cursor is on are this head's.
 
 use crate::app::*;
-use crate::ui::render::row_strings;
+use crate::ui::render::{row_strings, wrap};
+use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+use rano::agent::pane;
+use rano::agent::text::clean_line;
 use rano::agent::todos::{RepoRow, TodoLine, TodosPane};
+use rano::render::Line;
 
 impl App {
     pub(crate) fn todos_lines(&mut self, w: usize) -> Vec<String> {
@@ -65,7 +69,17 @@ impl App {
                             Some(TodoCondition::Job { handle }) => Some(handle.clone()),
                             None => None,
                         },
-                        cursor: mine && marked(&TodoStop::Mine(t.content.clone())),
+                        // **The mark follows the STOP, whichever half the row is on.** rano draws
+                        // the `▸` from this flag alone, so a model's row left at `false` would be
+                        // a stop the cursor walks onto with nothing drawn under it — the same
+                        // defect as a cursor that is not where the keys think it is, one half of
+                        // the list over. `todos_stops` is the one enumeration that says which row
+                        // that is.
+                        cursor: marked(&if mine {
+                            TodoStop::Mine(t.content.clone())
+                        } else {
+                            TodoStop::Theirs(t.content.clone())
+                        }),
                     }
                 })
                 .collect(),
@@ -89,10 +103,229 @@ impl App {
         };
         let content = pane.content(w);
         // **The rows the stops landed on, taken as they went out** — what the arrows scroll by
-        // and a click is tested against.
-        self.todos_stop_rows = content.stop_rows;
+        // and a click is tested against. The model's rows are stops now and rano does not record
+        // them, so the record is completed here; see [`session_stop_rows`].
+        self.todos_stop_rows = session_stop_rows(&content, &self.todos);
         row_strings(&content.lines, self.cfg.palette())
     }
+
+    /// **One row, whole** — the overlay the todos pane's Enter opens.
+    ///
+    /// # Why it is here at all
+    ///
+    /// The pane draws every row to the pane's own width (rano's `TodosPane::content` trims each
+    /// line to `w`), and these rows are written by a model. The operator's report: *"in todo list
+    /// i cant expand your todo items - only truncated titles available"*. **Nothing was lost on
+    /// the wire** — `TodoEntry::content` arrives whole — it was only unreadable, and this is the
+    /// one place on the screen where the whole of it is.
+    ///
+    /// # What it shows beyond the text
+    ///
+    /// The **author** and the **status**, because both are on the row and reading a row means
+    /// reading them: the model's rows and the operator's own look alike in a list and are not the
+    /// same fact (one is the operator's to toggle, the other is the model's to retire), and *open*,
+    /// *in progress*, *done* and *set aside* are four different answers to *is this still owed*.
+    /// What the row **waits on** (`when`) and what it **needs** (`needs`) are on the row as well,
+    /// and they are the two facts a reader asks about next — *why has nothing happened* and *what
+    /// has to land first*.
+    ///
+    /// A repo row's facts are the file's rather than a session's: the mark the file gave it, and
+    /// its own continuation lines **shown whole under it** rather than behind the pane's `···`.
+    ///
+    /// # What happens when the row changes while this is open
+    ///
+    /// The row is looked up **by identity at DRAW time** and never carried in the overlay, so a
+    /// `TodosUpdated` landing under an open overlay draws the NEW status rather than the one it
+    /// had when Enter was pressed. **The words ARE the identity** — the board has no ids, which is
+    /// `TodoStop`'s own docstring — so a row whose text changed is a different row, and the overlay
+    /// says the row is gone rather than showing words that are no longer on the board. A repo row's
+    /// identity is its place in a file this head re-reads on every draw (`refresh_repo_todos`), and
+    /// an item edited away says the same thing.
+    pub(crate) fn todos_open_lines(&self, w: usize) -> Vec<String> {
+        let Some(stop) = self.todos_open.as_ref() else {
+            return Vec::new();
+        };
+        let mut lines = vec![pane::title("todos — one row"), Line::default()];
+        match stop {
+            // **Reachable by no key**, and said rather than drawn empty: Enter on the control opens
+            // the card, because the control is not a row with words of its own (`key_todos_pane`).
+            TodoStop::Add => lines.push(Line::raw(
+                "  the `[+]` control has no text of its own — enter there opens the card.",
+            )),
+            // **The operator's half and the model's half, by the same words and the same rule**:
+            // `Mine` is the row whose author is the operator, `Theirs` is every other author, and
+            // the lookup takes the first row with those words on that half — the same row the
+            // stops were built from, in the list's own order.
+            TodoStop::Mine(words) | TodoStop::Theirs(words) => {
+                let mine = matches!(stop, TodoStop::Mine(_));
+                let held = self
+                    .todos
+                    .iter()
+                    .find(|t| t.content == *words && (t.by == TodoBy::Operator) == mine);
+                match held {
+                    Some(t) => {
+                        lines.push(pane::faint(format!("    {}", row_facts(t))));
+                        if !t.needs.is_empty() {
+                            let needs: Vec<String> = t.needs.iter().map(need_words).collect();
+                            lines.push(pane::faint(format!("    needs {}", needs.join(", "))));
+                        }
+                        lines.push(Line::default());
+                        push_whole(&mut lines, &t.content, w);
+                    }
+                    None => lines.push(Line::raw(format!(
+                        "  `{}` is not on the board any more — a row's words are its identity, so a \
+                         row renamed is a different row. esc goes back to the list.",
+                        clean_line(words)
+                    ))),
+                }
+            }
+            TodoStop::Repo(i) => match self.repo_todos.as_ref().and_then(|rows| rows.get(*i)) {
+                Some(r) if r.item => {
+                    lines.push(pane::faint(format!(
+                        "    the repo's TODO.md · {}",
+                        mark_words(r.mark)
+                    )));
+                    lines.push(Line::default());
+                    push_whole(&mut lines, &r.text, w);
+                    if !r.body.is_empty() {
+                        lines.push(Line::default());
+                        for b in &r.body {
+                            push_whole(&mut lines, b, w);
+                        }
+                    }
+                }
+                _ => lines.push(Line::raw(format!(
+                    "  row {i} of TODO.md is not there any more — the file is read again on every \
+                     draw, so an edit under this overlay moves what that row number points at. esc \
+                     goes back to the list."
+                ))),
+            },
+        }
+        lines.push(Line::default());
+        lines.push(pane::faint("    esc goes back to the list"));
+        row_strings(&lines, self.cfg.palette())
+    }
+}
+
+/// **A row's own words, whole, wrapped and indented** — the one place in this pane where a row is
+/// not cut to the pane's width.
+///
+/// **Split on newlines first, and cleaned line by line**: `clean_line` turns a newline into a space
+/// (§3.1's guard, because a row is text this head did not write), so a row that carries newlines —
+/// which a model may write — has to be broken before it is cleaned or the shape it was written in
+/// is lost. A line that wraps to nothing is kept as a blank row, because the blank is part of what
+/// the author wrote.
+fn push_whole(out: &mut Vec<Line>, text: &str, w: usize) {
+    for l in text.split('\n') {
+        let rows = wrap(&clean_line(l), w.saturating_sub(2).max(1));
+        if rows.is_empty() {
+            out.push(Line::default());
+        }
+        for one in rows {
+            out.push(Line::raw(format!("  {one}")));
+        }
+    }
+}
+
+/// **Who wrote a row and where it stands** — the overlay's own header line, and the two facts the
+/// pane's row carries in its margin (`— model`, the mark).
+fn row_facts(t: &TodoEntry) -> String {
+    let mut s = format!("{} · {}", author_words(&t.by), status_words(t.status));
+    if let Some(letibot_sessionlog::event::TodoCondition::Job { handle }) = &t.when {
+        s.push_str(&format!(" · waits on {}", clean_line(handle)));
+    }
+    s
+}
+
+/// The author, in the pane's own words — `you` and `the model`, one row apart.
+///
+/// **A parent's row shows the string it arrived with** (`Parent <session-id>`): the variant
+/// carries the author exactly as the operator specified it, and re-spelling it here would be a
+/// second name for one fact.
+fn author_words(by: &TodoBy) -> String {
+    match by {
+        TodoBy::Operator => "you".into(),
+        TodoBy::Model => "the model".into(),
+        TodoBy::Parent(who) => clean_line(who),
+        TodoBy::Queue => "the merge queue".into(),
+    }
+}
+
+/// The row's state as a reader's word. The pane draws rano's four marks (`[ ]`, `[~]`, `[x]`,
+/// `[p]`); this is the same four said out, plus the fifth state the marks have no glyph for.
+fn status_words(s: TodoStatus) -> &'static str {
+    match s {
+        TodoStatus::Pending => "open",
+        TodoStatus::InProgress => "in progress",
+        TodoStatus::Completed => "done",
+        TodoStatus::Postponed => "set aside",
+        TodoStatus::Cancelled => "cancelled",
+    }
+}
+
+/// One edge of `needs`, as the sentence a reader can act on.
+fn need_words(n: &TodoNeed) -> String {
+    match n {
+        TodoNeed::Row { content } => format!("row `{}`", clean_line(content)),
+        TodoNeed::Child { id } => format!("child {}", clean_line(id)),
+        TodoNeed::Job { handle } => format!("job {}", clean_line(handle)),
+        // **Kept rather than dropped** — a plan is what would be lost — and said as the one thing
+        // this build can honestly say about it.
+        TodoNeed::Unknown => "an edge this build does not know".into(),
+    }
+}
+
+/// A `TODO.md` item's mark as a word, for the overlay's header line.
+fn mark_words(m: Option<TodoMark>) -> &'static str {
+    match m {
+        Some(TodoMark::Open) => "open",
+        Some(TodoMark::Doing) => "in progress",
+        Some(TodoMark::Done) => "done",
+        Some(TodoMark::Postponed) => "set aside",
+        // A heading carries no mark; a heading is not a stop, so this is the honest answer rather
+        // than a guess at a state the file never gave.
+        None => "unmarked",
+    }
+}
+
+/// **Every stop's drawn row, with the session's rows put back in.**
+///
+/// rano's `TodosPane::content` records a stop row only for the rows its own pane treats as stops —
+/// the add control, the operator's rows (`mine`) and the repo's items — because its pane has no act
+/// on a model's row. This head's cursor does now (Enter reads one whole, `App::todos_stops`), so
+/// without this the record and the enumeration would be two lists of different lengths: every stop
+/// after the first model's row would scroll the cursor to a row that is not its own, and a click
+/// would move the cursor to a different row than the one under the pointer. That is the
+/// two-enumerations defect this pane's docstrings are a monument to, arriving from the library side.
+///
+/// **The session's rows are one contiguous block of exactly `todos.len()` rows directly under the
+/// add control**, which is what rano draws (the control, then the list, one row each, in order), so
+/// the block is placed from the control's own recorded row and the repo's recorded rows follow it
+/// untouched. **The shape is checked rather than trusted**: if the record is shorter than the
+/// layout implies, or the block would run past the rows that were drawn, rano's own record is kept
+/// — the model's rows then scroll to their neighbour's row rather than the whole list pointing
+/// somewhere wrong.
+fn session_stop_rows(
+    content: &rano::agent::pane::PaneLines,
+    todos: &[letibot_sessionlog::event::TodoEntry],
+) -> Vec<usize> {
+    use letibot_sessionlog::event::TodoBy;
+    let recorded = &content.stop_rows;
+    // The recorded stops are the control, the operator's rows in order, then the repo's items.
+    let mine = todos.iter().filter(|t| t.by == TodoBy::Operator).count();
+    let repo_from = 1 + mine;
+    let start = match recorded.first() {
+        Some(first) if recorded.len() >= repo_from => first + 1,
+        _ => return recorded.clone(),
+    };
+    if start + todos.len() > content.lines.len() {
+        return recorded.clone();
+    }
+    let mut out = Vec::with_capacity(recorded.len() + todos.len() - mine);
+    out.push(recorded[0]);
+    out.extend(start..start + todos.len());
+    out.extend_from_slice(&recorded[repo_from..]);
+    out
 }
 
 /// The repo's `TODO.md` as a section map: one line per `##` section with its

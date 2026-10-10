@@ -742,6 +742,19 @@ impl App {
             rows.truncate(room);
             self.picker_rows_drawn = rows.len();
             rows
+        } else if self.todos_open.is_some() {
+            // **One row, whole, through `pane_window`** so it pages like the panes: a row is written
+            // by a model and can be longer than the screen — the operator's own report is that the
+            // pane showed a truncated title and nothing else — so an overlay that could not be
+            // scrolled would be the same defect with a bigger box. It sits ABOVE the pane's own
+            // branch because it is what the pane's Enter opened, and Esc gives the pane back.
+            //
+            // The file is re-read here as it is for the pane: a repo row's overlay draws from the
+            // same fresh read the list does, so an edit under an open overlay shows the new file
+            // rather than the read the keypress happened to catch.
+            self.refresh_repo_todos();
+            let rows = self.todos_open_lines(w);
+            self.pane_window(rows, room)
         } else if self.todos_pane {
             // **Where the pane's own first row goes on the screen**, which is what a click's `y`
             // has to be measured against: the session header sits above it when the frame is tall

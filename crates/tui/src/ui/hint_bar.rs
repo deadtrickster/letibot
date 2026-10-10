@@ -37,13 +37,19 @@ impl App {
             HintMode::SessionPicker
         } else if self.pick.is_some() {
             HintMode::Pick
+        } else if self.todos_open.is_some() {
+            // **The row's overlay is a READING screen**, like the standing pane's: it has no field on
+            // it and its keys are the arrows and the page keys. rano keeps the bar's tail sentences
+            // and is pinned by tag, so `Reading`'s tail (`esc closes this`) is taken and this head's
+            // own half says what the keys do — exactly as the pane's own branch below does.
+            HintMode::Reading
         } else if self.todos_pane {
             // **The todos pane's keys, composed HERE.** rano keeps the bar's tail sentences and is
             // pinned by tag, and its `HintMode::Todos` sentence says *enter or tab unfolds* — true of
-            // rano's pane, false of this one, where those two keys open the card on the add row and
-            // mark one of the operator's rows done. So this pane takes `Reading`'s tail (`esc closes
-            // this`, which is true of it) and its own keys go in the half this head owns, exactly as
-            // the queue pane's verbs and the standing-notes pane do below.
+            // rano's pane, false of this one, where those two keys open the card on the add row,
+            // read a row whole (enter) and act on it (tab). So this pane takes `Reading`'s tail (`esc
+            // closes this`, which is true of it) and its own keys go in the half this head owns,
+            // exactly as the queue pane's verbs and the standing-notes pane do below.
             HintMode::Reading
         } else if self.config_pane {
             HintMode::Config
@@ -75,7 +81,9 @@ impl App {
         // of the SAME row and is empty while a pane has the keyboard. They lead there on purpose:
         // the bar is over capacity at 80 columns by construction, and the renderer keeps the head,
         // so the keys this pane adds are the ones that survive the cut.
-        let editor = if self.todos_pane {
+        let editor = if self.todos_open.is_some() {
+            Line::styled(self.todos_open_hint(), Role::Faint)
+        } else if self.todos_pane {
             Line::styled(self.todos_hint(), Role::Faint)
         } else if self.queue_pane && self.queue_open.is_none() {
             Line::styled("a approve · v veto · d drop · r restart", Role::Faint)

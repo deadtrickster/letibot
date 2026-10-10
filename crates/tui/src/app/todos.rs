@@ -282,6 +282,11 @@ impl App {
         // stale; one field reset on every open is the same behaviour with nothing to
         // forget.
         self.pane_scroll = 0;
+        // **And a row left open goes with the pane.** The overlay's own Esc already returns to
+        // the list, so this is the door that cannot be reached while it is up — but a pane
+        // closed by any other means must not leave a row standing over the screen it belonged
+        // to, which is `/queue`'s rule for its own overlay.
+        self.todos_open = None;
         self.redraw = true;
         if self.todos_pane {
             // Read at open, and re-read on every draw the file has moved under — see
@@ -301,22 +306,37 @@ impl App {
     /// arithmetic — and *"mouse doesnt click"* — a click on the add row computing a negative index,
     /// thrown away. **Two enumerations was the defect.**
     ///
-    /// Three kinds, and the tag carries IDENTITY rather than position: a position is a fact about
+    /// Four kinds, and the tag carries IDENTITY rather than position: a position is a fact about
     /// the list when it was DRAWN, and a list changes between a draw and a keypress (a `TodosUpdated`
     /// arriving, a row removed), so every action would land on whatever took its neighbour's place.
     ///
-    /// **The model's rows are NOT stops**, which is the R44 boundary and not an omission: no key
-    /// acts on one — the model may move its own row's status and the operator may not — and a cursor
-    /// that stops where no key acts is a cursor the operator presses keys into and nothing happens.
-    /// They are skipped the way the repo's headings are.
+    /// **The model's rows ARE stops, and Enter on one READS it.**
+    ///
+    /// They were not, and the reason was sound while it held: no key acted on one — the model
+    /// moves its own row's status and the operator may not — and a cursor that stops where no key
+    /// acts is a cursor the operator presses keys into and nothing happens. **Enter now acts on
+    /// every row: it opens the row's whole text** ([`App::todos_open`]), which is the operator's
+    /// own report against this pane — *"in todo list i cant expand your todo items - only
+    /// truncated titles available"*, about the model's rows, which are the long ones. So the rule
+    /// is kept rather than bent: a stop is where a key acts, and reading is an act. **Reading is
+    /// not moving** — nothing here changes a row's state, which is the R44 boundary that still
+    /// holds.
+    ///
+    /// The repo's headings are still skipped, and that is not the same rule broken: the rule is
+    /// *a stop must have a key*, not *every key must have a row*. A heading is a section label
+    /// rather than a row with words of its own, and a reader who wants the section has the items
+    /// under it.
     pub(crate) fn todos_stops(&self) -> Vec<TodoStop> {
         let mut out = vec![TodoStop::Add];
-        for t in self
-            .todos
-            .iter()
-            .filter(|t| t.by == letibot_sessionlog::event::TodoBy::Operator)
-        {
-            out.push(TodoStop::Mine(t.content.clone()));
+        // **In the order the pane DRAWS them**, which is the daemon's own order over the whole
+        // union — one walk, so the cursor's sequence and the rows on the screen cannot come from
+        // two readings of the list.
+        for t in &self.todos {
+            out.push(if t.by == letibot_sessionlog::event::TodoBy::Operator {
+                TodoStop::Mine(t.content.clone())
+            } else {
+                TodoStop::Theirs(t.content.clone())
+            });
         }
         if let Some(rows) = &self.repo_todos {
             for (i, r) in rows.iter().enumerate() {
@@ -347,18 +367,37 @@ impl App {
     ///
     /// **One precondition is NOT said, and it is the honest gap**: `key_todos_pane` acts on Enter
     /// and Tab only while the composer is EMPTY (a half-typed `/command` owns Tab), so with text in
-    /// the composer this bar promises a toggle Enter will not perform. The sentence it replaces was
+    /// the composer this bar promises a read Enter will not perform. The sentence it replaces was
     /// false there too — it said `unfolds` — so this is narrower than what was fixed, not wider.
+    ///
+    /// **Two keys, and the bar says both, because they are now two acts**: Enter reads the row
+    /// whole, Tab performs the pane's own act on it. Before this, one sentence covered both
+    /// because both keys did the same thing; a bar that went on saying `enter or tab toggles it
+    /// done` would name a key that now opens an overlay instead.
     pub(crate) fn todos_hint(&self) -> String {
         let stops = self.todos_stops();
         let at = self.todos_sel.min(stops.len().saturating_sub(1));
         let act = match stops.get(at) {
             Some(TodoStop::Add) => "enter or tab opens the card",
-            Some(TodoStop::Mine(_)) => "enter or tab toggles it done",
-            Some(TodoStop::Repo(_)) => "enter or tab unfolds the item",
-            None => "enter or tab acts on the row",
+            Some(TodoStop::Mine(_)) => "enter reads it whole · tab toggles it done",
+            Some(TodoStop::Theirs(_)) => "enter reads it whole",
+            Some(TodoStop::Repo(_)) => "enter reads it whole · tab unfolds the item",
+            None => "enter reads the row whole",
         };
         format!("↑↓ moves · {act} · /todo rm N removes one of yours")
+    }
+
+    /// **The open row's own half of the bottom bar.**
+    ///
+    /// The overlay is modal — it takes the whole keyboard while it is up
+    /// ([`App::key_todo_open`]) — so the bar has to name the way out, and it names the keys that
+    /// move the window too: a row longer than the screen is the case the overlay exists for, and a
+    /// reader who does not know the page keys exist would think the rest was not there. The tail
+    /// sentence (`esc closes this`) is `Reading`'s, which is what the overlay's mode takes; the
+    /// sentence here is the head's half and says what the key actually does — *back to the list*,
+    /// because the pane is still behind it.
+    pub(crate) fn todos_open_hint(&self) -> String {
+        "↑↓ pgup/pgdn and the wheel scroll · esc goes back to the list".to_string()
     }
 
     /// **The pane row the stop at the cursor was DRAWN on**, read out of
@@ -470,6 +509,18 @@ pub(crate) enum TodoStop {
     /// the words are the identity, which is the same key `/todo done N` uses. A row renamed is a
     /// different row, and that is the honest reading of a list with no ids.
     Mine(String),
+    /// **One of the MODEL's rows — `Mine`'s other half, by its words**, and the rows the operator's
+    /// report was about: *"in todo list i cant expand your todo items"*. They are stops now because
+    /// Enter READS a row ([`App::todos_open`]) and a stop is where a key acts; nothing here moves
+    /// one, which is the boundary that used to be the reason they were skipped (see
+    /// [`App::todos_stops`]).
+    ///
+    /// It carries the words rather than the author, and that is the board's own rule: a row's
+    /// identity is its exact text, and the lookup that draws the overlay takes the first row with
+    /// those words that is not the operator's — which is the same row, because the stops are built
+    /// in the list's own order. A `Parent <id>` or a `queue` row is one of these too: none of the
+    /// three is the operator's to move.
+    Theirs(String),
     /// A row of the workspace's `TODO.md`, by index into `repo_todos` — the file's own order IS
     /// its identity, because the pane re-reads the file.
     Repo(usize),

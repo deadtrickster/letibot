@@ -216,6 +216,11 @@ impl App {
             self.jobs_pane = false;
             self.queue_pane = false;
             self.standing_pane = false;
+            // **A row left open goes with the pane it belongs to**: the overlay's own Esc returns
+            // to the LIST and is handled above this block, so this is the door that catches every
+            // other way the pane can close — and `toggle_todos` is the other door, which clears it
+            // for the same reason.
+            self.todos_open = None;
             self.config_pane = false;
             self.sub_out_pending = None;
             self.redraw = true;
@@ -412,17 +417,33 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// **An open todos pane owns Up and Down, and Enter unfolds the item.**
+    /// **An open todos pane owns Up and Down, Enter reads the row whole, and Tab acts on it.**
     ///
     /// The items carry the detail a TODO.md puts under them — the commit a
     /// vendoring pins, the `Deps:` that says what blocks it — and the pane
     /// showed the first line only, so an item trailed off mid-sentence. Arrows
-    /// move, Enter acts: the same two the jobs and subagent panes use.
+    /// move and Enter opens the row under the cursor: the same two the jobs and
+    /// subagent panes use.
     /// **ONE ENUMERATION, AND EVERY KEY READS IT** — leticl's `todos-stops`, whose docstring is
     /// the operator's two reports: *"arrows dont go here"* and *"mouse doesnt click"*. Both were
     /// the same defect, a cursor whose position came from one list and whose row came from
-    /// another. The stops are the add control, the operator's own items, and the repo's items —
-    /// and NOT the model's rows, which no key acts on.
+    /// another. The stops are the add control, the session's rows (the model's and the operator's
+    /// alike) and the repo's items.
+    ///
+    /// # Which key wins, and why
+    ///
+    /// **Enter READS the row and Tab ACTS on it, and that is a change to what Enter meant here.**
+    /// Every other pane in this head spends Enter on *open the thing under the cursor* — the queue
+    /// entry, a job's output, a standing note — and this pane was the one place it meant *toggle a
+    /// row done* or *unfold an item*. The operator's report is why the read wins: *"in todo list i
+    /// cant expand your todo items - only truncated titles available"*, against rows the pane
+    /// draws to its own width with nothing behind them ([`App::todos_open`]).
+    ///
+    /// **The acts are not lost, they are on Tab** — which already carried every one of them
+    /// (`enter or tab …` was the old bar's own sentence), so nothing becomes unreachable and no
+    /// second key has to be learned. The exception is the ADD CONTROL: **the card wins there**,
+    /// because that row has no text of its own to read — it is a control, and its act is what it
+    /// is for.
     ///
     /// **A key this block does not name FALLS THROUGH**, which is what keeps the pane from
     /// eating the composer: `Tab` is the completion key while a `/command` is half-typed (the
@@ -430,6 +451,11 @@ impl App {
     /// is the operator's to type. The first cut of this block ended in an unconditional
     /// `return None` and the pane swallowed the whole keyboard — a `▸` that looked right with
     /// nothing behind it, which is a worse defect than the one it replaced.
+    ///
+    /// **And the read carries the same empty-composer guard the acts do**, because with a line
+    /// typed Enter is the composer's in this pane — the contract `keys/mod.rs` records for the
+    /// todos stops (*a typed line IS the answer there*) — and a read that took that Enter would
+    /// silently swallow what the operator was writing.
     pub(crate) fn key_todos_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.todos_pane {
             let stops = self.todos_stops();
@@ -451,18 +477,31 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                // **Enter acts on what the cursor is ON**, which is the whole point of one
-                // enumeration: the add control opens the card, one of your rows is marked done,
-                // and a repo item unfolds. Tab stays the repo's unfold, because the hand is
-                // already there for it and the composer is empty here.
+                // **Enter READS the row under the cursor** — the whole of it, in an overlay, which
+                // is the one place a row longer than the pane can be read at all. The add control
+                // is the exception, and it is not a special case so much as the row's own nature:
+                // there is no text there to open, and its act is opening the card.
+                Key::Enter if self.editor.text().is_empty() => match &stops[at] {
+                    TodoStop::Add => {
+                        self.open_todo_card();
+                        return ControlFlow::Break(None);
+                    }
+                    row => {
+                        self.todos_open = Some(row.clone());
+                        self.pane_scroll = 0;
+                        self.redraw = true;
+                        return ControlFlow::Break(None);
+                    }
+                },
                 // **A click moves the cursor, and Enter still does the act** — the same two
                 // acts, kept two, that the pickers here already keep (*"select and confirm stay
                 // two acts"*). Straight off the recorded rows, so the row the pointer is on is
-                // the row the pane drew there.
+                // the row the pane drew there. (The act Enter does is now the READ, which is a
+                // click's business no more than the toggle was.)
                 //
                 // **A click into the blank space moves nothing**, and so does one on a row that
-                // is not a stop at all — one of the model's rows, or a repo heading. There is no
-                // key that would act on it, which is the same reason it is not a stop.
+                // is not a stop at all — a repo heading. There is no key that would act on it,
+                // which is the same reason it is not a stop.
                 Key::Click { y, .. } => {
                     if let Some(sel) = self.todo_stop_at_row(*y) {
                         self.todos_sel = sel;
@@ -471,7 +510,11 @@ impl App {
                     }
                     return ControlFlow::Break(None);
                 }
-                Key::Enter | Key::Tab if self.editor.text().is_empty() => match &stops[at] {
+                // **Tab is the pane's own acts**, which is what it was beside Enter before the read
+                // took Enter: the card on the control, the toggle on one of the operator's rows,
+                // the unfold on a repo item. On the model's rows there is no act to perform — the
+                // R44 boundary, said rather than left as a key that does nothing.
+                Key::Tab if self.editor.text().is_empty() => match &stops[at] {
                     TodoStop::Add => {
                         self.open_todo_card();
                         return ControlFlow::Break(None);
@@ -506,9 +549,67 @@ impl App {
                         self.redraw = true;
                         return ControlFlow::Break(None);
                     }
+                    // **Said, not silently nothing** — the rule this pane's own bar keeps about a
+                    // key that names the wrong act: the model moves its own row's status and the
+                    // operator may not, and a Tab that did nothing here would read as a pane that
+                    // had stopped answering.
+                    TodoStop::Theirs(_) => {
+                        self.say(
+                            "that row is the model's — nothing here moves it; enter reads it whole",
+                        );
+                        self.redraw = true;
+                        return ControlFlow::Break(None);
+                    }
                 },
                 _ => {}
             }
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// **The row the todos pane's Enter opened owns the keyboard while it is up** — Esc goes back
+    /// to the LIST, which is still behind it, the arrows walk the window, and nothing else reaches
+    /// the composer. The queue entry's overlay, one pane along, and it sits in the same place that
+    /// one does: above the block that closes every pane on Esc, and below the chords.
+    ///
+    /// # Why the keys are split between here and the chords
+    ///
+    /// **The page keys and the wheel are `key_chords`'s**, not this handler's: they are settled for
+    /// every open pane there (`self.todos_pane` is true whenever this overlay is — it is only ever
+    /// opened from that pane, and both doors that close the pane clear the overlay), and they move
+    /// `pane_scroll`, which is the field this overlay is drawn through. An arm here for the same
+    /// keys would be dead code that looks live, and a second spelling of one rule is how the two
+    /// come to disagree. The ARROWS are here because no other block owns them for a pane: the
+    /// pane's own handler is below this one, and it would move the cursor of a list nobody can see.
+    ///
+    /// # Why a key it does not name does not fall through
+    ///
+    /// A reading surface with no field on it has no meaning for a key it does not name, and the
+    /// alternative is a draft growing in the composer under the row being read. **The chords above
+    /// still work** — `ctrl-t` closes the pane, the visibility chords still switch — because this
+    /// handler is below them; what it takes is what nothing else wanted.
+    pub(crate) fn key_todo_open(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        if self.todos_open.is_some() {
+            if matches!(k, Key::Esc | Key::CtrlC) {
+                self.todos_open = None;
+                self.pane_scroll = 0;
+                self.redraw = true;
+                return ControlFlow::Break(None);
+            }
+            if matches!(k, Key::Up | Key::Down) {
+                self.pane_scroll = if matches!(k, Key::Up) {
+                    self.pane_scroll.saturating_sub(1)
+                } else {
+                    self.pane_scroll + 1
+                };
+                // Clamped against the last draw's own numbers: the key handler has no width and
+                // no height, and a scroll clamped against a guess walks past the end.
+                let max = self.pane_len.saturating_sub(self.pane_room);
+                self.pane_scroll = self.pane_scroll.min(max);
+                self.redraw = true;
+                return ControlFlow::Break(None);
+            }
+            return ControlFlow::Break(None);
         }
         ControlFlow::Continue(())
     }

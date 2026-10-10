@@ -1832,10 +1832,15 @@ fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
     assert!(!screen.contains("audit the store"), "{screen}");
 }
 
-/// **Tab unfolds, like enter.** The operator, after using the pane: *"i also
+/// **Tab unfolds — and enter does not.** The operator, after using the pane: *"i also
 /// feel like I want Tab to expand the todo row"*. It completes a `/command`
 /// while one is being typed, and the composer is empty here — the same
 /// condition enter already carried.
+///
+/// **`like enter` is no longer true of it**: Enter reads the row whole in an overlay
+/// (`key_todos_pane`), which is the operator's later report — *"in todo list i cant expand your
+/// todo items - only truncated titles available"* — and the unfold stayed on Tab, which already
+/// carried it.
 #[test]
 fn tab_unfolds_an_item_and_still_completes_a_command() {
     let dir = std::env::temp_dir().join(format!(
@@ -1895,8 +1900,13 @@ fn tab_unfolds_an_item_and_still_completes_a_command() {
 /// the commits it pins; the pane showed the first line and stopped, so the
 /// item trailed off mid-sentence. The operator: *"if a todo has some
 /// associated text? should i be able to expand it somehow?"*
+///
+/// **Tab unfolds it, and Enter reads it whole** — the two keys came apart when Enter took the
+/// read (`key_todos_pane`), and this test follows the unfold through Tab because that is where the
+/// unfold lives now. The overlay that Enter opens shows the same body lines, whole, and is tested
+/// in `tests/todos.rs`.
 #[test]
-fn an_items_continuation_lines_are_kept_and_unfold_on_enter() {
+fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
     // Written with explicit newlines rather than `\`-continuations: that
     // escape eats the leading whitespace of the next line, which is exactly
     // the indentation this test is about.
@@ -1963,25 +1973,26 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_enter() {
         on(&screen, "[+] add todo item"),
         "starts on the control: {screen}"
     );
-    // The model's rows and your own are not stops either, so the arrows never park on a row
-    // where no key acts — the same reason the repo's headings are skipped.
+    // The cursor starts on the `[+]` control and this file's list has no session rows, so one Down
+    // is the first item. (A session's rows are stops too now — Enter reads one whole, which is what
+    // the operator asked for; see `tests/todos.rs`.)
     assert!(
         !screen.contains("▸ T1"),
         "the cursor is not on an item yet: {screen}"
     );
 
-    // One Down is what reaches the first item, and Enter unfolds it.
+    // One Down is what reaches the first item, and Tab unfolds it.
     a.key(Key::Down);
     let screen = a.screen(110, 40).join("\n");
     assert!(
         on(&screen, "T1 vendor the deps"),
         "down reached T1: {screen}"
     );
-    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.key(Key::Tab), None);
     let screen = a.screen(110, 40).join("\n");
     assert!(
         on(&screen, "T1 vendor the deps"),
-        "Enter does not move the cursor: {screen}"
+        "Tab does not move the cursor: {screen}"
     );
     assert!(
         screen.contains("scripts/bootstrap.sh (yason 0c84b29)."),
@@ -1993,10 +2004,10 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_enter() {
         "unfolded drops the mark: {screen}"
     );
 
-    // Enter again folds it; an arrow moves on and folds what it leaves.
-    a.key(Key::Enter);
+    // Tab again folds it; an arrow moves on and folds what it leaves.
+    a.key(Key::Tab);
     assert!(!a.screen(110, 40).join("\n").contains("bootstrap.sh"));
-    a.key(Key::Enter);
+    a.key(Key::Tab);
     a.key(Key::Down);
     let screen = a.screen(110, 40).join("\n");
     assert!(

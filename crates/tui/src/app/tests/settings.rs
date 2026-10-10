@@ -305,12 +305,21 @@ fn a_row_number_answers_the_ask_the_mode_card_and_the_quit_card() {
 /// rather than on somebody's screen.
 #[test]
 fn no_pane_lets_the_wheel_through_to_the_conversation() {
-    let panes: [(&str, fn(&mut App)); 8] = [
+    let panes: [(&str, fn(&mut App)); 9] = [
         ("help", |a| a.help = true),
         ("picker", |a| a.picker = true),
         ("mode_picker", |a| a.pick = Some(Pick::Mode)),
         ("stats", |a| a.stats = true),
         ("todos_pane", |a| a.todos_pane = true),
+        // **And the row the pane's Enter opened**, which is the newest screen on top of the
+        // transcript and therefore the newest one that can forget: the page keys and the wheel are
+        // the chords' for any open pane, and they move `pane_scroll` — the field this overlay is
+        // drawn through — so a notch there moves the overlay's window and not the conversation
+        // under it (`key_todo_open` says which handler owns which key).
+        ("todos_open", |a| {
+            a.todos_pane = true;
+            a.todos_open = Some(TodoStop::Theirs("a row".into()));
+        }),
         ("subagents_pane", |a| a.subagents_pane = true),
         ("jobs_pane", |a| a.jobs_pane = true),
         ("config_pane", |a| a.config_pane = true),

@@ -78,7 +78,7 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "ctrl-t",
-            "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves (or click a row), enter acts on the row under the cursor, pgup/pgdn scrolls",
+            "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves (or click a row), enter reads the row under the cursor whole, tab acts on it (the card, done, unfold), pgup/pgdn scrolls",
         ),
         (
             "/new [title]",

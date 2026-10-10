@@ -1020,6 +1020,22 @@ pub struct App {
     /// frame is tall enough to have one. Recorded rather than assumed because a click's `y` is in
     /// absolute screen coordinates and the header above the pane is not part of it.
     pub(crate) todos_pane_top: usize,
+    /// **The todo row whose whole text is open, BY ITS IDENTITY**, until Esc — the overlay the
+    /// pane's Enter opens, and the answer to the operator's report that a row could not be
+    /// expanded: *"in todo list i cant expand your todo items - only truncated titles
+    /// available"*.
+    ///
+    /// **A [`TodoStop`] and not an index**, for the reason `queue_open` is an id: the pane draws
+    /// its rows to the pane's width, so a row longer than the pane is cut off with nothing behind
+    /// it, and the overlay is the only place the rest of it exists. A `TodosUpdated` can land
+    /// while the overlay is up, and an index taken at the keypress would then point at whichever
+    /// row slid into that slot — the same two-enumerations defect [`App::todos_stops`] records.
+    ///
+    /// **The row is looked up by that identity at DRAW time** (`ui::panes::todos`), so the
+    /// overlay shows the list as it stands now: a status moved under it draws the new status, and
+    /// a row whose WORDS changed is a different row (the board has no ids — see [`TodoStop`]) and
+    /// the overlay says so rather than showing a text that is no longer on the board.
+    pub(crate) todos_open: Option<TodoStop>,
     pub(crate) repo_sel: usize,
     pub(crate) repo_open: bool,
     /// **How far the open pane is scrolled**, in rows hidden above it.
@@ -1709,6 +1725,7 @@ impl App {
             todos_sel: 0,
             todos_stop_rows: Vec::new(),
             todos_pane_top: 0,
+            todos_open: None,
             repo_sel: 0,
             repo_open: false,
             slash_out: None,

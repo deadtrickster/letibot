@@ -5,13 +5,18 @@ use super::*;
 /// **The todos pane's bar names the keys THAT pane answers.**
 ///
 /// The footer used to be rano's pinned `HintMode::Todos` sentence — *"↑↓ moves · enter or tab
-/// unfolds · pgup/pgdn and the wheel scroll · esc closes"* — and `enter or tab unfolds` is false on
-/// two of the three stops this pane's cursor can be on: `key_todos_pane` opens the card on the add
+/// unfolds · pgup/pgdn and the wheel scroll · esc closes"* — and `enter or tab unfolds` was false on
+/// two of the three stops this pane's cursor could be on: `key_todos_pane` opens the card on the add
 /// control, and on one of the operator's rows the same two keys mark it done (and unmark it again).
 /// Only a repo item unfolds.
 ///
 /// The head composes the whole bar now, so the act it names follows the cursor — and the way out is
 /// still named, from `Reading`'s tail, which is true of this pane.
+///
+/// **And the two keys have come apart, so the bar names both.** Enter reads the row whole (the
+/// operator's report: *"in todo list i cant expand your todo items"*) and Tab performs the act the
+/// two of them used to share, so a bar that went on saying `enter or tab toggles it done` would name
+/// a key that now opens an overlay instead.
 #[test]
 fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
@@ -50,14 +55,18 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     );
     assert!(!bar.contains("unfolds"), "nothing here unfolds: {bar}");
 
-    // **One of the operator's own rows** — one Down from the add control. Enter TOGGLES it, which
+    // **One of the operator's own rows** — one Down from the add control. TAB toggles it, which
     // is the sentence rano's pinned footer got wrong, and `/todo rm` is named because deletion is
     // the operator's own act and this is the only place it is spelled.
     a.todos_sel = 1;
     let bar = a.hint_bar(200);
     assert!(
-        bar.contains("enter or tab toggles it done"),
+        bar.contains("tab toggles it done"),
         "the act on the operator's row is the toggle: {bar}"
+    );
+    assert!(
+        bar.contains("enter reads it whole"),
+        "and enter, which reads the row, is named beside it: {bar}"
     );
     assert!(
         !bar.contains("unfolds"),
@@ -69,7 +78,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     );
 
     // **A repo item unfolds**, which is the one stop where the old sentence was true — and it is
-    // still said, so the fix is a correction rather than a deletion.
+    // still said, so the fix is a correction rather than a deletion. Enter reads it; Tab unfolds it.
     a.repo_todos = Some(vec![TodoRow {
         indent: 0,
         mark: Some(TodoMark::Open),
@@ -80,8 +89,27 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     a.todos_sel = 2;
     let bar = a.hint_bar(200);
     assert!(
-        bar.contains("enter or tab unfolds the item"),
+        bar.contains("tab unfolds the item"),
         "the repo's own act is still named: {bar}"
+    );
+
+    // **A model's row: the read and nothing else.** No key of this pane moves one — the R44
+    // boundary — and the bar says only what it does do rather than promising an act.
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::TodosUpdated {
+            todos: vec![row("a row the model wrote", TodoBy::Model)],
+        },
+    )));
+    a.todos_sel = 1;
+    let bar = a.hint_bar(200);
+    assert!(
+        bar.contains("enter reads it whole"),
+        "the model's row can be read: {bar}"
+    );
+    assert!(
+        !bar.contains("toggles") && !bar.contains("unfolds"),
+        "and the bar promises no act on it: {bar}"
     );
 }
 
@@ -273,11 +301,16 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         screen.join("\n")
     );
     assert_eq!(a.repo_sel, 2, "and the repo cursor followed");
+    // **Enter does not confirm the click — it READS the row it landed on**, which is the same
+    // two-acts rule said one key over: the click moved the cursor, and the read is what Enter does
+    // with it. Esc puts the reader back on the same row.
     assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.todos_open, Some(TodoStop::Repo(2)));
+    a.key(Key::Esc);
     let screen = a.screen(110, 40);
     assert!(
         marked(&screen, "T2 second item"),
-        "the click did not confirm:\n{}",
+        "the click did not confirm, and esc came back to the row:\n{}",
         screen.join("\n")
     );
 
@@ -2039,4 +2072,454 @@ fn a_template_item_over_the_cap_is_not_seeded_and_is_said() {
          {said}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===== One row, whole: the overlay the pane's Enter opens =====
+
+/// A head with the todos pane open and one row per `(author, content)`, the cursor parked on the
+/// FIRST of them — the add control is where the cursor starts, so one Down is what reaches it.
+fn todos_head(rows: &[(letibot_sessionlog::event::TodoBy, &str)]) -> App {
+    use letibot_sessionlog::event::{TodoEntry, TodoStatus};
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: rows
+                .iter()
+                .map(|(by, content)| TodoEntry {
+                    by: by.clone(),
+                    content: (*content).to_string(),
+                    status: TodoStatus::Pending,
+                    when: None,
+                    needs: Vec::new(),
+                })
+                .collect(),
+        },
+    )));
+    a.key(Key::CtrlT);
+    a.key(Key::Down);
+    a
+}
+
+/// **Enter reads the row under the cursor, and Esc goes back to the list with the cursor on it.**
+///
+/// The operator's report, and the whole of what this overlay is for: *"in todo list i cant expand
+/// your todo items - only truncated titles available"*. The pane draws every row to the pane's own
+/// width, so a row longer than the pane is cut off with nothing behind it — and the rows are written
+/// by a model, which writes long ones.
+///
+/// **The model's rows are the ones the report is about**, and they were not stops at all before
+/// this: no key acted on one, and a cursor stops only where a key acts. Enter reading a row is what
+/// makes them stops, which is the rule kept rather than bent (`App::todos_stops`).
+#[test]
+fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
+    use letibot_sessionlog::event::TodoBy;
+    let mut a = todos_head(&[
+        (TodoBy::Model, "the model's first row"),
+        (TodoBy::Operator, "the operator's own row"),
+        (TodoBy::Model, "the model's second row"),
+    ]);
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(
+        a.todos_open,
+        Some(TodoStop::Theirs("the model's first row".into())),
+        "enter opens the row the cursor is on"
+    );
+    let screen = a.screen(100, 30).join("\n");
+    assert!(screen.contains("todos — one row"), "{screen}");
+    assert!(
+        screen.contains("the model · open"),
+        "the author and the state are part of reading the row: {screen}"
+    );
+    assert!(screen.contains("the model's first row"), "{screen}");
+    assert!(
+        !screen.contains("the model's second row") && !screen.contains("the operator's own row"),
+        "the overlay is ONE row and not the list: {screen}"
+    );
+
+    // Esc goes back to the LIST — the pane is still there — and the cursor is where it was.
+    a.key(Key::Esc);
+    assert!(a.todos_open.is_none(), "esc leaves the row");
+    assert!(
+        a.todos_pane,
+        "esc goes back to the list, not out of everything"
+    );
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        !screen.contains("todos — one row"),
+        "the overlay is gone: {screen}"
+    );
+    assert!(
+        screen
+            .lines()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("the model's first row")),
+        "the cursor is on the row it was on: {screen}"
+    );
+    // And a second Esc closes the pane, which is the pair the queue entry's overlay keeps.
+    a.key(Key::Esc);
+    assert!(!a.todos_pane, "the second esc closes the pane");
+}
+
+/// **Enter reads one of the operator's OWN rows and TAB toggles it.**
+///
+/// The two keys came apart when Enter took the read, and the act that used to be on Enter is the one
+/// that must not have been lost with it: the toggle is what the typed door (`/todo done N`) sends,
+/// and a read that had taken the toggle's key without leaving the toggle somewhere would have made
+/// this pane's own act unreachable.
+#[test]
+fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = todos_head(&[(TodoBy::Operator, "the operator's own row")]);
+    // The pane's own open (`ListTodos`) is drained first, so what is left is what the keys sent.
+    let _ = a.take_actions();
+    // Enter READS it — the same overlay, and nothing is sent by the read.
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(
+        a.todos_open,
+        Some(TodoStop::Mine("the operator's own row".into()))
+    );
+    assert!(a.take_actions().is_empty(), "reading a row sends nothing");
+    a.key(Key::Esc);
+
+    // Tab toggles it, and again puts it back — a cursor that can only go one way is one you cannot
+    // correct.
+    match a.key(Key::Tab) {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items[0].status, TodoStatus::Completed, "{items:?}");
+        }
+        other => panic!("expected the toggle, got {other:?}"),
+    }
+    match a.key(Key::Tab) {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items[0].status, TodoStatus::Pending, "{items:?}");
+        }
+        other => panic!("expected the row to be reopened, got {other:?}"),
+    }
+    assert!(
+        a.todos_open.is_none(),
+        "and Tab does not open the overlay as a side effect"
+    );
+}
+
+/// **The cursor walks every row of the board — the model's and the operator's — and the mark is on
+/// the row the keys are about.**
+///
+/// This is the half of "the model's rows are stops" that the pane's own record cannot carry: rano
+/// records a stop row only for the rows IT treats as stops, so the head completes the record
+/// (`ui::panes::todos::session_stop_rows`), and a wrong completion shows up here as a `▸` on the
+/// neighbour of the row the cursor is on — the two-enumerations defect, arriving from the library
+/// side.
+#[test]
+fn the_cursor_walks_every_row_and_the_mark_follows_it() {
+    use letibot_sessionlog::event::TodoBy;
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-todo-walk-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    std::fs::write(
+        dir.join("TODO.md"),
+        "## Phase 0\n\n- [ ] the file's own item\n",
+    )
+    .expect("write");
+    let mut a = todos_head(&[
+        (TodoBy::Model, "the model's first row"),
+        (TodoBy::Operator, "the operator's own row"),
+        (TodoBy::Model, "the model's second row"),
+    ]);
+    a.wiring.workspace = dir.display().to_string();
+    a.refresh_repo_todos();
+
+    // Down from the first row to the last, one press at a time: the mark is on the row the key
+    // moved to, every time.
+    for want in [
+        "the model's first row",
+        "the operator's own row",
+        "the model's second row",
+        "the file's own item",
+    ] {
+        let screen = a.screen(110, 40);
+        let marked = screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .unwrap_or_else(|| panic!("nothing is marked in:\n{}", screen.join("\n")));
+        assert!(
+            marked.contains(want),
+            "the mark is on the wrong row — wanted {want:?}, drawn {marked:?}"
+        );
+        a.key(Key::Down);
+    }
+    // And the wrap goes back to the control, which is the head of the one enumeration.
+    let screen = a.screen(110, 40);
+    assert!(
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("[+] add todo item")),
+        "the walk wraps to the control: {}",
+        screen.join("\n")
+    );
+
+    // **A click is the other reader of that record, and the one a wrong completion breaks**: a
+    // click on a row's own screen row must land the cursor on THAT row, and the stop it lands on is
+    // the position of the row in the one enumeration. Clicking the operator's row — stop 2, the
+    // third — is the case a record missing the model's rows gets wrong by one.
+    let screen = a.screen(110, 40);
+    let y = screen
+        .iter()
+        .position(|l| l.contains("the operator's own row"))
+        .expect("the row is drawn");
+    a.key(Key::Click {
+        x: 6,
+        y: u16::try_from(y).expect("fits"),
+    });
+    assert_eq!(a.todos_sel, 2, "the click landed on the row it was on");
+    let screen = a.screen(110, 40);
+    assert!(
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("the operator's own row")),
+        "and the mark is there: {}",
+        screen.join("\n")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A row that carries newlines is shown WHOLE** — the shape a model writes, and the one the pane
+/// cannot draw: rano's row is `clean_line(content)`, which turns the newline into a space, so the
+/// row's own lines are not rows on the pane at all.
+#[test]
+fn a_row_that_carries_newlines_is_shown_whole() {
+    use letibot_sessionlog::event::TodoBy;
+    let content = format!(
+        "{}the second line, which the pane cannot show in full",
+        "first line of the row ".repeat(4)
+    );
+    let mut a = todos_head(&[(TodoBy::Model, &content)]);
+    // The pane's own row: one line, trimmed to the pane's width, so the tail is not on it.
+    let pane = a.screen(60, 30).join("\n");
+    assert!(
+        !pane.contains("the pane cannot show in full"),
+        "the pane is the reason the overlay exists: {pane}"
+    );
+
+    a.key(Key::Enter);
+    let screen = a.screen(60, 30).join("\n");
+    assert!(screen.contains("first line of the row"), "{screen}");
+    assert!(
+        screen.contains("the pane cannot show in full"),
+        "the row's second line is on the overlay: {screen}"
+    );
+    // **The newline is a break and not a space**: the row's second line begins a row of its own,
+    // which is the shape the author wrote — rano's own row is `clean_line(content)`, where that
+    // newline is a space and the two lines are one run of text.
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.trim() == "which the pane cannot show in full"),
+        "the row's own line begins its own row: {screen}"
+    );
+}
+
+/// **A row longer than the screen PAGES rather than being cut to the window.**
+///
+/// This is the half of the operator's report that a bigger box alone would not answer: the row can
+/// be longer than any terminal, and the overlay's window is the whole of what makes the rest of it
+/// reachable. The page keys move the OVERLAY — the transcript underneath stays where it was, which
+/// is the defect the two overlays before this one have (`key_todo_open` says so in its own words).
+#[test]
+fn a_row_longer_than_the_screen_pages_rather_than_truncating() {
+    use letibot_sessionlog::event::TodoBy;
+    let long = (0..120)
+        .map(|i| format!("word{i:03}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut a = todos_head(&[(TodoBy::Model, &long)]);
+    a.key(Key::Enter);
+    let first = a.screen(100, 16).join("\n");
+    assert!(first.contains("word000"), "{first}");
+    assert!(
+        !first.contains("word119"),
+        "the tail is below the fold, which is the whole point: {first}"
+    );
+
+    for _ in 0..40 {
+        a.key(Key::PageDown);
+    }
+    let last = a.screen(100, 16).join("\n");
+    assert!(
+        last.contains("word119"),
+        "the rest of the row is reachable by paging: {last}"
+    );
+    assert!(
+        a.following(),
+        "and the page keys moved the overlay, not the transcript underneath it"
+    );
+}
+
+/// **The overlay draws the board as it stands NOW, and a row that is gone says so.**
+///
+/// The row is looked up by identity at draw time and never carried in the overlay
+/// (`todos_open_lines`), and the board's identity IS the words — there are no ids — so the two
+/// halves of this are the two things a `TodosUpdated` can do to an open row: move its state, which
+/// draws the new state, and rename it, which is a different row and is said rather than drawn as
+/// text that is no longer on the board.
+#[test]
+fn a_row_that_moves_under_the_overlay_is_drawn_as_it_stands_now() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = todos_head(&[(TodoBy::Model, "the row as it was written")]);
+    a.key(Key::Enter);
+    let screen = a.screen(100, 30).join("\n");
+    assert!(screen.contains("the model · open"), "{screen}");
+
+    // The model marks its own row done. The overlay shows the new state, not the one it had when
+    // Enter was pressed.
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::TodosUpdated {
+            todos: vec![TodoEntry {
+                by: TodoBy::Model,
+                content: "the row as it was written".into(),
+                status: TodoStatus::Completed,
+                when: None,
+                needs: Vec::new(),
+            }],
+        },
+    )));
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        screen.contains("the model · done"),
+        "the state is read at draw time: {screen}"
+    );
+
+    // And a row renamed is a DIFFERENT row — the board has no ids — so the overlay says so rather
+    // than showing words that are not on the board any more.
+    a.apply(ServerFrame::Event(env(
+        3,
+        SessionEvent::TodosUpdated {
+            todos: vec![TodoEntry {
+                by: TodoBy::Model,
+                content: "the row, rewritten".into(),
+                status: TodoStatus::Pending,
+                when: None,
+                needs: Vec::new(),
+            }],
+        },
+    )));
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        screen.contains("is not on the board any more"),
+        "a renamed row is a different row: {screen}"
+    );
+    // **And the row that took its place is not drawn as though it were it.** The words appear once,
+    // quoted in the sentence that says they are gone; what must NOT appear is the new row's text or
+    // a facts line, which is what a lookup that had fallen back to the index would have drawn.
+    assert!(
+        !screen.contains("the row, rewritten") && !screen.contains("the model ·"),
+        "the overlay does not draw whatever took the row's place: {screen}"
+    );
+}
+
+/// **A parent's row says who wrote it, in the words it arrived with** — the fourth author on the
+/// wire, and the one a reader cannot guess: `Parent <session-id>` is the string the operator
+/// specified, and the overlay shows it rather than re-spelling it as *the model's*.
+#[test]
+fn a_parents_row_names_its_author() {
+    use letibot_sessionlog::event::TodoBy;
+    let mut a = todos_head(&[(
+        TodoBy::parent_of("s-1789462738453908838"),
+        "audit the store",
+    )]);
+    a.key(Key::Enter);
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("Parent s-1789462738453908838 · open"),
+        "{screen}"
+    );
+}
+
+/// **A row's `needs` are part of reading it** — the edges that say what has to land first, which
+/// the pane's one-line row cannot carry at all.
+#[test]
+fn the_overlay_shows_what_the_row_needs() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: vec![TodoEntry {
+                by: TodoBy::Model,
+                content: "land the port".into(),
+                status: TodoStatus::Pending,
+                when: None,
+                needs: vec![
+                    TodoNeed::Row {
+                        content: "seat the tool".into(),
+                    },
+                    TodoNeed::Job {
+                        handle: "j89".into(),
+                    },
+                ],
+            }],
+        },
+    )));
+    a.key(Key::CtrlT);
+    a.key(Key::Down);
+    a.key(Key::Enter);
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("needs row `seat the tool`, job j89"),
+        "{screen}"
+    );
+}
+
+/// **Keys typed in the overlay do not reach the composer.**
+///
+/// The overlay is a READING surface: nothing on it is a field, so a key it does not name has no
+/// meaning there, and a draft growing in the composer under a row somebody is reading is a message
+/// they did not write. The sharpest half is the recall — with a line queued, Up in the overlay used
+/// to be the composer's (it takes the queued prompts back out of the daemon), which is the arm this
+/// overlay sits above.
+#[test]
+fn keys_typed_in_the_overlay_do_not_reach_the_composer() {
+    use letibot_sessionlog::event::TodoBy;
+    let mut a = todos_head(&[(TodoBy::Model, "a row")]);
+    a.key(Key::Enter);
+    assert!(a.todos_open.is_some());
+
+    a.key(Key::Char('x'));
+    assert_eq!(
+        a.editor.text(),
+        "",
+        "a typed key is not the composer's while a row is open"
+    );
+    assert!(
+        a.todos_open.is_some(),
+        "and it did not close the row either"
+    );
+
+    // Up is the overlay's — it scrolls — and NOT the queued line's recall.
+    a.pending_prompts = vec!["a queued line".into()];
+    a.key(Key::Up);
+    assert_eq!(a.editor.text(), "", "the queued line was not recalled");
+    assert_eq!(a.pending_prompts, vec!["a queued line".to_string()]);
+
+    // And Enter in the overlay does not send anything: there is nothing to send, and the row stays
+    // open — a second Enter is not a way out of a screen whose way out is named on it.
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(a.todos_open.is_some());
+    assert_eq!(a.editor.text(), "");
 }
