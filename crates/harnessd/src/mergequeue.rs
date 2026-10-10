@@ -8108,7 +8108,13 @@ mod tests {
         let ci = [
             "sh scripts/check-fmt.sh main",
             "cargo clippy --all-targets",
-            "cargo test --workspace --no-fail-fast -- --nocapture",
+            // **CI's own step, and the gate's differs by this prefix and by nothing else.**
+            // Without it a test with no vocabulary GGUF SKIPS through `apparatus::present` and
+            // reports as passed — MEASURED: a broken `LETIBOT_VOCAB_GGUF` with the variable unset
+            // gives `10 passed` for the review suite's ten tests, and `10 failed` with it. So the
+            // gate would report review coverage it never had. Asserted below so that dropping the
+            // prefix is a red test rather than a quiet return to a green lie.
+            "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture",
             "cargo build --release --bins",
         ];
         assert_eq!(
@@ -8117,6 +8123,12 @@ mod tests {
             "the gate is CI's steps and the install: {steps:?}"
         );
         assert_eq!(&steps[..ci.len()], &ci, "CI's steps, in CI's order");
+        assert!(
+            steps[2].starts_with("LETIBOT_REQUIRE_APPARATUS=1 "),
+            "the test step still requires the apparatus, because a SKIP is reported as a pass: \
+             {}",
+            steps[2]
+        );
         assert_eq!(
             steps.last().map(String::as_str),
             Some("sh scripts/install-gate-build.sh"),

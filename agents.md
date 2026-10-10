@@ -71,16 +71,30 @@ wrappers' source of truth), `tests/fidelity`, `scratch/` (untracked; see gotchas
 The merge queue runs these in a branch's worktree, after rebasing it onto `main` and before
 landing it; the first that fails parks the branch. Read from `main`'s copy of this file, so a
 branch cannot change its own gate. The first four are what `.github/workflows/ci.yml` runs — a
-queue that lands on a weaker standard than CI lands branches CI would refuse. The fifth is the
-queue's own and CI has no use for it: a runner has no launcher to satisfy.
+queue that lands on a weaker standard than CI lands branches CI would refuse, and the ONE
+difference is the `LETIBOT_REQUIRE_APPARATUS=1` prefix on the test step, which makes a skip a
+failure (see below). The fifth is the queue's own and CI has no use for it: a runner has no
+launcher to satisfy.
 
 ```sh
 sh scripts/check-fmt.sh main
 cargo clippy --all-targets
-cargo test --workspace --no-fail-fast -- --nocapture
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins
 sh scripts/install-gate-build.sh
 ```
+
+**The test step REQUIRES the apparatus it needs, and that env prefix is the whole of the
+reason.** A test with no vocabulary GGUF SKIPS itself through
+[`letibot_tokencore::apparatus::present`], which prints its reason and returns — and a test that
+returns is a test that PASSED, as far as the step's status is concerned. MEASURED on this box:
+`LETIBOT_VOCAB_GGUF=/tmp/definitely-not-a-gguf cargo test -p letibot-harnessd --lib review_pass`
+reports **`10 passed`** for ten tests that never ran, and the same command with
+`LETIBOT_REQUIRE_APPARATUS=1` reports **`10 failed`**. So without the prefix the gate can report
+review coverage it never had — the same class of defect as a gate that proves a binary it never
+installs. The default vocabulary path does resolve on this box (`$HOME/models/qwen3.8-flash-next/`),
+so the prefix changes nothing here today and is what makes a box that lacks it go RED rather than
+green.
 
 **The first four are PROOF and not INSTALLATION, and the fifth is the gap.** The queue runs
 every step with `CARGO_TARGET_DIR` pointed at `<worktree>/target` (`mergequeue.rs`'s
