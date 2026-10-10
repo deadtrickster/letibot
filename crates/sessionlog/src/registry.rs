@@ -53,7 +53,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
-use crate::hub::{Hub, QueuedCommand, SessionStatus};
+use crate::hub::{CommandKind, DAEMON_SUBMITTER, Hub, QueuedCommand, SessionStatus};
 use crate::log::LogBounds;
 use crate::view::ViewBounds;
 
@@ -746,6 +746,15 @@ pub trait PromptDriver: Send + Sync {
 /// Returns one sentence per run it ended, for the announcement, so *it ended nothing* and
 /// *it ended nothing because nothing was running* are different answers.
 pub type RunEnder = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
+/// **Why a stop interrupts the turns it holds** — the reason recorded on the turn it ends.
+///
+/// One string, named, because it lands in three places a reader can reach — the running
+/// turn's own abort row (`steering_urgent`, `AbortCause::Steering`), the `interrupt_idle`
+/// warning a stop that arrived between turns publishes, and the sentence
+/// `crate::server`'s `Stop` frame prints to every head — and three copies of it would be
+/// three answers to *why did my turn end*.
+pub const STOPPING_TURN_REASON: &str = "the daemon is stopping";
 
 /// **A session's standing notes, as rows — computed where the vocabulary is.**
 ///
@@ -1597,6 +1606,30 @@ impl Registry {
     /// still be published to the heads that are watching — a stop that ended the operator's
     /// command is a fact about their session, and it belongs on the log rather than in a file
     /// nobody tails.
+    ///
+    /// **And every TURN in flight is interrupted** — the same problem one layer up, with a
+    /// different answer because the thing being held is different. A *run* is a command's
+    /// process tree and a cgroup ends it; a *turn* is a generation, and what holds it is the
+    /// model's own stream, which no ender can reach. What reaches it is the interrupt a head's
+    /// Esc-Esc sends, through the one door that exists for it ([`Hub::submit`]'s
+    /// [`DAEMON_SUBMITTER`] arm, which admits `Interrupt` and nothing else of the sort), and
+    /// that is what every session with a turn in flight is handed here, **before** the hubs
+    /// close so the running turn's steering poll still finds it.
+    ///
+    /// **Why it is not left to finish.** That was the design and the operator has now
+    /// overruled it in their own words: *"a stop must not start a turn, and must interrupt the
+    /// turns it holds"*. Measured cost of the old rule on one evening: eleven
+    /// `--continue` refusals in the daemon's own log, five of them back to back — the daemon
+    /// asked to stop unlinked its socket and dropped its listener within a poll of the signal,
+    /// went on holding the folder's lock until its last turn finished its round, and every
+    /// liveness test this box has then said *no daemon here*. The launcher started one; the
+    /// folder claim refused it. Ending the turn is what makes the stop take as long as the
+    /// stop and not as long as the round.
+    ///
+    /// **And it does not start a turn.** The interrupt is a command like any other, so a
+    /// session whose turn is NOT running is left alone here (`status().running` is the
+    /// question, asked of the hub) — and even if one were handed over, the daemon's own arm
+    /// for it between turns is `interrupt_idle`, not a prompt.
     pub fn close(&self) {
         // Once, and only once, for the reason the field gives.
         if !self
@@ -1631,6 +1664,24 @@ impl Registry {
             .iter()
             .map(|(_, e)| e.hub.clone())
             .collect();
+        // **The turns, before the hubs close.** `submit` is the only door that reaches a turn
+        // in flight, and it is taken at the next token by the steering poll
+        // (`Harness::HubSteering`), which is what *interrupt* means here: the partial output is
+        // kept and the round is recorded as aborted, exactly as an Esc-Esc is.
+        for h in &hubs {
+            if h.status().running {
+                h.submit(
+                    DAEMON_SUBMITTER,
+                    "daemon-stopping",
+                    // No expectation: this is not a head following the stream, and a seq
+                    // check here could only refuse the stop.
+                    0,
+                    CommandKind::Interrupt {
+                        reason: STOPPING_TURN_REASON.to_string(),
+                    },
+                );
+            }
+        }
         for h in hubs {
             h.close();
         }
@@ -1713,6 +1764,56 @@ mod tests {
         assert_eq!(b.head_seq(), 0, "b saw a's events");
         assert_eq!(b.snapshot().turn, None);
         assert_eq!(a.snapshot().turn.unwrap().text, "only in a");
+    }
+
+    /// **A stop interrupts the turns it holds — and starts none.**
+    ///
+    /// The operator's ruling, verbatim: *"a stop must not start a turn, and must interrupt the
+    /// turns it holds"*. The state this measures is the one that cost them an evening of
+    /// `--continue` refusals: `close` wakes the worker out of `next_command`, and a worker
+    /// **inside a turn** has not reached it — so the daemon went on holding the folder's lock
+    /// after its socket file and its listener were already gone, and the next start was refused
+    /// by the claim.
+    ///
+    /// Three facts, and the third is the one a fix gets wrong:
+    ///
+    ///  1. the session with a turn in flight is handed the interrupt the running turn's own
+    ///     steering poll takes — asked for through `try_steering_command`, which is literally
+    ///     the call `HubSteering` makes once per frame;
+    ///  2. it is an `Interrupt` naming why, and not a prompt: the reason is the named constant,
+    ///     so the row the turn keeps and the sentence a head is shown cannot drift;
+    ///  3. a session with NOTHING running is left alone. A stop that handed every hub a command
+    ///     would be a stop that could start a turn, which is half of the same rule.
+    #[test]
+    fn a_stop_interrupts_the_turns_it_holds_and_starts_none() {
+        let r = reg();
+        let running = r.create("s-running", "", SessionWiring::default()).unwrap();
+        let idle = r.create("s-idle", "", SessionWiring::default()).unwrap();
+        running.publish(testing::turn_started("t1"));
+        assert!(running.status().running, "the premise: a turn is in flight");
+        assert!(!idle.status().running, "the premise: and this one is idle");
+
+        r.close();
+
+        match running.try_steering_command() {
+            Some(cmd) => assert_eq!(
+                cmd.kind,
+                CommandKind::Interrupt {
+                    reason: STOPPING_TURN_REASON.to_string()
+                },
+                "the stop hands the turn the interrupt an Esc-Esc sends, and says why"
+            ),
+            None => panic!(
+                "the stop left the turn in flight: nothing for its steering poll, so the \
+                 daemon waits for the round it was asked to end"
+            ),
+        }
+        assert!(
+            idle.try_command().is_none(),
+            "a stop queued a command for a session with nothing running"
+        );
+        // And it is an interrupt rather than a turn: nothing was appended to the conversation.
+        assert_eq!(idle.snapshot().turn, None, "a stop must not start a turn");
     }
 
     #[test]

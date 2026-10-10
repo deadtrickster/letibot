@@ -1459,12 +1459,20 @@ SESSIONS_EOF
       exit "$all_failed"
     fi
     if p="$(daemon_pid)"; then
-      if [ "$FORCE" = 1 ]; then
-        # Abort the turns BEFORE the signal, over the protocol: a busy daemon's
-        # worker finishes a turn mid-flight before honouring SIGTERM, and a wedged
-        # one never does. An interrupt is the frame an Esc-Esc sends.
-        "$BIN/letibot-tui" --socket "$SOCKET" --interrupt-all || true
-      fi
+      # **Abort the turns BEFORE the signal, and for every stop rather than only for
+      # `--force`.** The operator's ruling, verbatim: *"a stop must not start a turn, and
+      # must interrupt the turns it holds"*. What `--force` used to be the only spelling of
+      # is now what stopping MEANS: a busy daemon's worker finishes a turn mid-flight before
+      # honouring SIGTERM, and the socket file and the listener are already gone by then — so
+      # the folder looks empty to every liveness test this box has while the process still
+      # holds the lock, and the next `--continue` starts a daemon that the lock refuses
+      # (measured: eleven of those in one evening's log, five back to back). An interrupt is
+      # the frame an Esc-Esc sends, and it is the one door that reaches a turn in flight.
+      #
+      # The daemon's own half (`Registry::close`) interrupts what it holds when the signal
+      # reaches it, which is what covers `--stop --all` and every stop this script did not
+      # make — a ctrl-c, a systemd unit, another terminal. This is the first of two doors.
+      "$BIN/letibot-tui" --socket "$SOCKET" --interrupt-all || true
       # "stopped" is said AFTER the process is gone, not after the signal is
       # sent, and the record is removed only then. Measured 2026-09-16: a daemon
       # wedged on a llama-server that had gone away swallowed SIGTERM, this
@@ -1780,6 +1788,33 @@ if ! live; then
   # listening; `up` is the belt to that braces, because it is a real conversation
   # rather than a netlink dump.
   version_skew_or_continue
+  # **AND A DAEMON THAT IS STILL THERE IS NOT A DAEMON THAT IS GONE.** `live` asks the
+  # socket path, and a daemon that was asked to stop unlinks that file and drops its
+  # listener within a poll of the signal while it finishes the turn it was holding. In
+  # that window nothing this box tests can see it — and the folder LOCK still can, which
+  # is what refused the second daemon ten times in one evening: `--continue` started one,
+  # and harnessd answered *"is already served by a live daemon (pid N) ... stop the one
+  # named here (`letibot --stop`) and start again"*.
+  #
+  # The record beside the socket is the fact that survives that window: `--stop` removes
+  # it only after the process is gone. So a pid that is still alive and is a harnessd is
+  # a daemon on its way out, and the honest thing is to WAIT for it rather than to start a
+  # second one — with the daemon interrupting its own turns at the signal, that wait is
+  # milliseconds. `wait_gone` is the same bounded wait `--stop` uses, so the two verbs
+  # cannot disagree about what "gone" means.
+  if _going="$(daemon_pid)"; then
+    # `|| true` for the SIGPIPE reason `daemon_pid` gives: `head -1` ends the upstream, and a
+    # failing command substitution in an assignment aborts this script under `set -e`.
+    _going_prog="$(pid_argv "$_going" | head -1 || true)"
+    case "$_going_prog" in
+      *harnessd*)
+        echo "letibot: a harnessd for $WORKSPACE (pid $_going) is still going - waiting for it" >&2
+        # It is not a slow stop any more: it is a daemon nothing can reach. The one
+        # cleanup is a hand on the process, and `refuse_detached` names it.
+        wait_gone "$_going" 20 || refuse_detached
+        ;;
+    esac
+  fi
   # Nothing answered, so the file is a leftover.
   rm -f "$SOCKET"
   # The daemon opens its first session eagerly, so passing `--session ID` here is

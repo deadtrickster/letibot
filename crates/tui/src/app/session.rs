@@ -143,8 +143,13 @@ impl App {
             // which is two minutes at the default. That is the difference between a stop
             // that is merely slow and one that has to be forced, and the operator is the
             // only one who can tell which they are looking at.
-            "A turn was running, and the daemon finishes its round before it stops — and a \
-             round can be inside a command, whose own deadline is what ends it. This is a \
+            //
+            // **The TURN is not that wait any more.** The daemon interrupts the turns it
+            // holds on the way out — the same frame an Esc-Esc sends — so what a head sees
+            // here is the round a command is inside, not a generation finishing. See
+            // `Registry::close`'s `STOPPING_TURN_REASON`.
+            "A turn was running; the daemon interrupts it on the way out, so this is the \
+             round a COMMAND is inside — and its own deadline is what ends that. This is a \
              slow stop rather than a refused one."
         } else {
             "No turn was running, so there was nothing for it to finish."
@@ -964,10 +969,10 @@ pub struct Stopping {
     /// when the kernel would not say, which is a fact the farewell states rather than
     /// fills in.
     pub pid: Option<i32>,
-    /// **Whether the model was still working when the head gave up waiting.** A daemon mid-turn
-    /// legitimately finishes its round first, so this is the difference between *a slow stop* and
-    /// *a daemon that did not go* — and it is the head's to know because it is the head that was
-    /// watching the turn.
+    /// **Whether the model was still working when the head gave up waiting.** The daemon
+    /// interrupts the turns it holds on the way out, so this is not *a turn finishing its
+    /// round* — it is what tells *a stop that is inside a command* from *a daemon that did not
+    /// go*, and it is the head's to know because it is the head that was watching the turn.
     ///
     /// **`turn_busy` and not the state name**: the round a daemon finishes before it stops can be
     /// one whose tool call is executing, and a head that asked only whether a round was generating
@@ -996,7 +1001,8 @@ impl Stopping {
         };
         format!(
             "stopping the daemon: {seen} — {} waiting, {} before this head gives up \
-             and tells you what it saw. A turn already generating finishes its round.",
+             and tells you what it saw. A turn already generating is interrupted on the \
+             way out, not waited for.",
             dur_human(out),
             dur_human(left),
         )

@@ -1586,8 +1586,10 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             detail: format!(
                                 "`{who}` asked this daemon to stop. Every head detaches, \
                                  the socket goes, and the session is on disk — `letibot \
-                                 --continue` reopens it. A turn already generating \
-                                 finishes its round; nothing new is started."
+                                 --continue` reopens it. A turn already generating is \
+                                 INTERRUPTED rather than waited for — it ends at its next \
+                                 token, its partial output is kept, and nothing new is \
+                                 started."
                             ),
 
                             compaction: None,
