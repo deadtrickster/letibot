@@ -7684,28 +7684,28 @@ impl Harness {
         self.subagents = runner;
     }
 
-    /// **A refusing verdict, back to the child that did the work** — the complaints, through the
-    /// same door every message goes through.
+    /// **A refusing verdict, back to a live session** — the complaints, through the same door every
+    /// message goes through.
     ///
-    /// **The recipient is `entry.id` and not `merge_review.session_id`.** The review row's
-    /// `session_id` is the session that HOSTED the review — the one whose agent was told to judge,
-    /// and the one a person attaches to when they want to read the argument — while the entry's
-    /// `id` is the session that did the work. Delivery uses the second, which is also the key
-    /// `veto` uses; the first would send the reviewer its own verdict.
+    /// **The recipient is the entry's `session_id`, the child that did the work, and NOT the review
+    /// row's `session_id`.** The review row's is the session that HOSTED the review — the one whose
+    /// agent was told to judge, and the one a person attaches to when they want to read the
+    /// argument — so a message there would be the reviewer being handed its own verdict.
     ///
-    /// **A delivery that failed is said, and it does not undo the verdict.** The row is the durable
-    /// fact and it is already written; what a person needs is not a retry but to know that the ball
-    /// did NOT go back — a child whose session has closed cannot be sent to work.
+    /// **And when that child is gone the ROOT that enqueued the entry is asked second.** A subagent
+    /// that finished is a session whose turn has ended, so the child is the party most likely to be
+    /// missing by the time a reviewer has read its branch, and the root is the model that holds the
+    /// verbs that move the entry. The order, the walk and the two sentences live in the queue
+    /// ([`crate::mergequeue::deliver_the_refusal`]) rather than here, so this door and
+    /// [`crate::mergequeue::report_verdict`]'s refuse arm cannot come to two answers about who a
+    /// refusal reaches.
     ///
-    /// **And the ball goes to the PROJECT instead, which is the fallback.** The child that should
-    /// have carried the complaints back is exactly the session that is gone, so the root of the
-    /// tree it belonged to is the only session left that owns the worktree and can put the work in
-    /// front of the review again: `mergequeue::hand_over_from_session` writes the handover onto the
-    /// entry's row and rings it, and that session's model is told
-    /// ([`Harness::handover_notices`]) that the branch does **not** land as it stands and how to
-    /// put it back in the queue. **A person is the last resort** — `/queue approve`,
-    /// `/queue restart` and `/queue rm` are named on the row and in this log when the project is
-    /// gone too, and not before.
+    /// **A delivery NOBODY could take is said, and it does not undo the verdict.** The row is the
+    /// durable fact and it is already written; what a person needs is not a retry but to know that
+    /// the ball did not go back — and the sentence is [`crate::mergequeue::complaints_instead`], the
+    /// same one the door reports, with each attempt's own words in it. **A refusal that reached the
+    /// root publishes nothing**: the ball went back to a model that can act, and a Failure here
+    /// would say something went wrong that did not.
     ///
     /// `store` is passed rather than read from `self` because the caller already holds it: the
     /// review row's own write is the half this follows.
@@ -7737,43 +7737,47 @@ impl Harness {
             }
         };
         let review = store.merge_review(entry_id).ok().flatten();
-        let said = crate::mergequeue::refusal_message(&entry, review.as_ref());
         let runner = self.subagents.clone();
-        if let Err(why) = letibot_tools::builtins::task::TaskRunner::send(&*runner, entry_id, &said)
-        {
+        let delivered = crate::mergequeue::deliver_the_refusal(
+            store,
+            &entry,
+            review.as_ref(),
+            &move |to: &str, text: &str| {
+                letibot_tools::builtins::task::TaskRunner::send(&*runner, to, text)
+            },
+        );
+        if let crate::mergequeue::Delivered::Nobody(missed) = &delivered {
             // **And the PROJECT that owns the branch is told**, which is what this arm used to end
             // at *"a person has to move it"*. The operator's principle: *"a person is the last
             // resort, not the mechanism"* — and the child that should have carried the complaints
             // back is exactly the session that is gone, so the root of the tree it belonged to is
             // the only session left that owns the worktree and can put the work in front of the
-            // review again.
-            //
-            // **The door is `mergequeue`'s and not this method's**, because the same act — the row
-            // carrying the handover, then the root of the entry's tree rung — is the queue's own
-            // fallback one kind over, and *which session, and how it is found* must have one
-            // answer (`mergequeue::project_session`). What is this method's is the sentence: the
-            // delivery failure, in the transport's own words.
+            // review again: `mergequeue::hand_over_from_session` writes the handover onto the
+            // entry's row and rings it. **A person is the last resort** — the verbs are named on
+            // the row and in this log when the project is gone too, and not before.
             let told = crate::mergequeue::hand_over_from_session(
                 store,
                 &self.session_registry,
                 entry_id,
-                &format!("the complaints did NOT reach the child: {why}"),
+                &crate::mergequeue::complaints_instead(&entry, missed),
             );
             let detail = match told {
                 Ok(what) => format!(
-                    "the review of `{entry_id}` refused it, and the complaints did NOT reach the \
-                     child: {why} The verdict stands — the entry does not land until a review \
-                     accepts it — and the project it came from is told: {what}"
+                    "the review of `{entry_id}` refused it, and the complaints reached nobody. {}\n\n\
+                     The verdict stands — the entry does not land until a review accepts it — and \
+                     the project it came from is told: {what}",
+                    crate::mergequeue::complaints_instead(&entry, missed)
                 ),
                 // **Nobody to tell is said, not swallowed**, and the person's verbs are what is
                 // left — which is the last resort this whole fallback is written to keep as the
                 // last resort.
                 Err(e) => format!(
-                    "the review of `{entry_id}` refused it, and the complaints did NOT reach the \
-                     child: {why} The verdict stands — the entry does not land until a review \
-                     accepts it — and nobody could be told either: {e} A person has to move it: \
+                    "the review of `{entry_id}` refused it, and the complaints reached nobody. \
+                     {}\n\nThe verdict stands — the entry does not land until a review accepts it \
+                     — and nobody could be told either: {e} A person has to move it: \
                      `/queue restart {entry_id}`, `/queue approve {entry_id}`, or \
-                     `/queue rm {entry_id}`."
+                     `/queue rm {entry_id}`.",
+                    crate::mergequeue::complaints_instead(&entry, missed)
                 ),
             };
             self.hub.publish(SessionEvent::Warning {

@@ -2348,21 +2348,69 @@ pub fn refusal_message(
     entry: &MergeEntry,
     review: Option<&letibot_tokencore::store::ReviewRecord>,
 ) -> String {
-    let said = match review {
+    back_to_work(entry, &the_refusal(review), &review_half(review))
+}
+
+/// **The same refusal, to the session that ENQUEUED the entry** — for when the child that wrote the
+/// branch cannot be reached.
+///
+/// The child's sentence ([`refusal_message`]) opens with *your branch `x` was taken out of the merge
+/// queue … and the entry is back with you*, which is true of the child and false of anybody else:
+/// the root did not write the branch. So this says what IS true of the root — a child it started has
+/// been refused, the child could not be told, and the entry, with every verb that moves it, is the
+/// root's now — and `why_child` is the delivery door's own words for the failed attempt, QUOTED
+/// rather than paraphrased. A reader who cannot see that reason cannot tell a dead subagent from a
+/// daemon that would not send.
+///
+/// **The reviewer's reasons travel whole**, the same [`review_half`] the child's sentence carries and
+/// the same [`the_refusal`] opening: *why* is the whole of what the second party has to act on, and a
+/// summary here would be this code writing the reviewer's half for it. The remedies are named for
+/// the same reason they are in [`back_to_work`] — the root is the party holding them.
+pub fn enqueuer_refusal_message(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+    why_child: &str,
+) -> String {
+    let head = format!(
+        "The branch `{}` of a child you started was taken out of the merge queue: it is NOT landing \
+         as it stands, and the entry `{}` is yours to move. The child that wrote it could not be \
+         told — {why_child} — so the complaints are here, with you.",
+        entry.branch, entry.id
+    );
+    format!(
+        "{head}\n\n{said}\n\n{reviewed}\n\nThe work is in the worktree at `{wt}`, and nothing lands \
+         until a review accepts it and the gate is green. `/queue restart {short}` asks the reviewer \
+         again about the branch as it is now, `/queue approve {id}` overrides the verdict and lets \
+         the queue land it, and `/queue rm {id}` drops the entry.",
+        said = the_refusal(review),
+        reviewed = review_half(review),
+        wt = entry
+            .worktree
+            .as_deref()
+            .unwrap_or("(none — the branch is not checked out)"),
+        short = letibot_sessionlog::registry::short_id(&entry.id),
+        id = entry.id,
+    )
+}
+
+/// **What both refusal sentences open with** — the verdict word and whether anybody has overridden
+/// it. One function because the child's sentence and the enqueuer's are two addresses of one fact,
+/// and two copies of this would be two accounts of whether the branch was judged.
+fn the_refusal(review: Option<&letibot_tokencore::store::ReviewRecord>) -> String {
+    match review {
         Some(r) if r.decision.is_some() => format!(
             "The gatekeeper refused it: its verdict on this branch is `{}`, and the review is what \
              refused it — nobody has overridden it.",
             r.decision.as_deref().unwrap_or("no verdict")
         ),
         // A refusal whose row is gone is not a refusal anybody can act on with a reason, and the
-        // child is told exactly that rather than left to infer a judgement from a silence.
+        // reader is told exactly that rather than left to infer a judgement from a silence.
         _ => {
             "The gatekeeper refused it: the branch does not land as it stands, and the review row \
               it was refused on is no longer in the queue."
                 .to_string()
         }
-    };
-    back_to_work(entry, &said, &review_half(review))
+    }
 }
 
 /// **The tail both sentences carry** — the part a child acts on, and the reason they are one
@@ -4307,10 +4355,15 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
 //   `/queue approve` takes, so there is one answer to *what makes an entry takeable* rather than
 //   two. The person's verb is that path with the operator's rules in front of it ([`approvable`]),
 //   and a reviewer's `accept` is that path with the reviewer's reasons on the row.
-// * **`reject` → the reviewer's complaints go back to the child that wrote the branch**, as a
-//   message to that live session, through the same door `task_message` and [`veto`] use. A child
-//   whose session has closed cannot be sent anything, and then the complaints are still SOMEWHERE:
-//   [`complaints_instead`] is that answer, once.
+// * **`reject` → the reviewer's complaints go back to a LIVE session, and there are TWO parties
+//   they can go to.** The child that wrote the branch is asked FIRST — it is the one that can carry
+//   the work on in the worktree, and the party the operator's own model of this queue names (*"if
+//   it is not happy - it sends a message with complaints to original subagent"*) — and the session
+//   that ENQUEUED the entry is asked when the child's session is gone, which is the ordinary case
+//   for a subagent that has finished: it is the root of the entry's tree, and its model is the one
+//   holding the verbs that move the entry. One delivery, and the report says WHICH of the two took
+//   it ([`refusal_addressees`]); a child whose session has closed and a root nobody can reach leave
+//   the complaints where they are — [`complaints_instead`] is that answer, once.
 // * **`needs_human` → a question goes to the head**, through the one door a question has
 //   (`letibot_tools::builtins::intent::Questioner`, the rendezvous `ask_user_question` already
 //   rides). An abstention is not a park in silence: the entry does not land, and the person is
@@ -4334,7 +4387,8 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
 pub enum Door {
     /// **Accept** — the entry goes to the merge queue.
     Accept,
-    /// **Refuse** — the complaints go back to the child that wrote the branch.
+    /// **Refuse** — the complaints go back to a live session: the child that wrote the branch, or
+    /// the root that enqueued it when that child is gone.
     Refuse,
     /// **Cannot-decide** — a question goes to the head.
     CannotDecide,
@@ -4391,15 +4445,21 @@ pub enum Done {
     Queued(String),
     /// **Refuse** — the complaints, and where they went.
     ///
-    /// **`child` is named whether or not the delivery landed.** *Who the complaints are for* is a
-    /// fact about the verdict — the entry's own id, which is the child's session (`entry_for_finished`
-    /// mints the id from the handle) — and not about this attempt to deliver them; a report that
-    /// dropped the id when the session had closed would be a refusal nobody could trace back.
-    /// `delivered` is the delivery's own answer, and `said` carries where the complaints are
-    /// instead when it is false ([`complaints_instead`]).
+    /// **`child` is named whether or not anything landed.** *Who the complaints are for* is a fact
+    /// about the verdict — the entry's `session_id`, the subagent that finished the branch, which
+    /// `entry_for_finished` writes as the child's own handle — and not about this attempt to deliver
+    /// them; a report that dropped the id when the session had closed would be a refusal nobody
+    /// could trace back.
+    ///
+    /// **`reached` is WHICH of the two parties took them** ([`refusal_addressees`]), or `None` when
+    /// neither did. That is not decoration: the child that wrote the branch and the root that
+    /// enqueued it are two sessions with two different things to do about one refusal, and a report
+    /// that named only the child would say *the complaints went to a session* about a delivery the
+    /// ROOT made. `said` is the sentence either way — the party that took them and the door's own
+    /// words when they landed, and [`complaints_instead`] when they did not.
     Refused {
         child: String,
-        delivered: bool,
+        reached: Option<Addressee>,
         said: String,
     },
     /// **Cannot-decide** — a question was raised at the head.
@@ -4424,17 +4484,23 @@ pub enum Done {
 ///
 /// `deliver` and `ask` are seams, [`veto`]'s own shape and for its reason: the act is a function of
 /// a store and two callbacks, so a test drives all three doors with no socket, no child and no
-/// head. `deliver(child, text)` is the daemon's `task_message` door (`TaskRunner::send`, the
-/// `CommandKind::Message` a child's own reader answers by starting a turn); `ask(&Question)` is the
-/// questioner the session already has (`crate::answers::HeadQuestioner`), and it is the caller's
-/// business whether it blocks — this function asks and reports.
+/// head. `deliver(session, text)` is the daemon's `task_message` door (`TaskRunner::send`, the
+/// `CommandKind::Message` a session's own reader answers by starting a turn); `ask(&Question)` is
+/// the questioner the session already has (`crate::answers::HeadQuestioner`), and it is the
+/// caller's business whether it blocks — this function asks and reports.
+///
+/// **The refuse door asks `deliver` more than once, and that is the point of it.** A refusal has two
+/// parties it can reach ([`refusal_addressees`]): the child that wrote the branch, and — when that
+/// session is gone, which is the ordinary end of a subagent — the root that enqueued it. One
+/// delivery, to the first party that takes it, and the report says which one that was.
 ///
 /// # A delivery that failed does not undo a refusal
 ///
 /// The refusal is written on the review row FIRST and the message is sent after, so a child whose
 /// session has closed leaves a verdict that stands and a message that did not go. That is
-/// [`Done::Refused`] with `delivered: false`, not an `Err`: the entry is refused either way, and
-/// what a person needs is where the complaints are instead — [`complaints_instead`].
+/// [`Done::Refused`] with `reached: None`, not an `Err`: the entry is refused either way, and what a
+/// person needs is where the complaints are instead — [`complaints_instead`], with each attempt's
+/// own words rather than an assertion about why they failed.
 ///
 /// # The word that opens no door
 ///
@@ -4482,29 +4548,26 @@ pub fn report_verdict(
             )?;
             Ok(Done::Queued(said))
         }
-        // **The complaints go back to the child that wrote the branch.** The row first, so the
-        // verdict is durable before anything is sent — and so [`refusal_message`] has the review to
-        // quote.
+        // **The complaints go back to a live session** — the child that wrote the branch, or the
+        // root that enqueued it when the child's own session is gone. The row first, so the verdict
+        // is durable before anything is sent — and so [`refusal_message`] has the review to quote.
         Door::Refuse => {
             let rec = record_the_verdict(store, &entry, reported, by, now_ms)?;
-            let complaints = refusal_message(&entry, Some(&rec));
             // **The delivery's own answer, and not a reading of the sentence.** A refusal is not
             // undone by a message that did not go, so a failure here is a REPORT and not an `Err`:
             // the verdict is on the row either way, and what a person needs is where the complaints
-            // are instead ([`complaints_instead`]).
-            let (delivered, said) = match deliver(&entry.id, &complaints) {
-                Ok(how) => (
-                    true,
-                    format!(
-                        "The complaints went to `{}`, the child that wrote `{}`: {how}",
-                        entry.id, entry.branch
-                    ),
-                ),
-                Err(why) => (false, complaints_instead(&entry, &why)),
+            // are instead ([`complaints_instead`]) — or, when the root took them, that the party the
+            // complaints reached is not the child ([`refusal_delivered`]).
+            let (reached, said) = match deliver_the_refusal(store, &entry, Some(&rec), deliver) {
+                Delivered::To { to, how, missed } => {
+                    let said = refusal_delivered(&entry, &to, &how, &missed);
+                    (Some(to), said)
+                }
+                Delivered::Nobody(missed) => (None, complaints_instead(&entry, &missed)),
             };
             Ok(Done::Refused {
-                child: entry.id.clone(),
-                delivered,
+                child: child_of(&entry),
+                reached,
                 said,
             })
         }
@@ -4553,13 +4616,204 @@ pub fn report_verdict(
     }
 }
 
-/// **Where a refusal's complaints go when the child that wrote the branch is gone.**
+// ===== Who a refusal's complaints reach =====
+//
+// **The row holds one party and the tree holds the other, and they are not the same party.** A
+// `task_start` child writes the branch and its own handle is both the entry's `id` and its
+// `session_id` — `HarnessTaskRunner::enqueue_entry` calls [`entry_for_finished`] with the handle
+// twice — so *the child whose work it is* is a fact the row carries. The MODEL that enqueued it is
+// not on the row at all: it is the ROOT of the child's session tree ([`root_session`]), the session
+// a person attaches to and the one that ran the `task_start`. With the review queue now a session
+// of its own whose children are the reviewers, those two are, by design, usually different parties.
+//
+// **So a refusal goes to the child first and to the root second.** The child is the party that can
+// carry the branch on in the worktree, and it is the one the operator's own model names — *"if it
+// is not happy - it sends a message with complaints to original subagent"*. But a child that
+// finished is a child whose turn has ended, and by the time a reviewer has read its branch its
+// session may be gone altogether: that is the measured defect this door answers (`queue: a
+// reviewer's refusal reaches the MODEL that enqueued it`, 5741101), where entries sat `failed` with
+// the verdict on their rows while the sessions that enqueued them carried on as if the work were
+// fine. The root is still a model that can act: it holds the verbs that move the entry
+// (`/queue restart|approve|rm`), and the entry is its branch's business.
+//
+// **One delivery, and the report names the party that took it.** Not two messages: the complaints
+// are one thing to say, and the second party is a FALLBACK for the first rather than a second
+// audience — a refusal said twice into one tree is the furniture this tree keeps refusing to make.
+// When neither party takes them the sentence names both attempts with each one's own words, which
+// is what makes the fallback TRUE: the door no longer asserts that a session is gone, it quotes the
+// door that could not reach it.
+
+/// **Which of the two parties a refusal can reach.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reaches {
+    /// **The child that wrote the branch** — the entry's `session_id`, the subagent that finished
+    /// the work, and the session that can carry it on in the worktree.
+    Child,
+    /// **The root session that enqueued it** — the session whose `task_start` started that child,
+    /// found by walking the stored parents ([`root_session`]).
+    ///
+    /// **The store's own column doc calls the CHILD "the session that enqueued it"**, because the
+    /// child enqueued the BRANCH; the model that enqueued the WORK is this one, one walk up. The two
+    /// readings are the whole reason this enum exists.
+    Root,
+}
+
+impl Reaches {
+    /// What this party is to the entry, in the words the sentences use.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Reaches::Child => "the child that wrote the branch",
+            Reaches::Root => "the root session that enqueued it",
+        }
+    }
+}
+
+/// **One party a refusal's complaints can go to** — which one it is, and the session to send to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Addressee {
+    /// Which party this is to the entry.
+    pub who: Reaches,
+    /// The session a message about the refusal is sent to.
+    pub session: String,
+}
+
+impl Addressee {
+    /// The party and its session, as a clause a sentence can carry.
+    pub fn describe(&self) -> String {
+        format!("`{}`, {}", self.session, self.who.as_str())
+    }
+}
+
+/// **The child that wrote the branch**, as the entry names it — `session_id`, the column that
+/// documents itself as the subagent that finished the work, with the entry's `id` for a row whose
+/// column is empty. In production they are the same handle; a row written by hand may differ, and
+/// the column is the one that promises to be a SESSION.
+///
+/// **`veto` keys on the entry's `id`** — the person's verb, whose sentence is written for the child
+/// that did the work — and for every entry the enqueuer writes the two are the same handle, so the
+/// two doors agree. This column is the one the walk to the root needs, which is why the refusal
+/// reads it.
+pub fn child_of(entry: &MergeEntry) -> String {
+    if entry.session_id.trim().is_empty() {
+        entry.id.clone()
+    } else {
+        entry.session_id.clone()
+    }
+}
+
+/// **Who a refusal's complaints are for, in the order they are tried** — the child, then the root.
+///
+/// **The walk is what names the root, and it needs the child's own session row.** An entry carries
+/// the child and nothing else about the tree, so a child whose row has gone leaves the root unnamed,
+/// and this then returns the one party it can name rather than inventing a second: a session id
+/// guessed here would be a message to nobody in particular. What that costs is said where it lands
+/// — [`complaints_instead`] names the parties that were actually tried.
+pub fn refusal_addressees(store: &Store, entry: &MergeEntry) -> Vec<Addressee> {
+    let child = child_of(entry);
+    let mut to = vec![Addressee {
+        who: Reaches::Child,
+        session: child.clone(),
+    }];
+    let root = root_session(store, &child);
+    if root != child {
+        to.push(Addressee {
+            who: Reaches::Root,
+            session: root,
+        });
+    }
+    to
+}
+
+/// **What handing a refusal over did** — the party that took the complaints, or why nobody did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivered {
+    /// **This party took them.** `how` is the delivery door's own words; `missed` is the parties
+    /// tried before it, in order, each in its own name — empty when the first party took them.
+    To {
+        to: Addressee,
+        how: String,
+        missed: Vec<String>,
+    },
+    /// **Neither party took them**, and these are the attempts in order, each in its own name.
+    Nobody(Vec<String>),
+}
+
+/// **The complaints, to the first party that will take them.**
+///
+/// The order and the walk are [`refusal_addressees`]'s; what is here is the trying. **The two
+/// parties are sent two different sentences**, because the same words are not true of both: the
+/// child's ([`refusal_message`]) says *your branch … is back with you*, which is false of a session
+/// that did not write it, and the root's ([`enqueuer_refusal_message`]) says that a child it started
+/// was refused and that the entry is its to move. What both carry whole is the reviewer's own
+/// reasons.
+///
+/// `deliver` is the daemon's message door, [`veto`]'s own seam, and a failure is a REPORT rather
+/// than an `Err`: the verdict is on the review row either way, and the second party is what a
+/// failure here is for.
+pub fn deliver_the_refusal(
+    store: &Store,
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+    deliver: &dyn Fn(&str, &str) -> Result<String, String>,
+) -> Delivered {
+    let mut missed: Vec<String> = Vec::new();
+    for to in refusal_addressees(store, entry) {
+        let text = match to.who {
+            Reaches::Child => refusal_message(entry, review),
+            // **The child's own failure is quoted, not paraphrased.** It is the reason this party is
+            // being asked at all, and a reader who cannot see it cannot tell a dead subagent from a
+            // daemon that would not send.
+            Reaches::Root => enqueuer_refusal_message(entry, review, &missed_clause(&missed)),
+        };
+        match deliver(&to.session, &text) {
+            Ok(how) => return Delivered::To { to, how, missed },
+            Err(why) => missed.push(format!("{}: {why}", to.describe())),
+        }
+    }
+    Delivered::Nobody(missed)
+}
+
+/// **The parties that could not be reached, as one clause** — each in its own name, so a sentence
+/// built from it says WHO was tried rather than only that somebody was not.
+fn missed_clause(missed: &[String]) -> String {
+    if missed.is_empty() {
+        // Unreachable from [`deliver_the_refusal`], which only asks the second party after the first
+        // has failed — and written out rather than `expect`ed because a sentence is no place for a
+        // panic, and an empty clause would read as *nobody was tried*.
+        return "the party before it could not be reached".to_string();
+    }
+    missed.join("; and ")
+}
+
+/// **The door's sentence for a refusal that landed** — and the half that says WHICH party took it.
+///
+/// Not decoration: the child that wrote the branch and the root that enqueued it are two sessions
+/// with two different things to do about one refusal, and a sentence that named only the child would
+/// say *the complaints went to a session* about a delivery the ROOT made. When the child was skipped
+/// the reason is in it, quoted from the door that could not reach it.
+fn refusal_delivered(entry: &MergeEntry, to: &Addressee, how: &str, missed: &[String]) -> String {
+    match to.who {
+        Reaches::Child => format!(
+            "The complaints went to `{}`, the child that wrote `{}`: {how}",
+            to.session, entry.branch
+        ),
+        Reaches::Root => format!(
+            "The child that wrote `{}` could not be told ({}) — so the complaints went to `{}`, the \
+             root session that enqueued it: {how}",
+            entry.branch,
+            missed_clause(missed),
+            to.session
+        ),
+    }
+}
+
+/// **Where a refusal's complaints go when NOBODY can be reached.**
 ///
 /// The operator's model of this queue, in their words: *"if it is not happy - it sends a message
 /// with complaints to original subagent"* — and a subagent whose session has closed cannot be sent
-/// anything. That is not a reason to drop the complaints, and it is not a reason to call the refusal
-/// a failure: the verdict is already written on the review row, and the entry does not land on it.
-/// So this names, once, the three places the complaints ARE:
+/// anything, nor can a root that is not live either. That is not a reason to drop the complaints,
+/// and it is not a reason to call the refusal a failure: the verdict is already written on the
+/// review row, and the entry does not land on it. So this names, once, where the complaints ARE:
 ///
 /// * **the review row** (`merge_review`), with the reviewer's reasons, the files it read and the
 ///   commands it ran — which `/queue` and the merge-queue pane draw, and which a person reads by
@@ -4567,21 +4821,32 @@ pub fn report_verdict(
 /// * **the entry's own `evidence`**, where the move is recorded;
 /// * **the operator**, who moves the entry by hand.
 ///
-/// A function rather than a sentence built at the call site so the two cannot drift: the `Err` a
-/// caller would otherwise get, the warning a session publishes and this paragraph are one answer to
-/// one question, and the child's id is in all three.
-pub fn complaints_instead(entry: &MergeEntry, why: &str) -> String {
+/// **`missed` is what makes it true.** It is the attempts, in order, each in its own name and with
+/// its own words — so the sentence QUOTES the delivery that failed instead of asserting why it did.
+/// The sentence this replaces said *that session is gone* about every failure there is, which is
+/// false for a daemon whose bell has closed, for an entry that left the queue mid-write, and for a
+/// row whose `session_id` names nothing at all; a fallback that says a false thing about WHY is
+/// worse than one that says only what happened.
+///
+/// A function rather than a sentence built at the call site so the two cannot drift: the warning the
+/// daemon publishes, the door's own report and this paragraph are one answer to one question, and
+/// the branch and the entry are in all three.
+pub fn complaints_instead(entry: &MergeEntry, missed: &[String]) -> String {
     let short = letibot_sessionlog::registry::short_id(&entry.id);
+    let why = missed_clause(missed);
     format!(
-        "The complaints did NOT reach `{}` — {why} That session is gone, and a refusal is not a \
-         delivery: the verdict stands. Where the complaints are instead: on the review row of \
-         `{}`, with the reviewer's reasons, the files it read and the commands it ran — which \
-         `/queue` and the merge-queue pane draw, and which a person reads by attaching to the \
-         session that reviewed it; on the entry's own evidence; and with the operator, who moves \
-         the entry by hand — `/queue restart {short}` asks the reviewer again about the branch as \
-         it is now, `/queue approve {}` overrides the verdict and lets the queue land it, and \
-         `/queue rm {}` drops the entry.",
-        entry.id, entry.id, entry.id, entry.id
+        "The complaints did NOT reach a live session — {why}. A refusal is not a delivery: the \
+         verdict stands, and `{branch}` does not land on it. Where the complaints are instead: on \
+         the review row of `{id}`, with the reviewer's reasons, the files it read and the commands \
+         it ran — which `/queue` and the merge-queue pane draw, and which a person reads by \
+         attaching to the session that reviewed it; on the entry's own evidence; and with the \
+         operator, who moves the entry by hand — `/queue restart {short}` asks the reviewer again \
+         about the branch as it is now, `/queue approve {id}` overrides the verdict and lets the \
+         queue land it, and `/queue rm {id}` drops the entry.",
+        branch = entry.branch,
+        id = entry.id,
+        why = why,
+        short = short,
     )
 }
 
@@ -10025,19 +10290,54 @@ mod person {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **`reject` sends the reviewer's complaints to the child that wrote the branch**, as a
+    /// **A session tree over the store** — a root and one child under it, which is the shape an
+    /// entry's `session_id` names (`HarnessTaskRunner::enqueue_entry` calls `entry_for_finished`
+    /// with the child's handle twice, and the child's own row names its parent).
+    ///
+    /// The walk is the point: an entry written as its own root would pass whether
+    /// [`root_session`] worked or not, so every refusal fixture below has the two rows.
+    fn a_child_of(db: &Path, parent: &str, child: &str) {
+        let store = store_at(db);
+        for (id, up) in [(parent, None), (child, Some(parent))] {
+            store
+                .put_session(&letibot_tokencore::store::SessionRecord {
+                    id: id.to_string(),
+                    title: None,
+                    model_id: String::new(),
+                    dialect_sha: String::new(),
+                    workspace_root: String::new(),
+                    owner: String::new(),
+                    approvers: Vec::new(),
+                    role: None,
+                    parent_session_id: up.map(str::to_string),
+                })
+                .expect("the session row");
+        }
+    }
+
+    /// **An entry whose `session_id` is a child under `parent`** — the entry `parked` wrote, with
+    /// its `session_id` pointed at the child the tree really has.
+    fn an_entry_of(db: &Path, id: &str, child: &str) -> MergeEntry {
+        let mut e = store_at(db).merge_entry(id).unwrap().expect("the entry");
+        e.session_id = child.to_string();
+        enqueue(db, &e);
+        e
+    }
+
+    /// **`reject` sends the reviewer's complaints to the CHILD that wrote the branch**, as a
     /// message to that live session — and the entry does not land on it.
     ///
-    /// The recipient is the ENTRY's id, which is the child's session (`entry_for_finished` mints
-    /// the id from the handle), and it is asserted as such: a refusal that reached the REVIEWER
-    /// would be the reviewer being sent its own verdict.
+    /// **The recipient is the entry's `session_id`, the column that documents itself as the subagent
+    /// that finished the work** — not the review row's `session_id`, which is the session that
+    /// HOSTED the review: sending there would be the reviewer being handed its own verdict. And not
+    /// the root either: the child is the first party, and a child that is there is the one that has
+    /// the worktree.
     #[test]
     fn the_refuse_door_sends_the_complaints_to_the_child_that_wrote_the_branch() {
         let (root, db, id) = parked("door-refuse", MergeState::Waiting);
-        // The entry's id IS the child that did the work — the shape `entry_for_finished` writes.
-        let mut e = store_at(&db).merge_entry(&id).unwrap().expect("the entry");
-        e.session_id = id.clone();
-        enqueue(&db, &e);
+        let child = "s-child-of-door-refuse";
+        a_child_of(&db, "s-root-of-door-refuse", child);
+        an_entry_of(&db, &id, child);
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let done = report_verdict(
@@ -10058,21 +10358,22 @@ mod person {
         .expect("the refusal");
 
         let Done::Refused {
-            child,
-            delivered,
+            child: named,
+            reached,
             said,
         } = &done
         else {
             panic!("a reject is a refusal: {done:?}")
         };
-        assert_eq!(child, &id, "a refusal names the child it was sent to");
-        assert!(
-            delivered,
-            "the child is live, so the complaints went: {said}"
+        assert_eq!(named, child, "a refusal names the child whose work it is");
+        assert_eq!(
+            reached.as_ref().map(|to| (to.who, to.session.as_str())),
+            Some((Reaches::Child, child)),
+            "the child is live, so the complaints went to it: {said}"
         );
         let went = sent.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(went.len(), 1, "one message, to one child: {went:?}");
-        assert_eq!(went[0].0, id, "and to the child, not to the reviewer");
+        assert_eq!(went[0].0, child, "and to the child, not to the reviewer");
         assert!(
             went[0].1.contains("the retry is not bounded"),
             "the complaints are the reviewer's own reasons: {}",
@@ -10104,15 +10405,142 @@ mod person {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **A child whose session is gone does not lose the complaints** — the refusal stands, and the
-    /// door names where the complaints ARE instead.
+    /// **When the child's session is gone the complaints reach the ROOT that enqueued it** — and the
+    /// sentence says WHICH of the two took them.
     ///
-    /// This is the half the brief asks for by name, and it is a REPORT rather than an `Err`: the
-    /// verdict is already written and the entry does not land either way, so what a person needs is
-    /// the three places the complaints went to instead of a delivery that did not happen.
+    /// This is the measured defect the whole change is against: a subagent that finished is a
+    /// session that is gone, and a refusal that stopped at it left the entry parked while the
+    /// session that enqueued the work carried on as if nothing had happened. The root is the model
+    /// that holds the verbs, so the door asks it second — with the child's own failure quoted, and
+    /// with the reviewer's reasons whole.
     #[test]
-    fn a_refusal_names_where_the_complaints_go_when_the_child_is_gone() {
+    fn a_refusal_reaches_the_root_that_enqueued_it_when_the_child_is_gone() {
+        let (root, db, id) = parked("door-root", MergeState::Waiting);
+        let child = "s-child-of-door-root";
+        let parent = "s-root-of-door-root";
+        a_child_of(&db, parent, child);
+        an_entry_of(&db, &id, child);
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = sent.clone();
+
+        let done = report_verdict(
+            &store_at(&db),
+            &id,
+            &Reported {
+                decision: Decision::Reject,
+                reasons: vec!["the retry is not bounded".into()],
+                files: vec![],
+                commands: vec![],
+            },
+            crate::sessions::gatekeeper::SESSION,
+            5_000,
+            // **The child is gone; the root is live.** The door's own answer decides which is
+            // which, so this stub answers by the session it was handed rather than by a flag.
+            &move |to: &str, text: &str| {
+                if to == child {
+                    return Err(format!("no session `{to}` is live in this daemon"));
+                }
+                seen.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((to.to_string(), text.to_string()));
+                Ok("the message started a turn in that session".into())
+            },
+            &no_head,
+            &quiet_events(),
+        )
+        .expect("the refusal");
+
+        let Done::Refused {
+            child: named,
+            reached,
+            said,
+        } = &done
+        else {
+            panic!("a reject is a refusal: {done:?}")
+        };
+        assert_eq!(
+            named, child,
+            "the child is named whether or not it was reached"
+        );
+        assert_eq!(
+            reached.as_ref().map(|to| (to.who, to.session.as_str())),
+            Some((Reaches::Root, parent)),
+            "the root took them, and the report says so: {said}"
+        );
+        // **The sentence says WHICH one it reached**, which is the whole reason the two are
+        // distinguished: a report that named only the child would be wrong about who has the ball.
+        assert!(said.contains(child), "the child it could not reach: {said}");
+        assert!(
+            said.contains(parent),
+            "and the session that took them: {said}"
+        );
+        assert!(
+            said.contains("could not be told")
+                && said.contains("no session `s-child-of-door-root`"),
+            "with the door's own reason for the miss, quoted: {said}"
+        );
+        assert!(
+            said.contains("root session that enqueued it"),
+            "and with the party named: {said}"
+        );
+
+        // **And the root was sent the SECOND sentence, not the child's.** *Your branch is back with
+        // you* is false of the root — it did not write the branch — so the message it gets is the
+        // one that says a child it started was refused and that the entry is its to move.
+        let went = sent.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(
+            went.len(),
+            1,
+            "the child was tried and failed, so one message: {went:?}"
+        );
+        assert_eq!(went[0].0, parent);
+        for asked in [
+            "a child you started was taken out of the merge queue",
+            "m-1",
+            "b-m-1",
+            "the retry is not bounded",
+            "/queue restart",
+            "/queue approve m-1",
+            "/queue rm m-1",
+        ] {
+            assert!(
+                went[0].1.contains(asked),
+                "`{asked}` is missing from: {}",
+                went[0].1
+            );
+        }
+        assert!(
+            !went[0].1.contains("Your branch"),
+            "the root is not told its own branch came back: {}",
+            went[0].1
+        );
+
+        // **And the refusal stands** — a delivery that moved to the second party does not undo it.
+        let store = store_at(&db);
+        let ruled = store.merge_review(&id).unwrap().expect("the verdict");
+        assert_eq!(ruled.decision.as_deref(), Some("reject"));
+        let entries = store.merge_entries().unwrap();
+        assert_eq!(next_takeable(&entries, &store.reviews().unwrap()), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A refusal nobody can take keeps the complaints somewhere and says where** — and the
+    /// sentence is TRUE: it quotes the two attempts rather than asserting why they failed.
+    ///
+    /// This is a REPORT rather than an `Err`: the verdict is already written and the entry does not
+    /// land either way, so what a person needs is the three places the complaints ARE. The two
+    /// failures are deliberately DIFFERENT KINDS — a session that is not live, and a daemon whose
+    /// bell is closed — because the sentence this replaced said *that session is gone* about every
+    /// failure there is, and a fallback that says a false thing about WHY is worse than one that
+    /// says only what happened.
+    #[test]
+    fn a_refusal_nobody_can_take_says_where_the_complaints_are_and_why() {
         let (root, db, id) = parked("door-gone", MergeState::Waiting);
+        let child = "s-child-of-door-gone";
+        let parent = "s-root-of-door-gone";
+        a_child_of(&db, parent, child);
+        an_entry_of(&db, &id, child);
+
         let done = report_verdict(
             &store_at(&db),
             &id,
@@ -10124,25 +10552,37 @@ mod person {
             },
             crate::sessions::gatekeeper::SESSION,
             5_000,
-            &|_, _| Err("no live session `m-1` is registered".into()),
+            &|to: &str, _: &str| {
+                if to == child {
+                    Err(format!("no session `{to}` is live in this daemon"))
+                } else {
+                    Err("the daemon's bell is closed (it is shutting down)".into())
+                }
+            },
             &no_head,
             &quiet_events(),
         )
         .expect("the refusal is still a report and not a failure");
 
         let Done::Refused {
-            child,
-            delivered,
+            child: named,
+            reached,
             said,
         } = &done
         else {
             panic!("a reject is a refusal: {done:?}")
         };
-        assert_eq!(child, &id, "the child is named even though it is gone");
-        assert!(!delivered, "the delivery did not land");
+        assert_eq!(named, child, "the child is named even though it is gone");
+        assert!(reached.is_none(), "nobody took them: {said}");
         for asked in [
-            "The complaints did NOT reach `m-1`",
-            "no live session `m-1` is registered",
+            "The complaints did NOT reach a live session",
+            // **Both parties, in order, each in its own name** — so a reader can tell WHICH one was
+            // which rather than being handed two anonymous failures.
+            "`s-child-of-door-gone`, the child that wrote the branch",
+            "`s-root-of-door-gone`, the root session that enqueued it",
+            // **And each attempt's own words, quoted.**
+            "no session `s-child-of-door-gone` is live in this daemon",
+            "the daemon's bell is closed (it is shutting down)",
             "the verdict stands",
             "the review row of `m-1`",
             "on the entry's own evidence",
@@ -10152,6 +10592,13 @@ mod person {
         ] {
             assert!(said.contains(asked), "`{asked}` is missing from: {said}");
         }
+        // **The sentence does not invent a reason.** The old one asserted *that session is gone*
+        // about every failure there is, which is false of a closed bell — and of an entry that left
+        // the queue mid-write, which is the other way this path is reached.
+        assert!(
+            !said.contains("That session is gone") && !said.contains("is gone"),
+            "the fallback must quote the attempts rather than claim why they failed: {said}"
+        );
 
         // **And the refusal stands** — a message that did not go does not undo a judgement.
         let store = store_at(&db);

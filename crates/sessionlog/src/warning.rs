@@ -250,11 +250,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // ended between that check and this drain. Routine, because nothing went wrong in the
     // session — the parent's next `task_result` reads a finished child and says so.
     ("message_idle", Class::Routine),
-    // **A refusing verdict that did not reach the child.** The review said `reject` or
-    // `needs_human`, the row is written, and the message carrying the complaints could not be
-    // sent — the child's session has closed, or the entry left the queue between the write and
-    // the delivery. Failure: the ball was supposed to go back and did not, so the entry waits
-    // for a person rather than for the child. See `Harness::send_a_refusal_back`.
+    // **A refusing verdict that reached NOBODY.** The review said `reject` or `needs_human`, the
+    // row is written, and the message carrying the complaints could not be sent to either party a
+    // refusal is for — the child that wrote the branch, or the root that enqueued it when that
+    // child is gone — so the entry left the queue between the write and the delivery, or both
+    // sessions are closed. Failure: the ball was supposed to go back and did not, so the entry
+    // waits for a person rather than for a child. **A refusal that reached the root is NOT this
+    // code**: the ball did go back, to the session that holds the verbs. See
+    // `Harness::send_a_refusal_back`.
     ("refusal_undelivered", Class::Failure),
     // **A finished `task_start` child's branch is in the merge queue**, said to the parent that
     // started it. Routine by the rule at the top of this table, and for the reason
@@ -770,13 +773,14 @@ mod the_register_census {
         //
         // **91, not the 90 the last census was taken at.** One arrival, and it moves the red
         // register: `refusal_undelivered` is the sentence said when a gatekeeper's refusing
-        // verdict was written onto its review row and the message carrying the complaints could
-        // not be sent — the child's session has closed, or the entry left the queue between the
-        // write and the delivery. A Failure by the rule at the top of the table: the ball was
-        // supposed to go back to the session that did the work and did not, so the entry waits
-        // for a person rather than for the child, and the alternative to saying so is a queue
-        // that looks like it sent work back when nothing was sent. See
-        // `Harness::send_a_refusal_back`.
+        // verdict was written onto its review row and the message carrying the complaints reached
+        // neither of the two parties a refusal is for — the child that wrote the branch, and the
+        // root that enqueued it, which is asked when the child is gone. The entry left the queue
+        // between the write and the delivery, or both sessions are closed. A Failure by the rule
+        // at the top of the table: the ball was supposed to go back to the session that did the
+        // work and did not, so the entry waits for a person rather than for a child, and the
+        // alternative to saying so is a queue that looks like it sent work back when nothing was
+        // sent. See `Harness::send_a_refusal_back`.
         //
         // **90, not the 89 the last census was taken at.** One arrival, and it moves the red
         // register: `todo_check_failed` is a CHILD that was due its idle plan-check and whose

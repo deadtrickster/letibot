@@ -34,9 +34,12 @@
 //!    there is the sentence and the tool's description. What is NOT yet reachable is the
 //!    *address*: a gatekeeper child is told nothing about the session it reviews for, so no
 //!    model can name it yet.
-//! 2. **the gatekeeper sending a kid back to work** — a refusing verdict, delivered to
-//!    `entry.id` by `Harness::serve_reviews`. Proved end to end by
-//!    `a_refusing_verdict_goes_back_to_the_child_that_did_the_work`.
+//! 2. **the gatekeeper sending a kid back to work** — a refusing verdict, delivered by
+//!    `Harness::serve_reviews`. Proved end to end by
+//!    `a_refusing_verdict_goes_back_to_the_child_that_did_the_work` when the child is still there,
+//!    and by `a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it` when it is not:
+//!    the complaints go to the child that wrote the branch, and to the session that enqueued it
+//!    when that child's session is gone. Two parties, one delivery, and the report says which.
 //! 3. **a notes keeper reporting what it could not settle** — not wired. It is the same two
 //!    acts (a session names a peer, the peer's turn starts), and nothing new is needed for it.
 //!
@@ -59,7 +62,9 @@ use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{Hub, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_tokencore::Vocab;
-use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, ReviewRecord, Store};
+use letibot_tokencore::store::{
+    MergeEntry, MergePriority, MergeState, ReviewRecord, SessionRecord, Store,
+};
 use letibot_tools::NullToolSink;
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
@@ -1147,6 +1152,152 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
             .any(|(code, _)| code == "refusal_undelivered"),
         "the complaints were delivered, so nothing should say they were not: {:#?}",
         warnings(father.harness.hub())
+    );
+
+    registry.close();
+}
+
+/// **A refusal whose CHILD is gone reaches the session that ENQUEUED the entry** — the production
+/// half of the rule `mergequeue::refusal_addressees` states, through `serve_reviews` and the real
+/// `TaskRunner::send`.
+///
+/// This is the defect the whole change is against, measured 2026-10-11: a subagent that finished is
+/// a session whose turn has ended, so the party the complaints are FOR is the party most likely to
+/// be missing — while the session that ran the `task_start` is the one whose model holds the verbs
+/// that move the entry. **The three sessions are three different parties here on purpose**: the
+/// entry's child (a row and no hub — gone), the peer that enqueued the branch (live), and the
+/// session hosting the review (this one, standing in for the gatekeeper). A door that stopped at
+/// the child would publish `refusal_undelivered` and the peer would hear nothing at all.
+#[test]
+fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-session-channel-refusal-gone");
+    let path = dir.path().join("sessions.db");
+    let main_id = "s-father-of-the-lost-branch";
+    let peer_id = "s-the-session-that-enqueued-it";
+    let lost = "s-the-child-that-left";
+
+    let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
+    // **One turn, and it is the gatekeeper's verdict.** No work child is spawned: the branch's
+    // child is gone, which is the state this test is about.
+    let verdict = a_plain_answer_turn(&parts.vocab, "reviewing", &a_refusing_verdict(), 30);
+    let stub = Stub::answering(vec![verdict], 1);
+
+    let cfg = config(main_id, stub.endpoint.clone(), &path);
+    let registry = Registry::new();
+    let mut father = a_session(main_id, &parts, &cfg, registry.clone());
+    // **The session that enqueued the work** — a session in its own right, live, with no tree edge
+    // to this one (the operator's own correction: *"well gatekeeper is not a child"*).
+    let _peer = a_session(peer_id, &parts, &cfg, registry.clone());
+    let peer_hub = registry
+        .get(peer_id)
+        .expect("the enqueuer's hub is in the registry");
+
+    let branch = "agent/the-lost-work".to_string();
+    let base_sha = "0".repeat(40);
+    let store = Store::open(&path).expect("the store");
+    // **The child's ROW, and no hub for it.** A session that finished and closed leaves the row —
+    // the store's own column doc says a session that is deleted does not un-merge a branch — while
+    // `Registry::get` answers for nothing. That pair is exactly what the walk needs to find the
+    // root, and exactly what makes the child the party that cannot be reached.
+    store
+        .put_session(&SessionRecord {
+            id: lost.to_string(),
+            title: None,
+            model_id: String::new(),
+            dialect_sha: String::new(),
+            workspace_root: cfg.workspace.display().to_string(),
+            owner: String::new(),
+            approvers: Vec::new(),
+            role: None,
+            parent_session_id: Some(peer_id.to_string()),
+        })
+        .expect("the lost child's row");
+    store
+        .put_merge_entry(&MergeEntry {
+            id: lost.to_string(),
+            session_id: lost.to_string(),
+            branch: branch.clone(),
+            base_sha: base_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: Vec::new(),
+            state: MergeState::Waiting,
+            brief: "do the work the brief names".into(),
+            evidence: String::new(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: Some(dir.relative()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        })
+        .expect("the entry");
+    store
+        .put_review(&ReviewRecord {
+            entry_id: lost.to_string(),
+            // The session that HOSTED the review, which is neither the child nor the enqueuer.
+            session_id: main_id.to_string(),
+            branch: branch.clone(),
+            base_sha: base_sha.clone(),
+            asked_ms: 1,
+            answered_ms: None,
+            decision: None,
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
+            reasons: Vec::new(),
+            files: Vec::new(),
+            commands: Vec::new(),
+        })
+        .expect("the review row");
+
+    // **The daemon's own pass**, driven until the ENQUEUER has the complaints. Nobody drains the
+    // peer's queue here — the message itself is the fact, and it is on the peer's own queue.
+    let heard_it = wait_for(&peer_hub, |hub| {
+        father.harness.serve_reviews();
+        hub.try_command().and_then(|c| match c.kind {
+            letibot_sessionlog::CommandKind::Message { text, .. } => Some(text),
+            _ => None,
+        })
+    });
+    assert!(
+        heard_it.contains(REFUSAL),
+        "the enqueuer was not told what the review said: {heard_it}"
+    );
+    assert!(
+        heard_it.contains("of a child you started") && heard_it.contains("is yours to move"),
+        "and it is the ENQUEUER's sentence, not the child's — it did not write the branch: \
+         {heard_it}"
+    );
+    assert!(
+        heard_it.contains(&format!("no session `{lost}` is live in this daemon")),
+        "with the door's own reason for the child it could not reach: {heard_it}"
+    );
+    assert!(
+        !heard_it.contains("Your branch"),
+        "the enqueuer is not told its own branch came back: {heard_it}"
+    );
+    // **And nothing says the ball did not go back**, because it did: the fallback is a delivery.
+    assert!(
+        !warnings(father.harness.hub())
+            .iter()
+            .any(|(code, _)| code == "refusal_undelivered"),
+        "the complaints reached the session that enqueued it, so nothing should say they did \
+         not: {:#?}",
+        warnings(father.harness.hub())
+    );
+
+    // **And the verdict is on the row**, where the queue reads it — the door moved the verdict, and
+    // the entry does not land on it.
+    let row = store
+        .merge_review(lost)
+        .expect("the review row reads back")
+        .expect("the review row is there");
+    assert_eq!(row.decision.as_deref(), Some("reject"), "{row:?}");
+    assert!(
+        row.reasons.iter().any(|r| r.contains(REFUSAL)),
+        "the reviewer's reasons are on the row: {row:?}"
     );
 
     registry.close();
