@@ -19,6 +19,14 @@
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# **`ENV` reaches this file's own RUN lines and NOTHING LATER.** Measured by a probe: the layer's rust
+# line installed a working 1.5 GB toolchain under /usr/local, and `cargo --version` still failed for
+# uid 1000 — because the rustup proxies look in `$HOME/.rustup` unless RUSTUP_HOME says otherwise, and
+# this file's ENV does not survive into a later shell. So the variables are set TWICE, on purpose: as
+# ENV below, so this file's own lines work, and in a profile file, so the guest's shells have them.
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+RUN echo export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo >> /etc/profile.d/10-letibot-rust.sh; cat /etc/profile.d/10-letibot-rust.sh
+
 # ── The Rust toolchain ───────────────────────────────────────────────────────────────────────────
 #
 # MEASURED 2026-10-10, and this cost two probes: THIS IMAGE HAS NO RUST ANYWHERE. An earlier probe
@@ -40,8 +48,14 @@ RUN set -eux; found=""; command -v cargo >/dev/null 2>&1 && found=$(command -v c
 # ── The dev packages the build scripts need ──────────────────────────────────────────────────────
 #
 # The guest has the RUNTIME libsqlite3.so.0 and no sqlite3.pc and no /usr/include/sqlite3.h, which is
-# the dev package's absence stated three ways. cmake and ninja are for the library below.
-RUN set -eux; apt-get update; apt-get install -y --no-install-recommends libsqlite3-dev pkg-config cc cmake ninja-build; rm -rf /var/lib/apt/lists/*
+# the dev package's absence stated three ways. cmake and ninja are for the library below; pkg-config is
+# already installed but is named because a build script looks for it.
+#
+# **NOT `cc`.** The first version listed it and the line died two seconds in: `E: Unable to locate
+# package cc` — cc is a VIRTUAL package name on Ubuntu, provided by build-essential, and /usr/bin/cc is
+# already there. Under the line's own `set -euo pipefail` that exit 100 killed the line, so the clone,
+# the library and the fetch below never ran at all — a missing package name cost three lines.
+RUN set -eux; apt-get update; apt-get install -y --no-install-recommends libsqlite3-dev pkg-config cmake ninja-build; rm -rf /var/lib/apt/lists/*
 
 # ── The llama.cpp checkout crates/llama/build.rs insists on ──────────────────────────────────────
 #
