@@ -527,6 +527,58 @@ pub fn to_the_alarm(code: &str) -> bool {
     ALARM_ONLY.contains(&code)
 }
 
+/// **The codes whose sentence is drawn in the conversation for a while and then taken
+/// down** — the third answer to *where does it go*, beside the record ([`TABLE`]'s rows,
+/// drawn as notes) and the edge ([`ALARM_ONLY`], which never gets a row at all).
+///
+/// # The rule, because the next person needs it to place a new code
+///
+/// **A code belongs here only when something else on the screen carries the same fact.**
+/// The sentence may go; the fact may not. That is the whole of why a timer is allowed at
+/// all, and why it is not allowed one register over: a timer is a *disclosure* decision,
+/// and the disclosure is the thing that has to survive it.
+///
+/// `merge_queued` is the case. The daemon says *your child's branch is in the merge
+/// queue*; the head's bottom edge counts the queue — how many entries are in review, how
+/// many are being merged, how many are parked — for as long as the queue holds anything,
+/// and the queue pane names every entry and its branch. So the row is the news and the
+/// edge is the standing fact.
+///
+/// It is **not** *all of `Class::Routine`*, for [`ALARM_ONLY`]'s reason one register over:
+/// `compacted` and `auto_compact` change the conversation and the operator has asked to
+/// see them happen, `daemon_stopping` is a sentence about the session ending, and
+/// `resume_note` is a fact about where you are. None of those is on the edge, so none of
+/// them may go quiet.
+///
+/// **A `Failure` or a `Refused` can never be here**, and that is asserted below rather
+/// than left to whoever adds the next row: a fault that stops being drawn after thirty
+/// seconds is a fault nobody sees, and the operator's own act is not news that expires.
+/// (`merge_not_queued`, the failure twin of the one row above, is exactly the code that
+/// must stay: it says a branch nothing will land.)
+///
+/// # Which head, and for how long
+///
+/// The **set** is here, with the class vocabulary, because it is the same axis
+/// [`ALARM_ONLY`] answers — *where does it go* — and a split only one head knew would have
+/// to be copied by the other. The **duration** is the head's, and it is one constant where
+/// the drawing happens: `letibot-tui`'s `FLEETING_MS`.
+///
+/// **Not the same as [`ALARM_ONLY`]**, and the two are not alternatives: an alarm-only code
+/// never gets a row (its number is in `/status` from the moment it arrives), and one of
+/// these gets a row and then loses it.
+pub const FLEETING: &[&str] = &[
+    // A finished `task_start` child's branch has entered the merge queue. The queue's
+    // standings are what the bottom edge counts, so the sentence is news and the count is
+    // the fact that stays. See `HarnessTaskRunner::enqueue_finished`, which publishes it.
+    "merge_queued",
+];
+
+/// Whether this code's sentence is drawn for a while and then taken down — see
+/// [`FLEETING`], whose docstring is the rule.
+pub fn is_fleeting(code: &str) -> bool {
+    FLEETING.contains(&code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +610,49 @@ mod tests {
             assert!(
                 !to_the_alarm(code),
                 "`{code}` changes the conversation and belongs in the record"
+            );
+        }
+    }
+
+    /// **Nothing that is a fault, and nothing the operator did, may go quiet on a timer.**
+    ///
+    /// [`FLEETING`] takes a code's sentence off the screen after the head's thirty seconds,
+    /// which is only honest when something else carries the fact. The class is the half of
+    /// that a test can check, and it is the half that matters: a `Failure` or a `Refused`
+    /// drawn for thirty seconds and then gone is a fault nobody reads, which is the
+    /// direction [`ALARM_ONLY`]'s guard above closes one register over. The other half —
+    /// *something else on the screen carries it* — is a fact about a head's own frame and is
+    /// argued in the table's docstring and tested where the timer lives.
+    #[test]
+    fn a_fleeting_code_is_never_a_failure_or_a_refusal() {
+        // The vacuity guard: an empty set would satisfy the loop below and prove nothing.
+        assert!(
+            is_fleeting("merge_queued"),
+            "the one code this table exists for has been removed, and the loop below \
+             would then check nothing: {FLEETING:?}"
+        );
+        for code in FLEETING {
+            assert_eq!(
+                class(code),
+                Class::Routine,
+                "`{code}` is fleeting and is not Routine — a fault that goes quiet on a \
+                 timer is a fault nobody sees"
+            );
+            assert!(is_fleeting(code), "the table is what `is_fleeting` reads");
+        }
+        // **And the rule was not widened to all of `Class::Routine`.** None of these is on
+        // the edge, so none of them has a second place to be read: a compaction the operator
+        // asked to watch, a session ending, and where the workspace came from.
+        for code in [
+            "compacted",
+            "auto_compact",
+            "daemon_stopping",
+            "daemon_stopping_runs",
+            "resume_note",
+        ] {
+            assert!(
+                !is_fleeting(code),
+                "`{code}` is not carried anywhere else, so its sentence has to stay"
             );
         }
     }

@@ -431,6 +431,165 @@ fn the_hint_line_names_the_person_verbs() {
     assert!(!a.hint_bar(160).contains("v veto"), "{}", a.hint_bar(160));
 }
 
+/// **The edge carries the queue's standings** — the operator's ask, in their words: *"hide it
+/// to near triangle with the current queue stats - how many in review how many being merged
+/// etc"*.
+///
+/// The counts are the daemon's own states, folded by [`App::queue_standings`], and the words
+/// are three: `waiting` is *in review* (the gatekeeper's review is what it waits on), `taken`
+/// is *being merged*, and the four the queue has stopped moving by itself are one word —
+/// *parked*, which is the count a person has to act on.
+#[test]
+fn the_bottom_edge_counts_the_queue_by_state() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(queue_frame(
+        vec![
+            queue_entry("c1", MergeState::Waiting),
+            queue_entry("c2", MergeState::Waiting),
+            queue_entry("c3", MergeState::Taken),
+            queue_entry("c4", MergeState::Failed),
+            queue_entry("c5", MergeState::Conflict),
+            queue_entry("c6", MergeState::Stale),
+            queue_entry("c7", MergeState::Vetoed),
+        ],
+        Vec::new(),
+    ));
+    let rows = a.screen(100, 24);
+    let screen = rows.join("\n");
+    assert!(
+        screen.contains("2 in review · 1 being merged · 4 parked"),
+        "the machine's three and the person's one are the same standing here — `parked`, \
+         the count somebody has to move: {screen}"
+    );
+    // **On the composer's bottom edge, not in the conversation** — the whole point of the
+    // move is that this row is chrome and cannot reflow the transcript.
+    let edge = rows
+        .iter()
+        .find(|l| l.contains("parked"))
+        .expect("the standings row");
+    assert!(
+        edge.contains('╰') && edge.contains('╯'),
+        "the standings are on the box's bottom edge, beside the ⚠: {edge:?}"
+    );
+    assert!(
+        !a.notes.iter().any(|(_, n)| matches!(
+            n,
+            Note::Warned(w) if w.code == "merge_queued"
+        )),
+        "and nothing was said in the conversation: {:?}",
+        a.notes
+    );
+}
+
+/// **Nothing standing is not a row of zeroes.**
+///
+/// An empty queue and a queue whose entries have all landed are the same fact about what is
+/// left to do — nothing — and the edge says nothing at all for both rather than
+/// `0 in review · 0 being merged · 0 parked`, which would be a row of attention paid for ever
+/// for a fact nobody has. The disclosure is `/queue`, which says *none* in words.
+///
+/// **A landed entry is the case that makes this a decision rather than an accident**: it is
+/// still in the daemon's queue (a later entry can name it in `needs`), so a head that counted
+/// every entry it held would show a row here and a head that folded `landed` into *parked* or
+/// *in review* would show a lie about where the work is.
+#[test]
+fn the_edge_says_nothing_when_nothing_stands() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    let empty = a.screen(100, 24).join("\n");
+    assert!(!empty.contains("in review"), "{empty}");
+
+    a.apply(queue_frame(
+        vec![
+            queue_entry("c1", MergeState::Landed),
+            queue_entry("c2", MergeState::Landed),
+        ],
+        Vec::new(),
+    ));
+    let landed = a.screen(100, 24).join("\n");
+    assert!(
+        !landed.contains("in review") && !landed.contains("parked"),
+        "a landed entry has no standing and is not folded into one: {landed}"
+    );
+    // **The positive control**, so the two absences above are a statement about standing and
+    // not a head that never draws the line at all: one entry that DOES stand, and the edge
+    // says so in the same frame.
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::MergeEntryAdded {
+            entry: queue_entry("c3", MergeState::Waiting),
+        },
+    )));
+    let standing = a.screen(100, 24).join("\n");
+    assert!(
+        standing.contains("1 in review · 0 being merged · 0 parked"),
+        "the same edge, one entry later: {standing}"
+    );
+    // **And the pane still draws them**, which is what makes the silence above a statement
+    // about standing and not a head that dropped two entries.
+    a.command("queue");
+    let pane = a.screen(100, 24).join("\n");
+    assert!(pane.contains("landed"), "{pane}");
+}
+
+/// **The standings line is the same row, byte for byte, while a reply streams** — the
+/// operator's report, and the bug this whole change is for: *"merge_queued notification sticks
+/// and jumps slightly up when you actively reply and then bottom"*.
+///
+/// The notice's row was in the conversation, so a row appearing above the composer reflowed
+/// the screen mid-reply and reflowed it back when the row landed. The fact lives on the edge
+/// now, and the edge is composed from the queue and from nothing about the turn — so the test
+/// pins the ROW and its bytes rather than a colour, because a colour that is right on a frame
+/// that moved is the defect.
+#[test]
+fn the_standings_line_does_not_move_when_a_reply_does() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(queue_frame(
+        vec![
+            queue_entry("c1", MergeState::Waiting),
+            queue_entry("c2", MergeState::Failed),
+        ],
+        Vec::new(),
+    ));
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::delta("t1", "here is the "),
+    )));
+    let first = a.screen(100, 24);
+    let at = first
+        .iter()
+        .position(|l| l.contains("parked"))
+        .expect("the standings row");
+    assert!(
+        first[at].contains('╰') && first[at].contains('╯'),
+        "the row this pins is the composer's bottom edge: {:?}",
+        first[at]
+    );
+
+    a.apply(ServerFrame::Event(env(3, testing::delta("t1", "answer"))));
+    let second = a.screen(100, 24);
+    assert!(
+        second.join("\n").contains("here is the answer"),
+        "the premise: the reply grew between the two frames"
+    );
+    assert_eq!(
+        second.iter().position(|l| l.contains("parked")),
+        Some(at),
+        "the standings moved down the screen while the reply grew: {}",
+        second.join("\n")
+    );
+    assert_eq!(
+        first[at], second[at],
+        "the standings line changed while only the reply did"
+    );
+}
+
 /// **A removed entry leaves the pane, and its verdict goes with it** — the queue's one event
 /// about an ABSENCE, which a head that folded the entry in needs or it goes on drawing a row the
 /// queue no longer holds.

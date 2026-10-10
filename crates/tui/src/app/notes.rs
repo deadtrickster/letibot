@@ -229,6 +229,31 @@ impl App {
         self.notice = None;
         self.notice_until = None;
     }
+
+    /// **Take down the notes whose sentence has been on the screen long enough** — the codes
+    /// in [`letibot_sessionlog::warning::FLEETING`], on this head's clock. See
+    /// [`FLEETING_MS`] for the duration and for why a timer is allowed here at all.
+    ///
+    /// **Returns whether anything went**, so the one caller can rebuild the rendered history
+    /// *once*. A note is a seam in `hist_lines` and the walk that put it there is incremental,
+    /// so the only honest way to un-draw a line is to rebuild — the shape [`App::retire`] has
+    /// for the reader's own act. Without the return this would have to rebuild on every frame
+    /// after the deadline, for ever, which is the quadratic cost `invalidate_history_from`'s
+    /// own docstring measures.
+    ///
+    /// **Spent, not retired.** `retire` is the reader's act and this is a clock's, and they
+    /// are told apart by where the key goes: a retired key is written to `head.toml` as this
+    /// reader's memory, and a timer may not write to that file — a key the reader retired is
+    /// theirs, and one they *restore* must stay restored. So the note leaves [`App::notes`]
+    /// rather than joining [`App::dismissed`], and the argument for letting it leave at all
+    /// is R10's own sentence: *the session log holds the durable fact; a note is how a head
+    /// shows it once* — with the second half of that here, because the queue's standings are
+    /// on the bottom edge and are showing it now.
+    pub(crate) fn fade_fleeting_notes(&mut self) -> bool {
+        let before = self.notes.len();
+        self.notes.retain(|(_, n)| !past_its_time(n, self.now_ms));
+        before != self.notes.len()
+    }
 }
 
 /// **How a save treats the retired set** — because one write cannot express both verbs.
@@ -496,3 +521,48 @@ pub(crate) fn fnv1a(s: &str) -> u64 {
 /// frames; see its `chrome.lisp` for the measurement. The two heads must not drift here,
 /// because the operator reads the same sentence for the same length of time on both.
 pub const NOTICE_MS: u64 = 1_600;
+
+/// **How long a fleeting note stays in the conversation** — the codes in
+/// [`letibot_sessionlog::warning::FLEETING`], which is the rule about *which* ones and why.
+///
+/// **Thirty seconds, and the number is the operator's**: *"hide it to near triangle with the
+/// current queue stats — how many in review how many being merged etc, do it after time, say
+/// 30 seconds"*. A duration and not a frame count, for [`NOTICE_MS`]'s reason exactly: a
+/// countdown of frames stops when the frames stop, which on a quiet screen is the moment a
+/// sentence is left standing longest.
+///
+/// # Why a timer is allowed here at all
+///
+/// **Because the fact does not go with the sentence.** `merge_queued` says *your child's
+/// branch is in the merge queue*, and the same frame that takes the row down carries the
+/// queue's standings on the bottom edge — how many entries are in review, how many are being
+/// merged, how many are parked — and the queue pane names every entry and its branch. So the
+/// row is the news and the edge is the standing fact; a head with no second place to read it
+/// must not put a code in that table, which is the argument written on it in
+/// `letibot_sessionlog::warning`.
+///
+/// **Measured from the announcement's own `ts`, not from the frame that drew it** — the log's
+/// clock for the envelope that carried it, which is the same wall clock this head's
+/// `now_ms` is read from (`letibot_sessionlog::event::now_ms`, and the daemon is on this box
+/// behind a unix socket). It is the same field [`note_key`] already treats as the
+/// announcement's identity, and it is the same comparison the decision card's ladder makes
+/// against `asked_ts`. The alternative — stamping each note as it is filed — would need a
+/// second clock kept beside every note and would let a redelivery restart a sentence that has
+/// already been read.
+///
+/// One constant, in one place, so that changing the decision is changing this line.
+pub const FLEETING_MS: u64 = 30_000;
+
+/// **Is this note past the time it is drawn for?** The `FLEETING` codes only, and the class
+/// table is what keeps the set honest (see its guard): a `Failure` or a `Refused` is never
+/// here, so a fault can never be on a timer.
+///
+/// Both `Warned` and `NotRun` carry a warning — the second is a refusal's register, and a
+/// code that is in the table is answered the same way whichever register it was drawn in.
+pub(crate) fn past_its_time(n: &Note, now_ms: u64) -> bool {
+    let w = match n {
+        Note::Warned(w) | Note::NotRun(w) => w,
+        _ => return false,
+    };
+    letibot_sessionlog::warning::is_fleeting(&w.code) && now_ms >= w.ts.saturating_add(FLEETING_MS)
+}

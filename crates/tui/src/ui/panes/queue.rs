@@ -6,8 +6,51 @@ use crate::ui::render::{dur_human, row_strings};
 use rano::agent::queue::{
     MergeMark, OpenedEntry, QueueEntry, QueueEntryView, QueuePane, ReviewRecord, ReviewState,
 };
+use rano::style::Role;
 
 impl App {
+    /// **The queue's standings** — how many entries stand in each of the three states a
+    /// reader reads the queue for, folded from the same snapshot the pane draws.
+    ///
+    /// # Where the words come from, and the one state with none
+    ///
+    /// `waiting` is the daemon's word for *not taken yet* — the gatekeeper's review is what
+    /// it is waiting for, and *in review* is the operator's own phrase for it. `taken` is a
+    /// merge in flight. `failed`, `conflict`, `stale` and `vetoed` are the four the queue has
+    /// stopped moving by itself, and **`parked` is the one word for all four** — what a person
+    /// has to act on, which is why it is the count the edge is loudest about. Those four are
+    /// not flattened into one state anywhere else (the pane draws `vetoed` in a different
+    /// mark from the machine's three, deliberately), so the word is this line's, and the pane
+    /// is where a reader goes to tell them apart.
+    ///
+    /// **`landed` has no standing word and none is invented.** A landed entry is finished —
+    /// it stays in the queue only because a later entry names it in `needs` — so counting it
+    /// as *in review* or *parked* would be a lie about where the work is, and calling it
+    /// anything of its own would invent a fourth standing nothing acts on. The standings
+    /// count what stands; a landed entry is drawn by the pane and by nothing here.
+    ///
+    /// # Why the edge carries it at all
+    ///
+    /// It is the fact a `merge_queued` note carries, and the reason that note may expire
+    /// (`letibot_sessionlog::warning::FLEETING`): the queue is on the screen for as long as it
+    /// holds anything, so the sentence going does not take the fact with it.
+    pub(crate) fn queue_standings(&self) -> Standings {
+        use letibot_sessionlog::event::MergeState as S;
+        let mut s = Standings::default();
+        for e in &self.merge {
+            // A `match` rather than a `Debug` format, so a state added to the closed set fails
+            // to compile here rather than arriving in a bucket nobody chose — the rule
+            // `merge_state_word` states one function down.
+            match e.state {
+                S::Waiting => s.review += 1,
+                S::Taken => s.merging += 1,
+                S::Failed | S::Conflict | S::Stale | S::Vetoed => s.parked += 1,
+                S::Landed => {}
+            }
+        }
+        s
+    }
+
     /// **The merge queue, as rows** — one entry per row plus its state and reason beneath it.
     ///
     /// Two lines an entry, like the jobs pane's rows and for the same reason: the facts a
@@ -126,6 +169,60 @@ impl App {
             entry,
         };
         row_strings(&view.lines(w), self.cfg.palette())
+    }
+}
+
+/// **The queue's three standings** — the counts the bottom edge draws, and nothing else.
+///
+/// Its own type rather than a tuple or a pre-rendered string for the reason the edge needs
+/// both halves of it: the words go on the line and the **register** is read from the counts
+/// (see [`Standings::role`]), so a caller cannot be handed the text without the count that
+/// decides how loud it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Standings {
+    /// `waiting`: in the queue, not taken — the gatekeeper's review is what it waits on.
+    pub(crate) review: usize,
+    /// `taken`: the queue is merging it now.
+    pub(crate) merging: usize,
+    /// `failed` / `conflict` / `stale` / `vetoed`: the queue has stopped, and a person moves it.
+    pub(crate) parked: usize,
+}
+
+impl Standings {
+    /// **The line, or `None` when nothing stands.**
+    ///
+    /// Nothing stands for an empty queue — and for a queue whose entries have all landed, which
+    /// is the same fact about what is left to do. The edge then says nothing at all rather than
+    /// `0 in review · 0 being merged · 0 parked`: a row of zeroes is a row of attention paid for
+    /// ever for a fact nobody has, which is the mistake `BoxBottom`'s own docstring names. The
+    /// disclosure is `/queue`, which says *none* in words and says what would land there.
+    ///
+    /// **All three counts, zeroes included, whenever anything stands** — §13.2b's rule read the
+    /// way it is meant: the three are one field, and a count that is missing when it is zero is
+    /// a count a reader has to remember the shape of the line to interpret. The words are fixed
+    /// and only the digits move, so the line is the same width for a given queue and does not
+    /// reflow when something else on the screen changes.
+    pub(crate) fn words(&self) -> Option<String> {
+        let standing = self.review + self.merging + self.parked;
+        (standing > 0).then(|| {
+            format!(
+                "{} in review · {} being merged · {} parked",
+                self.review, self.merging, self.parked
+            )
+        })
+    }
+
+    /// **The register the words are drawn in.** In flight is `Pending`; a parked entry is the
+    /// one count only a person can move, so the whole line takes the `⚠`'s own `Attention` —
+    /// bold yellow against plain, which is the pair the palette already separates by weight
+    /// for exactly this distinction. The words do not change with it, so neither does the
+    /// width.
+    pub(crate) fn role(&self) -> Role {
+        if self.parked > 0 {
+            Role::Attention
+        } else {
+            Role::Pending
+        }
     }
 }
 
