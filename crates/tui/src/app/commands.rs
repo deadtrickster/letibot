@@ -1010,6 +1010,7 @@ impl App {
                     status: letibot_sessionlog::event::TodoStatus::Pending,
                     by: letibot_sessionlog::event::TodoBy::Operator,
                     when: None,
+                    needs: Vec::new(),
                 });
                 self.say(&format!("added to your list — {} row(s)", mine.len()));
             }

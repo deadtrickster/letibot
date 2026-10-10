@@ -248,12 +248,14 @@ fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
                 letibot_sessionlog::event::TodoEntry {
                     by: letibot_sessionlog::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                     content: "seat the tool".into(),
                     status: letibot_sessionlog::event::TodoStatus::Completed,
                 },
                 letibot_sessionlog::event::TodoEntry {
                     by: letibot_sessionlog::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                     content: "render the pane".into(),
                     status: letibot_sessionlog::event::TodoStatus::InProgress,
                 },
@@ -422,6 +424,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             }],
         },
     )));
@@ -453,12 +456,14 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
                     status: TodoStatus::Pending,
                     by: TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 TodoEntry {
                     content: "ship the parity row".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Operator,
                     when: None,
+                    needs: Vec::new(),
                 },
             ],
         },
@@ -521,24 +526,28 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
             TodoEntry {
                 content: "one I owe".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoEntry {
                 content: "started".into(),
                 status: TodoStatus::InProgress,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoEntry {
                 content: "finished".into(),
                 status: TodoStatus::Completed,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoEntry {
                 content: "push once CI lands".into(),
@@ -547,6 +556,7 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
                 when: Some(TodoCondition::Job {
                     handle: "j121".into(),
                 }),
+                needs: Vec::new(),
             },
         ],
     });
@@ -608,6 +618,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: waiting.clone(),
+            needs: Vec::new(),
         }],
     });
     a.key(Key::CtrlT);
@@ -748,6 +759,7 @@ fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
         content: content.into(),
         status: TodoStatus::Pending,
         when: None,
+        needs: Vec::new(),
     };
     let mut a = app();
     a.apply(hello(
@@ -818,6 +830,7 @@ fn each_half_of_the_board_says_when_it_is_the_empty_one() {
             todos: vec![TodoEntry {
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
                 content: "my own row".into(),
                 status: TodoStatus::Pending,
             }],
@@ -929,6 +942,7 @@ fn a_todo_is_painted_by_its_state_in_both_halves() {
                 letibot_sessionlog::event::TodoEntry {
                     by: letibot_sessionlog::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                     content: "seated".into(),
                     status: letibot_sessionlog::event::TodoStatus::Completed,
                 },
@@ -936,6 +950,7 @@ fn a_todo_is_painted_by_its_state_in_both_halves() {
                     // A model's plan, which is also the field's serde default.
                     by: letibot_sessionlog::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                     content: "seating".into(),
                     status: letibot_sessionlog::event::TodoStatus::InProgress,
                 },
@@ -1113,6 +1128,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
             status: letibot_sessionlog::event::TodoStatus::Pending,
             by: letibot_sessionlog::event::TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }],
     });
     // Add one of ours. No `TodosUpdated` is applied afterwards — the row must be on the
@@ -1142,6 +1158,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
             status: letibot_sessionlog::event::TodoStatus::Pending,
             by: letibot_sessionlog::event::TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }],
     });
     let after = a.screen(110, 30).join("\n");
@@ -1177,6 +1194,7 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }],
     });
     match a.command("todo when 1 j121") {
@@ -1293,12 +1311,14 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoEntry {
                 content: "second".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ],
     });
@@ -1348,12 +1368,14 @@ fn starter_todos_copy_onto_the_operators_half() {
                 status: letibot_sessionlog::event::TodoStatus::Pending,
                 by: letibot_sessionlog::event::TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             letibot_sessionlog::event::TodoEntry {
                 content: "a model row".into(),
                 status: letibot_sessionlog::event::TodoStatus::Pending,
                 by: letibot_sessionlog::event::TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
         ],
     });

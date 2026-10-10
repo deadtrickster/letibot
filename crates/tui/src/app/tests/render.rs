@@ -678,6 +678,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             todos: vec![letibot_sessionlog::event::TodoEntry {
                 by: letibot_sessionlog::event::TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
                 content: format!("tidy up{HOSTILE}"),
                 status: letibot_sessionlog::event::TodoStatus::Pending,
             }],

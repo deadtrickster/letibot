@@ -220,6 +220,7 @@ fn probe_todo() -> TodoEntry {
         status: TodoStatus::Pending,
         by: TodoBy::Operator,
         when: None,
+        needs: Vec::new(),
     }
 }
 

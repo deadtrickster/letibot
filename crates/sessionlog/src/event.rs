@@ -202,6 +202,48 @@ pub struct TodoEntry {
     /// back as *unconditional*, which is what they were.
     #[serde(default)]
     pub when: Option<TodoCondition>,
+    /// **The rows and children this one waits for** — see `TodoItem::needs` for what an edge
+    /// means, for why an unresolvable one is never *met*, and for why a child is named by its
+    /// session id rather than by its words.
+    ///
+    /// **An ADDED, DEFAULTED FIELD on an existing struct, so no `PROTOCOL_VERSION` bump** —
+    /// this file's own history section names the case: a head built before it ignores the key
+    /// and draws exactly the row it drew before, and a head built after it reading an older
+    /// daemon sees `[]` and draws that same row, because a row with no edges is what it was
+    /// given. Nothing here is a word an older peer cannot DECODE, which is the one thing the
+    /// bumps in this file are for.
+    ///
+    /// **It is here because the pane has to be able to CARRY an edge, not only draw one.**
+    /// `SetOperatorTodos` replaces the operator's whole half of the board, and until this field
+    /// existed every edge on an operator's row was dropped at that door — the daemon's own
+    /// comment on that conversion said so (*"the wire carries no edges yet"*). Now the head
+    /// echoes back exactly what it was given, so the round trip is lossless.
+    #[serde(default)]
+    pub needs: Vec<TodoNeed>,
+}
+
+/// **What a row waits on**, as the WIRE spells it — **a copy of
+/// `letibot_tokencore::store::TodoNeed`**, not a re-export, for the reason [`TodoCondition`]
+/// below is already a copy of the store's: this crate is the wire, and a wire type that aliases
+/// a store type makes one crate's rename a protocol change. The conversion lives where the wire
+/// meets the store (harnessd's `todo_entry` and the `SetOperatorTodos` path), and it is a
+/// `match`, so a variant added on one side fails to compile on the other rather than arriving as
+/// a need nobody can evaluate.
+///
+/// **The tag is the contract**, exactly as it is for [`TodoCondition`]: `kind` and the snake_case
+/// names are what an older head reads past and what a newer one reads by, so a new variant is
+/// additive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoNeed {
+    /// Another row on this board, by its exact `content`.
+    Row { content: String },
+    /// **A CHILD session, by its session id** — the handle `task` handed back.
+    Child { id: String },
+    /// A kind this build does not know. See `TodoNeed::Unknown` in the store for why an unknown
+    /// edge is kept rather than refused: a plan is what would be lost.
+    #[serde(other)]
+    Unknown,
 }
 
 /// **What a row waits on**, as the WIRE spells it — **a copy of

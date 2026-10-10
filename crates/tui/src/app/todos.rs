@@ -189,6 +189,9 @@ impl App {
                 },
                 by: letibot_sessionlog::event::TodoBy::Operator,
                 when: None,
+                // **A template's items are rows, not a graph**: the file is a checklist and has
+                // nowhere to say what waits on what, so a seeded row waits on nothing.
+                needs: Vec::new(),
             });
         }
         let n = items.len();

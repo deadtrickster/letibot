@@ -1206,6 +1206,21 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    /// **When this daemon opened this session**, or `None` for one it does not hold.
+    ///
+    /// One entry lookup under the lock, and a reader of its own rather than `brief` for that
+    /// reason: `brief` builds a whole `SessionBrief` — which lists the session SOURCE, a store
+    /// query on this box — and the caller here is the idle plan-check, which asks about one child
+    /// per arming and needs one number. The name is the column's own (`SessionBrief::created_ms`),
+    /// so the two readings of one fact cannot drift apart.
+    pub fn created_ms(&self, session_id: &str) -> Option<u64> {
+        self.lock()
+            .entries
+            .iter()
+            .find(|(k, _)| k == session_id)
+            .map(|(_, e)| e.created_ms)
+    }
+
     /// Name a session. Empty is allowed and means "no name"; a head then shows the
     /// id, which is the honest fallback.
     /// Publish the settings a session runs under. See `Entry::settings`.

@@ -114,6 +114,10 @@ impl App {
                         status: letibot_sessionlog::event::TodoStatus::Pending,
                         by: letibot_sessionlog::event::TodoBy::Operator,
                         when,
+                        // **A row filed here waits on nothing**: the card's three fields are the
+                        // title, the detail and a JOB handle, and an edge is not one of them —
+                        // `todo_write` is where a row learns to wait on another.
+                        needs: Vec::new(),
                     });
                     self.echo_operator_todos(mine.clone());
                     self.redraw = true;

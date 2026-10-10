@@ -1542,14 +1542,15 @@ pub struct TodoItem {
 /// has no way to say *I do not know what this means*, and a dependency whose meaning is unknown
 /// would then be the one dependency that is silently satisfied.
 ///
-/// **One variant, and the next is named when something can EVALUATE it.** The two that are already
-/// shaped for, so neither has to be designed again:
+/// **The next kind is named when something can EVALUATE it.** The one still shaped for and not
+/// built, so it does not have to be designed again:
 ///
-/// * a **child session** — a row that is a dispatch is not work, it waits on a session's
-///   completion, which is what makes a parent's row for a running child silent *because it is not
-///   ready* rather than because the operator postponed it;
 /// * a **wasm predicate** — the host passes values and the module answers a verdict, and a trap, a
 ///   failed call or a fuelled-out one is unresolvable, which is this same rule a third time.
+///
+/// (The other one on that list was a **child session**, which is [`TodoNeed::Child`] below: it is
+/// built, and the thing that evaluates it is the daemon — a board cannot know whether a session is
+/// running, so the facts are handed in from outside rather than read here.)
 ///
 /// **The edge is a row's WORDS, and that is a decision rather than a shortcut.** The board has one
 /// key and it is `content`: `TodoBoard::set_operator_states` resolves the operator's rows by their
@@ -1572,6 +1573,23 @@ pub enum TodoNeed {
     /// refuses one and names the candidates — read one step earlier, where the guess it refuses to
     /// make is a row silently starting on the strength of a name that meant something else.
     Row { content: String },
+    /// **A CHILD session, named by its session id** — the dispatch case this enum's doc names first:
+    /// a row that is a dispatch is not work, it waits on a session's completion, and that is what
+    /// makes a parent's row for a running child silent *because it is not ready* rather than
+    /// because the operator postponed it.
+    ///
+    /// **The id is the handle `task` handed back**, in FULL: `task_result` is what reads it, and
+    /// the same rule `TodoBy::Parent` keeps for the author string applies — a shortened id is a
+    /// name the model cannot quote back to the tool that has to act on it.
+    ///
+    /// **Whether that child is RUNNING is not on this board, and this variant does not pretend it
+    /// is.** The daemon is the only thing that knows — its task journal records the spawn and the
+    /// finish, and its registry holds when the session was opened — so the caller hands both facts
+    /// in and `unmet_needs` reads them there. What a board alone can say about a child need is
+    /// nothing, which is why a board with no daemon behind it (every test of the tool crate) treats
+    /// the child as finished: there are no children there, and a need nobody can answer must not
+    /// read as met *or* as a row that waits for ever — see the doc on [`TodoItem::needs`].
+    Child { id: String },
     /// **A kind this build does not know** — a need written by a build that has one this one does
     /// not, and it is here because the alternative is worse in a way that is MEASURED, not imagined:
     /// `Harness::new` restores a resumed session's board with `store.todos(id).unwrap_or_default()`,
@@ -5486,11 +5504,12 @@ mod tests {
             "and the row has no edges, which is what it was"
         );
 
-        // **And a need of a kind a NEWER build wrote** — a `session` need, which this one cannot
-        // evaluate. The plan comes back; the edge reads as unknown; nothing is satisfied.
+        // **And a need of a kind a NEWER build wrote** — a wasm predicate, which this one cannot
+        // evaluate (see `TodoNeed`'s own list of what is still only shaped for). The plan comes
+        // back; the edge reads as unknown; nothing is satisfied.
         write_raw(
             r#"[{"content":"waiting on a child","status":"pending","by":"model","when":null,
-                "needs":[{"kind":"session","id":"s-child"}]}]"#,
+                "needs":[{"kind":"wasm","module":"check.wasm"}]}]"#,
         );
         let back = s.todos("sess-1").unwrap();
         assert_eq!(

@@ -1466,6 +1466,18 @@ pub struct Harness {
     /// The server thread answers the head's `Settings` from the registry, so
     /// what is running is what the pane shows.
     session_registry: Arc<letibot_sessionlog::registry::Registry>,
+    /// **The daemon's subagent journal, which is how a plan knows a child is still running.**
+    ///
+    /// A row may wait on a CHILD ([`letibot_tokencore::store::TodoNeed::Child`]), and whether that
+    /// child is running is not a fact any board holds: the journal is where every spawn and every
+    /// finish lands (`opening`/`running`/`done`/`failed`), so the idle check reads it here beside
+    /// the session registry — which supplies the other half, when the child was opened. See
+    /// `crate::sessions::child_sessions`, the one reader.
+    ///
+    /// It rides the harness rather than a config because it is the DAEMON's record and not this
+    /// session's, and it is shared: the same `Arc` the task runner spawns through, so a child
+    /// this session started and one a peer started are one fact.
+    tasks: Arc<crate::tasks::TaskJournal>,
     /// Where the mode came from, for the settings row: the project store or
     /// the daemon's flag/default. Decided at open and not kept by `Config`.
     mode_source: String,
@@ -4116,6 +4128,7 @@ impl Harness {
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
             session_registry: session_registry.clone(),
+            tasks: parts.tasks.clone(),
             mode_source,
             wiring,
             cfg,
@@ -6916,6 +6929,25 @@ impl Harness {
         }
     }
 
+    /// **The children this daemon is running, as the plan-check reads them.**
+    ///
+    /// The fact a board cannot hold, taken where it lives: the task journal says which children are
+    /// still running and the session registry says how long each has been, and the child's own hub
+    /// says what it last showed. `crate::sessions::child_sessions` is the one builder — the daemon's
+    /// worker arm calls the same function for the clock it holds, so the two readers of one plan
+    /// cannot come to different answers about a child.
+    ///
+    /// **Taken per ask rather than held**, because it is the one input to the check that moves
+    /// while nothing else does: a board nobody touched reads differently ten minutes later, and a
+    /// cached snapshot would be a check that cannot see a child stop.
+    fn child_sessions(&self) -> letibot_tools::builtins::todo::ChildSessions {
+        crate::sessions::child_sessions(
+            &self.session_registry,
+            &self.tasks,
+            letibot_sessionlog::registry::now_ms(),
+        )
+    }
+
     /// **The `[todo check]` text, or nothing** — and a row the operator has postponed is not part
     /// of it.
     ///
@@ -6937,14 +6969,19 @@ impl Harness {
         // (`the_plan_as_checked`, the ONE predicate) and the first is what a row's edges resolve
         // against, since a need is met by a row that is DONE and a done row is exactly what the
         // narrowing takes out. `unfinished_plan_for` says why they are two arguments.
+        //
+        // **And the children, which are the third thing a row can wait on** and the one fact none
+        // of the above holds: `child_sessions` is the daemon's snapshot of what is running, taken
+        // here so a child that has gone quiet since the last check is seen to have.
         let board = self.todos.snapshot();
-        let askable = crate::sessions::the_plan_as_checked(&board);
+        let children = self.child_sessions();
+        let askable = crate::sessions::the_plan_as_checked(&board, &children);
         // **The plan's text, as a value rather than an early return**, because this notice now
         // has a second thing it may have to say and a completed plan is no reason to say
         // neither. `nag_should_arm` compares the TEXT, so a notice that gains a sentence is a
         // new thing to say at the base window and an unchanged one is a repeat at the cap —
         // the ladder needs no change at all for this.
-        let plan = unfinished_plan_for(&askable, &board, self.nag_choice.as_deref());
+        let plan = unfinished_plan_for(&askable, &board, self.nag_choice.as_deref(), &children);
         let plan = plan.map(|(text, named)| {
             self.nag_choice = Some(named);
             text
@@ -10513,6 +10550,31 @@ impl Harness {
                     letibot_sessionlog::event::TodoCondition::Job { handle }
                 }
             }),
+            // **And its EDGES, by the same rule and for a second reason.** The `match` is the
+            // compile-time half (a need kind this head cannot decode would be a row nobody could
+            // act on); the field itself is what makes the pane able to CARRY an edge rather than
+            // only draw one — see `TodoEntry::needs`.
+            needs: t
+                .needs
+                .into_iter()
+                .map(|need| match need {
+                    letibot_tokencore::store::TodoNeed::Row { content } => {
+                        letibot_sessionlog::event::TodoNeed::Row { content }
+                    }
+                    // **The child's id travels verbatim**, the same rule `TodoBy::Parent`'s author
+                    // string keeps: it is the handle `task_result` collects by, so a head that
+                    // shortened it would hand the model a name nothing answers to.
+                    letibot_tokencore::store::TodoNeed::Child { id } => {
+                        letibot_sessionlog::event::TodoNeed::Child { id }
+                    }
+                    // **An unknown kind stays unknown on the wire**, which is what lets a head
+                    // that does not know one pass it back to a daemon that does rather than
+                    // dropping the edge it cannot read.
+                    letibot_tokencore::store::TodoNeed::Unknown => {
+                        letibot_sessionlog::event::TodoNeed::Unknown
+                    }
+                })
+                .collect(),
             by: match t.by {
                 letibot_tokencore::store::TodoBy::Model => letibot_sessionlog::event::TodoBy::Model,
                 letibot_tokencore::store::TodoBy::Operator => {
@@ -10983,10 +11045,14 @@ fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecor
 /// Those skips are the whole of the policy, and they are here rather than in the caller
 /// so that the decision and the sentence [`fate_line`] writes for it cannot be tested apart from
 /// each other — which is what left this piece unasserted until now.
-fn due_rows(rows: &[TodoItem], fate: impl Fn(&str) -> JobFate) -> Vec<(String, String, JobFate)> {
+fn due_rows(
+    rows: &[TodoItem],
+    children: &letibot_tools::builtins::todo::ChildSessions,
+    fate: impl Fn(&str) -> JobFate,
+) -> Vec<(String, String, JobFate)> {
     let mut out = Vec::new();
     for row in rows {
-        if !crate::sessions::the_check_may_ask_about(row) {
+        if !crate::sessions::the_check_may_ask_about(row, children) {
             continue;
         }
         let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
@@ -11102,7 +11168,9 @@ impl Harness {
     /// handle. A formatter returning only strings would leave the caller re-deriving what it had
     /// just looked up — which is how the two would come to disagree.
     pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
-        due_rows(&self.todos.snapshot(), |handle| self.job_fate(handle))
+        due_rows(&self.todos.snapshot(), &self.child_sessions(), |handle| {
+            self.job_fate(handle)
+        })
     }
 
     /// The same read as [`Self::job_output`], as a window rather than a page of
@@ -12275,7 +12343,11 @@ pub fn serve_child_under(
     // same arm `Sessions::after_turn` makes for a session the daemon holds, at the same
     // moment relative to the turn. A child that finished its task with an unfinished plan
     // is exactly a session whose last turn left work open.
-    nag.rearm(&sub.todo_list(), std::time::Instant::now());
+    nag.rearm(
+        &sub.todo_list(),
+        std::time::Instant::now(),
+        &sub.child_sessions(),
+    );
     loop {
         let kind = match hub.take_own_work_until(nag.due_at()) {
             // The hub closed: the daemon is going away, or this session was reaped.
@@ -12454,6 +12526,10 @@ pub fn serve_child_under(
 /// parent's `todo_write target=` bumping the board's version here). `turned` is the
 /// first; the version comparison is the second, and it is what turns a wake from a
 /// parent's write into a re-arm while a wake that found nothing stays silent.
+///
+/// **And the children are taken fresh**, exactly as `Sessions::rearm_todo_nag` takes them:
+/// they are the one input that moves while neither anchor does, so a row that waits on a
+/// child which has gone quiet is re-read rather than remembered.
 fn rearm_the_idle_check(
     sub: &Harness,
     nag: &mut crate::sessions::TodoNagClock,
@@ -12464,7 +12540,11 @@ fn rearm_the_idle_check(
     let moved = v != *board_version;
     *board_version = v;
     if turned || moved {
-        nag.rearm(&sub.todo_list(), std::time::Instant::now());
+        nag.rearm(
+            &sub.todo_list(),
+            std::time::Instant::now(),
+            &sub.child_sessions(),
+        );
     }
 }
 
@@ -16016,13 +16096,17 @@ mod tests {
             // skip buys is silence about work that is over.
             finished("push once CI lands", waiting_on("j121")),
         ];
-        let due = due_rows(&rows, |handle| match handle {
-            "j7" => JobFate::Running,
-            "j121" => JobFate::Ended {
-                state: "exited 0".into(),
+        let due = due_rows(
+            &rows,
+            &letibot_tools::builtins::todo::ChildSessions::none(),
+            |handle| match handle {
+                "j7" => JobFate::Running,
+                "j121" => JobFate::Ended {
+                    state: "exited 0".into(),
+                },
+                _ => JobFate::Unknown,
             },
-            _ => JobFate::Unknown,
-        });
+        );
         assert_eq!(
             due,
             vec![

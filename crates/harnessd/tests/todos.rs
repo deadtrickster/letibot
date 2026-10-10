@@ -317,6 +317,7 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
                 status: WireTodoStatus::Pending,
                 by: WireTodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             }],
         },
     };

@@ -3134,12 +3134,14 @@ mod tests {
                     status: crate::event::TodoStatus::Completed,
                     by: crate::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 crate::event::TodoEntry {
                     content: "render the pane".into(),
                     status: crate::event::TodoStatus::InProgress,
                     by: crate::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 // **And the fourth word, which is the one a head has to read back to draw the
                 // state**: the row the operator set aside. Spelled here rather than only in the
@@ -3153,6 +3155,7 @@ mod tests {
                     when: Some(crate::event::TodoCondition::Job {
                         handle: "j121".into(),
                     }),
+                    needs: Vec::new(),
                 },
             ],
         };
@@ -3181,12 +3184,14 @@ mod tests {
                     status: crate::event::TodoStatus::InProgress,
                     by: crate::event::TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 crate::event::TodoEntry {
                     content: "told by the parent".into(),
                     status: crate::event::TodoStatus::Pending,
                     by: crate::event::TodoBy::parent_of("s-1789462738453908838"),
                     when: None,
+                    needs: Vec::new(),
                 },
             ],
         };
@@ -3213,6 +3218,14 @@ mod tests {
     /// Both halves of the round trip are asserted, and the literal `"kind":"job"` is the point:
     /// this is the one fact two independently written heads have to agree about, so a rename here
     /// is a wire change and must fail a test rather than quietly change a spelling.
+    ///
+    /// **AND THE SAME ROW CARRIES ITS EDGES, tagged the same way.** `needs` is an ADDED, DEFAULTED
+    /// FIELD on this struct (so no bump, and an older head ignores it), and what it exists for is
+    /// the round trip rather than the drawing: `SetOperatorTodos` replaces the operator's whole
+    /// half of the board, so before this field every edge on one of their rows was dropped at that
+    /// door. The two kinds are asserted on the literal bytes for the reason the condition is: a
+    /// `child` need is a session id the model has to quote back to `task_result`, and the spelling
+    /// is what two heads agree on.
     #[test]
     fn a_todo_condition_is_tagged_on_the_wire_and_survives_the_round_trip() {
         let f = ServerFrame::Todos {
@@ -3224,6 +3237,14 @@ mod tests {
                 when: Some(crate::event::TodoCondition::Job {
                     handle: "j121".into(),
                 }),
+                needs: vec![
+                    crate::event::TodoNeed::Row {
+                        content: "run the tests".into(),
+                    },
+                    crate::event::TodoNeed::Child {
+                        id: "s-1-sub-2".into(),
+                    },
+                ],
             }],
         };
         let json = serde_json::to_string(&f).unwrap();
@@ -3231,13 +3252,29 @@ mod tests {
             json.contains(r#""when":{"kind":"job","handle":"j121"}"#),
             "the condition's own spelling is the wire contract: {json}"
         );
+        assert!(
+            json.contains(r#""needs":[{"kind":"row","content":"run the tests"},"#),
+            "and an edge is a tagged kind on the wire too: {json}"
+        );
+        assert!(
+            json.contains(r#"{"kind":"child","id":"s-1-sub-2"}]"#),
+            "a child need is a session id under its own kind: {json}"
+        );
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
 
         // **And a row written before the field — no `when` at all — reads as unconditional**,
         // which is what it was. Without this half, a head would refuse every row already in a
-        // store, and `serde(default)` would be a claim rather than a fact.
-        let old = json.replace(r#","when":{"kind":"job","handle":"j121"}"#, "");
+        // store, and `serde(default)` would be a claim rather than a fact. **Both fields go**, and
+        // the edges are the same argument one field over: a row from a daemon older than `needs`
+        // has none, which is what it had.
+        let old = json
+            .replace(r#","when":{"kind":"job","handle":"j121"}"#, "")
+            .replace(
+                r#","needs":[{"kind":"row","content":"run the tests"},{"kind":"child","id":"s-1-sub-2"}]"#,
+                "",
+            );
         assert!(!old.contains("when"), "the field was not removed: {old}");
+        assert!(!old.contains("needs"), "the field was not removed: {old}");
         let ServerFrame::Todos { todos, .. } =
             serde_json::from_str::<ServerFrame>(&old).expect("a row with no condition reads")
         else {
@@ -3246,6 +3283,10 @@ mod tests {
         assert_eq!(
             todos[0].when, None,
             "an absent condition is `None` — not an error, and not a default condition"
+        );
+        assert!(
+            todos[0].needs.is_empty(),
+            "and an absent edge list is no edges — not an error, and not a default need"
         );
     }
 }
