@@ -309,6 +309,18 @@ impl HeadClient {
         Ok(())
     }
 
+    /// **Ask for the standing notes, one row each.** The pane's bootstrap read, exactly as
+    /// [`Client::list_jobs`] is the jobs pane's: the corpus and the form each file has are the
+    /// daemon's, decided with the session's own token counter, and a head that drew its own
+    /// version would draw a second opinion about what the model was given.
+    ///
+    /// Asked on every pane-open rather than held: the notes are the operator's own files and
+    /// can be written between two opens, and this is a read a pane can afford.
+    pub fn list_notes(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::ListNotes)?;
+        Ok(())
+    }
+
     /// **Ask for the merge queue, whole.** The pane's bootstrap read, exactly as
     /// [`Client::list_jobs`] is the jobs pane's: the queue is the daemon's and a head that drew
     /// its own version would draw a stale one. From then on the `MergeEntryAdded` and

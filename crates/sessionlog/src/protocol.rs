@@ -566,7 +566,25 @@ use crate::view::Snapshot;
 /// **No store migration rides with it**: `merge_queue.state` is `TEXT` with no `CHECK`, and the
 /// closed set is parsed on read, so the seventh word is a word and not a column. What moves is the
 /// number and the two enums, which is why this section is here and not in `store.rs`.
-pub const PROTOCOL_VERSION: u32 = 38;
+///
+/// # 39: the standing notes, one row each, for the pane
+///
+/// [`ClientFrame::ListNotes`] and [`ServerFrame::StandingNotes`] arrive together, carrying
+/// [`NoteEntry`] — the row the standing-notes pane draws. **Two new frames and a new struct,
+/// so the number has to move**: `serde` has no catch-all on either enum, and a version-38
+/// head that never sends `ListNotes` is fine while a version-38 head *sent* one by a daemon
+/// that does not know it is an `unknown variant` refusal, mid-session. Both sides refuse the
+/// mismatch by name at ATTACH instead, which is what every version since 4 has bought.
+///
+/// **Why the row exists at all.** The notes section is verbatim under a token budget and an
+/// index over it, and the index half is invisible from outside: a note that did not fit is
+/// summarised *inside the system prompt*, where only the model reads it. The operator's own
+/// ask — *"i mean do the usual - notes pane"* — is a pane over that corpus, and the field
+/// that earns the pane is the **form**: which notes the model was actually given whole. It
+/// is decided by the module that decides the budget
+/// (`letibot_harnessd::standing_notes`), travels here, and is drawn — never re-derived in
+/// the head, which has no token counter and no business having one.
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1217,6 +1235,72 @@ pub struct JobEntry {
     pub elapsed_ms: u64,
 }
 
+/// **One standing note, as the section the harness builds has it.**
+///
+/// The pane's row, and the fourth consumer of one shape: the digest in the prompt, the
+/// offer's score, the keeper's report and this all read the same fields — the path, the
+/// **abstract** (the index's own line for the note: the author's when the file carries
+/// one, the note's first proper sentence otherwise) and the **form**, which is whether
+/// the budget injected this file whole or as an index of its headings.
+///
+/// # Why the form is on the wire, and why it is the field the pane exists for
+///
+/// *"verbatim up to certain size and above it - summarized with references"* is the
+/// operator's rule for this corpus, and until this row there was **nowhere the rule's
+/// effect could be seen**: a file over what is left of the budget becomes an index
+/// inside the system prompt, which nobody but the model reads. A person looking at the
+/// corpus could not tell which of their notes the model had actually been given.
+///
+/// It is decided by [`crate::PROTOCOL_VERSION`]'s own module — the one walk in
+/// `letibot_harnessd::standing_notes` that assembles the section — and **not by the head
+/// and not by a second reading in the pane**: two functions each deciding what a note
+/// *is* is two answers, and the pane would then be able to disagree with the prompt
+/// about the very thing it is showing.
+///
+/// # What is NOT here
+///
+/// The file's size, its mtime and whether it is still on disk. Those are the disk's
+/// facts rather than the index's, they change while a pane is open, and the head reads
+/// them itself when it draws — which is also the only way *the index names a note the
+/// disk no longer has* can be seen at all. See `ui/panes/standing.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteEntry {
+    /// The file, as the index names it — the absolute path the section's heading
+    /// carries, so a `read` of it and this row are the same file.
+    pub path: String,
+    /// The index's line for this note. `None` for a file with no prose at all — one
+    /// that is nothing but headings — which is the one case the derivation refuses.
+    #[serde(rename = "abstract")]
+    pub abstract_line: Option<String>,
+    /// `true` when that line is the author's own marker (`<!-- abstract: … -->`),
+    /// `false` when the harness derived it from the note's first sentence.
+    ///
+    /// On the row for the reason the index states it in words: a derived abstract is
+    /// the harness's reading of a note, and a reader who cannot tell it from the
+    /// author's is taking a guess for a statement.
+    pub abstract_written: bool,
+    /// **Verbatim or indexed, right now** — see the struct's own doc.
+    pub form: NoteForm,
+}
+
+/// **Which of the two forms the standing-notes section carries a note in.**
+///
+/// The words are the section's own: a file that fits what is left of the budget is
+/// injected **verbatim**, and one that does not arrives as an **indexed** entry — its
+/// path, its abstract and its headings with the line ranges they span, which is what the
+/// prompt's own heading says about it (*"did not fit the budget: what follows it is an
+/// index"*). A pane that said *digested* where the prompt says *indexed* would be a
+/// second name for one fact, and a second name is how a reader comes to think there are
+/// two things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteForm {
+    /// The file fits what was left of the budget and is injected whole.
+    Verbatim,
+    /// It did not fit: the section carries its index instead of its text.
+    Indexed,
+}
+
 /// **What a head wants back from a peek** — the scrub of a replay, or the rows of a session.
 ///
 /// The original answer is [`PeekShape::Events`] and it is the **default**, so a head that sends no
@@ -1552,6 +1636,24 @@ pub enum ClientFrame {
     /// carries transcript items, not events, so a head attaching fresh has no
     /// `TodosUpdated` to replay; from then on the events carry every change.
     ListTodos,
+    /// **The standing-notes pane's bootstrap read.** What is the harness reading into this
+    /// session's prompt right now, and which of those notes is the budget injecting whole?
+    ///
+    /// Answered with [`ServerFrame::StandingNotes`].
+    ///
+    /// Read-only and unserialised like [`ClientFrame::ListJobs`], and for the same reason: a
+    /// list is a question, not an act — a pane that opens must answer while it is open, and
+    /// a verb that rides the command queue answers after the turn. This one is asked on
+    /// every pane-open rather than pushed, because the corpus is the operator's own files
+    /// and can change between two opens.
+    ///
+    /// **The answer is the harness's mailbox, not a fresh read of the directory**: the form
+    /// each file has is decided with the session's own token counter against the budget, and
+    /// that counter is a loaded vocabulary the server thread does not hold. The harness
+    /// publishes the rows wherever the section can have changed — see
+    /// `Harness::publish_notes` — so this read is the same shape [`ClientFrame::ListJobs`]
+    /// has, one mailbox over.
+    ListNotes,
     /// This session's background jobs, from the daemon's process table.
     ///
     /// Read-only and unserialised like [`ClientFrame::ListTodos`], and for the
@@ -2156,6 +2258,28 @@ pub enum ServerFrame {
         session_id: String,
         jobs: Vec<JobEntry>,
     },
+    /// **The answer to [`ClientFrame::ListNotes`]: the standing notes, one row each, in the
+    /// order the section carries them.**
+    ///
+    /// The order is the rule the harness states and not this frame's business —
+    /// `AGENTS.md`, then the box-wide notes, then the project's, each directory newest
+    /// first — and it is carried rather than sorted here for the reason it exists at all:
+    /// the order decides which files arrive whole, so a pane that re-sorted them would be
+    /// describing a section nobody is being given.
+    ///
+    /// The rows are the harness's own reading of the corpus, published into the registry
+    /// the way `settings` and the job table are, because the form each file has is decided
+    /// with the session's token counter. See [`ClientFrame::ListNotes`].
+    ///
+    /// **An empty list is an answer and not a silence**: it says the harness is reading no
+    /// notes for this session, which is a fact a person can act on (there is nothing to
+    /// write down, or the directories are somewhere they did not expect). The one case it
+    /// cannot tell apart from that is a session whose harness has not opened yet — see
+    /// `Registry::notes`.
+    StandingNotes {
+        session_id: String,
+        notes: Vec<NoteEntry>,
+    },
     /// The answer to [`ClientFrame::ListMergeQueue`]: the whole queue as of now, every state.
     ///
     /// The snapshot half of the snapshot-plus-events pattern: a head attaching mid-flight gets
@@ -2484,6 +2608,7 @@ mod tests {
                 | ClientFrame::Interrupt { .. }
                 | ClientFrame::ListJobs { .. }
                 | ClientFrame::ListMergeQueue { .. }
+                | ClientFrame::ListNotes { .. }
                 | ClientFrame::ListSessions { .. }
                 | ClientFrame::ListTodos { .. }
                 | ClientFrame::Mode { .. }
@@ -2576,6 +2701,7 @@ mod tests {
                 | ServerFrame::Todos { .. }
                 | ServerFrame::Settings { .. }
                 | ServerFrame::Jobs { .. }
+                | ServerFrame::StandingNotes { .. }
                 | ServerFrame::MergeQueue { .. }
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::RowFetched { .. }
@@ -2595,8 +2721,15 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 38,
-            "the match above was last reconciled with the frame list at 38 — bumped for \
+            PROTOCOL_VERSION, 39,
+            "the match above was last reconciled with the frame list at 39 — `ListNotes` and \
+             `StandingNotes`, one NEW client frame and one NEW server frame carrying `NoteEntry`, \
+             the row the standing-notes pane draws (a version-38 daemon would fail to parse the \
+             first, a version-38 head would fail to decode the second mid-session — the version-34 \
+             argument). The notes section is verbatim under a budget and an index over it, and the \
+             index half has never been visible from outside: the operator asked for \"the usual - \
+             notes pane\" over a corpus where which notes the model was GIVEN WHOLE could not be \
+             seen at all. 38 was \
              `MergeState::Vetoed`, a NEW VARIANT on an existing enum: **no frame is added and the \
              number still has to move**, because the word travels inside `MergeEntryMoved` and \
              `ServerFrame::MergeQueue` — both carry the state — and a version-37 head cannot DECODE \

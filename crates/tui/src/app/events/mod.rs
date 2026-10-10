@@ -35,6 +35,7 @@ impl App {
             frame @ ServerFrame::Hello { .. } => self.on_hello(frame),
             frame @ (ServerFrame::Sessions { .. }
             | ServerFrame::Jobs { .. }
+            | ServerFrame::StandingNotes { .. }
             | ServerFrame::MergeQueue { .. }
             | ServerFrame::ShellSuggestions { .. }
             | ServerFrame::Todos { .. }

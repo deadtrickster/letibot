@@ -63,6 +63,15 @@ pub enum Action {
     /// Ask the daemon for its job table. The head renders the answer; it does
     /// not decide what is in it.
     ListJobs,
+    /// **Ask the daemon for the standing notes, one row each.** The pane's bootstrap read,
+    /// and the jobs pane's shape one mailbox over: the corpus and the form each file has —
+    /// verbatim, or an index because it did not fit what was left of the budget — are decided
+    /// by the module that assembles the section, with the session's own token counter. A head
+    /// holds no counter and draws what it is given.
+    ///
+    /// Asked on every pane-open rather than held: the notes are the operator's own files, and
+    /// this is the read that makes a note written a minute ago a row.
+    ListNotes,
     /// **Ask for the merge queue, whole.** The queue pane's bootstrap read, and
     /// daemon-level: there is one `main` and one queue, so the answer is not scoped to this
     /// session — see `ClientFrame::ListMergeQueue`.

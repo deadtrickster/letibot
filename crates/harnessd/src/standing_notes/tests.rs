@@ -465,3 +465,99 @@ fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
     );
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+/// **The pane's rows: one per note, in the section's order, carrying the index's own fields.**
+///
+/// This is the fourth consumer of one shape (path, abstract, size, verbatim-or-indexed,
+/// offered, taken) and the one a PERSON reads, so what it asserts is what the pane would draw
+/// and nothing more: the path the section's heading carries, the abstract the index shows —
+/// with the author's own line marked as theirs — and **the form**, which is the field the
+/// pane exists for. The size, the mtime and *is it still on disk* are deliberately absent:
+/// they are the disk's facts and the head reads them where it draws.
+#[test]
+fn the_panes_rows_are_the_indexes_own_fields() {
+    let ws = dir("rows");
+    write(
+        &ws.join("AGENTS.md"),
+        "# Rules\n\nBuild with `cargo test -p`, never `--workspace`.\n",
+    );
+    let body = over_budget();
+    write(
+        &ws.join(".letibot/notes/big.md"),
+        &format!("# Big\n\nFirst sentence of the big note. More after it.\n\n{body}\n"),
+    );
+    write(
+        &ws.join(".letibot/notes/small.md"),
+        "<!-- abstract: the author's own line -->\n\nthe small note's prose\n",
+    );
+    let rows = rows(&ws, &dir("none"), &vocab());
+    assert_eq!(
+        rows.len(),
+        3,
+        "one row per note the harness reads: {rows:?}"
+    );
+    // The section's order: AGENTS.md first, then the project's, newest first.
+    assert!(rows[0].path.ends_with("AGENTS.md"), "{rows:?}");
+    assert_eq!(rows[0].form, NoteForm::Verbatim);
+    assert_eq!(
+        rows[0].abstract_line.as_deref(),
+        Some("Build with `cargo test -p`, never `--workspace`."),
+        "the first proper sentence, as the index has it"
+    );
+    assert!(!rows[0].abstract_written, "derived, and said to be derived");
+
+    let big = rows
+        .iter()
+        .find(|r| r.path.ends_with("big.md"))
+        .expect("a row for the big note");
+    assert_eq!(
+        big.form,
+        NoteForm::Indexed,
+        "over the budget, so the prompt carries its index"
+    );
+    assert_eq!(
+        big.abstract_line.as_deref(),
+        Some("First sentence of the big note."),
+        "the abstract is the index's own line for a note that IS indexed"
+    );
+
+    let small = rows
+        .iter()
+        .find(|r| r.path.ends_with("small.md"))
+        .expect("a row for the small note");
+    assert_eq!(
+        small.form,
+        NoteForm::Verbatim,
+        "the small note beside the large one is still whole"
+    );
+    assert_eq!(
+        small.abstract_line.as_deref(),
+        Some("the author's own line"),
+        "the author's marker, not the derived sentence"
+    );
+    assert!(
+        small.abstract_written,
+        "and the row says it is the author's rather than the harness's reading"
+    );
+
+    // **And the rows and the section are ONE walk.** The form each file was given above is
+    // the form the prompt carries it in — the pane cannot disagree with what the model was
+    // handed, which is the whole reason `plan` exists.
+    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    assert!(s.contains("First sentence of the big note."), "{s}");
+    assert!(!s.contains(&body), "the big note is indexed, not injected");
+    assert!(
+        s.contains("the small note's prose"),
+        "and the small one is whole: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **An empty corpus is no rows, not a row that says nothing.** The pane says so itself
+/// (`ui/panes/standing.rs`); what this pins is that the daemon hands it nothing to draw.
+#[test]
+fn no_corpus_is_no_rows() {
+    let ws = dir("rows-empty");
+    assert!(rows(&ws, &dir("none"), &vocab()).is_empty());
+    let _ = std::fs::remove_dir_all(&ws);
+}

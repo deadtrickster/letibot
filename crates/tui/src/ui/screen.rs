@@ -751,6 +751,15 @@ impl App {
             self.queue_pane_top = usize::from(has_header);
             let rows = self.queue_lines(w);
             self.pane_window(rows, room)
+        } else if self.note_open.is_some() {
+            // **One note, open, through `pane_window`** so it scrolls like the panes: a note is
+            // prose and the long ones are the ones worth reading, which is the queue entry
+            // overlay's reason one pane along. Esc returns to the list behind it.
+            let rows = self.note_open_lines(w);
+            self.pane_window(rows, room)
+        } else if self.standing_pane {
+            let rows = self.standing_lines(w);
+            self.pane_window(rows, room)
         } else if self.subagents_pane {
             let rows = self.subagents_lines(w);
             self.pane_window(rows, room)

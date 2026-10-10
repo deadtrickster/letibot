@@ -108,6 +108,14 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              survives a streaming turn. Press again to release — it says how many rows arrived",
         ),
         (
+            "/standing",
+            "the notes the harness reads into the prompt — one row each, with the form the \
+             budget gave it: `verbatim` when the prompt carries the note whole, `indexed` when \
+             it did not fit and the prompt carries its headings and line ranges instead. \
+             enter reads a note; a path in a conversation is reachable here. This is NOT \
+             /notes, which is what this head has shown",
+        ),
+        (
             "/notes",
             "the disclosures this head has shown; /notes dismiss [N|all] retires one \
              or every one, /notes restore brings them back",

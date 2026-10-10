@@ -6,5 +6,6 @@ pub mod jobs;
 pub mod notes;
 pub mod picker;
 pub mod queue;
+pub mod standing;
 pub mod subagents;
 pub mod todos;

@@ -272,6 +272,7 @@ impl App {
                     || self.todos_pane
                     || self.subagents_pane
                     || self.jobs_pane
+                    || self.standing_pane
                     || self.config_pane
                     // **And the slash listing, which is a document read from its
                     // head.** It has its own arm for the arrows, and it was missing

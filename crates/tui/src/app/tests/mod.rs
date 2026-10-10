@@ -1359,6 +1359,7 @@ mod screen;
 mod scroll;
 mod session;
 mod settings;
+mod standing;
 mod subagents;
 mod todos;
 mod tools;

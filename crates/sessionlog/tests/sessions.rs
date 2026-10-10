@@ -106,6 +106,9 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::Jobs { session_id, jobs } => {
             format!("Jobs({session_id}, {} entries)", jobs.len())
         }
+        ServerFrame::StandingNotes { session_id, notes } => {
+            format!("StandingNotes({session_id}, {} notes)", notes.len())
+        }
         ServerFrame::RowFetched {
             row, body, total, ..
         } => format!(

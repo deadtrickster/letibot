@@ -51,6 +51,13 @@ impl App {
             HintMode::Queue
         } else if self.jobs_pane {
             HintMode::Jobs
+        } else if self.standing_pane {
+            // **`Reading` and not a mode of its own.** rano keeps the bar's tail sentences and
+            // is pinned by tag, so a new pane has no `HintMode` to take; the head's half of the
+            // bar is where this pane's own keys go, exactly as the queue pane's verbs do a few
+            // lines down. `Reading`'s tail — `esc closes this` — is true of the note that Enter
+            // opened and of the list alike, and the keys that matter are named on the left.
+            HintMode::Reading
         } else if !self.open.is_empty() {
             HintMode::Deciding
         } else {
@@ -64,6 +71,10 @@ impl App {
         // so the keys this pane adds are the ones that survive the cut.
         let editor = if self.queue_pane && self.queue_open.is_none() {
             Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
+        } else if self.note_open.is_some() {
+            Line::styled("↑↓ scrolls", Role::Faint)
+        } else if self.standing_pane {
+            Line::styled("↑↓ moves · enter reads the note", Role::Faint)
         } else {
             editor
         };
