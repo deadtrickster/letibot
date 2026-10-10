@@ -199,6 +199,36 @@ impl Verdict {
 /// [`parse_verdict`] reads THAT. A reply that does not close with it is refused by name
 /// rather than guessed at, and the refusal is the safe direction: a verdict nobody can
 /// read is a verdict the queue does not have, and the entry waits.
+///
+/// # One command per call, and why the prompt is where that is said
+///
+/// A gatekeeper inspects a branch with `cd X && git diff … | head -50`, `… > /tmp/out`,
+/// `$(git rev-parse …)` — compound commands — and **every one of them is a permission
+/// card, by construction.** The rules are tested one simple command at a time: a
+/// substitution, a redirection to a file and a group are never matched at all, so the
+/// shape falls outside every preapproval however the operator's file is written. The cost
+/// is two-sided, and both sides were measured on this box: with a person at the keyboard
+/// nineteen queued reviews drown the head (*"i got drown in permission prompts"*), and
+/// with nobody there each call is `not run`, the attempt fails, and the queue spends one
+/// of its three against a branch nobody judged.
+///
+/// So the prompt demands one simple command per call, states the reason, and gives the
+/// two substitutions that replace the shapes a review actually reaches for: `cwd` (which
+/// `bash` takes) instead of `cd`-then-command, and a narrower command instead of `| head`.
+///
+/// **And the prompt is the only half that can carry it today.** The seat cannot refuse the
+/// shape: a [`crate::runtime::Role`] is a name, a list of tool names and a ceiling, and
+/// nothing in the exec path — `InvokeCtx`, `GateCall`, `AdjudicatedGate` — is told which
+/// seat a call came from, so a refusal at the seat would mean plumbing the seat into the
+/// gate first. The prompt is the load-bearing half; this is the honest note about why it is
+/// currently the whole of it.
+///
+/// The example commands are a block the tests parse back out of the rendered prompt
+/// (`ONE_COMMAND_SHAPES_HEAD` anchors it) rather than a list compared against a constant,
+/// because a test that read the writer's own list would pass while the prompt said
+/// something else. The placeholders are capitals (`SHA`, `CRATE`) and not `<sha>`: `<` is a
+/// redirection to a shell, so a shape written that way would teach the very thing this rule
+/// forbids.
 pub fn review_prompt(req: &ReviewRequest) -> String {
     format!(
         "You are the gatekeeper. A subagent has finished work on a branch, and you \
@@ -222,7 +252,29 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          already there\".\n\
          4. Say what you looked at. Your verdict must name the files you read and \
          the commands you ran, against the branch and base above. A verdict against \
-         a SHA nobody can name is not evidence.\n\n\
+         a SHA nobody can name is not evidence.\n\
+         5. **One command per call.** Every `bash` call runs exactly one simple \
+         command: no `&&`, no `;`, no `|`, no `>` or `<` to a file, no `$(…)` or \
+         backticks, and no `cd`-then-command. The permission rules are tested one \
+         simple command at a time — a substitution, a redirection to a file and a group \
+         are never matched — so a compound command is a card for a person, and a review \
+         that uses them cannot run unattended: with nobody at the keyboard the call is \
+         not run at all, the attempt fails, and the queue spends one of the three attempts \
+         it has.\n\n\
+         {shapes_head}\n\
+         git diff {base}...{branch}\n\
+         git diff --stat {base}...{branch}\n\
+         git log --oneline -5 {base}..{branch}\n\
+         git show SHA\n\
+         rg PATTERN PATH\n\
+         cargo test -p CRATE\n\n\
+         Two things that are not exceptions. When you need another directory, pass it to \
+         the tool — `bash` takes a `cwd`, and `read`, `grep` and `glob` take a path — \
+         rather than `cd`-ing to it first. When you want a shorter output, ask for a \
+         narrower command (`git diff --stat`, `git log --oneline -5`) rather than piping \
+         it into `head`. And the `;` in the `commands:` field at the end of this brief is \
+         a LIST SEPARATOR and not a shell operator: each item in it is one simple command, \
+         written the way you ran it.\n\n\
          You may reason in prose for as long as you like. **Then end your reply with \
          exactly this block and nothing after it**, one field per line, the labels \
          spelled exactly as they are here:\n\n\
@@ -238,8 +290,15 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
         brief = req.brief,
         branch = req.branch,
         base = req.base_sha,
+        shapes_head = ONE_COMMAND_SHAPES_HEAD,
     )
 }
+
+/// **The line that opens the block of example commands in [`review_prompt`]** — the anchor
+/// the tests parse that block back out by, and one constant so the writer and the reader
+/// cannot disagree about where the list begins.
+const ONE_COMMAND_SHAPES_HEAD: &str = "The shapes a review needs, one per line, and each line is ONE command with nothing \
+     after it:";
 
 /// **The seam the merge queue lands on.**
 ///
@@ -511,6 +570,93 @@ mod tests {
             assert!(p.contains(l), "the prompt must state `{l}`:\n{p}");
         }
         assert!(p.contains("accept | reject | needs_human"), "{p}");
+    }
+
+    /// **The prompt states the rule that decides whether a review can run at all**, in its own
+    /// words: one simple command per call, every shape that breaks it, and the reason. Asserted
+    /// as strings on the rendered prompt, so the demand cannot be dropped in an edit that leaves
+    /// the closing block — which every other test here would still pass.
+    #[test]
+    fn the_prompt_demands_one_simple_command_per_call_and_says_why() {
+        let p = review_prompt(&request());
+        for want in [
+            "One command per call",
+            "no `&&`",
+            "no `;`",
+            "no `|`",
+            "no `>` or `<` to a file",
+            "no `$(…)` or backticks",
+            "no `cd`-then-command",
+            "a card for a person",
+            "cannot run unattended",
+        ] {
+            assert!(p.contains(want), "the prompt must state `{want}`:\n{p}");
+        }
+        // The two substitutions a reviewer reaches for a compound command to get, each named
+        // where it would look for it.
+        assert!(p.contains("`bash` takes a `cwd`"), "{p}");
+        assert!(p.contains("rather than piping it into `head`"), "{p}");
+        // **And the one `;` the prompt DOES ask for** — the verdict block's list separator — is
+        // named as a separator, so the rule above cannot be read as forbidding the evidence
+        // field it sits beside.
+        assert!(p.contains("LIST SEPARATOR"), "{p}");
+    }
+
+    /// The command shapes the prompt states, **read back out of the prompt's own text**: the
+    /// non-empty lines that follow `ONE_COMMAND_SHAPES_HEAD`, trimmed.
+    ///
+    /// Parsed rather than taken from a constant, because a test that read the writer's own list
+    /// would pass while the prompt said something else — which is the one thing this pair of
+    /// tests exists to catch.
+    fn stated_command_shapes(prompt: &str) -> Vec<String> {
+        let mut lines = prompt
+            .lines()
+            .skip_while(|l| l.trim() != ONE_COMMAND_SHAPES_HEAD);
+        lines.next(); // the head itself
+        lines
+            .map(str::trim)
+            .take_while(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// **Every command the prompt states is one simple command, and the seed rules admit it.**
+    ///
+    /// The first half is the shape the permission matcher can read at all: a substitution, a
+    /// redirection to a file, a group and a `&&`/`;`/`|` are exactly what it refuses to split,
+    /// so one of them in an example is the prompt teaching the card it forbids. `<` and `>` are
+    /// in the list for that reason and not for tidiness — which is why the placeholders are
+    /// capitals and not `<sha>`.
+    ///
+    /// The second half is the consequence, and it is the defect itself: an example the seed does
+    /// not preapprove is an example that costs a person a card. The seed is the floor this
+    /// repository installs; the operator's own file outranks it (last match wins), and a rule
+    /// they deleted is their call rather than this test's.
+    #[test]
+    fn every_shape_the_prompt_states_is_one_simple_command_and_costs_no_card() {
+        let shapes = stated_command_shapes(&review_prompt(&request()));
+        assert!(
+            shapes.len() >= 4,
+            "the prompt must state the shapes a review needs, one per line: {shapes:?}"
+        );
+        for shape in &shapes {
+            for bad in ["&&", ";", "|", ">", "<", "$(", "`"] {
+                assert!(
+                    !shape.contains(bad),
+                    "the prompt states `{shape}`, which carries `{bad}` — a compound command \
+                     is a card for a person. The stated shapes were: {shapes:?}"
+                );
+            }
+        }
+        let seed = crate::permission::seed();
+        for shape in &shapes {
+            assert_eq!(
+                crate::permission::evaluate_bash(shape, &[&seed]),
+                crate::permission::Action::Allow,
+                "`{shape}` is not preapproved by the seed, so a review that runs it is a \
+                 permission card — which is the defect this prompt rule exists to close"
+            );
+        }
     }
 
     /// **A reply in the shape the prompt asks for becomes the verdict it says** — the decision,
