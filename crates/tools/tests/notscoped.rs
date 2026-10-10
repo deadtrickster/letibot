@@ -152,6 +152,8 @@ fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
     let id = host
         .spawn(&SpawnRequest {
             command: "echo this must never run".into(),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: "/".into(),
             scope: ScopeKind::Turn,
             scope_name: None,

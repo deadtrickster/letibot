@@ -3898,6 +3898,28 @@ fn a_completion_notice_folds_to_one_line_per_settlement() {
     );
 }
 
+/// **A named job folds to the same line, with the name in it.**
+///
+/// The label is `release-build · j65` — spaces and all — and the fold took the bullet's first
+/// word for the handle, closed the backtick on it and failed, which dropped the WHOLE row to raw
+/// prose: the operator's line would have lost its fold, and the paragraph R7 addresses to the
+/// model would have come back, on exactly the notice the name was asked for. So the handle is
+/// the whole span between the backticks, and this is the test that says so.
+#[test]
+fn a_named_jobs_settlement_folds_with_its_name() {
+    const NAMED: &str = "[job] a job you backgrounded has ended:\n  - `release-build · j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test --workspace\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
+    let folded = folded_notice(NAMED, &[]).expect("a named job's notice folds");
+    assert_eq!(
+        folded,
+        "Job release-build · j65 exited 0 after 54.9s, wrote 1030 bytes: cargo test --workspace",
+        "the name is kept; the heading and the promise are not"
+    );
+    assert!(
+        !folded.contains("you do not need to wait for it"),
+        "the promise is to the model: {folded}"
+    );
+}
+
 /// **The plan's nudge is the same shape — and the operator asked for its HEAD alone.**
 ///
 /// Their words, on the row they have been reading all evening: *"in read verbosity todo nag

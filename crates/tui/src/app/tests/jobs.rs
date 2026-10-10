@@ -269,6 +269,8 @@ fn the_jobs_pane_names_the_file_a_redirected_job_writes_to() {
         vec![letibot_sessionlog::protocol::JobEntry {
             id: "j1".into(),
             command: "cargo test > /tmp/build.log 2>&1".into(),
+            // Nobody named it: this test is about the redirect, not the name.
+            slug: String::new(),
             how: "asked".into(),
             state: "running".into(),
             running: true,
@@ -310,6 +312,8 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
         |id: &str, running: bool, redirect: Option<&str>| letibot_sessionlog::protocol::JobEntry {
             id: id.into(),
             command: "cargo build".into(),
+            // The count on the composer's edge is about running jobs, named or not.
+            slug: String::new(),
             how: "asked".into(),
             state: if running {
                 "running".into()
@@ -524,6 +528,39 @@ fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
         !lines.contains("not in this head's window"),
         "the head no longer has a window to be outside of: {lines}"
     );
+}
+
+/// **The name the daemon sent survives the fold, and an unnamed row carries nothing.**
+///
+/// `JobEntry::slug` is the agent's own word for the work (`bash(slug: "release-build")`), and
+/// it arrives on the wire already flattened by the daemon — the head neither invents one nor
+/// trims one. **The pane's ROW cannot draw it yet**: the layout is rano's and its `JobRow` has
+/// no field for a name, which is written at [`crate::ui::panes::jobs`]. So this pins the half
+/// that IS this head's — the row the daemon sent is kept whole, name and all — which is what
+/// makes the drawing half one field away rather than a re-plumbing.
+#[test]
+fn a_jobs_name_survives_the_fold_and_an_unnamed_row_carries_none() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(jobs_frame(
+        "s",
+        vec![
+            named_job("j1", "release-build", "cargo build --release", true),
+            daemon_job("j2", "cargo test", true),
+        ],
+    ));
+    assert_eq!(a.jobs[0].slug, "release-build");
+    assert_eq!(a.jobs[0].id, "j1", "and the handle is untouched");
+    assert_eq!(
+        a.jobs[1].slug, "",
+        "nobody named this one, so there is nothing to draw — not a derivation"
+    );
+    // And the row it came in on is otherwise exactly what it was.
+    assert_eq!(a.jobs[1].command, "cargo test");
 }
 
 /// **A REDIRECTED JOB'S OUTPUT PANE NAMES THE FILE** — the operator: *"entering a job never

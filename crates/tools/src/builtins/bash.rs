@@ -127,6 +127,57 @@ fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Opti
     ))
 }
 
+/// **The name the caller gave this run**, or `None` when nobody said one.
+///
+/// `j57` is a counter. A person watching the jobs pane cannot tell which running job is the
+/// release build and which is the fold's tests, and a name is what makes a row ring a bell —
+/// so `bash` takes one: `slug: "release-build"`. It is **the agent's own stated intent for
+/// the work**, the same kind of fact as `task_start`'s `slug`, and **never a parse of the
+/// command line**: a name derived from `W=…; cd /tmp && cargo test …` is the machine
+/// inventing an intent, which is the defect this tree refuses everywhere else. **Missing or
+/// blank means no slug** — absent is the honest answer when nobody said one, and the command
+/// is already on the row, so a guessed name earns nothing.
+///
+/// A name and not a sentence: runs of whitespace **and control characters** become `-`, and the
+/// result is capped at [`MAX_SLUG`], so one stated name is one row in the listing and one cell in
+/// the pane whatever the caller typed. Nothing else is touched — no case change, no derivation,
+/// no fallback word for a blank argument.
+///
+/// **And the transcript is where it is actually read.** The pane was the origin of the ask, but
+/// the operator's correction was *"i was look at the transcript actually, not jobs pane"* — so
+/// the name rides on every sentence about the job: this result (below) and the settlement
+/// notice when it ends ([`crate::exec::job_label`], which is
+/// [`crate::exec::JobView::label`]'s rule without a view to hang it on). A job nobody named is
+/// unchanged in both places, because the rule's fallback is the id.
+fn slug_arg(args: &Value) -> Option<String> {
+    let raw = args.get("slug").and_then(|v| v.as_str())?;
+    let mut out = String::new();
+    for c in raw.chars() {
+        if c.is_control() || c.is_whitespace() {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.chars().count() > MAX_SLUG {
+        out = out.chars().take(MAX_SLUG).collect();
+        while out.ends_with('-') {
+            out.pop();
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The longest a job's name may be. The same number `task_start` caps a worktree's
+/// slug at, and for the same reason: it has to read in a row that is already carrying an
+/// id, a state, a byte count and a command.
+const MAX_SLUG: usize = 40;
+
 /// **How long a foreground run may go before the daemon says it is the wrong
 /// shape** — one minute.
 ///
@@ -175,7 +226,7 @@ impl Tool for Bash {
             "bash",
             "Run a shell command in the session's workspace and return its output. \
              Give `command`; optionally `cwd` (relative to the workspace), \
-             `timeout_ms`, and `background: true` to start it and return \
+             `timeout_ms`, `slug` and `background: true` to start it and return \
              immediately. A command you did NOT mark background is moved to the \
              background by the runtime once it has run longer than `timeout_ms`, and \
              the result says so, names its job id and says which call gets its \
@@ -183,10 +234,15 @@ impl Tool for Bash {
              would give you two. Every run is a job with an id: output is capped \
              inline and the rest is read with `job_output`, and a job's completion \
              **arrives on its own** when it ends — you are told, unprompted, so you \
-             do not sit and wait on it. **That is the rule, and it is about clocks rather \
-             than about verbs: you are woken when the job finishes, so do not build your \
-             own clock.** `sleep 200`, a `tail -f` of a log, a `until … ; do sleep 5; \
-             done` — every one of them is the same mistake in a different spelling, and \
+             do not sit and wait on it. **Give `slug` when the job is one a person \
+             will want to recognise** (`release-build`, `fold-tests`): your own name \
+             for the work, which is what the transcript calls this job and what the jobs \
+             pane draws beside the id — and never a restatement of the command. Leave it \
+             out when you have no name and none is invented for you. **That is the rule, \
+             and it is about clocks rather than about verbs: you are woken when the job \
+             finishes, so do not build your own clock.** `sleep 200`, a `tail -f` of a \
+             log, a `until … ; do sleep 5; done` — every one of them is the same mistake \
+             in a different spelling, and \
              each spends the wait twice: it cannot be woken early when the work finishes \
              in twenty seconds, and it cannot be ended cleanly when it fails. A job is \
              stopped with `job_kill`. Every process lands in a cgroup \
@@ -206,6 +262,7 @@ impl Tool for Bash {
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
                     "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes); set it higher for a command you know takes longer. Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and wakes you when it ends — rather than behind a raised timeout_ms."},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
+                    "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
                     "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."}
                 },
@@ -319,6 +376,10 @@ impl Tool for Bash {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // **The caller's own name for this work, or nothing.** Read here rather than derived
+        // from `command` anywhere: see [`slug_arg`] for the ruling and for what a blank
+        // argument means.
+        let slug = slug_arg(args);
         let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
         if ctx.backend.stat(cwd).is_none() && cwd != "." {
             let (dir, entries) = super::nearest_listing(ctx.backend, cwd);
@@ -406,6 +467,12 @@ impl Tool for Bash {
         env.push(("LETIBOT_COMMAND".to_string(), command.to_string()));
         let req = SpawnRequest {
             command: command.to_string(),
+            // The name the caller stated, if it stated one. It rides on the job whether or
+            // not this call asked for the background: a foreground run the runtime promotes
+            // is the same work, and a name that appeared only after the promotion would be
+            // a name nobody gave. Nothing else reads it — `job_entries` is what decides
+            // which jobs a listing shows.
+            slug,
             cwd,
             scope,
             scope_name,
@@ -454,8 +521,27 @@ impl Tool for Bash {
             host.arm_deadline(&id, timeout);
         }
 
+        // **What this job is called, in the one spelling the tree uses** — the name the caller
+        // stated beside the id the daemon minted (`release-build · j65`), or the bare id when
+        // nobody named it. It is [`crate::exec::JobView::label`]'s rule, reached through
+        // [`crate::exec::job_label`] because the view is an `Option` here — and because the
+        // settlement notice, which is where the operator reads that this job ENDED, has no view
+        // at all. **Every sentence about this run uses it, whichever way the run goes**: the
+        // backgrounded result, the promotion, the deadline and the refusals below. A job spelled
+        // by its name in one arm and by its id in the next is two answers to *which job is this*,
+        // which is the question a name exists to answer.
+        //
+        // Read off the VIEW rather than off `req`: the host makes a name unique within the
+        // session (`release-build`, then `release-build-2`), so the request is what was asked
+        // for while the view is what every row and every sentence will say.
+        let view = host.job(&id);
+        let slug = view
+            .as_ref()
+            .and_then(|v| v.slug.clone())
+            .or_else(|| req.slug.clone());
+        let label = crate::exec::job_label(slug.as_deref(), &id.0);
+
         if background {
-            let view = host.job(&id);
             // **Where this job's own output goes** — R41, requirement one, and it changes
             // what the sentences below may SAY rather than only adding a footnote beside
             // them.
@@ -500,15 +586,26 @@ impl Tool for Bash {
                 "spellings, and each spends the wait twice: it cannot be woken early when ",
                 "the work finishes in twenty seconds, and it cannot be ended when it fails.",
             );
+            // **And the handles a caller may pass.** The name is the caller's own word for
+            // the work, and it is spelled back with the id so that a string a person can
+            // read is a string that resolves to this job: the label above is what a reader
+            // SEES, and this is what `job_output`, `job_kill` and `job_wait` accept. Absent
+            // when nobody said one — no line, and not a derived one.
+            let named = match &slug {
+                Some(s) => format!(
+                    "  name: {s} — `job_output`, `job_kill` and `job_wait` take this or `{id}`\n"
+                ),
+                None => String::new(),
+            };
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 Duration::ZERO,
                 Backgrounding::Asked,
                 format!(
-                    "carry on — `{id}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}"
+                    "carry on — `{label}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}"
                 ),
                 format!(
-                    "started `{id}` in the background.\n  command: {command}\n  \
+                    "started `{label}` in the background.\n  command: {command}\n{named}  \
                      pid: {}\n  scope: {} — {}\n\nIt is running now, and **its \
                      completion will reach you by itself when it ends — do not wait for \
                      it, and do not poll.** {clock}\n\n{read_it} Carry on with something \
@@ -606,10 +703,10 @@ impl Tool for Bash {
             // window that will stay empty.
             let next = match crate::builtins::output_redirect_path(command) {
                 Some(path) => format!(
-                    "carry on — `{id}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended, and do not build your own clock in the meantime."
+                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended, and do not build your own clock in the meantime."
                 ),
                 None => format!(
-                    "carry on — `{id}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far."
+                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far."
                 ),
             };
             let mut inv = Invocation::backgrounded(
@@ -618,7 +715,7 @@ impl Tool for Bash {
                 p.how.clone(),
                 &next,
                 format!(
-                    "{body}\n\n[`{id}` was moved to the background — you did not ask \
+                    "{body}\n\n[`{label}` was moved to the background — you did not ask \
                      for it]\n  command: {command}\n  owned by: {} — {}\n\nIts \
                      completion will reach you on its own when it ends; do not wait on it.\n",
                     p.to,
@@ -637,7 +734,7 @@ impl Tool for Bash {
                     "output was capped inline at {MAX_INLINE_BYTES} bytes / \
                      {MAX_INLINE_LINES} lines, keeping the TAIL. {} Call `job_output` \
                      with job=\"{id}\" for the rest.",
-                    out.denominator(&id)
+                    out.denominator(&id, &label)
                 ));
             }
             for n in notes {
@@ -671,7 +768,7 @@ impl Tool for Bash {
                 // the type, not a case.
                 let reaped = host.kill_job(&id);
                 let mut inv = Invocation::timed_out(format!(
-                    "{body}\n\n[the command `{id}` was killed after {:.0}s — it outlived \
+                    "{body}\n\n[the command `{label}` was killed after {:.0}s — it outlived \
                      its deadline]\n  command: {command}\n\nIt did not fail; it was \
                      stopped. To run it longer, call `bash` again with a larger \
                      `timeout_ms`, or `background: true` to run it with no deadline.",
@@ -686,7 +783,7 @@ impl Tool for Bash {
                 Some(timeout) => {
                     let reaped = host.kill_job(&id);
                     let mut inv = Invocation::timed_out(format!(
-                        "{body}\n\n[the command `{id}` was killed after {:.0}s — it outlived \
+                        "{body}\n\n[the command `{label}` was killed after {:.0}s — it outlived \
                          its deadline]\n  command: {command}\n\nIt did not fail; it was \
                          stopped. To run it longer, call `bash` again with a larger \
                          `timeout_ms`, or `background: true` to run it with no deadline.",
@@ -705,13 +802,13 @@ impl Tool for Bash {
                 // would be the measured bug by another door: the person's `!`
                 // run ended by a clock nobody armed for it. The run is the
                 // operator's own, still going; its stop is their act — Ctrl+C
-                // at their console, `!term`, closing the head — or `job_kill`
-                // by id, and saying so with the id is the one honest answer
-                // this call can return.
+                // at their console, `!term`, closing the head — or `job_kill`,
+                // and naming the job in the spelling its own result used is the
+                // one honest answer this call can return.
                 None => Invocation::failed(
-                    format!("`{id}` is still running"),
+                    format!("`{label}` is still running"),
                     format!(
-                        "{body}\n\n[the wait for `{id}` ended while it was still running \
+                        "{body}\n\n[the wait for `{label}` ended while it was still running \
                          — no deadline applies to it, so it was NOT stopped]\n  \
                          command: {command}\n\nIt is the operator's own run: their console has its \
                          output, their own acts are its stop. `job_output` with \
@@ -720,7 +817,7 @@ impl Tool for Bash {
                 ),
             },
             JobState::NotScoped => Invocation::failed(
-                format!("`{id}` could not join its scope, so the command was NOT run"),
+                format!("`{label}` could not join its scope, so the command was NOT run"),
                 format!(
                     "{body}\n\nThe wrapper failed to put the process in its cgroup and \
                      refused to exec rather than start a process nothing would reap. \
@@ -731,7 +828,7 @@ impl Tool for Bash {
             // exactly the reading it must not get.
             _ if launcher_failed.is_some() => Invocation::failed(
                 format!(
-                    "`{id}`'s boundary did not come up, so nothing can be concluded from its exit"
+                    "`{label}`'s boundary did not come up, so nothing can be concluded from its exit"
                 ),
                 format!(
                     "{body}\n\n{}\n\nThis is `not_run` in substance: the confinement is \
@@ -749,7 +846,7 @@ impl Tool for Bash {
                  the command's answer, not a harness failure."
             )),
             other => Invocation::failed(
-                format!("`{id}` {}", other.word()),
+                format!("`{label}` {}", other.word()),
                 format!("{body}\n\nThe process did not exit on its own."),
             ),
         };
@@ -837,7 +934,7 @@ impl Tool for Bash {
                  {MAX_INLINE_LINES} lines, keeping the TAIL. {} Call `job_output` \
                  with job=\"{id}\" — and `offset` if you want a different window — \
                  for the rest.",
-                out.denominator(&id)
+                out.denominator(&id, &label)
             ));
         }
         for n in notes {
@@ -1137,6 +1234,74 @@ fn clip_tail(text: &str, max_bytes: usize, max_lines: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A name is never invented from the command — and that is the whole point of the
+    /// parameter.**
+    ///
+    /// The operator's ruling: *"the slug is your intent, not command"*. So the test that
+    /// matters is the one where the command is exactly the shape a deriver would reach for —
+    /// `W=…; cd /tmp && cargo test …`, whose first words are a variable assignment and a
+    /// `cd` — and the answer is **no name at all**. A guessed slug is worse than none: the
+    /// command is already on the row, so the guess costs the one thing a name is for.
+    #[test]
+    fn no_slug_is_ever_derived_from_the_command() {
+        let deriver_bait = serde_json::json!({
+            "command": "W=/tmp/build; cd /tmp && cargo test --workspace --release",
+            "background": true,
+        });
+        assert_eq!(slug_arg(&deriver_bait), None);
+
+        // Every shape of *nobody said one*: the key absent, null, an empty string, and
+        // whitespace. All four are the same answer, because all four are the same claim.
+        for args in [
+            serde_json::json!({"command": "cargo test"}),
+            serde_json::json!({"command": "cargo test", "slug": null}),
+            serde_json::json!({"command": "cargo test", "slug": ""}),
+            serde_json::json!({"command": "cargo test", "slug": "   \t "}),
+        ] {
+            assert_eq!(slug_arg(&args), None, "{args}");
+        }
+    }
+
+    /// **A stated name is the caller's own words, spelled as a name.**
+    ///
+    /// No derivation happens here either — the words are the model's — but a name is not a
+    /// sentence: one stated name has to be one row in `/job` and one cell in the pane, so runs
+    /// of whitespace become `-` and the length is capped. Nothing else moves: no case change,
+    /// no fallback word.
+    #[test]
+    fn a_stated_name_is_flattened_into_a_name_and_kept_otherwise() {
+        let args = |v: &str| serde_json::json!({"command": "cargo test", "slug": v});
+        assert_eq!(
+            slug_arg(&args("release-build")),
+            Some("release-build".to_string())
+        );
+        assert_eq!(
+            slug_arg(&args("  Release Build  ")),
+            Some("Release-Build".to_string()),
+            "whitespace is not a name's business, and the caller's case is"
+        );
+        assert_eq!(
+            slug_arg(&args("fold\ntests")),
+            Some("fold-tests".to_string()),
+            "a name that would draw as two rows"
+        );
+        assert_eq!(
+            slug_arg(&args("a\u{7}b")),
+            Some("a-b".to_string()),
+            "a control character is a break, not a letter: it cannot be drawn and it is not \
+             part of a name"
+        );
+        let long = "x".repeat(200);
+        let capped = slug_arg(&args(&long)).unwrap();
+        assert_eq!(capped.chars().count(), MAX_SLUG);
+        assert!(capped.chars().all(|c| c == 'x'));
+        // And the cap does not leave a dangling separator behind.
+        let words = format!("{} tail", "word ".repeat(20));
+        let capped = slug_arg(&args(&words)).unwrap();
+        assert!(!capped.ends_with('-'), "{capped:?}");
+        assert!(capped.chars().count() <= MAX_SLUG);
+    }
 
     #[test]
     fn the_tail_is_what_survives_the_cap() {

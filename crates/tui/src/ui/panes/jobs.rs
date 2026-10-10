@@ -72,6 +72,31 @@ impl App {
 
     /// **The jobs pane's facts, in rano's words**: the daemon's table as it stands, the fold
     /// of the finished ones, and the cursor.
+    ///
+    /// # The name is on the wire and NOT yet on this row
+    ///
+    /// `JobEntry::slug` is the daemon's answer to *what did the agent call this job* —
+    /// `release-build`, stated by the caller, never parsed from the command — and the wire
+    /// carries it now. **This row cannot draw it yet**: the layout is rano's
+    /// (`rano::agent::jobs::JobsPane::content`, rano `v0.8.1`, which composes
+    /// `"{id} {command}"` from [`JobRow`]), and that crate's `JobRow` has no field for a
+    /// name. There is deliberately no improvisation here — a slug smuggled into `id` would
+    /// stop being the handle `ReadJobOutput` takes, and one prefixed onto `command` would be
+    /// structure encoded as words in a string, which is the defect `protocol.rs` refuses by
+    /// name.
+    ///
+    /// So the drawing half is one field in rano and one line here:
+    ///
+    /// ```text
+    /// // rano, agent::jobs::JobRow
+    /// pub slug: String,
+    /// // and in `JobsPane::content`, the row becomes a name beside the id
+    /// // ...and in this head's adapter, one line: `slug: j.slug.clone(),`
+    /// ```
+    ///
+    /// Until then `/job` is where a name is readable: `Harness::job_lines` draws it beside
+    /// the id (`release-build · j65  running  4096 bytes  cargo build`), which is the same
+    /// rule the pane owes.
     pub(crate) fn jobs_view(&self) -> JobsPane {
         JobsPane {
             jobs: self

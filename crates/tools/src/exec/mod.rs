@@ -100,7 +100,7 @@ pub use confine::{
 };
 pub use host::{
     DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion, Protected,
-    SpawnRequest, Waited,
+    SpawnRequest, Waited, job_label,
 };
 pub use jobs::{DEADLINE_KILL, JobId, JobState, OutputSlice, Stdin};
 pub use monitor::{

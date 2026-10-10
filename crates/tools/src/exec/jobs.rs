@@ -499,12 +499,20 @@ impl OutputSlice {
     /// denominator*, and a zero denominator is a failed scope, never an answer.
     /// So a job that has written nothing says exactly that, and it does not look
     /// like a job whose output was dropped.
-    pub fn denominator(&self, job: &JobId) -> String {
+    ///
+    /// **Two spellings of one job, and they are two different jobs to do.** `label` is what a
+    /// reader is SHOWN — `release-build · j65`, the rule [`crate::exec::JobView::label`] and
+    /// [`crate::exec::job_label`] share — and `job` is the handle a CALL takes, because
+    /// `job_output` with `job="release-build · j65"` resolves to nothing: `pick_job` matches
+    /// the whole id or the whole slug and never a label. So this line names the job by its
+    /// label and the call it suggests passes the id, which is the same split the sentences
+    /// around it make.
+    pub fn denominator(&self, job: &JobId, label: &str) -> String {
         if self.produced == 0 {
-            return format!("`{job}` has produced 0 bytes of output so far.");
+            return format!("`{label}` has produced 0 bytes of output so far.");
         }
         let mut s = format!(
-            "bytes {}–{} of {} produced by `{job}`",
+            "bytes {}–{} of {} produced by `{label}`",
             self.from, self.to, self.produced
         );
         if self.dropped > 0 {
@@ -564,6 +572,22 @@ pub struct Job {
     /// What the model asked for, verbatim. Never re-rendered from argv: a command
     /// echoed back in a different spelling is a command the model did not write.
     pub command: String,
+    /// **The name the caller gave this work**, or `None` when nobody said one.
+    ///
+    /// `j57` is a counter: a person watching the pane cannot tell which running job is
+    /// the release build and which is the fold's tests, and a name is what makes a row
+    /// ring a bell. The name is the **agent's own stated intent** —
+    /// `bash(command = …, background: true, slug: "release-build")` — and never a parse
+    /// of the command line: a slug derived from `W=…; cd /tmp && cargo test …` is the
+    /// machine inventing an intent, which is the defect this tree refuses everywhere
+    /// else. **Absent is the honest answer when nobody said one**; the command is
+    /// already on the row, so a guessed slug earns nothing and costs the truth.
+    ///
+    /// **Unique within the session and fixed for the job's life.**
+    /// [`super::host::ProcessHost::spawn`] takes the name the caller asked for and
+    /// appends `-2`, `-3` … until it is free; nothing moves it afterwards, because a
+    /// name that moves while the job runs is worse than none.
+    pub slug: Option<String>,
     /// This job's **own** cgroup, which is what `job_kill` ends, and the scope
     /// that owns its lifetime — the turn, the session, or a named explicit
     /// scope. The distinction is the one a reader needs: `scope` is
@@ -601,6 +625,7 @@ impl Job {
     pub fn new(
         id: JobId,
         command: String,
+        slug: Option<String>,
         lifetime: Lifetime,
         cwd: String,
         pid: u32,
@@ -610,6 +635,7 @@ impl Job {
         Job {
             id,
             command,
+            slug,
             lifetime: Mutex::new(lifetime),
             cwd,
             started: SystemTime::now(),
@@ -696,7 +722,7 @@ mod tests {
     fn a_slice_of_nothing_says_so_rather_than_returning_zero() {
         let c = Capture::new(64);
         let s = c.tail(100);
-        let d = s.denominator(&JobId("j1".into()));
+        let d = s.denominator(&JobId("j1".into()), "j1");
         // `0` and `0 of 0` are different facts and this is the one that is not a
         // measurement about content.
         assert!(d.contains("produced 0 bytes"), "{d}");
@@ -711,7 +737,7 @@ mod tests {
         assert_eq!(s.text(), "6789abcdef");
         assert_eq!(s.produced, 16);
         assert_eq!(s.dropped, 6);
-        let d = s.denominator(&JobId("j1".into()));
+        let d = s.denominator(&JobId("j1".into()), "j1");
         assert!(d.contains("NO LONGER RETAINED"), "{d}");
         assert!(d.contains("of 16 produced"), "{d}");
         assert!(!s.complete());
@@ -732,7 +758,7 @@ mod tests {
         assert_eq!(second.dropped, 8);
         assert!(
             second
-                .denominator(&JobId("j1".into()))
+                .denominator(&JobId("j1".into()), "j1")
                 .contains("NO LONGER RETAINED")
         );
     }
@@ -742,9 +768,37 @@ mod tests {
         let mut c = Capture::new(64);
         c.push(b"0123456789");
         let s = c.slice(0, 4);
-        let d = s.denominator(&JobId("j7".into()));
+        let d = s.denominator(&JobId("j7".into()), "j7");
         assert!(d.contains("offset=4"), "{d}");
         assert!(d.contains("job=\"j7\""), "{d}");
+    }
+
+    /// **The name is the reader's half and the id is the caller's half, in one sentence.**
+    ///
+    /// The job_output header is this line, and the complaint that put a name on a job was
+    /// about exactly this kind of counter. What must NOT happen is the label leaking into the
+    /// `job="…"` suggestion: `release-build · j65` is not a handle `pick_job` resolves, so a
+    /// suggestion carrying one would send the caller to a refusal.
+    #[test]
+    fn the_denominator_names_the_job_and_suggests_a_handle_that_resolves() {
+        let mut c = Capture::new(64);
+        c.push(b"0123456789");
+        let s = c.slice(0, 4);
+        let named = s.denominator(&JobId("j65".into()), "release-build · j65");
+        assert!(
+            named.contains("produced by `release-build · j65`"),
+            "a named job is named in the header: {named}"
+        );
+        assert!(
+            named.contains("job=\"j65\""),
+            "and the argument it suggests is the resolvable one: {named}"
+        );
+        assert!(!named.contains("job=\"release-build"), "{named}");
+        // **And a job nobody named is the id in both places**, which is the label's own
+        // fallback rather than a second rule.
+        let bare = s.denominator(&JobId("j65".into()), "j65");
+        assert!(bare.contains("produced by `j65`"), "{bare}");
+        assert!(bare.contains("job=\"j65\""), "{bare}");
     }
 
     #[test]

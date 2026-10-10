@@ -53,6 +53,8 @@ use letibot_tools::exec::{
 fn spawn(host: &HostProcesses, command: &str, tty: bool) -> letibot_tools::exec::JobId {
     host.spawn(&SpawnRequest {
         command: command.to_string(),
+        // Nobody named this run: the substrate's own test.
+        slug: None,
         cwd: ".".into(),
         scope: ScopeKind::Turn,
         scope_name: None,

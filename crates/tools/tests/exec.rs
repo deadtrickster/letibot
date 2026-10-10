@@ -254,6 +254,8 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
     for cmd in ["sleep 300", "sleep 300", "sh -c 'sleep 300 & sleep 300'"] {
         host.spawn(&letibot_tools::exec::SpawnRequest {
             command: cmd.into(),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: ".".into(),
             scope: ScopeKind::Explicit,
             scope_name: Some("reaper-test".into()),
@@ -749,6 +751,8 @@ fn a_session_that_ends_leaves_no_empty_cgroup_directory_either() {
 
     host.spawn(&letibot_tools::exec::SpawnRequest {
         command: "true".into(),
+        // Nobody named this run: the substrate's own test.
+        slug: None,
         cwd: ".".into(),
         scope: ScopeKind::Turn,
         scope_name: None,
