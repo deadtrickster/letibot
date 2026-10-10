@@ -885,6 +885,10 @@ impl App {
             return None;
         }
         let mut mine = self.operator_todos();
+        // **The state moves this command makes on rows that are not the operator's** — see the
+        // `postpone|resume` arm below, which is the only verb that can make one. Sent beside the
+        // half, in one frame, because both are the board as the operator wants it.
+        let mut moved: Vec<letibot_sessionlog::event::TodoState> = Vec::new();
         // `done N` and `rm N` — a number is what the pane prints beside each of these rows.
         let (verb, arg) = match rest.split_once(char::is_whitespace) {
             Some((v, a)) => (v, a.trim()),
@@ -904,15 +908,25 @@ impl App {
                     return None;
                 }
                 if verb == "rm" {
-                    mine.remove(at - 1);
-                    self.say(&format!("row {at} is off the board"));
+                    // **STRUCK OFF, and not removed.** The operator's ruling: *"only i should be
+                    // able to delete todo items. as a rule everything that ever created stays in
+                    // history"*, and *"so done items or canceled items should be kept"*. So the row
+                    // keeps its words and its place and the model still sees it — marked — and
+                    // `/todo resume N` is how it comes back. Nothing here is a removal, which is
+                    // also why the model cannot do it: `todo_write` takes three words and none of
+                    // them is `cancelled`.
+                    mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Cancelled;
+                    self.say(&format!(
+                        "row {at} is struck off — it stays on the board, marked `[c]`, and the \
+                         model still sees it; `/todo resume {at}` puts it back"
+                    ));
                 } else {
                     mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Completed;
                     self.say(&format!("row {at} is done"));
                 }
             }
             // **`postpone N` and `resume N` — the state the operator owns, over the same numbers
-            // every other verb uses.**
+            // every other verb uses, AND over the words of a row that has no number.**
             //
             // The operator's ask: *"can we handle postponed todo item properly? i.e. they persist
             // but without nag and with some counter visible to me"*. The state is THEIRS and this
@@ -933,32 +947,123 @@ impl App {
             // handle is not touched by either verb, so a row set aside while waiting on a job goes
             // back to waiting on the same one.
             //
+            // **AND THE WORDS ARE THE REACH, because a row the MODEL wrote has no number.** The
+            // pane numbers the operator's own rows and only those (rano prints `{:>2}` for `mine`
+            // and four spaces for everything else), so a row the model wrote — accurate, and
+            // waiting on the operator's own hand — could not be named by any verb at all:
+            // `todo_write` refuses `postponed`, deliberately, and this verb numbered the other
+            // half. MEASURED: fourteen turns spent restating one true sentence, because nothing
+            // could silence a row that was correct. So a non-numeric argument is the row's own
+            // words, which is the board's one key everywhere else — `set_operator_states` resolves
+            // the operator's rows by their exact trimmed text, and `TodoNeed::Row` matches a plan's
+            // edges by content — and a name that does not resolve exactly once is REFUSED with
+            // what it found, the same rule every ambiguous name in this tree keeps.
+            //
+            // **A parent's row is refused by name.** A parent owns its own rows' states
+            // (`TodoBoard::upsert_parent` writes both the state and the edges of a row it names),
+            // so a set-aside written here would be taken back by the parent's next write — and a
+            // silence that evaporates is worse than a refusal that says where the row came from.
+            //
             // A bare `postpone` or `resume` with no number is the text of a new row, exactly as a
             // bare `done` is — see the arm below, which is the one convention for all of them.
             ("postpone" | "resume", n) if !n.is_empty() => {
-                let Ok(at) = n.parse::<usize>() else {
-                    self.say(&format!("`{n}` is not a row number — `/todo` lists yours"));
-                    return None;
-                };
-                if at < 1 || at > mine.len() {
-                    self.say(&format!(
-                        "there is no row {at} of yours — you have {}",
-                        mine.len()
-                    ));
-                    return None;
-                }
-                if verb == "postpone" {
-                    mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Postponed;
-                    self.say(&format!(
-                        "row {at} is set aside — it stays on your list and the model still sees \
-                         it, and nothing is reminded of it until you lift it with `/todo resume \
-                         {at}`"
-                    ));
+                use letibot_sessionlog::event::{TodoBy, TodoState, TodoStatus};
+                let set_aside = verb == "postpone";
+                let status = if set_aside {
+                    TodoStatus::Postponed
                 } else {
-                    mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Pending;
-                    self.say(&format!(
-                        "row {at} is back in the list — the check may ask about it again"
-                    ));
+                    TodoStatus::Pending
+                };
+                // A NUMBER is one of the operator's own rows — the numbers the pane prints.
+                if let Ok(at) = n.parse::<usize>() {
+                    if at < 1 || at > mine.len() {
+                        self.say(&format!(
+                            "there is no row {at} of yours — you have {}",
+                            mine.len()
+                        ));
+                        return None;
+                    }
+                    mine[at - 1].status = status;
+                    if set_aside {
+                        self.say(&format!(
+                            "row {at} is set aside — it stays on your list and the model still sees \
+                             it, and nothing is reminded of it until you lift it with `/todo resume \
+                             {at}`"
+                        ));
+                    } else {
+                        self.say(&format!(
+                            "row {at} is back in the list — the check may ask about it again"
+                        ));
+                    }
+                    // The optimistic view and the frame are the function's tail: `mine` has moved.
+                } else {
+                    // Anything else is the row's own WORDS, over the whole board.
+                    let want = n.trim();
+                    let hit: Option<(String, TodoBy)> = self
+                        .todos
+                        .iter()
+                        .find(|t| t.content.trim() == want)
+                        .map(|t| (t.content.clone(), t.by.clone()));
+                    // More than one row can say the same words — the halves are separate lists and
+                    // nothing stops a model and a person writing the same sentence.
+                    let ambiguous = self
+                        .todos
+                        .iter()
+                        .filter(|t| t.content.trim() == want)
+                        .count()
+                        > 1;
+                    let Some((content, by)) = hit else {
+                        self.say(&format!(
+                            "no row this head knows says `{want}` — open the todos pane (ctrl-t) so \
+                             it has read the board, and quote the row's own words exactly; a number \
+                             (`/todo postpone N`) is one of YOUR rows"
+                        ));
+                        return None;
+                    };
+                    if ambiguous {
+                        self.say(&format!(
+                            "two rows say `{want}`, so which one moves is not something this can \
+                             know — quote the one you mean, or use its number if it is yours"
+                        ));
+                        return None;
+                    }
+                    match by {
+                        TodoBy::Operator => {
+                            if let Some(t) = mine.iter_mut().find(|t| t.content == content) {
+                                t.status = status;
+                            }
+                        }
+                        TodoBy::Model => {
+                            moved.push(TodoState {
+                                content: content.clone(),
+                                status,
+                            });
+                            // **Shown at once**, the same trust `echo_operator_todos` places: the
+                            // write publishes when it lands, and until then the pane draws what was
+                            // sent rather than a row that has not moved yet.
+                            if let Some(t) = self.todos.iter_mut().find(|t| t.content == content) {
+                                t.status = status;
+                            }
+                        }
+                        TodoBy::Parent(who) => {
+                            self.say(&format!(
+                                "that row is {who}'s — a parent's rows are the parent's to retire, \
+                                 and a state set here would be taken back by its next write"
+                            ));
+                            return None;
+                        }
+                    }
+                    if set_aside {
+                        self.say(&format!(
+                            "`{content}` is set aside — it stays on the board and the model still \
+                             sees it, and nothing is reminded of it until you lift it with `/todo \
+                             resume`"
+                        ));
+                    } else {
+                        self.say(&format!(
+                            "`{content}` is back in the list — the check may ask about it again"
+                        ));
+                    }
                 }
             }
             // **`when N JOB` — the condition, attached by number.** The operator's own shape: *"if
@@ -1023,7 +1128,7 @@ impl App {
             }
         }
         self.echo_operator_todos(mine.clone());
-        Some(Action::SetOperatorTodos(mine))
+        Some(Action::SetOperatorTodos { items: mine, moved })
     }
 
     /// **`/notes` — what this head has shown, and how to retire it.**
@@ -1173,8 +1278,9 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("todos", "open or close the todos pane (ctrl-t)"),
     (
         "todo",
-        "TEXT adds one of YOUR rows · done N · rm N · postpone N · resume N — the pane numbers \
-         your half",
+        "TEXT adds one of YOUR rows · done N · rm N · postpone N · resume N — N numbers your half; \
+         `postpone`/`resume` also take a row's own WORDS, which is how you set aside one the model \
+         wrote",
     ),
     ("subagents", "open or close the subagent tree (ctrl-g)"),
     (

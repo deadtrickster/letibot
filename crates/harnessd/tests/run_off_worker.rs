@@ -362,7 +362,7 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
             // rather than racing the submit itself.
             std::thread::sleep(Duration::from_millis(900));
             client
-                .set_operator_todos(0, vec![probe_todo()])
+                .set_operator_todos(0, vec![probe_todo()], Vec::new())
                 .expect("the probe is accepted");
             let mut rec = Record::default();
             watch(&rx, &hub, &mut rec, |rec| {

@@ -152,7 +152,7 @@ impl TodoBoard {
     /// Returns how many rows on each half actually CHANGED — `(mine, theirs)` — and bumps the
     /// version only when that is not zero: a status set to what it already was is not an event, and
     /// announcing it would put a row on the wire and a write in the store for nothing.
-    pub fn set_states(
+    pub fn set_states_on_both_halves(
         &self,
         mine: &[(String, TodoStatus)],
         theirs: &[(String, TodoStatus)],
@@ -173,7 +173,73 @@ impl TodoBoard {
     /// **The operator's half alone** — the shape a caller that has only their rows to move wants,
     /// and the one this board's own tests and the `operator` field had before `update` existed.
     pub fn set_operator_states(&self, updates: &[(String, TodoStatus)]) -> Result<usize, String> {
-        self.set_states(&[], updates).map(|(_, theirs)| theirs)
+        self.set_states_on_both_halves(&[], updates)
+            .map(|(_, theirs)| theirs)
+    }
+
+    /// **The OPERATOR's door for a row that is not theirs** — the whole of what
+    /// `/todo postpone|resume <the row's words>` needs when the row is the MODEL's.
+    ///
+    /// **Why a second door exists.** [`TodoBoard::set_operator_states`] is the model's door and
+    /// resolves inside the operator's half only, because a model may not add, drop or re-author the
+    /// operator's rows. Nothing resolved the other way: a row the MODEL wrote that waits on a
+    /// person's hand — *"operator: paste the token"* — could be neither silenced by the model
+    /// (`todo_write` refuses `postponed`, deliberately: a model that could silence its own plan
+    /// could abandon it) nor named by the operator's verb, which numbered their own rows. So it sat
+    /// there being restated. MEASURED: fourteen turns on one true sentence.
+    ///
+    /// **The model's half only, and that is the boundary rather than an omission.** A parent's row
+    /// is its author's to retire — [`TodoBoard::upsert_parent`] owns both its state and its edges,
+    /// and would take a state written here straight back on the parent's next write — so the head
+    /// refuses one by name instead of writing a silence that evaporates.
+    ///
+    /// **It sets STATE and never membership**, which is `set_operator_states`'s rule with the
+    /// halves swapped: the operator can set a model's row aside and can never add, drop or re-word
+    /// one. The words are the key and a name that does not resolve exactly once is refused with the
+    /// candidates named, so nothing here can move a row nobody meant.
+    ///
+    /// Returns how many rows actually CHANGED, and bumps the version only when that is not zero —
+    /// the same rule the other two writers keep, so a re-send of an unchanged board is not an event.
+    pub fn set_states(&self, updates: &[(String, TodoStatus)]) -> Result<usize, String> {
+        let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        // Resolve every update BEFORE any is applied — see `set_operator_states` on ALL OR NOTHING:
+        // a call that names one good row and one bad one moves neither.
+        let mut plan: Vec<(usize, TodoStatus)> = Vec::new();
+        for (asked, status) in updates {
+            let want = asked.trim();
+            let hits: Vec<usize> = half
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.content.trim() == want)
+                .map(|(i, _)| i)
+                .collect();
+            match hits.as_slice() {
+                [one] => plan.push((*one, *status)),
+                [] => {
+                    return Err(format!(
+                        "no row of the model's says `{want}` — it may have rewritten its plan since \
+                         you named it, and a name that matches nothing is not a row to move."
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "`{want}` is TWO of the model's rows, so which one changes is not something \
+                         this can know. Quote the one you mean."
+                    ));
+                }
+            }
+        }
+        let mut changed = 0usize;
+        for (i, status) in plan {
+            if half[i].status != status {
+                half[i].status = status;
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(changed)
     }
 
     /// The operator's half alone, for a caller that needs to tell the two apart.
@@ -282,6 +348,18 @@ impl TodoBoard {
     /// no ambiguity refusal of [`resolve`]'s kind: there is nothing to choose between. (A store
     /// written by hand could hold two rows that trim alike, and the first is the one that moves.)
     ///
+    /// **A STATUS THE MODEL CANNOT SPELL IS NOT THE MODEL'S TO CLEAR.** `Postponed` and `Cancelled`
+    /// are the operator's own words: the model can neither set them nor write them back, and without
+    /// the rule below the operator's silence would die on the model's very next write — the row comes
+    /// back `pending` (the only sane word for work it is not doing) and the check starts asking again
+    /// about a row the operator had settled. MEASURED as the shape of the defect this whole half
+    /// exists for: a model's row that waits on a person's hand, silenced, then un-silenced by the
+    /// plan's next revision.
+    ///
+    /// **A row the model ANSWERS is answered.** `Completed` is not a way of clearing the operator's
+    /// word — it is the work being done — and there is nothing left to be silent about, so a row that
+    /// comes back `completed` takes it.
+    ///
     /// Returns how many rows were ADDED or CHANGED, and bumps the version only when that is not
     /// zero — [`TodoBoard::upsert_parent`]'s rule, so a re-send of an unchanged plan is not an event
     /// and does not cost the store a write or the pane a publish.
@@ -291,8 +369,13 @@ impl TodoBoard {
         for (content, status, needs) in rows {
             let want = content.trim();
             if let Some(hit) = half.iter_mut().find(|t| t.content.trim() == want) {
-                if hit.status != *status || &hit.needs != needs {
-                    hit.status = *status;
+                // The operator's word survives unless the model ANSWERED the row.
+                let kept = hit.status != *status
+                    && !matches!(status, TodoStatus::Completed)
+                    && matches!(hit.status, TodoStatus::Postponed | TodoStatus::Cancelled);
+                let wanted = if kept { hit.status } else { *status };
+                if hit.status != wanted || &hit.needs != needs {
+                    hit.status = wanted;
                     hit.needs = needs.clone();
                     changed += 1;
                 }
@@ -499,7 +582,12 @@ fn apply_states(half: &mut [TodoItem], plan: Vec<(usize, TodoStatus)>) -> usize 
 pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
     let mut open: Vec<&TodoItem> = todos
         .iter()
-        .filter(|t| t.status != TodoStatus::Completed)
+        // **A cancelled row is not work at all**, so it is not in the queue of work: the operator
+        // struck it off, and the row survives only as the history that ruling is about. `Postponed`
+        // is not excluded here and must not be — it is work still owed, and the narrowing that
+        // keeps it out of the idle check is the daemon's own predicate (`the_check_may_ask_about`),
+        // one level up, so that a postponed row still counts as part of the plan's size.
+        .filter(|t| !matches!(t.status, TodoStatus::Completed | TodoStatus::Cancelled))
         .collect();
     open.sort_by_key(|t| match t.status {
         TodoStatus::InProgress => 0,
@@ -904,6 +992,12 @@ pub fn unfinished_plan_for(
 pub enum NeedFate {
     /// The row it names is on the board and is not `Completed`.
     NotDone,
+    /// **The row it names is one the OPERATOR struck off.** Not `NotDone`: *"still open"* about a
+    /// row the operator has decided against sends the reader to finish work nobody owes, which is
+    /// the nag this check exists not to produce. The edge can never be met, so the honest thing to
+    /// say is that the plan has to be re-worded — the model owns the need, and `todo_write` is how
+    /// it drops one.
+    StruckOff,
     /// The name matches no row on the board — a re-worded row, a deleted one, or a name that was
     /// never right. The common case, and the one the message has to make repairable.
     NoSuchRow,
@@ -993,6 +1087,14 @@ fn unmet_needs(
                 match hits.as_slice() {
                     // **The one answer that is MET.** A single row, and it is done.
                     [one] if one.status == TodoStatus::Completed => {}
+                    // **A row the operator STRUCK OFF is not work that is coming.** It is not met —
+                    // the work was never done — and it is not *still open* either, because that is
+                    // an instruction to go and finish it and the operator has already said no. So
+                    // it is its own fate, and its sentence says what to do about it: re-word the
+                    // edge, which is a change the model can make with `todo_write`.
+                    [one] if one.status == TodoStatus::Cancelled => {
+                        out.push((content.clone(), NeedFate::StruckOff))
+                    }
                     [_] => out.push((content.clone(), NeedFate::NotDone)),
                     [] => out.push((content.clone(), NeedFate::NoSuchRow)),
                     _ => out.push((content.clone(), NeedFate::Ambiguous)),
@@ -1020,6 +1122,13 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
         .iter()
         .map(|(name, fate)| match fate {
             NeedFate::NotDone => format!("`{name}` (still open)"),
+            // **Said as the OPERATOR's act and not as a plan state**, because that is what the
+            // reader has to act on: nobody is going to finish this row, and the fix is the model's
+            // own — drop the need, or point it at work that can happen.
+            NeedFate::StruckOff => format!(
+                "`{name}` (struck off by the operator — this edge can never be met; re-word it with \
+                 `todo_write`)"
+            ),
             NeedFate::NoSuchRow => format!("`{name}` (no such row on this board)"),
             NeedFate::Ambiguous => format!("`{name}` (two rows on this board say that)"),
             NeedFate::UnknownKind => {
@@ -1518,7 +1627,7 @@ impl Tool for TodoWriteTool {
         // not resolve costs nothing at all — not the operator's rows, not the model's own, and not
         // the list beside them. `TodoBoard::set_states` is where that all-or-nothing lives; the
         // model's own list is an upsert and cannot refuse.
-        let (moved_mine, moved_theirs) = match self.board.set_states(&updates, &ops) {
+        let (moved_mine, moved_theirs) = match self.board.set_states_on_both_halves(&updates, &ops) {
             Ok(counts) => counts,
             Err(why) => {
                 return Invocation::failed(
@@ -1854,9 +1963,10 @@ fn render(todos: &[TodoItem]) -> String {
             TodoStatus::Pending => "[ ]",
             TodoStatus::InProgress => "[~]",
             TodoStatus::Completed => "[x]",
-            // **The operator's own mark.** See the legend below the list for what it means to the
+            // **The operator's own marks.** See the legend below the list for what each means to the
             // reader that has to act on it.
             TodoStatus::Postponed => "[p]",
+            TodoStatus::Cancelled => "[c]",
         };
         // **AND WHO WROTE IT, or `operator` is a field the model cannot aim.** The `by` field is
         // the whole of the difference between the halves, the pane has drawn it on every row since
@@ -1913,9 +2023,21 @@ fn render(todos: &[TodoItem]) -> String {
     // paragraph about it, and the reply is read by a model that pays for every word.
     if todos.iter().any(|t| t.status == TodoStatus::Postponed) {
         out.push_str(
-            "\n`[p]` is a row the OPERATOR has set aside — it is still on the board and still \
-             theirs, and it is not work you are being asked for: do not propose it again. They \
-             lift it themselves when they want it back.\n",
+            "\n`[p]` is a row the OPERATOR has set aside — it is still on the board, it is not work \
+             you are being asked for, and your own `todo_write` does not lift it: do not propose it \
+             again. They lift it themselves when they want it back.\n",
+        );
+    }
+    // **AND WHAT `[c]` MEANS, for the same reason one word over.** A cancelled row is one the
+    // operator struck off: it is still in the history because *"everything that ever created stays
+    // in history"*, and it is not work at all. A model that read the mark as *still mine to pick
+    // up* would propose a row the operator has already decided against — which is the nag this
+    // whole board exists to stop.
+    if todos.iter().any(|t| t.status == TodoStatus::Cancelled) {
+        out.push_str(
+            "\n`[c]` is a row the OPERATOR has STRUCK OFF — it stays in the history and it is not \
+             work you are owed: do not propose it, do not restore it, and do not put it back on the \
+             list under other words.\n",
         );
     }
     out
@@ -2076,6 +2198,145 @@ mod tests {
         assert!(
             said.contains("pending, in_progress, completed"),
             "and the refusal names the words it does take: {said}"
+        );
+    }
+
+    /// **A CANCELLED ROW IS MARKED IN WHAT THE MODEL IS SHOWN — AND THE WORD IS NOT THE MODEL'S.**
+    ///
+    /// The operator's two rulings are what the mark is for: *"only i should be able to delete todo
+    /// items. as a rule everything that ever created stays in history"* and *"so done items or
+    /// canceled items should be kept"*. So a cancelled row keeps its place in the list the model is
+    /// shown, marked, with the mark's meaning in the legend — a model that read `[c]` as *still mine
+    /// to pick up* would propose work the operator has already decided against, which is the nagging
+    /// the board exists to stop, arriving through the model's own good manners.
+    ///
+    /// And the state is not one the model may set: `todo_write` still takes three words, asserted on
+    /// the refusal itself, because that is where a fifth word would arrive.
+    #[test]
+    fn a_cancelled_row_is_marked_and_the_word_is_not_the_models() {
+        let struck_off = TodoItem {
+            content: "push leticl to github".into(),
+            status: TodoStatus::Cancelled,
+            by: TodoBy::Operator,
+            when: None,
+            needs: Vec::new(),
+        };
+        let all = vec![item("the model's own row", TodoStatus::Pending), struck_off];
+
+        let shown = render(&all);
+        assert!(
+            shown.contains("[c] push leticl to github"),
+            "**the row keeps its place in the list and is marked**: {shown}"
+        );
+        assert!(
+            shown.contains("— the operator's"),
+            "and says whose it is: {shown}"
+        );
+        assert!(
+            shown.contains("STRUCK OFF"),
+            "the mark's meaning has to be in the reply, not only in the mark: {shown}"
+        );
+        // The state is the OPERATOR's, so the word is not one this tool takes.
+        let (mut rt, _board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"todos": [{"content": "mine", "status": "cancelled"}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "**a model must not be able to strike a row off**: {:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains("pending, in_progress, completed"),
+            "and the refusal names the words it does take: {said}"
+        );
+    }
+
+    /// **THE SET-ASIDE SURVIVES THE MODEL'S NEXT WRITE, AND AN ANSWER DOES NOT.**
+    ///
+    /// This is the half that makes the operator's reach over a MODEL's row real rather than a
+    /// gesture. The model's half is replaced wholesale on every `todo_write`, and the row comes back
+    /// with one of the three words it can spell — `pending`, because the work is not done — so
+    /// without this rule the operator's silence would die on the model's very next revision of the
+    /// plan. **A status the model cannot spell is not the model's to clear.**
+    ///
+    /// And a row the model ANSWERS is answered: `completed` is not a way of clearing the operator's
+    /// word, it is the work being done, and there is nothing left to be silent about.
+    ///
+    /// The refusals are asserted too, because they are the other half of content-keying: a name
+    /// that matches nothing, or two rows at once, is refused rather than guessed at.
+    #[test]
+    fn a_set_aside_on_a_model_row_survives_the_models_rewrite() {
+        let b = TodoBoard::new(vec![item("operator: paste the token", TodoStatus::Pending)]);
+        assert_eq!(
+            b.set_states(&[("operator: paste the token".into(), TodoStatus::Postponed)])
+                .expect("the row is on the model's half and is named exactly"),
+            1
+        );
+        assert_eq!(b.snapshot()[0].status, TodoStatus::Postponed);
+
+        // The model rewrites its whole list and restates the row as open work.
+        b.upsert_model(&[(
+            "operator: paste the token".into(),
+            TodoStatus::Pending,
+            Vec::new(),
+        )]);
+        assert_eq!(
+            b.snapshot()[0].status,
+            TodoStatus::Postponed,
+            "**the operator's silence outlives the plan's next revision**"
+        );
+
+        // A row the model ANSWERS is answered — the set-aside has nothing left to do.
+        b.upsert_model(&[(
+            "operator: paste the token".into(),
+            TodoStatus::Completed,
+            Vec::new(),
+        )]);
+        assert_eq!(b.snapshot()[0].status, TodoStatus::Completed);
+
+        // A name that resolves to nothing is refused, not guessed at.
+        assert!(
+            b.set_states(&[("nobody says this".into(), TodoStatus::Postponed)])
+                .is_err(),
+            "a name that matches no row of the model's is not a row to move"
+        );
+        // And so is one that matches two — the board's one key can collide.
+        let two = TodoBoard::new(vec![
+            item("the same words", TodoStatus::Pending),
+            item("the same words", TodoStatus::InProgress),
+        ]);
+        assert!(
+            two.set_states(&[("the same words".into(), TodoStatus::Postponed)])
+                .is_err(),
+            "two rows with one name is not a row to move"
+        );
+    }
+
+    /// **A cancelled row is not in the queue of open work.** The queue is what the check asks about
+    /// and what `(N more open)` counts, so a struck-off row must not be in it — the operator has
+    /// decided against the work, and a plan that still served it would be nagging about something
+    /// nobody owes. `Postponed` is deliberately NOT excluded there (it is work still owed, and the
+    /// daemon's own predicate is what keeps it out of the check).
+    #[test]
+    fn a_cancelled_row_is_not_in_the_queue_of_open_work() {
+        let plan = vec![
+            item("open", TodoStatus::Pending),
+            item("struck off", TodoStatus::Cancelled),
+            item("done", TodoStatus::Completed),
+        ];
+        let queued: Vec<&str> = open_priority(&plan)
+            .iter()
+            .map(|t| t.content.as_str())
+            .collect();
+        assert_eq!(
+            queued,
+            vec!["open"],
+            "only work nobody has answered: {queued:?}"
         );
     }
 
@@ -3562,6 +3823,47 @@ mod tests {
         assert!(
             msg.contains("(1 more open)"),
             "and a blocked row is still open work, so it is counted: {msg}"
+        );
+    }
+
+    /// **AN EDGE INTO A ROW THE OPERATOR STRUCK OFF IS NOT *STILL OPEN* — it can never be met.**
+    ///
+    /// The interaction between the two halves of this change, and the reason it has its own
+    /// sentence: `/todo rm N` cancels a row rather than removing it, so a plan's edge can now name a
+    /// row that is on the board and will never be done. Saying *"still open"* about it sends the
+    /// model to finish work the operator has decided against — the nag this check exists not to
+    /// produce, and the same defect the *fourteen turns* measurement names. What the reader needs is
+    /// that the edge is dead and that the remedy is its own: `todo_write` can drop or re-point a
+    /// need.
+    #[test]
+    fn a_need_on_a_row_the_operator_struck_off_says_the_edge_can_never_be_met() {
+        let struck_off = TodoItem {
+            content: "run the tests".into(),
+            status: TodoStatus::Cancelled,
+            by: TodoBy::Operator,
+            when: None,
+            needs: Vec::new(),
+        };
+        // The cancelled row is not one the check may ask about, so the plan it is handed is the
+        // narrowed one — exactly what `harnessd`'s `the_plan_as_checked` builds.
+        let rows = vec![needs("deploy", TodoStatus::Pending, &["run the tests"])];
+        let board = vec![
+            struck_off,
+            needs("deploy", TodoStatus::Pending, &["run the tests"]),
+        ];
+        let (msg, _chosen) = unfinished_plan_for(&rows, &board, None, &ChildSessions::none())
+            .expect("a row that cannot start is said, not skipped");
+        assert!(
+            msg.contains("struck off by the operator"),
+            "the sentence names the operator's act: {msg}"
+        );
+        assert!(
+            msg.contains("re-word it"),
+            "and the remedy, which is the model's own: {msg}"
+        );
+        assert!(
+            !msg.contains("(still open)"),
+            "**and never says *still open* about a row nobody is going to finish**: {msg}"
         );
     }
 

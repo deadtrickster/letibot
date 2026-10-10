@@ -612,7 +612,45 @@ use crate::view::Snapshot;
 /// view of the session needs the same answer, and two readers inferring one rule from a
 /// string is the drift `Filling` was written to end: *only the daemon knows which operation is
 /// running, because it is the one running it.*
-pub const PROTOCOL_VERSION: u32 = 40;
+///
+/// # 41: a row the operator STRUCK OFF, and a verb that reaches one they did not write
+///
+/// Two changes under one number, and the first is the one that owes it.
+///
+/// **The word.** [`crate::event::TodoStatus`] grows `Cancelled`, by 36's rule exactly: no frame is
+/// added, and the number still has to move, because `serde` has no catch-all on this enum and the
+/// word travels inside [`crate::SessionEvent::TodosUpdated`] and [`ServerFrame::Todos`], which
+/// carry the whole list — a version-40 head cannot DECODE `"cancelled"`, and the failure takes
+/// every row beside it down with it, mid-session. The operator's two rulings are what it is for:
+/// *"only i should be able to delete todo items. as a rule everything that ever created stays in
+/// history"* and *"so done items or canceled items should be kept"*. So `/todo rm N` is a STATUS
+/// now: the row keeps its words, its author and its place on the board, the model still sees it
+/// (marked `[c]`), and the idle check never asks about it. It is the operator's act and not the
+/// model's — `todo_write` still takes the three words it took before.
+///
+/// **The reach.** [`ClientFrame::SetOperatorTodos`] gains `moved`, an ADDED, DEFAULTED field
+/// carrying [`crate::event::TodoState`] rows — the state moves the operator asked for on rows that
+/// are not theirs, named by their words. That half alone is the zero-bump kind this file names
+/// everywhere (*"an added, defaulted field on an existing struct"*): a version-40 daemon would
+/// ignore the key and draw the board it drew before. **It rides 41 rather than asking for its own
+/// number** because 41 is owed anyway, and because the ATTACH-time refusal is what the number is
+/// for: a version-41 head and a version-40 daemon never meet, so the ignored key is not a fact
+/// anybody can silently skip.
+///
+/// **Why the reach exists.** `/todo postpone|resume N` numbered the operator's OWN rows, and the
+/// pane's own numbers are theirs alone — so a row the MODEL wrote, accurate and waiting on a
+/// person's hand, had no door at all: `todo_write` refuses `postponed` (a model that could silence
+/// its own plan could abandon it), and the operator's verb could not name the row. MEASURED: the
+/// model spent fourteen turns restating one true sentence because nothing could silence a row that
+/// was correct. The fix is the verb's REACH and not a new state — `Postponed` already means exactly
+/// what is wanted — so the words of a row name it on either side of the half.
+///
+/// **The set-aside is not the model's to clear.** The model's half is replaced wholesale on every
+/// `todo_write`, so a `Postponed` the operator put on one of the model's rows would be cleared by
+/// the model's very next write — the words it can spell do not include that one. `TodoBoard::replace`
+/// therefore keeps a status the model cannot spell, which is what makes the operator's silence
+/// survive the plan's next revision.
+pub const PROTOCOL_VERSION: u32 = 41;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1445,6 +1483,23 @@ pub enum ClientFrame {
         /// is what the head meant, and a head that CAN send the key is unaffected.
         #[serde(default)]
         items: Vec<crate::event::TodoEntry>,
+        /// **The state moves the operator asked for on rows that are NOT theirs** — a row the MODEL
+        /// wrote that waits on a person's hand, set aside with `/todo postpone <the row's words>`,
+        /// or lifted again with `resume`.
+        ///
+        /// **Why it rides this frame and not one of its own.** `items` is the half a head OWNS and
+        /// therefore sends whole; this is the state it can ask for and cannot write, on a half that
+        /// belongs to somebody else. They are one act of the operator's — *the board as I want it* —
+        /// and one frame for one act is what keeps a head from accumulating a difference between its
+        /// copy and the store.
+        ///
+        /// **An ADDED, DEFAULTED FIELD, which is this file's own zero-bump case**: a version-40
+        /// daemon ignores the key and draws the board it drew before. It is here anyway because 41
+        /// is owed for `TodoStatus::Cancelled`, and because the ATTACH-time refusal is what the
+        /// number is for — a version-41 head and a version-40 daemon never meet, so the ignored key
+        /// is not a fact anybody can silently skip.
+        #[serde(default)]
+        moved: Vec<crate::event::TodoState>,
     },
     /// **Stop the daemon**, not just this head.
     ///
@@ -2769,8 +2824,24 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 40,
-            "the match above was last reconciled with the frame list at 40 — `TranscriptForked`, one \
+            PROTOCOL_VERSION, 41,
+            "the match above was last reconciled with the frame list at 41 — `TodoStatus::Cancelled`, a \
+             NEW VARIANT on an existing enum: **no frame is added and the number still has to move**, \
+             because a version-40 head cannot DECODE `\"cancelled\"` and the failure takes the whole \
+             `TodosUpdated`/`Todos` frame down with it (the version-36 argument, one word over). The \
+             operator's own rulings are what it is for — *\"only i should be able to delete todo \
+             items. as a rule everything that ever created stays in history\"* — so `/todo rm N` is a \
+             STATUS: the row keeps its words, its author and its place on the board, the model still \
+             sees it (marked `[c]`), and the idle check never asks about it again. 41 also carries \
+             `SetOperatorTodos.moved` — an ADDED, DEFAULTED field (the zero-bump kind this file names \
+             everywhere) which rides this number because 41 is owed anyway and the ATTACH-time refusal \
+             is what the number buys: a version-41 head and a version-40 daemon never meet, so the key \
+             an older daemon would ignore is not a fact anybody can silently skip. It is there so the \
+             operator's `/todo postpone|resume` can name a row the MODEL wrote — the verb's REACH, \
+             which is the whole of that half: `todo_write` refuses `postponed` (a model that could \
+             silence its own plan could abandon it) and the pane numbers only the operator's own rows, \
+             so a model's row that waits on a person's hand had no door at all. 40 was \
+             `TranscriptForked`, one \
              NEW event (a version-39 head would fail to decode it mid-session, the version-25 \
              argument), and the bump is owed because the fact it carries is one a head MUST NOT \
              skip: an added, defaulted field would have been the zero-bump route and an older head \
@@ -2923,6 +2994,31 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].content, "push leticl to github");
         assert_eq!(items[0].by, crate::event::TodoBy::Operator);
+
+        // **And the second half of the frame — the state moves on rows that are NOT the head's.**
+        // `moved` is an ADDED, DEFAULTED field, so a frame that carries none still parses (asserted
+        // above, where the whole key is absent); this is the other direction, and the spelling is
+        // asserted on the literal bytes because it is what the daemon resolves a row by.
+        let with_moves: ClientFrame = serde_json::from_str(
+            r#"{"frame":"set_operator_todos","client_request_id":"r3","expected_seq":11,
+                 "moved":[{"content":"operator: paste the token","status":"postponed"}]}"#,
+        )
+        .expect("a frame with state moves parses");
+        let ClientFrame::SetOperatorTodos { moved, items, .. } = &with_moves else {
+            panic!("not a set_operator_todos: {with_moves:?}");
+        };
+        assert!(
+            items.is_empty(),
+            "a move does not put anything in the head's own half: {items:?}"
+        );
+        assert_eq!(
+            moved,
+            &vec![crate::event::TodoState {
+                content: "operator: paste the token".into(),
+                status: crate::event::TodoStatus::Postponed,
+            }],
+            "the row is named by its words and the state is the one the operator asked for"
+        );
     }
 
     #[test]
@@ -3157,6 +3253,19 @@ mod tests {
                     }),
                     needs: Vec::new(),
                 },
+                // **And the FIFTH word, added at 41**: the row the operator struck off. It is here
+                // for the postponed row's own reason — a `cancelled` a head could not parse would
+                // fail the whole frame, taking the rows beside it with it — and because the row
+                // KEEPS ITS PLACE in this frame rather than being absent from it: `/todo rm N` is a
+                // status now, and a head that read the word as *a removal* would draw a board the
+                // daemon does not have.
+                crate::event::TodoEntry {
+                    content: "push leticl to github".into(),
+                    status: crate::event::TodoStatus::Cancelled,
+                    by: crate::event::TodoBy::Operator,
+                    when: None,
+                    needs: Vec::new(),
+                },
             ],
         };
         let json = serde_json::to_string(&f).unwrap();
@@ -3165,6 +3274,7 @@ mod tests {
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert!(json.contains(r#""status":"in_progress""#), "{json}");
         assert!(json.contains(r#""status":"postponed""#), "{json}");
+        assert!(json.contains(r#""status":"cancelled""#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 

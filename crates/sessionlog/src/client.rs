@@ -288,16 +288,24 @@ impl HeadClient {
     /// one, because the words are the operator's. Every row here carries
     /// [`letibot_sessionlog::event::TodoBy::Operator`], which is what makes the daemon file it in
     /// the operator's half instead of the model's.
+    ///
+    /// **`moved` is the other half of one act**: the state the operator asked for on rows that are
+    /// NOT theirs — a row the model wrote, set aside with `/todo postpone <its words>` — named by
+    /// content because the board has no other key. It rides this frame rather than a second one
+    /// because both are *the board as the operator wants it*, and two frames for one act is how a
+    /// head's copy and the store come to disagree.
     pub fn set_operator_todos(
         &mut self,
         expected_seq: u64,
         items: Vec<crate::event::TodoEntry>,
+        moved: Vec<crate::event::TodoState>,
     ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::SetOperatorTodos {
             client_request_id: client_request_id.clone(),
             expected_seq,
             items,
+            moved,
         })?;
         Ok(client_request_id)
     }

@@ -1534,14 +1534,18 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 client_request_id,
                 expected_seq,
                 items,
+                moved,
             }) => {
                 // **Not gated and not a decision.** The operator's own todo list is their own
                 // authoring, sent to the daemon that keeps the board — the same trust as a prompt.
+                // `moved` is the same act one row over: the state the operator asked for on a row
+                // they did not write, which is a state and never a membership — a head cannot add,
+                // remove or re-author a model's row through this door.
                 let f = seat.hub.submit(
                     &seat.head_id,
                     client_request_id,
                     expected_seq,
-                    CommandKind::SetOperatorTodos { items },
+                    CommandKind::SetOperatorTodos { items, moved },
                 );
                 writer.lock().unwrap().write(&f)?;
             }

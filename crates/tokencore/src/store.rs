@@ -1851,6 +1851,26 @@ pub enum TodoStatus {
     /// exists to stop it abandoning a plan, and that is the one thing the check must not offer.
     /// Lifting it is the same act, spelled the other way — see the head's `/todo resume N`.
     Postponed,
+    /// **Struck off by the OPERATOR — and the row STAYS.**
+    ///
+    /// The operator's two rulings, and this word is the one that makes them both true: *"only i
+    /// should be able to delete todo items. as a rule everything that ever created stays in
+    /// history"*, and *"so done items or canceled items should be kept"*. So `/todo rm N` is not a
+    /// removal any more — it is this status. The row keeps its words, its author and its place on
+    /// the board, the model still sees it (marked, with the mark's meaning spelled out under the
+    /// list), and the idle check never asks about it again.
+    ///
+    /// **A fifth word rather than a quieter `Postponed`.** `Postponed` is work still owed and
+    /// deliberately not being asked for — the operator intends to come back to it; `Cancelled` is
+    /// work the operator has decided against. They draw differently, they read differently to the
+    /// model, and one is the other's undo: `/todo resume N` lifts either, which is what makes a
+    /// `rm` a decision rather than an accident nobody can take back.
+    ///
+    /// **It is the operator's act and not the model's**, on `Postponed`'s own argument: a model
+    /// that could strike off a row would have a way to retire work it was asked for, and the whole
+    /// point of the row staying on the board is that a person can see it was there. `todo_write`
+    /// still takes the three words it took before.
+    Cancelled,
 }
 
 /// What a stable prefix was rendered from and by.
@@ -6099,6 +6119,47 @@ mod tests {
         };
         s.put_todos("sess-1", &[lifted.clone()]).unwrap();
         assert_eq!(s.todos("sess-1").unwrap(), vec![lifted]);
+    }
+
+    /// **A cancelled row is a row the store KEEPS, and the word on the wire is `cancelled`.**
+    ///
+    /// The operator's ruling is the whole of what this asserts: *"only i should be able to delete
+    /// todo items. as a rule everything that ever created stays in history"* and *"so done items or
+    /// canceled items should be kept"*. `/todo rm N` writes this status instead of taking the row
+    /// out, so the one thing that has to be true is that a store read hands it back — words, author,
+    /// condition and all — rather than the list coming back shorter.
+    ///
+    /// The spelling is asserted for `postponed`'s own reason: `cancelled` is what a `sqlite3` reader
+    /// sees in the row, and a head reads the same word back.
+    #[test]
+    fn a_cancelled_row_stays_on_the_board_and_the_store_keeps_it() {
+        let s = store();
+        let _seeded = seeded(&s);
+        let struck_off = TodoItem {
+            content: "push leticl to github".into(),
+            status: TodoStatus::Cancelled,
+            by: TodoBy::Operator,
+            when: None,
+            needs: Vec::new(),
+        };
+        s.put_todos("sess-1", &[struck_off.clone()]).unwrap();
+        assert_eq!(
+            s.todos("sess-1").unwrap(),
+            vec![struck_off],
+            "**the row is still there** — `rm` is a status, not a removal"
+        );
+        let raw: String = s
+            .conn
+            .query_row(
+                "SELECT todos_json FROM todo WHERE session_id = ?1",
+                params!["sess-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw.contains(r#""status":"cancelled""#),
+            "a store reader spells it the way every other status is spelled: {raw}"
+        );
     }
 
     /// **A parent's row round trips with the operator's own spelling for its author.**

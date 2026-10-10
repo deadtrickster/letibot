@@ -6909,12 +6909,38 @@ impl Harness {
     /// The board is one list with two authors; this replaces the operator's half and leaves the
     /// model's alone. Anything that reads the board afterwards — the pane, the model's prompt, and
     /// `nag_notice` above — sees both, which is the whole of the design.
+    ///
+    /// **`moved` is the one thing that reaches the model's half**, and it is a STATE and never a
+    /// membership: `/todo postpone|resume <the row's words>` on a row the model wrote, which the
+    /// operator can silence and can never add, drop or re-word. It is resolved by
+    /// `TodoBoard::set_states` — the words are the key — and a name that resolves to nothing (the
+    /// model rewrote its plan between the head's read and this write) is the daemon's log and the
+    /// union below is the correction.
+    ///
     /// **The version bump IS the announcement.** `set_operator` raises the board's version, and
     /// `flush_todos` — which runs at every turn boundary — publishes a `TodosUpdated` and persists
     /// when the version has moved. So the operator's rows reach every head and the store by the same
     /// path the model's do, with no second mechanism.
-    pub fn set_operator_todos(&mut self, items: Vec<letibot_tokencore::store::TodoItem>) {
+    pub fn set_operator_todos(
+        &mut self,
+        items: Vec<letibot_tokencore::store::TodoItem>,
+        moved: &[(String, letibot_tokencore::store::TodoStatus)],
+    ) {
         self.todos.set_operator(items);
+        // **And the state moves that are not the head's to make.** `/todo postpone|resume` names a
+        // row the MODEL wrote by its words; the board resolves them against the model's half and
+        // sets the status, which is the one thing the operator can change about a row they did not
+        // write — never its membership, its words or its author.
+        //
+        // **A refusal is the daemon's log and not the operator's silence.** The head resolved these
+        // names against the union it was looking at; a model that rewrote its plan in between makes
+        // a name resolve to nothing, and there is no frame here to say so on — the union this write
+        // publishes IS the correction, and the head draws it.
+        if !moved.is_empty()
+            && let Err(why) = self.todos.set_states(moved)
+        {
+            eprintln!("  todos: a state move did not land: {why}");
+        }
         // **AND PERSIST IT AND TELL EVERY HEAD, which is the half the version bump alone does not
         // do.** `flush_todos` is version-gated and runs at every TURN BOUNDARY — so on a session
         // where no turn ever runs again, the operator's rows would sit on the board unpublished and
@@ -10611,6 +10637,7 @@ impl Harness {
                 letibot_tokencore::store::TodoStatus::InProgress => WireTodoStatus::InProgress,
                 letibot_tokencore::store::TodoStatus::Completed => WireTodoStatus::Completed,
                 letibot_tokencore::store::TodoStatus::Postponed => WireTodoStatus::Postponed,
+                letibot_tokencore::store::TodoStatus::Cancelled => WireTodoStatus::Cancelled,
             },
         }
     }

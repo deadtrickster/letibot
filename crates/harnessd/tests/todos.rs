@@ -319,6 +319,7 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
                 when: None,
                 needs: Vec::new(),
             }],
+            moved: Vec::new(),
         },
     };
     let outcome = sessions.dispatch(&session_id, &cmd);
@@ -333,4 +334,62 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
          other half of the same gap: before, `SetOperatorTodos` set the board and nothing \
          else, so work the operator had just asked for was never mentioned again"
     );
+}
+
+/// **THE OPERATOR'S VERB REACHES A ROW THE MODEL WROTE — end to end, through the daemon.**
+///
+/// The hole, MEASURED: a row the model wrote that waits on a person's hand could not be silenced
+/// at all — `todo_write` refuses `postponed` (a model that could silence its own plan could
+/// abandon it), and `/todo postpone|resume N` numbered the operator's own rows. So the operator's
+/// verb now takes the row's own WORDS, and `moved` carries the state move beside the half they
+/// own.
+///
+/// What only this crate can assert is the seam: the words are resolved against the MODEL's half
+/// on the daemon's own board, the row is set aside rather than touched in any other way, and the
+/// write is PERSISTED — a silence that lived only in memory would be gone at the next restart,
+/// which is the one thing `Postponed` was asked for (*"they persist"*).
+#[test]
+fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let (_dir, path, session_id) = a_session_with_an_open_plan("moved-model-row");
+    let cfg = config(&path, &session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let mut h = opened(&cfg, &parts);
+
+    // The operator's verb, as the head sends it: their half is empty and the move names the
+    // model's row by its words.
+    h.set_operator_todos(
+        Vec::new(),
+        &[("finish the migration".into(), TodoStatus::Postponed)],
+    );
+
+    let rows = Store::open(&path)
+        .expect("the store")
+        .todos(&session_id)
+        .expect("the session's rows");
+    let row = rows
+        .iter()
+        .find(|t| t.content == "finish the migration")
+        .unwrap_or_else(|| panic!("the model's row is still on the board: {rows:#?}"));
+    assert_eq!(
+        row.status,
+        TodoStatus::Postponed,
+        "**the model's row is set aside, and it is still there**: {rows:#?}"
+    );
+    assert_eq!(row.by, TodoBy::Model, "and it is still the model's row");
+    assert_eq!(rows.len(), 1, "nothing was added or removed: {rows:#?}");
+
+    // **And the lift**, the same way — the state is reversible, which is what makes it a silence
+    // rather than a quiet way to retire somebody else's row.
+    h.set_operator_todos(
+        Vec::new(),
+        &[("finish the migration".into(), TodoStatus::Pending)],
+    );
+    let rows = Store::open(&path)
+        .expect("the store")
+        .todos(&session_id)
+        .expect("the session's rows");
+    assert_eq!(rows[0].status, TodoStatus::Pending, "{rows:#?}");
 }

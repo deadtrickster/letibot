@@ -175,7 +175,32 @@ pub(crate) fn the_check_may_ask_about(row: &TodoItem, children: &ChildSessions) 
         row.status,
         letibot_tokencore::store::TodoStatus::Completed
             | letibot_tokencore::store::TodoStatus::Postponed
+            // **And the row the operator STRUCK OFF**, for the same reason one word over: there is
+            // nothing owed, so there is nothing to ask about. `Cancelled` is not `Completed` — the
+            // row is a record of something that was wanted and decided against — but the check's
+            // question is *what do you owe*, and the answer is nothing either way.
+            | letibot_tokencore::store::TodoStatus::Cancelled
     ) && !waits_on_a_child_with_room_to_breathe(row, children)
+}
+
+/// **A status, as the STORE spells it** — the wire→store half of the one conversion the two copies
+/// of `TodoStatus` need, written once because both callers are on this side of the door.
+///
+/// It is a `match` rather than a pass-through for the reason `Harness::todo_entry`'s is: the two
+/// crates own the type separately and on purpose, so a variant added to one fails to compile here
+/// rather than arriving as a row in a state nothing can name.
+pub(crate) fn status_from_the_wire(
+    s: letibot_sessionlog::event::TodoStatus,
+) -> letibot_tokencore::store::TodoStatus {
+    use letibot_sessionlog::event::TodoStatus as Wire;
+    use letibot_tokencore::store::TodoStatus as Stored;
+    match s {
+        Wire::Pending => Stored::Pending,
+        Wire::InProgress => Stored::InProgress,
+        Wire::Completed => Stored::Completed,
+        Wire::Postponed => Stored::Postponed,
+        Wire::Cancelled => Stored::Cancelled,
+    }
 }
 
 /// **The children this daemon is running, as the plan-check needs them** — the fact a board cannot
@@ -2924,7 +2949,7 @@ impl<'a> Sessions<'a> {
             // operator's rows for free — the pane's `Todos` reply, the prompt the model is sent, and
             // the idle NAG (`Harness::nag_notice` → `unfinished_plan`), which is the whole reason
             // this exists: until now the nag could only ever fire for work the MODEL had written.
-            CommandKind::SetOperatorTodos { items } => {
+            CommandKind::SetOperatorTodos { items, moved } => {
                 let converted: Vec<letibot_tokencore::store::TodoItem> = items
                     .iter()
                     .map(|e| letibot_tokencore::store::TodoItem {
@@ -2939,20 +2964,7 @@ impl<'a> Sessions<'a> {
                                 }
                             }
                         }),
-                        status: match e.status {
-                            letibot_sessionlog::event::TodoStatus::Pending => {
-                                letibot_tokencore::store::TodoStatus::Pending
-                            }
-                            letibot_sessionlog::event::TodoStatus::InProgress => {
-                                letibot_tokencore::store::TodoStatus::InProgress
-                            }
-                            letibot_sessionlog::event::TodoStatus::Completed => {
-                                letibot_tokencore::store::TodoStatus::Completed
-                            }
-                            letibot_sessionlog::event::TodoStatus::Postponed => {
-                                letibot_tokencore::store::TodoStatus::Postponed
-                            }
-                        },
+                        status: status_from_the_wire(e.status),
                         by: letibot_tokencore::store::TodoBy::Operator,
                         // **The edges now CROSS this door rather than dying at it.** It used to
                         // say *"the wire carries no edges yet, so an operator's row arrives with
@@ -2983,8 +2995,16 @@ impl<'a> Sessions<'a> {
                     .collect();
                 // The head is the source of truth for its own rows, so its list REPLACES that half.
                 let n = converted.len();
+                // **And the state moves it asked for on rows that are not its own** — `/todo
+                // postpone|resume <the row's words>` on a row the MODEL wrote. The words are the
+                // key: the board resolves them against the model's half and sets the status, which
+                // is the one thing the operator can change about a row they did not write.
+                let states: Vec<(String, letibot_tokencore::store::TodoStatus)> = moved
+                    .iter()
+                    .map(|s| (s.content.clone(), status_from_the_wire(s.status)))
+                    .collect();
                 if let Some(h) = self.open.get_mut(session_id) {
-                    h.set_operator_todos(converted);
+                    h.set_operator_todos(converted, &states);
                 }
                 let _ = n;
                 // **ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS.** The idle clock used
@@ -4297,6 +4317,60 @@ mod idle_nag {
         assert!(
             !notice.contains("later"),
             "the check must not name a row the operator set aside: {notice}"
+        );
+        assert!(
+            !notice.contains("more open"),
+            "and must not count it among what is open either: {notice}"
+        );
+    }
+
+    /// **A row the operator STRUCK OFF does not arm the check either — and is not the same row as
+    /// one set aside.**
+    ///
+    /// `Cancelled` arrives with the same ask as `Postponed` (*"so done items or canceled items
+    /// should be kept"*): the row stays on the board as the record the operator's ruling is about,
+    /// and nothing asks about it, because there is nothing owed. The two are asserted TOGETHER
+    /// because they are one predicate's neighbours — the reason to write this test is that a fifth
+    /// word could have been added to the store and forgotten here, and the symptom would be a check
+    /// that nags about work somebody has already decided against.
+    #[test]
+    fn a_cancelled_row_does_not_arm_the_check() {
+        assert!(
+            !nag_should_arm(
+                &[row("struck off", TodoStatus::Cancelled)],
+                None,
+                &no_children()
+            ),
+            "the one row is struck off, so there is nothing to check"
+        );
+        assert!(
+            !nag_should_arm(
+                &[row("struck off", TodoStatus::Cancelled)],
+                Some(
+                    "[todo check] this turn is finished and one item is not done:\n  - struck off"
+                ),
+                &no_children()
+            ),
+            "a row decided against is not a reason to say the same thing again"
+        );
+        // …and the ordinary row beside it is the control, as it is for `Postponed`.
+        assert!(
+            nag_should_arm(&[row("now", TodoStatus::Pending)], None, &no_children()),
+            "an ordinary open row arms the check, so the silence above is the STATE"
+        );
+        let mixed = [
+            row("now", TodoStatus::Pending),
+            row("struck off", TodoStatus::Cancelled),
+        ];
+        let notice = super::unfinished_plan(
+            &super::the_plan_as_checked(&mixed, &no_children()),
+            &mixed,
+            &no_children(),
+        )
+        .expect("the ordinary row is open work");
+        assert!(
+            !notice.contains("struck off"),
+            "the check must not name a row the operator struck off: {notice}"
         );
         assert!(
             !notice.contains("more open"),

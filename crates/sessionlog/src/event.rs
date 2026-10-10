@@ -76,7 +76,7 @@ pub struct PromptProgress {
 /// is unchanged: same fields, same names.
 pub use letibot_transcript::ToolEditExcerpt as ToolEdit;
 
-/// A todo's state, on the wire. The same four words the store spells.
+/// A todo's state, on the wire. The same five words the store spells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
@@ -93,6 +93,17 @@ pub enum TodoStatus {
     /// section names: no frame is added, and the number still moves, because a head built before
     /// it cannot decode the word — and the failure is the whole frame, not the row.
     Postponed,
+    /// **The operator STRUCK THE ROW OFF, and the row stays** — see
+    /// `letibot_tokencore::store::TodoStatus::Cancelled`: `/todo rm N` writes this instead of
+    /// removing the row, because *"only i should be able to delete todo items. as a rule everything
+    /// that ever created stays in history"*.
+    ///
+    /// **Added at `PROTOCOL_VERSION` 41**, on `Postponed`'s own argument one word over: no frame is
+    /// added, and the number still moves, because `serde` has no catch-all on this enum and the
+    /// word travels inside `TodosUpdated`/`ServerFrame::Todos`, which carry the whole list — a
+    /// version-40 head cannot DECODE `"cancelled"`, and the failure takes every row beside it down
+    /// with it, mid-session.
+    Cancelled,
 }
 
 /// **Who wrote a todo**, on the wire — the whole of the difference between the operator's items and
@@ -220,6 +231,25 @@ pub struct TodoEntry {
     /// echoes back exactly what it was given, so the round trip is lossless.
     #[serde(default)]
     pub needs: Vec<TodoNeed>,
+}
+
+/// **One row's state, named by its words** — what an operator's `/todo postpone|resume` carries
+/// when the row it names is not one of theirs.
+///
+/// **Why it is not a `TodoEntry`.** A `TodoEntry` says who WROTE a row (`by`), what it waits on
+/// (`when`) and what it waits for (`needs`) — none of which this carries, and all of which would be
+/// a lie if it did: the operator moving a row's state changes none of them, and the author is the
+/// one thing about the row that must not be restated by a head. So it is two fields, and the wire
+/// says exactly what the act is.
+///
+/// **The words are the key**, which is the board's own identity rule: `TodoEntry` has no id (the
+/// operator ruled out a bump for one), `TodoBoard::set_operator_states` resolves the operator's
+/// rows by their exact trimmed text, and a plan's edges are a row's words for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoState {
+    /// The row's own words, exactly as the board shows them.
+    pub content: String,
+    pub status: TodoStatus,
 }
 
 /// **What a row waits on**, as the WIRE spells it — **a copy of

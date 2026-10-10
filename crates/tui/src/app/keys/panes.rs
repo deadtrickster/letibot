@@ -495,7 +495,10 @@ impl App {
                         }
                         self.say("toggled");
                         self.echo_operator_todos(mine.clone());
-                        return ControlFlow::Break(Some(Action::SetOperatorTodos(mine)));
+                        return ControlFlow::Break(Some(Action::SetOperatorTodos {
+                            items: mine,
+                            moved: Vec::new(),
+                        }));
                     }
                     TodoStop::Repo(i) => {
                         self.repo_sel = *i;

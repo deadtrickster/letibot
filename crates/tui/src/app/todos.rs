@@ -35,25 +35,39 @@ impl App {
         self.redraw = true;
     }
 
-    /// **`/todo …` — the operator's own rows.** The verb's three forms, and each one sends the
+    /// **`/todo …` — the operator's own rows.** The verb's forms, and each one sends the
     /// whole list:
     ///
     /// ```text
     /// /todo finish the parity row        add it, at the end
     /// /todo done 2                       mark the second of MY rows complete
-    /// /todo rm 2                         take it off the board
+    /// /todo rm 2                         strike it off: it STAYS, marked `[c]`
     /// /todo postpone 2                   set it aside: it stays, and nothing nags about it
     /// /todo resume 2                     put it back in the list
+    /// /todo postpone paste the token     the same, naming a row the MODEL wrote
     /// ```
     ///
-    /// **Numbered over the operator's rows and not the union**, because the model's rows are not
-    /// the operator's to edit — that is the same rule `/rename` and `/compact` keep about acting on
-    /// the session you are in. The count is the one the pane prints for that half.
+    /// **A number is numbered over the operator's rows and not the union**, because the model's
+    /// rows are not the operator's to edit — that is the same rule `/rename` and `/compact` keep
+    /// about acting on the session you are in. The count is the one the pane prints for that half.
     ///
-    /// **Marked complete rather than deleted** by `done`, which is the difference the daemon's own
-    /// `set_operator_states` draws: a finished row is a record of work, and only `rm` takes one off
-    /// the board. The model may move a row's STATUS (by quoting its words) and may not remove it,
-    /// which is the operator's ruling recorded on `TodoBoard`.
+    /// **`postpone`/`resume` also take a row's own WORDS, and that is the reach.** The pane numbers
+    /// the operator's rows and only those, so a row the MODEL wrote had no name this verb could use
+    /// — and no other door either: `todo_write` refuses `postponed` (a model that could silence its
+    /// own plan could abandon it). MEASURED: fourteen turns spent restating one true sentence about
+    /// a row that was correct and waiting on a person. The words are the board's one key
+    /// (`set_operator_states` resolves the operator's rows by their exact trimmed text), so a
+    /// non-numeric argument names any row on the board: the operator's own half is moved in the
+    /// list this head owns, and a MODEL's row goes out as a state move beside it — one frame, one
+    /// act. A parent's row is refused by name, because a parent owns its own rows' states.
+    ///
+    /// **Marked complete rather than deleted** by `done`, and **struck off rather than deleted** by
+    /// `rm`: the operator's ruling is *"only i should be able to delete todo items. as a rule
+    /// everything that ever created stays in history"*, so neither verb removes a row. `done` is a
+    /// record of work finished, `rm` is a record of work decided against — the row keeps its words,
+    /// its author and its place on the board either way, and `/todo resume N` lifts either. The
+    /// model may move a row's STATUS (by quoting its words) and may not remove one, which is the
+    /// operator's ruling recorded on `TodoBoard`.
     /// **THE OPERATOR'S OWN ROWS, DRAWN FROM THE MOMENT THEY ARE SENT** — their half of what
     /// `pending_prompts` does for their words.
     ///
@@ -197,7 +211,10 @@ impl App {
         let n = items.len();
         self.mark_seeded();
         self.echo_operator_todos(mine.clone());
-        self.queued.push(Action::SetOperatorTodos(mine));
+        self.queued.push(Action::SetOperatorTodos {
+            items: mine,
+            moved: Vec::new(),
+        });
         self.say(&format!(
             "{n} starter todo{} from {}",
             if n == 1 { "" } else { "s" },

@@ -291,15 +291,24 @@ pub enum CommandKind {
     /// it is a quiet no-op, because a prompt that survived to here is about to
     /// run as its own turn and is no longer the operator's to take back.
     WithdrawPrompts,
-    /// **The operator's half of the todo board**, replaced wholesale.
+    /// **The operator's half of the todo board**, replaced wholesale — plus the state moves they
+    /// asked for on rows that are not theirs.
     ///
     /// A head owns these rows — they are its own store's contents — so it sends the whole list on
     /// every change rather than a delta: a delta protocol for a list of tens of items would be a
     /// second source of truth about them, and `TodoBoard::set_operator` replaces one half atomically.
     ///
+    /// **`moved` is the reach and not a second list.** `/todo postpone|resume` used to name only the
+    /// operator's own rows, so a row the MODEL wrote — accurate, and waiting on a person's hand —
+    /// had no door at all: `todo_write` refuses `postponed`, and the operator's verb could not name
+    /// the row. These entries carry the row's words and the state the operator gave it, and the
+    /// daemon resolves them against the model's half by content — the board's one key. Membership
+    /// is untouched: a head can move a model's row's state and can never add, drop or re-author one.
+    ///
     /// Nothing here is a decision and nothing is gated: the operator's own list is not a tool call.
     SetOperatorTodos {
         items: Vec<crate::event::TodoEntry>,
+        moved: Vec<crate::event::TodoState>,
     },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
@@ -1319,8 +1328,15 @@ impl Hub {
                     format!("a message to this session from {from}")
                 }
                 (CommandKind::WithdrawPrompts, _) => "prompt take-back requested".into(),
-                (CommandKind::SetOperatorTodos { items }, _) => {
-                    format!("the operator's {} todo(s) sent", items.len())
+                (CommandKind::SetOperatorTodos { items, moved }, _) => {
+                    // The moves are counted too: a frame whose whole content is one state move is a
+                    // frame the operator is owed an answer about, and "0 todo(s) sent" would read
+                    // as *nothing happened*.
+                    match (items.len(), moved.len()) {
+                        (n, 0) => format!("the operator's {n} todo(s) sent"),
+                        (0, m) => format!("the operator's {m} row(s) moved"),
+                        (n, m) => format!("the operator's {n} todo(s) sent and {m} row(s) moved"),
+                    }
                 }
                 (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {

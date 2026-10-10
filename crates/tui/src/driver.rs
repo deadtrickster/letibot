@@ -677,8 +677,12 @@ impl Link {
                     // `by` tag on each row, persists it, and publishes it to every head. There is
                     // no per-row frame and no delta, so a head cannot accumulate a difference
                     // between its copy and the store.
-                    Action::SetOperatorTodos(items) => {
-                        self.client.set_operator_todos(app.seq, items)?;
+                    //
+                    // **And the state moves it asked for on rows that are not its own**, in the same
+                    // frame: a row the MODEL wrote, named by its words, which the operator may set
+                    // aside and may not otherwise touch.
+                    Action::SetOperatorTodos { items, moved } => {
+                        self.client.set_operator_todos(app.seq, items, moved)?;
                     }
                     Action::Interrupt(reason) => {
                         self.client.interrupt(app.seq, &reason)?;

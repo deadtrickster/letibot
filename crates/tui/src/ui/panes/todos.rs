@@ -35,6 +35,17 @@ impl App {
                             TodoStatus::InProgress => TodoMark::Doing,
                             TodoStatus::Completed => TodoMark::Done,
                             TodoStatus::Postponed => TodoMark::Postponed,
+                            // **rano's four marks have no fifth, and this is the one honest gap of
+                            // the cancelled row.** `TodoMark` is rano's (`rano::agent::todos`), the
+                            // pane that paints it is rano's, and the pinned rano has no
+                            // `Cancelled` — so a row the operator struck off draws in the SET-ASIDE
+                            // register, which is the closest of the four: faint, kept on the board,
+                            // and not asked about. What a reader still gets right is everything that
+                            // matters — the row's own words, its author, its place, and the header's
+                            // count, which never counted it as open — and `/todo resume N` is how it
+                            // comes back. When rano grows the mark, this arm becomes it and nothing
+                            // else here moves.
+                            TodoStatus::Cancelled => TodoMark::Postponed,
                         },
                         content: t.content.clone(),
                         mine,
@@ -131,7 +142,9 @@ pub(crate) fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
 /// `(open, postponed)`. `open` is every row the model still owes — `pending` or `in_progress`,
 /// which is exactly the set the idle check may ask about — and `postponed` is every row the
 /// operator has set aside. `completed` is neither: it is a record, and a header counting it would
-/// be answering a question nobody asks at a glance.
+/// be answering a question nobody asks at a glance. **`cancelled` is neither for the same reason**,
+/// and it is not folded into `postponed` even though both draw `[p]`: this count is read off the
+/// list, and the list knows the difference.
 ///
 /// **A free function over the list, and not a second count kept anywhere.** The defect this exists
 /// to prevent is a pane that disagrees with itself — a header derived from the wire while the rows
@@ -146,7 +159,8 @@ pub(crate) fn todo_counts(todos: &[letibot_sessionlog::event::TodoEntry]) -> (us
             letibot_sessionlog::event::TodoStatus::Pending
             | letibot_sessionlog::event::TodoStatus::InProgress => open += 1,
             letibot_sessionlog::event::TodoStatus::Postponed => postponed += 1,
-            letibot_sessionlog::event::TodoStatus::Completed => {}
+            letibot_sessionlog::event::TodoStatus::Completed
+            | letibot_sessionlog::event::TodoStatus::Cancelled => {}
         }
     }
     (open, postponed)

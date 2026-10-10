@@ -404,7 +404,7 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     typed(&mut a, "ship the parity row");
     assert!(matches!(
         a.key(Key::Enter),
-        Some(Action::SetOperatorTodos(_))
+        Some(Action::SetOperatorTodos { .. })
     ));
     assert!(a.todo_draft.is_none(), "the card came down");
     assert_eq!(a.input(), "", "and the composer is empty again");
@@ -454,7 +454,7 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
     // the count stayed behind.
     let act = a.key(Key::Enter);
     match act {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 2, "the echoed first row plus this one");
             assert_eq!(items[1].by, TodoBy::Operator);
             assert!(
@@ -516,7 +516,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     // **Adding one sends the WHOLE list, tagged as the operator's.** There is no per-row frame.
     let act = a.command("todo ship the parity row");
     match &act {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1, "the whole list is one row: {items:?}");
             assert_eq!(items[0].content, "ship the parity row");
             assert_eq!(
@@ -556,7 +556,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     // **`done 1` marks the FIRST OF THE OPERATOR'S ROWS** — not the first of the union, which
     // is the model's. A number over the union would edit a row that is not theirs to edit.
     match a.command("todo done 1") {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].content, "ship the parity row");
             assert_eq!(items[0].status, TodoStatus::Completed);
@@ -570,14 +570,30 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         "the refusal does not name the row: {:?}",
         a.notice
     );
-    // **`rm 1` takes it off**, which is the operator's own act and not the model's — the model
-    // may move a row's status and may not remove it.
+    // **`rm 1` STRIKES IT OFF, and the row STAYS** — the operator's ruling: *"only i should be
+    // able to delete todo items. as a rule everything that ever created stays in history"* and
+    // *"so done items or canceled items should be kept"*. So the list goes out one row long, with
+    // the row marked `cancelled`, and the daemon keeps it.
     match a.command("todo rm 1") {
-        Some(Action::SetOperatorTodos(items)) => {
-            assert!(items.is_empty(), "the row is gone: {items:?}");
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items.len(), 1, "the row is still there: {items:?}");
+            assert_eq!(items[0].content, "ship the parity row");
+            assert_eq!(
+                items[0].status,
+                TodoStatus::Cancelled,
+                "**struck off, not removed**: {items:?}"
+            );
         }
-        other => panic!("expected a removal, got {other:?}"),
+        other => panic!("expected a write of the operator's half, got {other:?}"),
     }
+    // **And the model cannot do the same.** The word is not one `todo_write` takes, and the
+    // refusal names the three it does — so a row can never be retired by the half that wrote it,
+    // which is the whole of the ruling.
+    assert!(
+        a.notice.as_deref().unwrap_or("").contains("struck off"),
+        "the act is said out loud, and says the row stays: {:?}",
+        a.notice
+    );
     // **A bare `/todo` opens the CARD** — the shape `/mode` and `/models` keep, where an act
     // with more than one part is chosen from a card rather than typed blind.
     assert_eq!(a.command("todo"), None);
@@ -707,7 +723,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
     a.key(Key::CtrlT);
 
     match a.command("todo postpone 1") {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1, "the whole half goes out: {items:?}");
             assert_eq!(items[0].status, TodoStatus::Postponed);
             assert_eq!(
@@ -727,7 +743,7 @@ fn a_row_is_set_aside_and_lifted_by_number() {
 
     // **And the lift.** Back to open work, with the same condition on it.
     match a.command("todo resume 1") {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items[0].status, TodoStatus::Pending);
             assert_eq!(items[0].when, waiting, "still waiting on the same handle");
         }
@@ -759,6 +775,195 @@ fn a_row_is_set_aside_and_lifted_by_number() {
         hint.contains("postpone") && hint.contains("resume"),
         "the todo row of the verb table does not name the two new verbs: {hint}"
     );
+}
+
+/// **A ROW THE MODEL WROTE CAN BE SET ASIDE BY THE OPERATOR — the verb's reach.**
+///
+/// The hole this closes, MEASURED: `/todo postpone|resume` numbered the operator's OWN rows and
+/// the pane numbers only those, while `todo_write` refuses `postponed` (a model that could
+/// silence its own plan could abandon it). So a row the MODEL wrote — accurate, and waiting on a
+/// person's hand — had no door at all: the model spent **fourteen turns** restating one true
+/// sentence, because nothing could silence a row that was correct.
+///
+/// Four claims, and the second is what makes it one act rather than two: the row's WORDS name it
+/// (the numbers still mean the operator's own half), the move goes out BESIDE the half — the
+/// model's rows are not the head's to write whole — `resume` lifts it again, and a name that
+/// resolves to nothing or to a parent's row is REFUSED rather than guessed at.
+#[test]
+fn a_row_the_model_wrote_can_be_set_aside_by_its_words() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoState, TodoStatus};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            TodoEntry {
+                content: "operator: paste the token".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+            TodoEntry {
+                content: "mine".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+                needs: Vec::new(),
+            },
+        ],
+    });
+    a.key(Key::CtrlT);
+
+    match a.command("todo postpone operator: paste the token") {
+        Some(Action::SetOperatorTodos { items, moved }) => {
+            assert_eq!(
+                items.len(),
+                1,
+                "the operator's half is unchanged: {items:?}"
+            );
+            assert_eq!(items[0].content, "mine");
+            assert_eq!(
+                moved,
+                vec![TodoState {
+                    content: "operator: paste the token".into(),
+                    status: TodoStatus::Postponed,
+                }],
+                "the move goes out beside the half, named by the row's own words"
+            );
+        }
+        other => panic!("expected a state move, got {other:?}"),
+    }
+    // **And it is on the pane at once**, the same trust the operator's own rows get: the write
+    // publishes when it lands, and until then the head draws what it sent.
+    assert_eq!(
+        a.todos
+            .iter()
+            .find(|t| t.content == "operator: paste the token")
+            .map(|t| t.status),
+        Some(TodoStatus::Postponed),
+        "the model's row is set aside in the head's own view: {:?}",
+        a.todos
+    );
+    assert!(
+        a.notice.as_deref().unwrap_or("").contains("set aside"),
+        "the act is said out loud: {:?}",
+        a.notice
+    );
+
+    // **And the lift**, by the same words — the state is reversible, which is what makes it a
+    // silence rather than a way to drop a row.
+    match a.command("todo resume operator: paste the token") {
+        Some(Action::SetOperatorTodos { moved, .. }) => {
+            assert_eq!(moved.len(), 1);
+            assert_eq!(moved[0].status, TodoStatus::Pending);
+        }
+        other => panic!("expected a state move, got {other:?}"),
+    }
+
+    // **A NUMBER still means the operator's own row**, even though the model's row is first in
+    // the union — the pane prints numbers for that half and for nothing else.
+    match a.command("todo postpone 1") {
+        Some(Action::SetOperatorTodos { items, moved }) => {
+            assert_eq!(items[0].content, "mine", "row 1 of YOUR rows: {items:?}");
+            assert_eq!(items[0].status, TodoStatus::Postponed);
+            assert!(moved.is_empty(), "a number never reaches the model's half");
+        }
+        other => panic!("expected a write of the operator's half, got {other:?}"),
+    }
+
+    // **A name that resolves to nothing is REFUSED**, and it says what it could have named — a
+    // guess here would set aside a row nobody meant.
+    assert_eq!(a.command("todo postpone nobody says this"), None);
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("no row this head knows says"),
+        "the refusal names what it looked for: {:?}",
+        a.notice
+    );
+
+    // **A parent's row is refused by name**, because a parent owns its own rows' states and a
+    // silence written here would be taken back by the parent's next write.
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![TodoEntry {
+            content: "told by the parent".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::parent_of("s-1789462738453908838"),
+            when: None,
+            needs: Vec::new(),
+        }],
+    });
+    assert_eq!(a.command("todo postpone told by the parent"), None);
+    assert!(
+        a.notice.as_deref().unwrap_or("").contains("Parent s-"),
+        "the refusal says whose row it is: {:?}",
+        a.notice
+    );
+}
+
+/// **A CANCELLED ROW STAYS ON THE BOARD, MARKED, AND IS NOT OPEN WORK.**
+///
+/// The operator's ruling, in their own words: *"only i should be able to delete todo items. as a
+/// rule everything that ever created stays in history"*, and *"so done items or canceled items
+/// should be kept"*. So what a reader can see is the whole of what has to hold: the row is DRAWN,
+/// with its own words and its author, and the header's `open` count — which is the set the idle
+/// check may ask about — does not count it. `resume` puts it back, which is what makes `rm` a
+/// decision rather than an accident.
+#[test]
+fn a_cancelled_row_stays_on_the_board_and_is_not_open_work() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            TodoEntry {
+                content: "the model's row".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+            TodoEntry {
+                content: "push leticl to github".into(),
+                status: TodoStatus::Cancelled,
+                by: TodoBy::Operator,
+                when: None,
+                needs: Vec::new(),
+            },
+        ],
+    });
+    a.key(Key::CtrlT);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("push leticl to github"),
+        "**the row is still on the board**: {screen}"
+    );
+    assert!(
+        screen.contains("push leticl to github  — you"),
+        "and it still wears its author: {screen}"
+    );
+    assert_eq!(
+        todo_counts(&a.todos),
+        (1, 0),
+        "one open row (the model's), and the cancelled one is neither open nor postponed"
+    );
+    assert!(
+        screen.contains("1 open") && !screen.contains("postponed"),
+        "the header counts only what is owed: {screen}"
+    );
+
+    // **And `resume` is the way back**, which is the other half of *kept in history*: the row was
+    // never lost, so it can be picked up again.
+    match a.command("todo resume 1") {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items[0].status, TodoStatus::Pending);
+        }
+        other => panic!("expected a write of the operator's half, got {other:?}"),
+    }
 }
 
 /// **A row is drawn ONCE, under the author that wrote it** — R51 item 18, and the defect it
@@ -815,7 +1020,7 @@ fn the_operators_own_rows_are_not_in_the_file_so_by_operator_is_not_file_sourced
 
     // The operator adds one the way they actually do, and it is filed as theirs.
     match a.command("todo something only this session knows about") {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].by, TodoBy::Operator, "it IS the operator's row");
             // **And it is not in the file**, which is the exception.
@@ -1219,7 +1424,7 @@ fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
     a.key(Key::CtrlT);
     assert!(matches!(
         a.command("todo check the parity row"),
-        Some(Action::SetOperatorTodos(_))
+        Some(Action::SetOperatorTodos { .. })
     ));
     let screen = a.screen(110, 30).join("\n");
     assert!(
@@ -1281,7 +1486,7 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
         }],
     });
     match a.command("todo when 1 j121") {
-        Some(Action::SetOperatorTodos(items)) => assert_eq!(
+        Some(Action::SetOperatorTodos { items, .. }) => assert_eq!(
             items[0].when,
             Some(TodoCondition::Job {
                 handle: "j121".into()
@@ -1293,7 +1498,7 @@ fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
     // **And off again.** A row whose job has ended must be able to stop waiting on it, or the
     // store reports the same row due on every wake for the rest of the session.
     match a.command("todo when 1 -") {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items[0].when, None, "`-` clears it")
         }
         other => panic!("expected a write, got {other:?}"),
@@ -1352,7 +1557,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
         "the card must say what the third field wants:\n{card}"
     );
     match a.key(Key::Enter) {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 1, "one row was filed: {items:?}");
             assert_eq!(items[0].by, TodoBy::Operator);
             assert_eq!(
@@ -1378,7 +1583,9 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     b.command("todo");
     typed(&mut b, "just a row");
     match b.key(Key::Enter) {
-        Some(Action::SetOperatorTodos(items)) => assert_eq!(items[0].when, None, "{items:?}"),
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items[0].when, None, "{items:?}")
+        }
         other => panic!("expected the add, got {other:?}"),
     }
 
@@ -1408,7 +1615,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     c.command("todo");
     typed(&mut c, "done 2");
     match c.key(Key::Enter) {
-        Some(Action::SetOperatorTodos(items)) => {
+        Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items.len(), 3, "a row was filed: {items:?}");
             assert_eq!(items[2].content, "done 2");
             assert_eq!(
@@ -1462,10 +1669,10 @@ fn starter_todos_copy_onto_the_operators_half() {
             },
         ],
     });
-    let Some(Action::SetOperatorTodos(sent)) = a
+    let Some(Action::SetOperatorTodos { items: sent, .. }) = a
         .queued
         .iter()
-        .find(|q| matches!(q, Action::SetOperatorTodos(_)))
+        .find(|q| matches!(q, Action::SetOperatorTodos { .. }))
         .cloned()
     else {
         panic!("the seed sent nothing: {:?}", a.queued);
@@ -1531,7 +1738,7 @@ fn a_seed_runs_once_per_project() {
     let sent = a
         .queued
         .iter()
-        .filter(|q| matches!(q, Action::SetOperatorTodos(_)))
+        .filter(|q| matches!(q, Action::SetOperatorTodos { .. }))
         .count();
     a.apply(ServerFrame::Todos {
         session_id: "s1".into(),
@@ -1540,7 +1747,7 @@ fn a_seed_runs_once_per_project() {
     assert_eq!(
         a.queued
             .iter()
-            .filter(|q| matches!(q, Action::SetOperatorTodos(_)))
+            .filter(|q| matches!(q, Action::SetOperatorTodos { .. }))
             .count(),
         sent,
         "no second seed was queued"

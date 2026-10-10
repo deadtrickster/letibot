@@ -121,7 +121,10 @@ impl App {
                     });
                     self.echo_operator_todos(mine.clone());
                     self.redraw = true;
-                    return ControlFlow::Break(Some(Action::SetOperatorTodos(mine)));
+                    return ControlFlow::Break(Some(Action::SetOperatorTodos {
+                        items: mine,
+                        moved: Vec::new(),
+                    }));
                 }
                 Key::Esc | Key::CtrlC => {
                     self.todo_draft = None;

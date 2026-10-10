@@ -52,14 +52,24 @@ pub enum Action {
     /// Ask for this session's todo list — the pane's bootstrap read.
     ListTodos,
     /// **The operator's half of the board, replaced wholesale** — R51 item 18's write half, and
-    /// the frame that had no sender until now.
+    /// the frame that had no sender until now — **plus the state moves they asked for on rows that
+    /// are not theirs.**
     ///
     /// The daemon stores and serves these rows and hands them to the model as part of one union;
     /// what it cannot do is invent one, because the words are the operator's. So the head owns them
     /// and sends the whole list on every change, which is the shape `TodoBoard::set_operator`
     /// documents: *"a delta protocol for a list of tens of items would be a second source of truth
     /// about them."*
-    SetOperatorTodos(Vec<letibot_sessionlog::event::TodoEntry>),
+    ///
+    /// **`moved` is one act, not a second list.** `/todo postpone|resume` can name a row the MODEL
+    /// wrote — a row that waits on the operator's own hand, which `todo_write` refuses to silence
+    /// and which the pane's numbers never reach — and a state move is the whole of it. It rides this
+    /// action because both halves are *the board as the operator wants it*, and two frames for one
+    /// act is how a head's copy and the store come to disagree.
+    SetOperatorTodos {
+        items: Vec<letibot_sessionlog::event::TodoEntry>,
+        moved: Vec<letibot_sessionlog::event::TodoState>,
+    },
     /// Ask the daemon for its job table. The head renders the answer; it does
     /// not decide what is in it.
     ListJobs,
