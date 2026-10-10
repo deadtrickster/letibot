@@ -1182,7 +1182,7 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
     // **One turn, and it is the gatekeeper's verdict.** No work child is spawned: the branch's
     // child is gone, which is the state this test is about.
-    let verdict = a_plain_answer_turn(&parts.vocab, "reviewing", &a_refusing_verdict(), 30);
+    let verdict = a_plain_answer_turn(&parts.vocab, "reviewing", &a_refusing_verdict_call(), 30);
     let stub = Stub::answering(vec![verdict], 1);
 
     let cfg = config(main_id, stub.endpoint.clone(), &path);
