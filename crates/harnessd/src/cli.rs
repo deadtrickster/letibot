@@ -394,6 +394,29 @@ enum Step {
     Slash(String),
 }
 
+/// **How long the daemon's exit waits for the subagent threads it started**, and why that
+/// number.
+///
+/// The wait is [`Sessions::drain_subagents`]'s, and the reason there is one at all is the
+/// process's exit: `exit()` runs every ELF finalizer, so a child still inside libllama's
+/// tokenizer when `_dl_fini` unloads `libggml-cuda` takes SIGSEGV — the crash measured on
+/// `message_between_turns`, `si_addr: 0x3`, after every test had printed `ok`.
+///
+/// **Why 5 seconds, from the two ends of the case.** The drain stops the children first, so
+/// what this waits on is a child that has been TOLD to stop. Three kinds of child answer at
+/// once: one parked between turns leaves on the closed hub, one between rounds leaves at its
+/// next round boundary — the round loop already polls its steering on 250 ms slices
+/// (`Harness::sleep_unless_closed`) — and one in a tool call leaves when that call returns.
+/// Several times the slice covers the first two, and it is longer than any single tokenization
+/// of a prompt this box has measured. What is left is the child inside ONE model call or one
+/// long tool, which cannot be interrupted at all: a local turn here has been measured in
+/// minutes, so a bound large enough for that case would make every Ctrl-C wait minutes for a
+/// case a larger number cannot fix anyway. Past this the exit gives up, says which session it
+/// could not wait for, and takes the crash risk rather than the hang — the same ruling
+/// `drop(merge_queue)` makes below, for the same reason: a daemon that will not stop is worse
+/// than a row the next daemon recovers.
+const SUBAGENT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub fn run(args: &[String]) -> Result<i32, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut cfg = Config::for_this_box(cwd);
@@ -1650,6 +1673,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
         }
         daemon.shutdown();
+        // **The same wait the serving path makes, for the same reason.** The process ends at
+        // the `Ok` below — `bin/harnessd.rs` turns it into `std::process::exit` — and a
+        // subagent thread still inside libllama when that runs the ELF finalizers is a
+        // SIGSEGV after the answers have already been printed. See `SUBAGENT_EXIT_GRACE`.
+        if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
+            eprintln!("  {said}");
+        }
         if let Some(seat) = &seat {
             seat.stop();
         }
@@ -1712,10 +1742,21 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     daemon.shutdown();
     // The seat after the daemon: the listener's next poll window sees the stop and
-    // the waiter claim is released with it. `std::process::exit` above runs no
-    // destructors, so this is said here rather than left to a drop.
+    // the waiter claim is released with it. `std::process::exit` above runs no RUST
+    // destructors, so this is said here rather than left to a drop — and it is worth
+    // being exact about the other half, because that half is this file's bug: `exit()`
+    // DOES run every ELF finalizer (`_dl_fini`), which is why the subagent threads are
+    // waited for below rather than left to the exit.
     if let Some(seat) = &seat {
         seat.stop();
+    }
+    // **Every subagent thread this daemon started is waited for before the process ends.**
+    // `daemon.shutdown()` above closed every hub, which is what a child parked between turns
+    // leaves on, and `drain_subagents` tells the running ones to stop first — a hub close does
+    // not end a turn already in flight. The bound is `SUBAGENT_EXIT_GRACE`'s, and what a
+    // give-up costs is the sentence printed here rather than a crash nobody can explain.
+    if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
+        eprintln!("  {said}");
     }
     drop(sessions);
     drop(seat);

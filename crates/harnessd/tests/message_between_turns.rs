@@ -63,7 +63,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_harnessd::config::{Config, Seat};
-use letibot_harnessd::sessions::{Outcome, Sessions};
+use letibot_harnessd::sessions::{Outcome, Sessions, SubagentExit};
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, DAEMON_SUBMITTER, Hub, QueuedCommand};
@@ -1165,5 +1165,183 @@ fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
             .any(|(code, _)| code == "message_idle"),
         "the worker published the sentence a queued message makes false: {:#?}",
         warnings(&child_hub)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The DAEMON'S exit — the call `cli.rs` makes, and the bound it makes it with
+// ---------------------------------------------------------------------------
+
+/// **Whatever a test here asserted, the tree is drained before the process can exit** — the
+/// same rule [`Parent`]'s `Drop` keeps, and for the same crash. The tests below build their own
+/// `Sessions` rather than a `Parent`, so they need their own guard: without it an assertion
+/// that fired early would leave a child thread inside libllama when `exit()` runs the ELF
+/// finalizers, which is the SIGSEGV this whole file exists for.
+struct DrainOnDrop<'s, 'p> {
+    sessions: &'s Sessions<'p>,
+    registry: &'s Registry,
+    stub: &'s Stub,
+}
+
+impl Drop for DrainOnDrop<'_, '_> {
+    fn drop(&mut self) {
+        // The daemon's own order, because the child only leaves on a closed hub.
+        self.registry.close();
+        self.stub.release(usize::MAX);
+        let gave_up = matches!(
+            self.sessions.drain_subagents(PATIENCE),
+            SubagentExit::GaveUp { .. }
+        );
+        if gave_up && !std::thread::panicking() {
+            panic!(
+                "a subagent thread outlived {PATIENCE:?} of waiting with its hub closed. The \
+                 process must not exit with one: `exit()` finalizes libllama/libggml-cuda \
+                 underneath it, and the last time this binary did that it died of SIGSEGV \
+                 after every test had passed."
+            );
+        }
+    }
+}
+
+/// **The daemon's exit waits for a child that is mid-turn, and gives up on a bound rather than
+/// hanging** — `Sessions::drain_subagents`, which is what `cli.rs` calls before `Ok(0)` becomes
+/// `std::process::exit(0)`.
+///
+/// The child is inside its model call, which is the one state a stop cannot reach: the interrupt
+/// is delivered at a round boundary and there is no round boundary while the answer is being
+/// read. So the first drain is the give-up arm — the bound is spent, the session is named, and
+/// the exit goes on — and the second, after the release lets the turn end and with the hub
+/// closed, is the clean arm. **What this does not stage is a real `harnessd` process quitting**;
+/// the binary's own `exit()` is not something a unit test can watch, and the crash it would take
+/// is a race. What is staged is the call and the bound, which is where both defects would live.
+#[test]
+fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-exit-drain");
+    let path = dir.path().join("sessions.db");
+    let id = "s-root-with-a-child";
+
+    // The vocabulary first — the canned frames must speak the ids the child will send.
+    let parts = parts_for(&config(id, Endpoint::new("127.0.0.1", 1), &path));
+    let held = a_plain_answer_turn(&parts.vocab, "working", "still here", 30);
+    // One request, HELD: the child is mid-call for as long as this test says.
+    let stub = Arc::new(Stub::held(vec![held], 1));
+
+    let cfg = config(id, stub.endpoint.clone(), &path);
+    let registry = Registry::new();
+    registry
+        .create(id, "the root", wiring(&cfg))
+        .expect("the session is created");
+    let sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    let _drained = DrainOnDrop {
+        sessions: &sessions,
+        registry: &registry,
+        stub: &stub,
+    };
+
+    // Spawn through the session's own runtime — the production door, the same one a turn uses.
+    let call = ToolCall {
+        id: "call_task".into(),
+        name: "task".into(),
+        arguments: serde_json::json!({"prompt": "hold a turn open"}).to_string(),
+    };
+    let handle = match sessions
+        .harness_of(id)
+        .expect("the root is open")
+        .runtime_handle()
+        .invoke("t1", &call, &mut NullToolSink)
+        .outcome
+    {
+        letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle,
+        other => panic!("`task` did not start a child: {other:?}"),
+    };
+    assert!(
+        stub.wait_for_requests(1),
+        "`{handle}` never sent its first round"
+    );
+
+    // **The daemon's quit, in its own order**: every hub closed first, then the drain.
+    registry.close();
+
+    let bound = Duration::from_millis(300);
+    let began = Instant::now();
+    let said = sessions
+        .drain_subagents(bound)
+        .sentence()
+        .expect("a child inside one model call cannot be waited for, and the caller must be told");
+    assert!(said.contains(id), "the session that could not be waited for: {said}");
+    assert!(
+        began.elapsed() >= bound,
+        "the wait must actually wait rather than answer on a live child: {:?}",
+        began.elapsed()
+    );
+    assert!(
+        began.elapsed() < PATIENCE,
+        "and it must give up on its bound rather than hang: {:?}",
+        began.elapsed()
+    );
+
+    // **And with the child able to move, the same call is a clean exit.** The release ends its
+    // turn, and with its hub already closed its thread leaves rather than parking — so the
+    // second drain's bound is NOT spent and what it reports is a wait that succeeded. Whether
+    // `told` counts the child depends on whether the thread had already left when the drain
+    // looked, which is the race the release starts; both are the clean arm and neither may
+    // read as a give-up.
+    stub.release(usize::MAX);
+    let began = Instant::now();
+    let done = sessions.drain_subagents(PATIENCE);
+    assert!(
+        matches!(done, SubagentExit::Waited { .. }),
+        "a child that can leave is a clean wait, not a give-up: {done:?}"
+    );
+    if let Some(said) = done.sentence() {
+        assert!(
+            said.contains("left") && !said.contains("SIGSEGV"),
+            "a wait that succeeded may not read as a give-up: {said}"
+        );
+    }
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "the wait ended {:?} after the child left, which is a deadline and not a wakeup",
+        began.elapsed()
+    );
+}
+
+/// **A quit with nothing running is not slowed down by the wait** — the other half, and the one
+/// that catches a hang. This is the ordinary daemon: a session that never started a child, a
+/// closed registry, and an exit that must not spend `SUBAGENT_EXIT_GRACE` on an empty tree.
+#[test]
+fn the_daemons_exit_returns_promptly_when_nothing_is_running() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-exit-quiet");
+    let path = dir.path().join("sessions.db");
+    let id = "s-root-quiet";
+
+    let cfg = config(id, Endpoint::new("127.0.0.1", 1), &path);
+    let parts = parts_for(&cfg);
+    let registry = Registry::new();
+    registry
+        .create(id, "the root", wiring(&cfg))
+        .expect("the session is created");
+    let sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    registry.close();
+
+    // The bound is the daemon's own number, so this measures the call the daemon makes.
+    let began = Instant::now();
+    assert_eq!(
+        sessions.drain_subagents(Duration::from_secs(5)).sentence(),
+        None,
+        "a session with no children is a clean exit, not a give-up"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(1),
+        "an empty tree cost {:?} of the exit's grace, which is a hang wearing a bound",
+        began.elapsed()
     );
 }

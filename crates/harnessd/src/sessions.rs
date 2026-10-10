@@ -605,6 +605,51 @@ fn wake_route(held_by_the_daemon: bool, live_in_the_registry: bool) -> WakeRoute
     }
 }
 
+/// **What a shutdown's wait for the subagent threads came to** — the two outcomes
+/// [`Sessions::drain_subagents`] distinguishes, so a caller's log can say which it was rather
+/// than only speaking up when something went wrong.
+#[derive(Debug)]
+pub enum SubagentExit {
+    /// **Every thread left inside the bound.** `told` is how many sessions had a child that was
+    /// TOLD to stop, which is the count of sessions that actually had something running — `0` is
+    /// a daemon that had nothing to wait for.
+    Waited { told: usize },
+    /// **The bound was spent and these sessions still had a thread.** See
+    /// [`SubagentExit::sentence`].
+    GaveUp {
+        sessions: Vec<String>,
+        waited: std::time::Duration,
+    },
+}
+
+impl SubagentExit {
+    /// **The one line a shutdown prints, or `None` when there is nothing to say.**
+    ///
+    /// Silence is the ordinary case — a daemon with nothing running, or whose children had
+    /// already left, has no fact here worth a line — while a quit that HAD to wait, and one that
+    /// could not, are exactly the two things a reader of the log needs to be able to tell apart.
+    /// Which sessions could not be waited for is named rather than counted: the session that is
+    /// still computing is the one somebody can go and look at, and a count would be the
+    /// claim-versus-fact defect this tree keeps paying for.
+    pub fn sentence(&self) -> Option<String> {
+        match self {
+            SubagentExit::Waited { told: 0 } => None,
+            SubagentExit::Waited { told } => Some(format!(
+                "waited for the subagent thread(s) of {told} session(s), and every one left \
+                 before the exit"
+            )),
+            SubagentExit::GaveUp { sessions, waited } => Some(format!(
+                "waited {waited:?} for the subagent thread(s) of {} and gave up; exiting anyway. \
+                 A thread still inside libllama when `exit()` runs the ELF finalizers can die of \
+                 SIGSEGV after this line — the crash this wait exists to prevent — so this \
+                 sentence is the record that the exit was not clean. The session(s) named are the \
+                 ones whose child could not be waited for.",
+                sessions.join(", ")
+            )),
+        }
+    }
+}
+
 impl<'a> Sessions<'a> {
     /// Start with one session, opened eagerly. See the module header for why the
     /// first one is not lazy.
@@ -1407,6 +1452,73 @@ impl<'a> Sessions<'a> {
     /// Sessions with a harness behind them. The rest exist and have never run.
     pub fn opened(&self) -> usize {
         self.open.len()
+    }
+
+    /// **Stop every session's subagents and wait for their threads to leave** — the daemon's
+    /// exit path, and the door the process's own exit needs before it runs `_dl_fini`.
+    ///
+    /// # Why the process's exit needs this at all
+    ///
+    /// A child's thread is spawned **detached** (`HarnessTaskRunner::start` drops the
+    /// `JoinHandle`), so nothing in the process can be joined to it. `exit()` runs every ELF
+    /// finalizer, and `_dl_fini` tears `libggml-cuda`/`libcudart` down underneath a thread
+    /// still inside libllama's tokenizer — measured on `message_between_turns`, `si_addr: 0x3`,
+    /// `SEGV_MAPERR`, **after every test had printed `ok`**. The daemon has the same shape: it
+    /// calls `daemon.shutdown()` (which closes every hub) and then returns `Ok(0)`, which
+    /// `bin/harnessd.rs` turns into `std::process::exit(0)` with the child threads still
+    /// inside the libraries those finalizers unload. See [`Harness::wait_for_children`].
+    ///
+    /// # Stop first, then wait
+    ///
+    /// Closing a hub is what a child PARKED between turns leaves on; it does not end a turn
+    /// already running. So each session's children are told to stop first
+    /// ([`Harness::stop_children`]), which is the interrupt that reaches a running turn at its
+    /// next round boundary — and only then are the threads waited for. The order is the whole
+    /// of this: a wait that ran first would spend its bound on a child nobody had told to
+    /// stop, and a child between turns would never be told at all.
+    ///
+    /// # The bound, and what it costs
+    ///
+    /// `timeout` is the caller's — `cli::SUBAGENT_EXIT_GRACE` is the daemon's, and the number
+    /// is argued there. A child inside a single model call or a long tool cannot be
+    /// interrupted at all, and a local turn on this box has been measured in minutes, so an
+    /// unbounded wait would make Ctrl-C a hang. When the bound is spent this returns a
+    /// sentence naming the sessions it could not wait for rather than blocking: a crash nobody
+    /// can explain is worse than a sentence naming what could not be waited for.
+    ///
+    /// The wait covers each session's **whole tree** and not one level of it — that is
+    /// [`Harness::wait_for_children`]'s own rule, and the reason it is safe to wait per session
+    /// here: a child's slots are its root's (`Parts::tree_slots`).
+    ///
+    /// Returns [`SubagentExit`], whose [`SubagentExit::sentence`] is the line to print: it is
+    /// `None` when nothing was running, so a caller prints it unconditionally without putting a
+    /// line on every ordinary quit.
+    pub fn drain_subagents(&self, timeout: std::time::Duration) -> SubagentExit {
+        let ids: Vec<String> = self.open.keys().cloned().collect();
+        let began = std::time::Instant::now();
+        let mut told = 0;
+        let mut left = Vec::new();
+        for id in ids {
+            let Some(harness) = self.open.get(&id) else {
+                continue;
+            };
+            // `Some` is this session's children having been told to stop, which is the count of
+            // sessions that had something running — a session with nothing live says nothing.
+            if harness.stop_children().is_some() {
+                told += 1;
+            }
+            if !harness.wait_for_children(timeout.saturating_sub(began.elapsed())) {
+                left.push(id);
+            }
+        }
+        if left.is_empty() {
+            SubagentExit::Waited { told }
+        } else {
+            SubagentExit::GaveUp {
+                sessions: left,
+                waited: timeout,
+            }
+        }
     }
 
     /// Submit one prompt to a session and wait for the answer.
@@ -4705,5 +4817,56 @@ mod the_wire_report {
         // And the sentence beside it agrees, which is the property that matters.
         let said = compaction_said(&r, scale);
         assert!(said.contains("160000 → 6000"), "{said}");
+    }
+}
+
+#[cfg(test)]
+mod the_subagent_exit_wait {
+    //! **What the daemon's exit says about the subagent threads it waited for** — the pure half
+    //! of `Sessions::drain_subagents`, tested where it lives rather than through a daemon.
+    //!
+    //! The wait itself is `Harness::wait_for_children` (tested in `harness.rs`), and the call
+    //! the daemon makes is exercised end to end by `message_between_turns`'s
+    //! `the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound`. What is left here is the
+    //! telling: which of the two outcomes speaks, what it names, and that the ordinary quit is
+    //! silent.
+    use super::SubagentExit;
+    use std::time::Duration;
+
+    /// **A quit with nothing running says nothing.** This is the ordinary case — no session had
+    /// a child to stop — and a line here would be a warning about nothing on every quit.
+    #[test]
+    fn a_quit_with_nothing_running_says_nothing() {
+        assert_eq!(SubagentExit::Waited { told: 0 }.sentence(), None);
+    }
+
+    /// **A wait that succeeded says so**, which is the other half of *the log says which of the
+    /// two it did*: a reader must be able to tell a clean exit from one that never looked.
+    #[test]
+    fn a_wait_that_succeeded_says_how_many_sessions_it_waited_for() {
+        let said = SubagentExit::Waited { told: 2 }
+            .sentence()
+            .expect("two sessions had children, so there is something to say");
+        assert!(said.contains('2'), "{said}");
+        assert!(said.contains("left"), "it claims the threads went: {said}");
+    }
+
+    /// **A give-up NAMES the session and the time it waited** — a count would leave the reader
+    /// unable to tell which session is still computing, and the number is the only way they can
+    /// tell a child that ignored the interrupt from one that was never told.
+    #[test]
+    fn a_give_up_names_the_session_and_the_time_it_waited() {
+        let said = SubagentExit::GaveUp {
+            sessions: vec!["s-root".to_string(), "s-other".to_string()],
+            waited: Duration::from_secs(5),
+        }
+        .sentence()
+        .expect("two sessions still running is a sentence");
+        assert!(said.contains("s-root") && said.contains("s-other"), "{said}");
+        assert!(said.contains("5s"), "the bound is part of the record: {said}");
+        assert!(
+            said.contains("SIGSEGV") && said.contains("not clean"),
+            "the sentence says what giving up costs, rather than claiming a clean exit: {said}"
+        );
     }
 }
