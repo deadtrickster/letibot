@@ -1687,6 +1687,95 @@ fn a_notice_expires_in_time_and_not_in_frames() {
     );
 }
 
+/// **A fleeting notice goes when its time is up, and a failure's does not.**
+///
+/// The operator's report, in their words: *"also merge_queued notification sticks and jumps
+/// slightly up when you actively reply and then bottom - hide it to near triangle with the
+/// current queue stats … do it after time, say 30 seconds"*. So the row is drawn for
+/// [`FLEETING_MS`] of wall time and then taken down — while `merge_not_queued`, its failure
+/// twin (the same door's other verdict: a branch nothing will land), is not on a timer at all.
+///
+/// **The clock is the head's own and the unit is the wall**, which is `NOTICE_MS`'s test one
+/// register over: 200 repaints at one millisecond age nothing, a millisecond before the
+/// deadline the row is still there, and the millisecond it is due it is gone. A timer counted
+/// in frames is a timer that stops when the frames stop.
+#[test]
+fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.clock(1_000);
+    for (seq, code, detail) in [
+        (
+            1,
+            "merge_queued",
+            "`agent/child-one` is in the merge queue as `c1`",
+        ),
+        (
+            2,
+            "merge_not_queued",
+            "the store would not open, so nothing will land it",
+        ),
+    ] {
+        a.apply(ServerFrame::Event(env_at(
+            seq,
+            1_000,
+            SessionEvent::Warning {
+                code: code.into(),
+                detail: detail.into(),
+                compaction: None,
+            },
+        )));
+    }
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("is in the merge queue"), "{screen}");
+    assert!(screen.contains("nothing will land it"), "{screen}");
+
+    // Frames do not age it (§11.3).
+    for _ in 0..200 {
+        a.screen(100, 24);
+    }
+    assert!(
+        a.screen(100, 24)
+            .join("\n")
+            .contains("is in the merge queue"),
+        "200 repaints is not a duration"
+    );
+
+    // The boundary, and not "eventually".
+    a.clock(1_000 + FLEETING_MS - 1);
+    assert!(
+        a.screen(100, 24)
+            .join("\n")
+            .contains("is in the merge queue"),
+        "still there a millisecond before"
+    );
+    a.clock(1_000 + FLEETING_MS);
+    let screen = a.screen(100, 24).join("\n");
+    assert!(
+        !screen.contains("is in the merge queue"),
+        "gone the millisecond it is due: {screen}"
+    );
+    assert!(
+        screen.contains("nothing will land it"),
+        "a failure is not on a timer, and the class table is what keeps it off one: {screen}"
+    );
+
+    // **Spent, not retired.** The sentence leaves this head rather than joining the reader's
+    // own retired set — a timer may not write `head.toml`, because a key the reader restored
+    // would then be re-retired by the clock on the next frame.
+    assert_eq!(
+        a.notes.len(),
+        1,
+        "one note left, and it is the failure: {:?}",
+        a.notes
+    );
+    assert!(
+        a.dismissed.is_empty(),
+        "a timer does not write the reader's file: {:?}",
+        a.dismissed
+    );
+}
+
 /// **One announcement is noted once, wherever it arrives from.**
 ///
 /// A `Warning` can reach a head twice: `adopt` plants everything the snapshot

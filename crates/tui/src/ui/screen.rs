@@ -2,6 +2,7 @@
 //! the conversation, the cards and panes, the composer and the hint bar — and where the cursor goes.
 
 use crate::app::*;
+use crate::ui::panes::queue::Standings;
 use crate::ui::render::{row, row_strings, trim_to, visible_width, wrap};
 use crate::ui::*;
 use rano::agent::composer::{BoxBottom, BoxTop};
@@ -104,6 +105,14 @@ impl App {
                 self.notice = None;
                 self.notice_until = None;
             }
+        }
+        // **A fleeting note's clock, read the same way** — `NOTICE_MS`'s sibling, one register
+        // over, and here rather than in the walk for the same reason: the sentence's lifetime
+        // is wall time and this is the frame either a deadline or a key takes effect on. The
+        // rebuild is what un-draws the row, and it happens on the frame the deadline passes
+        // and not on every frame after it — see [`App::fade_fleeting_notes`].
+        if self.fade_fleeting_notes() {
+            self.invalidate_history();
         }
 
         // **R20: the card is two pieces, and only one of them gives way.** `dec` is the
@@ -596,25 +605,41 @@ impl App {
     }
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
-    /// conversation, and the visibility rung.
+    /// conversation, the visibility rung, and the merge queue's standings.
     pub(crate) fn box_bottom(&self, w: usize, completions: Option<&rano::render::Line>) -> String {
         // The alarm, then the viewport's state **only when it is holding** (R36 — following is
         // the ordinary state and owes the reader nothing), then the rung **when it is the one
         // that hides things** (R37): each drawn only when it is news, because a marker that is
-        // always on is furniture.
+        // always on is furniture. The standings follow the same rule from the other side: they
+        // are drawn while the queue holds something that stands and not otherwise, so the edge
+        // carries them exactly as long as they are the fact a `merge_queued` row told.
         let bottom = BoxBottom {
             alarmed: self.alarmed(),
             holding: self.scroll_state().is_some(),
             rung: self.rung_state(),
         };
+        let standings = self.queue_standings();
+        let right = bottom_markers(&bottom, &standings);
         let p = self.cfg.palette();
         let Some(legend) = completions.filter(|l| l.width() > 0) else {
-            return crate::ui::rows::row(&bottom.line(w), p);
+            // **One builder for both paths.** rano's `BoxBottom::line` composes this same right
+            // side, and the path below has always built it here (it needs the width before the
+            // left legend is cut); using the local builder for both is what keeps the edge from
+            // saying one thing with a completion open and another without.
+            return crate::ui::rows::row(
+                &rano::agent::composer::box_edge(
+                    w,
+                    '╰',
+                    '╯',
+                    &rano::render::Line::default(),
+                    &right.unwrap_or_default(),
+                ),
+                p,
+            );
         };
         // **The completions inlaid at the left**, as leticl draws them. The right side's own
-        // markers are what `BoxBottom` would pin there, and they keep their room: the
-        // completions are cut to what is left, so typing `/` never hides an alarm.
-        let right = bottom_markers(&bottom);
+        // markers are what the edge pins there, and they keep their room: the completions are
+        // cut to what is left, so typing `/` never hides an alarm or a standing queue.
         let keep = right.as_ref().map_or(0, |r| r.width() + 4);
         let room = w.saturating_sub(6 + keep).max(8);
         let mut left = legend.clone();
@@ -768,10 +793,14 @@ impl App {
     }
 }
 
-/// `BoxBottom`'s right-hand markers as a line (`None` when it has nothing to say): the alarm,
-/// `holding`, the rung — the same pieces in the same roles, for an edge that also carries the
-/// completions at its left.
-fn bottom_markers(b: &BoxBottom) -> Option<rano::render::Line> {
+/// The bottom edge's right-hand markers as a line (`None` when it has nothing to say): the
+/// alarm, `holding`, the rung, and **the merge queue's standings** — the same pieces in the
+/// same roles, for an edge that also carries the completions at its left.
+///
+/// **The standings are last, and they are the one piece here that is not about this head.**
+/// The other three are states of the reader's own screen; this one is the queue's, which is
+/// why it is drawn from the daemon's own states and never from a count this head keeps.
+fn bottom_markers(b: &BoxBottom, standings: &Standings) -> Option<rano::render::Line> {
     use rano::render::{Line, Span};
     use rano::style::Role;
     let mut right = Line::default();
@@ -793,6 +822,10 @@ fn bottom_markers(b: &BoxBottom) -> Option<rano::render::Line> {
             rano::agent::text::clean_line(r),
             Role::Attention,
         ));
+    }
+    if let Some(words) = standings.words() {
+        sep(&mut right);
+        right.push(Span::role(words, standings.role()));
     }
     (right.width() > 0).then_some(right)
 }
