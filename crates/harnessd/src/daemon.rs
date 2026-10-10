@@ -205,7 +205,9 @@ impl Daemon {
                         // main gatekeeper session which is hardcoded … it is a normal auto-driving
                         // session that treats review queue as todo list - so nags and all"*. So the
                         // session exists first and its BOARD is the queue — one row per entry
-                        // waiting for a verdict, filled from the store on this same clock.
+                        // waiting for a verdict, filled from the store on this same clock — and the
+                        // review is a `task` CHILD of it: `serve_reviews` below starts one for each
+                        // row nobody is working, and the row then says which child it is.
                         //
                         // Silence is the ordinary case: `Ok(false)` is every pass after the first
                         // (the session is already open), and the rows say nothing of their own — a

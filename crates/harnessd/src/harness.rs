@@ -1634,9 +1634,18 @@ pub struct Harness {
     /// request)` for each gatekeeper child it started and has not yet heard back from. See
     /// [`Harness::serve_reviews`].
     reviewing: Vec<(String, String, letibot_tools::gatekeeper::ReviewRequest)>,
-    /// **Every gatekeeper child this session has started**, answered or not: a settlement
-    /// naming one is the review's, not news for this session's model, and is dropped from the
-    /// notices (`Harness::wake`).
+    /// **Every gatekeeper child this session has started**, answered or not: a settlement naming
+    /// one is the review's, not news for this session's model, and is dropped from the notices
+    /// (`Harness::wake`).
+    ///
+    /// **The reason changed with the ownership, and it is still the reason.** While the review ran
+    /// under the tree the branch came from, this session's model had nothing to do with a review at
+    /// all. Now the review is a `task` child of the QUEUE's session (`Harness::serve_reviews`), so
+    /// the settlement does arrive at the session that owns the row — and it is still not news,
+    /// because `Harness::wake` calls `serve_reviews` FIRST: by the time the notices are built, the
+    /// child's answer has been parsed onto the entry's review row and the row is off this session's
+    /// board. What the queue's session hears about its rows is the BOARD (a row `in progress` with
+    /// the child's handle, or gone), not a sentence about a child that has already been collected.
     gatekeepers: std::collections::HashSet<String>,
     /// **The queue entries this session's model has been told need a merge gate**, so each is
     /// said once per daemon. See [`Harness::queue_notices`].
@@ -7213,10 +7222,13 @@ impl Harness {
     /// none, and write the verdict of each one that has answered.**
     ///
     /// The queue's door (`mergequeue::GatekeeperDoor`) writes a request row naming this session
-    /// as its host and rings it; this is the host's half. A gatekeeper is a **subagent** of this
-    /// session, seated `gatekeeper` (read-only, `bash` for `git diff`), given the review brief and
-    /// nothing else — so its asks come up this tree to its head like any child's, which is what a
-    /// reviewer the daemon owned alone could not have.
+    /// as the one that reviews it and rings it; this is that session's half. **A gatekeeper is a
+    /// `task` child of THIS session** — started through `self.subagents`, the same runner the
+    /// `task` tool uses — so its `parent_session_id` is this session, its settlement is published
+    /// on this session's hub, its slot is one this session's `task_result`/`task_message` reach,
+    /// and its approvals ask at this session's head. The one session whose rows name it is the
+    /// review queue's (`crate::sessions::gatekeeper::SESSION`), which is why the reviewer runs
+    /// under the queue's own session and not under the tree the branch came from.
     ///
     /// **Called from three places, and the third is the one that was missing.** The top of every
     /// wake — the queue's ring, and the child's own settlement (a child's end wakes its parent);
@@ -7237,6 +7249,17 @@ impl Harness {
     /// say: a request row and an attempt in flight are the same row (`decision` NULL,
     /// `attempts` 0, `failed_ms` NULL). So the two passes above may see the same row as often as
     /// they like — the store decides what is owed, `reviewing` decides what is already in hand.
+    /// **That guard is what makes "one review per entry" true of a session's children**, and it
+    /// is why the gatekeeper session's prompt tells its model NOT to start a reviewer itself: two
+    /// children on one row would be two reviewers reading one branch.
+    ///
+    /// **A child that comes back is written onto its row, and that is the seam this slice leaves.**
+    /// The reviewer's answer is PARSED here ([`review_outcome`] → `letibot_tools::gatekeeper::parse_verdict`)
+    /// and the verdict is written onto the entry's `merge_review` row by [`write_outcome`]; the
+    /// child writing that row ITSELF — its own verdict, so the parent stops reading its answer —
+    /// is the next slice. What is true either way, and what the board relies on: the row's
+    /// `decision`/`answered_ms` is the only thing that takes an entry off the queue, and so off
+    /// this session's board.
     ///
     /// **Returns how many gatekeepers it started**, so a caller that is looking at a log can say
     /// so; the writing-back half of this function is not counted.
@@ -7268,6 +7291,12 @@ impl Harness {
             .collect();
         // **Start the ones nobody is reviewing.**
         let mut started = 0;
+        // **Whether this pass moved what is ON this session's board** — a review child started, or
+        // one that is gone — because a row that is being worked and a row nobody has started are
+        // two different rows, and the board says which ([`Self::fill_queue_board`]). Re-filled at
+        // the end of this pass rather than left to the daemon's next one, so the row a session is
+        // nagged about is never one whose child is already running.
+        let mut moved = false;
         for row in &rows {
             if self.reviewing.iter().any(|(e, _, _)| *e == row.entry_id) {
                 continue;
@@ -7290,6 +7319,7 @@ impl Harness {
             {
                 Ok(handle) => {
                     started += 1;
+                    moved = true;
                     self.gatekeepers.insert(handle.clone());
                     self.reviewing.push((row.entry_id.clone(), handle, req));
                 }
@@ -7309,15 +7339,20 @@ impl Harness {
         let mut still = Vec::with_capacity(self.reviewing.len());
         for (entry_id, handle, req) in std::mem::take(&mut self.reviewing) {
             let Some(row) = rows.iter().find(|r| r.entry_id == entry_id) else {
-                // Answered elsewhere, or the entry left the queue: nothing to write.
+                // Answered elsewhere, or the entry left the queue: nothing to write — and the row
+                // is off the board for the same reason.
+                moved = true;
                 continue;
             };
             let status = self.subagents.collect(&handle, std::time::Duration::ZERO);
             // A handle this runner no longer knows is a child that is gone: dropped, so the next
-            // ring starts a new gatekeeper for the row that is still waiting.
+            // ring starts a new gatekeeper for the row that is still waiting — and the row goes
+            // back to being ordinary work nobody has started, which is what the board must say
+            // about it.
             let gone = status == TaskStatus::Unknown;
             match review_outcome(&req, status) {
                 Some(o) => {
+                    moved = true;
                     // **A refusal is the ball going back, and this is where it goes.** The
                     // operator's model of this queue, in their words: *"gatekeeper reviews and
                     // drives subagents to completion by nagging them via messages. so it gets queue
@@ -7333,11 +7368,32 @@ impl Harness {
                     }
                 }
                 None if !gone => still.push((entry_id, handle, req)),
-                None => {}
+                None => moved = true,
             }
         }
         self.reviewing = still;
+        // **And the board, when any of that moved it — and only for the session whose board the
+        // queue IS.** `fill_queue_board` is the one writer of the queue's half and it is
+        // version-gated (`TodoBoard::set_queue` compares the rows), so a pass that changed nothing
+        // costs no write and no publish. The guard is not tidiness: a row written by an OLDER build
+        // names the tree the branch came from (`mergequeue::GatekeeperDoor`'s migration note), and
+        // that session still serves it — it must not find the daemon's whole queue on its own
+        // board for having done so.
+        if moved && self.is_the_queue() {
+            self.fill_queue_board();
+        }
         started
+    }
+
+    /// **Whether this session is the review queue's own** — the one
+    /// [`crate::sessions::gatekeeper::SESSION`] names, whose board is the queue.
+    ///
+    /// One caller ([`Harness::serve_reviews`], deciding whether the board it just moved is ITS),
+    /// and it is a function because the two questions it answers — *does this session serve
+    /// reviews* (any session a row names) and *is this session the queue* (exactly one) — are
+    /// different, and collapsing them is how an ordinary session comes to carry the queue's rows.
+    fn is_the_queue(&self) -> bool {
+        self.hub.session_id() == crate::sessions::gatekeeper::SESSION
     }
 
     /// **The queue, as THIS session's board — one row per entry waiting for a verdict.**
@@ -7372,11 +7428,34 @@ impl Harness {
     ///
     /// Returns how many rows the board holds afterwards. A flush failure is printed rather than
     /// swallowed, the way `set_operator_todos` prints its own: the rows are on the board either way.
-    pub fn fill_queue_board(&mut self, serving: &std::path::Path) -> usize {
+    ///
+    /// **The workspace is the SESSION's own**, canonical — the rule `served_by` compares, and the
+    /// same one the review pass uses ([`Harness::serving`]), so the board and the pass cannot come
+    /// to different answers about which queue this session is looking at. For the review queue's
+    /// session that is the daemon's workspace (it is created with `Sessions::wiring`), and for a
+    /// session a head made it is the directory the head was standing in.
+    ///
+    /// **A row a review child is on is marked with that child** ([`gatekeeper::row`]): the child
+    /// is a fact about THIS session's own children and nothing in the store holds it, so it is
+    /// read here, from `reviewing`, at the moment the rows are drawn. A pass that started or lost
+    /// a child re-fills in the same breath ([`Harness::serve_reviews`]).
+    pub fn fill_queue_board(&mut self) -> usize {
         let Some(store) = self.store.as_ref() else {
             return 0;
         };
-        let rows = crate::sessions::gatekeeper::queue_rows(store, serving);
+        let serving = self.serving();
+        let rows: Vec<letibot_tokencore::store::TodoItem> =
+            crate::sessions::gatekeeper::waiting(store, &serving)
+                .iter()
+                .map(|entry| {
+                    let child = self
+                        .reviewing
+                        .iter()
+                        .find(|(id, _, _)| id == &entry.id)
+                        .map(|(_, handle, _)| handle.as_str());
+                    crate::sessions::gatekeeper::row(entry, child)
+                })
+                .collect();
         let n = self.todos.set_queue(rows);
         // Version-gated: the board only publishes and persists when the queue actually MOVED, so a
         // queue standing still costs nothing on every pass.
@@ -7386,8 +7465,17 @@ impl Harness {
         n
     }
 
-    /// **Install the runner a test owns**, so the host's half of a review can be measured without
-    /// a model, a provider or a real child.
+    /// **The workspace this session's daemon serves, canonical** — `served_by` compares canonical
+    /// forms and a session's `workspace_root` is stored as it was typed, so this is the one
+    /// spelling of *the queue this session is looking at*, read by the board and by the review
+    /// pass. A path that does not canonicalize (it is gone, or this process may not look) is used
+    /// as it is, which is what `Sessions::fill_gatekeeper_board` did at its own call site.
+    fn serving(&self) -> std::path::PathBuf {
+        std::fs::canonicalize(&self.cfg.workspace).unwrap_or_else(|_| self.cfg.workspace.clone())
+    }
+
+    /// **Install the runner a test owns**, so the review queue's half of a review can be measured
+    /// without a model, a provider or a real child.
     ///
     /// [`HarnessTaskRunner::for_enqueue`]'s posture, and for its reason: the field stays private
     /// and this is `#[cfg(test)]`, so it is in no binary. `Harness::open` builds the real runner
@@ -7681,7 +7769,9 @@ impl Harness {
             .unwrap_or_default();
         // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
         // went onto the queue's row above; telling this session's model that "a subagent you
-        // started has finished" would be a turn about a child it never started.
+        // started has finished" would be a turn about work that is already recorded and already
+        // gone from the board. It holds for the QUEUE's session too, and for the same reason — the
+        // pass above ran first and the row is answered (see the field's own doc).
         done.retain(|c| !self.gatekeepers.contains(&c.job));
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.

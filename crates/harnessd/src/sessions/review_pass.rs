@@ -21,14 +21,20 @@
 //!
 //! What is asserted here, and what the requirement named:
 //!
-//! * **A `Due` review whose host is idle is spawned by the pass, with no wake involved.** Nothing
+//! * **A `Due` review whose session is idle is spawned by the pass, with no wake involved.** Nothing
 //!   rings anything in this file: the row is written, the pass is called, and a gatekeeper is
 //!   started with the review's brief and the `gatekeeper` seat.
+//! * **The reviewer is a `task` child of the REVIEW QUEUE's session and of no other.** The row names
+//!   it (`mergequeue::GatekeeperDoor` writes `gatekeeper::SESSION`), `Harness::serve_reviews` spawns
+//!   through that harness's own runner — the same door `task` uses — and the daemon's own first
+//!   session is asked to start nothing at all. The child's `parent_session_id` is the queue's
+//!   session, its settlement is published on that session's hub, and its approvals ask at that
+//!   session's head.
 //! * **A review already being served is not spawned twice by a second pass.** The store still says
 //!   `Due` — the row is a request and an attempt in flight is the same row — so the guard that
 //!   answers this is the session's own `reviewing` list, and the assertion is that the second pass
 //!   starts nothing and writes nothing.
-//! * **A review hosted by a session this daemon does not hold is left alone.** The row stays as it
+//! * **A review naming a session this daemon does not hold is left alone.** The row stays as it
 //!   was, and no child is started for it: the pass serves what it holds and nothing else.
 //! * **A row whose backoff has not elapsed is not asked again** — the other half of idempotence,
 //!   and the one the STORE carries (`attempts`/`failed_ms` through `mergequeue::review_retry`).
@@ -39,8 +45,9 @@
 //! `queue_e2e`'s situation exactly, answered the same way: [`present_gguf`] announces a skip when
 //! it is not here rather than failing, and `LETIBOT_REQUIRE_APPARATUS=1` refuses that skip. **Not a
 //! model**: no round runs here. The child a real runner would start needs one, which is why the
-//! one held harness is handed a recording runner (`Harness::set_subagents_for_test`) — the
-//! measurement is *what the pass asked for*, not what a child then did.
+//! harnesses that could be asked to start one are handed a recording runner
+//! (`Harness::set_subagents_for_test`) — the measurement is *what the pass asked for, and of
+//! which session*, not what a child then did.
 //!
 //! And **not the live store**: the queue lives in `sessions.db`, and every test here builds its own
 //! in a temp directory that removes itself.
@@ -112,20 +119,26 @@ impl TaskRunner for Recording {
     }
 }
 
-/// **Everything a test here starts from**: a temp store, one session this daemon holds, one it
-/// does not, and the runner that records the spawns.
+/// **Everything a test here starts from**: a temp store, the review queue's session, the daemon's
+/// own session, one session this daemon does not hold, and the two runners that record the spawns.
 ///
-/// The held session is the one `Sessions::open_first` opens eagerly. The other is created in the
-/// registry and never opened — a session this daemon knows about and does not hold, which is the
-/// state a review's host is in when it belongs to another daemon.
+/// The daemon's own session is the one `Sessions::open_first` opens eagerly; the queue's session is
+/// opened by `Sessions::ensure_gatekeeper` and is the one a review is a child of. The third is
+/// created in the registry and never opened — a session this daemon knows about and does not hold.
 struct Fixture {
     /// Held, not read: dropping it deletes the store.
     _dir: TempDir,
     db: PathBuf,
     cfg: Config,
     registry: Arc<Registry>,
+    /// `(prompt, role)` per `start`, in order, asked of the REVIEW QUEUE's session.
     started: Arc<Mutex<Vec<(String, String)>>>,
-    /// The session this daemon holds — the host the pass serves.
+    /// **And what the daemon's OWN session was asked to start**, which must stay empty: a review is
+    /// a `task` child of the queue's session, not of whatever session the daemon was started with.
+    /// A recording runner on that session is the only way to assert the difference — a runner that
+    /// is never asked records nothing whether the code is right or the fixture is.
+    started_by_the_daemon: Arc<Mutex<Vec<(String, String)>>>,
+    /// The session that hosts the reviews — the queue's own.
     host: String,
     /// A session that exists and is not held.
     elsewhere: String,
@@ -158,7 +171,10 @@ impl Fixture {
             cfg,
             registry,
             started: Arc::new(Mutex::new(Vec::new())),
-            host: "s-host".into(),
+            started_by_the_daemon: Arc::new(Mutex::new(Vec::new())),
+            // **The review queue's session**, hardcoded (`gatekeeper::SESSION`): the one the door
+            // writes on the row and the one the reviewer is a child of.
+            host: crate::sessions::gatekeeper::SESSION.to_string(),
             elsewhere: "s-elsewhere".into(),
         })
     }
@@ -213,41 +229,64 @@ impl Fixture {
             .expect("the request row");
     }
 
-    /// **The daemon**: `Sessions::open_first` over the held session, with the recording runner
-    /// installed in the one harness it holds.
+    /// **The daemon**: `Sessions::open_first` over its own session, the review queue's session
+    /// opened beside it, and the recording runners installed in both harnesses.
     ///
-    /// The runner is installed after the open because `Harness::open` builds the real one from the
-    /// parts, and a real one would spawn a child that needs a model.
+    /// The runners are installed after the opens because `Harness::open` builds the real one from
+    /// the parts, and a real one would spawn a child that needs a model.
     fn sessions<'p>(&self, parts: &'p Parts) -> Sessions<'p> {
         let mut sessions = Sessions::open_first(parts, self.cfg.clone(), self.registry.clone())
-            .expect("the held session opens");
-        let held = sessions
+            .expect("the daemon's own session opens");
+        // **The review queue's session** — the daemon's own idle arm opens it the same way, on its
+        // first pass (`Sessions::ensure_gatekeeper`), and this is the session a review belongs to.
+        sessions
+            .ensure_gatekeeper()
+            .expect("the review queue's session opens");
+        sessions
             .open
             .get_mut(&self.host)
-            .expect("the daemon holds the session it opened");
-        held.set_subagents_for_test(Arc::new(Recording {
-            started: self.started.clone(),
-        }));
+            .expect("the review queue's session is open")
+            .set_subagents_for_test(Arc::new(Recording {
+                started: self.started.clone(),
+            }));
+        sessions
+            .open
+            .get_mut(&self.cfg.session_id)
+            .expect("the daemon's own session is open")
+            .set_subagents_for_test(Arc::new(Recording {
+                started: self.started_by_the_daemon.clone(),
+            }));
         sessions
     }
 
-    /// What the pass asked for, in order.
+    /// What the review queue's session was asked to start, in order.
     fn asked(&self) -> Vec<(String, String)> {
         self.started
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+
+    /// **And what the daemon's own session was asked to start** — nothing, in every test here.
+    fn asked_by_the_daemon(&self) -> Vec<(String, String)> {
+        self.started_by_the_daemon
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
-/// **A `Due` review whose host is idle is spawned by the pass — and nothing rings anything.**
+/// **A `Due` review is spawned as the REVIEW QUEUE's own `task` child — and nothing rings
+/// anything.**
 ///
-/// This is the defect in its plainest form: the row is in the store, the host has no turn running
-/// and no wake coming, and before the pass existed nothing ever looked. The child is the review's
-/// own — the brief is the entry's, and the seat is `gatekeeper` — so what is asserted is not *a
-/// child started* but *the right child started for the right row*.
+/// This is the defect in its plainest form: the row is in the store, the session that reviews it
+/// has no turn running and no wake coming, and before the pass existed nothing ever looked. The
+/// child is the review's own — the brief is the entry's, and the seat is `gatekeeper` — so what is
+/// asserted is not *a child started* but *the right child started, for the right row, by the right
+/// session*: the row names the queue's session (`mergequeue::GatekeeperDoor` writes that id), the
+/// pass spawns through THAT harness's runner, and the daemon's own session is asked for nothing.
 #[test]
-fn a_due_review_for_an_idle_host_is_spawned_by_the_pass() {
+fn a_due_review_is_spawned_as_the_queue_sessions_own_child() {
     let Some(f) = Fixture::new("due") else {
         return;
     };
@@ -267,7 +306,7 @@ fn a_due_review_for_an_idle_host_is_spawned_by_the_pass() {
         f.asked()
     );
     let asked = f.asked();
-    assert_eq!(asked.len(), 1, "one row, one gatekeeper: {asked:?}");
+    assert_eq!(asked.len(), 1, "one row, one reviewer: {asked:?}");
     let (prompt, role) = &asked[0];
     assert_eq!(
         role, "gatekeeper",
@@ -282,6 +321,22 @@ fn a_due_review_for_an_idle_host_is_spawned_by_the_pass() {
         prompt.contains("make the reader keep the last record"),
         "the review is given the ENTRY's brief — the reviewer reads the branch against the ask \
          and has no other source for it: {prompt}"
+    );
+    // **AND IT IS THE QUEUE SESSION'S CHILD, which is the half this slice moves.** The row names
+    // `s-gatekeeper` and `Harness::serve_reviews` spawns through `self.subagents` — the same runner
+    // the `task` tool uses, whose `base.session_id` is the parent — so *whose runner was asked* is
+    // *whose child this is*. The daemon's own session has a runner too, and it was asked for
+    // nothing: a review is not a child of whatever session the daemon was started with.
+    assert_eq!(
+        f.host,
+        crate::sessions::gatekeeper::SESSION,
+        "the row is the review queue's session's"
+    );
+    assert!(
+        f.asked_by_the_daemon().is_empty(),
+        "the daemon's own session was asked to start NOTHING — the review is the queue's child, \
+         not the daemon's: {:?}",
+        f.asked_by_the_daemon()
     );
 
     // And the row is still outstanding: the child is running, so nobody has judged anything.
@@ -302,7 +357,8 @@ fn a_due_review_for_an_idle_host_is_spawned_by_the_pass() {
 /// `decision` NULL and `attempts` 0, and `review_retry` says `Due` for both on purpose, because an
 /// outstanding review is re-asked rather than counted. So the second pass sees exactly what the
 /// first one saw, and the guard that answers it is the session's own `reviewing` list. This is
-/// that guard, measured through the door the daemon uses.
+/// that guard, measured through the door the daemon uses — and it is the guard the queue session's
+/// own prompt leans on when it tells its model NOT to start a reviewer of its own.
 #[test]
 fn a_review_already_being_served_is_not_spawned_twice() {
     let Some(f) = Fixture::new("twice") else {
@@ -336,14 +392,19 @@ fn a_review_already_being_served_is_not_spawned_twice() {
     assert!(row.failure.is_empty(), "and there is no failure to read");
 }
 
-/// **A review hosted by a session this daemon does not hold is left alone.**
+/// **A review naming a session this daemon does not hold is left alone.**
 ///
 /// The whole design in one assertion. A ring is a bell and a bell is per-daemon, so a mover in
 /// another daemon cannot reach this one — which is why the pass reads the store, and why it serves
 /// only what it holds: two daemons each serving their own rows is the arrangement that needs
 /// nothing to reach anything. The row is not touched, and no child is started for it.
+///
+/// **The row the door writes names the review queue's session** (`mergequeue::GatekeeperDoor`),
+/// which is the case every other test here covers; this one is the row a daemon must NOT serve, and
+/// it stays reachable because the pass asks the STORE which session a row names rather than
+/// assuming the id.
 #[test]
-fn a_review_hosted_elsewhere_is_left_alone() {
+fn a_review_naming_a_session_this_daemon_does_not_hold_is_left_alone() {
     let Some(f) = Fixture::new("elsewhere") else {
         return;
     };

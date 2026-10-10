@@ -673,17 +673,28 @@ pub struct Sessions<'a> {
     wall_gave_up: std::collections::HashSet<String>,
 }
 
-/// **The two facts a session the DAEMON ITSELF starts has, which the daemon's command line cannot
-/// supply.** One caller today — [`Sessions::ensure_gatekeeper`] — and a struct rather than two
-/// parameters because they are one decision: *this session is not the conversation the operator
-/// described on the command line*. The seat decides what it may do; the title is the name its own
-/// store row carries, which is what `letibot --sessions` prints.
+/// **The three facts a session the DAEMON ITSELF starts has, which the daemon's command line
+/// cannot supply.** One caller today — [`Sessions::ensure_gatekeeper`] — and a struct rather than
+/// three parameters because they are one decision: *this session is not the conversation the
+/// operator described on the command line*. The seat decides what it may do; the title is the name
+/// its own store row carries, which is what `letibot --sessions` prints; the prompt is the
+/// paragraph only this session is given.
 struct OwnSession {
     seat: crate::config::Seat,
     /// The name the session is opened under — the hardcoded one when it is being made, and the name
     /// its own row already holds when it is being RESUMED, so a session the operator renamed does
     /// not come back with the hardcoded name on the config and the renamed one in the store.
     title: String,
+    /// **What this session is told that no other session is** — appended to the composed prompt at
+    /// open, and `None` for a session the ordinary prompt is right for. See
+    /// [`crate::sessions::gatekeeper::PROMPT`] for the one paragraph that exists today, and
+    /// `Config::compose_system_with_notes` for what it is appended TO: the sections from
+    /// `prompts.toml`, the `system_extra`, then the standing notes, then this.
+    ///
+    /// **It is frozen with the rest of the prefix**, which is the rule every session's prompt
+    /// keeps: a session already open keeps the prompt it opened with, and `ReseatSession` is the
+    /// tree's remedy for a prompt that changed under a live conversation.
+    prompt: Option<&'static str>,
 }
 
 /// Which sessions attach to the seat, and how the attachment is wired.
@@ -1559,6 +1570,7 @@ impl<'a> Sessions<'a> {
             // the SESSION's config and never on `self.base`: one session opening on a seat and a
             // name of its own must not re-seat or rename the daemon's other sessions, and the two
             // are the same struct one clone apart.
+            let mut prompt = None;
             if let Some(own) = own {
                 cfg.seat = own.seat;
                 // **The title is on the config and not only in the registry**, which is what makes
@@ -1566,12 +1578,20 @@ impl<'a> Sessions<'a> {
                 // and a name that lived only in memory would come back `(unnamed)` in
                 // `letibot --sessions` after every restart.
                 cfg.title = own.title;
+                prompt = own.prompt;
             }
             let (tool, cond) = self.seat_tool(session_id);
             // Compose the system prompt from `prompts.toml` and the standing
             // notes, once, at open — the same rule as the first session:
             // message 0 is written from this and never rewritten after.
             cfg.compose_system_with_notes(&self.parts.vocab);
+            // **And the paragraph only THIS session is given**, after the notes and before message 0
+            // is written: it is part of the same frozen prefix, and a session with none of its own
+            // (`None`, which is every session the operator started) is the composed prompt byte for
+            // byte.
+            if let Some(extra) = prompt {
+                cfg.system.push_str(extra);
+            }
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
             let mut h = Harness::open_with_registry(
                 self.parts,
@@ -2050,8 +2070,8 @@ impl<'a> Sessions<'a> {
     ///
     /// The review clock is the one that is armed from open and never stands down, and that is the
     /// design rather than an oversight: a review is asked for by the QUEUE's thread and served by a
-    /// SESSION's, the store is the only thing they share, and the ring between them is a bell — so
-    /// a daemon that holds the host has no event to wait for. See [`REVIEW_PASS_EVERY`].
+    /// SESSION's — the review queue's own — and the store is the only thing they share, so the ring
+    /// between them is a bell and a bell is per-daemon. See [`REVIEW_PASS_EVERY`].
     pub fn next_idle_at(&self) -> Option<Instant> {
         match (self.next_nag_at(), self.reviews_at) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -2073,21 +2093,27 @@ impl<'a> Sessions<'a> {
 
     /// **Every review owed to a session this daemon holds, served from the store.**
     ///
-    /// The queue's door ([`crate::mergequeue::GatekeeperDoor`]) writes the request row naming its
-    /// host and rings that host's bell — and a bell is per-daemon, so a mover in another daemon
+    /// The queue's door ([`crate::mergequeue::GatekeeperDoor`]) writes the request row naming the
+    /// review queue's session and rings it — and a bell is per-daemon, so a mover in another daemon
     /// rings one nobody is standing at, and a daemon that restarts between the ask and the wake has
     /// nothing left to ring (the ring is in memory; the row is in the store). This is the durable
     /// half: **each daemon serves the reviews its own sessions host**, on its own clock
     /// ([`Sessions::reviews_due`]), from the one medium both daemons can see.
     ///
-    /// A row whose host this daemon does not hold is left alone, and that is the design rather
-    /// than a limitation: two daemons each serving what they hold needs nothing to reach anything,
-    /// which is the only arrangement that survives a ring that cannot cross a process.
+    /// **One session hosts them, and it is the queue's own** —
+    /// [`gatekeeper::SESSION`], whose board is the queue. A review is a `task` child of THAT
+    /// session (`Harness::serve_reviews` starts it through the session's own runner), which is the
+    /// operator's *"gatekeepers are subagents"* one level down: the reviewer is a subagent of the
+    /// tutor, and its asks come up to the tutor's head. The loop below is over every session this
+    /// daemon holds rather than over that one id, because which session a row names is the STORE's
+    /// fact and not this function's: a row naming a session this daemon does not hold is left
+    /// alone, which is the whole arrangement (two daemons each serving what they hold needs
+    /// nothing to reach anything).
     ///
     /// **"Holds" means a harness** — `self.open`, which is every session this daemon has built and
-    /// can run a turn in. A session that is merely in the registry (a head's `/new`, or a host the
-    /// queue's door has just resumed) is not held yet: the open is on the worker's own queue and
-    /// `Sessions::open` builds the harness there, after which the next pass serves it.
+    /// can run a turn in. A session that is merely in the registry is not held yet: the open is on
+    /// the worker's own queue and `Sessions::open` builds the harness there, after which the next
+    /// pass serves it.
     ///
     /// The body is [`Harness::serve_reviews`] — the same function the wake and the round boundary
     /// call — so all three doors make one decision from one body of evidence: the store's
@@ -2115,11 +2141,17 @@ impl<'a> Sessions<'a> {
     ///   this, and a pass is not an event: without this check a second pass would build a second
     ///   harness for one session id.
     /// * **this box** — the REGISTRY, and behind it the STORE. A session this daemon does not hold
-    ///   but the store knows is **resumed** ([`Registry::resumable`], the same door
-    ///   `mergequeue::GatekeeperDoor` uses to resume a host that has closed) rather than created
+    ///   but the store knows is **resumed** ([`Registry::resumable`]) rather than created
     ///   fresh — so a daemon restarted, or a second daemon on the same store, comes back to the
     ///   SAME conversation under the same id instead of making a twin. [`gatekeeper::SESSION`]'s
     ///   own doc says why that id is fixed rather than minted.
+    ///
+    /// # The prompt, which is this session's own
+    ///
+    /// [`gatekeeper::PROMPT`] is appended to the composed prompt at open, and it is the paragraph
+    /// that says what the rows are and what the session does about them — the operator's *"it
+    /// managed via its prompt and so on"*. See [`OwnSession::prompt`] for where it lands, and the
+    /// constant for what it deliberately leaves out.
     ///
     /// # The seat, and why it is not the daemon's
     ///
@@ -2157,6 +2189,7 @@ impl<'a> Sessions<'a> {
                 Some(OwnSession {
                     seat: gatekeeper::SEAT,
                     title,
+                    prompt: Some(gatekeeper::PROMPT),
                 }),
             );
         }
@@ -2174,6 +2207,7 @@ impl<'a> Sessions<'a> {
             Some(OwnSession {
                 seat: gatekeeper::SEAT,
                 title,
+                prompt: Some(gatekeeper::PROMPT),
             }),
         )
     }
@@ -2183,22 +2217,21 @@ impl<'a> Sessions<'a> {
     ///
     /// **The board is a VIEW and the states stay in the store**: [`gatekeeper`]'s module docs carry
     /// the boundary, and `TodoBoard::set_queue` carries why the half is replaced rather than upserted.
-    /// Nothing here decides what a row is — `gatekeeper::queue_rows` does, out of the queue's own
-    /// `is_ready`/`review_gate` — and nothing here arms a clock by itself: the re-arm below is the
-    /// ordinary one, because a board that MOVED is a board worth checking. That is the rule
-    /// `CommandKind::SetOperatorTodos` keeps, and for its reason: the clock reads the rows when it
-    /// is armed, so a row written onto a board nobody re-armed is a row nothing will ever ask about.
+    /// Nothing here decides what a row is — `gatekeeper::waiting` does, out of the queue's own
+    /// `is_ready`/`review_gate`/`served_by` — and nothing here arms a clock by itself: the re-arm
+    /// below is the ordinary one, because a board that MOVED is a board worth checking. That is the
+    /// rule `CommandKind::SetOperatorTodos` keeps, and for its reason: the clock reads the rows when
+    /// it is armed, so a row written onto a board nobody re-armed is a row nothing will ever ask
+    /// about.
+    ///
+    /// **Which workspace the queue is read from is the harness's own** ([`Harness::fill_queue_board`]
+    /// reads `self.cfg.workspace`, canonical), so the board and the review pass ask one question
+    /// with one spelling rather than two that could drift.
     ///
     /// Returns how many rows the board holds, which is what a caller's log line counts.
     pub fn fill_gatekeeper_board(&mut self) -> usize {
-        // **Canonical, because `served_by` compares canonical forms.** The rule the queue's own
-        // daemon applies to the workspace it serves (`MergeQueueDaemon::serving`), applied here for
-        // the same reason: a session's `workspace_root` is stored as the head typed it and an entry
-        // is this daemon's when the two name the same directory, not the same string.
-        let ws = std::fs::canonicalize(&self.base.workspace)
-            .unwrap_or_else(|_| self.base.workspace.clone());
         let rows = match self.open.get_mut(gatekeeper::SESSION) {
-            Some(h) => h.fill_queue_board(&ws),
+            Some(h) => h.fill_queue_board(),
             // The session did not open — said on the daemon's log by the caller of
             // `ensure_gatekeeper`. Nothing is lost: the next pass fills the board.
             None => return 0,

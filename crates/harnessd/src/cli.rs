@@ -972,18 +972,22 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // is told it has no queue rather than pretending to serve one.
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // **The door the queue reviews through: a gatekeeper SUBAGENT.**
+    // **The door the queue reviews through: the review queue's own SESSION, which spawns the
+    // reviewer as a `task` child of itself.**
     //
     // A reviewer the daemon owned by itself could not be opened — the gatekeeper seats `bash`,
     // and `Harness::open` refuses an exec seat whose adjudicator reaches nobody, which is what a
-    // headless daemon session has. A subagent's asks go up to its root's head, so the review
-    // runs as a hidden child of the root of the session that enqueued the entry (resumed from
-    // the store when it is not live): `GatekeeperDoor` writes the request naming that host and
-    // rings it, and the host spawns the child and writes the verdict (`Harness::serve_reviews`).
+    // headless daemon session has. A SUBAGENT's asks go up to its tree's root, so the review runs
+    // as a child of the session that reviews the branch — `gatekeeper::SESSION`, the daemon's
+    // hardcoded review queue, whose board is the queue. `GatekeeperDoor` writes the request naming
+    // that session and rings it; `Harness::serve_reviews` starts the child and writes the verdict
+    // onto the same row when it answers.
+    //
     // **The row is what the review depends on and the ring is only the latency**: a ring is a
-    // bell and a bell is per-daemon, so a daemon serves the reviews ITS sessions host from the
-    // store on its own clock (`Sessions::serve_reviews`). With no store there is no row to write,
-    // and the door refuses by name.
+    // bell and a bell is per-daemon, so a daemon serves the reviews its sessions host from the
+    // store on its own clock (`Sessions::serve_reviews`), which is also what serves an ask that
+    // arrived before the queue's session was open. With no store there is no row to write, and
+    // the door refuses by name.
     let reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send> = match cfg.store.as_ref() {
         None => Box::new(letibot_tools::gatekeeper::NoReviewer),
         Some(path) => match letibot_tokencore::store::Store::open(path) {
