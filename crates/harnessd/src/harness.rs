@@ -6939,9 +6939,46 @@ impl Harness {
         // narrowing takes out. `unfinished_plan_for` says why they are two arguments.
         let board = self.todos.snapshot();
         let askable = crate::sessions::the_plan_as_checked(&board);
-        let (text, named) = unfinished_plan_for(&askable, &board, self.nag_choice.as_deref())?;
-        self.nag_choice = Some(named);
-        Some(text)
+        // **The plan's text, as a value rather than an early return**, because this notice now
+        // has a second thing it may have to say and a completed plan is no reason to say
+        // neither. `nag_should_arm` compares the TEXT, so a notice that gains a sentence is a
+        // new thing to say at the base window and an unchanged one is a repeat at the cap —
+        // the ladder needs no change at all for this.
+        let plan = unfinished_plan_for(&askable, &board, self.nag_choice.as_deref());
+        let plan = plan.map(|(text, named)| {
+            self.nag_choice = Some(named);
+            text
+        });
+        // **And the prompt this session is speaking, when it is not this daemon's.**
+        //
+        // The sentence is composed once, at open, by the fingerprint comparison and left in the
+        // registry for the ATTACH path — because a warning published before a head arrives is
+        // filed `Placed::Before` and never drawn. The head is not the only reader it needs: the
+        // model cannot see it either, so a session can spend an evening speaking a prompt its
+        // daemon would not compose, with the model unable to name the problem. This is the
+        // model's copy, and it ends with what to DO rather than with the diagnosis — the same
+        // shape `[todo check]` uses, for the same reason: the rule travels with the notice
+        // instead of living somewhere the model has to remember to look.
+        //
+        // Nothing clears this but a re-seat, and that is deliberate: `set_stale_prefix(…, None)`
+        // is written by the fork onto a new prompt, so the reminder stops being true exactly
+        // when the person acts — the loop closes without anybody having to remember to close it.
+        let stale = self
+            .session_registry
+            .stale_prefix(&self.cfg.session_id)
+            .map(|said| {
+                format!(
+                    "{said} Say this to the person in your reply, and keep saying it until they \
+                     act: nothing else clears it, and a new session seats the current prompt \
+                     without the question arising."
+                )
+            });
+        match (plan, stale) {
+            (None, None) => None,
+            (Some(plan), None) => Some(plan),
+            (None, Some(stale)) => Some(stale),
+            (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
+        }
     }
 
     /// **The plan's nudge as a turn of its own, when nothing else is happening.**
