@@ -2034,31 +2034,27 @@ fn run_query(
             Err(e) => Err(e.to_string()),
         },
         Query::Latest => {
-            let mut all = scoped(&store, scope)?;
-            // An **exact** workspace match beats a descendant of it. Standing in
-            // `~` and asking to continue should not hand back the conversation you
-            // were having in `~/Projects/rano` while a `~` conversation exists; the
-            // subtree match is the fallback that makes `--continue` work from a
-            // subdirectory, not a licence to reach downwards past a closer answer.
-            if let Some(root) = scope {
-                all.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != root);
-            }
-            // **A session with no rows is not a conversation to continue.** Two of
-            // the five sessions in this box's store are exactly that: a daemon wrote
-            // the row at startup and nobody ever prompted into it. They are the
-            // *newest* rows in the table, so picking by time alone answers
-            // `--continue` with an empty screen — which is indistinguishable from
-            // resume being broken, and is how this would have been reported as still
-            // not working.
-            let skipped = all.iter().filter(|s| s.items == 0).count();
-            let rows: Vec<_> = all.into_iter().filter(|s| s.items > 0).collect();
-            if skipped > 0 {
+            let latest = newest_conversation(scoped(&store, scope)?, scope);
+            // **What the pick walked past is said, not silently dropped.** The launcher
+            // deliberately does not capture this stream: it is the announcement of which
+            // conversation the next thing typed lands in, and a pick that skipped ten rows
+            // to reach it should say so.
+            if latest.hidden > 0 {
                 eprintln!(
-                    "skipped {skipped} session(s) with no rows: nothing was ever said in them"
+                    "skipped {} session(s) that are not conversations: a task child and the \
+                     merge queue's reviewer are sessions, and neither is a conversation to \
+                     continue",
+                    latest.hidden
+                );
+            }
+            if latest.empty > 0 {
+                eprintln!(
+                    "skipped {} session(s) with no rows: nothing was ever said in them",
+                    latest.empty
                 );
             }
 
-            match rows.first() {
+            match &latest.pick {
                 // Printed on stdout alone, so `$(harnessd --latest-session)` is the
                 // id and nothing else. Which one it picked, and why, goes to stderr —
                 // where the launcher can echo it and a pipeline ignores it.
@@ -2074,22 +2070,21 @@ fn run_query(
                     Ok(0)
                 }
                 None => {
-                    eprintln!(
-                        "no stored session{}",
-                        scope
-                            .map(|p| format!(" under {}", p.display()))
-                            .unwrap_or_default()
-                    );
+                    eprintln!("{}", nothing_to_continue(&latest, scope));
                     Ok(1)
                 }
             }
         }
         Query::List => {
-            // Subagents are children of a session, not sessions a picker lists —
-            // they live in the subagent tree, not the flat list.
+            // **The same predicate the resolution reads**, and that is the point of it: the
+            // listing and `--latest-session` are two questions about one store, and when they
+            // disagreed the operator was handed a reviewer by `--continue` that this list would
+            // never have offered him. Subagents are children of a session, not sessions a picker
+            // lists — they live in the subagent tree, not the flat list — and the queue's
+            // reviewer is not a conversation wherever it sits.
             let rows: Vec<_> = scoped(&store, scope)?
                 .into_iter()
-                .filter(|s| s.parent_session_id.is_none())
+                .filter(is_conversation)
                 .collect();
             if tsv {
                 // id, title, workspace, rows, last-activity-ms. Tab-separated and
@@ -2171,6 +2166,145 @@ fn scoped(
         .into_iter()
         .filter(|s| std::path::Path::new(&s.workspace_root).starts_with(root))
         .collect())
+}
+
+/// **Is this row a conversation a person can be brought back to?**
+///
+/// `--continue` promises to reopen *your conversation*, and a store holds three kinds of row that
+/// are sessions without being one: a sub-session, the merge queue's reviewer, and a conversation
+/// nobody ever said anything in. The first two are refused here; the third cannot be, because
+/// *has anything been said in it* is the caller's question ([`newest_conversation`]).
+///
+/// * **A sub-session** — a `task` child, or the merge queue's reviewer. The relation is
+///   `parent_session_id`, the same field the head's picker nests by (its `session_rows`), and
+///   `--list-sessions` reads this same predicate — so the listing and the resolution cannot
+///   disagree about a row again, which is exactly what they did.
+/// * **The queue's gatekeeper**, by the seat its own row recorded (its `role`, which is
+///   `Seat::Gatekeeper.as_str()`) or by the title cut from the review brief
+///   ([`letibot_sessionlog::GATEKEEPER_TITLE_PREFIX`]).
+///
+/// # Why the gatekeeper has a mark of its own when it is already a child
+///
+/// The operator's report is what the mark is for: *"restart pg-noop and was brought to one of
+/// the gatekeeper sessions"*. Ten reviewers spawned into one workspace by the merge queue made
+/// the newest row in it a reviewer, and `--continue` — which asked only for the newest row —
+/// handed back a review. The parent field alone would have skipped those ten; the seat and the
+/// title are here because a reviewer is not a conversation *wherever it sits*: a row the
+/// operator renamed keeps its seat, and a head rebuilding a row off the wire has no role to
+/// read and only the title, which is why the brief is required to begin with the mark.
+///
+/// Nothing else is filtered. A root session is a conversation however it was started, whatever
+/// its model, and whether or not it has a title.
+fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
+    s.parent_session_id.is_none()
+        && s.role.as_deref() != Some(crate::config::Seat::Gatekeeper.as_str())
+        && !s
+            .title
+            .as_deref()
+            .is_some_and(|t| t.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX))
+}
+
+/// What `--latest-session` resolved to, and what it walked past on the way.
+struct Latest {
+    /// The conversation to reopen, or `None` — and the three counts below are what tells the
+    /// three ways of having none apart.
+    pick: Option<letibot_tokencore::store::StoredSession>,
+    /// Rows in scope before anything was skipped. The difference between *nothing is here* and
+    /// *nothing but children is here*, which are two different sentences to a person.
+    in_scope: usize,
+    /// Rows that are sessions and not conversations: a task child, or the queue's reviewer.
+    hidden: usize,
+    /// Conversations nobody ever said anything in.
+    empty: usize,
+}
+
+/// **The newest session that is a CONVERSATION** — the rule `--continue` implements.
+///
+/// # The rule
+///
+/// Of the sessions stored under the scope, take the ones that are conversations
+/// ([`is_conversation`]) and have at least one row, and return the newest. "Newest" is
+/// `last_activity_ms`, which is the last row's time — the order `Store::list_sessions` already
+/// returns — and an **exact** workspace match beats a descendant of it, so standing in `~` and
+/// asking to continue hands back the `~` conversation rather than the one in
+/// `~/Projects/rano`. The sort is stable, so within each of those two groups recency stands.
+///
+/// # The edges, named
+///
+/// * **A root with no rows is skipped, not returned.** A daemon writes the session row at
+///   startup and nobody may ever prompt into it; those rows are often the newest in the table,
+///   and picking one answers `--continue` with an empty screen — indistinguishable from resume
+///   being broken. This is the rule that was already here; it is unchanged.
+/// * **A child that is newer than every root does not win, and does not lift its parent's
+///   time either.** The pick is the newest root's own last utterance. Promoting a root by its
+///   children's activity is a second notion of recency that would let a reviewer's clock decide
+///   where the person lands — which is the defect being fixed, one step removed.
+/// * **A child whose parent is gone is still skipped.** An orphan row is a sub-session that
+///   lost its parent, not a conversation that grew one; it is reachable by id (`--session ID`,
+///   and the picker nests it under nothing) and is never what `--continue` opens.
+/// * **A workspace holding nothing but children has nothing to continue**, and the sentence for
+///   it says exactly that rather than "no stored session" — see [`nothing_to_continue`].
+fn newest_conversation(
+    mut all: Vec<letibot_tokencore::store::StoredSession>,
+    scope: Option<&std::path::Path>,
+) -> Latest {
+    // An **exact** workspace match beats a descendant of it. Standing in
+    // `~` and asking to continue should not hand back the conversation you
+    // were having in `~/Projects/rano` while a `~` conversation exists; the
+    // subtree match is the fallback that makes `--continue` work from a
+    // subdirectory, not a licence to reach downwards past a closer answer.
+    if let Some(root) = scope {
+        all.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != root);
+    }
+    let in_scope = all.len();
+    let mut hidden = 0usize;
+    let mut empty = 0usize;
+    let mut rows = Vec::with_capacity(all.len());
+    for s in all {
+        if !is_conversation(&s) {
+            hidden += 1;
+        } else if s.items == 0 {
+            empty += 1;
+        } else {
+            rows.push(s);
+        }
+    }
+    Latest {
+        pick: rows.into_iter().next(),
+        in_scope,
+        hidden,
+        empty,
+    }
+}
+
+/// **Why there is nothing to continue**, as a sentence a person can act on.
+///
+/// Three stores produce the same `None` and only one of them means *there is nothing here*, so
+/// the answer names which one this is. The remedy matters more than the diagnosis: a store
+/// whose every row is a sub-session is a store where `--sessions` shows nothing and a bare
+/// `letibot` starts a conversation, and a person told only "no stored session" would go looking
+/// for a fault in the store that is not there.
+fn nothing_to_continue(latest: &Latest, scope: Option<&std::path::Path>) -> String {
+    let here = scope
+        .map(|p| format!(" under {}", p.display()))
+        .unwrap_or_default();
+    if latest.in_scope == 0 {
+        return format!("no stored session{here}");
+    }
+    if latest.hidden == latest.in_scope {
+        return format!(
+            "the {} session(s){here} are all sub-sessions — task children and the merge \
+             queue's reviewers — and a sub-session is not a conversation to continue. \
+             `letibot` starts a new one here, `--sessions` lists the conversations on disk, \
+             and `--session ID` opens a sub-session by id.",
+            latest.in_scope
+        );
+    }
+    format!(
+        "every conversation{here} is empty: {} session(s) with no rows, nothing ever said \
+         in them. `letibot` starts a new one, and `--sessions` shows what is on disk.",
+        latest.empty
+    )
 }
 
 /// A duration, in the largest unit that is still a small number.
@@ -2276,6 +2410,105 @@ mod tests {
                 .expect("session");
         }
         (store, d)
+    }
+
+    /// A session row with the four fields the resolution reads: where it was opened, what it is
+    /// called, the seat it was recorded in, and the session that spawned it.
+    fn session_row(
+        store: &Store,
+        id: &str,
+        workspace: &str,
+        title: Option<&str>,
+        role: Option<&str>,
+        parent: Option<&str>,
+    ) {
+        store
+            .put_session(&SessionRecord {
+                id: id.into(),
+                title: title.map(str::to_string),
+                model_id: "m".into(),
+                dialect_sha: "d".into(),
+                workspace_root: workspace.into(),
+                owner: "dead".into(),
+                approvers: vec![],
+                role: role.map(str::to_string),
+                parent_session_id: parent.map(str::to_string),
+            })
+            .expect("session");
+    }
+
+    /// **Give a session rows, and make sure the store's clock has passed `after_ms` FIRST.**
+    ///
+    /// Returns the `last_activity_ms` the store then reports, which is what the resolution orders
+    /// by.
+    ///
+    /// The wait comes *before* the rows, and that is the whole of the correctness here.
+    /// `created_at` is stamped once, when a row is appended, so a fixture that waits afterwards
+    /// is waiting for a number that cannot change: two sessions written inside the same
+    /// millisecond then tie, and a tie is broken by the order the session rows were inserted —
+    /// which is the order a fixture writes them in. A test that means *the child is NEWER than
+    /// its parent* would therefore pass with the rule removed. (It did more than that the first
+    /// time this was written: the wait was after the append, the reviewer landed 0.3 ms behind
+    /// its host, the stamps came out equal and the loop spun for ever.)
+    fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
+        wait_past(after_ms);
+        let prefix = store
+            .put_stable_prefix(&letibot_tokencore::store::StablePrefixRecord {
+                dialect_sha: "d".into(),
+                system: format!("system of {id}"),
+                tools_json: vec![],
+                tokens: vec![1, 2, 3],
+                h_init: [0u8; 32],
+                vocab_source: "test".into(),
+            })
+            .expect("prefix");
+        let transcript = format!("{id}#t0");
+        store
+            .put_transcript(&transcript, id, &prefix)
+            .expect("transcript");
+        for seq in 0..rows {
+            let tokens: Vec<u32> = vec![7, 8, 9];
+            store
+                .append_item(
+                    &transcript,
+                    seq,
+                    &letibot_transcript::TranscriptItem::User {
+                        speaker: Default::default(),
+                        parts: vec![letibot_transcript::UserPart::Text {
+                            text: format!("row {seq} of {id}"),
+                        }],
+                    },
+                    &letibot_tokencore::ledger::LedgerRow {
+                        item_id: format!("{transcript}.{seq}"),
+                        tok_offset: seq * 3,
+                        tok_len: 3,
+                        h_k: [0u8; 32],
+                    },
+                    &tokens,
+                )
+                .expect("a row");
+        }
+        // Read back what the store says rather than what this function believes: the stamp is
+        // the store's, and it is the number the resolution orders by.
+        store
+            .session(id)
+            .expect("reading")
+            .expect("the row just written")
+            .last_activity_ms
+    }
+
+    /// Wait until the store's own clock has passed `ms` — for a fixture whose time is stamped at
+    /// write time and cannot be moved afterwards.
+    fn wait_past(ms: i64) {
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        };
+        while now() <= ms {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     struct TempDir(std::path::PathBuf);
@@ -2513,6 +2746,240 @@ mod tests {
             )
             .expect("scoping")
             .is_empty()
+        );
+    }
+
+    /// **The operator's report, as a test.** Ten reviewers spawned into one workspace by the
+    /// merge queue made the newest row in it a reviewer, and `--continue` — which asked only for
+    /// the newest row — reopened a review instead of the conversation that enqueued the work:
+    /// *"restart pg-noop and was brought to one of the gatekeeper sessions"*.
+    #[test]
+    fn a_reviewer_is_never_the_conversation_continue_reopens() {
+        let (store, _d) = store_with(&[]);
+        session_row(
+            &store,
+            "s-mine",
+            "/ws",
+            Some("the conversation"),
+            None,
+            None,
+        );
+        let mine = rows_for(&store, "s-mine", 3, 0);
+
+        // The queue's reviewer: a child of that conversation, seated `gatekeeper`, its title cut
+        // from the review brief — and NEWER than anything the person said.
+        session_row(
+            &store,
+            "s-gk",
+            "/ws",
+            Some(&format!(
+                "{} a subagent has finished work on a branch",
+                letibot_sessionlog::GATEKEEPER_TITLE_PREFIX
+            )),
+            Some("gatekeeper"),
+            Some("s-mine"),
+        );
+        let reviewer = rows_for(&store, "s-gk", 40, mine);
+        assert!(
+            reviewer > mine,
+            "the fixture's reviewer has to be the newer row, or this proves nothing"
+        );
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(
+            latest.pick.as_ref().map(|s| s.id.as_str()),
+            Some("s-mine"),
+            "a reviewer is a session and not a conversation"
+        );
+        assert_eq!(
+            latest.hidden, 1,
+            "and it is counted as skipped, not quietly dropped"
+        );
+    }
+
+    /// **The seat carries the mark where the title cannot.** A reviewer the person renamed keeps
+    /// the seat its row recorded, and a head rebuilding a row from the wire has no role to read
+    /// at all — only the brief's first words. Both marks are therefore applied, and this is the
+    /// half the title alone cannot cover.
+    #[test]
+    fn a_reviewer_whose_title_was_changed_is_still_not_a_conversation() {
+        let (store, _d) = store_with(&[]);
+        session_row(
+            &store,
+            "s-mine",
+            "/ws",
+            Some("the conversation"),
+            None,
+            None,
+        );
+        let mine = rows_for(&store, "s-mine", 2, 0);
+        // No parent and a title of the operator's own: nothing but the seat says what this is.
+        session_row(
+            &store,
+            "s-gk",
+            "/ws",
+            Some("review of agent/idle-clock"),
+            Some("gatekeeper"),
+            None,
+        );
+        let reviewer = rows_for(&store, "s-gk", 9, mine);
+        assert!(reviewer > mine, "the reviewer is the newer row");
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(
+            latest.pick.as_ref().map(|s| s.id.as_str()),
+            Some("s-mine"),
+            "the seat is the mark that survives a rename"
+        );
+    }
+
+    /// **A task child that is newer than its parent is not the answer**, and it does not lift
+    /// its parent's time either: the pick is the newest conversation's own last utterance, and
+    /// promoting a root by its children's activity would let a reviewer's clock decide where the
+    /// person lands.
+    #[test]
+    fn a_task_child_newer_than_its_parent_is_not_the_conversation() {
+        let (store, _d) = store_with(&[]);
+        session_row(
+            &store,
+            "s-mine",
+            "/ws",
+            Some("the conversation"),
+            None,
+            None,
+        );
+        let mine = rows_for(&store, "s-mine", 2, 0);
+        // A plain `task` child: no gatekeeper mark anywhere, a parent and nothing else.
+        session_row(
+            &store,
+            "s-task",
+            "/ws",
+            Some("survey the crate"),
+            Some("coder"),
+            Some("s-mine"),
+        );
+        let child = rows_for(&store, "s-task", 12, mine);
+        assert!(child > mine, "the child is the newer row");
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(
+            latest.pick.as_ref().map(|s| s.id.as_str()),
+            Some("s-mine"),
+            "the parent is where a person continues, however recently the child worked"
+        );
+        assert_eq!(latest.hidden, 1);
+    }
+
+    /// **A child whose parent is gone is still a child**, and a workspace holding nothing else
+    /// has nothing to continue. What matters here is the sentence: it names the case and gives a
+    /// remedy, because the alternative — `no stored session` over a store that is not empty —
+    /// sends a person looking for a fault that is not there.
+    #[test]
+    fn a_workspace_holding_nothing_but_children_says_so() {
+        let (store, _d) = store_with(&[]);
+        // The parent row was deleted (`--delete` takes a session with no rows) or lives in
+        // another store; either way this row is a sub-session with nobody above it.
+        session_row(
+            &store,
+            "s-orphan",
+            "/ws",
+            Some("a child of a session that is gone"),
+            Some("coder"),
+            Some("s-parent-nobody-has"),
+        );
+        rows_for(&store, "s-orphan", 4, 0);
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert!(latest.pick.is_none(), "an orphan is not a conversation");
+        let said = nothing_to_continue(&latest, Some(std::path::Path::new("/ws")));
+        assert!(
+            said.contains("sub-session"),
+            "it names what is there: {said}"
+        );
+        assert!(said.contains("/ws"), "and where: {said}");
+        assert!(
+            said.contains("--session ID") && said.contains("--sessions"),
+            "and what a person can do about it: {said}"
+        );
+
+        // A store with nothing in it at all is a different sentence, and the old one.
+        let empty = newest_conversation(Vec::new(), Some(std::path::Path::new("/ws")));
+        assert!(empty.pick.is_none());
+        assert_eq!(
+            nothing_to_continue(&empty, Some(std::path::Path::new("/ws"))),
+            "no stored session under /ws"
+        );
+    }
+
+    /// **A conversation nobody ever said anything in is skipped** — the rule that was here
+    /// before the reviewer was, pinned so the narrowing above cannot quietly drop it. These rows
+    /// are often the NEWEST in a store: a daemon writes one at startup, and picking it answers
+    /// `--continue` with an empty screen.
+    #[test]
+    fn a_conversation_with_no_rows_is_not_continued() {
+        let (store, _d) = store_with(&[]);
+        session_row(&store, "s-old", "/ws", Some("something I said"), None, None);
+        let said = rows_for(&store, "s-old", 5, 0);
+        // Opened after it, and never prompted into: a row whose time is its creation time, so
+        // the clock has to have moved before it is written.
+        wait_past(said);
+        session_row(&store, "s-blank", "/ws", None, None, None);
+        assert!(
+            store
+                .session("s-blank")
+                .expect("reading")
+                .expect("the row")
+                .last_activity_ms
+                > said,
+            "the empty conversation has to be the newer row"
+        );
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(latest.pick.as_ref().map(|s| s.id.as_str()), Some("s-old"));
+        assert_eq!(latest.empty, 1);
+    }
+
+    /// The exact workspace still beats a descendant of it — asserted here because that sort
+    /// moved into [`newest_conversation`] and an untested move is a rule nobody is holding.
+    #[test]
+    fn an_exact_workspace_beats_a_descendant_of_it() {
+        let (store, _d) = store_with(&[]);
+        session_row(&store, "s-here", "/ws", Some("here"), None, None);
+        let here = rows_for(&store, "s-here", 2, 0);
+        session_row(
+            &store,
+            "s-below",
+            "/ws/crates/ui",
+            Some("below"),
+            None,
+            None,
+        );
+        let below = rows_for(&store, "s-below", 2, here);
+        assert!(below > here, "the descendant is the newer row");
+
+        let latest = newest_conversation(
+            store.list_sessions().expect("listing"),
+            Some(std::path::Path::new("/ws")),
+        );
+        assert_eq!(
+            latest.pick.as_ref().map(|s| s.id.as_str()),
+            Some("s-here"),
+            "the subtree match is a fallback, not a licence to reach past a closer answer"
         );
     }
 }

@@ -212,11 +212,59 @@ pub fn run(args: &[String]) -> i32 {
         return probe(&args);
     }
 
-    if let Err(e) = live(&args, cfg) {
-        eprintln!("letibot-tui: {e}");
-        return 1;
+    // **The id, on stdout, as the last thing this head says.** The launcher `exec`s the head,
+    // so this stream IS the launcher's stdout — the one place an exit can leave something for
+    // the next command to read. What else an exit says (a farewell, a stopped daemon's
+    // apology) goes to stderr and stays there.
+    //
+    // `--no-tty` is the one head that leaves no line: its stdout is documented as ONE frame,
+    // and an id appended to a screen is a line a pipeline would read as part of the render.
+    // The id is still available there by the route a script should be using anyway —
+    // `harnessd --latest-session`.
+    match live(&args, cfg) {
+        Ok(served) => {
+            if !args.no_tty {
+                if let Err(e) = print_exit_session(&mut std::io::stdout(), &served) {
+                    eprintln!("letibot-tui: {e}");
+                    return 1;
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("letibot-tui: {e}");
+            1
+        }
     }
-    0
+}
+
+/// **The id this head was serving, as the one line an exit leaves on stdout.**
+///
+/// # Why the head prints it and not the daemon
+///
+/// The launcher `exec`s this head, so a head's stdout is the launcher's stdout — the terminal
+/// the person is sitting at. The daemon's stdout is not: `scripts/letibot` starts it detached
+/// with `>>"$LOG"`, so an id printed there lands in a log file nobody reads, and the operator's
+/// ask — *"on exit you have to print main session id to stdout too"* — would be met on paper and
+/// nowhere else.
+///
+/// # Why exactly one line, and why it is the session it was SERVING
+///
+/// The id is the thing the next command needs: `letibot --session <id>` reopens it when the
+/// automatic pick is wrong, and a person reads it off the screen and pastes it. So it goes out
+/// alone, on stdout, with nothing beside it — everything else an exit says is a sentence on
+/// stderr, which a pipeline ignores.
+///
+/// It is the session the head was **in** at exit, not the daemon's first session and not its
+/// root: the operator may have switched with ctrl-s, and resuming the child they were actually
+/// looking at is a thing `--session` supports. A head that never got a `Hello` — the wait was
+/// interrupted — has no id and says nothing at all, because an empty line is a line a script
+/// would take for one.
+fn print_exit_session<W: std::io::Write>(out: &mut W, served: &str) -> std::io::Result<()> {
+    if served.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "{served}")
 }
 
 /// How long the head waits for the daemon's `Hello` before giving up.
@@ -596,7 +644,18 @@ fn ask_sessions(
     }
 }
 
-fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>> {
+/// **Run the head until it quits, and return the session it was serving.**
+///
+/// The id is the exit's one piece of output — see [`print_exit_session`], which the caller
+/// writes it with once this function has returned. It is returned rather than printed here
+/// because returning is what drops the `Terminal`: the alternate screen is torn down as this
+/// function's locals go out of scope, and a line printed before that lands on a screen that is
+/// about to be erased.
+///
+/// Empty means *this head never seated a session* — the attach was refused, the `Hello` never
+/// came, or the person quit during the wait. There is no id to give then, and the caller says
+/// nothing rather than an empty line.
+fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Error>> {
     let mut app = App::new(cfg);
     app.load_prefs();
 
@@ -694,7 +753,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                             let _ = app.key(k);
                         }
                         if app.should_quit() {
-                            return Ok(());
+                            return Ok(app.session_id().to_string());
                         }
                         app.clock(now_ms());
                         let (w, h) = t.size();
@@ -829,7 +888,43 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     if let Some(reason) = app.farewell() {
         eprintln!("letibot: the daemon ended this head — {reason}");
     }
-    Ok(())
+    // **The id, read last and read live.** A head that switched with ctrl-s — or that was
+    // switched by a `--resume` at attach — was serving something other than the daemon's first
+    // session, and the id the next command needs is the one it was actually in. The terminal is
+    // already back (the `Some(term)` arm above dropped it), so this is a line on the operator's
+    // own screen rather than a row of a frame that is about to be erased.
+    Ok(app.session_id().to_string())
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    /// **The exit line is the id and nothing else.**
+    ///
+    /// This is the whole of the operator's second ask — *"on exit you have to print main
+    /// session id to stdout too"* — so it is asserted on the bytes rather than described: the
+    /// next command is `letibot --session <id>`, and a person copies the line off the terminal.
+    /// A sentence on the same line would make it a line to edit rather than one to paste.
+    #[test]
+    fn the_exit_prints_the_id_it_was_serving_and_nothing_else() {
+        let mut out: Vec<u8> = Vec::new();
+        print_exit_session(&mut out, "s-1788987496351498881").expect("writing");
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            "s-1788987496351498881\n"
+        );
+    }
+
+    /// **A head that never seated a session prints nothing at all.** An empty line is still a
+    /// line: a script reading stdout would take it for an id, and the operator would see a blank
+    /// where the answer should be — which is how a refusal comes to look like a bug in the exit.
+    #[test]
+    fn a_head_that_never_seated_a_session_prints_nothing() {
+        let mut out: Vec<u8> = Vec::new();
+        print_exit_session(&mut out, "").expect("writing");
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
+    }
 }
 
 #[cfg(test)]
