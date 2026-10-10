@@ -4862,8 +4862,14 @@ mod the_subagent_exit_wait {
         }
         .sentence()
         .expect("two sessions still running is a sentence");
-        assert!(said.contains("s-root") && said.contains("s-other"), "{said}");
-        assert!(said.contains("5s"), "the bound is part of the record: {said}");
+        assert!(
+            said.contains("s-root") && said.contains("s-other"),
+            "{said}"
+        );
+        assert!(
+            said.contains("5s"),
+            "the bound is part of the record: {said}"
+        );
         assert!(
             said.contains("SIGSEGV") && said.contains("not clean"),
             "the sentence says what giving up costs, rather than claiming a clean exit: {said}"

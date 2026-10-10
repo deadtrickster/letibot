@@ -1272,7 +1272,10 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
         .drain_subagents(bound)
         .sentence()
         .expect("a child inside one model call cannot be waited for, and the caller must be told");
-    assert!(said.contains(id), "the session that could not be waited for: {said}");
+    assert!(
+        said.contains(id),
+        "the session that could not be waited for: {said}"
+    );
     assert!(
         began.elapsed() >= bound,
         "the wait must actually wait rather than answer on a live child: {:?}",
