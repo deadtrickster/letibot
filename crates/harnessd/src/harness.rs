@@ -4496,19 +4496,17 @@ impl Harness {
     /// into the composer can. Before this it could not — the answer was a tool payload and
     /// nothing else, and no `User` row of theirs existed to cite.
     fn settle_asked(&mut self, result: &mut TranscriptItem) -> Vec<TranscriptItem> {
-        let Some(asked) = self
-            .asked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        else {
+        let Some(asked) = self.asked.lock().unwrap_or_else(|e| e.into_inner()).take() else {
             return Vec::new();
         };
         // **Only an answer the tool ACCEPTED.** `ask_user_question` reports an abstention as
         // `Abstained` — a real answer — and everything it refused (an empty answer, an option
         // index nobody offered, a note qualifying nothing) as `not_run`. Writing a person's
         // row for one of those would attribute to them a sentence the harness rejected.
-        let TranscriptItem::ToolResult { outcome, origin, .. } = result else {
+        let TranscriptItem::ToolResult {
+            outcome, origin, ..
+        } = result
+        else {
             return Vec::new();
         };
         if !matches!(
@@ -4524,7 +4522,8 @@ impl Harness {
             who: asked.by.clone(),
         });
         let at = Some(Instant::now());
-        self.trail.say(Speaker::Agent, &question_row_text(&asked), at);
+        self.trail
+            .say(Speaker::Agent, &question_row_text(&asked), at);
         self.trail.say(Speaker::Operator, &said, at);
         asked_rows(&asked, &said).to_vec()
     }
@@ -6749,16 +6748,35 @@ impl Harness {
     /// nothing else — so its asks come up this tree to its head like any child's, which is what a
     /// reviewer the daemon owned alone could not have.
     ///
-    /// Called at the top of every wake, which is what both of its triggers are: the queue's ring,
-    /// and the child's own settlement (a child's end wakes its parent). Idempotent — a row with a
-    /// gatekeeper already working is left alone — so the queue may ring as often as it likes.
-    /// After a daemon restart the children are gone and the rows are not, and the next ring
+    /// **Called from three places, and the third is the one that was missing.** The top of every
+    /// wake — the queue's ring, and the child's own settlement (a child's end wakes its parent);
+    /// **the round boundary of a turn this session is running** (`Harness::run_rounds`), because a
+    /// wake cannot reach a session that is inside a turn; and `Sessions::serve_reviews`, the
+    /// daemon's own clock, which reads the store for the sessions it holds whatever their turn
+    /// state and whatever daemon asked for the review.
+    ///
+    /// MEASURED, 2026-10-10: eighteen `Due` rows with `attempts = 0` against them, none answered,
+    /// no gatekeeper child and nothing in the log — for half an hour, while both hosting sessions
+    /// were busy. The wake was queued behind the turn and the turn had no boundary that looked.
+    ///
+    /// **Idempotent on two pieces of evidence, and both are needed.** The store's
+    /// `attempts`/`failed_ms`, through [`crate::mergequeue::review_retry`], says whether an
+    /// attempt is *owed* — a row whose last attempt failed is not re-asked until its backoff has
+    /// elapsed, and a row that has been answered is not in `rows` at all. The session's own
+    /// `reviewing` list says whether this daemon is already serving it, which the store cannot
+    /// say: a request row and an attempt in flight are the same row (`decision` NULL,
+    /// `attempts` 0, `failed_ms` NULL). So the two passes above may see the same row as often as
+    /// they like — the store decides what is owed, `reviewing` decides what is already in hand.
+    ///
+    /// **Returns how many gatekeepers it started**, so a caller that is looking at a log can say
+    /// so; the writing-back half of this function is not counted.
+    /// After a daemon restart the children are gone and the rows are not, and the next pass
     /// starts a new gatekeeper for each.
-    pub fn serve_reviews(&mut self) {
+    pub fn serve_reviews(&mut self) -> usize {
         use letibot_tools::builtins::task::TaskStatus;
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
-            return;
+            return 0;
         };
         // **The same bound the queue rings under, read here because this is where the turn is
         // spent.** The queue's pass and this function are the two halves of one decision, and
@@ -6779,6 +6797,7 @@ impl Harness {
             })
             .collect();
         // **Start the ones nobody is reviewing.**
+        let mut started = 0;
         for row in &rows {
             if self.reviewing.iter().any(|(e, _, _)| *e == row.entry_id) {
                 continue;
@@ -6800,6 +6819,7 @@ impl Harness {
                 .start(&letibot_tools::gatekeeper::review_prompt(&req), &spec)
             {
                 Ok(handle) => {
+                    started += 1;
                     self.gatekeepers.insert(handle.clone());
                     self.reviewing.push((row.entry_id.clone(), handle, req));
                 }
@@ -6833,6 +6853,23 @@ impl Harness {
             }
         }
         self.reviewing = still;
+        started
+    }
+
+    /// **Install the runner a test owns**, so the host's half of a review can be measured without
+    /// a model, a provider or a real child.
+    ///
+    /// [`HarnessTaskRunner::for_enqueue`]'s posture, and for its reason: the field stays private
+    /// and this is `#[cfg(test)]`, so it is in no binary. `Harness::open` builds the real runner
+    /// from the parts, and a test that wants to see *what the pass asked for* replaces it after
+    /// the open — which is exactly the seam `serve_reviews`'s own tests need, since the child a
+    /// real runner starts would need a model.
+    #[cfg(test)]
+    pub(crate) fn set_subagents_for_test(
+        &mut self,
+        runner: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
+    ) {
+        self.subagents = runner;
     }
 
     /// **Re-attempt one merge-queue entry's review** — `/queue restart ENTRY-ID`, and the key on
@@ -7008,8 +7045,10 @@ impl Harness {
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
         // **The merge queue's reviews first**, and they are never a turn of this session: a
         // gatekeeper started, or a verdict written, is the queue's business. See
-        // [`Harness::serve_reviews`].
-        self.serve_reviews();
+        // [`Harness::serve_reviews`]. A wake is one of the three doors into it and not the only
+        // one any more: a session inside a turn is served at its round boundary, and a session
+        // this daemon holds is served by the daemon's own clock whatever its turn state.
+        let _ = self.serve_reviews();
         // **Two kinds of thing arrive between turns, and they share one turn.**
         //
         // A monitor that fired, and a background job that ended. Both are the machine's
@@ -9303,6 +9342,20 @@ impl Harness {
             // the worker's queue until the turn ended, and a turn can run for minutes — see
             // `Hub::try_head_run_command`, which is where the mechanism is written down.
             self.apply_queued_head_run();
+            // **And the merge-queue reviews this session hosts**, at the same boundary and for
+            // the same reason as the two above: they are work whose whole point is to happen
+            // *during* a turn, and the door that would otherwise take them (`Harness::wake`) is
+            // the one this turn is holding shut. MEASURED, 2026-10-10: eighteen `Due` rows,
+            // none of them ever asked, for half an hour — the ring was queued behind turns that
+            // never looked. The cost here is one indexed `SELECT` over a table that is one row
+            // per queue entry, against a round that is a generation.
+            let served = self.serve_reviews();
+            if served > 0 {
+                eprintln!(
+                    "  {} · reviews -> {served} gatekeeper(s)",
+                    self.hub.session_id()
+                );
+            }
             self.persist()?;
             // The calls of this round have run; if the model revised its plan,
             // the store and the heads hear about it now, at the round boundary —
@@ -15142,10 +15195,8 @@ mod tests {
         );
         // Typed words are the whole answer.
         assert_eq!(
-            operator_answer_text(&asked(QuestionAnswer::free(
-                "neither — split it in two"
-            )))
-            .as_deref(),
+            operator_answer_text(&asked(QuestionAnswer::free("neither — split it in two")))
+                .as_deref(),
             Some("neither — split it in two")
         );
         // And an abstention is the act, in the only word the wire carries for it.
@@ -15156,7 +15207,10 @@ mod tests {
         // **An index nobody offered has nothing of theirs in it.** The tool refuses one of
         // those, so this is the belt to that pair of braces rather than a state a session
         // reaches — and returning words here would be inventing a sentence for them.
-        assert_eq!(operator_answer_text(&asked(QuestionAnswer::choosing(7))), None);
+        assert_eq!(
+            operator_answer_text(&asked(QuestionAnswer::choosing(7))),
+            None
+        );
     }
 
     /// **The two rows: the question is the session's, the answer is the operator's.**

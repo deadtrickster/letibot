@@ -956,9 +956,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // headless daemon session has. A subagent's asks go up to its root's head, so the review
     // runs as a hidden child of the root of the session that enqueued the entry (resumed from
     // the store when it is not live): `GatekeeperDoor` writes the request naming that host and
-    // rings it, and the host spawns the child and writes the verdict
-    // (`Harness::serve_reviews`). With no store there is no row to write, and the door refuses
-    // by name.
+    // rings it, and the host spawns the child and writes the verdict (`Harness::serve_reviews`).
+    // **The row is what the review depends on and the ring is only the latency**: a ring is a
+    // bell and a bell is per-daemon, so a daemon serves the reviews ITS sessions host from the
+    // store on its own clock (`Sessions::serve_reviews`). With no store there is no row to write,
+    // and the door refuses by name.
     let reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send> = match cfg.store.as_ref() {
         None => Box::new(letibot_tools::gatekeeper::NoReviewer),
         Some(path) => match letibot_tokencore::store::Store::open(path) {
