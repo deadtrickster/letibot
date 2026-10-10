@@ -46,6 +46,21 @@ pub struct Unreadable {
 pub struct ModeStore {
     path: Option<PathBuf>,
     by_root: BTreeMap<PathBuf, Mode>,
+    /// **The operator's recorded consent, per root** — the moment it was given, for the one
+    /// point that needs one.
+    ///
+    /// `allow-all` on a bare host is reachable only through the operator's answer to a
+    /// question ([`Mode::ALLOW_ALL_HERE`]), and that answer used to live in a single process:
+    /// every restart dropped it and they gave it again. Their words: *"make my allow-all
+    /// survive across restarts"*. Recording it HERE is what the module's own objection asks
+    /// for rather than what it forbids — the row then says the point AND that a person agreed
+    /// to it, and [`ModeStore::describe`] reads both aloud, so nothing comes back that the
+    /// banner cannot explain. What the module refused was a point that arrived silently and
+    /// claimed a boundary it did not have; a stamp is the opposite of silent.
+    ///
+    /// Meaningful only on an `allow-all` row, and cleared when the row moves anywhere else,
+    /// because consent is for one question and does not travel to a point nobody picked.
+    consented: BTreeMap<PathBuf, String>,
     /// Rows that did not parse, kept so the disclosure can say so. **Not** dropped: a
     /// project whose line is malformed is a project the operator thinks they
     /// configured.
@@ -82,17 +97,28 @@ impl ModeStore {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((name, root)) = line.split_once('\t') else {
+            // Two fields are a row; a third is the operator's recorded consent for it. A
+            // row without one is every row written before this existed, and it loads
+            // unchanged.
+            let mut fields = line.split('\t');
+            let (Some(name), Some(root)) = (fields.next(), fields.next()) else {
                 s.unreadable.push(Unreadable {
                     line: i + 1,
                     text: line.to_string(),
-                    why: "no tab: a row is `<mode name>\\t<absolute project root>`".into(),
+                    why: "no tab: a row is `<mode name>\\t<absolute project root>`, and a third \
+                          `\\t<consented-at>` is the operator's own answer for `allow-all`"
+                        .into(),
                 });
                 continue;
             };
+            let consented = fields.next().map(str::trim).filter(|c| !c.is_empty());
             match Mode::parse(name.trim()) {
                 Ok(m) => {
-                    s.by_root.insert(PathBuf::from(root.trim()), m);
+                    let root = PathBuf::from(root.trim());
+                    if let Some(when) = consented {
+                        s.consented.insert(root.clone(), when.to_string());
+                    }
+                    s.by_root.insert(root, m);
                 }
                 Err(why) => s.unreadable.push(Unreadable {
                     line: i + 1,
@@ -151,15 +177,65 @@ impl ModeStore {
     /// this moment — a store that refused to record *writes allowed* because no head
     /// happened to be attached would be refusing to remember an intention.
     pub fn set(&mut self, root: &Path, mode: Mode) -> std::io::Result<()> {
-        self.by_root.insert(canonical(root), mode);
+        let root = canonical(root);
+        // **A row that moves OFF `allow-all` takes the consent with it.** The operator
+        // answered a question about that point, not about the one they are moving to — the
+        // same rule the point itself states, that consent does not travel. Moving TO
+        // `allow-all` keeps whatever was recorded, so the row write and the answer can arrive
+        // in either order without one undoing the other.
+        if mode.name != Mode::ALLOW_ALL.name {
+            self.consented.remove(&root);
+        }
+        self.by_root.insert(root, mode);
         self.flush()
+    }
+
+    /// **The operator's recorded consent for this project**, if they have given one.
+    ///
+    /// Read beside the row at open: an `allow-all` row WITH a stamp resolves to
+    /// [`Mode::ALLOW_ALL_HERE`] — the point that tells the boundary the truth — and one
+    /// without it is refused as it always was, naming how to give the answer. Resolved by the
+    /// same longest-ancestor rule as the row itself, so a stamp on `~/Projects` covers what
+    /// the row covers and no more.
+    pub fn consent(&self, root: &Path) -> Option<&str> {
+        let root = canonical(root);
+        self.consented
+            .iter()
+            .filter(|(k, _)| root.starts_with(k))
+            .max_by_key(|(k, _)| k.as_os_str().len())
+            .map(|(_, when)| when.as_str())
+    }
+
+    /// **Record the operator's answer**, and write the file.
+    ///
+    /// Called from the `/mode` path when the answer to the unconfined-`allow-all` question is
+    /// yes; `when` is the moment, so the disclosure can say whose answer it was and when.
+    pub fn set_consent(&mut self, root: &Path, when: &str) -> std::io::Result<()> {
+        self.consented.insert(canonical(root), when.to_string());
+        self.flush()
+    }
+
+    /// **Forget it**, for a point that does not need an answer.
+    ///
+    /// `set` already does this when a row moves off `allow-all`; this is the same act for a
+    /// caller that knows the answer is not wanted, and it reports whether there was one — a
+    /// "forgotten" that forgot nothing is the kind of report that makes somebody think they
+    /// revoked something.
+    pub fn clear_consent(&mut self, root: &Path) -> std::io::Result<bool> {
+        let had = self.consented.remove(&canonical(root)).is_some();
+        self.flush()?;
+        Ok(had)
     }
 
     /// Drop a project's row, putting it back to [`UNSEEN_PROJECT`]. Returns whether
     /// there was one — a "removed" that removed nothing is the kind of report that
     /// makes somebody think they revoked something.
     pub fn remove(&mut self, root: &Path) -> std::io::Result<bool> {
-        let had = self.by_root.remove(&canonical(root)).is_some();
+        let root = canonical(root);
+        let had = self.by_root.remove(&root).is_some();
+        // **The row and the answer go together**: a project with no row has no consent, or a
+        // `/mode` that forgot where the project sits would still open `allow-all` for it.
+        self.consented.remove(&root);
         self.flush()?;
         Ok(had)
     }
@@ -182,11 +258,16 @@ impl ModeStore {
         }
         let mut out = String::from(
             "# letibot: where each project sits. One row per project root.\n\
-             #   <mode name>\\t<absolute project root>\n\
-             # A root with no row is `always-ask`. The longest matching ancestor wins.\n",
+             #   <mode name>\\t<absolute project root>[\\t<consented-at>]\n\
+             # A root with no row is `always-ask`. The longest matching ancestor wins.\n\
+             # The third field is the operator's own answer to the question `allow-all` asks\n\
+             # on a bare host, recorded so that a restart does not throw it away.\n",
         );
         for (root, m) in &self.by_root {
-            out.push_str(&format!("{}\t{}\n", m.name, root.display()));
+            match self.consented.get(root) {
+                Some(when) => out.push_str(&format!("{}\t{}\t{}\n", m.name, root.display(), when)),
+                None => out.push_str(&format!("{}\t{}\n", m.name, root.display())),
+            }
         }
         // Rows this build could not read are **kept**, not dropped on the first write.
         // Losing an operator's line because a newer build wrote the file is the worst
@@ -253,6 +334,67 @@ mod tests {
         let d = std::env::temp_dir().join(format!("letibot-modes-{name}-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         d.join("modes.tsv")
+    }
+
+    /// **The operator's answer round-trips, and only on the row it was given for.**
+    ///
+    /// MEASURED 2026-10-10: `allow-all` was the one point that could not survive a restart,
+    /// because it needs a confinement a bare host cannot supply and the only thing that opens
+    /// it is a person's answer — an answer that lived in one process and died with it. The row
+    /// carries it now, and this is what that has to mean: it survives the file, it is there
+    /// only for the project that was asked about, and moving that project anywhere else
+    /// forgets it, so `/mode` away and back cannot resurrect an older `yes`.
+    #[test]
+    fn the_operators_answer_round_trips_and_only_where_it_was_given() {
+        let path = tmp("consent");
+        let _ = std::fs::remove_file(&path);
+        let mine = std::env::temp_dir().join("consent/mine");
+        let theirs = std::env::temp_dir().join("consent/theirs");
+        let when = "2026-10-10T13:22:13+00:00";
+
+        let mut s = ModeStore::load(&path);
+        s.set(&mine, Mode::ALLOW_ALL).expect("set the row");
+        s.set_consent(&mine, when).expect("record the answer");
+        assert_eq!(s.consent(&mine), Some(when), "the answer did not come back");
+        assert_eq!(
+            s.consent(&theirs),
+            None,
+            "an answer to one project travelled to another"
+        );
+
+        // **It survives the file**, which is the whole point of recording it rather than
+        // keeping it in memory.
+        let back = ModeStore::load(&path);
+        assert_eq!(
+            back.consent(&mine),
+            Some(when),
+            "the answer did not survive a reload"
+        );
+        assert_eq!(back.for_project(&mine).name, "allow-all");
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("allow-all\t") && l.ends_with(when)),
+            "the row does not carry the answer: {text}"
+        );
+
+        // **And moving the project off `allow-all` forgets it.** Consent is for one
+        // question, and it does not travel to a point nobody picked.
+        let mut s = ModeStore::load(&path);
+        s.set(&mine, Mode::WRITES_ALLOWED).expect("move the row");
+        assert_eq!(
+            s.consent(&mine),
+            None,
+            "the answer outlived the row it was given for"
+        );
+        let back = ModeStore::load(&path);
+        assert_eq!(back.consent(&mine), None, "and not in the file either");
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(
+            !text.contains(when),
+            "the forgotten answer is still written: {text}"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A directory nobody has configured is at always-ask: nothing that is not a read

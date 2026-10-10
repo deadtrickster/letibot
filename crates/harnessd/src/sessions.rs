@@ -3182,41 +3182,34 @@ impl<'a> Sessions<'a> {
                     };
                     harness.workspace().to_path_buf()
                 };
-                // **A consented `allow-all` is never written to the row.**
+                // **A consented `allow-all` IS written now — with the answer that opens it.**
                 //
-                // The row is what every LATER session in this project opens at, and
-                // `allow-all` needs a confinement that a bare host cannot supply. So
-                // writing it here is writing a point that refuses at every future
-                // open — which is exactly what happened in leticl on 2026-09-20: the
-                // session move failed the prerequisite, the row was written anyway,
-                // and from then on every subagent died at open with *"a confinement
-                // for exec"*. The operator saw *"subagents dont work"*.
-                //
-                // Consent is a thing a person gave once, in front of one session,
-                // and `Harness::set_mode_consented` keeps it there. Persisting it
-                // would be replaying their answer at every later start, for a
-                // boundary claim nobody re-made.
-                let persist =
-                    !(*consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name);
-                if !persist && let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "mode_session_only".into(),
-                        detail: format!(
-                            "`allow-all` is this session's, not {}'s: nothing confines \
-                             this box, so the point stands on the confirmation you just \
-                             gave and is not written to the project store. A new session \
-                             here starts where it did before, and asks again.",
-                            workspace.display()
-                        ),
-
-                        compaction: None,
-                    });
-                }
-                if let Err(e) = (if persist {
-                    self.parts.mode_store.write().unwrap().set(&workspace, mode)
-                } else {
+                // It used to be left out of the row, and for a good reason: a row naming
+                // `allow-all` refuses at every later open on a bare host, and leticl died
+                // exactly that way on 2026-09-20 — the row was written, every subagent then
+                // died at open with *"a confinement for exec"*, and the operator saw
+                // *"subagents dont work"*. What changed is that the operator's ANSWER now
+                // travels with the row as its third field: a later open reading `allow-all`
+                // AND a stamp resolves to `ALLOW_ALL_HERE` — the same coordinate with the
+                // boundary told truthfully — instead of refusing, and the startup says whose
+                // answer it was and when. A row naming `allow-all` with NO stamp still
+                // refuses exactly as it did, and that is what keeps the leticl failure from
+                // coming back: the stamp is only ever written by a person answering.
+                let consented_here =
+                    *consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name;
+                // **The row, and then the answer** — in that order, through one lock, so a
+                // reader of the file never sees a consent for a row that is not there. `set`
+                // itself forgets a stamp when a row moves off `allow-all`, so putting a project
+                // back to another point is a real revocation, and `/mode allow-all` again
+                // cannot resurrect an older `yes`.
+                if let Err(e) = (|| -> std::io::Result<()> {
+                    let mut store = self.parts.mode_store.write().unwrap();
+                    store.set(&workspace, mode)?;
+                    if consented_here {
+                        store.set_consent(&workspace, &letibot_flowy::seat::rfc3339_now())?;
+                    }
                     Ok(())
-                }) {
+                })() {
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
                             code: "mode_unpersisted".into(),
@@ -3267,12 +3260,14 @@ impl<'a> Sessions<'a> {
                         Ok((said, applied)) => hub.publish(SessionEvent::Warning {
                             code: "mode_set".into(),
                             // **Say what is true of the project separately from what
-                            // is true of this session**, because with a consented
-                            // `allow-all` they differ. This sentence claimed the row
-                            // had been written and that every later session would
-                            // start there — neither of which happens when `persist`
-                            // is false — and then printed the REQUESTED point's
-                            // summary over the applied one.
+                            // is true of this session**, because they can differ: a point
+                            // the row carries may still be one this session cannot move
+                            // to. **Ask the store what the row says rather than assuming
+                            // it** — `set` has already run above, so this is the file's own
+                            // answer and the one a person reading the row would get. The
+                            // consented `allow-all` needs no branch of its own any more:
+                            // the row IS written, with the stamp beside it, and the applied
+                            // point's own summary says what the confirmation covers.
                             detail: {
                                 let row = self
                                     .parts
@@ -3282,20 +3277,8 @@ impl<'a> Sessions<'a> {
                                     .map(|st| st.for_project(&workspace).name)
                                     .unwrap_or(mode.name);
                                 format!(
-                                    "{said}. {}. {}",
-                                    if persist {
-                                        format!(
-                                            "{} is at `{}` from every later session too",
-                                            workspace.display(),
-                                            mode.name
-                                        )
-                                    } else {
-                                        format!(
-                                            "{}'s row is unchanged at `{row}`, so a new \
-                                             session here starts there",
-                                            workspace.display()
-                                        )
-                                    },
+                                    "{said}. {} is at `{row}` from every later session too. {}",
+                                    workspace.display(),
                                     applied.summary
                                 )
                             },

@@ -2236,7 +2236,27 @@ impl Harness {
                 let before = cfg.mode.name;
                 cfg.mode = store.for_project(&cfg.workspace);
                 mode_source = "project store (modes.tsv)".into();
-                if cfg.mode.name != before {
+                // **And the recorded consent, when the row names the point that needs one.**
+                //
+                // `allow-all` is the point that requires a confinement, so on a bare host the
+                // only thing that opens it is the operator's answer to a question. That answer
+                // is now recorded in the store — the row's third field — precisely so a restart
+                // stops throwing it away and they stop giving it again. It resolves to
+                // `ALLOW_ALL_HERE`, the same coordinate with the boundary told truthfully, and
+                // it is DISCLOSED right here, because a point that came back silently is the one
+                // failure this whole rule exists to prevent.
+                if cfg.mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                    && let Some(when) = store.consent(&cfg.workspace)
+                {
+                    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                    mode_source = format!("project store (modes.tsv), at your word of {when}");
+                    notes.push(format!(
+                        "`allow-all` for {} — on this box, with nothing confining it, because you \
+                         said so on {when}. Nothing is asked here and the always-ask list is \
+                         admitted; `/mode <other>` takes it back and forgets the answer.",
+                        cfg.workspace.display()
+                    ));
+                } else if cfg.mode.name != before {
                     notes.push(format!(
                         "mode is `{}` for {} (from the project store), not the daemon default `{before}`",
                         cfg.mode.name, cfg.workspace.display()
@@ -9995,9 +10015,12 @@ impl Harness {
                 return;
             }
         };
-        // **Not persisted from here.** The project row is `Sessions`' business and
-        // is written on the between-turns path; a consented `allow-all` is not
-        // written at all. This is the session's own point moving, and nothing else.
+        // **The row is `Sessions`' business; the RECORDING happens where the row is written.**
+        // This session's point has moved, and that is all this function does — see
+        // `sessions::Sessions`' mode path, which writes the project row and, for a consented
+        // `allow-all`, the operator's answer beside it. It lives there because that is where
+        // the store is reachable and where the `consented` flag already arrives; a second
+        // writer here would be a second source of truth about one row.
         let consented = *consented;
         match self.set_mode_consented(mode, consented) {
             Ok(said) => {

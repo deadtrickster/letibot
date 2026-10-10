@@ -602,9 +602,10 @@ impl Mode {
         requires: &[Prereq::WritableBackend],
         summary: "write, exec and network all go through without asking, the always-ask \
                   list included — on this box, with nothing confining it, because the \
-                  operator confirmed that for this session. Only a secret leaving the \
-                  box is still refused. Lasts as long as the session: no file records \
-                  it and no later daemon starts here.",
+                  operator confirmed it. Only a secret leaving the box is still refused. \
+                  The confirmation is RECORDED with the project — a third field on its row \
+                  in `modes.tsv` — so it survives a restart and is read aloud at every \
+                  startup; `/mode <other>` takes it back and forgets the answer.",
     };
 
     /// The named points, in widening order. The order is the one a banner lists them
