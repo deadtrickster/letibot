@@ -513,6 +513,75 @@ fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
     );
 }
 
+/// **A note this session wrote is not offered back to it.**
+///
+/// Its author composed every word, so the offer is a fetch of the model's own output — and it
+/// wins its round for a structural reason: a note about what you are doing scores highest
+/// against the subject you are writing about. MEASURED 2026-10-10, one evening: four of fourteen
+/// offers were notes the same session had just written, each at the top of its round.
+#[test]
+fn a_note_this_session_wrote_is_not_offered_back() {
+    let f = Fixture::new("written");
+    corpus(&f);
+
+    // Without the write, it is offered.
+    let mut fresh = Offers::new();
+    assert!(
+        fresh.compose(&f.ws, &f.global, "", &prompt(ABOUT)),
+        "the fixture note earns a hint"
+    );
+
+    // The session writes it. `notes add` carries a bare stem, which is one of the three
+    // spellings `same_note` resolves.
+    let mut wrote_it = prompt(ABOUT);
+    wrote_it.push(TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![call(
+            "notes",
+            r#"{"action":"add","name":"the-offer-and-the-tail"}"#,
+        )],
+        truncated: false,
+    });
+    let mut offers = Offers::new();
+    assert!(
+        !offers.compose(&f.ws, &f.global, "", &wrote_it),
+        "a note this session wrote is not offered back to it"
+    );
+
+    // **And it is the note that was written, not 'any write at all'.** Writing something else
+    // leaves this one offerable.
+    let mut wrote_another = prompt(ABOUT);
+    wrote_another.push(TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![call(
+            "notes",
+            r#"{"action":"add","name":"some-other-note"}"#,
+        )],
+        truncated: false,
+    });
+    let mut other = Offers::new();
+    assert!(
+        other.compose(&f.ws, &f.global, "", &wrote_another),
+        "writing a different note does not silence this one"
+    );
+
+    // And an `append` to it counts the same way — the author has read it by writing into it.
+    let mut appended = prompt(ABOUT);
+    appended.push(TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![call(
+            "notes",
+            r#"{"action":"append","name":"the-offer-and-the-tail"}"#,
+        )],
+        truncated: false,
+    });
+    let mut offers2 = Offers::new();
+    assert!(
+        !offers2.compose(&f.ws, &f.global, "", &appended),
+        "an append is a write too"
+    );
+}
+
 /// The log, parsed — one JSON object per line, in the order they were written.
 fn log_lines(ws: &Path) -> Vec<serde_json::Value> {
     let text = std::fs::read_to_string(ws.join(LOG)).expect("the log exists");

@@ -249,6 +249,17 @@ impl Offers {
             .flatten()
             .filter_map(read_of)
             .collect();
+        // **And the notes this session wrote**, which no `read` call will have recorded: see
+        // [`written_of`]. Their author has the content already.
+        let wrote: HashSet<PathBuf> = items
+            .iter()
+            .filter_map(|i| match i {
+                TranscriptItem::Assistant { tool_calls, .. } => Some(tool_calls.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(written_of)
+            .collect();
         // The best note over the floor that is neither spent, nor already in the
         // conversation, nor already in the prompt. `best` answers with one, so a
         // note that is skipped is skipped for good this round rather than fallen
@@ -262,6 +273,7 @@ impl Offers {
             || self.offered.contains(path)
             || already.contains(path)
             || already.iter().any(|p| same_note(p, path))
+            || wrote.iter().any(|p| same_note(p, path))
             || carried_verbatim(system, path)
         {
             return false;
@@ -419,6 +431,31 @@ pub fn subject(items: &[TranscriptItem]) -> String {
         .unwrap_or(0);
     out.truncate(cut);
     out
+}
+
+/// **A note this session WROTE** — `notes` with `add`/`append`/`replace`, or a `write`/`edit`
+/// naming one.
+///
+/// The sibling of [`read_of`], and the same argument taken one step further: a session that wrote
+/// a note has its content, because it composed every word of it. Offering it back is an offer to
+/// fetch what the model just produced — and it wins its round for a structural reason, since a
+/// note about what you are doing scores highest against the subject you are writing about.
+/// MEASURED 2026-10-10, one evening: four of fourteen offers were notes the same session had just
+/// written, each at the top of its round.
+pub fn written_of(call: &ToolCall) -> Option<PathBuf> {
+    let args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+    match call.name.as_str() {
+        "notes" => match args.get("action").and_then(|v| v.as_str())? {
+            "add" | "append" | "replace" => args
+                .get("path")
+                .or_else(|| args.get("name"))
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from),
+            _ => None,
+        },
+        "write" | "edit" => args.get("path").and_then(|v| v.as_str()).map(PathBuf::from),
+        _ => None,
+    }
 }
 
 /// **The note a tool call would put into the conversation** — `read`'s `path`, or
