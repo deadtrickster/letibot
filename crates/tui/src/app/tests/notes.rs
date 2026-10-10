@@ -2003,3 +2003,199 @@ fn the_no_progress_warning_leaves_a_resident_line_and_a_status_row() {
         "no auto-compact row on /status: {status}"
     );
 }
+
+/// **The sentence a fold writes into `compacted`** — the daemon's own words, from
+/// `sessions::compaction_said`, on the path where nobody watched the summary turn being
+/// written: the whole record is pasted into the detail.
+///
+/// This is the text the operator was looking at. It is not a transcription slip: the format
+/// strings are `compaction_said`'s, and the record under them is what the model reads in place
+/// of everything before it.
+fn a_compacted_said() -> String {
+    format!(
+        "compacted: 958397 → 100005 tokens, on transcript s#t25. Nothing of the summary turn \
+         reached this screen — it ran over a scratch transcript — so here is what the model now \
+         reads in place of everything before it:\n\n## Goal\n\n{}",
+        "THE MODEL'S OWN RECORD ".repeat(20)
+    )
+}
+
+/// **A compaction is ONE line in the rungs that show the conversation alone.**
+///
+/// The operator: *"compaction leads to too much noise in the conversation for me. in
+/// conversation and show edits i want a one line - compacted blablabla"*. The two rungs he
+/// named are `conversation` and `read-edits` — `Conversation`'s set with and without the
+/// `Edits` flag — and the wall in both of them is the `compacted` warning, whose detail carries
+/// the model's whole record on the fold path.
+///
+/// **The row the daemon appends for the fork is not what he is seeing**, and that is the thing
+/// this test pins rather than assumes: the fork's `System` item is `Conversation`'s own
+/// counter-example — *nothing the head did to produce them* — so the rung hides it, and what
+/// reaches the glass is the warning. Both halves are asserted below.
+#[test]
+fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
+    for profile in [Profile::CONVERSATION, Profile::READ_EDITS] {
+        let mut a = app();
+        a.visibility = Visibility::of(profile);
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "compacted".into(),
+                detail: a_compacted_said(),
+                compaction: None,
+            },
+        )));
+        let frame = a.screen(100, 30);
+        let screen = frame.join("\n");
+        let carrying = |needle: &str| frame.iter().filter(|l| l.contains(needle)).count();
+        assert_eq!(
+            carrying("958397 → 100005 tokens"),
+            1,
+            "a compaction's numbers are on ONE row at `{}`:\n{screen}",
+            profile.name
+        );
+        assert_eq!(
+            carrying("compacted"),
+            1,
+            "and the compaction is one row, not a block at `{}`:\n{screen}",
+            profile.name
+        );
+        assert!(
+            screen.contains("/notes"),
+            "the row says where the whole sentence is at `{}`:\n{screen}",
+            profile.name
+        );
+        // **The model's record is not on the screen.** It is the prompt, not anything that
+        // happened, and this is the half the operator was complaining about.
+        assert!(
+            !screen.contains("THE MODEL'S OWN RECORD"),
+            "the record the model reads was drawn in the conversation at `{}`:\n{screen}",
+            profile.name
+        );
+        // **And nothing was swallowed**: the whole sentence, record and all, is on `/notes` —
+        // the unfold the row's seam names.
+        a.command("notes");
+        let listing = a.screen(100, 60).join("\n");
+        assert!(
+            listing.contains("THE MODEL'S OWN RECORD"),
+            "the record is not in the listing either, so the row cut it:\n{listing}"
+        );
+        assert!(
+            listing.contains("ran over a scratch transcript"),
+            "the daemon's sentence is not in the listing whole:\n{listing}"
+        );
+    }
+}
+
+/// **The fold is a property of the note and not of a rung**, and the fork's own row does not
+/// vanish above them.
+///
+/// Two absences must not look like one. A rung-gated fold would make the ladder a revision —
+/// `Verbosity::Loud`'s docstring: *"a rung that hid one would retroactively erase a warning
+/// already read"* — so the compaction is one line at `loud` too; and the `System` row the fork
+/// appends is drawn there as it always was, whole, because `loud` is the rung that draws what
+/// the head was given.
+#[test]
+fn a_compaction_is_one_line_at_every_rung_and_the_forks_row_still_draws() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::LOUD);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Warning {
+            code: "compacted".into(),
+            detail: a_compacted_said(),
+            compaction: None,
+        },
+    )));
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::appended("s#t25.0", "system"),
+    )));
+    a.record_item(
+        "s#t25.0",
+        TranscriptItem::System {
+            text: format!(
+                "This conversation was compacted: what was said before this point is replaced \
+                 by the summary below, which was written over the full history of transcript \
+                 s#t24 and proposed no tool calls.\n\n{}",
+                "THE MODEL'S OWN RECORD ".repeat(20)
+            ),
+            origin: letibot_transcript::SystemOrigin::Update,
+        },
+    );
+    let frame = a.screen(100, 40);
+    let screen = frame.join("\n");
+    assert_eq!(
+        frame
+            .iter()
+            .filter(|l| l.contains("958397 → 100005 tokens"))
+            .count(),
+        1,
+        "the warning is still one row at `loud`:\n{screen}"
+    );
+    assert!(
+        screen.contains("This conversation was compacted"),
+        "the fork's own row vanished from the rung that draws what the head was given:\n{screen}"
+    );
+}
+
+/// **A warning in the same window still draws, whole.**
+///
+/// The fold's whole risk is the one `warning.rs` names: a head that folds a warning too
+/// eagerly is a head whose failures nobody reads. A compaction is folded; a chain mismatch
+/// beside it is not, and the two are asserted on one screen because that is the comparison a
+/// reader makes.
+#[test]
+fn a_warning_beside_a_compaction_still_draws_whole() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    for (seq, code, detail) in [
+        (1u64, "compacted", a_compacted_said()),
+        (
+            2,
+            "ledger_chain_mismatch",
+            "row 41's head is not the one that was stored, so every row after it is \
+             unverifiable: the chain broke at 41 and the store says nothing about how."
+                .into(),
+        ),
+    ] {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::Warning {
+                code: code.into(),
+                detail,
+                compaction: None,
+            },
+        )));
+    }
+    let frame = a.screen(100, 30);
+    let screen = frame.join("\n");
+    let mismatch: Vec<&String> = frame
+        .iter()
+        .filter(|l| l.contains("ledger_chain_mismatch"))
+        .collect();
+    assert_eq!(mismatch.len(), 1, "the failure has its own row:\n{screen}");
+    assert!(
+        screen.contains("unverifiable"),
+        "and its sentence is drawn, not folded away:\n{screen}"
+    );
+    assert!(
+        !screen.contains("THE MODEL'S OWN RECORD"),
+        "the compaction beside it is still one line:\n{screen}"
+    );
+}
