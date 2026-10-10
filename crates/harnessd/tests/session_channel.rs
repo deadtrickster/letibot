@@ -1025,7 +1025,14 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let hearing = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PEER, 30);
     let stub = Stub::answering(vec![work, verdict, hearing], 3);
 
-    let cfg = config(main_id, stub.endpoint.clone(), &path);
+    // **The reviewer stays on this machine.** `Harness::serve_reviews` places a reviewer in a
+    // firecode VM where the box can boot one, and this box can — which this test must not do: the
+    // fixture's workspace is `/tmp`, so a VM here would measure and copy it and boot firecracker,
+    // while what this test is about is the channel a refusing verdict comes back on. Stated as a
+    // VALUE rather than by racing `$FIRECODE_BIN` — `wired.rs`'s discipline, and the reason the
+    // veto is a `Config` field instead of something read off the machine.
+    let mut cfg = config(main_id, stub.endpoint.clone(), &path);
+    cfg.gatekeeper_vm = false;
     let registry = Registry::new();
     let mut father = a_session(main_id, &parts, &cfg, registry.clone());
 

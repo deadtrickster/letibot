@@ -60,7 +60,7 @@ use std::time::Duration;
 use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::apparatus::present_gguf;
 use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, ReviewRecord, Store};
-use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
+use letibot_tools::builtins::task::{Placement, TaskRunner, TaskSpec, TaskStatus};
 
 use super::*;
 
@@ -95,19 +95,37 @@ impl Drop for TempDir {
     }
 }
 
+/// **One `start`, as the recording runner saw it**: the prompt, the seat, and where the pass asked
+/// for the child to run.
+///
+/// The placement is here because it is a decision the pass makes FOR a reviewer and for no other
+/// child — see `gatekeeper::reviewer_placement` — so *what the pass asked for* is not the whole
+/// answer without it. Every other field of the [`TaskSpec`] is the caller's and has its own test;
+/// this one is the pass's own.
+#[derive(Debug, Clone)]
+struct Asked {
+    prompt: String,
+    role: String,
+    placement: Placement,
+}
+
 /// **A runner that records what it was asked to start and answers `Running` for ever.**
 ///
 /// A running child is the interesting one: it stays in the harness's `reviewing` list, which is
 /// the state the second-pass test needs, and it never writes a verdict onto a row.
 struct Recording {
-    /// `(prompt, role)` per `start`, in order.
-    started: Arc<Mutex<Vec<(String, String)>>>,
+    /// One entry per `start`, in order.
+    started: Arc<Mutex<Vec<Asked>>>,
 }
 
 impl TaskRunner for Recording {
     fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
         let mut g = self.started.lock().unwrap_or_else(|e| e.into_inner());
-        g.push((prompt.to_string(), spec.role.clone()));
+        g.push(Asked {
+            prompt: prompt.to_string(),
+            role: spec.role.clone(),
+            placement: spec.placement,
+        });
         Ok(format!("sub-{}", g.len()))
     }
 
@@ -131,13 +149,13 @@ struct Fixture {
     db: PathBuf,
     cfg: Config,
     registry: Arc<Registry>,
-    /// `(prompt, role)` per `start`, in order, asked of the REVIEW QUEUE's session.
-    started: Arc<Mutex<Vec<(String, String)>>>,
+    /// One entry per `start`, in order, asked of the REVIEW QUEUE's session.
+    started: Arc<Mutex<Vec<Asked>>>,
     /// **And what the daemon's OWN session was asked to start**, which must stay empty: a review is
     /// a `task` child of the queue's session, not of whatever session the daemon was started with.
     /// A recording runner on that session is the only way to assert the difference — a runner that
     /// is never asked records nothing whether the code is right or the fixture is.
-    started_by_the_daemon: Arc<Mutex<Vec<(String, String)>>>,
+    started_by_the_daemon: Arc<Mutex<Vec<Asked>>>,
     /// The session that hosts the reviews — the queue's own.
     host: String,
     /// A session that exists and is not held.
@@ -260,7 +278,7 @@ impl Fixture {
     }
 
     /// What the review queue's session was asked to start, in order.
-    fn asked(&self) -> Vec<(String, String)> {
+    fn asked(&self) -> Vec<Asked> {
         self.started
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -268,7 +286,7 @@ impl Fixture {
     }
 
     /// **And what the daemon's own session was asked to start** — nothing, in every test here.
-    fn asked_by_the_daemon(&self) -> Vec<(String, String)> {
+    fn asked_by_the_daemon(&self) -> Vec<Asked> {
         self.started_by_the_daemon
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -307,7 +325,7 @@ fn a_due_review_is_spawned_as_the_queue_sessions_own_child() {
     );
     let asked = f.asked();
     assert_eq!(asked.len(), 1, "one row, one reviewer: {asked:?}");
-    let (prompt, role) = &asked[0];
+    let Asked { prompt, role, .. } = &asked[0];
     assert_eq!(
         role, "gatekeeper",
         "the reviewer runs in the gatekeeper seat — read-only, with `bash` for `git diff`"
@@ -392,6 +410,72 @@ fn a_review_already_being_served_is_not_spawned_twice() {
     assert!(row.failure.is_empty(), "and there is no failure to read");
 }
 
+/// **The reviewer is placed where this box can place one, and the state is DECLARED where it
+/// cannot — never a silent fallback to the machine the session asked to leave.**
+///
+/// This is the placement decided FOR a child rather than by the call that spawns it, and it is not
+/// a detail: a reviewer on this machine seats `bash`, so every call it makes is a permission card,
+/// and a card with no head attached times out and FAILS the review. So the assertion is that what
+/// the pass asked for follows the box — `Firecode` here where firecode is installed, `Host` where
+/// it is not — and that a session which says *no VM* gets none.
+///
+/// **The two arms are stated differently on purpose.** The veto is a VALUE the test sets, so that
+/// arm holds on any machine; the box's own answer is read from `firecode_available()`, the same
+/// call the pass makes, so the assertion follows the box rather than `$FIRECODE_BIN` being raced
+/// with a guess about what is installed. The three-way state itself — including *asked for a VM,
+/// box cannot give one* — is asserted as pure arms in `gatekeeper`'s own tests, where the box is an
+/// argument.
+#[test]
+fn a_review_child_is_placed_where_the_box_can_place_one() {
+    let Some(f) = Fixture::new("placed") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.entry("m-placed", "keep the last record");
+    f.review("m-placed", &f.host, 0, None);
+
+    let mut sessions = f.sessions(&parts);
+    assert_eq!(sessions.serve_reviews(), 1, "the pass asks");
+    let asked = f.asked();
+    assert_eq!(asked.len(), 1, "one row, one reviewer: {asked:?}");
+    match letibot_tools::firecode::firecode_available() {
+        Ok(bin) => assert_eq!(
+            asked[0].placement,
+            Placement::Firecode,
+            "firecode is installed at {} — the reviewer runs in a VM, where its `bash` calls are \
+             not permission cards",
+            bin.display()
+        ),
+        Err(why) => assert_eq!(
+            asked[0].placement,
+            Placement::Host,
+            "this box cannot boot a VM ({why}), so the reviewer runs here — the declared state, \
+             said in the session's own prompt, and not a `Firecode` this box would fail to honour"
+        ),
+    }
+
+    // **And a session that states no VM keeps its reviewer here**, whatever the box can do — the
+    // behaviour every review had before the placement existed, stated as a value so this arm is
+    // asserted on a box with firecode and on one without.
+    let Some(mut f) = Fixture::new("placed-host") else {
+        return;
+    };
+    f.cfg.gatekeeper_vm = false;
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.entry("m-here", "keep the last record");
+    f.review("m-here", &f.host, 0, None);
+
+    let mut sessions = f.sessions(&parts);
+    assert_eq!(sessions.serve_reviews(), 1, "the pass still asks");
+    let asked = f.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(
+        asked[0].placement,
+        Placement::Host,
+        "a session that states `gatekeeper_vm = false` keeps its reviewer on this machine"
+    );
+}
+
 /// **A review naming a session this daemon does not hold is left alone.**
 ///
 /// The whole design in one assertion. A ring is a bell and a bell is per-daemon, so a mover in
@@ -423,11 +507,11 @@ fn a_review_naming_a_session_this_daemon_does_not_hold_is_left_alone() {
     let asked = f.asked();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert!(
-        asked[0].0.contains("mine to review"),
+        asked[0].prompt.contains("mine to review"),
         "the child started is the HELD session's review: {asked:?}"
     );
     assert!(
-        !asked[0].0.contains("theirs to review"),
+        !asked[0].prompt.contains("theirs to review"),
         "a review hosted by a session this daemon does not hold is not this daemon's to serve — \
          the daemon that holds `{}` serves it: {asked:?}",
         f.elsewhere

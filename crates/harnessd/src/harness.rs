@@ -7261,6 +7261,15 @@ impl Harness {
     /// `decision`/`answered_ms` is the only thing that takes an entry off the queue, and so off
     /// this session's board.
     ///
+    /// **The reviewer is the one child whose placement is decided FOR it**, and this is where the
+    /// decision is spent: `crate::sessions::gatekeeper::reviewer_placement` reads
+    /// `Config::gatekeeper_vm` and the box's own answer, and its `ReviewerPlacement::placement()`
+    /// is what the spec carries. A reviewer is a HOST session seating `bash`, so on this machine
+    /// every `bash` call it makes is a permission card, and a card with no head attached times out
+    /// and fails the review; inside a VM the boundary is the VM and nothing asks. The session's own
+    /// prompt is composed from the SAME function (`Sessions::ensure_gatekeeper`), so what it was
+    /// told and where its children go cannot drift apart.
+    ///
     /// **Returns how many gatekeepers it started**, so a caller that is looking at a log can say
     /// so; the writing-back half of this function is not counted.
     /// After a daemon restart the children are gone and the rows are not, and the next pass
@@ -7289,6 +7298,16 @@ impl Harness {
                     == crate::mergequeue::ReviewRetry::Due
             })
             .collect();
+        // **Where a reviewer runs, decided ONCE PER PASS.** The one child whose placement is not
+        // the caller's word — see `gatekeeper::reviewer_placement` for the whole of the decision,
+        // for why the box's own answer cannot be overridden into a VM it cannot boot, and for what
+        // the session's own prompt says about it (the same function, so the two cannot disagree).
+        // Read here rather than in the loop because `firecode_available()` walks `$PATH`.
+        let placement = crate::sessions::gatekeeper::reviewer_placement(
+            self.cfg.gatekeeper_vm,
+            letibot_tools::firecode::firecode_available(),
+        )
+        .placement();
         // **Start the ones nobody is reviewing.**
         let mut started = 0;
         // **Whether this pass moved what is ON this session's board** — a review child started, or
@@ -7311,6 +7330,7 @@ impl Harness {
             };
             let spec = letibot_tools::builtins::task::TaskSpec {
                 role: "gatekeeper".into(),
+                placement,
                 ..Default::default()
             };
             match self

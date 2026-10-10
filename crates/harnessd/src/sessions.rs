@@ -687,14 +687,17 @@ struct OwnSession {
     title: String,
     /// **What this session is told that no other session is** — appended to the composed prompt at
     /// open, and `None` for a session the ordinary prompt is right for. See
-    /// [`crate::sessions::gatekeeper::PROMPT`] for the one paragraph that exists today, and
-    /// `Config::compose_system_with_notes` for what it is appended TO: the sections from
-    /// `prompts.toml`, the `system_extra`, then the standing notes, then this.
+    /// [`crate::sessions::gatekeeper::PROMPT`] for the constant paragraph, and
+    /// [`crate::sessions::gatekeeper::prompt`] for why this is a `String` and not a `&'static str`:
+    /// half of that paragraph is the placement its reviewers have, which is this BOX's answer
+    /// (`firecode` or not) and cannot be a constant. `Config::compose_system_with_notes` is what it
+    /// is appended TO: the sections from `prompts.toml`, the `system_extra`, then the standing notes,
+    /// then this.
     ///
     /// **It is frozen with the rest of the prefix**, which is the rule every session's prompt
     /// keeps: a session already open keeps the prompt it opened with, and `ReseatSession` is the
     /// tree's remedy for a prompt that changed under a live conversation.
-    prompt: Option<&'static str>,
+    prompt: Option<String>,
 }
 
 /// Which sessions attach to the seat, and how the attachment is wired.
@@ -1590,7 +1593,7 @@ impl<'a> Sessions<'a> {
             // (`None`, which is every session the operator started) is the composed prompt byte for
             // byte.
             if let Some(extra) = prompt {
-                cfg.system.push_str(extra);
+                cfg.system.push_str(&extra);
             }
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
             let mut h = Harness::open_with_registry(
@@ -2148,10 +2151,12 @@ impl<'a> Sessions<'a> {
     ///
     /// # The prompt, which is this session's own
     ///
-    /// [`gatekeeper::PROMPT`] is appended to the composed prompt at open, and it is the paragraph
-    /// that says what the rows are and what the session does about them — the operator's *"it
-    /// managed via its prompt and so on"*. See [`OwnSession::prompt`] for where it lands, and the
-    /// constant for what it deliberately leaves out.
+    /// [`gatekeeper::prompt`] is appended to the composed prompt at open — the constant paragraph
+    /// that says what the rows are and what the session does about them, plus the paragraph that says
+    /// WHERE ITS REVIEWERS RUN. The second half is why the prompt is composed here rather than read
+    /// off a constant: the placement is this box's answer, and the session has to know which one it
+    /// got. See [`OwnSession::prompt`] for where it lands, and the two functions for what they
+    /// deliberately leave out.
     ///
     /// # The seat, and why it is not the daemon's
     ///
@@ -2168,6 +2173,15 @@ impl<'a> Sessions<'a> {
         if self.base.store.is_none() || self.open.contains_key(gatekeeper::SESSION) {
             return Ok(false);
         }
+        // **Where its reviewers will run, decided HERE because the session has to be TOLD.**
+        // `Harness::serve_reviews` asks the same function at the spawn, so the paragraph this session
+        // opens with and the placement its children get are one answer from one reading of the same
+        // two facts — and a box that cannot boot a VM is a STATE this session can read
+        // (`ReviewerPlacement::NoVm`, with the box's own reason in it), not a fallback nobody can see.
+        let prompt = gatekeeper::prompt(&gatekeeper::reviewer_placement(
+            self.base.gatekeeper_vm,
+            letibot_tools::firecode::firecode_available(),
+        ));
         if self.registry.get(gatekeeper::SESSION).is_none() {
             // **Resumed, or made, and the store is what decides which.** The stored row carries the
             // title a person may have renamed; a session nobody has ever opened gets the hardcoded
@@ -2189,7 +2203,7 @@ impl<'a> Sessions<'a> {
                 Some(OwnSession {
                     seat: gatekeeper::SEAT,
                     title,
-                    prompt: Some(gatekeeper::PROMPT),
+                    prompt: Some(prompt),
                 }),
             );
         }
@@ -2207,7 +2221,7 @@ impl<'a> Sessions<'a> {
             Some(OwnSession {
                 seat: gatekeeper::SEAT,
                 title,
-                prompt: Some(gatekeeper::PROMPT),
+                prompt: Some(prompt),
             }),
         )
     }

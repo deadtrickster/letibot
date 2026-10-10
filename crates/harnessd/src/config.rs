@@ -536,6 +536,26 @@ pub struct Config {
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
     /// VM under this session.
     pub vm_args: Vec<String>,
+    /// **Whether the review queue's reviewers may be placed in a firecode VM** — the one child
+    /// whose placement is decided FOR it rather than by the call that spawns it
+    /// (`Harness::serve_reviews`, and see `crate::sessions::gatekeeper::reviewer_placement` for the
+    /// whole of the decision).
+    ///
+    /// `true` is *may*, not *will*: the box still has to be able to boot one, so this is a VM where
+    /// `firecode` is installed and this machine where it is not. `false` is the one thing a caller
+    /// can add — keep the reviewer here — and it is a **value** rather than something read off the
+    /// machine, which is what a test that drives a review through the real spawner needs:
+    /// `session_channel`'s refusing-verdict test starts a real gatekeeper and its workspace is
+    /// `/tmp`, so a VM there would measure and copy it and boot firecracker to answer a question
+    /// that test is not asking.
+    ///
+    /// **And the box's own answer cannot be overridden into a VM it cannot boot.** A reviewer that
+    /// cannot start is written as a FAILED ATTEMPT on the review's row
+    /// (`Harness::serve_reviews`), so a placement this box cannot honour would park every entry in
+    /// the queue at once — on the one box that can run no reviewer at all. Such a box runs its
+    /// reviewers here and SAYS SO, in the session's own prompt, rather than falling back silently:
+    /// the state is `ReviewerPlacement::NoVm` with the reason the box gave.
+    pub gatekeeper_vm: bool,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
     /// **What to try when the model this session is on is OUT** — `[fallback] models`
@@ -1480,6 +1500,7 @@ impl Config {
             auto_compact_stood_down: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
+            gatekeeper_vm: true,
             provider: None,
             fabric: None,
             allow_bash: false,

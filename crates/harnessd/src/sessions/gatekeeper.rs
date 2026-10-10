@@ -120,9 +120,10 @@
 //! It is left as it is because the slice's requirement is that the listing shows it, and because
 //! choosing between those two is the operator's call.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use letibot_tokencore::store::{MergeEntry, Store, TodoBy, TodoItem, TodoNeed, TodoStatus};
+use letibot_tools::builtins::task::Placement;
 
 use crate::mergequeue::{ReviewGate, is_ready, repo_of_worktree, review_gate, served_by};
 
@@ -167,6 +168,139 @@ pub const TITLE: &str = "the review queue";
 /// a daemon started `--role coder` would otherwise seat the review queue as a coder, which cannot
 /// open unattended.
 pub const SEAT: crate::config::Seat = crate::config::Seat::Orchestrator;
+
+/// **Where a review-queue session's reviewers run** — the decision as a STATE, rather than as a
+/// placement that happens to come out `host` when something was wrong.
+///
+/// There are three states and not two, and the third is the point of the type: *this box cannot
+/// boot a VM* is a fact with a name and with the box's own reason attached, and not a silent
+/// fallback to the machine the session asked to leave. The session is told which one it is
+/// ([`prompt`]), so the difference is legible from the transcript and not only from a log line —
+/// and a reader can tell *the session vetoed the VM* from *the box could not give one*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewerPlacement {
+    /// **A firecode VM.** The VM is the boundary, so a reviewer's `bash` asks nobody: there is no
+    /// card for this session's head or the operator to answer.
+    Vm,
+    /// **This machine, because the session states no VM** ([`crate::config::Config::gatekeeper_vm`])
+    /// — the arm a caller that must not boot one takes, and the behaviour every review had before
+    /// the placement existed.
+    Host,
+    /// **This machine, because the BOX cannot boot one.** The session asked for a VM and this is
+    /// the box's answer, carrying the reason it gave: declared, so nothing here reads as a choice
+    /// nobody made.
+    NoVm { why: String },
+}
+
+impl ReviewerPlacement {
+    /// **The `task` placement this state means** — what [`Harness::serve_reviews`] puts on the
+    /// review child's [`letibot_tools::builtins::task::TaskSpec`].
+    ///
+    /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+    pub fn placement(&self) -> Placement {
+        match self {
+            ReviewerPlacement::Vm => Placement::Firecode,
+            ReviewerPlacement::Host | ReviewerPlacement::NoVm { .. } => Placement::Host,
+        }
+    }
+
+    /// **Where the reviewers run, in the session's own words** — the paragraph [`prompt`] appends
+    /// to [`PROMPT`].
+    ///
+    /// Each arm says the same three things, because each is what a reader of this session's
+    /// transcript needs to know: where the children run, why that is the answer, and what the
+    /// consequence is for the cards that come to this session's head. The two `host` arms differ in
+    /// their *why* and that is exactly the distinction the state exists to keep — a session that
+    /// vetoed the VM is not a box that cannot give one, and a person reading the log has to be able
+    /// to tell which of the two they are looking at.
+    pub fn said(&self) -> String {
+        match self {
+            ReviewerPlacement::Vm => "\n\
+Where your reviewers run: **in a firecode VM**. Each review child is booted in one, on a COPY of \
+this workspace, and the VM is the boundary — so a reviewer's `bash` asks nobody, and no permission \
+card reaches your head or the operator's. Its commands run in that copy, and `.git` travels with it \
+(only `.git/worktrees` is excluded), so `git diff <base>...<branch>` reads the branch the row names. \
+Nothing of the reviewer's tree comes back as a branch: what comes back is a VERDICT, and that is what \
+you write.\n"
+                .to_string(),
+            ReviewerPlacement::Host => "\n\
+Where your reviewers run: **on this machine**, inside this session's own boundary — this session \
+states no VM (`gatekeeper_vm = false`), so its reviewers are not placed in one. A reviewer seats \
+`gatekeeper` and has `bash`, so its calls are permission cards, and they come to YOUR head: a card \
+nobody answers times out and the review fails. If a review stalls waiting on one, that is why.\n"
+                .to_string(),
+            ReviewerPlacement::NoVm { why } => format!(
+                "\n\
+Where your reviewers run: **on this machine, NOT in a VM** — this session asks for a VM \
+(`gatekeeper_vm`) and this box cannot boot one: {why}. That is the box's answer and not a choice \
+this session can override, because a `firecode` placement this box cannot honour would fail every \
+review in the queue at once: a reviewer that cannot start is written as a FAILED ATTEMPT on the \
+row. So the reviewer runs here, seats `gatekeeper` with `bash`, and its calls are permission cards \
+that come to YOUR head. The operator's remedy is a `firecode` on the daemon's PATH (or \
+`$FIRECODE_BIN`) and a restart.\n"
+            ),
+        }
+    }
+}
+
+/// **Where the reviewers of a review-queue session run**: a firecode VM where this box can boot
+/// one, this machine where it cannot — and this machine when the session states no VM.
+///
+/// # Why the reviewer is the one child whose placement is decided FOR it
+///
+/// Every other child's placement is the caller's word (`task`'s `where`, `task_start`'s). A
+/// reviewer has no caller: the queue's own clock starts it ([`Harness::serve_reviews`]), and the
+/// session it belongs to is a HOST session seating `bash`, so every `bash` call a reviewer makes is
+/// a permission card — measured as one card per reviewer, and with no head attached the card times
+/// out at 300 s and the review FAILS. Inside a VM there is no card to answer, because the VM is the
+/// boundary: the reviewer runs at allow-all and asks nobody, which is the whole of what the queue
+/// needs from it. The operator's own rule for the substrate says the same thing from the other end:
+/// *"Use it for work that must not spend the operator's attention — a reviewer, a long build, a
+/// probe."* So this is the one place that has to decide.
+///
+/// # Why the box's answer cannot be overridden into a VM it cannot boot
+///
+/// `task(where: firecode)` refuses AT THE CALL on a box with no firecode
+/// ([`letibot_tools::builtins::task`]'s `placement_arg`), because there is a caller there to refuse
+/// to. This path has none: [`Harness::serve_reviews`] writes a reviewer that could not start as a
+/// **failed attempt** on the review's row, so a `Firecode` this box cannot honour would park every
+/// entry in the queue at once — on the one box that can run no reviewer at all. So `may_use_vm` can
+/// only ever REMOVE the VM, never force one, and the box's own answer is a declared state
+/// ([`ReviewerPlacement::NoVm`]) rather than a silent `Host`.
+///
+/// `may_use_vm` is [`crate::config::Config::gatekeeper_vm`], and it is an argument rather than an
+/// environment read for the reason [`letibot_tools::firecode::FirecodeSpec`]'s `bin` is one: a
+/// caller that must not boot a VM says so as a value, instead of racing every other reader of
+/// `$FIRECODE_BIN` in the process.
+///
+/// **What the check is, and what it is not.** `firecode_available()` answers *the CLI is there and
+/// runnable*, which is not the same claim as *a VM can boot*: a box with the CLI and no working
+/// hypervisor would fail every reviewer and park the queue on the failed attempts. Nothing cheaper
+/// answers the stronger question without booting one, and the limit is stated here rather than left
+/// for a reader to assume it away.
+///
+/// **The review prompt is not told any of this, on purpose.**
+/// [`letibot_tools::gatekeeper::review_prompt`] names no absolute path — `git diff
+/// <base>...<branch>`, `rg PATTERN PATH`, and the advice to hand `bash` a `cwd` rather than
+/// `cd`-ing are all relative, and relative is what a copy preserves — so a reviewer reads the same
+/// words wherever it runs. See [`ReviewerPlacement::said`] for what THIS session is told instead.
+///
+/// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+pub fn reviewer_placement(
+    may_use_vm: bool,
+    available: Result<PathBuf, String>,
+) -> ReviewerPlacement {
+    match (may_use_vm, available) {
+        // **The session's veto first**, so a box that COULD boot one is not consulted about a
+        // reviewer this session has said must not be placed in one.
+        (false, _) => ReviewerPlacement::Host,
+        (true, Ok(_)) => ReviewerPlacement::Vm,
+        // **And the box's inability is a state, not a fallback.** Every arm is named; there is no
+        // catch-all here, because a catch-all is exactly how *the box cannot boot one* becomes
+        // indistinguishable from *the session said no*.
+        (true, Err(why)) => ReviewerPlacement::NoVm { why },
+    }
+}
 
 /// **What the review queue's own session is TOLD, in its own system prompt** — the operator's
 /// *"it managed via its prompt and so on"*, read as an instruction rather than as a description.
@@ -236,6 +370,23 @@ You may hold a plan of your own on this board like any other session — `todo_w
 rows and nobody else's. The queue's rows are not yours to write, and they are never buried: they \
 come first on the board, and the idle check asks about them before it asks about your plan.\n\
 ";
+
+/// **The paragraph the review queue's session opens with**, for the placement its reviewers have.
+///
+/// [`PROMPT`] is the constant half — what the rows are, that a review is this session's own child,
+/// and what alone takes a row off. The placement is the half that CANNOT be a constant, because it
+/// is this box's answer ([`reviewer_placement`]), and it is appended last so the session reads what
+/// it is, then what it does about it, then where the children that do it run.
+///
+/// **One function, two callers**: this one at open, and [`Harness::serve_reviews`] at every spawn.
+/// They ask the same question of the same two facts, so the paragraph a session was given and the
+/// placement its children actually get cannot drift apart — which is the whole reason the decision
+/// is a function here rather than a line at each site.
+///
+/// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
+pub fn prompt(placement: &ReviewerPlacement) -> String {
+    format!("{PROMPT}{}", placement.said())
+}
 
 /// **The rows this daemon's queue is waiting for verdicts on** — one per entry, in the order the
 /// queue would serve them, with no child on any of them. [`waiting`] is the same set as entries,
@@ -855,6 +1006,111 @@ mod tests {
                 .system
                 .contains("You are the review queue"),
             "the paragraph goes to the queue's session and to no other"
+        );
+    }
+
+    /// **A reviewer is placed in a VM where this box can boot one, and on this machine where it
+    /// cannot — and *the box cannot* is a DECLARED state, not a silent fallback.**
+    ///
+    /// The box is an ARGUMENT here rather than the environment, so every arm holds on whatever
+    /// machine runs this and `$FIRECODE_BIN` is not raced — the discipline `firecode.rs` states for
+    /// its own `bin` field. Three arms, and the third is the point: *the session said no* and *the
+    /// box could not* are two different states, and a catch-all `_ => Host` is exactly how they
+    /// become one thing that neither a reader nor the session can tell apart.
+    #[test]
+    fn a_reviewer_is_placed_where_the_box_can_place_one() {
+        let here = PathBuf::from("/usr/local/bin/firecode");
+        let absent = "there is no `firecode` on this host's PATH (nor $FIRECODE_BIN)".to_string();
+        // The box can boot one and the session does not object: the reviewer runs in a VM.
+        assert_eq!(
+            reviewer_placement(true, Ok(here)).placement(),
+            Placement::Firecode,
+            "a box that can boot a VM places the reviewer in one: the VM is the boundary, so no \
+             `bash` call of its is a permission card"
+        );
+        // **And the box cannot: a state carrying the box's own words**, not a bare `Host`.
+        let no_vm = reviewer_placement(true, Err(absent.clone()));
+        assert_eq!(
+            no_vm,
+            ReviewerPlacement::NoVm { why: absent },
+            "a box that cannot boot one runs the reviewer here and SAYS SO — the reason travels \
+             with the state instead of being dropped on the floor"
+        );
+        assert_eq!(
+            no_vm.placement(),
+            Placement::Host,
+            "and what the spawn carries is this machine — the only placement left"
+        );
+        // **And a session that states no VM is not overridden by a box that could boot one.**
+        assert_eq!(
+            reviewer_placement(false, Ok(PathBuf::from("/usr/bin/firecode"))),
+            ReviewerPlacement::Host,
+            "the veto is the session's, and a box that could boot a VM does not undo it"
+        );
+    }
+
+    /// **The session is told WHERE ITS REVIEWERS RUN**, and told which of the three states it is
+    /// in — because the two `host` states have different consequences for the session reading them.
+    ///
+    /// `the_session_is_told_what_its_board_is` asserts the constant half. This is the half that
+    /// cannot be a constant, so all three arms are asserted on the pure function — where the box is
+    /// an argument and no machine's `$PATH` is consulted — and the arm a real session can be put in
+    /// without racing the box is asserted on the session itself below.
+    #[test]
+    fn the_session_is_told_where_its_reviewers_run() {
+        let vm = prompt(&reviewer_placement(
+            true,
+            Ok(PathBuf::from("/usr/bin/firecode")),
+        ));
+        assert!(
+            vm.contains("You are the review queue"),
+            "the constant half is still there, ahead of the placement: {vm}"
+        );
+        assert!(
+            vm.contains("Where your reviewers run: **in a firecode VM**"),
+            "a VM placement is said, and said as WHERE ITS REVIEWERS RUN: {vm}"
+        );
+        let why = "there is no `firecode` on this host's PATH (nor $FIRECODE_BIN)".to_string();
+        let none = prompt(&reviewer_placement(true, Err(why.clone())));
+        assert!(
+            none.contains("NOT in a VM") && none.contains(&why),
+            "and a box that cannot boot one is a DECLARED state carrying the box's own words — \
+             the difference between this and the arm below is the whole reason the state exists: \
+             {none}"
+        );
+        let host = prompt(&reviewer_placement(
+            false,
+            Ok(PathBuf::from("/usr/bin/firecode")),
+        ));
+        assert!(
+            host.contains("`gatekeeper_vm = false`"),
+            "and a session that vetoed the VM is told the veto is why, not the box: {host}"
+        );
+    }
+
+    /// **A session that states no VM reads it in its own prompt** — the arm a test can put a real
+    /// session in on ANY box, because `gatekeeper_vm = false` is the answer whatever
+    /// `firecode_available()` says. The other two arms are the pure function's, above.
+    ///
+    /// The veto is stated as a VALUE rather than by racing `$FIRECODE_BIN`, and this is the same
+    /// thing `session_channel`'s refusing-verdict test does for the same reason: a VM on a box that
+    /// has one would copy the fixture's workspace and boot firecracker to answer a question this
+    /// test is not asking.
+    #[test]
+    fn a_session_that_states_no_vm_is_told_its_reviewers_run_here() {
+        let Some(mut f) = Fixture::new("prompt-host") else {
+            return;
+        };
+        f.cfg.gatekeeper_vm = false;
+        let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+        let sessions = f.opened(&parts);
+        let said = f.prompt(&sessions);
+
+        assert!(
+            said.contains("Where your reviewers run: **on this machine**")
+                && said.contains("`gatekeeper_vm = false`"),
+            "the queue's session reads where its reviewers run, and the veto is named as the \
+             reason rather than the box: {said}"
         );
     }
 
