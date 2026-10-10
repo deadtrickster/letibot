@@ -53,8 +53,38 @@
 //! would be a note that can drift from the text under it, and the duplication is
 //! what an author would see first.
 //!
-//! # The search door
+//! # The similarity gate on a write, and why it is here rather than at creation
 //!
+//! A note that is a near-copy of one that exists makes the index worse for every
+//! reader of it, and the corpus only grows. So `add`, `append` and `replace` all
+//! ask [`crate::similarity`] the same question before the bytes become durable —
+//! [`DUPLICATE_FLOOR`] is the answer that refuses — and the refusal names the
+//! note that was too close, because *"that name is taken"* is only half an
+//! answer.
+//!
+//! **Both triggers, and the operator said so twice:** *"since we ride similarity
+//! score - worth having it as a gate for new notes"*, and then *"add this
+//! new-note similarity check. add it for 'just before edit made durable' too. we
+//! dont want to endup with n almost identical notes by edits anyway"*. A defect
+//! that arrives by a second door is the same defect, so the check is not at
+//! creation: it is at `write_atomic`, where every one of the three verbs arrives,
+//! and the note being edited is excluded from its own corpus so an `append` is
+//! never refused for resembling the note it grows.
+//!
+//! **What it scores** is the same three fields the index shows — title, abstract,
+//! headings — and never a note's body, so an author can move a note out of the
+//! gate's way by saying what distinguishes it, which is the act the refusal is
+//! asking for.
+//!
+//! **And the door it does not close.** `write` and `edit` can put a file into
+//! `.letibot/notes/` without passing through here, and nothing in this tool can
+//! see that. Closing it needs the same [`NotesScope`] seam threaded into those
+//! two tools, which are unit structs today (`crates/tools/src/builtins/edit.rs`),
+//! so it is named here rather than pretended about. The gate is on the documented
+//! door: the one the schema describes, the one `list` reports, and the one a
+//! session reaches for when it means *write a note*.
+//!
+//! # The search door
 //! `search` answers a query with paths, line numbers and the matching lines —
 //! local, no model, no network, and deliberately useful *without* the index being
 //! any good: the index names a note and its headings, and the note whose abstract
@@ -87,6 +117,7 @@ use serde_json::Value;
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
+use crate::similarity;
 
 /// Where the standing notes live, as the harness that injects them sees it.
 /// Supplied by the daemon, which owns the workspace and the config dir; this
@@ -175,6 +206,25 @@ fn sources(scope: &dyn NotesScope) -> Vec<Source> {
             label: "project notes (written with this tool, and by the operator)",
         },
     ]
+}
+
+/// Every note the harness injects, as `(path, text)` — the corpus a score is
+/// computed over.
+///
+/// The same three sources and the same order the injected section is assembled
+/// from, so the notes a score is over are exactly the notes a model can be told
+/// about: a note the reader would not inject is not in the corpus, and a
+/// similarity score is never about something unreachable.
+///
+/// Read here rather than through the session backend, for the reason
+/// [`NotesScope`] gives: the box-wide notes are outside every session's backend
+/// view, and the corpus the gate scores against must be the whole one.
+fn corpus(scope: &dyn NotesScope) -> Vec<(PathBuf, String)> {
+    sources(scope)
+        .iter()
+        .flat_map(|s| s.notes())
+        .filter_map(|p| std::fs::read_to_string(&p).ok().map(|text| (p, text)))
+        .collect()
 }
 
 /// **Newest first, ties by name** — the order the reader assembles each notes
@@ -311,6 +361,22 @@ pub const ABSTRACT_CHARS: usize = 240;
 /// answer the model has to spend a turn reading around. Past the cap the reply
 /// names the count it left out, so the caller can narrow rather than guess.
 const MAX_SEARCH_LINES: usize = 200;
+
+/// **How alike two notes have to be before the second one is refused.**
+///
+/// A floor and not a scale, because the gate is a refusal and a refusal has to be
+/// arguable: at or over this and the write does not happen, and the refusal names
+/// the note that was too close so the author can act on it. Raise it with a
+/// measurement, not a feeling.
+///
+/// MEASURED 2026-10-12 against this box's own corpus — the operator's 23 standing
+/// notes, read once by a scratch test deleted before the commit. The numbers, and
+/// the arithmetic that produced them, are in `crate::similarity`'s module doc:
+/// the closest honest pair in that corpus scores 0.183, the weakest near-copy
+/// 0.363, a verbatim copy under a new name 0.957. 0.30 sits in the gap, and it
+/// errs toward refusing — a refusal costs one round, a corpus of near-duplicates
+/// costs every reader of the index.
+pub const DUPLICATE_FLOOR: f64 = 0.30;
 
 /// A note's abstract: the line the index shows for it, and where that line came
 /// from.
@@ -489,7 +555,9 @@ impl Tool for NotesTool {
              which note you want), `add` (create one), `append` (add to one that exists), \
              `replace` (rewrite one that exists, reporting what it replaced). Writes go to \
              the workspace's `.letibot/notes/` only, by bare `name` — `AGENTS.md` and the \
-             box-wide notes are the operator's. Write down what is worth keeping: something \
+             box-wide notes are the operator's. A write that would land as a near-copy of a \
+             note that already exists is refused and names it: grow that note instead, or say \
+             what distinguishes this one. Write down what is worth keeping: something \
              interesting, remarkable or surprising you would not want to rediscover — not a \
              summary of what happened.",
             serde_json::json!({
@@ -544,6 +612,29 @@ impl Tool for NotesTool {
 }
 
 impl NotesTool {
+    /// **The gate's question, asked of the bytes that are about to be durable:**
+    /// is this note a near-copy of one that exists?
+    ///
+    /// `target` is the note being written and is excluded from its own corpus —
+    /// an `append` must not be refused for being similar to the note it grows.
+    /// `after` is the whole file as it would land, not the fragment that changed:
+    /// the score is a property of the note, and half a note has no score.
+    ///
+    /// `None` when nothing is close, and `None` too when there is no corpus — the
+    /// first note in a workspace cannot be a duplicate of anything, and a gate
+    /// that refused the first write would be a gate nobody kept.
+    fn duplicate(&self, target: &Path, after: &str) -> Option<(PathBuf, f64)> {
+        let corpus = similarity::Corpus::new(&corpus(self.scope.as_ref()));
+        if corpus.is_empty() {
+            return None;
+        }
+        let candidate = similarity::index_text(target, after);
+        corpus
+            .nearest(&candidate, Some(target))
+            .filter(|(_, score)| *score >= DUPLICATE_FLOOR)
+            .map(|(path, score)| (path.to_path_buf(), score))
+    }
+
     /// Every note the harness reads, in the order the injected block carries
     /// them — the model's map for `read`, and the honest report of a source
     /// that is empty or missing rather than silence about it.
@@ -961,6 +1052,37 @@ impl NotesTool {
                 "nothing to do: `{stem}` already holds exactly that text.\n\n{WHEN_READ}\n"
             ));
         }
+        // **The similarity gate, on BOTH write triggers and just before the write
+        // becomes durable.** A note that is a near-copy of one that exists is a
+        // defect wherever it arrives from — the `add` that creates it and the
+        // `append`/`replace` that grows one into it — so the check sits here,
+        // after the bytes are computed and before `write_atomic`, rather than at
+        // creation only. See [`DUPLICATE_FLOOR`].
+        if let Some((other, score)) = self.duplicate(&target, &after) {
+            return Invocation::failed(
+                format!(
+                    "`{stem}` would be a near-copy of `{}` (score {score:.2} of 1.00)",
+                    other.display()
+                ),
+                format!(
+                    "Nothing was written. The score is the same lexical measure the read hint \
+                     uses — IDF-weighted cosine over each note's abstract, title and \
+                     headings — and {:.2} is at or over the {DUPLICATE_FLOOR:.2} floor. The \
+                     corpus is curated on purpose: every note in it is one somebody decided was \
+                     worth keeping, so a near-copy makes the index worse for every reader of \
+                     it. What to do instead: grow the note that exists (`action` = \"append\", \
+                     `name` = {:?}), or rewrite it deliberately (`action` = \"replace\"), or — if \
+                     this really is a different thing — say what distinguishes it in the \
+                     abstract and the headings, because those are the fields the score reads. \
+                     The nearest note is the one named above; `notes` action=\"read\" opens it.",
+                    score,
+                    other
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                ),
+            );
+        }
         if let Err(e) = write_atomic(&target, after.as_bytes()) {
             return Invocation::failed(
                 format!("could not write `{}`: {e}", target.display()),
@@ -1218,6 +1340,217 @@ mod tests {
             "replaced wholesale\n\n- and by name\n",
             "append joins with a blank line and keeps one trailing newline"
         );
+    }
+
+    /// A note about the store's write lock, written the way a session writes
+    /// one: an abstract and three headings, which is the whole of what the
+    /// score reads.
+    const STORE_LOCK: &str = "<!-- abstract: a store connection waits five seconds for the \
+                              write lock and a busy handler holds the wait -->\n\n\
+                              ## The lock\n\nThe connection waits, and the wait is what the busy \
+                              handler is for.\n\n\
+                              ## What the operator saw\n\nA failed write with no wait at all.\n\n\
+                              ## The handler\n\nIt holds the wait rather than failing the call.\n";
+
+    /// **The near-copy: the same note, a new name, its abstract reworded.**
+    ///
+    /// The measurement in `crate::similarity` puts this shape at 0.363 and the
+    /// closest honest pair in this box's corpus at 0.183, so it is the fixture
+    /// the floor has to be on the right side of.
+    const STORE_LOCK_AGAIN: &str = "<!-- abstract: a connection to the store holds for the \
+                                    write lock, and the busy handler is what carries the \
+                                    wait -->\n\n\
+                                    ## The lock\n\nThe connection waits, and the wait is what the \
+                                    busy handler is for.\n\n\
+                                    ## What the operator saw\n\nA failed write with no wait at \
+                                    all.\n\n\
+                                    ## The handler\n\nIt holds the wait rather than failing the \
+                                    call.\n";
+
+    /// **A near-duplicate note is refused by the write gate, and a genuinely
+    /// new one is not.**
+    ///
+    /// The operator's ask, verbatim: *"since we ride similarity score - worth
+    /// having it as a gate for new notes"*. Both halves are asserted against the
+    /// REAL tool over a fixture workspace, because a gate that only refuses — or
+    /// only admits — is not a gate, and the half that is easier to forget is the
+    /// one that must not fire.
+    #[test]
+    fn a_near_duplicate_note_is_refused_and_a_new_one_is_not() {
+        let mut h = writable_harness();
+        let (ws, _) = h.notes_dirs();
+
+        // The first note in an empty workspace cannot be a duplicate of anything,
+        // and the gate says so by admitting it. The second is admitted too, and
+        // for a reason that is worth stating: **with one note in the corpus every
+        // term is in every note, so `idf` is zero and nothing scores at all.**
+        // A gate that cannot discriminate admits — the unsafe direction, and the
+        // same limitation the read hint has in the other direction. Two notes is
+        // where the arithmetic starts to mean something.
+        let r = h.call(
+            "notes",
+            r###"{"action":"add","name":"tui-scrollbar-width","abstract":"the pane scrollbar is one column wide and the border colour is not the theme's","text":"## The width\n\nOne column.\n\n## The colour\n\nIt comes from the theme.\n"}"###,
+        );
+        assert!(r.is_grounded(), "the first note lands: {}", r.render());
+        let r = h.call(
+            "notes",
+            &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
+        );
+        assert!(r.is_grounded(), "the second lands: {}", r.render());
+
+        // The near-copy, under a name that says nothing about it being one.
+        let r = h.call(
+            "notes",
+            &format!(
+                r#"{{"action":"add","name":"store-connection-wait","text":{STORE_LOCK_AGAIN:?}}}"#
+            ),
+        );
+        assert!(!r.is_grounded(), "a near-copy is refused");
+        let said = r.render();
+        assert!(
+            said.contains("near-copy") && said.contains("store-write-lock.md"),
+            "the refusal names the note that was too close: {said}"
+        );
+        assert!(
+            said.contains("Nothing was written"),
+            "and that nothing happened: {said}"
+        );
+        assert!(
+            !ws.join(".letibot/notes/store-connection-wait.md").exists(),
+            "the refused note is not on disk"
+        );
+
+        // **And a genuinely new note is admitted**, in the same corpus, through
+        // the same gate — the half that a floor set too low would break.
+        let r = h.call(
+            "notes",
+            r###"{"action":"add","name":"compaction-tail-clamp","abstract":"compaction folds the first half of a conversation into a summary and the tail is clamped against the budget","text":"## What is folded\n\nThe first half.\n\n## The tail\n\nClamped.\n"}"###,
+        );
+        assert!(
+            r.is_grounded(),
+            "a note about something else is not a near-copy: {}",
+            r.render()
+        );
+        assert!(ws.join(".letibot/notes/compaction-tail-clamp.md").exists());
+    }
+
+    /// **An edit that would turn a note into a near-copy of another is caught
+    /// just before it is durable — and the note's own text is not what it is
+    /// measured against.**
+    ///
+    /// The operator's second half, verbatim: *"add it for 'just before edit made
+    /// durable' too. we dont want to endup with n almost identical notes by edits
+    /// anyway"*. `replace` is the edit that rewrites a note wholesale, and it is
+    /// the one that can make a near-copy out of two notes that were distinct.
+    /// `append` is the same door with a smaller step, and the note being edited is
+    /// excluded from its own corpus — otherwise growing a note would refuse itself.
+    #[test]
+    fn an_edit_that_would_make_a_note_a_near_copy_is_caught() {
+        let mut h = writable_harness();
+        let (ws, _) = h.notes_dirs();
+        h.call(
+            "notes",
+            &format!(r#"{{"action":"add","name":"store-write-lock","text":{STORE_LOCK:?}}}"#),
+        );
+        h.call(
+            "notes",
+            r###"{"action":"add","name":"tui-scrollbar-width","abstract":"the pane scrollbar is one column wide and the border colour is not the theme's","text":"## The width\n\nOne column.\n\n## The colour\n\nIt comes from the theme.\n"}"###,
+        );
+        let before = std::fs::read_to_string(ws.join(".letibot/notes/tui-scrollbar-width.md"))
+            .expect("the second note is on disk");
+
+        // `replace`, turning the TUI note into the store note's near-copy.
+        let r = h.call(
+            "notes",
+            &format!(
+                r#"{{"action":"replace","name":"tui-scrollbar-width","text":{STORE_LOCK_AGAIN:?}}}"#
+            ),
+        );
+        assert!(!r.is_grounded(), "the edit is refused: {}", r.render());
+        assert!(
+            r.render().contains("store-write-lock.md"),
+            "and it names what it would have duplicated: {}",
+            r.render()
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join(".letibot/notes/tui-scrollbar-width.md")).unwrap(),
+            before,
+            "the refusal is before the write, so the note is byte-identical"
+        );
+
+        // **An edit that grows a note away from the other one is admitted**, and
+        // an `append` of a note's own words to itself is not a self-duplicate.
+        let r = h.call(
+            "notes",
+            r###"{"action":"append","name":"store-write-lock","text":"## And the timeout is configurable\n\nThirty seconds, not five, since 2026-10-11.\n"}"###,
+        );
+        assert!(
+            r.is_grounded(),
+            "a note is not a duplicate of itself: {}",
+            r.render()
+        );
+        let grown = std::fs::read_to_string(ws.join(".letibot/notes/store-write-lock.md")).unwrap();
+        assert!(grown.contains("configurable"), "the append landed: {grown}");
+    }
+
+    /// **The floor's two sides, stated as numbers, so a change to the
+    /// arithmetic cannot move the gate quietly.**
+    ///
+    /// The measured corpus is not in the tree — these are fixtures built to the
+    /// shapes that were measured, and the numbers they hold are the ones
+    /// `crate::similarity`'s module doc records.
+    #[test]
+    fn the_gate_floor_sits_between_the_measured_shapes() {
+        let corpus = similarity::Corpus::new(&[
+            (
+                PathBuf::from("/notes/store-write-lock.md"),
+                STORE_LOCK.to_string(),
+            ),
+            (
+                PathBuf::from("/notes/tui-scrollbar-width.md"),
+                "<!-- abstract: the pane scrollbar is one column wide and the border colour is \
+                 not the theme's -->\n\n## The width\n\nOne column.\n\n## The colour\n\nIt \
+                 comes from the theme.\n"
+                    .to_string(),
+            ),
+        ]);
+        let at = |p: &str, text: &str| similarity::index_text(&PathBuf::from(p), text);
+
+        // The near-copy: over the floor.
+        let copy = at("/notes/store-connection-wait.md", STORE_LOCK_AGAIN);
+        let (path, score) = corpus.nearest(&copy, None).expect("a corpus of two");
+        assert!(
+            score >= DUPLICATE_FLOOR,
+            "the near-copy scores {score:.3}, under the {DUPLICATE_FLOOR:.2} floor"
+        );
+        assert!(path.ends_with("store-write-lock.md"), "{path:?}");
+
+        // Two notes about different subjects: under it, with room.
+        let (path, score) = corpus
+            .nearest(
+                &at(
+                    "/notes/compaction-tail.md",
+                    "<!-- abstract: compaction folds the first half of a conversation into a \
+                     summary and the tail is clamped against the budget -->\n\n## What is \
+                     folded\n\nThe first half.\n",
+                ),
+                None,
+            )
+            .expect("a corpus of two");
+        assert!(
+            score < DUPLICATE_FLOOR,
+            "a genuinely new note scores {score:.3} against {path:?}, over the \
+             {DUPLICATE_FLOOR:.2} floor"
+        );
+
+        // And the note being edited is not in its own corpus: the same text
+        // scored against a corpus that still holds it would be a self-refusal.
+        let itself = PathBuf::from("/notes/store-write-lock.md");
+        let (path, score) = corpus
+            .nearest(&at("/notes/store-write-lock.md", STORE_LOCK), Some(&itself))
+            .expect("the other note is still there");
+        assert!(path.ends_with("tui-scrollbar-width.md"), "{path:?}");
+        assert!(score < DUPLICATE_FLOOR, "{score:.3}");
     }
 
     /// **There is no spelling of a write that leaves the project notes

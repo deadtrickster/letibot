@@ -108,30 +108,37 @@
 //! note the model could neither recognise nor address, which is the one thing an
 //! index must not be.
 //!
-//! # The offering half, which is not here
+//! # The offering half, which lives in `crate::notes_offer`
 //!
 //! The index is passive: it says what the notes are, and the model has to think
 //! to look. The other half — a hint that a note *bears on what you are doing
-//! now*, with a score, over this corpus — is deliberately not built here. Where
-//! it would attach, and what it must not do:
+//! now*, with a score, over this corpus — is [`crate::notes_offer`]. What belongs
+//! here is the part of it that is a fact about this module:
 //!
 //! * **The corpus** is [`gather`]'s output: the same files, in the same order,
 //!   read once. A scoring pass wants that list and nothing else, which is why it
-//!   is public.
-//! * **The delivery is a transcript row, never the prefix.** This module's whole
-//!   schedule exists because injecting into history invalidates everything after
-//!   it — `docs/compaction.md` §2/§3 measure 144.6 s to re-prefill 150k tokens
-//!   against 0.8 s for a cache hit. A hint is OFFERED, not asserted: it goes in
-//!   the way `Harness::wake` and `Harness::nag_turn` already let the harness talk
-//!   to itself — `Harness::submit_item(TranscriptItem::User { speaker:
-//!   Speaker::Agent, .. })`, a row after the prefix, which costs one turn and no
-//!   cache.
+//!   is public, and the score itself is `letibot_tools::similarity` — one
+//!   arithmetic, shared with the gate on writing a note.
+//! * **The delivery is the request's TAIL, never the prefix and never a row.**
+//!   This module's whole schedule exists because injecting into history
+//!   invalidates everything after it — `docs/compaction.md` §2/§3 measure 144.6 s
+//!   to re-prefill 150k tokens against 0.8 s for a cache hit. This section used to
+//!   say the hint goes in as a transcript row, through `Harness::submit_item`, and
+//!   the operator's ruling is further out than that: *"we offer a note and if
+//!   model takes it - good, if it doesnt follow up with the note read - we can
+//!   discard the offer from context altogether"*. A row cannot be un-said; an
+//!   assembly can be recomposed. So the offer is composed per round by the request
+//!   assembly and handed to the engine as a trailing item
+//!   (`TurnRequest::tail`), which is committed nowhere.
 //! * **Never a `read`.** A hint that silently spends the model's context on a
 //!   note is the injected-material failure `docs/memory.md` §5 measures; the
-//!   model decides whether to open what was offered.
+//!   model decides whether to open what was offered. The note that WAS opened
+//!   needs nothing further — its content arrives as an ordinary tool result and is
+//!   permanent, which is exactly what makes the offer droppable.
 //! * **Nothing here may be re-read mid-session.** A score computed at session
 //!   open is stale by the second turn and there is no seam to refresh it through;
-//!   a hint belongs to the turn it is offered in.
+//!   a hint belongs to the turn it is offered in, which is why the corpus is read
+//!   per round rather than remembered.
 //!
 //! # The envelope
 //!

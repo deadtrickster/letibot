@@ -107,6 +107,7 @@ pub mod leticode_config;
 pub mod m1;
 pub mod mergequeue;
 pub mod modes;
+pub mod notes_offer;
 pub mod notes_scope;
 pub mod oracle;
 pub mod progress;

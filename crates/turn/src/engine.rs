@@ -603,6 +603,28 @@ impl TurnEngine {
         sink: &mut dyn EventSink,
         steering: &mut dyn SteeringSource,
     ) -> Result<TurnOk, TurnFailure> {
+        self.run_turn_steered_with_tail(session, sink, steering, &[])
+    }
+
+    /// **The same round, with items the request carries and the log does not.**
+    ///
+    /// `tail` is rendered after the ledger and committed nowhere: `session.items`
+    /// — and therefore the next round's cached prefix — is untouched. The one
+    /// caller is the standing-notes offer (`letibot_harnessd::notes_offer`), and
+    /// the reason it has to be a tail rather than a row is in that module's
+    /// header: *a row cannot be un-said; an assembly can be recomposed*.
+    ///
+    /// **Where it lands is the whole of the cost argument.** Appending after the
+    /// ledger re-prefills only what follows the change, so the offer costs the
+    /// tokens of one hint and not the 144.6 s `docs/compaction.md` §2 measures for
+    /// a prefix that moved.
+    pub fn run_turn_steered_with_tail(
+        &mut self,
+        session: &mut Session,
+        sink: &mut dyn EventSink,
+        steering: &mut dyn SteeringSource,
+        tail: &[TranscriptItem],
+    ) -> Result<TurnOk, TurnFailure> {
         // **The byte vocabulary's ids mean nothing to a llama-server.** They are this
         // machine's record of a provider session (`Vocab::bytes`), and this path sends
         // token ids as numbers — so a session on it is refused here, before anything is
@@ -673,6 +695,17 @@ impl TurnEngine {
             self.renderer.generation_prompt()
         })?;
         let mut prompt = session.ledger.tokens().to_vec();
+        // The round's tail, rendered through the same renderer the transcript uses
+        // and appended after everything the ledger holds. Each item is rendered
+        // against the history as it stood BEFORE it, which is
+        // `render_incremental`'s contract — the same call `Session::append_items`
+        // makes, minus the append.
+        for item in tail {
+            let spans = self
+                .renderer
+                .render_incremental(&session.items, std::slice::from_ref(item));
+            prompt.extend_from_slice(&self.tokenize(&spans)?);
+        }
         prompt.extend_from_slice(&lead);
         let prompt_tokens = prompt.len() as u64;
 
@@ -1265,6 +1298,33 @@ impl TurnEngine {
         tools_json: &[String],
         max_output_tokens: Option<u32>,
     ) -> Result<TurnOk, TurnFailure> {
+        self.run_turn_messages_with_tail(
+            session,
+            sink,
+            steering,
+            backend,
+            system,
+            tools_json,
+            &[],
+            max_output_tokens,
+        )
+    }
+
+    /// **The same round on a provider, with items the request carries and the log
+    /// does not** — see [`TurnEngine::run_turn_steered_with_tail`], which is the
+    /// same argument on the local path and the place it is written down.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_turn_messages_with_tail(
+        &mut self,
+        session: &mut Session,
+        sink: &mut dyn EventSink,
+        steering: &mut dyn SteeringSource,
+        backend: &dyn letibot_backend::MessagesBackend,
+        system: &str,
+        tools_json: &[String],
+        tail: &[TranscriptItem],
+        max_output_tokens: Option<u32>,
+    ) -> Result<TurnOk, TurnFailure> {
         use letibot_backend::{BackendError, Delta, Finish, StreamFlow, TurnRequest};
 
         session.turn_seq += 1;
@@ -1299,6 +1359,7 @@ impl TurnEngine {
             system,
             tools_json,
             items: &session.items,
+            tail,
             max_output_tokens,
         };
         let mut urgent: Option<String> = None;

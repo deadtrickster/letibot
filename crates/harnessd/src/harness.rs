@@ -8682,6 +8682,13 @@ impl Harness {
         // `max_tool_rounds` below is the backstop it demotes; see `crate::progress`
         // for why a round count was the wrong instrument and what replaced it.
         let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
+        // **The turn's standing-notes offers** — see `crate::notes_offer`, which is
+        // where the whole argument lives. Per TURN and not per round: *"rare (once
+        // per note per turn at most)"*, so a note offered in round one is not
+        // offered again in round three, however well it still scores. The offer
+        // itself is per ROUND and lives in the request assembly below, never in the
+        // transcript — *a row cannot be un-said; an assembly can be recomposed*.
+        let mut offers = crate::notes_offer::Offers::new();
         // Consecutive HTTP failures on the round being attempted. Not per turn:
         // the thing being waited out is the endpoint, and it is as likely to go
         // down on round nine as on round one.
@@ -8795,6 +8802,25 @@ impl Harness {
                 }
             }
             let mut sink = CapturingSink::new(self.hub.clone());
+            // **Compose this round's offer, before anything is sent.** It is scored
+            // against the person's prompt and the turn's tool results — the design's
+            // own subject — and handed to the engine as a trailing item that
+            // `session.items` never sees. Nothing over the floor is said, and
+            // nothing said is recorded: see `crate::notes_offer`.
+            //
+            // **Not on a compaction turn.** That turn is the harness asking for a
+            // summary of what is already here; a note offered on top of it is a
+            // fetch in the middle of a job whose whole instruction is to write, and
+            // the offer would be settled against calls the summary turn never made.
+            if !self.compacting {
+                offers.compose(
+                    &self.cfg.workspace,
+                    &crate::standing_notes::global_dir(),
+                    &self.prefix.system,
+                    &self.session.items,
+                );
+            }
+            let tail = offers.tail();
             // **Take the round again when the endpoint is the thing that
             // failed.** An inner loop, so a retry does NOT spend one of
             // `max_tool_rounds`: it produced nothing and appended nothing, and
@@ -8878,19 +8904,22 @@ impl Harness {
                     std::time::Duration::from_secs(SILENT_ROUND_SECS),
                 );
                 let attempted = match &self.provider {
-                    None => {
-                        self.engine
-                            .run_turn_steered(&mut self.session, &mut sink, &mut steering)
-                    }
+                    None => self.engine.run_turn_steered_with_tail(
+                        &mut self.session,
+                        &mut sink,
+                        &mut steering,
+                        &tail,
+                    ),
                     // A cloud turn: the transcript as messages, the ledger as the
                     // record. Same events, same verdicts, same TurnOk.
-                    Some(p) => self.engine.run_turn_messages(
+                    Some(p) => self.engine.run_turn_messages_with_tail(
                         &mut self.session,
                         &mut sink,
                         &mut steering,
                         p.as_ref(),
                         &self.prefix.system,
                         &self.prefix.tools_json,
+                        &tail,
                         None,
                     ),
                 };
@@ -9212,6 +9241,12 @@ impl Harness {
                 .flatten()
                 .collect();
             let text = visible_text(&appended);
+            // **The offer is settled here, where the round's calls are known**, and
+            // logged whichever way it went — *"the signal is did a tool call in the
+            // next round touch that path? Log offers and take-ups; tune the floor
+            // from that ratio."* A round that ends the turn with no calls settles
+            // with an empty list, which is an untaken offer and is recorded as one.
+            offers.settle(&self.cfg.workspace, &self.cfg.session_id, &calls);
             // **What the agent says it is doing, recorded before its calls are
             // adjudicated.** A model's prose for a round is the sentence in front of
             // its tool calls — "the queued-prompt rendering lives in app.rs; I am
