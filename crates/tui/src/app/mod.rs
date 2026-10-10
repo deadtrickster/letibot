@@ -1368,6 +1368,23 @@ pub struct App {
     /// rewritten; and both happen here, because a snapshot replaces the transcript whole
     /// and an elision changes a row's height. See [`App::hold`].
     pub(crate) anchor: Option<Held>,
+    /// **Where the reader was when a snapshot replaced the rows under them** — the two
+    /// things that can still be asked of a transcript that has not arrived yet, taken at
+    /// the moment the old one went.
+    ///
+    /// **A snapshot is a transcript boundary, and a place does not cross one by
+    /// counting.** The ids are per-transcript (`{transcript_id}.{n}`, `engine.rs`), so the
+    /// rows a fork carries across arrive under new ones and the id the viewport is
+    /// holding names a different place — or nothing — in what replaces it. The two things
+    /// that survive are the row's **own words** ([`App::retire_pending`]'s precedent: match
+    /// on the content, never on the id a fork has replaced) and the **line** the reader
+    /// was at, which is what the window holds while the carry lands.
+    ///
+    /// `Some` is a carry in flight. It is taken in [`App::load`], **before the rows go**,
+    /// because afterwards there is nothing left to ask; and it is spent by
+    /// [`App::repair_anchor`], which places the row again under its new id or says that
+    /// the new transcript does not carry it and goes to the tail. See [`Carry`].
+    pub(crate) carry: Option<Carry>,
     /// **How many wheel notches down this flick has counted, when the last one fell, and
     /// how many rows the transcript held when it did** (2026-10-09's third report).
     ///
@@ -1719,6 +1736,7 @@ impl App {
             daemon_pid: None,
             unconfirmed: Vec::new(),
             anchor: None,
+            carry: None,
             wheel_run: 0,
             wheel_last_ms: 0,
             wheel_items: 0,

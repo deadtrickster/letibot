@@ -304,10 +304,19 @@ impl App {
         // **The anchor, before the frame borrows anything** (R36).
         //
         // Two things, and both need `&mut self`: a held row that the replacement took away
-        // has to be **said**, and the reader has to be moved to the nearest row that
-        // survived. Here rather than beside the placement below, because a note is written
-        // on the head and the head is lent to the frame from the next line on.
+        // has to be **found again by its own words or said to be gone**, and the reader has
+        // to be moved to the tail when the new transcript does not carry it. Here rather
+        // than beside the placement below, because a note is written on the head and the
+        // head is lent to the frame from the next line on.
         self.repair_anchor();
+
+        // **A carry in flight, and the line the window holds while it lands** (R36).
+        //
+        // Read before the disjoint borrow below, for the same reason `now_ms` is: the
+        // anchor's own arm needs it, and it is a field of `self` that arm cannot reach.
+        // `Some` only between a snapshot that replaced the rows and the frame that places
+        // the held row again — see [`App::carry`].
+        let carrying = self.carry.as_ref().map(|c| c.line);
 
         // Read before the disjoint borrow below, for the same reason: it asks the rows
         // which announcements are already drawing an echo. See `App::bound_prompts`.
@@ -631,12 +640,27 @@ impl App {
                     // what the requirement forbids. Only an act does that: a scroll down
                     // past the bottom ([`App::hold`]) or `esc`.
                 }
-                // **The row is gone.** Its handling is above, before the frame borrowed
-                // the history — see `App::repair_anchor` — because saying so is a note and
-                // a note is `&mut self`. Reaching here means it went away between that
-                // check and this line, which cannot happen: nothing between them replaces
-                // the rows. Falling back to the count is the honest answer if it ever does.
-                None => {}
+                // **The row is not on the screen.** Its handling is above, before the frame
+                // borrowed the history — see `App::repair_anchor` — because saying so is a
+                // note and a note is `&mut self`.
+                None => {
+                    // **A carry in flight, and the count must not be asked.** The reader's
+                    // row is named but has no body yet, so there is nothing to place the
+                    // window on — and `scroll` was measured against the transcript this one
+                    // replaced. Every body that lands moves `total` under it, so a window
+                    // placed by that count is a reader dragged to the bottom of a
+                    // conversation they were reading the middle of: the operator, *"i was
+                    // scrolled up and it showed me thousands of lines 'below'"*. The window
+                    // holds the LINE the reader was at instead — the reader's PLACE is the
+                    // pending row, and it is not being carried by this number.
+                    if let Some(line) = carrying {
+                        *scroll = total.saturating_sub((line + room.max(1)).min(total));
+                    }
+                    // **And with no carry pending, the count is what is left.** Reaching
+                    // here means the row went away between the check above and this line,
+                    // which cannot happen: nothing between them replaces the rows. Falling
+                    // back to the count is the honest answer if it ever does.
+                }
             }
         }
         *scroll = (*scroll).min(total.saturating_sub(room.max(1)));

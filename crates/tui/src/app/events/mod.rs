@@ -171,6 +171,10 @@ impl App {
             // (R36). Carrying it across a switch would hold the reader on a row of another
             // conversation's transcript — the same lie a carried-over model name is.
             self.anchor = None;
+            // **And the carry with it**, for the same reason and one more: a carry is a
+            // place taken in THIS conversation's rows, and a place in another session's
+            // transcript is not a place to look for here. See [`App::carry`].
+            self.carry = None;
         }
         self.session_id = s.session_id;
         self.seq = s.seq;
@@ -244,6 +248,22 @@ impl App {
             self.usage_cache_measured = true;
             self.last_timings = Some(*timings);
         }
+        // **The reader's place, taken BEFORE the rows go** (R36).
+        //
+        // A snapshot is a transcript boundary, and the ids are per-transcript
+        // (`{transcript_id}.{n}`, `engine.rs`) — so after this line the id the viewport is
+        // holding names a different place, or nothing at all. The two things that can still
+        // be asked of the transcript that arrives are the row's own WORDS and the LINE the
+        // reader was at, and both have to be taken here, while the rows they describe are
+        // still here to be asked. See [`App::carry`] and [`App::repair_anchor`], which spends
+        // it: the row is placed again under its new id, or the tail is where the reader goes
+        // and the sentence says so.
+        //
+        // A switch takes none of it: the rows that went belong to another conversation.
+        self.carry = same_session.then(|| Carry {
+            words: self.held_row_words(),
+            line: self.held_line(),
+        });
         self.items = s.items;
         // A snapshot replaces the rows, so everything derived from them — the `!`
         // candidates and the model's suggestions — is stale and goes with them.

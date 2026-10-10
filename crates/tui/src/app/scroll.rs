@@ -4,7 +4,7 @@
 use super::*;
 use crate::ui::render::{RenderConfig, visible_width};
 use letibot_sessionlog::view::{CallState, SnapshotItem, TurnState, Warned};
-use letibot_transcript::TranscriptItem;
+use letibot_transcript::{TranscriptItem, UserPart};
 
 impl App {
     /// Throw the rendered history away; it is rebuilt from `items` and `notes`
@@ -971,18 +971,49 @@ impl App {
             .copied()
     }
 
-    /// **The row a held viewport was on is gone — say so, and land on its neighbour.**
+    /// **The words of the row the reader is holding** — what [`Carry`] is taken from.
     ///
-    /// A `resync`, a snapshot on `hello` and a compaction all replace the rows wholesale, so
-    /// the thing the reader was reading may not be carried any more: it was summarised into
-    /// the base, or the transcript it lived in was replaced. That is **a fact about their
-    /// session** rather than a rendering detail, so it is said rather than silently
-    /// absorbed — R29's rule, and the disclosure carries the act that undoes it.
+    /// `None` when nothing is held, when the held row is not in `items`, and when the row
+    /// carries no words at all: a row whose body has not arrived has nothing to be found
+    /// by, and that is a fact the carry has to be told rather than guessed around.
+    pub(crate) fn held_row_words(&self) -> Option<String> {
+        let held = self.anchor.as_ref()?;
+        let row = self.items.iter().find(|r| r.item_id == held.item_id)?;
+        row_words(row)
+    }
+
+    /// **The row a held viewport was on is not in this transcript — find it again, or say
+    /// that it is gone.**
     ///
-    /// **The view lands on the nearest surviving row**, not somewhere arbitrary: the ordinal
-    /// it held is the only ordering both sides of a replacement agree on, so the row that
-    /// took its place is where the reader goes. Jumping to the bottom would lose their place
-    /// twice — once to the replacement and once to the head.
+    /// A `resync`, a snapshot on `hello`, a fork and a compaction all replace the rows
+    /// wholesale, and a fork replaces them **under new ids** (`{transcript_id}.{n}`,
+    /// `engine.rs`). So the id the viewport holds names nothing in the transcript that
+    /// arrives, and the replacement is the only thing that moves a reader who has not
+    /// touched a key.
+    ///
+    /// # The row is found by its own words, and never by its index
+    ///
+    /// [`Carry`] is the row's text, taken before the old rows went, and this is where it is
+    /// spent. The [`App::retire_pending`] precedent: a fork's carried rows arrive under new
+    /// ids, so **match on the content**. An ordinal is a position in the list that has just
+    /// been replaced — carrying one across is carrying an offset measured against something
+    /// that no longer exists, and the same integer then names a different place. That is the
+    /// defect this exists for: the operator, scrolled up and reading, *"it also broke my
+    /// scroll - i was scrolled up and it showed me thousands of lines 'below'"*.
+    ///
+    /// **And a row that is not there is said, not jumped over.** The view goes to the TAIL
+    /// — the one place in the new transcript that is true of the whole of it — and the
+    /// reader is told in a sentence they can see. A reader who was reading must never be
+    /// moved in silence, and the tail is a move.
+    ///
+    /// # Not matchable YET is not gone
+    ///
+    /// A carry announces every row and publishes the bodies in the same pass, so a snapshot
+    /// taken mid-carry holds rows with no words to match ([`Bulk`]). Until that carry
+    /// completes the anchor is **pending**: it stays where it is, the window holds the line
+    /// it was on (see the anchor's arm in `ui/transcript/window.rs`), and the row is placed
+    /// the moment its body lands. Only when every announced row has its body and the words
+    /// are still nowhere is the row honestly gone.
     ///
     /// Emitted as a note with its own code rather than a notice: the reader has to be able to
     /// find it again, `/notes` lists it, and `/status` counts it. `Failure`, by R29 part
@@ -990,9 +1021,15 @@ impl App {
     /// the thing they were reading is not there.
     pub(crate) fn repair_anchor(&mut self) {
         let Some(held) = self.anchor.clone() else {
+            self.carry = None;
             return;
         };
+        // **The row is on the screen, or in the transcript, under its own id** — so whatever
+        // the replacement did, it did not take this row. The carry is spent either way: an
+        // id that survived is an id this viewport never had to cross a boundary for, and
+        // leaving the words pending would match them against a later transcript.
         if self.span_for(&held.item_id).is_some() {
+            self.carry = None;
             return;
         }
         // **A row that is simply not rendered yet is NOT a row that is gone.** In tail mode
@@ -1002,20 +1039,59 @@ impl App {
         // session. The distinction is `items`, which knows every row, versus `spans`, which
         // knows the drawn ones.
         if self.items.iter().any(|it| it.item_id == held.item_id) {
+            self.carry = None;
             return;
         }
-        let ordinal = held.ordinal.min(self.items.len().saturating_sub(1));
-        self.anchor = self.items.get(ordinal).map(|it| Held {
-            item_id: it.item_id.clone(),
-            ordinal,
-            into: 0,
-        });
-        let said = format!(
-            "the row you were reading is no longer carried: this transcript was replaced (a \
-             compaction, a resync or a snapshot), and the row was `{}`. The view is holding \
-             the nearest row that survived — `esc` follows the stream again.",
-            held.item_id
-        );
+        // **The id is gone, so this is a transcript boundary.** The row's own words are the
+        // one thing both transcripts can be asked for — and the first row that says them is
+        // the row the reader was on, because a carry preserves the conversation's order and
+        // that is the only ordering the two sides agree on.
+        //
+        // Borrowed rather than cloned: this runs every frame until the row is placed, and a
+        // tool result's words are its whole payload.
+        let found = self
+            .carry
+            .as_ref()
+            .and_then(|c| c.words.as_deref())
+            .and_then(|words| self.items.iter().position(|it| row_says(it, words)));
+        if let Some(row) = found {
+            self.anchor = Some(Held {
+                item_id: self.items[row].item_id.clone(),
+                ordinal: row,
+                into: held.into,
+            });
+            self.carry = None;
+            // **No `redraw`.** A moved viewport is a diff rather than an erase — the same
+            // rule the scroll keys keep — and this is the head moving a reader who did not
+            // move: the frame that follows writes only the rows that changed.
+            return;
+        }
+        // **Not matchable yet is not gone.** A snapshot taken mid-carry holds rows whose
+        // bodies are still coming, and there is nothing in a body-less row to match — so the
+        // anchor waits, and the frame holds the line rather than counting from a bottom that
+        // has moved. See the docstring.
+        if self.bulk.is_some() {
+            return;
+        }
+        // **Not carried.** The tail is the only place left that is true, and the reader is
+        // told: a move made in silence is the defect this whole path exists to refuse.
+        self.anchor = None;
+        let said = match self.carry.take().and_then(|c| c.words) {
+            Some(_) => format!(
+                "the row you were reading is not in the transcript that replaced it: the rows \
+                 were replaced (a fork — a compaction, a re-seat or a resync) and `{}` was not \
+                 carried across. The view follows the tail again rather than holding a place \
+                 the new transcript does not have.",
+                held.item_id
+            ),
+            // The row had no body when the rows went, so there were no words to look for.
+            // Said as that rather than as *the row is gone*, which is a different claim.
+            None => "the row you were reading could not be found in the transcript that \
+                     replaced it: its body had not arrived, so there were no words to match, \
+                     and the rows were replaced (a fork — a compaction, a re-seat or a \
+                     resync). The view follows the tail again."
+                .to_string(),
+        };
         let already = self.notes.iter().any(|(_, n)| match n {
             Note::Warned(w) => w.code == "anchor_lost" && w.detail == said,
             _ => false,
@@ -1036,7 +1112,8 @@ impl App {
             // showing. A disclosure the reader cannot see is not a disclosure, and this is
             // one about the viewport itself.
             self.say(&format!(
-                "the row you were reading is gone — the transcript was replaced. Holding the                  nearest surviving row; `esc` follows again (row `{}`)",
+                "the row you were reading is not in the transcript that replaced it — the \
+                 view follows the tail again (row `{}`)",
                 held.item_id
             ));
             self.redraw = true;
@@ -1262,14 +1339,21 @@ pub(crate) fn targets_before(
 
 /// **What the reader is holding their viewport on** — R36.
 ///
-/// The row's **id and not its index**, because the index is exactly what a snapshot
-/// replacement moves: a `resync`, a `hello` and a compaction all replace `items` wholesale,
-/// and the row the reader was on can survive that with a different index or not survive it
-/// at all. The id is the only name for it that both sides of a replacement agree on.
+/// The row's **id and not a line count**, because a count is what every arrival and every
+/// re-wrap invalidates: content below moves the bottom a count is measured from, and a row
+/// above growing moves every line under it.
 ///
-/// `ordinal` is the index at the moment of capture, and it is the fallback: when the id is
-/// gone, the nearest surviving row in row order is the one that took its place, and the
-/// head anchors there and **says so** rather than jumping somewhere arbitrary.
+/// **An id is a name inside ONE transcript.** The ids are `{transcript_id}.{n}`, so the
+/// transcript a fork carries across names the same conversation with different ids — and
+/// across that boundary the id is no better than an index. What survives a fork is the
+/// row's own words: see [`Carry`] and [`App::repair_anchor`].
+///
+/// `ordinal` is the index at the moment of capture, and it is used **within one
+/// transcript** and never across one: it is what [`App::reanchor_off_hidden`] searches
+/// outward from when a rung hides the row. A snapshot that replaces the rows is a
+/// boundary, and an index measured on the other side of it names a different place — see
+/// [`App::repair_anchor`], which finds the row by its own words instead and goes to the
+/// tail when it cannot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Held {
     pub(crate) item_id: String,
@@ -1277,6 +1361,116 @@ pub(crate) struct Held {
     /// Lines into the row's own rendering. Bounded to the row's height when it is used, so
     /// a row that shrank under the anchor does not push the view past its own end.
     pub(crate) into: usize,
+}
+
+/// **Where the reader was when a snapshot replaced the rows under them** — R36, taken at
+/// the boundary and spent on the other side of it.
+///
+/// A transcript boundary (a fork, a re-seat, a compaction, a resync) replaces `items`
+/// wholesale, and the ids are per-transcript (`{transcript_id}.{n}`, `engine.rs`) — so the
+/// row the viewport was holding is named by nothing in the transcript that arrives. Two
+/// facts still hold, and they are the two a reader can be found by:
+///
+/// * **`words`** — the row's own content ([`row_words`]), which is what a fork carries
+///   across unchanged. [`App::retire_pending`] met the same wall when a fork replaced the
+///   row it was waiting for and answered it the same way: **match on the text**. `None`
+///   when the held row had no body at the boundary — there is then nothing to match, and
+///   the honest outcome is the tail plus a sentence saying so.
+/// * **`line`** — the body line the reader was at, in the buffer that just went. The
+///   window holds it while the carry lands, because the alternative is the count in
+///   [`App::scroll`], and that count is measured from a bottom that has moved.
+///
+/// **This is the view's state and not the daemon's `carry`.** A *carry* on the wire is a
+/// snapshot whose rows have no bodies yet ([`Bulk`]); this is the reader's place taken at
+/// the moment such a snapshot landed, and it is `Some` only until [`App::repair_anchor`]
+/// has placed the row or given up on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Carry {
+    pub(crate) words: Option<String>,
+    pub(crate) line: usize,
+}
+
+/// **A row's own words** — what [`Carry::words`] is taken from.
+///
+/// The engine's JOIN for a `User` row (the text parts newline-joined, the same reading
+/// [`App::retire_pending`] makes of one), the text for the prose kinds, the payload for a
+/// tool result, the label for a segment mark. `None` for a row with no body yet and for
+/// one that says nothing at all: a row with no words is a row this cannot find, and an
+/// empty string would match the first empty row in the next transcript.
+///
+/// **One rule, two readers.** This builds the string the boundary takes; [`row_says`]
+/// compares a row against it without building anything, because that one runs per row
+/// while a carry lands and one row's text can be hundreds of kilobytes.
+pub(crate) fn row_words(it: &SnapshotItem) -> Option<String> {
+    match it.item.as_ref()? {
+        TranscriptItem::System { text, .. }
+        | TranscriptItem::Assistant { text, .. }
+        | TranscriptItem::Reasoning { text, .. } => (!text.is_empty()).then(|| text.clone()),
+        TranscriptItem::ToolResult { payload, .. } => {
+            (!payload.is_empty()).then(|| payload.clone())
+        }
+        TranscriptItem::SegmentMark { label, .. } => (!label.is_empty()).then(|| label.clone()),
+        TranscriptItem::User { parts, .. } => {
+            let joined = parts
+                .iter()
+                .filter_map(text_part)
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!joined.is_empty()).then_some(joined)
+        }
+    }
+}
+
+/// Whether this row says exactly `words` — [`Carry::words`]' question, asked of every row
+/// in the transcript that replaced the one it was taken from. See [`row_words`].
+///
+/// **An empty `words` is never a match**, and that is [`row_words`]' own rule kept from this
+/// side: a row that says nothing is a row the carry has nothing to find by, so an empty
+/// string must not become the one thing it matches — which is what it would be, since the
+/// first row of a conversation that says nothing says `""`.
+pub(crate) fn row_says(it: &SnapshotItem, words: &str) -> bool {
+    if words.is_empty() {
+        return false;
+    }
+    match it.item.as_ref() {
+        None => false,
+        Some(TranscriptItem::System { text, .. })
+        | Some(TranscriptItem::Assistant { text, .. })
+        | Some(TranscriptItem::Reasoning { text, .. }) => text == words,
+        Some(TranscriptItem::ToolResult { payload, .. }) => payload == words,
+        Some(TranscriptItem::SegmentMark { label, .. }) => label == words,
+        Some(TranscriptItem::User { parts, .. }) => user_says(parts, words),
+    }
+}
+
+/// The `User` half of [`row_says`]: the text parts newline-joined, compared in place
+/// rather than built, because a row's text is not bounded by anything this loop needs.
+fn user_says(parts: &[UserPart], words: &str) -> bool {
+    let mut rest = words;
+    let mut any = false;
+    for text in parts.iter().filter_map(text_part) {
+        if any {
+            match rest.strip_prefix('\n') {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        }
+        match rest.strip_prefix(text) {
+            Some(r) => rest = r,
+            None => return false,
+        }
+        any = true;
+    }
+    any && rest.is_empty()
+}
+
+/// One `User` row's text piece, if it has one — the same reading [`App::load`] and
+/// [`App::record_item`] make when they retire a queued echo.
+fn text_part(p: &UserPart) -> Option<&str> {
+    match p {
+        UserPart::Text { text } => Some(text),
+        _ => None,
+    }
 }
 
 /// Where the history walk stood before one row. See [`App::hist_marks`].
