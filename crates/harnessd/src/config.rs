@@ -2588,7 +2588,15 @@ impl Config {
                 Some(fc) => out.push(Disclosure::on(
                     "firecode",
                     format!(
-                        "a subagent can be placed in a VM: firecode at {}{}",
+                        "a subagent can be placed in a VM: firecode at {}{}. Inside, the guest sees \
+                         a copy of this workspace and nothing else of the host — no host filesystem, \
+                         no host processes, no credentials — so permission checks are off there: \
+                         nothing is asked and there is nothing to approve. The guest root is a layer \
+                         stack, so what a VM installs and saves is still there next run rather than \
+                         reinstalled per call, and a project's toolchains live in its own layer. Use \
+                         it for work that must not spend the operator's attention — a reviewer, a \
+                         long build, a probe — and for anything you want to be unable to reach this \
+                         box.",
                         fc.path.display(),
                         if fc.inherit {
                             ", and a VM's copy inherits its source's layers"

@@ -545,7 +545,7 @@ impl Tool for TaskTool {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
-                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM). Placement never changes permissions."}
+                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."}
                 },
                 "required": ["prompt"]
             }),
@@ -728,7 +728,7 @@ impl Tool for TaskStartTool {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
-                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM). Placement never changes permissions."},
+                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
