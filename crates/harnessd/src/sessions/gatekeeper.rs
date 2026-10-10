@@ -439,7 +439,10 @@ mod tests {
         }
 
         fn collect(&self, _handle: &str, _timeout: Duration) -> TaskStatus {
-            TaskStatus::Running { note: None }
+            TaskStatus::Running {
+                note: None,
+                child: None,
+            }
         }
     }
 
