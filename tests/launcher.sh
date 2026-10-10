@@ -177,4 +177,61 @@ else
   echo "ok   no reader takes a /proc directory's mtime for a process start time"
 fi
 
+# **A daemon that is still going is WAITED FOR, not started over.**
+#
+# The operator's ten `--continue` refusals, constructed: a daemon asked to stop unlinks its
+# socket file and drops its listener within a poll of the signal while it finishes the turn
+# it was holding — so in that window every liveness test this box has says *no daemon here*,
+# the launcher starts one, and the FOLDER LOCK refuses it (`already served by a live daemon
+# (pid N) ... stop the one named here`). The record beside the socket is the fact that
+# survives that window, and this is what the launcher does with it.
+#
+# Constructed rather than raced: the *daemon* is a stub that listens (so the start path runs
+# its real `live` poll), and it goes when this test lets it go.
+if command -v python3 >/dev/null 2>&1; then
+  cat > "$T/bin/harnessd" <<'STUB'
+#!/usr/bin/env python3
+import os, socket, sys, time
+p = sys.argv[sys.argv.index("--socket") + 1]
+try: os.unlink(p)
+except FileNotFoundError: pass
+s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(1)
+print("harnessd", *sys.argv[1:], flush=True)
+while True: time.sleep(0.2)
+STUB
+  chmod +x "$T/bin/harnessd"
+
+  key="$(printf '%s' "$T/ws" | sha256sum | cut -c1-12)"
+  mkdir -p "$T/run/letibot"
+  sock="$T/run/letibot/$key.sock"
+  # **A daemon of THIS folder, on its way out**: its argv names our socket, which is how the
+  # launcher tells it from a recycled pid that is somebody else's harnessd, and it lives
+  # until this test lets it go.
+  bash -c 'while [ ! -e "$1" ]; do sleep 0.05; done' _ "$T/let-go" bash --socket "$sock" &
+  going=$!
+  printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$going" "$T/ws" "$sock" \
+    > "$T/run/letibot/$key.json"
+
+  ( run "$DEFAULT_ONLY" --session s-x > "$T/going.out" 2>&1 ) &
+  launched=$!
+  # Let it reach the wait, then let the daemon go. The bound is the point of the case: it
+  # must not have started a second daemon in that window.
+  sleep 1
+  : > "$T/let-go"
+  wait "$launched" 2>/dev/null || true
+  out="$(cat "$T/going.out")"
+  expect "a daemon that is still going is waited for" "$out" "is still going - waiting for it"
+  refuse "  ...and nothing is started over it" "$out" "already served by a live daemon"
+  expect "  ...and the session opens once it is gone" "$out" "THE HEAD RAN"
+
+  # The stub daemon the launcher started is a real one for this case; it does not exit.
+  # (Read with the same sed the launcher's own `json_num` is, because that is a function of
+  # the launcher and not of this harness.)
+  kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$T/run/letibot/$key.json" | head -1)" 2>/dev/null || true
+  kill "$going" 2>/dev/null || true
+else
+  echo "skip the going-daemon case: no python3 to listen on a unix socket"
+fi
+
 [ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }

@@ -1803,17 +1803,26 @@ if ! live; then
   # milliseconds. `wait_gone` is the same bounded wait `--stop` uses, so the two verbs
   # cannot disagree about what "gone" means.
   if _going="$(daemon_pid)"; then
-    # `|| true` for the SIGPIPE reason `daemon_pid` gives: `head -1` ends the upstream, and a
-    # failing command substitution in an assignment aborts this script under `set -e`.
-    _going_prog="$(pid_argv "$_going" | head -1 || true)"
-    case "$_going_prog" in
-      *harnessd*)
-        echo "letibot: a harnessd for $WORKSPACE (pid $_going) is still going - waiting for it" >&2
-        # It is not a slow stop any more: it is a daemon nothing can reach. The one
-        # cleanup is a hand on the process, and `refuse_detached` names it.
-        wait_gone "$_going" 20 || refuse_detached
-        ;;
-    esac
+    # **And it has to be THIS folder's daemon.** The record's pid can be stale, and a pid can
+    # be recycled onto another folder's harnessd — which would make a stranger's daemon the
+    # reason this folder waits, and then the reason it refuses. A daemon's argv names the
+    # socket it serves, so that is the question asked. No pipe into `grep`: `pid_argv` is read
+    # whole, so no SIGPIPE and no `set -e` abort from an assignment.
+    _going_argv="$(pid_argv "$_going")"
+    if grep -qxF -- "$SOCKET" <<<"$_going_argv"; then
+      echo "letibot: a harnessd for $WORKSPACE (pid $_going) is still going - waiting for it" >&2
+      if ! wait_gone "$_going" 20; then
+        # **Not `refuse_detached`.** That sentence says the daemon is still LISTENING with
+        # its socket file gone, and nothing was listening here — only a pid holding the
+        # folder claim. Saying the other thing would be a report about a state nobody
+        # measured, at the one moment a person is trying to get back into their session.
+        echo "letibot: a harnessd for $WORKSPACE (pid $_going) still holds this folder and is" >&2
+        echo "         not taking heads, 10s after it was asked to stop. Nothing was started" >&2
+        echo "         over it: two daemons for one folder interleave rows into one transcript." >&2
+        echo "         letibot --stop            # or: kill $_going" >&2
+        exit 1
+      fi
+    fi
   fi
   # Nothing answered, so the file is a leftover.
   rm -f "$SOCKET"

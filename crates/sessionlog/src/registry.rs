@@ -792,7 +792,8 @@ pub struct Registry {
     notes: Mutex<std::collections::HashMap<String, NotesSource>>,
     /// **`close` is not idempotent where the enders are concerned.** It is called by the
     /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending
-    /// every run three times would be three reap records for one decision.
+    /// every run three times would be three reap records for one decision. The turns are
+    /// ended under this same guard: one stop, one interrupt per session holding one.
     ended_runs: std::sync::atomic::AtomicBool,
     /// Set once at startup by the daemon. `None` in every head and every test that
     /// predates resume, and the registry then lists only what it holds.
@@ -1631,6 +1632,12 @@ impl Registry {
     /// question, asked of the hub) — and even if one were handed over, the daemon's own arm
     /// for it between turns is `interrupt_idle`, not a prompt.
     pub fn close(&self) {
+        let hubs: Vec<Arc<Hub>> = self
+            .lock()
+            .entries
+            .iter()
+            .map(|(_, e)| e.hub.clone())
+            .collect();
         // Once, and only once, for the reason the field gives.
         if !self
             .ended_runs
@@ -1657,29 +1664,29 @@ impl Registry {
                     }
                 }
             }
-        }
-        let hubs: Vec<Arc<Hub>> = self
-            .lock()
-            .entries
-            .iter()
-            .map(|(_, e)| e.hub.clone())
-            .collect();
-        // **The turns, before the hubs close.** `submit` is the only door that reaches a turn
-        // in flight, and it is taken at the next token by the steering poll
-        // (`Harness::HubSteering`), which is what *interrupt* means here: the partial output is
-        // kept and the round is recorded as aborted, exactly as an Esc-Esc is.
-        for h in &hubs {
-            if h.status().running {
-                h.submit(
-                    DAEMON_SUBMITTER,
-                    "daemon-stopping",
-                    // No expectation: this is not a head following the stream, and a seq
-                    // check here could only refuse the stop.
-                    0,
-                    CommandKind::Interrupt {
-                        reason: STOPPING_TURN_REASON.to_string(),
-                    },
-                );
+            // **And the turns, once, before the hubs close.** `submit` is the only door that
+            // reaches a turn in flight, and it is taken at the next token by the steering poll
+            // (`Harness::HubSteering`), which is what *interrupt* means here: the partial output
+            // is kept and the round is recorded as aborted, exactly as an Esc-Esc is.
+            //
+            // **Inside the once-guard with the run enders, and not outside it.** `close` is
+            // called three times on the way out — by the `Stop` frame, by `catch_signals` and
+            // again by `ServerHandle::shutdown` — and a resubmission would be a second
+            // `CommandIssued` for one decision, which is exactly what `ended_runs` exists to
+            // stop for the runs.
+            for h in &hubs {
+                if h.status().running {
+                    h.submit(
+                        DAEMON_SUBMITTER,
+                        "daemon-stopping",
+                        // No expectation: this is not a head following the stream, and a seq
+                        // check here could only refuse the stop.
+                        0,
+                        CommandKind::Interrupt {
+                            reason: STOPPING_TURN_REASON.to_string(),
+                        },
+                    );
+                }
             }
         }
         for h in hubs {
