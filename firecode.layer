@@ -25,7 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # this file's ENV does not survive into a later shell. So the variables are set TWICE, on purpose: as
 # ENV below, so this file's own lines work, and in a profile file, so the guest's shells have them.
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
-RUN echo export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo >> /etc/profile.d/10-letibot-rust.sh; cat /etc/profile.d/10-letibot-rust.sh
+RUN echo export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo > /etc/profile.d/10-letibot-rust.sh; cat /etc/profile.d/10-letibot-rust.sh
 
 # ── The Rust toolchain ───────────────────────────────────────────────────────────────────────────
 #
@@ -40,10 +40,12 @@ RUN echo export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo >> /et
 # which is who the work runs as. Rustup's own documented recipe, with RUSTUP_HOME and CARGO_HOME
 # moved out of $HOME.
 #
-# The search first anyway, so that an image which DOES ship one is used rather than duplicated —
-# remembering /usr/lib/cargo, which exists on this image and holds only bin/fd: a search that matched
-# a DIRECTORY named cargo would be fooled, so this matches a regular executable file.
-RUN set -eux; found=""; command -v cargo >/dev/null 2>&1 && found=$(command -v cargo); if [ -z "$found" ]; then found=$(find / -xdev -maxdepth 6 -type f -name cargo -perm -u+x 2>/dev/null | head -1); fi; if [ -n "$found" ]; then ln -sfn "$found" /usr/local/bin/cargo; ln -sfn "$(dirname "$found")/rustc" /usr/local/bin/rustc 2>/dev/null || true; else export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo; curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable; ln -sfn /usr/local/cargo/bin/cargo /usr/local/bin/cargo; ln -sfn /usr/local/cargo/bin/rustc /usr/local/bin/rustc; ln -sfn /usr/local/cargo/bin/rustup /usr/local/bin/rustup; fi; cargo --version; rustc --version
+# **AND A WORKING SYMLINK IS THE ONE CASE THIS MUST NOT TOUCH.** The version that searched with
+# `command -v cargo` found the one a provisioned IMAGE had already put at /usr/local/bin/cargo, and
+# ran `ln -sfn /usr/local/bin/cargo /usr/local/bin/cargo` — a self-referential link, which took cargo
+# off the PATH in a VM whose toolchain had been perfect. The journal recorded the line verbatim and
+# `cargo check` answered rc=127. A search that finds the thing it is about to create is not a search.
+RUN set -eux; if [ ! -x /usr/local/bin/cargo ]; then export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo; if [ ! -x /usr/local/cargo/bin/cargo ]; then curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable; fi; ln -sfn /usr/local/cargo/bin/cargo /usr/local/bin/cargo; ln -sfn /usr/local/cargo/bin/rustc /usr/local/bin/rustc; ln -sfn /usr/local/cargo/bin/rustup /usr/local/bin/rustup; fi; cargo --version; rustc --version
 
 # ── The dev packages the build scripts need ──────────────────────────────────────────────────────
 #
@@ -82,4 +84,11 @@ RUN set -eux; cd /home/dead/Projects/llama.cpp; cmake -B build-glm -G Ninja -DCM
 # this fetches what Cargo.lock names, into the layer, where every later VM inherits it. Without it
 # the first cargo check in every fresh VM pays a cold registry fetch; a probe measured exactly that
 # (no ~/.cargo, no vendor/, no .cargo/config.toml in the guest).
-RUN set -eux; CARGO_HOME=/usr/local/cargo cargo fetch
+# **AND THE OWNERSHIP IS THE POINT.** MEASURED: a VM provisioned by the imported image could not build
+# at all — `failed to create directory /usr/local/cargo/git/db/rano-…: Permission denied` — because
+# the fetch below runs as ROOT and the work runs as uid 1000. The cache is read by the build and also
+# WRITTEN by it (a git dependency is cloned and locked there), so a root-owned CARGO_HOME is a
+# toolchain that works and a build that refuses. An earlier draft left the fetch out of the IMAGE on
+# the grounds that a cold one costs seconds — measured in a probe whose own home was writable, which
+# is precisely the condition the image removes.
+RUN set -eux; CARGO_HOME=/usr/local/cargo cargo fetch; chown -R 1000:1000 /usr/local/cargo /usr/local/rustup; ls -ld /usr/local/cargo/registry
