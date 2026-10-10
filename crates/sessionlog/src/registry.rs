@@ -468,6 +468,22 @@ struct Entry {
     /// reach the harness; the harness pushes on open and on every runtime
     /// change, so a head reads what is running and not what was flagged.
     settings: Vec<crate::protocol::SettingRow>,
+    /// **What this session's harness said about its frozen prefix**, or `None` when it had
+    /// nothing to say. The sentence, not a flag: the harness is the only thing that can
+    /// write it, because the two facts it compares — what the session was seated with and
+    /// what this daemon would compose now — are only ever in one place at once, and naming
+    /// what moved (which tool, which schema) needs both in hand.
+    ///
+    /// **Stored and said LATER, which is the whole reason it is a field.** A warning
+    /// published while the harness opens is filed by a head that attaches afterwards as
+    /// [`crate::view::Placed`]`::Before` — listed by `/notes`, counted by `/status`, and
+    /// **not drawn**, because it is older than the conversation on the screen. So the
+    /// comparison happens where the facts are and the SENTENCE happens at ATTACH
+    /// (`server::seat_in`), while the head is watching.
+    ///
+    /// A mailbox rather than a live read, for `settings`' own reason: this is answered on
+    /// a head's connection thread and the harness belongs to the worker.
+    stale_prefix: Option<String>,
 }
 
 struct Inner {
@@ -879,6 +895,7 @@ impl Registry {
                     wiring: SessionWiring::default(),
                     parent_session_id: None,
                     settings: Vec::new(),
+                    stale_prefix: None,
                 },
             ));
         }
@@ -940,6 +957,7 @@ impl Registry {
                 wiring,
                 parent_session_id: parent,
                 settings: Vec::new(),
+                stale_prefix: None,
             },
         ));
         drop(g);
@@ -998,6 +1016,7 @@ impl Registry {
                 wiring,
                 parent_session_id: parent,
                 settings: Vec::new(),
+                stale_prefix: None,
             },
         ));
         Ok(())
@@ -1195,6 +1214,31 @@ impl Registry {
         if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
             e.settings = rows;
         }
+    }
+
+    /// **Publish what this session's harness found about its frozen prefix** — the
+    /// sentence [`Registry::stale_prefix`] hands an attaching head, or `None` when the
+    /// session speaks the prompt this daemon would compose now.
+    ///
+    /// Written by the harness on open and on every fork (a re-seat puts the session onto
+    /// the seated prompt, so there is nothing left to say). A session nobody has opened —
+    /// every session on disk, and every child served by its own reader — has no entry here
+    /// and says nothing, which is the honest answer: no harness has compared anything.
+    pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>) {
+        let mut g = self.lock();
+        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+            e.stale_prefix = said;
+        }
+    }
+
+    /// The sentence an attaching head should be told, or `None` for silence. See
+    /// [`Registry::set_stale_prefix`].
+    pub fn stale_prefix(&self, session_id: &str) -> Option<String> {
+        let g = self.lock();
+        g.entries
+            .iter()
+            .find(|(k, _)| k == session_id)
+            .and_then(|(_, e)| e.stale_prefix.clone())
     }
 
     /// **The jobs a session's harness last published.**

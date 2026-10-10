@@ -2286,5 +2286,76 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
     assert!(
         !screen.contains("THE MODEL'S OWN RECORD"),
         "the compaction beside it is still one line:\n{screen}"
+
+/// **The stale-prefix notice lands where the operator already looks.**
+///
+/// The daemon's half is `Harness::open`'s (and `harnessd`'s `prefix_fingerprint.rs`
+/// asserts it); this is the half that decides whether anybody ever reads it. The
+/// sentence goes out as an ordinary `SessionEvent::Warning` — the daemon publishes it on
+/// the session's own log from `Harness::open`, which is the channel a head is handed live
+/// or in its snapshot — so the whole of this head's obligation is that the code is
+/// classified and drawn as a note row like every other warning.
+///
+/// **The MARK is the register's, and the register is `Routine`.** The operator asked for
+/// this notice *"where they already look — the `!` warning lines"*, and the note rows are
+/// where they look; `!` is what those rows carry in the FAILURE register. A stale prefix is
+/// not a session in trouble — the conversation is intact, every tool the prompt declares
+/// still works, and the remedy is a verb the operator has — so it is filed with
+/// `resume_note` and `open_note`, which are the same family of fact: what opening or
+/// resuming did. Painting it `!` would put it in the register with `turn_failed` and
+/// `context_wall`, which is R19's second fault exactly, in the operator's own words about
+/// a routine compaction arriving in a denial's colour. Asserted rather than assumed, so
+/// that moving it is a deliberate edit to two lines and not a drift.
+#[test]
+fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
+    let detail = "session s-1789462738453908838 was seated 10-08 21:14 with a prompt this \
+                  daemon would not compose now: the tool schemas have changed since. \
+                  `/reseat` rebuilds the prompt from what is seated now, carrying this \
+                  conversation across as it is; a new session gets the seated one from \
+                  the start.";
+    let hub = Hub::new("s");
+    // **A turn first, so the head is not drawing its empty-session placeholder** — notes
+    // live in the transcript's margin, and a session that has said nothing has no margin
+    // to draw them in. Same preamble as `ctrl_n_retires_every_note_and_keeps_every_note`.
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    // **LIVE, not in the snapshot.** R19 stopped planting a note that arrives with a
+    // snapshot, so the delivery that matters here is the one a head attached to a running
+    // session gets — which is exactly how this notice reaches the operator whose session
+    // was resumed a moment before they attached.
+    let e = hub.publish(SessionEvent::Warning {
+        code: "prefix_stale".into(),
+        detail: detail.into(),
+        compaction: None,
+    });
+    a.apply(ServerFrame::Event(e));
+
+    assert_eq!(
+        letibot_sessionlog::warning::class("prefix_stale"),
+        letibot_sessionlog::warning::Class::Routine,
+        "the register is the whole of what a reader takes from the colour"
+    );
+    let screen = a.screen(120, 40).join("\n");
+    let row = screen
+        .lines()
+        .find(|l| l.contains("prefix_stale"))
+        .unwrap_or_else(|| panic!("the notice is not on a note row at all:\n{screen}"));
+    assert!(
+        row.contains("· prefix_stale"),
+        "the housekeeping mark, in the register the table gives it: {row:?}"
+    );
+    assert!(
+        screen.contains("`/reseat`"),
+        "and the remedy has to be in the words on the screen, not only in the daemon's \
+         event: {screen}"
+    );
+    // **A row, not a counter on the alarm.** `ALARM_ONLY` is the list of codes that belong
+    // on the triangle; this one is a fact about the conversation the operator is in, and a
+    // reader who never opens `/status` is exactly the reader it is for.
+    assert!(
+        !letibot_sessionlog::warning::to_the_alarm("prefix_stale"),
+        "a stale prefix changes what the model can call, so it belongs in the record"
     );
 }

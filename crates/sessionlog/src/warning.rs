@@ -290,6 +290,17 @@ pub const TABLE: &[(&str, Class)] = &[
     // from the row, the title, the seat. Facts about where you are.
     ("resume_note", Class::Routine),
     ("open_note", Class::Routine),
+    // **The session's message 0 is not the one this daemon would compose now** — the
+    // system instructions, the tool schemas or the seat it hands a session have changed
+    // since this one was seated, and a session keeps the prefix it was created with. A
+    // fact about where you are, exactly like the two above, and the remedy is a verb the
+    // operator has (`/reseat`): Routine, because nothing is broken and the session is not
+    // in trouble — it is running under an older prompt, which is what a session DOES. The
+    // risk the sentence names is the model not being able to call a tool this build seats,
+    // and that risk is answered by reading it and typing the verb. Written by
+    // `Harness::open` through `prefix_fingerprint`, which is the one place the two sides
+    // of the comparison are computed.
+    ("prefix_stale", Class::Routine),
     // **This head's own**: it got its connection back. Filed at a real seam as it
     // happens, so it is news rather than history.
     ("reattached", Class::Routine),
@@ -741,15 +752,22 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 91 codes, of which **9** are the reader's own input refused.
+    /// **The census, pinned.** 92 codes, of which **9** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_32_routine_9_refused_and_50_failures() {
+    fn the_table_is_33_routine_9_refused_and_50_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **92, not the 91 the last census was taken at.** One arrival: `prefix_stale` is the
+        // sentence said when a session's message 0 is not the prompt this daemon would compose
+        // now — the system instructions, the tool schemas or the seat it hands a session have
+        // changed since it was seated, and a session keeps the prefix it was created with.
+        // Routine by `resume_note`'s own ruling beside it: it is a fact about where you are,
+        // nothing is broken, and the remedy is a verb the operator has (`/reseat`).
+        //
         // **91, not the 90 the last census was taken at.** One arrival, and it moves the red
         // register: `refusal_undelivered` is the sentence said when a gatekeeper's refusing
         // verdict was written onto its review row and the message carrying the complaints could
@@ -861,12 +879,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 91, "the table's size");
-        assert_eq!(count(Class::Routine), 32);
+        assert_eq!(TABLE.len(), 92, "the table's size");
+        assert_eq!(count(Class::Routine), 33);
         assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
         assert_eq!(count(Class::Failure), 50);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 50 of 91 and the middle is 9**, which is why the third register is a
+        // register is 50 of 92 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

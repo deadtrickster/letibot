@@ -48,6 +48,10 @@ toml.workspace = true
 # thread. No async runtime, no HTTP client: the turn engine is a synchronous state
 # machine and the log is threads and a condvar.
 libc = "0.2"
+# The fingerprint of a session's frozen prefix (`harness::prefix_fingerprint`). The same
+# `sha2` `letibot-tokencore` content-addresses a stable prefix with, and already in this
+# tree four times over, so the dependency argument was spent before it was needed here.
+sha2 = "0.10"
 
 [[bin]]
 name = "harnessd"
