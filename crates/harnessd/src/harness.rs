@@ -9061,12 +9061,19 @@ impl Harness {
         // for why a round count was the wrong instrument and what replaced it.
         let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
         // **The turn's standing-notes offers** — see `crate::notes_offer`, which is
-        // where the whole argument lives. Per TURN and not per round: *"rare (once
-        // per note per turn at most)"*, so a note offered in round one is not
-        // offered again in round three, however well it still scores. The offer
-        // itself is per ROUND and lives in the request assembly below, never in the
-        // transcript — *a row cannot be un-said; an assembly can be recomposed*.
+        // where the whole argument lives. Per ROUND for the round's own offer, and
+        // **per SESSION for the memory** — *"rare (once per note per turn at most)"*
+        // was the wrong unit: a turn is minutes and a session is days, so a note
+        // never read and never in the prompt won the same slot in turn after turn.
+        // Measured 2026-10-10: 120 offers, 19 taken, one note offered 22 times, every
+        // repeat a row in the operator's transcript. `recall` reads back what this
+        // session has already been offered, so the offer is once per note per
+        // SESSION, and does so from the log rather than from a set in memory —
+        // see its own doc. The offer itself is per ROUND and lives in the request
+        // assembly below, never in the transcript — *a row cannot be un-said; an
+        // assembly can be recomposed*.
         let mut offers = crate::notes_offer::Offers::new();
+        offers.recall(&self.cfg.workspace, &self.cfg.session_id);
         // Consecutive HTTP failures on the round being attempted. Not per turn:
         // the thing being waited out is the endpoint, and it is as likely to go
         // down on round nine as on round one.

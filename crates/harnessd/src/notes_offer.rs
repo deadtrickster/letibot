@@ -98,7 +98,20 @@ use letibot_tools::similarity::Corpus;
 /// **It is a starting point, not a finding**, and the design says so itself:
 /// *"tune the floor from that ratio"* — the take-up log
 /// (`<workspace>/.letibot/notes-offers.jsonl`) is the measurement that moves it.
-pub const OFFER_FLOOR: f64 = 0.14;
+///
+/// **Moved to 0.18 on that measurement, 2026-10-10.** The fixtures had the honest
+/// positives at 0.366–0.419; live offers land far lower, and the log of **121 offers
+/// with 19 taken** says where the two populations actually divide: the lowest score
+/// ever taken was 0.183, and of the 61 offers below it **not one was taken**. At 0.18
+/// the offer count halves — 60 instead of 121 — and the take-ups stay 19, all of
+/// them; 0.20 would cost one (41 offers, 18 taken) and 0.22 would cost ten (23
+/// offers, 9 taken). Above the floor the shape is a cliff, not a slope, which is what
+/// a floor is for.
+///
+/// The operator's word for the volume at 0.14 was *"the notes keep pilin up.
+/// unacceptable"*, and the other half of that fix is the memory: a note is offered
+/// once per SESSION, not once per turn — see [`Offers::recall`].
+pub const OFFER_FLOOR: f64 = 0.18;
 
 /// How many characters of the subject are scored, taken from the most recent end.
 ///
@@ -164,6 +177,37 @@ pub struct Offers {
 impl Offers {
     pub fn new() -> Offers {
         Offers::default()
+    }
+
+    /// **Seed the memory with what this SESSION has already been offered.**
+    ///
+    /// The memory used to be the turn's alone — *"rare (once per note per turn at
+    /// most)"* — which is right about one turn and wrong about a session. Measured
+    /// 2026-10-10 on this box, in one workspace: of 120 offers, 19 were taken, one
+    /// note had been offered 22 times and another 20, and every repeat is a row in
+    /// the operator's transcript. Their words: *"the notes keep pilin up.
+    /// unacceptable"*. A note is offered once per session now, not once per turn.
+    ///
+    /// **The log is the memory, rather than a set beside it.** It already carries the
+    /// session id and the path of every offer — [`Offers::settle`] writes both — so
+    /// the fact survives a daemon restart, and there is no second copy of it to
+    /// disagree with the file. A line that cannot be parsed is skipped: this is the
+    /// notes path, where a hint that fails is still a hint.
+    pub fn recall(&mut self, workspace: &Path, session: &str) {
+        let Ok(text) = std::fs::read_to_string(workspace.join(LOG)) else {
+            return;
+        };
+        for line in text.lines() {
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if row.get("session").and_then(|s| s.as_str()) != Some(session) {
+                continue;
+            }
+            if let Some(path) = row.get("path").and_then(|p| p.as_str()) {
+                self.offered.insert(PathBuf::from(path));
+            }
+        }
     }
 
     /// **Compose this round's offer**, or decide to say nothing. `false` is the
@@ -355,7 +399,25 @@ pub fn subject(items: &[TranscriptItem]) -> String {
             break;
         }
     }
-    out.truncate(SUBJECT_CHARS.min(out.len()));
+    // **The cut lands on a character boundary, never through one.** `truncate`
+    // panics when the length it is handed is not a boundary of the string, and
+    // this string is the operator's own words plus the turn's tool results —
+    // full of `—`, `⚠`, `→`, box-drawing from a `capture-pane` and Cyrillic.
+    // Measured 2026-10-10, on this box: an `assertion failed:
+    // self.is_char_boundary(new_len)` raised right here took `thread 'main'` down
+    // with it, so the daemon died from the offer path — a path whose own contract
+    // is that a hint which fails is still a hint, and whose worst case was meant
+    // to be a missing line in a log. Three panics in one evening, one of them a
+    // subagent's thread, each beside the offer it was composing.
+    //
+    // Walk to the nearest boundary at or below the cap: byte 0 is always one, so
+    // the search cannot come up empty.
+    let cut = SUBJECT_CHARS.min(out.len());
+    let cut = (0..=cut)
+        .rev()
+        .find(|&i| out.is_char_boundary(i))
+        .unwrap_or(0);
+    out.truncate(cut);
     out
 }
 

@@ -419,6 +419,100 @@ fn the_subject_is_the_prompt_and_this_turns_tool_results() {
     );
 }
 
+/// **A cut through a multi-byte character must not panic.**
+///
+/// Measured 2026-10-10, on the box, and it is the worst failure this module has had:
+/// `String::truncate` asserts that the length it is handed is a boundary of the
+/// string, and the subject is the operator's own words plus the turn's tool results —
+/// full of `—`, `⚠`, `→`, box-drawing out of a `capture-pane` and Cyrillic. A subject
+/// whose cut fell inside one of those characters raised
+/// `assertion failed: self.is_char_boundary(new_len)` on `thread 'main'`, so the
+/// daemon died from the offer path — the path whose own contract, above in this
+/// module, is that *a hint that fails is still a hint*. Three panics in one evening,
+/// one of them a subagent's thread.
+///
+/// Every fixture in this file is ASCII, which is the whole reason the suite stayed
+/// green while the daemon was dying.
+#[test]
+fn a_cut_inside_a_character_does_not_panic() {
+    // 7_999 bytes of ASCII, then a 3-byte character placed so that byte
+    // `SUBJECT_CHARS` falls in the middle of it. This is the shape that killed it:
+    // `out.truncate(SUBJECT_CHARS.min(out.len()))` with a boundary 8_000 bytes in.
+    let text = format!("{}☃ and on", "a".repeat(SUBJECT_CHARS - 1));
+    let said = subject(&[result(&text)]);
+    assert!(
+        said.is_char_boundary(said.len()),
+        "the cut is not on a character boundary"
+    );
+    assert!(
+        said.len() <= SUBJECT_CHARS,
+        "the cap was exceeded: {} bytes",
+        said.len()
+    );
+    assert_eq!(
+        said.len(),
+        SUBJECT_CHARS - 1,
+        "the cut moves back to the nearest boundary at or below the cap, and no further"
+    );
+    assert!(
+        text.starts_with(&said),
+        "the cut kept more than it was given"
+    );
+}
+
+/// **A note this session was already offered is not offered again — the memory is
+/// the session's, not the turn's.**
+///
+/// The sibling test above is the turn's half of this. Measured 2026-10-10 on the
+/// box, that half was the only one that existed: `Offers` was built fresh each turn,
+/// so *"once per note"* meant once per TURN, and one note was offered 22 times across
+/// a session's turns — 120 offers in the log, 19 taken, every repeat a row in the
+/// operator's transcript. Their words for it: *"the notes keep pilin up.
+/// unacceptable"*.
+#[test]
+fn a_note_offered_in_an_earlier_turn_is_not_offered_again() {
+    let f = Fixture::new("recall");
+    let path = corpus(&f);
+    let items = prompt(ABOUT);
+
+    // A fresh turn offers it, because nothing in THIS turn has yet.
+    let mut fresh = Offers::new();
+    assert!(
+        fresh.compose(&f.ws, &f.global, "", &items),
+        "the fixture note earns a hint"
+    );
+
+    // The session's earlier offer, written exactly where `settle` writes it.
+    let log = f.ws.join(LOG);
+    let line = serde_json::json!({
+        "at": 1,
+        "session": "s-mine",
+        "path": path.display().to_string(),
+        "score": 0.2,
+        "taken": false,
+    })
+    .to_string();
+    // And a line that is not JSON at all: the notes path is best-effort, so a
+    // corpus of one bad line must not cost the session its memory.
+    std::fs::write(&log, format!("{line}\nnot json at all\n")).expect("the log");
+
+    let mut said = Offers::new();
+    said.recall(&f.ws, "s-mine");
+    assert!(
+        !said.compose(&f.ws, &f.global, "", &items),
+        "an offer already made to this session is not made again"
+    );
+
+    // **And the memory is the session's, not the box's**: another session's line
+    // must not silence this one, or a child's offers would mute its parent's.
+    let mut other = Offers::new();
+    other.recall(&f.ws, "s-other");
+    assert!(
+        other.compose(&f.ws, &f.global, "", &items),
+        "another session's offer is not this session's memory"
+    );
+}
+
 /// The log, parsed — one JSON object per line, in the order they were written.
 fn log_lines(ws: &Path) -> Vec<serde_json::Value> {
     let text = std::fs::read_to_string(ws.join(LOG)).expect("the log exists");
