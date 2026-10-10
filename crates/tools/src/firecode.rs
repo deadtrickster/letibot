@@ -839,6 +839,47 @@ impl ExecBackend for FirecodeBackend {
         Ok(out)
     }
 
+    /// **One `find` for the whole tree, not one `list` per directory.**
+    ///
+    /// `list` here is one `firecode in` vsock round trip, measured at 0.645–0.688 s;
+    /// the walk behind a VM-placed session's first `glob` covered 122 directories and
+    /// spent 80.48 s of a 125 s boot-to-answer doing it. `find` answers the same tree
+    /// in the guest in ~0.7 s, so this is the one place the trait's default loop is
+    /// the wrong shape — and it is why [`ExecBackend::list_tree`] exists at all.
+    ///
+    /// The listing is put back into the order the loop would have produced
+    /// ([`tree_in_walk_order`]) so that `glob`, `grep` and `outline` cannot tell which
+    /// of the two ran.
+    fn list_tree(
+        &self,
+        root: &str,
+        limit: usize,
+        skip: &dyn Fn(&DirEntry) -> bool,
+    ) -> Result<(Vec<DirEntry>, bool), BackendError> {
+        let gp = self.guest_path(root);
+        let q = shell_quote(&gp.display().to_string());
+        let (bytes, exit) = self.guest(&format!(
+            "if [ ! -e {q} ]; then exit 22; fi; if [ ! -d {q} ]; then exit 23; fi; \
+             find {q} -mindepth 1 -printf '%y\\t%s\\t%p\\n'"
+        ))?;
+        match exit {
+            22 => return Err(BackendError::NotFound(root.to_string())),
+            23 => return Err(BackendError::NotADirectory(root.to_string())),
+            // Any other status is `find` complaining, on the merged stream, about a
+            // subtree it could not read — after printing everything it could. The
+            // bytes are parsed anyway: one unreadable directory is not a reason to
+            // answer "no files", which is what an error here would become one layer
+            // up, where `walk` turns an error into an empty walk.
+            _ => {}
+        }
+        Ok(tree_in_walk_order(
+            &bytes,
+            &gp.display().to_string(),
+            limit,
+            skip,
+        ))
+    }
+
     fn stat(&self, path: &str) -> Option<DirEntry> {
         let gp = self.guest_path(path);
         let q = shell_quote(&gp.display().to_string());
@@ -894,6 +935,103 @@ const LEGACY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Inline writes up to this many bytes ride in the command; larger go through `cp`.
 const INLINE_WRITE_BYTES: usize = 48 * 1024;
+
+/// The entries in a `find -printf '%y\t%s\t%p\n'` listing, in the order the
+/// per-directory loop would have produced them.
+///
+/// **The order is the point, not a nicety.** `find` walks depth-first; a walk of
+/// [`ExecBackend::list`] is breadth-first with each directory's children in the order
+/// `list` returned them (firecode's sorts by name). `glob` and `grep` print their hits
+/// in walk order, so a listing handed back in `find`'s order would reorder a model's
+/// answer with nothing saying why — the same tree would answer differently depending
+/// on which substrate it was on. Rebuilding the loop's order from the flat listing is
+/// what makes the one-command path indistinguishable from it.
+///
+/// `skip` is tested before descent, exactly as the loop tests it, so a skipped
+/// directory's contents are dropped even though `find` has already printed them: the
+/// loop never fetched them, and the two must agree entry for entry.
+///
+/// `pub(crate)` so the test that pins the two paths together can drive both.
+pub(crate) fn tree_in_walk_order(
+    listing: &[u8],
+    root: &str,
+    limit: usize,
+    skip: &dyn Fn(&DirEntry) -> bool,
+) -> (Vec<DirEntry>, bool) {
+    let mut by_parent: std::collections::HashMap<String, Vec<DirEntry>> =
+        std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(listing).lines() {
+        let mut parts = line.splitn(3, '\t');
+        let (Some(kind), Some(size), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            // Not a listing line. `firecode in` merges the guest's stderr into the
+            // same stream, so `find`'s own complaints arrive here too, and a line
+            // with no tab is not an entry.
+            continue;
+        };
+        by_parent
+            .entry(parent_of(path).to_string())
+            .or_default()
+            .push(DirEntry {
+                path: path.to_string(),
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                is_dir: kind == "d",
+                bytes: size.parse().unwrap_or(0),
+            });
+    }
+
+    let mut out = Vec::new();
+    let mut truncated = false;
+    let mut queue = std::collections::VecDeque::from([find_root(root).to_string()]);
+    while let Some(dir) = queue.pop_front() {
+        let Some(mut children) = by_parent.remove(&dir) else {
+            continue;
+        };
+        children.sort_by(|a, b| a.name.cmp(&b.name));
+        for e in children {
+            if skip(&e) {
+                continue;
+            }
+            if out.len() >= limit {
+                truncated = true;
+                return (out, truncated);
+            }
+            if e.is_dir {
+                queue.push_back(e.path.clone());
+            }
+            out.push(e);
+        }
+    }
+    (out, truncated)
+}
+
+/// The root as `find` echoes it back in `%p`.
+///
+/// `find` appends a separator only when the argument does not already end in one, so
+/// a **single** trailing separator is gone from every printed path and a doubled one
+/// survives. Measured with findutils 4.10.0: `find t/ -printf '%p'` prints `t/sub`,
+/// `find t// -printf '%p'` prints `t//sub`, `find t/. -printf '%p'` prints `t/./sub` —
+/// and `Path::join`, which builds the loop's directory strings, appends the same way.
+/// Getting this wrong is silent: every entry would be filed under a parent the walk
+/// never visits, and the tree would answer "no files".
+fn find_root(root: &str) -> &str {
+    match root.len() {
+        0 | 1 => root,
+        n if root.ends_with('/') && !root[..n - 1].ends_with('/') => &root[..n - 1],
+        _ => root,
+    }
+}
+
+/// The directory part of a path `find` printed: `path` is `parent` + `name`, with a
+/// separator added only when the parent did not already end in one.
+fn parent_of(path: &str) -> &str {
+    match path.rfind('/') {
+        None => "",
+        Some(0) => "/",
+        Some(i) if path.as_bytes()[i - 1] == b'/' => &path[..i + 1],
+        Some(i) => &path[..i],
+    }
+}
 
 fn run_id(bin: &Path, project: &Path) -> Option<String> {
     let out = std::process::Command::new(bin)
@@ -1402,5 +1540,87 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
         assert_eq!(shell_quote(""), "''");
+    }
+
+    /// **One round trip for the whole tree, end to end** — the fix, and the reason
+    /// [`ExecBackend::list_tree`] exists. The VM-placed session's first `glob` spent
+    /// 80.48 s of a 125 s boot-to-answer on 122 per-directory `list` calls at
+    /// 0.645–0.688 s each (measured 2026-10-08).
+    ///
+    /// The stub answers the one `find` with the guest's listing — `find`'s own order,
+    /// a name with a space, a directory entry, and a `target/` whose contents the skip
+    /// set must drop — and what comes back is what the per-directory loop would have
+    /// produced for the same tree. The call log is the count: `up` probes the door
+    /// with one `in ... true`, so the claim is the *delta* — one more round trip for
+    /// the whole tree, or the tree went back to being N of them.
+    #[test]
+    fn the_tree_is_one_in_call_and_parses_like_the_loop() {
+        let root = tmp("tree");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let cache = root.join("cache");
+        let copy = cache.join("child");
+        let calls = root.join("in-calls");
+        let arms = format!(
+            "{HAPPY}\n\
+             in) echo \"$@\" >> '{calls}'; printf 'd\\t0\\t{c}/a b\\nf\\t7\\t{c}/a b/inner.txt\\n\
+             f\\t12\\t{c}/plain.txt\\nd\\t0\\t{c}/target\\nf\\t999\\t{c}/target/junk\\n' ;;",
+            calls = calls.display(),
+            c = copy.display()
+        );
+        let bin = stub_firecode(&root.join("fc"), &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &cache, &bin)).unwrap();
+
+        let in_calls = || {
+            std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let before = in_calls();
+        let (got, truncated) = crate::backend::walk(
+            &b,
+            &copy.display().to_string(),
+            100,
+            &crate::backend::default_skip,
+        );
+        let log = std::fs::read_to_string(&calls).unwrap_or_default();
+
+        let at = |rel: &str, name: &str, is_dir: bool, bytes: u64| DirEntry {
+            path: format!("{}/{rel}", copy.display()),
+            name: name.into(),
+            is_dir,
+            bytes,
+        };
+        assert_eq!(
+            got,
+            vec![
+                at("a b", "a b", true, 0),
+                at("plain.txt", "plain.txt", false, 12),
+                at("a b/inner.txt", "inner.txt", false, 7),
+            ],
+            "the tree came back in find's order, or with the skipped target's contents"
+        );
+        assert!(!truncated);
+        // The tree is one round trip: exactly one `in` ran a `find`. `up` probes the
+        // door with an `in ... true` of its own, so the count is of tree commands and
+        // not of every call the backend made.
+        let tree: Vec<&str> = log.lines().filter(|l| l.contains("find ")).collect();
+        assert_eq!(
+            tree.len(),
+            1,
+            "the tree took {} round trips, not one (in calls {before} -> {}): {log}",
+            tree.len(),
+            in_calls()
+        );
+        // And the one call really is the whole tree: no depth limit, and the path
+        // form the parser needs.
+        let tree_call = tree.first().copied().unwrap_or_default();
+        assert!(
+            tree_call.contains("-mindepth 1")
+                && tree_call.contains("%p")
+                && !tree_call.contains("-maxdepth"),
+            "the one command is not the whole tree: {tree_call}"
+        );
     }
 }

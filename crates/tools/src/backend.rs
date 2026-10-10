@@ -229,7 +229,64 @@ pub trait ExecBackend: Send + Sync {
 
     /// One directory, not recursive. Recursion belongs to the tools, which then
     /// works identically over a tar channel that has no `walkdir`.
+    ///
+    /// **That rule is a trade, and the trade is the condition to weigh before
+    /// overriding [`Self::list_tree`].** One directory per call is right when one
+    /// call is cheap — a tar channel's `list` is local, and nothing is gained by
+    /// teaching it a second command. It is wrong when one call is a network round
+    /// trip: firecode's is one `firecode in` vsock call, **measured at 0.645–0.688 s**
+    /// (2026-10-08), so a walk of the 122-directory tree behind the first `glob` of
+    /// a VM-placed session cost 122 of them — 79.1 s of a 125 s boot-to-answer.
+    /// `list` stays the per-directory primitive either way; [`Self::list_tree`] is
+    /// where a backend says which of the two it is.
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError>;
+
+    /// **The tree under `root`, in the order a walk of [`Self::list`] produces** —
+    /// the seam a backend whose `list` is expensive overrides.
+    ///
+    /// The default *is* that walk: breadth-first over `list`, each directory's
+    /// children in the order `list` returned them, `skip` tested before descent so a
+    /// skipped directory's contents are never fetched, and `limit` stopping it where
+    /// it stands (the second element of the pair says it did). A backend that does
+    /// not override this keeps today's behaviour byte for byte — and so does every
+    /// tool above it, which is the point: `glob`, `grep` and `outline` reach the tree
+    /// through [`walk`] and through nothing else.
+    ///
+    /// An override must return the **same entries in the same order**, `skip` and
+    /// `limit` included, or a tool's answer would depend on the substrate it ran on.
+    /// A backend that fetches the tree in one command has already paid for all of it,
+    /// so there the limit bounds what is *returned*, not the work of finding it.
+    fn list_tree(
+        &self,
+        root: &str,
+        limit: usize,
+        skip: &dyn Fn(&DirEntry) -> bool,
+    ) -> Result<(Vec<DirEntry>, bool), BackendError> {
+        let mut out = Vec::new();
+        let mut queue = std::collections::VecDeque::from([root.to_string()]);
+        let mut truncated = false;
+        while let Some(dir) = queue.pop_front() {
+            let Ok(entries) = self.list(&dir) else {
+                continue;
+            };
+            for e in entries {
+                if skip(&e) {
+                    continue;
+                }
+                if out.len() >= limit {
+                    // Bounded, and the caller is told it was bounded. A silent cut is
+                    // the failure §8.3 refuses one layer up.
+                    truncated = true;
+                    return Ok((out, truncated));
+                }
+                if e.is_dir {
+                    queue.push_back(e.path.clone());
+                }
+                out.push(e);
+            }
+        }
+        Ok((out, truncated))
+    }
 
     /// Does this path exist, and what is it? `None` for absent.
     fn stat(&self, path: &str) -> Option<DirEntry>;
@@ -1148,41 +1205,25 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Recursive listing, in terms of `list` alone.
+/// Recursive listing, over [`ExecBackend::list_tree`].
 ///
-/// Written here rather than with `std::fs` so that it works unchanged over a
-/// backend whose "filesystem" is a tar channel. `limit` bounds the walk: a tool
-/// that walks an unbounded tree is a tool that hangs on a home directory.
+/// Written against the trait rather than with `std::fs` so that it works unchanged
+/// over a backend whose "filesystem" is a tar channel. The loop itself now lives in
+/// [`ExecBackend::list_tree`]'s default, so a backend whose per-directory call is a
+/// network round trip can replace it with one command; this stays the call the tools
+/// make, and its answer does not depend on which of the two ran. `limit` bounds the
+/// walk: a tool that walks an unbounded tree is a tool that hangs on a home
+/// directory.
+///
+/// An error — a root that does not exist, most often — is an empty walk, which is
+/// what the per-directory loop has always done with a directory it could not list.
 pub fn walk(
     backend: &dyn ExecBackend,
     root: &str,
     limit: usize,
     skip: &dyn Fn(&DirEntry) -> bool,
 ) -> (Vec<DirEntry>, bool) {
-    let mut out = Vec::new();
-    let mut queue = std::collections::VecDeque::from([root.to_string()]);
-    let mut truncated = false;
-    while let Some(dir) = queue.pop_front() {
-        let Ok(entries) = backend.list(&dir) else {
-            continue;
-        };
-        for e in entries {
-            if skip(&e) {
-                continue;
-            }
-            if out.len() >= limit {
-                // Bounded, and the caller is told it was bounded. A silent cut is
-                // the failure §8.3 refuses one layer up.
-                truncated = true;
-                return (out, truncated);
-            }
-            if e.is_dir {
-                queue.push_back(e.path.clone());
-            }
-            out.push(e);
-        }
-    }
-    (out, truncated)
+    backend.list_tree(root, limit, skip).unwrap_or_default()
 }
 
 /// The default skip set: version-control and build directories, which are never
@@ -1238,6 +1279,8 @@ mod tests {
         assert_eq!(c.root_path(), c.workspace_path());
     }
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fixture() -> (tempdir::TempDir, HostBackend) {
         let d = tempdir::TempDir::new();
@@ -1510,6 +1553,206 @@ mod tests {
         let (few, truncated) = walk(&b, ".", 1, &default_skip);
         assert_eq!(few.len(), 1);
         assert!(truncated);
+    }
+
+    /// **The tree the two walk paths have to agree on**: a directory, a name with a
+    /// space in it, a nested file, and a `target/` that [`default_skip`] must drop
+    /// *before* descending into it — the pruning that made the measured tree 122
+    /// directories instead of 522.
+    const TREE: &[(&str, &str, bool, u64)] = &[
+        ("/w", "a b", true, 0),
+        ("/w", "empty", true, 0),
+        ("/w", "plain.txt", false, 12),
+        ("/w", "target", true, 0),
+        ("/w/a b", "inner.txt", false, 7),
+        ("/w/target", "junk", false, 999),
+    ];
+
+    fn kids_of(entries: &[(&str, &str, bool, u64)]) -> HashMap<String, Vec<DirEntry>> {
+        let mut kids: HashMap<String, Vec<DirEntry>> = HashMap::new();
+        for (parent, name, is_dir, bytes) in entries {
+            kids.entry((*parent).to_string())
+                .or_default()
+                .push(DirEntry {
+                    path: format!("{parent}/{name}"),
+                    name: (*name).to_string(),
+                    is_dir: *is_dir,
+                    bytes: *bytes,
+                });
+        }
+        // Firecode's `list` sorts by name, and the loop's order is what an override
+        // has to reproduce, so the fake sorts the same way.
+        for v in kids.values_mut() {
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        kids
+    }
+
+    fn paths(entries: &[DirEntry]) -> Vec<&str> {
+        entries.iter().map(|e| e.path.as_str()).collect()
+    }
+
+    /// A backend that is the tree in memory, with **no** `list_tree` of its own: the
+    /// trait's default drives it one directory at a time, and the count of `list`
+    /// calls is what says so.
+    struct TreeFake {
+        kids: HashMap<String, Vec<DirEntry>>,
+        list_calls: AtomicUsize,
+    }
+
+    impl ExecBackend for TreeFake {
+        fn run(&self, _cmd: &Command) -> Result<Output, BackendError> {
+            Err(BackendError::Unsupported("a fake runs nothing"))
+        }
+        fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
+            Err(BackendError::NotFound(path.to_string()))
+        }
+        fn write(&self, path: &str, _bytes: &[u8]) -> Result<(), BackendError> {
+            Err(BackendError::NotFound(path.to_string()))
+        }
+        fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            // A directory the tree does not mention is empty, not an error: an empty
+            // directory is a real directory and the loop must call `list` for it.
+            Ok(self.kids.get(path).cloned().unwrap_or_default())
+        }
+        fn stat(&self, _path: &str) -> Option<DirEntry> {
+            None
+        }
+        fn describe(&self) -> String {
+            "a tree in memory".into()
+        }
+    }
+
+    /// The same shape with `list_tree` **defined**, as firecode defines it. An
+    /// override that quietly fell back on the loop would still return entries, so the
+    /// counts are the assertion and the entries alone are not.
+    struct OneCallFake {
+        tree_calls: AtomicUsize,
+        list_calls: AtomicUsize,
+    }
+
+    impl ExecBackend for OneCallFake {
+        fn run(&self, _cmd: &Command) -> Result<Output, BackendError> {
+            Err(BackendError::Unsupported("a fake runs nothing"))
+        }
+        fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
+            Err(BackendError::NotFound(path.to_string()))
+        }
+        fn write(&self, path: &str, _bytes: &[u8]) -> Result<(), BackendError> {
+            Err(BackendError::NotFound(path.to_string()))
+        }
+        fn list(&self, _path: &str) -> Result<Vec<DirEntry>, BackendError> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+        fn stat(&self, _path: &str) -> Option<DirEntry> {
+            None
+        }
+        fn describe(&self) -> String {
+            "a tree in memory, in one command".into()
+        }
+        fn list_tree(
+            &self,
+            root: &str,
+            _limit: usize,
+            _skip: &dyn Fn(&DirEntry) -> bool,
+        ) -> Result<(Vec<DirEntry>, bool), BackendError> {
+            self.tree_calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                vec![DirEntry {
+                    path: format!("{root}/one"),
+                    name: "one".into(),
+                    is_dir: false,
+                    bytes: 1,
+                }],
+                false,
+            ))
+        }
+    }
+
+    /// **The seam's cost, counted.** A backend whose `list_tree` is defined is asked
+    /// once for the whole tree and never per directory. The measured reason: on
+    /// firecode `list` is one vsock round trip at 0.645–0.688 s, and 122 of them were
+    /// 80.48 s of a 125 s boot-to-answer (2026-10-08).
+    #[test]
+    fn a_defined_list_tree_is_one_call_and_never_the_loop() {
+        let b = OneCallFake {
+            tree_calls: AtomicUsize::new(0),
+            list_calls: AtomicUsize::new(0),
+        };
+        let (got, truncated) = walk(&b, "/w", 100, &default_skip);
+        assert_eq!(
+            paths(&got),
+            vec!["/w/one"],
+            "the override's answer comes back"
+        );
+        assert!(!truncated);
+        assert_eq!(b.tree_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            b.list_calls.load(Ordering::SeqCst),
+            0,
+            "the override fell back to the per-directory loop"
+        );
+    }
+
+    /// The default is still the loop, one call per directory, in its own order — and
+    /// none at all for a directory `skip` removed before descent.
+    #[test]
+    fn the_default_list_tree_is_the_per_directory_loop() {
+        let b = TreeFake {
+            kids: kids_of(TREE),
+            list_calls: AtomicUsize::new(0),
+        };
+        let (got, truncated) = walk(&b, "/w", 100, &default_skip);
+        assert_eq!(
+            paths(&got),
+            vec!["/w/a b", "/w/empty", "/w/plain.txt", "/w/a b/inner.txt"],
+            "breadth-first, siblings by name, skipped directories not descended"
+        );
+        assert!(!truncated);
+        assert_eq!(
+            b.list_calls.load(Ordering::SeqCst),
+            3,
+            "one call per directory: /w, /w/a b, /w/empty — and none for the skipped target"
+        );
+    }
+
+    /// **`find`'s listing and the loop's answer are the same list**, entry for entry
+    /// and in the same order, which is the whole contract an override has to keep.
+    ///
+    /// The listing is written the way `find` prints it — depth-first, which is *not*
+    /// the loop's order — and it carries the two things a byte-level parser gets wrong
+    /// first: a name with a space in it, and a directory entry. It also carries a
+    /// `target/` and everything `find` printed beneath it, which the skip set must drop
+    /// even though the command already fetched them.
+    #[test]
+    fn the_find_listing_parses_byte_identically_to_the_loop() {
+        let b = TreeFake {
+            kids: kids_of(TREE),
+            list_calls: AtomicUsize::new(0),
+        };
+        let listing: &[u8] = b"d\t0\t/w/a b\n\
+                              f\t7\t/w/a b/inner.txt\n\
+                              d\t0\t/w/empty\n\
+                              f\t12\t/w/plain.txt\n\
+                              d\t0\t/w/target\n\
+                              f\t999\t/w/target/junk\n";
+        let (looped, cut_loop) = walk(&b, "/w", 100, &default_skip);
+        let (found, cut_find) =
+            crate::firecode::tree_in_walk_order(listing, "/w", 100, &default_skip);
+        assert_eq!(
+            found, looped,
+            "the one-command listing and the loop disagree"
+        );
+        assert_eq!(cut_find, cut_loop);
+        // And the bound cuts both in the same place, saying so the same way.
+        let (few_loop, cut_loop) = walk(&b, "/w", 2, &default_skip);
+        let (few_find, cut_find) =
+            crate::firecode::tree_in_walk_order(listing, "/w", 2, &default_skip);
+        assert_eq!(few_find, few_loop);
+        assert_eq!((cut_find, cut_loop), (true, true));
+        assert_eq!(paths(&few_find), vec!["/w/a b", "/w/empty"]);
     }
 }
 
