@@ -304,7 +304,13 @@ pub struct ShapelessAdmit {
 /// `prefix_fingerprint`, additive, described at its migration arm below. See
 /// [`StoredSession::prefix_fingerprint`] for what is in it and why the live half of the
 /// prompt is not.
-pub const SCHEMA_VERSION: i64 = 21;
+///
+/// **22** since the merge-queue entry carries the **landing half's own rows** —
+/// `merge_queue.gate_steps_json`, additive, described at its migration arm below and at the
+/// column in [`SCHEMA_SQL`]. One row per gate step (the command, its outcome, the tail of its
+/// output, when it started and how long it took) so that a landing can be DRAWN and not merely
+/// judged: a row that records only `failed` can only ever draw `failed`.
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -478,6 +484,29 @@ CREATE TABLE IF NOT EXISTS job (
 -- the same column as the six. What DOES have to move for it is the wire: see
 -- `letibot_sessionlog::event::MergeState` and `PROTOCOL_VERSION` 38, because a head that
 -- cannot decode the word loses the whole frame it arrives in.
+--
+-- **`gate_steps_json` is the LANDING half's own record (v22)**, and it is a column on the
+-- entry rather than a table or a sentence in `evidence`. Three reasons, in order of weight:
+--
+-- 1. **`evidence` cannot hold it.** The evidence is a sentence a person reads and the queue
+--    OVERWRITES on every move — the landing's own `Landed` sentence is written by the very
+--    move that ends the landing, so rows put there would be destroyed by the write that
+--    records them. And a row of a table is a fact; a row buried in prose is a fact nobody can
+--    read back without parsing English.
+-- 2. **The rows are about ONE entry's landing.** Nothing ever asks for step 2 of an entry by
+--    itself, or for the steps across entries, and the queue's read is the whole queue on every
+--    pass: a table of its own would be a join on that read to serve a question that is always
+--    asked as a whole.
+-- 3. **It is the shape the review half already has.** `merge_review.commands_json` keeps the
+--    commands the reviewer looked at as a JSON array on the review's own row; this is the same
+--    shape one table along, for the landing's own commands.
+--
+-- What a reader of the rows CAN tell: the commands `main`'s `AGENTS.md` declared, in order,
+-- and for each whether it passed, failed, or was never reached — with the tail of its output,
+-- when it started and how long it took. What it CANNOT tell: anything about a previous run of
+-- the gate on the same entry (the rows are replaced whole, so the list is the LAST run and not
+-- a history of attempts), and nothing about a step's environment beyond the command line it
+-- was given.
 CREATE TABLE IF NOT EXISTS merge_queue (
     id          TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL,
@@ -491,7 +520,8 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     created_ms  INTEGER NOT NULL,
     updated_ms  INTEGER NOT NULL,
     worktree    TEXT,
-    landed_sha  TEXT
+    landed_sha  TEXT,
+    gate_steps_json TEXT NOT NULL DEFAULT '[]'   -- v22: one row per gate step, see above
 );
 
 -- The read the daemon does on every pass: the entries in a state, in priority order,
@@ -1172,6 +1202,65 @@ impl MergeState {
     }
 }
 
+/// **One step of the gate, as the landing ran it** — the row the landing half records, one per
+/// command `main`'s `AGENTS.md` declared.
+///
+/// The note's argument for the merge half is that *"the merge queue is a machine. Rebase, then
+/// the gate's steps, then land. Nothing is being decided; something is being run. And a thing
+/// that is being run can be drawn well"* — and a drawing needs the steps, not a verdict. A
+/// landing that records only `failed` can only ever draw `failed`: the niceness is impossible by
+/// construction, not by taste. The review half already carries `commands_json` and `evidence`;
+/// this is the landing half's own.
+///
+/// **The rows live on the entry** ([`MergeEntry::gate_steps`]) and the argument is on the
+/// column in [`SCHEMA_SQL`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MergeGateStep {
+    /// **The command as `main`'s `AGENTS.md` spells it** — the step's identity, and the string
+    /// a person would paste into a shell to reproduce the row.
+    ///
+    /// Empty for exactly one row: the [`MergeGateOutcome::NoGate`] one, where there was no
+    /// command to run. See that variant.
+    pub command: String,
+    /// What became of it, out of [`MergeGateOutcome`]'s closed set.
+    pub outcome: MergeGateOutcome,
+    /// **The tail of what the step wrote**, with the bytes dropped from the front counted —
+    /// see `mergequeue::tail`, which is where the truncation and its admission come from. Empty
+    /// on a step that never ran, which is what `not_run` says rather than an empty output.
+    pub output: String,
+    /// When the step started, Unix ms. `0` on a step that never ran.
+    pub started_ms: u64,
+    /// How long it took, ms. `0` on a step that never ran, and a real `0` for a command that
+    /// took under a millisecond — the outcome is what tells the two apart, not this number.
+    pub elapsed_ms: u64,
+}
+
+/// **What became of one gate step** — the closed set the landing's rows are written in.
+///
+/// Four words, and each is a different fact: a step that ran and was green, a step that ran and
+/// was red, a step the gate never reached because an earlier one was red, and the one row a
+/// repository with **no gate** records. The last is a variant rather than an empty list because
+/// *"the gate declared nothing to run"* and *"the gate has not run yet"* are different facts,
+/// and an empty checklist reads as a third one — *all steps passed* — which is the lie the
+/// operator's own rule forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeGateOutcome {
+    /// It ran, and it was green.
+    Passed,
+    /// It ran, and it was red. Its `output` is the tail that says why.
+    Failed,
+    /// **An earlier step was red, so the gate stopped before this one.** Not `passed`: a step
+    /// that did not run is not a step that was green, and drawing the two the same way is how a
+    /// gate that stopped at the first failure comes to look like a gate that ran everything.
+    NotRun,
+    /// **The repository's `main` declares no gate at all.** One row, with an empty `command` and
+    /// the queue's own sentence in `output`, because there is no command to name — and a row
+    /// rather than an empty list, because the empty list is [`MergeEntry::gate_steps`]'s word
+    /// for *the gate has not run on this entry*.
+    NoGate,
+}
+
 /// **One entry in the merge queue, as the session store keeps it** — the durable half of
 /// the queue the daemon serves.
 ///
@@ -1249,6 +1338,23 @@ pub struct MergeEntry {
     /// last of its dependencies to land, which is the current tip of main because the queue
     /// is serial.
     pub landed_sha: Option<String>,
+    /// **The landing half's own record: one row per gate step, in the order `main` declared
+    /// them** — the command, its outcome, the tail of its output, when it started and how long
+    /// it took ([`MergeGateStep`]). Written as the gate runs, and attached to the move that ends
+    /// the landing, so a `Landed` entry carries the rows of the run that landed it.
+    ///
+    /// **Empty is a fact and it means *the gate has not run on this entry*.** An entry waiting
+    /// for a review, or held for want of a worktree, has run nothing; and the one landing that
+    /// runs no gate — the branch `main` already contains, which is moved to `Landed` without a
+    /// rebase and without a gate — carries the empty list with its evidence sentence saying so.
+    /// It does NOT mean *every step passed*: a gate that ran has a row per step, and a
+    /// repository with no gate has the one [`MergeGateOutcome::NoGate`] row rather than nothing.
+    ///
+    /// **The list is the LAST run and not a history.** A gate re-run on the same entry (the
+    /// operator's restart, a re-take) replaces the rows whole, the way the `job` row is one row
+    /// per handle rather than a log. A reader who needs the history of attempts is asking for
+    /// the session log, which is where the moves are.
+    pub gate_steps: Vec<MergeGateStep>,
 }
 
 /// **One row of the merge queue, before the closed sets are parsed** — the shape the
@@ -1275,6 +1381,7 @@ struct RawMergeEntry {
     updated_ms: i64,
     worktree: Option<String>,
     landed_sha: Option<String>,
+    gate_steps_json: String,
 }
 
 /// The column order the merge-queue `SELECT`s use, read into a [`RawMergeEntry`].
@@ -1293,6 +1400,7 @@ fn merge_entry_raw_from_row(r: &rusqlite::Row) -> rusqlite::Result<RawMergeEntry
         updated_ms: r.get(10)?,
         worktree: r.get(11)?,
         landed_sha: r.get(12)?,
+        gate_steps_json: r.get(13)?,
     })
 }
 
@@ -1321,6 +1429,11 @@ fn merge_entry_from_raw(raw: RawMergeEntry) -> Result<MergeEntry> {
         ))
     })?;
     let needs = serde_json::from_str(&raw.needs_json)?;
+    // **The gate's rows are parsed the way `needs` is**, and a blob this build cannot read is a
+    // refusal rather than an empty list: `[]` is the entry's own word for *the gate has not run*,
+    // so a corrupt blob read as empty would turn *the queue cannot tell you* into *nothing
+    // happened* — the one substitution this file's `Corrupt` variant exists to prevent.
+    let gate_steps = serde_json::from_str(&raw.gate_steps_json)?;
     Ok(MergeEntry {
         id: raw.id,
         session_id: raw.session_id,
@@ -1335,6 +1448,7 @@ fn merge_entry_from_raw(raw: RawMergeEntry) -> Result<MergeEntry> {
         updated_ms: raw.updated_ms as u64,
         worktree: raw.worktree,
         landed_sha: raw.landed_sha,
+        gate_steps,
     })
 }
 
@@ -2401,6 +2515,63 @@ impl Store {
                 )?;
             }
         }
+        if from < 22 {
+            // v22: **the landing half's own rows** — see the `merge_queue` comment in
+            // [`SCHEMA_SQL`] for where they live and why, and [`MergeGateStep`] for what one row
+            // is.
+            //
+            // **`'[]'` on every existing row, and that is the true state of such a row.** A
+            // queue entry written before this column existed has no gate rows because nothing
+            // recorded any: `[]` is the entry's own word for *the gate has not run on this
+            // entry* ([`MergeEntry::gate_steps`]), which is exactly what a row from an older
+            // build can honestly say. Backfilling a `no_gate` row or a row per step would be
+            // this migration inventing a landing it did not witness.
+            //
+            // Guarded rather than a bare `ALTER TABLE`, for the reason v17's `brief` and v20's
+            // `failure` are: a fixture walks a current store backwards by dropping columns and
+            // lowering the version, and a fixture that dropped only some of them would otherwise
+            // fail here with "duplicate column name" — which reads as corruption rather than as
+            // the idempotence every other step in this function has.
+            //
+            // **The table first, in its v22 shape, `IF NOT EXISTS`** — the v5, v16 and v20 arms'
+            // posture, for their reason: a migrated store never runs `SCHEMA_SQL`, and a fixture
+            // may arrive at this version with no `merge_queue` table at all (the stood-down
+            // fixture builds a bare v18 store and jumps straight here). On a real v21 store this
+            // is a no-op and the guarded `ALTER` below does the work; on a bare one it IS the
+            // work.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS merge_queue (
+                      id          TEXT PRIMARY KEY,
+                      session_id  TEXT NOT NULL,
+                      branch      TEXT NOT NULL,
+                      base_sha    TEXT NOT NULL,
+                      priority    TEXT NOT NULL,
+                      needs_json  TEXT NOT NULL,
+                      state       TEXT NOT NULL,
+                      brief       TEXT NOT NULL DEFAULT '',
+                      evidence    TEXT NOT NULL,
+                      created_ms  INTEGER NOT NULL,
+                      updated_ms  INTEGER NOT NULL,
+                      worktree    TEXT,
+                      landed_sha  TEXT,
+                      gate_steps_json TEXT NOT NULL DEFAULT '[]'
+                  );
+                  CREATE INDEX IF NOT EXISTS merge_queue_state_idx
+                      ON merge_queue (state, priority, created_ms);",
+            )?;
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'gate_steps_json'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn.execute_batch(
+                    "ALTER TABLE merge_queue ADD COLUMN gate_steps_json TEXT NOT NULL DEFAULT '[]'",
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -3148,6 +3319,14 @@ impl Store {
     /// [`Store::put_job`] stamps it: the store is the clock, and a caller that supplies its
     /// own would be a caller that could backdate a move. `created_ms` is the entry's, because
     /// it is the enqueue time and the enqueue is the entry's own act.
+    ///
+    /// **`gate_steps_json` is written by this call like every other field, and that is
+    /// deliberate**: the landing's rows are attached to the move that ends the landing, so a
+    /// move that carries rows writes them and a move that carries none writes the empty list —
+    /// *the gate has not run on this entry* ([`MergeEntry::gate_steps`]). A field-by-field merge
+    /// in the style of [`Store::put_job`] would let rows from an earlier gate run survive a move
+    /// that had none, which is exactly the *"a landing that records only a verdict"* confusion
+    /// this column exists to end.
     /// **Take a waiting entry, or learn that somebody else has** — one `UPDATE … WHERE state =
     /// 'waiting'`, so two daemons over one store cannot both take the same branch: exactly one
     /// of them sees `true`. The row moves to `taken`; the caller writes the rest of the move.
@@ -3164,12 +3343,12 @@ impl Store {
         self.conn.execute(
             "INSERT INTO merge_queue
                 (id, session_id, branch, base_sha, priority, needs_json, state, brief, evidence,
-                 created_ms, updated_ms, worktree, landed_sha)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 created_ms, updated_ms, worktree, landed_sha, gate_steps_json)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
               ON CONFLICT(id) DO UPDATE SET
                 session_id = ?2, branch = ?3, base_sha = ?4, priority = ?5, needs_json = ?6,
                 state = ?7, brief = ?8, evidence = ?9, updated_ms = ?11, worktree = ?12,
-                landed_sha = ?13",
+                landed_sha = ?13, gate_steps_json = ?14",
             params![
                 entry.id,
                 entry.session_id,
@@ -3184,6 +3363,7 @@ impl Store {
                 now_ms(),
                 entry.worktree,
                 entry.landed_sha,
+                serde_json::to_string(&entry.gate_steps)?,
             ],
         )?;
         Ok(())
@@ -3200,7 +3380,7 @@ impl Store {
     pub fn merge_entries(&self) -> Result<Vec<MergeEntry>> {
         let mut st = self.conn.prepare(
             "SELECT id, session_id, branch, base_sha, priority, needs_json, state, brief,
-                    evidence, created_ms, updated_ms, worktree, landed_sha
+                    evidence, created_ms, updated_ms, worktree, landed_sha, gate_steps_json
                FROM merge_queue ORDER BY created_ms, id",
         )?;
         let rows = st.query_map([], merge_entry_raw_from_row)?;
@@ -3215,7 +3395,7 @@ impl Store {
     pub fn merge_entry(&self, id: &str) -> Result<Option<MergeEntry>> {
         let mut st = self.conn.prepare(
             "SELECT id, session_id, branch, base_sha, priority, needs_json, state, brief,
-                    evidence, created_ms, updated_ms, worktree, landed_sha
+                    evidence, created_ms, updated_ms, worktree, landed_sha, gate_steps_json
                FROM merge_queue WHERE id = ?1",
         )?;
         let raw: Option<RawMergeEntry> = st
@@ -4647,6 +4827,24 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some("/wt/agent-merge-queue".into()),
             landed_sha: None,
+            // **The landing half's rows, on the row they belong to.** Two of them, one per step,
+            // because one row could be a coincidence of a field that happens to serialise.
+            gate_steps: vec![
+                MergeGateStep {
+                    command: "cargo fmt --all -- --check".into(),
+                    outcome: MergeGateOutcome::Passed,
+                    output: String::new(),
+                    started_ms: 1_000,
+                    elapsed_ms: 12,
+                },
+                MergeGateStep {
+                    command: "cargo test --workspace".into(),
+                    outcome: MergeGateOutcome::Failed,
+                    output: "… [4096 byte(s) dropped from the front]\n2 failed".into(),
+                    started_ms: 1_012,
+                    elapsed_ms: 9_000,
+                },
+            ],
         };
         {
             let s = Store::open(&path).expect("a store");
@@ -4672,6 +4870,10 @@ mod tests {
             assert_eq!(back[0].created_ms, enqueued.created_ms);
             assert_eq!(back[0].worktree, enqueued.worktree);
             assert_eq!(back[0].landed_sha, enqueued.landed_sha);
+            assert_eq!(
+                back[0].gate_steps, enqueued.gate_steps,
+                "the landing's rows are the entry's own, and they survive the round trip"
+            );
 
             // **And the move is the SAME row.** An entry has one state at a time, so the
             // second write updates it — a table that appended would make `merge_entries()` a
@@ -4738,6 +4940,7 @@ mod tests {
             updated_ms: 1,
             worktree: None,
             landed_sha: None,
+            gate_steps: vec![],
         })
         .expect("the entry");
         s.put_review(&ReviewRecord {
@@ -4825,6 +5028,7 @@ mod tests {
             updated_ms: 1,
             worktree: Some("/wt".into()),
             landed_sha: None,
+            gate_steps: vec![],
         };
         // **A verdict on every one of the seven**, so "cleared" and "left alone" are both
         // claims about a row that had something to clear.
@@ -4951,6 +5155,7 @@ mod tests {
             updated_ms: 1,
             worktree: Some("/wt".into()),
             landed_sha: None,
+            gate_steps: vec![],
         };
         let failed = entry("m-1", MergeState::Failed);
         s.put_merge_entry(&failed).expect("the entry");
@@ -5097,6 +5302,7 @@ mod tests {
             updated_ms: 1,
             worktree: Some("/wt".into()),
             landed_sha: None,
+            gate_steps: vec![],
         };
         let review = |id: &str| ReviewRecord {
             entry_id: id.into(),
@@ -5225,6 +5431,87 @@ mod tests {
         assert_eq!(back, verdict, "a v19 verdict reads back unchanged");
         assert_eq!(back.attempts, 0, "and reads as no failed attempt");
         assert_eq!(back.failure, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A v21 store gains the landing half's column, and its existing rows read as *the gate has
+    /// not run*.** `[]` is that fact and not *every step passed* — a row written before this
+    /// column existed has no gate rows because nothing recorded any, which is exactly what the
+    /// empty list means.
+    #[test]
+    fn a_v21_store_gains_the_gate_step_column() {
+        let dir = std::env::temp_dir().join(format!("letibot-migrate-v22-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let old = MergeEntry {
+            id: "m-old".into(),
+            session_id: "s-1".into(),
+            branch: "agent/x".into(),
+            base_sha: "abc".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: None,
+            landed_sha: None,
+            gate_steps: vec![],
+        };
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_merge_entry(&old).unwrap();
+        }
+        {
+            // Walk the store back to v21: the column goes, and the version with it — the same
+            // shape the v19 and v20 fixtures use, one version along.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "ALTER TABLE merge_queue DROP COLUMN gate_steps_json;
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version (version) VALUES (21);",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).expect("the migration runs");
+        let back = s.merge_entry("m-old").unwrap().unwrap();
+        // `updated_ms` is the store's clock (`put_merge_entry`), so it is normalized away rather
+        // than asserted — everything else is the row the v21 store wrote.
+        assert_eq!(
+            MergeEntry {
+                updated_ms: back.updated_ms,
+                ..old.clone()
+            },
+            back,
+            "a v21 entry reads back unchanged"
+        );
+        assert!(
+            back.gate_steps.is_empty(),
+            "and reads as *the gate has not run on it*: {:?}",
+            back.gate_steps
+        );
+
+        // **And the column is writeable through the API it exists for**, which is the half a
+        // migration that only added a column would not prove.
+        let with_rows = MergeEntry {
+            state: MergeState::Landed,
+            evidence: "landed at def456".into(),
+            landed_sha: Some("def456".into()),
+            gate_steps: vec![MergeGateStep {
+                command: "make test".into(),
+                outcome: MergeGateOutcome::Passed,
+                output: "ok".into(),
+                started_ms: 5,
+                elapsed_ms: 6,
+            }],
+            ..old.clone()
+        };
+        s.put_merge_entry(&with_rows).unwrap();
+        let moved = s.merge_entry("m-old").unwrap().unwrap();
+        assert_eq!(moved.gate_steps, with_rows.gate_steps);
+        assert_eq!(moved.gate_steps[0].command, "make test");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5366,6 +5653,7 @@ mod tests {
                 updated_ms: 1,
                 worktree: None,
                 landed_sha: None,
+                gate_steps: vec![],
             };
             s.put_merge_entry(&entry)
                 .expect("a row through the migrated table");

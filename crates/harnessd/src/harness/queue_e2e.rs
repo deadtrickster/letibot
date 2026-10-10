@@ -73,7 +73,7 @@ use letibot_tools::builtins::task::{Finished, TaskRunner as _, WorktreePlacement
 use letibot_tools::gatekeeper::NoReviewer;
 
 use super::*;
-use crate::mergequeue::{MergeQueueDaemon, REVIEWER_SESSION_ID, StepOutcome};
+use crate::mergequeue::{GateRun, MergeQueueDaemon, REVIEWER_SESSION_ID, StepOutcome};
 
 /// **The branch every child in this file is on** — `worktree_branch`'s own shape,
 /// `agent/<slug>`, so a name that reaches the queue here is a name `task_start` produces.
@@ -329,7 +329,7 @@ fn daemon(fx: &Fixture, repo: &Path) -> MergeQueueDaemon {
     MergeQueueDaemon::new(
         fx.store(),
         repo.to_path_buf(),
-        Box::new(|_: &Path| Ok(())),
+        Box::new(|_: &Path| GateRun::green()),
         Box::new(NoReviewer),
         Box::new(|_: SessionEvent| {}),
     )

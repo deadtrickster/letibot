@@ -1313,6 +1313,7 @@ fn queue_entry(
         updated_ms: 1_000,
         worktree: None,
         landed_sha: None,
+        gate_steps: Vec::new(),
     }
 }
 

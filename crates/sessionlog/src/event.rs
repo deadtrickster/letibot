@@ -356,6 +356,69 @@ pub struct MergeEntry {
     /// The tip the entry landed at, set when it moves to `Landed`.
     #[serde(default)]
     pub landed_sha: Option<String>,
+    /// **The landing half's rows: one per gate step, in the order `main` declared them** — a
+    /// copy of `letibot_tokencore::store::MergeGateStep`, for the reason [`MergeEntry`] is a copy
+    /// of its own row.
+    ///
+    /// **`serde(default)`, so no `PROTOCOL_VERSION` bump** — this file's own test for whether a
+    /// bump is owed: an older head ignores an unknown key and draws exactly the row it drew
+    /// before, and a newer head reading an older daemon sees `[]` and draws the same row,
+    /// because *the gate has not run on this entry* is what a daemon from before this field can
+    /// honestly say. Nothing here is a word an older peer cannot DECODE, which is the one thing
+    /// the bumps in this file are for.
+    ///
+    /// **It is on the wire because the note's argument for the merge half is that a thing being
+    /// RUN can be drawn well**, and a drawing needs the steps rather than a verdict: a head
+    /// handed only `failed` can only ever draw `failed`. Empty is a fact and not a missing one —
+    /// see the store's own doc on the field — and a repository with no gate sends the one
+    /// [`MergeGateOutcome::NoGate`] row rather than nothing.
+    ///
+    /// **The live half of it does not travel.** [`SessionEvent::MergeEntryMoved`] carries a
+    /// state and an evidence sentence and not a whole entry, so a head folding a move keeps the
+    /// rows from the snapshot it last read; the rows are written by the move that ENDS a
+    /// landing, which is exactly the move a head re-reads the queue after.
+    #[serde(default)]
+    pub gate_steps: Vec<MergeGateStep>,
+}
+
+/// **One gate step, on the wire** — a copy of `letibot_tokencore::store::MergeGateStep`, for the
+/// reason [`MergeEntry`] is a copy of its own row: the head draws it and must not be able to
+/// write one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeGateStep {
+    /// The command as `main`'s `AGENTS.md` spells it. Empty for exactly one row — the
+    /// [`MergeGateOutcome::NoGate`] one, where there was no command to run.
+    pub command: String,
+    /// What became of it, out of [`MergeGateOutcome`]'s closed set.
+    pub outcome: MergeGateOutcome,
+    /// The tail of what the step wrote, with the bytes dropped from the front counted.
+    #[serde(default)]
+    pub output: String,
+    /// When the step started, Unix ms. `0` on a step that never ran.
+    #[serde(default)]
+    pub started_ms: u64,
+    /// How long it took, ms. `0` on a step that never ran.
+    #[serde(default)]
+    pub elapsed_ms: u64,
+}
+
+/// **What became of one gate step**, on the wire — a copy of
+/// `letibot_tokencore::store::MergeGateOutcome`, for the reason [`MergeState`] is a copy.
+///
+/// `passed`, `failed`, `not_run` and `no_gate` are four different facts and a head must not
+/// collapse them: a step that never ran is not a step that was green, and a repository with no
+/// gate is not a gate that passed everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeGateOutcome {
+    /// It ran, and it was green.
+    Passed,
+    /// It ran, and it was red; `output` is the tail that says why.
+    Failed,
+    /// An earlier step was red, so the gate stopped before this one.
+    NotRun,
+    /// The repository's `main` declares no gate at all.
+    NoGate,
 }
 
 /// **The reviewer's verdict on one entry, on the wire** — a copy of

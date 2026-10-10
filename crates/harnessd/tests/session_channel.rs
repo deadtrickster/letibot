@@ -1055,6 +1055,7 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
             updated_ms: 1,
             worktree: Some(dir.relative()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         })
         .expect("the entry");
     store

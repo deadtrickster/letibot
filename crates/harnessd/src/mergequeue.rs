@@ -49,7 +49,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
-use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, Store};
+use letibot_tokencore::store::{
+    MergeEntry, MergeGateOutcome, MergeGateStep, MergePriority, MergeState, Store,
+};
 
 // ===== The pure core: the state machine, with no store, no git and no thread =====
 
@@ -568,26 +570,148 @@ pub fn gate_target_dir(worktree: &Path) -> PathBuf {
 }
 
 /// **Run the gate** — `main`'s steps, in order, each through `sh -c` in the entry's worktree
-/// after the rebase. The first that fails is the answer, with the tail of its output; there is
-/// no `--continue`, because a gate that ran everything after a red step would spend minutes to
-/// say what the first line already said.
+/// after the rebase. The first that fails ends the run, and every step the gate declared leaves
+/// a row: the ones that ran with their outcome, the tail of their output and their timing, and
+/// the ones after a red step marked [`MergeGateOutcome::NotRun`] rather than passed. There is no
+/// `--continue`, because a gate that ran everything after a red step would spend minutes to say
+/// what the first line already said — and the rows say the rest did not run, which is the fact a
+/// reader needs and a shortened list would not give.
 ///
 /// **And the build is pointed inside that worktree** ([`GATE_TARGET_DIR`]), because the entry's
 /// own `.cargo/config.toml` points it at the main tree's `target/` and the artifacts there were
 /// built from sources that are not this branch's. A gate that judged a branch on another tree's
 /// build is a gate that is red for every branch, whatever the branch does.
-pub fn repo_gate(worktree: &Path) -> Result<(), String> {
-    let steps = gate_on_main(worktree)?.ok_or_else(|| {
-        "there is no merge gate on main (a `Merge gate` section in AGENTS.md)".to_string()
-    })?;
+///
+/// **A repository with no gate is a row and not an empty list.** `main` without a `Merge gate`
+/// section yields the one [`MergeGateOutcome::NoGate`] row ([`GateRun::no_gate`]) carrying the
+/// queue's own sentence, because the empty list is the entry's word for *the gate has not run*
+/// and a blank checklist would read as *every step passed* — the one reading that must not be
+/// available for a repository nobody has configured.
+pub fn repo_gate(worktree: &Path) -> GateRun {
+    let steps = match gate_on_main(worktree) {
+        Ok(Some(steps)) => steps,
+        Ok(None) => {
+            return GateRun::no_gate(
+                "`main` has no `Merge gate` section in AGENTS.md, so there is no step to run",
+            );
+        }
+        Err(e) => {
+            return GateRun::no_gate(&format!("the merge gate could not be read from main: {e}"));
+        }
+    };
     let target = gate_target_dir(worktree).to_string_lossy().into_owned();
     let env = [(GATE_TARGET_DIR, target.as_str())];
-    for step in steps {
-        if let Err(out) = run_captured_env(worktree, &env, "sh", &["-c", &step]) {
-            return Err(format!("`{step}` failed:\n{}", tail(&out, EVIDENCE_BYTES)));
+    let mut rows: Vec<MergeGateStep> = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let started_ms = gate_now_ms();
+        let out = run_captured_env(worktree, &env, "sh", &["-c", step]);
+        let elapsed_ms = gate_now_ms().saturating_sub(started_ms);
+        match out {
+            Ok(text) => rows.push(step_row(
+                step,
+                MergeGateOutcome::Passed,
+                &text,
+                started_ms,
+                elapsed_ms,
+            )),
+            Err(text) => {
+                rows.push(step_row(
+                    step,
+                    MergeGateOutcome::Failed,
+                    &text,
+                    started_ms,
+                    elapsed_ms,
+                ));
+                // **The steps the gate never reached are on the entry too, and marked.** A list
+                // that stopped at the red step would leave a reader unable to tell *the gate had
+                // three steps and the third was never tried* from *the gate had two steps and
+                // both were green* — the two draw identically and only one of them is the truth.
+                rows.extend(steps[i + 1..].iter().map(|s| MergeGateStep {
+                    command: s.clone(),
+                    outcome: MergeGateOutcome::NotRun,
+                    // Empty rather than a placeholder sentence: the outcome word is the fact, and
+                    // prose here would be this code writing a step's output for it.
+                    output: String::new(),
+                    started_ms: 0,
+                    elapsed_ms: 0,
+                }));
+                return GateRun {
+                    steps: rows,
+                    failure: Some(format!("`{step}` failed:\n{}", tail(&text, EVIDENCE_BYTES))),
+                };
+            }
         }
     }
-    Ok(())
+    GateRun {
+        steps: rows,
+        failure: None,
+    }
+}
+
+/// **The clock the gate's rows are stamped with**, Unix ms.
+///
+/// The same reading the daemon's pass takes (`crate::config::now_ns`), so a row's `started_ms`
+/// and the move that carries it are on one clock and a reader can subtract them.
+fn gate_now_ms() -> u64 {
+    (crate::config::now_ns() / 1_000_000) as u64
+}
+
+/// **One step's row**, with the same output cap the evidence uses: the failure is at the END of
+/// a failing step's output, and a passing step's output is kept for the same reason the failing
+/// one's is — a row a person reads should be the step's own words and not a summary of them.
+fn step_row(
+    command: &str,
+    outcome: MergeGateOutcome,
+    output: &str,
+    started_ms: u64,
+    elapsed_ms: u64,
+) -> MergeGateStep {
+    MergeGateStep {
+        command: command.to_string(),
+        outcome,
+        output: tail(output, EVIDENCE_BYTES),
+        started_ms,
+        elapsed_ms,
+    }
+}
+
+/// **What one run of the gate leaves behind** — the rows a landing records, and the failure's own
+/// words when the run was red.
+///
+/// The two are one value rather than a `Result` because they are not alternatives: a red run has
+/// BOTH its rows (the steps that ran and the ones it never reached) and the sentence the entry's
+/// `evidence` carries. A `Result<Vec<MergeGateStep>, String>` would make the rows something a
+/// caller could drop on the failing path, which is the defect this whole change is about.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GateRun {
+    /// One row per step `main` declared, in order — see [`repo_gate`].
+    pub steps: Vec<MergeGateStep>,
+    /// The gate's own words when it is red, or `None` when it is green.
+    pub failure: Option<String>,
+}
+
+impl GateRun {
+    /// **A green run of a gate that declared nothing** — the test's no-op gate, and the honest
+    /// row set for a gate that ran no step at all.
+    pub fn green() -> Self {
+        Self::default()
+    }
+
+    /// **A repository with no gate, as one row.** The command is empty because there was no
+    /// command to name, and `reason` is the queue's own sentence — see [`MergeGateOutcome::NoGate`]
+    /// for why this is a row and not an empty list.
+    pub fn no_gate(reason: &str) -> Self {
+        Self {
+            steps: vec![MergeGateStep {
+                command: String::new(),
+                outcome: MergeGateOutcome::NoGate,
+                output: reason.to_string(),
+                started_ms: gate_now_ms(),
+                elapsed_ms: 0,
+            }],
+            failure: Some(reason.to_string()),
+        }
+    }
 }
 
 // ===== The wire: the store's row as a head reads it =====
@@ -621,6 +745,26 @@ pub fn wire_entry(entry: &MergeEntry) -> letibot_sessionlog::event::MergeEntry {
         updated_ms: entry.updated_ms,
         worktree: entry.worktree.clone(),
         landed_sha: entry.landed_sha.clone(),
+        gate_steps: entry.gate_steps.iter().map(wire_gate_step).collect(),
+    }
+}
+
+/// **One gate step, as the wire spells it** — the same `match` [`wire_entry`] makes on the
+/// states, on its own so the copy of the closed set is one place. A word added on either side
+/// fails to compile HERE rather than arriving at a head as an outcome nobody can draw.
+pub fn wire_gate_step(step: &MergeGateStep) -> letibot_sessionlog::event::MergeGateStep {
+    use letibot_sessionlog::event as wire;
+    wire::MergeGateStep {
+        command: step.command.clone(),
+        outcome: match step.outcome {
+            MergeGateOutcome::Passed => wire::MergeGateOutcome::Passed,
+            MergeGateOutcome::Failed => wire::MergeGateOutcome::Failed,
+            MergeGateOutcome::NotRun => wire::MergeGateOutcome::NotRun,
+            MergeGateOutcome::NoGate => wire::MergeGateOutcome::NoGate,
+        },
+        output: step.output.clone(),
+        started_ms: step.started_ms,
+        elapsed_ms: step.elapsed_ms,
     }
 }
 
@@ -751,6 +895,10 @@ pub fn entry_for_finished(
         updated_ms: now_ms,
         worktree: Some(placement.path.clone()),
         landed_sha: None,
+        // **No rows, and it means *the gate has not run on this entry yet*.** The landing half
+        // writes them ([`MergeGateStep`]) as the gate runs; an enqueued entry has been gated by
+        // nothing.
+        gate_steps: Vec::new(),
     })
 }
 
@@ -2234,15 +2382,17 @@ pub fn review_exhausted_evidence(
 pub struct MergeQueueDaemon {
     store: Store,
     repo: PathBuf,
-    /// The gate: the same checks CI runs, as a function of the worktree. `Ok` is green, and
-    /// `Err` is the reason the gate failed, in the gate's own words.
+    /// **The gate**: the steps `main` declared, run at the tip, as a function of the worktree.
+    /// It returns a [`GateRun`] — the rows the landing records (one per step, in order) and the
+    /// gate's own words when it is red — rather than a bare verdict, because a landing that
+    /// records only `failed` can only ever be DRAWN as `failed`.
     ///
     /// A function rather than a fixed command list, for the reason the test needs it: the
-    /// production gate is `cargo fmt`, `cargo clippy`, `cargo test` and a release build, and
-    /// the test gate is a no-op, and both are *the gate* — the thing that runs at the tip
-    /// after the rebase. The seam is the function, and the production wiring fills it with
-    /// the CI commands.
-    gate: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
+    /// production gate is `main`'s own `Merge gate` section ([`repo_gate`]), and the test gate
+    /// is a no-op ([`GateRun::green`]), and both are *the gate* — the thing that runs at the tip
+    /// after the rebase. The seam is the function, and the production wiring fills it with the
+    /// repository's own commands.
+    gate: Box<dyn Fn(&Path) -> GateRun + Send>,
     /// **Whether the repository has a gate at all**, asked before an entry is taken — `Err` is
     /// why it has not, and the entry waits with that on its row. Always ready unless set
     /// ([`Self::with_gate_check`]): the production wiring asks `main`'s AGENTS.md
@@ -2281,7 +2431,7 @@ impl MergeQueueDaemon {
     pub fn new(
         store: Store,
         repo: PathBuf,
-        gate: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
+        gate: Box<dyn Fn(&Path) -> GateRun + Send>,
         reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send>,
         events: Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send>,
     ) -> Self {
@@ -2427,7 +2577,7 @@ impl MergeQueueDaemon {
                             // Written only when it changes, since every pass asks again.
                             Ok(said) => {
                                 if entry.evidence != said {
-                                    self.move_to(entry, MergeState::Waiting, said, None)?;
+                                    self.move_to(entry, MergeState::Waiting, said, None, None)?;
                                 }
                             }
                             Err(e) => {
@@ -2438,6 +2588,7 @@ impl MergeQueueDaemon {
                                     entry,
                                     MergeState::Waiting,
                                     format!("the gatekeeper could not be asked: {e}"),
+                                    None,
                                     None,
                                 )?;
                             }
@@ -2450,7 +2601,7 @@ impl MergeQueueDaemon {
                     ReviewRetry::Wait { in_ms } => {
                         let said = review_failed_evidence(review, in_ms);
                         if entry.evidence != said {
-                            self.move_to(entry, MergeState::Waiting, said, None)?;
+                            self.move_to(entry, MergeState::Waiting, said, None, None)?;
                         }
                     }
                     // **The attempts are spent: park it, with the failure's own words.** A
@@ -2459,7 +2610,7 @@ impl MergeQueueDaemon {
                     // stays for the same reason: the tree is where the reason is.
                     ReviewRetry::Exhausted => {
                         let said = review_exhausted_evidence(entry, review);
-                        self.move_to(entry, MergeState::Failed, said, None)?;
+                        self.move_to(entry, MergeState::Failed, said, None, None)?;
                         return Ok(StepOutcome::ReviewGaveUp);
                     }
                 },
@@ -2469,7 +2620,7 @@ impl MergeQueueDaemon {
                     // review is that shape exactly: the work stays, the worktree stays, and a
                     // person answers it. A state of its own would say the same thing one word
                     // further out and would cost a protocol bump to draw.
-                    self.move_to(entry, MergeState::Failed, verdict, None)?;
+                    self.move_to(entry, MergeState::Failed, verdict, None, None)?;
                     return Ok(StepOutcome::Refused);
                 }
             }
@@ -2493,7 +2644,13 @@ impl MergeQueueDaemon {
         let repo = self.repo_for(&entry);
         if let Err(why) = (self.gate_ready)(&repo) {
             if entry.evidence != why {
-                self.move_to(&entry, MergeState::Waiting, why, None)?;
+                // **The absence is recorded on the entry as its own row.** The queue holds the
+                // branch rather than failing it, and the row says WHY in the landing half's own
+                // vocabulary ([`MergeGateOutcome::NoGate`]) rather than leaving the checklist
+                // empty — an empty list is *the gate has not run*, and a pane drawing it as
+                // *every step passed* is the one reading this row exists to make unavailable.
+                let run = GateRun::no_gate(&why);
+                self.move_to(&entry, MergeState::Waiting, why, None, Some(run.steps))?;
                 // **And the project's agent is told**, once — the operator: *"let main project
                 // agent manage it"*. A door that could not reach anybody is said, not swallowed.
                 if let Err(e) = self.reviewer.gate_missing(&entry.id) {
@@ -2541,7 +2698,13 @@ impl MergeQueueDaemon {
                     entry.branch,
                     letibot_sessionlog::registry::short_id(&entry.id)
                 );
-                self.move_to(&entry, MergeState::Landed, evidence, Some(tip.to_string()))?;
+                self.move_to(
+                    &entry,
+                    MergeState::Landed,
+                    evidence,
+                    Some(tip.to_string()),
+                    None,
+                )?;
                 return Ok(StepOutcome::Landed(tip.to_string()));
             }
         }
@@ -2561,6 +2724,7 @@ impl MergeQueueDaemon {
             MergeState::Taken,
             "rebasing at the tip".into(),
             None,
+            None,
         )?;
 
         // **Rebase it at the tip**: onto the current main, not the SHA it was written
@@ -2579,18 +2743,24 @@ impl MergeQueueDaemon {
                 MergeState::Waiting,
                 "no worktree: the branch is not checked out".into(),
                 None,
+                None,
             )?;
             return Ok(StepOutcome::Idle);
         }
         let worktree = Path::new(worktree);
         if let Err(e) = rebase(worktree, base) {
-            self.move_to(&entry, MergeState::Conflict, e, None)?;
+            self.move_to(&entry, MergeState::Conflict, e, None, None)?;
             return Ok(StepOutcome::Conflict);
         }
 
-        // **Run the gate**, at the tip, on the rebased branch.
-        if let Err(e) = (self.gate)(worktree) {
-            self.move_to(&entry, MergeState::Failed, e, None)?;
+        // **Run the gate**, at the tip, on the rebased branch — and the run's rows ride the
+        // move that ends it, whichever way it ends. This is the whole of the change: the
+        // landing half records one row per step (the command, its outcome, the tail of its
+        // output, when it started and how long it took), so that a landing can be DRAWN rather
+        // than only judged.
+        let run = (self.gate)(worktree);
+        if let Some(e) = run.failure {
+            self.move_to(&entry, MergeState::Failed, e, None, Some(run.steps))?;
             return Ok(StepOutcome::Failed);
         }
 
@@ -2598,21 +2768,23 @@ impl MergeQueueDaemon {
         let tip = match fast_forward_main(&repo, &entry.branch) {
             Ok(tip) => tip,
             Err(e) => {
-                self.move_to(&entry, MergeState::Failed, e, None)?;
+                self.move_to(&entry, MergeState::Failed, e, None, Some(run.steps))?;
                 return Ok(StepOutcome::Failed);
             }
         };
         if let Err(e) = push_main(&repo) {
-            self.move_to(&entry, MergeState::Failed, e, None)?;
+            self.move_to(&entry, MergeState::Failed, e, None, Some(run.steps))?;
             return Ok(StepOutcome::Failed);
         }
 
-        // **Land it**: the row carries the tip, and the cleanup the state owns runs.
+        // **Land it**: the row carries the tip and the gate's rows, and the cleanup the state
+        // owns runs.
         self.move_to(
             &entry,
             MergeState::Landed,
             format!("landed at {tip}"),
             Some(tip.clone()),
+            Some(run.steps),
         )?;
 
         Ok(StepOutcome::Landed(tip))
@@ -2627,18 +2799,30 @@ impl MergeQueueDaemon {
     /// daemon's [`Self::recover`] and its cleanup are both idempotent. `landed_sha` is set only
     /// where there is one to set: a move that is not a landing carries the entry's own, which
     /// is `None` for an entry that has not landed.
+    ///
+    /// **`gate_steps` is `Some` on exactly the moves that have something to say about the
+    /// gate** — the landing's own two (`Landed` and the `Failed` a red step parks), and the
+    /// hold that records *this repository has no gate*. `None` leaves the entry's rows as they
+    /// are, which for every other move is the empty list the enqueuer wrote: a review that has
+    /// not answered, a veto, a restart and a conflict have run no step, and a move that wrote
+    /// the empty list over rows an earlier gate run left would be the queue forgetting a
+    /// landing it witnessed.
     fn move_to(
         &self,
         entry: &MergeEntry,
         state: MergeState,
         evidence: String,
         landed_sha: Option<String>,
+        gate_steps: Option<Vec<MergeGateStep>>,
     ) -> Result<(), letibot_tokencore::store::StoreError> {
         let mut moved = entry.clone();
         moved.state = state;
         moved.evidence = evidence;
         if landed_sha.is_some() {
             moved.landed_sha = landed_sha;
+        }
+        if let Some(steps) = gate_steps {
+            moved.gate_steps = steps;
         }
         self.store.put_merge_entry(&moved)?;
         clean_up(&self.repo_for(entry), entry, state);
@@ -2999,6 +3183,7 @@ mod tests {
             updated_ms: created_ms,
             worktree: None,
             landed_sha: None,
+            gate_steps: Vec::new(),
         }
     }
 
@@ -3614,6 +3799,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(other_wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &other_entry);
         approve(&db, "m-other");
@@ -3633,6 +3819,7 @@ mod tests {
             updated_ms: 2_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &feature_entry);
         approve(&db, "m-land");
@@ -3642,7 +3829,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -3738,6 +3925,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         // An accepting verdict, so the queue may TAKE it: this is about what the pass does with
@@ -3895,6 +4083,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(other_wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &other_entry);
         approve(&db, "m-other");
@@ -3914,6 +4103,7 @@ mod tests {
             updated_ms: 2_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &feature_entry);
         approve(&db, "m-conflict");
@@ -3921,7 +4111,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -3980,6 +4170,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         approve(&db, "m-failed");
@@ -3988,7 +4179,29 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Err("the gate is red".into())),
+            // **A red run with the rows it leaves behind**: the failing step carries the gate's
+            // own words and the one after it is marked not-run rather than passed — see
+            // `a_failing_step_records_its_tail_and_the_rest_are_not_run` for the same shape
+            // against a real `AGENTS.md`.
+            Box::new(|_| GateRun {
+                steps: vec![
+                    MergeGateStep {
+                        command: "cargo fmt --check".into(),
+                        outcome: MergeGateOutcome::Failed,
+                        output: "the gate is red".into(),
+                        started_ms: 1_000,
+                        elapsed_ms: 5,
+                    },
+                    MergeGateStep {
+                        command: "cargo test".into(),
+                        outcome: MergeGateOutcome::NotRun,
+                        output: String::new(),
+                        started_ms: 0,
+                        elapsed_ms: 0,
+                    },
+                ],
+                failure: Some("the gate is red".into()),
+            }),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -4008,6 +4221,17 @@ mod tests {
             failed.evidence, "the gate is red",
             "the row has the gate's words"
         );
+        // **And the landing half's rows came with the move.** A parked entry whose row said
+        // only `failed` is exactly what this change is about.
+        assert_eq!(
+            failed.gate_steps.len(),
+            2,
+            "one row per step the gate declared: {:?}",
+            failed.gate_steps
+        );
+        assert_eq!(failed.gate_steps[0].outcome, MergeGateOutcome::Failed);
+        assert_eq!(failed.gate_steps[1].outcome, MergeGateOutcome::NotRun);
+        assert_eq!(failed.gate_steps[1].command, "cargo test");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4035,6 +4259,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(_wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
 
@@ -4042,7 +4267,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -4085,6 +4310,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
 
@@ -4106,7 +4332,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             Box::new(Shared(door.clone())),
             quiet_events(),
         );
@@ -4162,6 +4388,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         // The verdict, written by the reviewer's own half — a reject with a reason and the
@@ -4187,7 +4414,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -4247,6 +4474,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         store_at(&db)
@@ -4269,7 +4497,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -4359,13 +4587,14 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         // The door refuses, which is what a daemon with no reviewer session does.
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             Box::new(RecordingReviewer::default()),
             quiet_events(),
         );
@@ -4416,6 +4645,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         approve(&db, "m-events");
@@ -4424,7 +4654,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             events.sink(),
         );
@@ -4486,6 +4716,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
         enqueue(&db, &entry);
         store_at(&db)
@@ -4509,7 +4740,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             events.sink(),
         );
@@ -4557,6 +4788,7 @@ mod tests {
             updated_ms: 1_000,
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
+            gate_steps: Vec::new(),
         };
 
         // **Every state that keeps its tree, driven through the rule.** These are the states
@@ -4616,6 +4848,11 @@ mod tests {
     /// (and the queue holds the entry rather than failing it); a section is its steps, run in
     /// order through `sh -c`, the first red one ending the run; and a branch that rewrote the
     /// section to pass is still judged by `main`'s.
+    ///
+    /// **And every step the gate declared leaves a ROW**, which is the half this test grew: the
+    /// step that ran green, the step that was red with the tail of its output, and the step the
+    /// run never reached — marked [`MergeGateOutcome::NotRun`] rather than passed, because a list
+    /// that stopped at the red step cannot be told from a shorter gate that was all green.
     #[test]
     fn the_gate_is_mains_agents_md_and_the_first_red_step_ends_it() {
         let dir = std::env::temp_dir().join(format!("letibot-mq-gate-{}", std::process::id()));
@@ -4656,10 +4893,45 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "gate"]);
         assert!(gate_configured(&dir).is_ok());
-        let err = repo_gate(&dir).expect_err("the second step is red");
+        let run = repo_gate(&dir);
+        let err = run.failure.expect("the second step is red");
         assert!(
             err.contains("exit 3") && err.contains("red-step"),
             "{err:?}"
+        );
+        // **The three rows, in the order `main` declared them.** The first ran and was green,
+        // the second ran and was red with the failing command's own output as its tail, and the
+        // third — the step after the red one — is `not_run`, which is not `passed`.
+        assert_eq!(
+            run.steps
+                .iter()
+                .map(|s| (s.command.as_str(), s.outcome))
+                .collect::<Vec<_>>(),
+            vec![
+                ("true", MergeGateOutcome::Passed),
+                (
+                    "sh -c 'echo red-step >&2; exit 3'",
+                    MergeGateOutcome::Failed
+                ),
+                ("touch ran-after", MergeGateOutcome::NotRun),
+            ],
+            "the gate's rows: {:?}",
+            run.steps
+        );
+        assert!(
+            run.steps[1].output.contains("red-step"),
+            "the failing step's own words are its output tail: {:?}",
+            run.steps[1].output
+        );
+        assert!(
+            run.steps[0].started_ms > 0 && run.steps[0].elapsed_ms < 60_000,
+            "a step that ran is stamped with when and how long: {:?}",
+            run.steps[0]
+        );
+        assert_eq!(
+            (run.steps[2].started_ms, run.steps[2].elapsed_ms),
+            (0, 0),
+            "a step that never ran has no timing to give"
         );
         assert!(
             !dir.join("ran-after").exists(),
@@ -4670,8 +4942,139 @@ mod tests {
         git(&["checkout", "-q", "-b", "agent/sneaky"]);
         std::fs::write(dir.join("AGENTS.md"), "## Merge gate\n\n```sh\ntrue\n```\n").unwrap();
         git(&["commit", "-qam", "loosen the gate"]);
-        assert!(repo_gate(&dir).is_err(), "the branch's own gate was used");
+        assert!(
+            repo_gate(&dir).failure.is_some(),
+            "the branch's own gate was used"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A repository with no gate records that as its own fact** — one row saying so, and NOT an
+    /// empty list. `[]` is the entry's word for *the gate has not run on this entry*, and a blank
+    /// checklist read as *every step passed* is the one reading a repository nobody has
+    /// configured must not be able to produce.
+    #[test]
+    fn a_repository_with_no_gate_records_that_as_its_own_row() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-mq-nogate-row-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "t@t"]);
+        git(&dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("README.md"), "x\n").expect("write");
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "init"]);
+        assert_eq!(
+            gate_on_main(&dir).expect("reads"),
+            None,
+            "no section on main"
+        );
+
+        let run = repo_gate(&dir);
+        assert_eq!(
+            run.steps.len(),
+            1,
+            "one row, not an empty list: {:?}",
+            run.steps
+        );
+        assert_eq!(run.steps[0].outcome, MergeGateOutcome::NoGate);
+        assert!(
+            run.steps[0].command.is_empty(),
+            "there is no command to name: {:?}",
+            run.steps[0].command
+        );
+        assert!(
+            run.steps[0].output.contains("Merge gate"),
+            "the row carries the queue's own sentence: {:?}",
+            run.steps[0].output
+        );
+        assert!(
+            run.failure.is_some(),
+            "and it is not a green run: there was nothing to pass"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A landing whose gate has three steps records three rows, in order** — through the whole
+    /// pass, on a real repository whose `AGENTS.md` declares them, with the rows read back out of
+    /// the store the landing was written to.
+    ///
+    /// This is the change in one test: the entry reaches `landed_sha` carrying what its gate did,
+    /// so a pane can draw the landing rather than only its verdict.
+    #[test]
+    fn a_landing_records_one_row_per_step_in_order() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("gate-rows");
+        // `main` declares the gate, and the branch is cut from it — so the rebase replays the
+        // branch on top of the section and the gate the queue reads is the one it was held to.
+        std::fs::write(
+            root.join("AGENTS.md"),
+            "# Project\n\n## Merge gate\n\n```sh\necho first\necho second\necho third\n```\n",
+        )
+        .expect("write");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "the gate"]);
+
+        let db = root.join("sessions.db");
+        let mut e = entry(
+            "m-steps",
+            MergePriority::Subagent,
+            MergeState::Waiting,
+            1_000,
+        );
+        e.branch = "feature".into();
+        e.base_sha = main_sha;
+        e.worktree = Some(wt.to_str().unwrap().to_string());
+        enqueue(&db, &e);
+        approve(&db, "m-steps");
+
+        // The PRODUCTION gate, not a stub: the rows under test are the ones `repo_gate` builds
+        // out of `main`'s own `AGENTS.md`.
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(repo_gate),
+            quiet_reviewer(),
+            quiet_events(),
+        )
+        .with_gate_check(Box::new(gate_configured));
+        assert!(
+            matches!(daemon.step().expect("the pass"), StepOutcome::Landed(_)),
+            "the gate is three green steps"
+        );
+
+        let landed = store_at(&db)
+            .merge_entry("m-steps")
+            .expect("reads")
+            .expect("the entry");
+        assert_eq!(landed.state, MergeState::Landed);
+        assert!(landed.landed_sha.is_some(), "the entry landed with its tip");
+        assert_eq!(
+            landed
+                .gate_steps
+                .iter()
+                .map(|s| (s.command.as_str(), s.outcome))
+                .collect::<Vec<_>>(),
+            vec![
+                ("echo first", MergeGateOutcome::Passed),
+                ("echo second", MergeGateOutcome::Passed),
+                ("echo third", MergeGateOutcome::Passed),
+            ],
+            "one row per step, in the order main declared them: {:?}",
+            landed.gate_steps
+        );
+        assert!(
+            landed.gate_steps[0].output.contains("first")
+                && landed.gate_steps[2].output.contains("third"),
+            "each row keeps the tail of its OWN step's output: {:?}",
+            landed.gate_steps
+        );
+        // **The rows are on disk, not in the daemon**: a second connection reads them.
+        assert_eq!(
+            store_at(&db).merge_entry("m-steps").unwrap().unwrap(),
+            landed
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **The gate's build is pointed inside the worktree it is judging** — see
@@ -4720,7 +5123,11 @@ mod tests {
         git_with_identity(&["add", "-A"]);
         git_with_identity(&["commit", "-qm", "gate"]);
 
-        repo_gate(&dir).expect("the gate is green");
+        repo_gate(&dir)
+            .failure
+            .is_none()
+            .then_some(())
+            .expect("the gate is green");
         let seen = std::fs::read_to_string(dir.join("gate-target-dir")).expect("the step wrote it");
         assert_eq!(
             Path::new(seen.trim()),
@@ -4760,7 +5167,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             above.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -4797,7 +5204,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -4848,7 +5255,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             a.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         )
@@ -4901,7 +5308,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             dir.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             Box::new(Counting(told.clone())),
             quiet_events(),
         )
@@ -4957,7 +5364,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             dir.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         )
@@ -4972,6 +5379,22 @@ mod tests {
         let row = store_at(&db).merge_entry("g1").unwrap().unwrap();
         assert_eq!(row.state, MergeState::Waiting, "held, not failed");
         assert_eq!(row.evidence, "waiting for a merge gate");
+        // **And the absence is a ROW on the entry, not a blank checklist.** The queue never ran
+        // a step, and the row says so in the landing half's own vocabulary rather than leaving
+        // an empty list that a pane could draw as *every step passed*.
+        assert_eq!(
+            row.gate_steps.iter().map(|s| s.outcome).collect::<Vec<_>>(),
+            vec![MergeGateOutcome::NoGate],
+            "the repository with no gate: {:?}",
+            row.gate_steps
+        );
+        assert!(
+            row.gate_steps[0]
+                .output
+                .contains("waiting for a merge gate"),
+            "the row carries the queue's own sentence: {:?}",
+            row.gate_steps[0].output
+        );
         // The gate lands on main: the next pass takes it (and, with no worktree here, says so).
         ready.store(true, std::sync::atomic::Ordering::SeqCst);
         daemon.step().expect("the pass");
@@ -5039,6 +5462,13 @@ mod tests {
             e.evidence = "the reason".into();
             e.worktree = Some("/wt".into());
             e.landed_sha = Some("tip".into());
+            e.gate_steps = vec![MergeGateStep {
+                command: "make test".into(),
+                outcome: MergeGateOutcome::Failed,
+                output: "2 failed".into(),
+                started_ms: 7,
+                elapsed_ms: 8,
+            }];
             let w = wire_entry(&e);
             assert_eq!(w.state, want, "{state:?} did not survive the hop");
             assert_eq!(w.id, e.id);
@@ -5051,6 +5481,14 @@ mod tests {
             assert_eq!(w.updated_ms, e.updated_ms);
             assert_eq!(w.worktree, e.worktree);
             assert_eq!(w.landed_sha, e.landed_sha);
+            // **The landing's rows cross too**, word for word: the outcome is a closed set the
+            // head draws, and `wire_gate_step` is where a variant added on either side fails to
+            // compile.
+            assert_eq!(w.gate_steps, vec![wire_gate_step(&e.gate_steps[0])]);
+            assert_eq!(
+                w.gate_steps[0].outcome,
+                letibot_sessionlog::event::MergeGateOutcome::Failed
+            );
         }
         for (p, want) in [
             (MergePriority::Urgent, wire::MergePriority::Urgent),
@@ -5111,7 +5549,7 @@ mod tests {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             std::env::temp_dir(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             quiet_reviewer(),
             quiet_events(),
         );
@@ -5242,6 +5680,7 @@ mod gatekeeper_door {
                 updated_ms: 1,
                 worktree: None,
                 landed_sha: None,
+                gate_steps: Vec::new(),
             })
             .unwrap();
         let registry = SessionRegistry::new();
@@ -5488,7 +5927,7 @@ mod restart {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             Box::new(Shared(door.clone())),
             quiet_events(),
         );
@@ -5678,7 +6117,7 @@ mod restart {
         let daemon = MergeQueueDaemon::new(
             store_at(&db),
             root.clone(),
-            Box::new(|_| Ok(())),
+            Box::new(|_| GateRun::green()),
             Box::new(Shared(door.clone())),
             quiet_events(),
         );
@@ -5861,6 +6300,7 @@ fn tests_entry_for_door(id: &str, session: &str) -> MergeEntry {
         updated_ms: 1,
         worktree: None,
         landed_sha: None,
+        gate_steps: Vec::new(),
     }
 }
 

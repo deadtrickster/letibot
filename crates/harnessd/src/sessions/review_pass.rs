@@ -183,6 +183,7 @@ impl Fixture {
                 updated_ms: now,
                 worktree: None,
                 landed_sha: None,
+                gate_steps: Vec::new(),
             })
             .expect("the entry row");
     }
