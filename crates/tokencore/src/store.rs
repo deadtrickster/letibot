@@ -310,7 +310,19 @@ pub struct ShapelessAdmit {
 /// column in [`SCHEMA_SQL`]. One row per gate step (the command, its outcome, the tail of its
 /// output, when it started and how long it took) so that a landing can be DRAWN and not merely
 /// judged: a row that records only `failed` can only ever draw `failed`.
-pub const SCHEMA_VERSION: i64 = 22;
+///
+/// **23** since a store that predates the review/merge SPLIT has its queue **cleared once**,
+/// on the first open of it by this build. This is the one arm that REMOVES rows rather than
+/// adding a column or a table, and its arm is where the operator's ruling and the reason it is
+/// the honest act are written down.
+///
+/// **It is 23 rather than 22 because the two migrations were in flight together.** `22` was
+/// taken by `merge_queue.gate_steps_json` (`agent/per-step-landing-rows`, `af2144b`) before
+/// this one reached main, and two migrations numbered 22 would each read the other's store as
+/// *current* and never run. So this arm is written `from < 23` rather than against a pair of
+/// numbers: a store left at 21 by the base, at 22 by that branch, or at anything older is
+/// cleared on the first open by this build either way.
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -2572,6 +2584,58 @@ impl Store {
                 )?;
             }
         }
+        if from < 23 {
+            // v23: **the queue a pre-split store was holding is CLEARED — once, on the first
+            // open of it by this build.**
+            //
+            // **`from < 23`, and deliberately not a pair of numbers.** The arm above (v22,
+            // `merge_queue.gate_steps_json`) was written while this one was in flight and took
+            // the number 22. The newest a store this build opens can be is therefore 22 — one
+            // the v22 arm has just migrated — or older still, and it is the RANGE that clears
+            // it either way: a pair of numbers would have to be re-derived every time another
+            // migration lands between them. See [`SCHEMA_VERSION`].
+            //
+            // The operator's ruling, verbatim: *"after it all built we need a way out for the
+            // pg-noop session. basically i suggest on the first start to reset the whole
+            // queue, we are splitting it to reviews and merges anyway."* The split is what
+            // makes those rows unreadable rather than merely stale: once an entry is a REVIEW
+            // that hands off to a merge, the single-queue states this build wrote
+            // (`waiting`/`taken`/`failed`/`conflict`/`stale`/`landed`/`vetoed`) describe a
+            // machine it no longer has, and a pane has no honest way to draw one.
+            //
+            // **Clearing is the honest act here, and it is the operator's own decision rather
+            // than a tidy-up nobody asked for.** Those rows belonged to a DIFFERENT MACHINE;
+            // clearing them says exactly that, and does not say *this work never happened*.
+            // The work is in git — this arm deletes from two tables and touches no branch and
+            // no worktree — and that is what makes the clear safe to run on a real store's
+            // first open.
+            //
+            // **`DELETE FROM` is the route taken, and the trigger list is why.** The doc above
+            // says a `BEFORE DELETE` trigger raises, so that a migration cannot quietly rewrite
+            // history. VERIFIED against [`SCHEMA_SQL`]: the only triggers in this store are
+            // `transcript_item_no_update`, `transcript_item_no_delete` and
+            // `transcript_item_append_only_insert`, all three on `transcript_item`. Neither
+            // `merge_queue` nor `merge_review` carries one, so the drop-and-recreate route (and
+            // the drop-the-trigger, delete, restore-it one) is NOT needed and is deliberately
+            // not taken: recreating a table means restating its column list, and a restated
+            // list drifts from [`SCHEMA_SQL`] the first time one of those columns changes.
+            //
+            // **Guarded on the table being there at all.** A migrated store never runs
+            // [`SCHEMA_SQL`], and a fixture may arrive at this version with no queue in it —
+            // the v1, v4 and v20 fixtures build bare stores and jump straight here. `DELETE
+            // FROM` a table that does not exist is an error, and a migration that refused an
+            // empty file would be a worse bug than the one this arm exists to fix.
+            for table in ["merge_queue", "merge_review"] {
+                let there: bool = self
+                    .conn
+                    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")
+                    .and_then(|mut st| st.exists(params![table]))
+                    .unwrap_or(false);
+                if there {
+                    self.conn.execute(&format!("DELETE FROM {table}"), [])?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -4165,6 +4229,57 @@ mod tests {
         }
     }
 
+    /// **One queue entry, at a state of the caller's choosing** — the shape the three reset
+    /// tests below fill a queue with, written once because all three need it.
+    fn queue_entry(id: &str, state: MergeState) -> MergeEntry {
+        MergeEntry {
+            id: id.into(),
+            session_id: "s-child".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "abc".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state,
+            brief: "do the work".into(),
+            evidence: "the gate is red".into(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: Some("/wt".into()),
+            landed_sha: None,
+            gate_steps: vec![],
+        }
+    }
+
+    /// **The reviewer's verdict on one entry**, for the same three fixtures.
+    fn queue_review(id: &str) -> ReviewRecord {
+        ReviewRecord {
+            entry_id: id.into(),
+            session_id: "s-reviewer".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "abc".into(),
+            asked_ms: 1_000,
+            answered_ms: Some(1_500),
+            decision: Some("accept".into()),
+            attempts: 1,
+            failed_ms: None,
+            failure: String::new(),
+            reasons: vec!["it does what the ask said".into()],
+            files: vec![],
+            commands: vec![],
+        }
+    }
+
+    /// **Walk a store's `schema_version` back to `v`**, so the next `Store::open` migrates it.
+    /// The fixtures in this file do this inline; the three tests below do it three times.
+    fn stamp_version(path: &std::path::Path, v: i64) {
+        let c = rusqlite::Connection::open(path).unwrap();
+        c.execute_batch(&format!(
+            "DELETE FROM schema_version;
+             INSERT INTO schema_version (version) VALUES ({v});"
+        ))
+        .unwrap();
+    }
+
     fn seeded(s: &Store) -> (String, String) {
         let p = prefix();
         let prefix_id = s.put_stable_prefix(&p).unwrap();
@@ -5385,9 +5500,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A v19 store gains the three columns, and its existing rows read as *no failed
-    /// attempt*.** A verdict is not a failure, and `attempts = 0` is the true state of a row
-    /// whose ask was answered.
+    /// **A v19 store gains the three columns, and the row it was holding is cleared on the way
+    /// through.** A verdict is not a failure and `attempts = 0` is the true state of a row whose
+    /// ask was answered — but a store this old is also pre-SPLIT, so the newest arm of
+    /// `migrate_from` empties its queue before `open` returns. What is left here is the v20 arm:
+    /// the columns, and the defaults a row written with the old column list reads as. The clear
+    /// has its own test.
     #[test]
     fn a_v19_store_gains_the_attempt_columns() {
         let dir = std::env::temp_dir().join(format!("letibot-migrate-v20-{}", std::process::id()));
@@ -5427,6 +5545,24 @@ mod tests {
             .unwrap();
         }
         let s = Store::open(&path).expect("the migration runs");
+        // **The clear arm empties this store's queue on the way through** — it is a pre-split
+        // store, which is the operator's ruling rather than an accident of the fixture.
+        assert!(
+            s.merge_review("m-old").unwrap().is_none(),
+            "a store below the head is cleared on its first open, verdict and all"
+        );
+        // The three columns are there — the v20 arm's work — and a row written with the v19
+        // column list reads as *no failed attempt*, which is what the defaults on them mean.
+        s.connection()
+            .execute(
+                "INSERT INTO merge_review
+                     (entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
+                      reasons_json, files_json, commands_json)
+                   VALUES ('m-old', 's-host', 'agent/x', 'abc', 1000, 2000, 'accept',
+                           '[\"it does what the ask said\"]', '[]', '[]')",
+                [],
+            )
+            .expect("the migrated table takes a row in the v19 shape");
         let back = s.merge_review("m-old").unwrap().unwrap();
         assert_eq!(back, verdict, "a v19 verdict reads back unchanged");
         assert_eq!(back.attempts, 0, "and reads as no failed attempt");
@@ -5476,6 +5612,25 @@ mod tests {
             .unwrap();
         }
         let s = Store::open(&path).expect("the migration runs");
+        // **The v23 arm clears this store's queue on the way through** — a v21 store predates
+        // the review/merge split, so the row this fixture wrote is gone before `open` returns.
+        // What is left to check here is the v22 arm's own work: the column, and that a row
+        // written in the v21 shape reads as *the gate has not run on it*.
+        assert!(
+            s.merge_entry("m-old").unwrap().is_none(),
+            "a store below the head is cleared on its first open, the landing row with it"
+        );
+        // A row in the v21 column shape — no `gate_steps_json` — through the migrated table.
+        s.connection()
+            .execute(
+                "INSERT INTO merge_queue
+                     (id, session_id, branch, base_sha, priority, needs_json, state, brief,
+                      evidence, created_ms, updated_ms, worktree, landed_sha)
+                   VALUES ('m-old', 's-1', 'agent/x', 'abc', 'subagent', '[]', 'waiting',
+                           'do the work', '', 1, 1, NULL, NULL)",
+                [],
+            )
+            .expect("the migrated table takes a row in the v21 shape");
         let back = s.merge_entry("m-old").unwrap().unwrap();
         // `updated_ms` is the store's clock (`put_merge_entry`), so it is normalized away rather
         // than asserted — everything else is the row the v21 store wrote.
@@ -6479,6 +6634,229 @@ mod tests {
                 .is_ok(),
             "a store already at the current version still answers a write"
         );
+    }
+
+    /// **A store that predates the review/merge split comes back with an EMPTY queue** — once,
+    /// on the first open of it by this build.
+    ///
+    /// The operator's ruling, verbatim: *"after it all built we need a way out for the pg-noop
+    /// session. basically i suggest on the first start to reset the whole queue, we are
+    /// splitting it to reviews and merges anyway."* A `schema_version` bump is what "once"
+    /// means in this store, and this is the test that the bump does it.
+    ///
+    /// **The fixture is stamped 22** — the version the v22 arm above leaves a store at, which
+    /// is what the operator's own store becomes the moment that migration lands. So this is
+    /// the store this arm will actually meet: `from < 22` is false for it, only the clear runs,
+    /// and the row it deletes is one the v22 build wrote. The 21 case is the next test's.
+    ///
+    /// **The rows are the whole point.** A queue that was already empty would pass this by
+    /// accident, so the fixture fills BOTH tables at the version just before the arm. The tables
+    /// are then checked USABLE, because a clear that left one refusing writes would be worse
+    /// than the rows it removed; and the version is checked to be the head, because an arm that
+    /// cleared but did not stamp would clear again on every open — the one way this can be
+    /// wrong in the direction that keeps costing the operator state.
+    #[test]
+    fn a_v22_store_has_its_queue_cleared_on_the_first_open() {
+        let dir = std::env::temp_dir().join(format!("letibot-migrate-v23-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        {
+            let s = Store::open(&path).expect("a store");
+            // A waiting entry and a landed one: the two ends of the old machine's life, so
+            // "cleared" is not only true of the rows that were parked.
+            s.put_merge_entry(&queue_entry("m-waiting", MergeState::Waiting))
+                .expect("the entry");
+            s.put_merge_entry(&queue_entry("m-landed", MergeState::Landed))
+                .expect("the landed entry");
+            s.put_review(&queue_review("m-waiting"))
+                .expect("the verdict");
+        }
+        stamp_version(&path, 22);
+
+        let s = Store::open(&path).expect("the migration runs");
+        let v: i64 = s
+            .connection()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "the arm stamped the head");
+        assert!(
+            s.merge_entries().expect("reads").is_empty(),
+            "every row the old machine wrote is gone, the landed one with the waiting one"
+        );
+        assert!(
+            s.reviews().expect("reads").is_empty(),
+            "and the verdicts on them went with them"
+        );
+
+        // **The tables are intact and usable.** A clear is not a drop: the queue that comes out
+        // of this has to take the next entry, or the operator is left with a worse state than
+        // the one the clear was for.
+        s.put_merge_entry(&queue_entry("m-new", MergeState::Waiting))
+            .expect("the table takes a new entry");
+        s.put_review(&queue_review("m-new"))
+            .expect("and a new verdict");
+        assert_eq!(s.merge_entries().expect("reads").len(), 1);
+        assert_eq!(
+            s.merge_review("m-new")
+                .expect("reads")
+                .expect("the row is there")
+                .decision
+                .as_deref(),
+            Some("accept")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The arm runs ONCE.** The queue is cleared on the first open of a store that predates
+    /// the split and never again: a store already at the head keeps every row it holds, which is
+    /// what makes this a migration rather than a policy of clearing on every start.
+    ///
+    /// Both halves are here because they are the same claim from two sides: a store written at
+    /// the head survives a reopen, and a store that was just migrated keeps what is written into
+    /// it after the clear. The fixture is stamped **21** — this base's own head — which is the
+    /// other side of the range the arm's `from < 23` covers (the test above takes 22).
+    #[test]
+    fn a_store_at_the_current_version_keeps_its_queue() {
+        let dir = std::env::temp_dir().join(format!("letibot-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        {
+            let s = Store::open(&path).expect("a store");
+            s.put_merge_entry(&queue_entry("m-a", MergeState::Waiting))
+                .expect("the entry");
+            s.put_merge_entry(&queue_entry("m-b", MergeState::Failed))
+                .expect("the parked entry");
+            s.put_review(&queue_review("m-a")).expect("the verdict");
+        }
+        {
+            // No walk back: this store is at the head, so `open` migrates nothing at all.
+            let s = Store::open(&path).expect("the same store, a second daemon");
+            assert_eq!(
+                s.merge_entries().expect("reads").len(),
+                2,
+                "a store at the head keeps every row it holds"
+            );
+            assert_eq!(s.reviews().expect("reads").len(), 1);
+        }
+
+        // **And the same store, walked back and migrated, keeps what is written AFTER the
+        // clear** — the second open is the one that would run the arm again if it could.
+        stamp_version(&path, 21);
+        {
+            let s = Store::open(&path).expect("the migration runs");
+            assert!(
+                s.merge_entries().expect("reads").is_empty(),
+                "the first open of a store below the head is the one that clears"
+            );
+            s.put_merge_entry(&queue_entry("m-after", MergeState::Waiting))
+                .expect("the entry");
+            s.put_review(&queue_review("m-after")).expect("the verdict");
+        }
+        {
+            let s = Store::open(&path).expect("a third open, at the head");
+            assert_eq!(
+                s.merge_entries().expect("reads").len(),
+                1,
+                "the second open cleared nothing: the arm is a version step, not a policy"
+            );
+            assert!(s.merge_review("m-after").expect("reads").is_some());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Nothing but the queue moves.** The reset's whole safety argument is that the work is in
+    /// git and not in the queue; the store's other tables are the conversation and the record,
+    /// and no reset has any business in them. A session, its transcript and transcript rows, its
+    /// todo list and its job history are written before the migration and read back after it,
+    /// row for row.
+    ///
+    /// (**There is no notes table in this store.** The standing notes are files under
+    /// `.letibot/notes/`, read at every base rebuild, so nothing this file does can move them —
+    /// said here rather than asserted, because a test asserting a table that does not exist
+    /// would be a test of its own fixture.)
+    #[test]
+    fn the_queue_reset_moves_nothing_but_the_queue() {
+        let dir = std::env::temp_dir().join(format!("letibot-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let tr = "tr-1".to_string();
+        {
+            let s = Store::open(&path).expect("a store");
+            let (tr, _) = seeded(&s);
+            let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+            let item = TranscriptItem::Assistant {
+                text: "the answer".into(),
+                tool_calls: vec![],
+                truncated: false,
+            };
+            let toks = vec![10u32];
+            let row = ledger.append("it-0", &toks).unwrap().clone();
+            s.append_item(&tr, 0, &item, &row, &toks)
+                .expect("the transcript row");
+            s.put_todos(
+                "sess-1",
+                &[TodoItem {
+                    content: "ship the pane".into(),
+                    status: TodoStatus::InProgress,
+                    by: TodoBy::Model,
+                    when: None,
+                    needs: Vec::new(),
+                }],
+            )
+            .expect("the todo list");
+            s.put_job(
+                "sess-1",
+                &JobRecord {
+                    handle: "j7".into(),
+                    command: "cargo test".into(),
+                    how: "asked".into(),
+                    state: "exited 0".into(),
+                    produced: 12,
+                    elapsed_ms: 34,
+                    redirect: None,
+                },
+            )
+            .expect("the job row");
+            s.put_merge_entry(&queue_entry("m-waiting", MergeState::Waiting))
+                .expect("the entry");
+            s.put_review(&queue_review("m-waiting"))
+                .expect("the verdict");
+        }
+        stamp_version(&path, 22);
+
+        let s = Store::open(&path).expect("the migration runs");
+        assert!(
+            s.merge_entries().expect("reads").is_empty(),
+            "the queue is the one thing that moved"
+        );
+        assert!(
+            s.session("sess-1").expect("reads").is_some(),
+            "the session is not the queue"
+        );
+        assert_eq!(
+            s.current_transcript_id("sess-1").expect("reads").as_deref(),
+            Some(tr.as_str()),
+            "nor is the transcript"
+        );
+        assert_eq!(
+            s.item_count(&tr).expect("reads"),
+            1,
+            "and the conversation's rows are not the queue's"
+        );
+        let row = s
+            .row_json_at(&tr, 0)
+            .expect("reads")
+            .expect("the row is there");
+        assert!(
+            row.contains("the answer"),
+            "the row came back changed: {row}"
+        );
+        assert_eq!(s.todos("sess-1").expect("reads").len(), 1);
+        assert_eq!(s.jobs("sess-1").expect("reads").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The guard's pair survives the daemon that decided it** — the whole
