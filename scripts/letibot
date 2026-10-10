@@ -1007,6 +1007,35 @@ PROBE=""
 # One implementation for both callers, because `--ls` and `--daemons` check *every*
 # record rather than this folder's, and a fix applied to one caller and forgotten in the
 # other is exactly how this class of bug survives.
+# **The folder's claim, read from the KERNEL rather than from this launcher's record.**
+#
+# `daemon_pid` reads a file this script writes, and that is a proxy: a daemon started by
+# any other means, or a record cleaned up early, leaves it empty while the folder is very
+# much held. MEASURED 2026-10-11 on the operator's box, `letibot --continue`: the record
+# said nothing, so the wait below never fired, the launcher started a daemon, and harnessd
+# refused it three times -- *"already served by a live daemon (pid 4138759)"* -- after
+# which the poll gave up with "daemon did not come up". The pid in that refusal was alive
+# and the record knew nothing about it.
+#
+# The lock beside the socket is the fact harnessd ITSELF guards on, so it is the one to
+# ask. `/proc/locks` is a pure read -- `flock -n` would TAKE the claim, which is the
+# opposite of testing it -- and the kernel answers about the INODE, which is what makes
+# this immune to the window that defeats every other test: a daemon on its way out has
+# already closed its listener (so `ss` says nothing), has already unlinked its socket file
+# (so `-S` says nothing), and still holds this.
+#
+# Field layout, from `/proc/locks`: `4: FLOCK ADVISORY WRITE <pid> <maj:min:inode> 0 EOF`.
+folder_lock_pid() { # prints the pid holding this folder's claim, or fails
+  local lock ino
+  lock="${SOCKET%.sock}.lock"
+  [ -f "$lock" ] || return 1
+  ino="$(stat -c %i "$lock" 2>/dev/null)" || return 1
+  [ -n "$ino" ] || return 1
+  awk -v ino="$ino" '
+    $2 == "FLOCK" && $6 ~ (":" ino "$") { print $5; found = 1; exit }
+    END { exit !found }
+  ' /proc/locks 2>/dev/null
+}
 socket_is_listening() { # socket_is_listening PATH
   if [ "$HOST_OS" = Darwin ]; then
     [ -n "$(socket_pids "$1")" ]
@@ -1190,6 +1219,22 @@ daemon_pid() {
   # whose whole job is to be a fallback.
   p="$(socket_pids "$SOCKET" | head -1 || true)"
   [ -n "$p" ] && { echo "$p"; return 0; }
+  # **Then the lock, and only then the record.** The lock is the claim harnessd itself
+  # refuses a second daemon on, and the daemon writes its OWN pid into it
+  # (`FolderClaim::write_pid`), so it is the folder's answer about the folder. The record
+  # is this launcher's note about what it once started.
+  #
+  # MEASURED 2026-10-11, pg-noop: nothing was listening, the record said pid 1119301, the
+  # lock said 1119303. `--stop` took the record's answer, killed it, saw it gone, printed
+  # `stopped harnessd for …` and deleted the record — while the daemon holding the folder
+  # went on holding it. The next `--continue` then had no record and no listener, started a
+  # daemon, and harnessd refused it by name. Why the two pids differed is NOT known; the
+  # obvious theory was that `setsid` forks and `$!` names the wrapper, and that was tested
+  # on this box and is false — it exec'd and `$!` was the real pid. So the fix does not rest
+  # on a cause: whatever wrote the wrong number, the lock is the one that cannot be wrong
+  # about who holds the lock.
+  p="$(folder_lock_pid || true)"
+  [ -n "$p" ] && pid_alive "$p" && { echo "$p"; return 0; }
   p="$(record_field pid)"
   [ -n "$p" ] && pid_alive "$p" && { echo "$p"; return 0; }
   return 1
@@ -1845,7 +1890,13 @@ if ! live; then
   # one layer down.
   for _ in $(seq 1 60); do live && break; sleep 0.5; done
   live || { echo "letibot: daemon did not come up; last lines of $LOG:" >&2; tail -15 "$LOG" >&2; exit 1; }
-  record_write "$DPID"
+  # **Record the pid the DAEMON claims, not the one this shell started.** By here the
+  # claim is taken and the listener is up, so the lock names the process that holds the
+  # folder. `--stop --all` reads these records directly and cannot consult `daemon_pid`,
+  # so a record holding the wrong number is a stop that kills the wrong thing — which is
+  # exactly what was measured on 2026-10-11. `$DPID` stays as the fallback for a box whose
+  # `/proc/locks` this cannot read.
+  record_write "$(folder_lock_pid || echo "$DPID")"
   # The session was named on the daemon's own command line, so the head attaches to
   # it by being the head of that daemon. Nothing more to ask for.
   exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
