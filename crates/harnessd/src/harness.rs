@@ -14844,7 +14844,9 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // Always a door for a root session, seat or no seat: without one the tool
     // says so and names `/flowy login`. That is what lets a seat arrive while
     // the session is open. A subagent hears through its parent.
-    if cfg.parent_session_id.is_none() && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
+    if cfg.parent_session_id.is_none()
+        && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper)
+    {
         r.tools.push("flowy".into());
     }
     // **`web_search` is seated only when something is behind it**, and a subagent
@@ -14854,14 +14856,16 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // bytes in the stable prefix, so seating it unconditionally would re-prefill
     // every stored conversation on this box to add a tool that refuses. A session
     // started without `--web-search` is byte-identical to yesterday's.
-    if cfg.web_search.is_some() && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
+    if cfg.web_search.is_some()
+        && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper)
+    {
         r.tools.push("web_search".into());
         r.max_tools += 1;
     }
     // **`web_fetch` seats on the same rule as `web_search`**: only when
     // something is behind it, so a session started without `--web-fetch` is
     // byte-identical to one from before the flag existed.
-    if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
+    if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper) {
         r.tools.push("web_fetch".into());
         r.max_tools += 1;
     }
@@ -14897,6 +14901,11 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
             }
             r
         }
+        // **The notes keeper**: the read tools and `notes`, and no exec path at all, so there is
+        // no flag to strip. A repair goes through `notes` — the one writer that keeps a note a
+        // note (a bare NAME, `.letibot/notes/` only, the author's abstract, the historical
+        // caveat) — and nothing on this seat can touch code.
+        Seat::NotesKeeper => roles::notes_keeper(),
         Seat::Leticode => {
             let mut r = roles::leticode();
             if !cfg.allow_bash {
@@ -19049,5 +19058,62 @@ mod gatekeeper_reviews {
                 .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
             "the review brief no longer begins with the head's mark"
         );
+    }
+
+    /// **The notes keeper is a seat, and the seat is what confines it.**
+    ///
+    /// `notes` declares `Access::Write`, so the backend has to be writable — a read-only backend
+    /// refuses every repair, and a keeper that cannot repair only complains. What keeps it out of
+    /// the code is the SEAT: no `write`, no `edit`, no `bash`, no child to delegate to. Both
+    /// halves are asserted here because either one alone reads as the other having been done.
+    #[test]
+    fn the_notes_keeper_is_a_seat_that_repairs_memory_and_cannot_touch_code() {
+        assert_eq!(Seat::parse("notes_keeper").unwrap(), Seat::NotesKeeper);
+        assert_eq!(Seat::parse("keeper").unwrap(), Seat::NotesKeeper);
+        assert_eq!(Seat::NotesKeeper.as_str(), "notes_keeper");
+        assert!(
+            Seat::NotesKeeper.needs_writable_backend(),
+            "the `notes` tool writes, and a read-only backend refuses it"
+        );
+        assert!(
+            !Seat::NotesKeeper.needs_exec_backend(),
+            "a keeper runs nothing: the commits a note cites were resolved for it"
+        );
+        let seat = base_role_for_seat(Seat::NotesKeeper, &Config::for_this_box("/tmp"));
+        for forbidden in ["write", "edit", "bash", "task", "task_start"] {
+            assert!(
+                !seat.tools.iter().any(|t| t == forbidden),
+                "the notes keeper must not be seated with `{forbidden}`: {:?}",
+                seat.tools
+            );
+        }
+        assert!(
+            seat.tools.iter().any(|t| t == "notes"),
+            "and it must be seated with the one writer that keeps a note a note: {:?}",
+            seat.tools
+        );
+    }
+
+    /// **The keeper's brief begins with the mark**, on the gatekeeper's rule — so the piece that
+    /// spawns one has nothing to change here when it lands.
+    #[test]
+    fn the_keepers_brief_begins_with_the_mark() {
+        use letibot_tools::notes_keeper::{KeeperRequest, NoSupersession, TITLE_PREFIX};
+        let root = std::env::temp_dir().join(format!("letibot-keeper-seat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".letibot/notes")).expect("mkdir");
+        let note = root.join(".letibot/notes/x.md");
+        std::fs::write(&note, "a note about `crates/tools/src/notes_keeper.rs`\n").expect("write");
+        let req = KeeperRequest::gather(&root, &note, &NoSupersession).expect("gather");
+        let prompt = letibot_tools::notes_keeper::keeper_prompt(&req);
+        assert!(
+            prompt.starts_with(TITLE_PREFIX),
+            "the keeper's brief no longer begins with the mark"
+        );
+        assert!(
+            prompt.contains("notes_keeper.rs"),
+            "the evidence rides along"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -103,6 +103,19 @@ pub enum Seat {
     /// person picks: the daemon starts it as a hidden child of the session whose branch it
     /// judges (`mergequeue::GatekeeperDoor`).
     Gatekeeper,
+    /// **The standing notes' keeper** ([`letibot_tools::runtime::roles::notes_keeper`]): `read`,
+    /// `grep`, `glob`, `read_spill` and `notes` — the read tools and the one writer that can
+    /// reach a note.
+    ///
+    /// It needs a **writable** backend, because `notes` declares `Access::Write`, and it needs
+    /// **no exec backend**: it has no `bash`, so the commits a note cites are resolved for it
+    /// before it is asked ([`letibot_tools::references`]). Nothing here can author code, which
+    /// is the whole of its seat — a keeper inspects a note against the tree and repairs memory.
+    ///
+    /// Never a seat a person picks, on the gatekeeper's rule: the daemon starts it, as a hidden
+    /// child of the session whose workspace's notes it reviews. Nothing starts one yet — the
+    /// per-workspace clock is deliberately deferred — so this is the seat that clock will use.
+    NotesKeeper,
 }
 
 impl Seat {
@@ -115,6 +128,7 @@ impl Seat {
             Seat::Runner => "runner",
             Seat::Leticode => "leticode",
             Seat::Gatekeeper => "gatekeeper",
+            Seat::NotesKeeper => "notes_keeper",
         }
     }
 
@@ -130,9 +144,10 @@ impl Seat {
             "runner" => Ok(Seat::Runner),
             "leticode" | "opencode" => Ok(Seat::Leticode),
             "gatekeeper" => Ok(Seat::Gatekeeper),
+            "notes_keeper" | "keeper" => Ok(Seat::NotesKeeper),
             other => Err(format!(
                 "unknown role `{other}`; this build has orchestrator, planner, \
-                 researcher, coder, runner, leticode, gatekeeper"
+                 researcher, coder, runner, leticode, gatekeeper, notes_keeper"
             )),
         }
     }
@@ -146,7 +161,13 @@ impl Seat {
     pub fn needs_writable_backend(self) -> bool {
         matches!(
             self,
-            Seat::Planner | Seat::Coder | Seat::Runner | Seat::Leticode
+            // `NotesKeeper` joined on 2026-10-10, and the reason is its one writer: the `notes`
+            // tool declares `Access::Write`, so a read-only backend refuses every repair — and a
+            // keeper that cannot repair is a keeper that only complains. What keeps it from
+            // authoring code is its SEAT (no `write`, no `edit`, no `bash`), not its backend,
+            // exactly as the design has it: *"it inspects and it repairs memory; it does not
+            // edit code."*
+            Seat::Planner | Seat::Coder | Seat::Runner | Seat::Leticode | Seat::NotesKeeper
         )
     }
 

@@ -1382,6 +1382,34 @@ pub mod roles {
             &["read", "grep", "glob", "bash", "read_spill"],
         )
     }
+
+    /// **The notes keeper's seat: the read tools and `notes`, and nothing that can author
+    /// code.**
+    ///
+    /// The design: *"Its seat is read + `notes`, not the coder toolset."* So there is no
+    /// `write`, no `edit`, no `bash`, and no job or task surface: a keeper inspects a note
+    /// against the tree and repairs *memory*, and a seat that could do more would be a seat that
+    /// could do something nobody asked it to.
+    ///
+    /// **`notes` is the one writer, and that is the point rather than a convenience.** It is how
+    /// a repair keeps authorship: the tool takes a bare NAME, so there is no spelling of a write
+    /// that leaves `.letibot/notes/`; it refuses `AGENTS.md` and the box-wide notes, which are
+    /// the operator's; it keeps the author's `<!-- abstract: … -->` line; and every `read` of a
+    /// note carries the caveat that says the note is a record of what was true when it was
+    /// written. A keeper that could `write` a note file could make its own prose
+    /// indistinguishable from the operator's, which is the one failure the notes tool exists to
+    /// prevent.
+    ///
+    /// Because `notes` declares [`crate::Access::Write`], the daemon gives this seat
+    /// `HostBackend::writable` (`Seat::NotesKeeper::needs_writable_backend`) — a write path, and
+    /// no exec path. `grep` and `glob` ride along with `read` because they are the same act by
+    /// other means, and the gatekeeper's seat has them for the same reason.
+    pub fn notes_keeper() -> Role {
+        Role::new(
+            "notes_keeper",
+            &["read", "grep", "glob", "read_spill", "notes"],
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -2503,6 +2531,49 @@ mod tests {
             );
         }
         // The seat is under its own ceiling, so it is seatable.
+        assert!(
+            seat.tools.len() <= seat.max_tools,
+            "the seat is over its own ceiling: {} > {}",
+            seat.tools.len(),
+            seat.max_tools
+        );
+    }
+
+    /// **The notes keeper seat: the read tools and `notes`, and nothing that authors code.**
+    ///
+    /// The design, verbatim: *"Its seat is read + `notes`, not the coder toolset."* `notes` is
+    /// the one writer, and it is how a repair keeps authorship — the tool takes a bare NAME, so
+    /// no spelling of a write leaves `.letibot/notes/`, and it refuses `AGENTS.md` and the
+    /// box-wide notes, which are the operator's. Everything a keeper needs to *see* is here;
+    /// nothing it could *author* is.
+    #[test]
+    fn the_notes_keeper_seat_reads_and_repairs_memory_but_never_code() {
+        let seat = roles::notes_keeper();
+        for want in ["read", "grep", "glob", "read_spill", "notes"] {
+            assert!(
+                seat.tools.iter().any(|t| t == want),
+                "the notes keeper seat must name `{want}`: {:?}",
+                seat.tools
+            );
+        }
+        // Nothing that can author code, and nothing that can run it: the keeper inspects a note
+        // and repairs memory. `bash` in particular is NOT here even behind a flag — the commits
+        // a note cites were resolved for it before it was asked (`crate::references`).
+        for forbidden in [
+            "write",
+            "edit",
+            "bash",
+            "task",
+            "task_start",
+            "job_kill",
+            "monitor",
+        ] {
+            assert!(
+                !seat.tools.iter().any(|t| t == forbidden),
+                "the notes keeper seat must not name `{forbidden}`: {:?}",
+                seat.tools
+            );
+        }
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",
