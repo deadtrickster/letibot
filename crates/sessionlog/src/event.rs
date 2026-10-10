@@ -270,6 +270,10 @@ pub enum TodoNeed {
     Row { content: String },
     /// **A CHILD session, by its session id** — the handle `task` handed back.
     Child { id: String },
+    /// **A background JOB, by its handle** — the one `bash background: true` and `job_list` print.
+    /// [`TodoNeed::Child`]'s sibling one layer down: an EDGE, where a `when` of the same handle is
+    /// the operator's clock. See `TodoNeed::Job` in the store for the whole of the distinction.
+    Job { handle: String },
     /// A kind this build does not know. See `TodoNeed::Unknown` in the store for why an unknown
     /// edge is kept rather than refused: a plan is what would be lost.
     #[serde(other)]

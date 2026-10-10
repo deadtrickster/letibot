@@ -3333,9 +3333,9 @@ mod tests {
     /// FIELD on this struct (so no bump, and an older head ignores it), and what it exists for is
     /// the round trip rather than the drawing: `SetOperatorTodos` replaces the operator's whole
     /// half of the board, so before this field every edge on one of their rows was dropped at that
-    /// door. The two kinds are asserted on the literal bytes for the reason the condition is: a
-    /// `child` need is a session id the model has to quote back to `task_result`, and the spelling
-    /// is what two heads agree on.
+    /// door. The three kinds are asserted on the literal bytes for the reason the condition is: a
+    /// `child` need is a session id the model has to quote back to `task_result`, a `job` need is
+    /// the handle it has to quote back to `job_output`, and the spelling is what two heads agree on.
     #[test]
     fn a_todo_condition_is_tagged_on_the_wire_and_survives_the_round_trip() {
         let f = ServerFrame::Todos {
@@ -3354,6 +3354,9 @@ mod tests {
                     crate::event::TodoNeed::Child {
                         id: "s-1-sub-2".into(),
                     },
+                    crate::event::TodoNeed::Job {
+                        handle: "j2070".into(),
+                    },
                 ],
             }],
         };
@@ -3367,8 +3370,14 @@ mod tests {
             "and an edge is a tagged kind on the wire too: {json}"
         );
         assert!(
-            json.contains(r#"{"kind":"child","id":"s-1-sub-2"}]"#),
+            json.contains(r#"{"kind":"child","id":"s-1-sub-2"},"#),
             "a child need is a session id under its own kind: {json}"
+        );
+        // **And a JOB need is a handle under its own kind** — the edge this feature added, whose
+        // spelling is what a head has to agree about to carry it back through `SetOperatorTodos`.
+        assert!(
+            json.contains(r#"{"kind":"job","handle":"j2070"}]"#),
+            "a job need is a handle under its own kind: {json}"
         );
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
 
@@ -3380,7 +3389,7 @@ mod tests {
         let old = json
             .replace(r#","when":{"kind":"job","handle":"j121"}"#, "")
             .replace(
-                r#","needs":[{"kind":"row","content":"run the tests"},{"kind":"child","id":"s-1-sub-2"}]"#,
+                r#","needs":[{"kind":"row","content":"run the tests"},{"kind":"child","id":"s-1-sub-2"},{"kind":"job","handle":"j2070"}]"#,
                 "",
             );
         assert!(!old.contains("when"), "the field was not removed: {old}");

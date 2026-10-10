@@ -6974,6 +6974,39 @@ impl Harness {
         )
     }
 
+    /// **The jobs this session is running, as the plan-check reads them.**
+    ///
+    /// The other fact a board cannot hold, and the one the check has to know to stay SILENT about a
+    /// row that waits on a job ([`letibot_tokencore::store::TodoNeed::Job`]): while the job runs the
+    /// row is not work the check may speak about, and the moment it ends the row is.
+    ///
+    /// **Asked PER HANDLE the plan names, through [`Harness::job_fate`]** — the same lookup the
+    /// `[todo] … is due` firing reads through, so the two readers of one handle cannot come to
+    /// different answers about it, and a handle this session has never heard of answers `Unknown`,
+    /// which is a job that ENDED. A snapshot built from a listing instead would be a second way to
+    /// ask *is this running* — and the second way would be the one that disagreed after a restart,
+    /// where the live table is empty and only the record knows what became of the job.
+    ///
+    /// **Taken per ask rather than held**, for `child_sessions`' reason: a job ends while nothing
+    /// else moves, and a cached snapshot would be a check that cannot see it stop.
+    pub(crate) fn running_jobs(
+        &self,
+        rows: &[TodoItem],
+    ) -> letibot_tools::builtins::todo::RunningJobs {
+        let mut jobs = letibot_tools::builtins::todo::RunningJobs::none();
+        for row in rows {
+            for need in &row.needs {
+                let letibot_tokencore::store::TodoNeed::Job { handle } = need else {
+                    continue;
+                };
+                if matches!(self.job_fate(handle), JobFate::Running) {
+                    jobs = jobs.running(handle.clone());
+                }
+            }
+        }
+        jobs
+    }
+
     /// **The `[todo check]` text, or nothing** — and a row the operator has postponed is not part
     /// of it.
     ///
@@ -6999,15 +7032,26 @@ impl Harness {
         // **And the children, which are the third thing a row can wait on** and the one fact none
         // of the above holds: `child_sessions` is the daemon's snapshot of what is running, taken
         // here so a child that has gone quiet since the last check is seen to have.
+        //
+        // **And the jobs, which are the fourth** — the same argument one layer down, and the one the
+        // operator's own long jobs made: a row that waits on a job that is running is not work this
+        // check may speak about, so the snapshot is taken here too rather than remembered.
         let board = self.todos.snapshot();
         let children = self.child_sessions();
-        let askable = crate::sessions::the_plan_as_checked(&board, &children);
+        let jobs = self.running_jobs(&board);
+        let askable = crate::sessions::the_plan_as_checked(&board, &children, &jobs);
         // **The plan's text, as a value rather than an early return**, because this notice now
         // has a second thing it may have to say and a completed plan is no reason to say
         // neither. `nag_should_arm` compares the TEXT, so a notice that gains a sentence is a
         // new thing to say at the base window and an unchanged one is a repeat at the cap —
         // the ladder needs no change at all for this.
-        let plan = unfinished_plan_for(&askable, &board, self.nag_choice.as_deref(), &children);
+        let plan = unfinished_plan_for(
+            &askable,
+            &board,
+            self.nag_choice.as_deref(),
+            &children,
+            &jobs,
+        );
         let plan = plan.map(|(text, named)| {
             self.nag_choice = Some(named);
             text
@@ -10612,6 +10656,12 @@ impl Harness {
                     letibot_tokencore::store::TodoNeed::Child { id } => {
                         letibot_sessionlog::event::TodoNeed::Child { id }
                     }
+                    // **And the job handle travels verbatim too**, for the same reason one layer
+                    // down: it is the name `job_output` and `job_kill` are given, and the pane has
+                    // to be able to carry an edge into a job rather than only draw one.
+                    letibot_tokencore::store::TodoNeed::Job { handle } => {
+                        letibot_sessionlog::event::TodoNeed::Job { handle }
+                    }
                     // **An unknown kind stays unknown on the wire**, which is what lets a head
                     // that does not know one pass it back to a daemon that does rather than
                     // dropping the edge it cannot read.
@@ -11091,14 +11141,20 @@ fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecor
 /// Those skips are the whole of the policy, and they are here rather than in the caller
 /// so that the decision and the sentence [`fate_line`] writes for it cannot be tested apart from
 /// each other — which is what left this piece unasserted until now.
+///
+/// **`jobs` is the fourth fact the narrowing takes**, beside the board's statuses, the children and
+/// the row's own condition: a row that waits on a job this session is running is not one the idle
+/// check may speak about, so it must not fire here either. It is handed in rather than looked up so
+/// that this stays a function of its arguments — see `Harness::running_jobs` for the one lookup.
 fn due_rows(
     rows: &[TodoItem],
     children: &letibot_tools::builtins::todo::ChildSessions,
+    jobs: &letibot_tools::builtins::todo::RunningJobs,
     fate: impl Fn(&str) -> JobFate,
 ) -> Vec<(String, String, JobFate)> {
     let mut out = Vec::new();
     for row in rows {
-        if !crate::sessions::the_check_may_ask_about(row, children) {
+        if !crate::sessions::the_check_may_ask_about(row, children, jobs) {
             continue;
         }
         let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
@@ -11214,9 +11270,13 @@ impl Harness {
     /// handle. A formatter returning only strings would leave the caller re-deriving what it had
     /// just looked up — which is how the two would come to disagree.
     pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
-        due_rows(&self.todos.snapshot(), &self.child_sessions(), |handle| {
-            self.job_fate(handle)
-        })
+        // **The rows and both live facts, taken together** — the same reading `nag_notice` takes, so
+        // the firing and the nag cannot disagree about whether a row is one the check may speak
+        // about: a row waiting on a young child or on a running job is not due by EITHER door.
+        let rows = self.todos.snapshot();
+        let children = self.child_sessions();
+        let jobs = self.running_jobs(&rows);
+        due_rows(&rows, &children, &jobs, |handle| self.job_fate(handle))
     }
 
     /// The same read as [`Self::job_output`], as a window rather than a page of
@@ -12429,10 +12489,17 @@ pub fn serve_child_under(
     // same arm `Sessions::after_turn` makes for a session the daemon holds, at the same
     // moment relative to the turn. A child that finished its task with an unfinished plan
     // is exactly a session whose last turn left work open.
+    //
+    // **And the jobs are read here too**, exactly as `Sessions::rearm_todo_nag` reads them: a
+    // child's own board may wait on a job the child backgrounded, and the silence that buys is
+    // the same one, so the two owners of this clock must take the same reading of it.
+    let rows = sub.todo_list();
+    let jobs = sub.running_jobs(&rows);
     nag.rearm(
-        &sub.todo_list(),
+        &rows,
         std::time::Instant::now(),
         &sub.child_sessions(),
+        &jobs,
     );
     loop {
         let kind = match hub.take_own_work_until(nag.due_at()) {
@@ -12615,7 +12682,9 @@ pub fn serve_child_under(
 ///
 /// **And the children are taken fresh**, exactly as `Sessions::rearm_todo_nag` takes them:
 /// they are the one input that moves while neither anchor does, so a row that waits on a
-/// child which has gone quiet is re-read rather than remembered.
+/// child which has gone quiet is re-read rather than remembered. **And the jobs with them**,
+/// from this session's own process table: a row that waits on a background job is silent
+/// while it runs, and whether it still runs is not a fact the board or the version holds.
 fn rearm_the_idle_check(
     sub: &Harness,
     nag: &mut crate::sessions::TodoNagClock,
@@ -12626,10 +12695,13 @@ fn rearm_the_idle_check(
     let moved = v != *board_version;
     *board_version = v;
     if turned || moved {
+        let rows = sub.todo_list();
+        let jobs = sub.running_jobs(&rows);
         nag.rearm(
-            &sub.todo_list(),
+            &rows,
             std::time::Instant::now(),
             &sub.child_sessions(),
+            &jobs,
         );
     }
 }
@@ -16303,6 +16375,7 @@ mod tests {
         let due = due_rows(
             &rows,
             &letibot_tools::builtins::todo::ChildSessions::none(),
+            &letibot_tools::builtins::todo::RunningJobs::none(),
             |handle| match handle {
                 "j7" => JobFate::Running,
                 "j121" => JobFate::Ended {

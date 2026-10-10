@@ -48,8 +48,8 @@ use letibot_tokencore::store::{Store, TodoItem};
 // `RunningChild` is what it holds about one, and `waits_on_a_child_with_room_to_breathe` is the
 // silence the operator asked for, kept beside the sentence it suppresses.
 use letibot_tools::builtins::todo::{
-    ChildSessions, RunningChild, unfinished_plan, waits_on_a_child_with_room_to_breathe,
-    when_a_young_child_grows_up,
+    ChildSessions, RunningChild, RunningJobs, unfinished_plan,
+    waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, when_a_young_child_grows_up,
 };
 use std::sync::{Arc, Mutex};
 
@@ -170,7 +170,24 @@ pub(crate) const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 /// exercised through a daemon is a rule tested by accident. Three readers, one definition — the
 /// arming decision below, `Harness::nag_notice` (the `[todo check]` text) and `due_rows` (the
 /// `[todo] … is due` firing).
-pub(crate) fn the_check_may_ask_about(row: &TodoItem, children: &ChildSessions) -> bool {
+///
+/// **And a row that waits on a RUNNING JOB is not, for the same reason one kind over.** The
+/// operator's ask, 2026-10-11: *"todo can be declared to be dependent on a subsession and on a
+/// job ... and that should drastically decrease nags count"* — and the failure it answers was
+/// measured the same night: each of the operator's long jobs had a row nagging while it ran, and
+/// there was no way to say *this waits on that job*. The job half of the rule is
+/// `waits_on_a_running_job` and needs no clock to end it: a job's settlement is delivered to the
+/// model as a turn of its own, and a turn's end is what re-arms this very clock, so the silence
+/// ends by itself where the child's has to be given a deadline.
+///
+/// **Both facts land in one predicate because they are one question** — *is this row work the
+/// check may speak about now* — and a second filter is the two-answers failure `the_plan_as_checked`
+/// exists to prevent.
+pub(crate) fn the_check_may_ask_about(
+    row: &TodoItem,
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> bool {
     !matches!(
         row.status,
         letibot_tokencore::store::TodoStatus::Completed
@@ -181,6 +198,7 @@ pub(crate) fn the_check_may_ask_about(row: &TodoItem, children: &ChildSessions) 
             // question is *what do you owe*, and the answer is nothing either way.
             | letibot_tokencore::store::TodoStatus::Cancelled
     ) && !waits_on_a_child_with_room_to_breathe(row, children)
+        && !waits_on_a_running_job(row, jobs)
 }
 
 /// **A status, as the STORE spells it** — the wire→store half of the one conversion the two copies
@@ -327,10 +345,16 @@ pub(crate) fn child_reading(
 /// because a board cannot hold it: whether a child session is still running is the daemon's fact
 /// ([`child_sessions`]), and a row that waits on a young one is one this check may not speak about
 /// either — the operator's *"not nagged till childs are running for the first 30 minutes of child
-/// life"*.
-pub(crate) fn the_plan_as_checked(rows: &[TodoItem], children: &ChildSessions) -> Vec<TodoItem> {
+/// life"*. **`jobs` is the fourth**, the same argument one layer down: a row that waits on a job
+/// that is still running is out of the plan's hands too, and it is read from the daemon's own
+/// process table rather than from the board (see `Harness::running_jobs`).
+pub(crate) fn the_plan_as_checked(
+    rows: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> Vec<TodoItem> {
     rows.iter()
-        .filter(|row| the_check_may_ask_about(row, children))
+        .filter(|row| the_check_may_ask_about(row, children, jobs))
         .cloned()
         .collect()
 }
@@ -352,15 +376,20 @@ pub(crate) fn the_plan_as_checked(rows: &[TodoItem], children: &ChildSessions) -
 /// session. The reading it takes (`the_plan_as_checked`) is the same one `Harness::nag_notice`
 /// takes, so a plan whose only unfinished row is postponed is silent on both counts: no clock, and
 /// no `[todo check]` text to send if one were armed by an earlier state of the plan.
-fn nag_should_arm(todos: &[TodoItem], nagged: Option<&str>, children: &ChildSessions) -> bool {
+fn nag_should_arm(
+    todos: &[TodoItem],
+    nagged: Option<&str>,
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> bool {
     // **The two arguments are the two halves of one reading**: `the_plan_as_checked` is what the
     // check may SPEAK about, and the board itself is what its edges RESOLVE against — a done row is
     // exactly one the narrowing removes, and it is what satisfies a need. Both come from the ONE
-    // predicate, so nothing here is a second answer to what a plan is — and `children` goes to both,
-    // because a row that waits on a young child is removed by that same predicate and a need of a
-    // child is answered by nothing on the board at all.
-    let askable = the_plan_as_checked(todos, children);
-    match unfinished_plan(&askable, todos, children) {
+    // predicate, so nothing here is a second answer to what a plan is — and `children` and `jobs` go
+    // to both, because a row that waits on a young child or on a running job is removed by that same
+    // predicate and a need of either kind is answered by nothing on the board at all.
+    let askable = the_plan_as_checked(todos, children, jobs);
+    match unfinished_plan(&askable, todos, children, jobs) {
         Some(text) => nagged != Some(text.as_str()),
         None => false,
     }
@@ -450,10 +479,27 @@ impl TodoNagClock {
     ///   child's AGE is none of those, so without this arm the silence the operator asked for would
     ///   have no end: the row would stay quiet until somebody happened to do something, and the
     ///   steering (*"be steared to check the child is not stuck"*) would arrive only by accident.
-    pub fn rearm(&mut self, todos: &[TodoItem], now: Instant, children: &ChildSessions) {
-        self.due = if nag_should_arm(todos, self.nagged.as_deref(), children) {
+    /// * **silent only because a JOB is running** — armed for NOTHING, and that is the one place
+    ///   this clock's answer differs from the child's above. A running job needs no deadline of its
+    ///   own: its settlement is delivered to the model as a turn, and a turn's end is what re-arms
+    ///   this clock (`after_turn`, `serve_child_under`), so the row is asked about the moment the
+    ///   job is over without anything here having to know when that will be.
+    pub fn rearm(
+        &mut self,
+        todos: &[TodoItem],
+        now: Instant,
+        children: &ChildSessions,
+        jobs: &RunningJobs,
+    ) {
+        self.due = if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {
             Some(now + self.window)
-        } else if unfinished_plan(&the_plan_as_checked(todos, children), todos, children).is_some()
+        } else if unfinished_plan(
+            &the_plan_as_checked(todos, children, jobs),
+            todos,
+            children,
+            jobs,
+        )
+        .is_some()
         {
             // `nagged_at` is written with `nagged` and cleared with it, and this arm is reached only
             // with a notice outstanding — so the anchor is there, and a missing one would be a
@@ -1885,12 +1931,21 @@ impl<'a> Sessions<'a> {
     /// one input that moves without the board moving: a child that has gone quiet changes what the
     /// check would say about a row nobody has touched, so the snapshot is taken per arming rather
     /// than held (see `child_sessions`).
+    ///
+    /// **And the jobs with them, read from the SESSION's own process table** — the one fact here the
+    /// daemon does not own outright. A handle is answered by the session that holds it
+    /// (`Harness::running_jobs`, which asks the same `job_fate` the `[todo] … is due` firing reads
+    /// through), so a session the daemon does not hold contributes nothing rather than a guess: its
+    /// rows are not this daemon's to arm.
     fn rearm_todo_nag(&mut self, session_id: &str) {
-        let rows = self
-            .open
-            .get(session_id)
-            .map(|h| h.todo_list())
-            .unwrap_or_default();
+        let (rows, jobs) = match self.open.get(session_id) {
+            Some(h) => {
+                let rows = h.todo_list();
+                let jobs = h.running_jobs(&rows);
+                (rows, jobs)
+            }
+            None => (Vec::new(), RunningJobs::none()),
+        };
         let children = child_sessions(
             &self.registry,
             &self.parts.tasks,
@@ -1900,6 +1955,7 @@ impl<'a> Sessions<'a> {
             &rows,
             Instant::now(),
             &children,
+            &jobs,
         );
     }
 
@@ -3026,6 +3082,15 @@ impl<'a> Sessions<'a> {
                                 letibot_sessionlog::event::TodoNeed::Child { id } => {
                                     letibot_tokencore::store::TodoNeed::Child { id: id.clone() }
                                 }
+                                // **The job handle crosses verbatim**, the same rule the child's
+                                // id and a row's words keep: it is what `job_output` and
+                                // `job_kill` are given, and a shortened one is a name nothing
+                                // answers to.
+                                letibot_sessionlog::event::TodoNeed::Job { handle } => {
+                                    letibot_tokencore::store::TodoNeed::Job {
+                                        handle: handle.clone(),
+                                    }
+                                }
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
                                 }
@@ -4036,6 +4101,9 @@ mod idle_nag {
     // The snapshot the daemon hands the check (`sessions::child_sessions`), spelled in this
     // module's tests the way the arming decision takes it.
     use super::ChildSessions;
+    // The jobs snapshot the daemon hands the same check (`Harness::running_jobs`), spelled here the
+    // way the arming decision takes it.
+    use super::RunningJobs;
     use letibot_tokencore::store::{TodoBy, TodoItem, TodoStatus};
 
     /// **Nothing is running** — the reading every test here that is not about a child passes, and
@@ -4078,6 +4146,24 @@ mod idle_nag {
         }
     }
 
+    /// **A row that waits on a JOB** — the case the operator asked for one layer below a child:
+    /// work that cannot start until a background job this session is running has ended.
+    fn row_needing_a_job(content: &str, handle: &str) -> TodoItem {
+        TodoItem {
+            needs: vec![letibot_tokencore::store::TodoNeed::Job {
+                handle: handle.to_string(),
+            }],
+            ..row(content, TodoStatus::Pending)
+        }
+    }
+
+    /// **Nothing running outside the board** — no job this session holds, which is the reading
+    /// every test here that is not about a job passes, and the one a daemon with no process host
+    /// hands in.
+    fn no_jobs() -> letibot_tools::builtins::todo::RunningJobs {
+        letibot_tools::builtins::todo::RunningJobs::none()
+    }
+
     /// **A child this daemon is running**, as a test states one: an age, what it last showed, and
     /// whether a turn is in flight in it.
     fn child(
@@ -4118,11 +4204,11 @@ mod idle_nag {
         // sentence is rendered. And a plan whose ONLY row is that one arms nothing at all.
         let young = ChildSessions::none().running("s-1-sub-2", child(5 * 60, Some(4), true));
         assert!(
-            super::the_plan_as_checked(&plan, &young).is_empty(),
+            super::the_plan_as_checked(&plan, &young, &no_jobs()).is_empty(),
             "a row waiting on a five-minute-old child is not work this check may speak about"
         );
         assert!(
-            !nag_should_arm(&plan, None, &young),
+            !nag_should_arm(&plan, None, &young, &no_jobs()),
             "and that plan arms NOTHING — the silence is the schedule's, not a sentence that \
              happens to be empty"
         );
@@ -4131,7 +4217,7 @@ mod idle_nag {
         // moment the child leaves its room to breathe, and the steering arrives when it can.
         let t0 = std::time::Instant::now();
         let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
-        clock.rearm(&plan, t0, &young);
+        clock.rearm(&plan, t0, &young, &no_jobs());
         assert_eq!(
             clock.due_at(),
             Some(t0 + std::time::Duration::from_secs(25 * 60)),
@@ -4146,11 +4232,16 @@ mod idle_nag {
         // `a_child_between_turns_is_told_to_be_asked_and_not_killed` is that state's own).
         let old = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
         assert!(
-            nag_should_arm(&plan, None, &old),
+            nag_should_arm(&plan, None, &old, &no_jobs()),
             "past the room to breathe, the check speaks"
         );
-        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan, &old), &plan, &old)
-            .expect("a stuck plan is a finding");
+        let said = super::unfinished_plan(
+            &super::the_plan_as_checked(&plan, &old, &no_jobs()),
+            &plan,
+            &old,
+            &no_jobs(),
+        )
+        .expect("a stuck plan is a finding");
         assert!(
             said.contains("the child `s-1-sub-2`, running 45 minutes"),
             "the sentence names the child and its age: {said}"
@@ -4162,6 +4253,87 @@ mod idle_nag {
         assert!(
             !said.contains("cannot start yet"),
             "not the sentence that tells the reader nothing: {said}"
+        );
+    }
+
+    /// **A row that waits on a RUNNING JOB keeps the check silent, and the same row is asked about
+    /// once the job has ended.**
+    ///
+    /// The operator's ask, 2026-10-11 — *"todo can be declared to be dependent on a subsession and
+    /// on a job ... and that should drastically decrease nags count"* — and the failure it answers
+    /// was measured the same night: each of the operator's long jobs had a row nagging while it ran.
+    ///
+    /// **The two halves differ from the child's in the one way that matters here.** A young child's
+    /// silence has to be given a DEADLINE, because nothing else would ever end it; a running job's
+    /// does not, because its settlement is delivered to the model as a turn of its own and a turn's
+    /// end re-arms this very clock. So the whole of this rule is the predicate: while the job runs
+    /// nothing is armed and nothing is said, and the row is asked about the moment it is over.
+    #[test]
+    fn a_running_job_keeps_the_check_silent_and_the_end_of_it_asks_again() {
+        let plan = [row_needing_a_job("push the branch", "j2070")];
+        let running = RunningJobs::none().running("j2070");
+        assert!(
+            super::the_plan_as_checked(&plan, &no_children(), &running).is_empty(),
+            "a row waiting on a running job is not work this check may speak about"
+        );
+        assert!(
+            !nag_should_arm(&plan, None, &no_children(), &running),
+            "and that plan arms NOTHING — the silence is the schedule's, not a sentence that \
+             happens to be empty"
+        );
+        let t0 = std::time::Instant::now();
+        let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
+        clock.rearm(&plan, t0, &no_children(), &running);
+        assert_eq!(
+            clock.due_at(),
+            None,
+            "and no deadline is invented for it: the job's own settlement is what ends the \
+             silence, so there is nothing to arm"
+        );
+
+        // **The job ends** — the handle is not in the snapshot any more — and the row is work.
+        let ended = RunningJobs::none();
+        assert_eq!(
+            super::the_plan_as_checked(&plan, &no_children(), &ended).len(),
+            1,
+            "the row is askable once the job it waited on is over"
+        );
+        assert!(
+            nag_should_arm(&plan, None, &no_children(), &ended),
+            "and the check is armed for it"
+        );
+        let said = super::unfinished_plan(
+            &super::the_plan_as_checked(&plan, &no_children(), &ended),
+            &plan,
+            &no_children(),
+            &ended,
+        )
+        .expect("the row is open work now");
+        assert!(
+            said.contains("  - push the branch"),
+            "the sentence names the row itself: {said}"
+        );
+        assert!(
+            !said.contains("j2070"),
+            "and says nothing about the job, which is over: {said}"
+        );
+    }
+
+    /// **A daemon full of jobs says nothing about a board that waits on rows** — the compatibility
+    /// half of the same predicate, said the way the child one is.
+    #[test]
+    fn a_board_that_waits_on_nothing_is_unmoved_by_a_daemon_full_of_jobs() {
+        let plan = [row("open", TodoStatus::Pending)];
+        let busy = RunningJobs::none().running("j2070").running("j2081");
+        assert_eq!(
+            super::the_plan_as_checked(&plan, &no_children(), &busy).len(),
+            1,
+            "the row is askable whatever jobs the session happens to be running"
+        );
+        assert_eq!(
+            nag_should_arm(&plan, None, &no_children(), &no_jobs()),
+            nag_should_arm(&plan, None, &no_children(), &busy),
+            "the arming decision is the same one"
         );
     }
 
@@ -4177,18 +4349,18 @@ mod idle_nag {
             .running("s-other", child(3 * 60, Some(1), true))
             .running("s-older", child(90 * 60, Some(60 * 60), false));
         assert_eq!(
-            super::the_plan_as_checked(&plan, &no_children()).len(),
+            super::the_plan_as_checked(&plan, &no_children(), &no_jobs()).len(),
             1,
             "the row is askable"
         );
         assert_eq!(
-            super::the_plan_as_checked(&plan, &busy).len(),
+            super::the_plan_as_checked(&plan, &busy, &no_jobs()).len(),
             1,
             "and it is askable whatever children the daemon happens to be running"
         );
         assert_eq!(
-            nag_should_arm(&plan, None, &no_children()),
-            nag_should_arm(&plan, None, &busy),
+            nag_should_arm(&plan, None, &no_children(), &no_jobs()),
+            nag_should_arm(&plan, None, &busy, &no_jobs()),
             "the arming decision is the same one"
         );
     }
@@ -4196,18 +4368,23 @@ mod idle_nag {
     /// A plan with nothing open is not a plan to nag about.
     #[test]
     fn a_finished_plan_is_never_armed() {
-        assert!(!nag_should_arm(&[], None, &no_children()), "no plan at all");
+        assert!(
+            !nag_should_arm(&[], None, &no_children(), &no_jobs()),
+            "no plan at all"
+        );
         // even if something WAS nagged before and has since been finished
         assert!(!nag_should_arm(
             &[],
             Some("[todo check] 2 of 3"),
-            &no_children()
+            &no_children(),
+            &no_jobs(),
         ));
         // and a plan whose rows are all answered
         assert!(!nag_should_arm(
             &[row("done", TodoStatus::Completed)],
             None,
-            &no_children()
+            &no_children(),
+            &no_jobs(),
         ));
     }
 
@@ -4217,7 +4394,8 @@ mod idle_nag {
         assert!(nag_should_arm(
             &[row("open", TodoStatus::Pending)],
             None,
-            &no_children()
+            &no_children(),
+            &no_jobs(),
         ));
     }
 
@@ -4240,24 +4418,25 @@ mod idle_nag {
             row_needing("run the tests", &["deploy"]),
         ];
         assert!(
-            nag_should_arm(&plan, None, &no_children()),
+            nag_should_arm(&plan, None, &no_children(), &no_jobs()),
             "nothing can start, so the check must speak rather than go quiet"
         );
         let said = super::unfinished_plan(
-            &super::the_plan_as_checked(&plan, &no_children()),
+            &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
             &plan,
             &no_children(),
+            &no_jobs(),
         )
         .expect("a stuck plan is a finding");
         assert!(said.contains("NOTHING can start"), "{said}");
         assert!(
-            !nag_should_arm(&plan, Some(&said), &no_children()),
+            !nag_should_arm(&plan, Some(&said), &no_children(), &no_jobs()),
             "the same stuck plan is the same notice, so it repeats at the ladder's rate"
         );
         // **And it is a NOTICE and not a hole in the schedule**: the clock arms it one window out.
         let t0 = std::time::Instant::now();
         let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
-        clock.rearm(&plan, t0, &no_children());
+        clock.rearm(&plan, t0, &no_children(), &no_jobs());
         assert_eq!(
             clock.due_at(),
             Some(t0 + std::time::Duration::from_secs(60)),
@@ -4278,12 +4457,18 @@ mod idle_nag {
     fn an_unchanged_plan_is_not_a_new_notice() {
         let plan = [row("open", TodoStatus::Pending)];
         let sent = super::unfinished_plan(
-            &super::the_plan_as_checked(&plan, &no_children()),
+            &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
             &plan,
             &no_children(),
+            &no_jobs(),
         )
         .expect("open work");
-        assert!(!nag_should_arm(&plan, Some(&sent), &no_children()));
+        assert!(!nag_should_arm(
+            &plan,
+            Some(&sent),
+            &no_children(),
+            &no_jobs()
+        ));
     }
 
     /// Any change at all is a new thing to say — an item closed, one started, one added.
@@ -4291,15 +4476,17 @@ mod idle_nag {
     fn a_plan_that_moved_is_armed_again() {
         let plan = [row("open", TodoStatus::Pending)];
         let sent = super::unfinished_plan(
-            &super::the_plan_as_checked(&plan, &no_children()),
+            &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
             &plan,
             &no_children(),
+            &no_jobs(),
         )
         .expect("open work");
         assert!(nag_should_arm(
             &[row("open", TodoStatus::InProgress)],
             Some(&sent),
-            &no_children()
+            &no_children(),
+            &no_jobs(),
         ));
         assert!(nag_should_arm(
             &[
@@ -4307,7 +4494,8 @@ mod idle_nag {
                 row("added", TodoStatus::Pending)
             ],
             Some(&sent),
-            &no_children()
+            &no_children(),
+            &no_jobs(),
         ));
     }
 
@@ -4323,7 +4511,12 @@ mod idle_nag {
     #[test]
     fn a_postponed_row_does_not_arm_the_check() {
         assert!(
-            !nag_should_arm(&[row("later", TodoStatus::Postponed)], None, &no_children()),
+            !nag_should_arm(
+                &[row("later", TodoStatus::Postponed)],
+                None,
+                &no_children(),
+                &no_jobs()
+            ),
             "the one row is set aside, so there is nothing to check"
         );
         // **Even after the check spoke about it**, which is the transition a session really makes:
@@ -4333,13 +4526,19 @@ mod idle_nag {
             !nag_should_arm(
                 &[row("later", TodoStatus::Postponed)],
                 Some("[todo check] this turn is finished and one item is not done:\n  - later"),
-                &no_children()
+                &no_children(),
+                &no_jobs(),
             ),
             "a postponement is not a reason to say the same thing again"
         );
         // …and the ordinary row beside it is the control.
         assert!(
-            nag_should_arm(&[row("now", TodoStatus::Pending)], None, &no_children()),
+            nag_should_arm(
+                &[row("now", TodoStatus::Pending)],
+                None,
+                &no_children(),
+                &no_jobs()
+            ),
             "an ordinary open row arms the check, so the silence above is the STATE and not a \
              check that stopped working"
         );
@@ -4353,9 +4552,10 @@ mod idle_nag {
             row("later", TodoStatus::Postponed),
         ];
         let notice = super::unfinished_plan(
-            &super::the_plan_as_checked(&mixed, &no_children()),
+            &super::the_plan_as_checked(&mixed, &no_children(), &no_jobs()),
             &mixed,
             &no_children(),
+            &no_jobs(),
         )
         .expect("the ordinary row is open work");
         assert!(
@@ -4383,7 +4583,8 @@ mod idle_nag {
             !nag_should_arm(
                 &[row("struck off", TodoStatus::Cancelled)],
                 None,
-                &no_children()
+                &no_children(),
+                &no_jobs(),
             ),
             "the one row is struck off, so there is nothing to check"
         );
@@ -4393,13 +4594,19 @@ mod idle_nag {
                 Some(
                     "[todo check] this turn is finished and one item is not done:\n  - struck off"
                 ),
-                &no_children()
+                &no_children(),
+                &no_jobs(),
             ),
             "a row decided against is not a reason to say the same thing again"
         );
         // …and the ordinary row beside it is the control, as it is for `Postponed`.
         assert!(
-            nag_should_arm(&[row("now", TodoStatus::Pending)], None, &no_children()),
+            nag_should_arm(
+                &[row("now", TodoStatus::Pending)],
+                None,
+                &no_children(),
+                &no_jobs()
+            ),
             "an ordinary open row arms the check, so the silence above is the STATE"
         );
         let mixed = [
@@ -4407,9 +4614,10 @@ mod idle_nag {
             row("struck off", TodoStatus::Cancelled),
         ];
         let notice = super::unfinished_plan(
-            &super::the_plan_as_checked(&mixed, &no_children()),
+            &super::the_plan_as_checked(&mixed, &no_children(), &no_jobs()),
             &mixed,
             &no_children(),
+            &no_jobs(),
         )
         .expect("the ordinary row is open work");
         assert!(
@@ -4441,12 +4649,22 @@ mod idle_nag {
         );
 
         // An open plan arms at now + window — the boundary is exact, not "about a minute".
-        clock.rearm(&[row("open", TodoStatus::Pending)], t0, &no_children());
+        clock.rearm(
+            &[row("open", TodoStatus::Pending)],
+            t0,
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
 
         // **And stands down for a plan with nothing to ask about** — the operator's
         // postponed row is the case the rule exists for, so it is the case pinned here.
-        clock.rearm(&[row("later", TodoStatus::Postponed)], t0, &no_children());
+        clock.rearm(
+            &[row("later", TodoStatus::Postponed)],
+            t0,
+            &no_children(),
+            &no_jobs(),
+        );
         assert!(
             clock.due_at().is_none(),
             "a postponed-only plan arms nothing: the operator's `[p]` stays theirs"
@@ -4468,21 +4686,27 @@ mod idle_nag {
         let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
         let plan = [row("open", TodoStatus::Pending)];
         let said = super::unfinished_plan(
-            &super::the_plan_as_checked(&plan, &no_children()),
+            &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
             &plan,
             &no_children(),
+            &no_jobs(),
         )
         .expect("open work");
 
         // The first check of a plan is one base window after the turn that armed it.
-        clock.rearm(&plan, t0, &no_children());
+        clock.rearm(&plan, t0, &no_children(), &no_jobs());
         assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
 
         // Delivered: the notice is recorded, the deadline is spent — and the REPEAT is armed, one
         // doubled interval after the DELIVERY.
         assert!(clock.due_now(t0 + Duration::from_secs(60)));
         clock.said(Some(said.clone()), t0 + Duration::from_secs(60));
-        clock.rearm(&plan, t0 + Duration::from_secs(60), &no_children());
+        clock.rearm(
+            &plan,
+            t0 + Duration::from_secs(60),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(60 + 120)),
@@ -4492,7 +4716,12 @@ mod idle_nag {
         // **And a turn that changes nothing does not postpone it.** The anchor is the delivery, so
         // a wake-driven turn in between arms the SAME moment rather than a fresh window — which is
         // what keeps a session that keeps waking from pushing its own reminder back for ever.
-        clock.rearm(&plan, t0 + Duration::from_secs(100), &no_children());
+        clock.rearm(
+            &plan,
+            t0 + Duration::from_secs(100),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(180)),
@@ -4502,13 +4731,23 @@ mod idle_nag {
         // Delivered again: the ladder doubles again.
         assert!(clock.due_now(t0 + Duration::from_secs(180)));
         clock.said(Some(said.clone()), t0 + Duration::from_secs(180));
-        clock.rearm(&plan, t0 + Duration::from_secs(180), &no_children());
+        clock.rearm(
+            &plan,
+            t0 + Duration::from_secs(180),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
 
         // **A plan that moved is a new thing to say** — one row started — and the ladder starts
         // over at the base window, however long the old notice stood.
         let moved = [row("open", TodoStatus::InProgress)];
-        clock.rearm(&moved, t0 + Duration::from_secs(400), &no_children());
+        clock.rearm(
+            &moved,
+            t0 + Duration::from_secs(400),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(460)),
@@ -4519,20 +4758,31 @@ mod idle_nag {
         // steering a child exercises too (`serve_child_under`'s prompt arm) — at the base rate and
         // not at whatever gap the ladder had grown to.
         let moved_said = super::unfinished_plan(
-            &super::the_plan_as_checked(&moved, &no_children()),
+            &super::the_plan_as_checked(&moved, &no_children(), &no_jobs()),
             &moved,
             &no_children(),
+            &no_jobs(),
         )
         .expect("open work");
         clock.said(Some(moved_said), t0 + Duration::from_secs(400));
-        clock.rearm(&moved, t0 + Duration::from_secs(400), &no_children());
+        clock.rearm(
+            &moved,
+            t0 + Duration::from_secs(400),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(520)),
             "the moved plan's own notice repeats at its doubled interval"
         );
         clock.prompt_arrived();
-        clock.rearm(&moved, t0 + Duration::from_secs(430), &no_children());
+        clock.rearm(
+            &moved,
+            t0 + Duration::from_secs(430),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(490)),
@@ -4555,21 +4805,22 @@ mod idle_nag {
         let mut clock = super::TodoNagClock::with_window(window);
         let plan = [row("open", TodoStatus::Pending)];
         let said = super::unfinished_plan(
-            &super::the_plan_as_checked(&plan, &no_children()),
+            &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
             &plan,
             &no_children(),
+            &no_jobs(),
         )
         .expect("open work");
         let mut at = Instant::now();
         let mut gaps: Vec<Duration> = Vec::new();
-        clock.rearm(&plan, at, &no_children());
+        clock.rearm(&plan, at, &no_children(), &no_jobs());
         for _ in 0..40 {
             let due = clock.due_at().expect("an unfinished plan is always armed");
             gaps.push(due - at);
             assert!(clock.due_now(due), "the deadline's own instant is due");
             clock.said(Some(said.clone()), due);
             at = due;
-            clock.rearm(&plan, at, &no_children());
+            clock.rearm(&plan, at, &no_children(), &no_jobs());
         }
 
         // Every gap is the one before it doubled, or the cap — never more than both.
@@ -4600,15 +4851,21 @@ mod idle_nag {
         let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
         let plan = [row("open", TodoStatus::Pending)];
         let said = super::unfinished_plan(
-            &super::the_plan_as_checked(&plan, &no_children()),
+            &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
             &plan,
             &no_children(),
+            &no_jobs(),
         )
         .expect("open work");
-        clock.rearm(&plan, t0, &no_children());
+        clock.rearm(&plan, t0, &no_children(), &no_jobs());
         assert!(clock.due_now(t0 + Duration::from_secs(60)));
         clock.said(Some(said), t0 + Duration::from_secs(60));
-        clock.rearm(&plan, t0 + Duration::from_secs(60), &no_children());
+        clock.rearm(
+            &plan,
+            t0 + Duration::from_secs(60),
+            &no_children(),
+            &no_jobs(),
+        );
         assert!(
             clock.due_at().is_some(),
             "the repeat is armed for the unfinished plan"
@@ -4620,6 +4877,7 @@ mod idle_nag {
             &[row("open", TodoStatus::Postponed)],
             t0 + Duration::from_secs(70),
             &no_children(),
+            &no_jobs(),
         );
         assert!(
             clock.due_at().is_none(),
@@ -4630,12 +4888,18 @@ mod idle_nag {
             &[row("open", TodoStatus::Completed)],
             t0 + Duration::from_secs(80),
             &no_children(),
+            &no_jobs(),
         );
         assert!(clock.due_at().is_none(), "a finished plan arms nothing");
 
         // The row comes back unfinished, and the notice is the one already sent: the repeat is
         // armed at the ladder's own gap (the delivery plus two windows), not at a fresh window.
-        clock.rearm(&plan, t0 + Duration::from_secs(90), &no_children());
+        clock.rearm(
+            &plan,
+            t0 + Duration::from_secs(90),
+            &no_children(),
+            &no_jobs(),
+        );
         assert_eq!(
             clock.due_at(),
             Some(t0 + Duration::from_secs(180)),
@@ -4654,7 +4918,12 @@ mod idle_nag {
 
         let t0 = Instant::now();
         let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
-        clock.rearm(&[row("open", TodoStatus::Pending)], t0, &no_children());
+        clock.rearm(
+            &[row("open", TodoStatus::Pending)],
+            t0,
+            &no_children(),
+            &no_jobs(),
+        );
         let due = t0 + Duration::from_secs(60);
 
         assert!(
@@ -4671,7 +4940,12 @@ mod idle_nag {
 
         // `fired` is `serve_child_under`'s half of the same disarm, told by
         // `OwnWork::TimedOut` instead of a return value.
-        clock.rearm(&[row("open", TodoStatus::Pending)], t0, &no_children());
+        clock.rearm(
+            &[row("open", TodoStatus::Pending)],
+            t0,
+            &no_children(),
+            &no_jobs(),
+        );
         clock.fired();
         assert!(clock.due_at().is_none());
     }

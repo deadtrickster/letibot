@@ -1677,9 +1677,10 @@ pub struct TodoItem {
 /// * a **wasm predicate** — the host passes values and the module answers a verdict, and a trap, a
 ///   failed call or a fuelled-out one is unresolvable, which is this same rule a third time.
 ///
-/// (The other one on that list was a **child session**, which is [`TodoNeed::Child`] below: it is
-/// built, and the thing that evaluates it is the daemon — a board cannot know whether a session is
-/// running, so the facts are handed in from outside rather than read here.)
+/// (Two others on that list are BUILT, and both are [`TodoNeed`]'s: a **child session**
+/// ([`TodoNeed::Child`]) and a **background job** ([`TodoNeed::Job`]). What evaluates them is the
+/// daemon — a board cannot know whether a session or a process is running, so the facts are handed
+/// in from outside rather than read here.)
 ///
 /// **The edge is a row's WORDS, and that is a decision rather than a shortcut.** The board has one
 /// key and it is `content`: `TodoBoard::set_operator_states` resolves the operator's rows by their
@@ -1719,6 +1720,30 @@ pub enum TodoNeed {
     /// the child as finished: there are no children there, and a need nobody can answer must not
     /// read as met *or* as a row that waits for ever — see the doc on [`TodoItem::needs`].
     Child { id: String },
+    /// **A background JOB, named by the handle `bash background: true` and `job_list` print** —
+    /// [`TodoNeed::Child`]'s sibling one layer down: the row cannot start until that job ENDS, any
+    /// ending, and while it runs the idle check stays silent about the row rather than asking for
+    /// work that is blocked on something the plan cannot move.
+    ///
+    /// **The distinction from a `when` is the whole of why this variant exists**, because the two
+    /// read the SAME handle out of the same table and mean opposite things. `when: TodoCondition::Job`
+    /// is the operator's clock — the row FIRES when the job ends, and the check is asked for it. A
+    /// `needs` entry is an EDGE — the row cannot start until the job is over, and the check is
+    /// silent about it while it is not. Measured, 2026-10-11: the operator's own long jobs each had
+    /// a row nagging while they ran, and there was no way to say *this waits on that job*.
+    ///
+    /// **The handle is the full one** `bash background: true` and `job_list` print, the same rule
+    /// [`TodoNeed::Child`] keeps for a session id and for the same reason: it is what `job_output`
+    /// and `job_kill` are given, so a shortened handle is a name nothing answers to.
+    ///
+    /// **Whether that job is RUNNING is not on this board, and this variant does not pretend it
+    /// is** — the process table is the daemon's and the store holds only what outlived it, so the
+    /// caller hands a snapshot in and `unmet_needs` reads it there. What a board alone can say
+    /// about a job need is nothing, and a caller with no daemon behind it treats the job as ended:
+    /// **a handle that is not running — including one this session has never heard of, which is
+    /// what a handle looks like after a restart — is a job that ended**, which is
+    /// [`TodoCondition::Job`]'s own ruling one variant up and the reason the two cannot disagree.
+    Job { handle: String },
     /// **A kind this build does not know** — a need written by a build that has one this one does
     /// not, and it is here because the alternative is worse in a way that is MEASURED, not imagined:
     /// `Harness::new` restores a resumed session's board with `store.todos(id).unwrap_or_default()`,
@@ -6008,6 +6033,35 @@ mod tests {
         assert!(
             raw.contains(r#""kind":"row","content":"run the tests""#),
             "the edge is a tagged kind on the wire between this crate and `sqlite3`: {raw}"
+        );
+
+        // **And the job edge is the same tagged shape under its own kind**, so the two facts a
+        // board cannot hold — a child session and a background job — are told apart by a reader of
+        // the raw row rather than guessed at from the payload.
+        write_raw(
+            r#"[{"content":"deploy","status":"pending","by":"model","when":null,
+                       "needs":[{"kind":"job","handle":"j2070"}]}]"#,
+        );
+        let back = s.todos("sess-1").unwrap();
+        assert_eq!(
+            back[0].needs,
+            vec![TodoNeed::Job {
+                handle: "j2070".into()
+            }],
+            "a job edge round-trips as a job edge"
+        );
+        s.put_todos("sess-1", &back).unwrap();
+        let raw: String = s
+            .conn
+            .query_row(
+                "SELECT todos_json FROM todo WHERE session_id = ?1",
+                params!["sess-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw.contains(r#""kind":"job","handle":"j2070""#),
+            "and it is written back as the kind a later build reads: {raw}"
         );
     }
 

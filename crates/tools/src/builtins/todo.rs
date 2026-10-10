@@ -25,7 +25,7 @@
 //! that makes that split possible without the tools crate knowing about stores or
 //! logs: the tool mutates the board, the harness watches the version.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -715,6 +715,55 @@ impl ChildSessions {
     }
 }
 
+/// **What the daemon knows about the JOBS a plan waits on** — the second fact a BOARD cannot hold,
+/// handed in beside [`ChildSessions`].
+///
+/// A row may wait on a background job ([`TodoNeed::Job`]), and whether that job is still running is
+/// on no board: the process table is the daemon's, and the store holds only what outlived it. So the
+/// caller takes a SNAPSHOT and passes it — a value rather than a live query, for [`ChildSessions`]'
+/// own reason: the three cases that matter (a job that is running, one that has ended, and a handle
+/// nobody has heard of) are three values rather than three daemons.
+///
+/// **A handle that is not in here is not running, and that is the ANSWER rather than a gap.** It is
+/// the reading [`TodoCondition::Job`] already gives a handle it does not know — *"a job that is not
+/// running — including one this session has never heard of, which is what a handle looks like after
+/// a restart — is a job that ended"* — and an edge into a job that ended is therefore MET: the row
+/// that waited on it can start. The alternative is an edge nothing can ever answer, which is the
+/// failure [`TodoNeed::Unknown`] exists to refuse; and it is the same rule
+/// [`ChildSessions`] keeps for a child that is not in its map.
+///
+/// **Liveness is the whole of it, which is where this differs from [`ChildSessions`].** A child
+/// carries its age and what it last showed because the check has to STEER the model at a child that
+/// has gone quiet; a job needs no steering — its settlement is already on its way to the model
+/// (`jobwatch` submits it as a turn of its own), so all the check has to know is whether the row's
+/// blocker is still there.
+#[derive(Debug, Clone, Default)]
+pub struct RunningJobs {
+    live: BTreeSet<String>,
+}
+
+impl RunningJobs {
+    /// Nothing running — a reading with no daemon behind it, and the honest one for every board
+    /// whose rows wait on rows.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// **A job that is running HERE**, by the handle `bash background: true` and `job_list` print.
+    /// A builder, so a caller states its whole snapshot in one expression and a test states one
+    /// case per line.
+    pub fn running(mut self, handle: impl Into<String>) -> Self {
+        self.live.insert(handle.into());
+        self
+    }
+
+    /// **Whether this handle is running here** — the one read [`unmet_needs`] and the check's
+    /// narrowing both take.
+    pub fn is_running(&self, handle: &str) -> bool {
+        self.live.contains(handle)
+    }
+}
+
 /// **Whether a row waits on a child that is still inside its room to breathe.**
 ///
 /// A row whose need is a live child younger than [`CHILD_ROOM_TO_BREATHE`] is one the check may not
@@ -734,6 +783,35 @@ pub fn waits_on_a_child_with_room_to_breathe(row: &TodoItem, children: &ChildSes
         TodoNeed::Child { id } => children
             .child(id)
             .is_some_and(|child| child.age < CHILD_ROOM_TO_BREATHE),
+        _ => false,
+    })
+}
+
+/// **Whether a row waits on a job that is still running.**
+///
+/// The job half of [`waits_on_a_child_with_room_to_breathe`], and it is the operator's own ask of
+/// 2026-10-11: *"todo can be declared to be dependent on a subsession and on a job ... and that
+/// should drastically decrease nags count"*, measured the same night — each of the operator's long
+/// jobs had a row nagging while it ran, because there was no way to say *this waits on that job*.
+///
+/// **A job is silent for as long as it RUNS, where a child is silent only while it is YOUNG**, and
+/// the difference is not an oversight. A child is a session the plan cannot see into, so past its
+/// room to breathe the check has to say *look at the child* — that is the steering
+/// [`CHILD_ROOM_TO_BREATHE`] exists for. A job needs no steering and no age: the daemon watches
+/// every background job and submits its settlement as a turn of its own, so a row blocked on a
+/// running job is a row whose answer is already on its way, and the only honest thing the check can
+/// do while it runs is say nothing. **And the silence ends by itself**: the settlement is a turn, a
+/// turn's end re-arms the idle clock, and the row is then asked about — no deadline of its own is
+/// needed, which is why there is no job-side twin of [`when_a_young_child_grows_up`].
+///
+/// **Any need of that shape makes the row quiet**, whatever else it waits on — [`waits_on_a_child_with_room_to_breathe`]'s
+/// rule one kind over: the job is one reason the row cannot start, and one the plan cannot move.
+///
+/// A caller that does not narrow gets the other half of the same design: [`unmet_needs`] still says
+/// the job is running, because it is, and the sentence for it says so.
+pub fn waits_on_a_running_job(row: &TodoItem, jobs: &RunningJobs) -> bool {
+    row.needs.iter().any(|need| match need {
+        TodoNeed::Job { handle } => jobs.is_running(handle),
         _ => false,
     })
 }
@@ -831,12 +909,24 @@ fn human_gap(gap: Duration) -> String {
 /// has shown lately — so the daemon hands its snapshot in; [`ChildSessions`] says why it is a value
 /// and [`unmet_needs`] says what is read from it. `ChildSessions::none()` is the honest reading for
 /// a caller with no daemon behind it, and the only one that leaves a board of row-edges unchanged.
+///
+/// **And `jobs` is the fourth, one layer down from `children`.** A row that waits on a background
+/// JOB resolves against the process table, which no board holds either, so the daemon hands that
+/// snapshot in too — [`RunningJobs`] says what absence means and [`unmet_needs`] says what is read
+/// from it. The two are separate arguments rather than one *live* value because they are two facts
+/// with two readers: a child's age is what the check STEERS by, a job's liveness is all it has to
+/// know, and a caller that has one and not the other is an ordinary caller (a session with a process
+/// host and no subagents, and the reverse).
+///
+/// **The order is the operator's own**: *"dependent on a subsession and on a job"* — the child
+/// first, the job second, everywhere in this file.
 pub fn unfinished_plan(
     rows: &[TodoItem],
     board: &[TodoItem],
     children: &ChildSessions,
+    jobs: &RunningJobs,
 ) -> Option<String> {
-    unfinished_plan_for(rows, board, None, children).map(|(text, _)| text)
+    unfinished_plan_for(rows, board, None, children, jobs).map(|(text, _)| text)
 }
 
 /// **The check's sentence, and the row it named** — the row handed back so the caller can remember
@@ -873,19 +963,20 @@ pub fn unfinished_plan(
 /// neither of the two additions below can fire. The blocked line and the nothing-can-start sentence
 /// are the only places this message knows there is a graph — which is what makes the compatibility
 /// claim a consequence of the design rather than a promise kept by hand. **The same holds for a
-/// board whose edges are all `Row`s and whose `children` is empty**, which is every board in a
-/// runtime with no daemon behind it.
+/// board whose edges are all `Row`s and whose `children` and `jobs` are empty**, which is every
+/// board in a runtime with no daemon behind it.
 pub fn unfinished_plan_for(
     rows: &[TodoItem],
     board: &[TodoItem],
     chosen: Option<&str>,
     children: &ChildSessions,
+    jobs: &RunningJobs,
 ) -> Option<(String, String)> {
     let PlanAsGraph {
         open,
         ready,
         blocked,
-    } = as_a_graph(rows, board, children);
+    } = as_a_graph(rows, board, children, jobs);
     // **AND THE ONE ALREADY ASKED ABOUT COMES FIRST**, while it is still ready. A row that has left
     // the ready set — done, set aside by the operator, or BLOCKED — is no longer a choice, and the
     // head of the ready set is; `the_check_may_ask_about` is what decided the first two, so this
@@ -1028,6 +1119,16 @@ pub enum NeedFate {
     /// silence is `waits_on_a_child_with_room_to_breathe`'s, taken by the caller before this
     /// function is handed the rows, so what is here is the fact and the policy is one step out.
     ChildRunning(RunningChild),
+    /// **A background job this session is running** — the row cannot start until it ends, ANY
+    /// ending, and while it runs the idle check stays SILENT about the row
+    /// ([`waits_on_a_running_job`]): what is here is the fate for a caller that did not narrow.
+    ///
+    /// **It carries no payload, and that difference from [`NeedFate::ChildRunning`] is the design
+    /// rather than an economy.** A child's fate carries the child's facts because the check has to
+    /// STEER — *look at the child, it has gone quiet* — and a job needs no steering at all: the
+    /// daemon already watches it and delivers its settlement as a turn of its own. All a reader of
+    /// this line has to know is that the blocker is still there and is not the plan's to move.
+    JobRunning,
 }
 
 /// **The rows the check may speak about, read as a graph** — split by whether they can start.
@@ -1051,17 +1152,19 @@ struct PlanAsGraph<'a> {
 /// prevent.
 ///
 /// **`children` is the same split one fact over**: a child's liveness is not on the board either,
-/// so the caller hands its snapshot in beside the board — see [`ChildSessions`].
+/// so the caller hands its snapshot in beside the board — see [`ChildSessions`] — and `jobs` is the
+/// second such fact, for the reason [`RunningJobs`] gives.
 fn as_a_graph<'a>(
     rows: &'a [TodoItem],
     board: &[TodoItem],
     children: &ChildSessions,
+    jobs: &RunningJobs,
 ) -> PlanAsGraph<'a> {
     let queue = open_priority(rows);
     let mut ready = Vec::new();
     let mut blocked = Vec::new();
     for row in queue.iter().copied() {
-        let unmet = unmet_needs(board, row, children);
+        let unmet = unmet_needs(board, row, children, jobs);
         if unmet.is_empty() {
             ready.push(row);
         } else {
@@ -1085,10 +1188,19 @@ fn as_a_graph<'a>(
 /// session is running, so the caller's snapshot is the whole of the evidence — and a child that is
 /// not in it is one that has finished, which is the answer the row waits for (see [`ChildSessions`]
 /// for why absence is not a gap).
+///
+/// **A `Job` need is answered by `jobs`, and there ABSENCE IS THE ANSWER ITSELF.** The board cannot
+/// say whether a process is running either, so a handle the snapshot does not hold is a job that
+/// ENDED — which is the whole of what the row waits for — and the edge is therefore MET: nothing is
+/// pushed and the row is READY. That is `TodoCondition::Job`'s ruling read as an edge instead of as
+/// a clock (*"a job that is not running — including one this session has never heard of, which is
+/// what a handle looks like after a restart — is a job that ended"*), and the two must not differ:
+/// one handle, one answer, whether the row fires on the ending or waits for it.
 fn unmet_needs(
     board: &[TodoItem],
     row: &TodoItem,
     children: &ChildSessions,
+    jobs: &RunningJobs,
 ) -> Vec<(String, NeedFate)> {
     let mut out = Vec::new();
     for need in &row.needs {
@@ -1123,6 +1235,16 @@ fn unmet_needs(
                     out.push((id.clone(), NeedFate::ChildRunning(*child)));
                 }
             }
+            // **A job the session is running is NOT met** — it has not ended, which is the whole of
+            // what the row waits for — and the handle is the NAME the message prints, the same way
+            // a child's id is: it is what `job_output` and `job_kill` are given, so the model has
+            // to be able to quote it back. A handle that is not in the snapshot is a job that
+            // ENDED, and nothing is pushed for it: see this function's own doc.
+            TodoNeed::Job { handle } => {
+                if jobs.is_running(handle) {
+                    out.push((handle.clone(), NeedFate::JobRunning));
+                }
+            }
             TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
         }
     }
@@ -1155,6 +1277,12 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
                 "the child `{name}`, running {} — {}",
                 human_gap(child.age),
                 child_said(child)
+            ),
+            // **A job is named by its handle**, the one `job_list` and `job_output` are given, and
+            // the sentence says the two things the reader needs and nothing else: the blocker is
+            // still there, and it is not theirs to move — the settlement is already on its way.
+            NeedFate::JobRunning => format!(
+                "the job `{name}`, still running — its completion arrives as a turn of its own"
             ),
         })
         .collect();
@@ -1301,30 +1429,28 @@ fn child_said(child: &RunningChild) -> String {
 /// **What the check says about the rows it cannot ask for**, in one line — so the model learns the
 /// plan is not empty, it is STUCK, and on what.
 ///
-/// **Two leads, because there are two kinds of stuck and they ask different things of the reader.**
-/// A row waiting on another ROW waits on something the plan can move — finish it, or correct a need
-/// that names nothing — and it gets *"cannot start yet"*, which is the sentence that has always
-/// been here. A row waiting on a CHILD waits on something the plan cannot move at all, and the
-/// operator's ruling is that it gets *check whether it is stuck* instead; one sentence for both
-/// would make the second read as the first, which is exactly the nag the room to breathe exists to
-/// avoid. A row with both kinds of need goes with the children, because the child is the half the
-/// plan cannot answer.
+/// **Three leads, because there are three kinds of stuck and they ask different things of the
+/// reader.** A row waiting on another ROW waits on something the plan can move — finish it, or
+/// correct a need that names nothing — and it gets *"cannot start yet"*, which is the sentence that
+/// has always been here. A row waiting on a CHILD waits on something the plan cannot move at all,
+/// and the operator's ruling is that it gets *check whether it is stuck* instead; one sentence for
+/// both would make the second read as the first, which is exactly the nag the room to breathe exists
+/// to avoid. A row waiting on a JOB waits on something nobody has to do anything about — the
+/// settlement is already on its way — and it gets a lead of its own rather than the child's, because
+/// *check whether it is stuck* about a job would send the reader to look at a process that is doing
+/// exactly what it was started for. **A row with more than one kind of need goes with the furthest
+/// one**, and the order of the three is the order of how little the plan can do about it: child,
+/// then job, then row.
 fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
-    // A row goes with the CHILDREN when it waits on one, even if it also waits on a row: the
-    // child is the half the plan cannot answer, and that is what the lead is for.
-    let waiting_on_a_child = |unmet: &[(String, NeedFate)]| {
-        unmet
-            .iter()
-            .any(|(_, fate)| matches!(fate, NeedFate::ChildRunning(_)))
-    };
     let mut said: Vec<String> = Vec::new();
-    for (on_a_child, lead) in [
-        (false, "cannot start yet"),
-        (true, "waiting on a child that is still running"),
+    for lead in [
+        "cannot start yet",
+        "waiting on a child that is still running",
+        "waiting on a job that is still running",
     ] {
         let lines: Vec<String> = blocked
             .iter()
-            .filter(|(_, unmet)| waiting_on_a_child(unmet) == on_a_child)
+            .filter(|(_, unmet)| lead_of(unmet) == lead)
             .map(|(row, unmet)| blocked_line(row, unmet))
             .collect();
         if !lines.is_empty() {
@@ -1338,7 +1464,27 @@ fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
     said.join(" ")
 }
 
-/// `1 row` / `2 rows` — the count both leads above open with.
+/// [`blocked_said`]'s classification, split out because a closure cannot be called by name in the
+/// filter there — see that function's doc for what the order of the three means. A row goes with
+/// the CHILD when it waits on one, then with the JOB, and only otherwise with the plain rows: what
+/// the lead is for is the thing the plan is least able to answer.
+fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
+    if unmet
+        .iter()
+        .any(|(_, fate)| matches!(fate, NeedFate::ChildRunning(_)))
+    {
+        "waiting on a child that is still running"
+    } else if unmet
+        .iter()
+        .any(|(_, fate)| matches!(fate, NeedFate::JobRunning))
+    {
+        "waiting on a job that is still running"
+    } else {
+        "cannot start yet"
+    }
+}
+
+/// `1 row` / `2 rows` — the count the leads above open with.
 fn rows_count(n: usize) -> String {
     match n {
         1 => "1 row".to_string(),
@@ -1358,29 +1504,42 @@ fn rows_count(n: usize) -> String {
 ///
 /// **And the way out is not one way out.** *"Unblock one of these"* is the whole of the advice when
 /// the blockers are rows, and it is wrong when one of them is a CHILD: a child is outside the plan,
-/// so nothing the model writes moves it — what that row asks for is a look at the child. The extra
-/// sentence is added only when such a row is here, which is the same rule the rest of this file
-/// keeps about saying things a reader has no use for.
+/// so nothing the model writes moves it — what that row asks for is a look at the child. A JOB is
+/// the third case and it is not a way out at all: nothing has to be done about a job that is running,
+/// because its completion arrives as a turn of its own — so what the reader is told is to leave it
+/// alone, which is the sentence that keeps this from reading as a plan to repair. Each extra clause
+/// is added only when such a row is here, which is the same rule the rest of this file keeps about
+/// saying things a reader has no use for.
 fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
     let lines: Vec<String> = blocked
         .iter()
         .map(|(row, unmet)| format!("  - {}", blocked_line(row, unmet)))
         .collect();
-    let a_child_is_waiting = blocked.iter().any(|(_, unmet)| {
-        unmet
+    let any = |fate: fn(&NeedFate) -> bool| {
+        blocked
             .iter()
-            .any(|(_, fate)| matches!(fate, NeedFate::ChildRunning(_)))
-    });
-    let out = if a_child_is_waiting {
-        "unblock one of these rather than starting something new: finish a row they wait on, or \
-         correct a need that names nothing on this board — and where what is waited on is a CHILD, \
-         the look is at the child and not at the plan, because the plan cannot move it. A plan \
-         where nothing can start is a plan to fix, not a plan to work."
-    } else {
-        "unblock one of these rather than starting something new: finish a row they wait on, or \
-         correct a need that names nothing on this board. A plan where nothing can start is a plan \
-         to fix, not a plan to work."
+            .any(|(_, unmet)| unmet.iter().any(|(_, f)| fate(f)))
     };
+    let a_child_is_waiting = any(|f| matches!(f, NeedFate::ChildRunning(_)));
+    let a_job_is_waiting = any(|f| matches!(f, NeedFate::JobRunning));
+    let mut out = String::from(
+        "unblock one of these rather than starting something new: finish a row they wait on, or \
+         correct a need that names nothing on this board",
+    );
+    if a_child_is_waiting {
+        out.push_str(
+            " — and where what is waited on is a CHILD, the look is at the child and not at the \
+             plan, because the plan cannot move it",
+        );
+    }
+    if a_job_is_waiting {
+        out.push_str(
+            " — and where what is waited on is a JOB, there is nothing to unblock and nothing to \
+             look at: its completion arrives as a turn of its own, and the row can start when it \
+             does",
+        );
+    }
+    out.push_str(". A plan where nothing can start is a plan to fix, not a plan to work.");
     format!(
         "[todo check] this turn is finished and NOTHING can start — every item left waits on \
          another:\n{}\n{out}",
@@ -1497,7 +1656,16 @@ impl Tool for TodoWriteTool {
               SILENT about the row — you are given room to work on other things — and once it has \
               been running a while the check tells you where the child has got to and says to \
               look at it if it has gone quiet. Use it for a dispatch: a row that collects a \
-              subagent's work is not work you can do yet.",
+              subagent's work is not work you can do yet.\n\nA row \
+               may also WAIT ON A BACKGROUND JOB: `needs` takes \
+               {\"kind\": \"job\", \"handle\": \"<the handle `bash` with `background: true`, or \
+               `job_list`, printed>\"}, and the row cannot start until that job has ENDED, any \
+               ending. While the job runs the check is SILENT about the row — its completion \
+               arrives as a turn of its own, so there is nothing to watch and nothing to look at \
+               — and the row is asked about once it is over. Use it for work that has to land \
+               first: a row that pushes a branch waits on the job that tests it. This is an EDGE \
+               and not a clock: a row that FIRES when a job ends is the operator's `when`, which \
+               is not yours to write.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1571,7 +1739,11 @@ impl Tool for TodoWriteTool {
                                                     {\"kind\": \"child\", \"id\": \"s-…\"} names a \
                                                     CHILD you started with `task` — the session id \
                                                     it handed back — and waits for that child to \
-                                                    finish. Optional, and empty is the ordinary \
+                                                    finish. {\"kind\": \"job\", \"handle\": \"j…\"} names a \
+                                                     BACKGROUND JOB by the handle `job_list` \
+                                                     prints, and waits for it to END, any ending — \
+                                                     the check is silent about the row while the \
+                                                     job runs. Optional, and empty is the ordinary \
                                                     row: a row that names nothing is ready as soon \
                                                     as it is open. A row name that matches no \
                                                     row, or two, blocks this row and the check says \
@@ -1730,7 +1902,8 @@ impl Tool for TodoWriteTool {
         // not resolve costs nothing at all — not the operator's rows, not the model's own, and not
         // the list beside them. `TodoBoard::set_states` is where that all-or-nothing lives; the
         // model's own list is an upsert and cannot refuse.
-        let (moved_mine, moved_theirs) = match self.board.set_states_on_both_halves(&updates, &ops) {
+        let (moved_mine, moved_theirs) = match self.board.set_states_on_both_halves(&updates, &ops)
+        {
             Ok(counts) => counts,
             Err(why) => {
                 return Invocation::failed(
@@ -1973,8 +2146,8 @@ fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus
 }
 
 /// **One `needs` entry, as the tool spells it** — a plain string (the other row's own words), or the
-/// tagged form the store and the wire carry: `{"kind": "row", "content": "…"}` or
-/// `{"kind": "child", "id": "s-…"}`.
+/// tagged form the store and the wire carry: `{"kind": "row", "content": "…"}`,
+/// `{"kind": "child", "id": "s-…"}` or `{"kind": "job", "handle": "j…"}`.
 ///
 /// **A kind this build cannot evaluate is REFUSED, by name.** The tag exists so a kind can be added
 /// without a new field on every row — *"a kind can be added without a new field on every row and a
@@ -1984,11 +2157,13 @@ fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus
 /// waits for nothing. What the *store* does with a kind from a NEWER build is the other half of the
 /// same rule, and it is [`TodoNeed`]'s own `Unknown` variant.
 ///
-/// **A `child` need is a session id, and this tool does not check that it is live.** It cannot: the
-/// board is this crate's and liveness is the daemon's ([`ChildSessions`]), so what a wrong id costs
-/// is said where the answer is — the row reads as ready, and the model finds out by asking
-/// `task_result`. Refusing one here would need a fact this layer does not hold, and a refusal
-/// invented from a guess is worse than the sentence the daemon writes.
+/// **A `child` need is a session id and a `job` need is a job handle, and this tool checks NEITHER
+/// for liveness.** It cannot: the board is this crate's and liveness is the daemon's
+/// ([`ChildSessions`], [`RunningJobs`]), so what a wrong name costs is said where the answer is —
+/// the row reads as ready, and the model finds out by asking `task_result` or `job_output`. Refusing
+/// one here would need a fact this layer does not hold, and a refusal invented from a guess is worse
+/// than the sentence the daemon writes. What IS refused here is a name that is EMPTY, because an
+/// empty name waits for nothing while saying it waits — a thing this layer can see for itself.
 fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation> {
     let where_ = format!("entry {}'s need {}", entry + 1, at + 1);
     let named = |content: &str| -> Result<TodoNeed, Invocation> {
@@ -2013,6 +2188,19 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
         }
         Ok(TodoNeed::Child { id: id.to_string() })
     };
+    let job = |handle: &str| -> Result<TodoNeed, Invocation> {
+        if handle.trim().is_empty() {
+            return Err(Invocation::failed(
+                format!("{where_} names an empty job handle"),
+                "a `job` need names a background job by the handle `bash background: true` and \
+                 `task` hand back, and the one `job_list` prints; an empty handle waits for nothing \
+                 while saying it waits.",
+            ));
+        }
+        Ok(TodoNeed::Job {
+            handle: handle.to_string(),
+        })
+    };
     match v {
         Value::String(content) => named(content),
         Value::Object(o) => match o.get("kind").and_then(|k| k.as_str()) {
@@ -2032,25 +2220,36 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                      that call handed back — the full id, as its reply printed it.",
                 )),
             },
+            Some("job") => match o.get("handle").and_then(|h| h.as_str()) {
+                Some(handle) => job(handle),
+                None => Err(Invocation::failed(
+                    format!("{where_} has kind `job` and no `handle`"),
+                    "a `job` need names a background job by its `handle` — the one `bash` with \
+                     `background: true` and `job_list` print.",
+                )),
+            },
             Some(other) => Err(Invocation::failed(
                 format!("{where_} has kind `{other}`, which this build cannot evaluate"),
                 "the kinds of need are `row` — another row on this list, by its exact `content` — \
-                 and `child` — a subagent you started with `task`, by the session id it gave you. \
-                 Send a row's name as a plain string, or the tagged form {\"kind\": \"row\", \
-                 \"content\": \"…\"} or {\"kind\": \"child\", \"id\": \"s-…\"}. A kind nobody can \
-                 evaluate is refused rather than dropped: a need that cannot be answered must \
-                 never read as met.",
+                 `child` — a subagent you started with `task`, by the session id it gave you — and \
+                 `job` — a background job, by the handle `job_list` prints. Send a row's name as a \
+                 plain string, or the tagged form {\"kind\": \"row\", \"content\": \"…\"}, \
+                 {\"kind\": \"child\", \"id\": \"s-…\"} or {\"kind\": \"job\", \"handle\": \"j…\"}. \
+                 A kind nobody can evaluate is refused rather than dropped: a need that cannot be \
+                 answered must never read as met.",
             )),
             None => Err(Invocation::failed(
                 format!("{where_} has no `kind`"),
                 "a need is either a plain string (the other row's exact `content`) or \
-                 {\"kind\": \"row\", \"content\": \"…\"} / {\"kind\": \"child\", \"id\": \"s-…\"}.",
+                 {\"kind\": \"row\", \"content\": \"…\"} / {\"kind\": \"child\", \"id\": \"s-…\"} / \
+                 {\"kind\": \"job\", \"handle\": \"j…\"}.",
             )),
         },
         _ => Err(Invocation::failed(
             format!("{where_} is neither a string nor an object"),
             "a need is either a plain string (the other row's exact `content`) or \
-             {\"kind\": \"row\", \"content\": \"…\"} / {\"kind\": \"child\", \"id\": \"s-…\"}.",
+             {\"kind\": \"row\", \"content\": \"…\"} / {\"kind\": \"child\", \"id\": \"s-…\"} / \
+             {\"kind\": \"job\", \"handle\": \"j…\"}.",
         )),
     }
 }
@@ -2109,6 +2308,10 @@ fn render(todos: &[TodoItem]) -> String {
                         // **The child, by its id**, because that is what the model has to hand to
                         // `task_result` — the same rule the nag's own line keeps.
                         TodoNeed::Child { id } => format!("the child `{id}`"),
+                        // **The job, by its handle**, because that is what the model has to hand
+                        // `job_output` or `job_kill` — the same rule the child's id keeps, and the
+                        // same rule the nag's own line keeps.
+                        TodoNeed::Job { handle } => format!("the job `{handle}`"),
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
                     .collect();
@@ -3284,7 +3487,9 @@ mod tests {
             "the refusal names the kind it does not know: {said}"
         );
         assert!(
-            said.contains("the kinds of need are `row`") && said.contains("and `child`"),
+            said.contains("the kinds of need are `row`")
+                && said.contains("`child`")
+                && said.contains("`job`"),
             "and says what it does take: {said}"
         );
         assert!(
@@ -3356,6 +3561,89 @@ mod tests {
         );
     }
 
+    /// **A row can be told to WAIT ON A JOB, and the reply shows it** — the write half of the edge
+    /// the operator asked for (*"todo can be declared to be dependent on a subsession and on a
+    /// job"*), and the half that makes the idle check's silence reachable at all: a need nothing can
+    /// write is a rule nothing can exercise.
+    ///
+    /// The handle is the one `bash` with `background: true` and `job_list` print, quoted verbatim
+    /// for the same reason a child's session id is: it is what `job_output` and `job_kill` are given.
+    #[test]
+    fn a_plan_can_wait_on_a_job_by_its_handle() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [{"content": "push the branch", "status": "pending",
+                     "needs": [{"kind": "job", "handle": "j2070"}]}]}"#,
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+        assert_eq!(
+            board.snapshot()[0].needs,
+            vec![TodoNeed::Job {
+                handle: "j2070".into()
+            }],
+            "the edge is on the board"
+        );
+        assert!(
+            r.payload.contains("(waiting on the job `j2070`)"),
+            "and the reply shows it, so the model can maintain it: {}",
+            r.payload
+        );
+        // **And with no daemon behind this board the job is not running**, which is the honest
+        // reading rather than a guess — `RunningJobs::none()` is what a caller with no process host
+        // hands in, and the row is then ordinary open work.
+        assert!(
+            nag_for(&board.snapshot()).is_some(),
+            "a row whose job is not running is work, not a stuck plan"
+        );
+
+        // **An empty handle is refused by name**, the same rule an empty row name and an empty
+        // session id keep: a need that names nothing must not read as one that names something.
+        let r = rt.invoke(
+            "t2",
+            &call(
+                r#"{"todos": [{"content": "push the branch", "status": "pending",
+                     "needs": [{"kind": "job", "handle": "  "}]}]}"#,
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(
+            format!("{:?} {}", r.outcome, r.payload).contains("empty job handle"),
+            "the refusal says which kind of name was empty: {:?} {}",
+            r.outcome,
+            r.payload
+        );
+        // And a `job` need with no `handle` at all is refused too, rather than read as an empty one.
+        let r = rt.invoke(
+            "t3",
+            &call(
+                r#"{"todos": [{"content": "push the branch", "status": "pending",
+                     "needs": [{"kind": "job"}]}]}"#,
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(
+            format!("{:?} {}", r.outcome, r.payload).contains("no `handle`"),
+            "{:?} {}",
+            r.outcome,
+            r.payload
+        );
+    }
+
     /// **An empty name and a `needs` that is not a list are refused by name too** — the same rule,
     /// one level down: an edge that names nothing is not an edge.
     #[test]
@@ -3406,16 +3694,27 @@ mod tests {
     /// **The check's sentence for a plan that IS the whole board** — the shorthand every test below
     /// uses, and the honest one: these plans carry no POSTPONED row, so the caller's narrowing
     /// (`the_plan_as_checked`) would hand back exactly the same rows, and no row of theirs waits on
-    /// a child, so `ChildSessions::none()` is the reading the daemon would hand in for them. A test
-    /// that needs the two to differ says so by calling `unfinished_plan` with both — or by passing
-    /// the children it means, as the child tests below do.
+    /// a child or on a job, so `ChildSessions::none()` and `RunningJobs::none()` are the reading the
+    /// daemon would hand in for them. A test that needs the two to differ says so by calling
+    /// `unfinished_plan` with both — or by passing the children or the jobs it means, as the child
+    /// and job tests below do.
     fn nag_for(todos: &[TodoItem]) -> Option<String> {
-        nag_with(todos, &ChildSessions::none())
+        nag_with(todos, &ChildSessions::none(), &no_jobs())
     }
 
     /// [`nag_for`] with the daemon's own reading of the children a plan waits on.
-    fn nag_with(todos: &[TodoItem], children: &ChildSessions) -> Option<String> {
-        unfinished_plan(todos, todos, children)
+    fn nag_with(
+        todos: &[TodoItem],
+        children: &ChildSessions,
+        jobs: &RunningJobs,
+    ) -> Option<String> {
+        unfinished_plan(todos, todos, children, jobs)
+    }
+
+    /// **Nothing running outside the board** — no job this session holds, which is the reading every
+    /// test here that is not about a job passes, and the one a daemon with no process host hands in.
+    fn no_jobs() -> RunningJobs {
+        RunningJobs::none()
     }
 
     /// **A child this daemon is running**, as a test states one: an age, and what it last showed.
@@ -3431,6 +3730,17 @@ mod tests {
     fn waiting_on_a_child(content: &str, id: &str) -> TodoItem {
         TodoItem {
             needs: vec![TodoNeed::Child { id: id.to_string() }],
+            ..item(content, TodoStatus::Pending)
+        }
+    }
+
+    /// **A row that waits on a JOB** — the case this feature was asked for: work that cannot start
+    /// until something the daemon is running has ended.
+    fn waiting_on_a_job(content: &str, handle: &str) -> TodoItem {
+        TodoItem {
+            needs: vec![TodoNeed::Job {
+                handle: handle.to_string(),
+            }],
             ..item(content, TodoStatus::Pending)
         }
     }
@@ -3473,7 +3783,8 @@ mod tests {
             item("second", TodoStatus::Pending),
         ];
         let (text, named) =
-            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none()).expect("open work");
+            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
+                .expect("open work");
         assert_eq!(named, "first", "the queue's head is named first");
         assert!(text.contains("first"), "{text}");
 
@@ -3484,9 +3795,14 @@ mod tests {
             item("first", TodoStatus::Pending),
             item("second", TodoStatus::Pending),
         ];
-        let (text, named) =
-            unfinished_plan_for(&grown, &grown, Some(&named), &ChildSessions::none())
-                .expect("open work");
+        let (text, named) = unfinished_plan_for(
+            &grown,
+            &grown,
+            Some(&named),
+            &ChildSessions::none(),
+            &no_jobs(),
+        )
+        .expect("open work");
         assert_eq!(
             named, "first",
             "the row already named is the row asked about"
@@ -3509,7 +3825,8 @@ mod tests {
             item("second", TodoStatus::Pending),
         ];
         let (_, named) =
-            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none()).expect("open work");
+            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
+                .expect("open work");
         assert_eq!(named, "first");
 
         let first_done = vec![
@@ -3521,6 +3838,7 @@ mod tests {
             &first_done,
             Some("first"),
             &ChildSessions::none(),
+            &no_jobs(),
         )
         .expect("open work");
         assert_eq!(named, "second", "the answered row is not a choice any more");
@@ -3536,6 +3854,7 @@ mod tests {
             &after_a_postponement,
             Some("first"),
             &ChildSessions::none(),
+            &no_jobs(),
         )
         .expect("open work");
         assert_eq!(named, "second");
@@ -3547,6 +3866,7 @@ mod tests {
                 &[item("first", TodoStatus::Completed)],
                 Some("first"),
                 &ChildSessions::none(),
+                &no_jobs(),
             )
             .is_none(),
             "a finished plan is silence, whatever the last check named"
@@ -3561,15 +3881,21 @@ mod tests {
     fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
         let plan = vec![item("the migration", TodoStatus::InProgress)];
         let (fresh, _) =
-            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none()).expect("open work");
+            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
+                .expect("open work");
         assert!(
             fresh.contains("you had it in progress"),
             "a row already in progress at the first check: {fresh}"
         );
 
-        let (sticky, _) =
-            unfinished_plan_for(&plan, &plan, Some("the migration"), &ChildSessions::none())
-                .expect("open work");
+        let (sticky, _) = unfinished_plan_for(
+            &plan,
+            &plan,
+            Some("the migration"),
+            &ChildSessions::none(),
+            &no_jobs(),
+        )
+        .expect("open work");
         assert!(
             sticky.contains("marked in progress and still open"),
             "the model's own claim, said back to it: {sticky}"
@@ -3579,13 +3905,15 @@ mod tests {
         // And a PENDING row that was already asked about says so, rather than repeating the first
         // check's sentence verbatim — which is what makes the repeat legible as a repeat.
         let pending = vec![item("the migration", TodoStatus::Pending)];
-        let (first, _) = unfinished_plan_for(&pending, &pending, None, &ChildSessions::none())
-            .expect("open work");
+        let (first, _) =
+            unfinished_plan_for(&pending, &pending, None, &ChildSessions::none(), &no_jobs())
+                .expect("open work");
         let (repeat, _) = unfinished_plan_for(
             &pending,
             &pending,
             Some("the migration"),
             &ChildSessions::none(),
+            &no_jobs(),
         )
         .expect("open work");
         assert!(
@@ -3845,6 +4173,7 @@ mod tests {
             &[item("first", TodoStatus::Pending)],
             Some("first"),
             &ChildSessions::none(),
+            &no_jobs(),
         )
         .expect("open work");
         assert_eq!(
@@ -3856,7 +4185,7 @@ mod tests {
         );
 
         // **AND THE STRUCTURE**: the graph split of a board with no edges is the identity.
-        let graph = as_a_graph(&plan, &plan, &ChildSessions::none());
+        let graph = as_a_graph(&plan, &plan, &ChildSessions::none(), &no_jobs());
         assert_eq!(
             graph.open, 2,
             "the plan's size, minus the row that is done — a completed row is not work this check \
@@ -3954,8 +4283,9 @@ mod tests {
             struck_off,
             needs("deploy", TodoStatus::Pending, &["run the tests"]),
         ];
-        let (msg, _chosen) = unfinished_plan_for(&rows, &board, None, &ChildSessions::none())
-            .expect("a row that cannot start is said, not skipped");
+        let (msg, _chosen) =
+            unfinished_plan_for(&rows, &board, None, &ChildSessions::none(), &no_jobs())
+                .expect("a row that cannot start is said, not skipped");
         assert!(
             msg.contains("struck off by the operator"),
             "the sentence names the operator's act: {msg}"
@@ -3982,8 +4312,9 @@ mod tests {
             needs("deploy", TodoStatus::Pending, &["run the tests"]),
             needs("run the tests", TodoStatus::Pending, &["deploy"]),
         ];
-        let (msg, named) = unfinished_plan_for(&plan, &plan, None, &ChildSessions::none())
-            .expect("a stuck plan is a finding");
+        let (msg, named) =
+            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
+                .expect("a stuck plan is a finding");
         assert!(
             msg.starts_with("[todo check] this turn is finished and NOTHING can start"),
             "the state is said in the house prefix's own voice: {msg}"
@@ -4026,8 +4357,9 @@ mod tests {
 
         // Alone, it is the degenerate case: the ONLY row cannot start.
         let alone = vec![needs("deploy", TodoStatus::Pending, &["publish"])];
-        let (msg, named) = unfinished_plan_for(&alone, &alone, None, &ChildSessions::none())
-            .expect("a stuck plan speaks");
+        let (msg, named) =
+            unfinished_plan_for(&alone, &alone, None, &ChildSessions::none(), &no_jobs())
+                .expect("a stuck plan speaks");
         assert!(msg.contains("NOTHING can start"), "{msg}");
         assert!(
             msg.contains("`deploy` waits on `publish` (no such row on this board)"),
@@ -4109,7 +4441,7 @@ mod tests {
             !waits_on_a_child_with_room_to_breathe(&plan[0], &old),
             "past the room to breathe, the check may speak"
         );
-        let msg = nag_with(&plan, &old).expect("a stuck plan speaks");
+        let msg = nag_with(&plan, &old, &no_jobs()).expect("a stuck plan speaks");
         assert!(
             msg.contains("the child `s-1-sub-2`, running 45 minutes"),
             "the sentence names the child and its age: {msg}"
@@ -4147,7 +4479,7 @@ mod tests {
             "s-1-sub-2",
         )];
         let moving = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(8), true));
-        let msg = nag_with(&plan, &moving).expect("a stuck plan speaks");
+        let msg = nag_with(&plan, &moving, &no_jobs()).expect("a stuck plan speaks");
         assert!(
             msg.contains("it is working (a turn is in flight, its last event was 8 seconds ago)"),
             "a child that moved eight seconds ago is called working: {msg}"
@@ -4159,8 +4491,9 @@ mod tests {
 
         // **The same age, nothing moving.** The two notices differ, and that difference is the
         // whole of what the operator asked for.
-        let quiet = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
-        let quiet_msg = nag_with(&plan, &quiet).expect("a stuck plan speaks");
+        let quiet =
+            ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+        let quiet_msg = nag_with(&plan, &quiet, &no_jobs()).expect("a stuck plan speaks");
         assert_ne!(msg, quiet_msg, "working and quiet must not read the same");
         assert!(
             quiet_msg.contains("check whether it is stuck"),
@@ -4187,7 +4520,7 @@ mod tests {
         // Forty-five minutes old, nothing for twelve minutes, and **no turn in flight**: the child
         // finished the turn it was running and is parked, waiting for a word.
         let idle = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), false));
-        let msg = nag_with(&plan, &idle).expect("an old child is spoken about");
+        let msg = nag_with(&plan, &idle, &no_jobs()).expect("an old child is spoken about");
         assert!(
             msg.contains("no turn is in flight") && msg.contains("12 minutes"),
             "the evidence is printed, because a reader judges by it: {msg}"
@@ -4205,7 +4538,7 @@ mod tests {
         // check sentence — the two states cannot be told apart by anything but the fact.
         let working =
             ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
-        let other = nag_with(&plan, &working).expect("a stuck plan speaks");
+        let other = nag_with(&plan, &working, &no_jobs()).expect("a stuck plan speaks");
         assert_ne!(msg, other, "idle and wedged must not read the same");
     }
 
@@ -4226,7 +4559,7 @@ mod tests {
             !waits_on_a_child_with_room_to_breathe(&plan[0], &finished),
             "a child that is not running is not a reason to stay quiet"
         );
-        let msg = nag_with(&plan, &finished).expect("the row is open work now");
+        let msg = nag_with(&plan, &finished, &no_jobs()).expect("the row is open work now");
         assert!(
             msg.contains("  - collect the child's answer — yours"),
             "the row itself is what the check asks about: {msg}"
@@ -4235,6 +4568,154 @@ mod tests {
             !msg.contains("s-1-sub-2") && !msg.contains("check whether it is stuck"),
             "and it is not about the child any more — the row's own words say `child`, so what \
              this asserts is that the ID is gone and nothing asks to check on it: {msg}"
+        );
+    }
+
+    /// **A row that waits on a JOB is silent while the job runs, and asked about once it ends.**
+    ///
+    /// The operator's ask, 2026-10-11: *"todo can be declared to be dependent on a subsession and on
+    /// a job ... and that should drastically decrease nags count"* — measured the same night, when
+    /// each of their long jobs had a row nagging while it ran.
+    ///
+    /// **The same plan and the same handle throughout**, and the only fact that changes is whether
+    /// the job is running. While it is, `waits_on_a_running_job` is what the caller narrows with —
+    /// `harnessd`'s `the_check_may_ask_about` reads it exactly as it reads the child one — so the row
+    /// is not asked about AND not listed as blocked. When the job ends the edge is MET and what the
+    /// check says is the row itself.
+    #[test]
+    fn a_running_job_keeps_the_row_silent_and_the_end_of_it_asks_again() {
+        let plan = vec![waiting_on_a_job("push the branch", "j2070")];
+
+        // **Running: the row is one the check may not speak about at all.**
+        let running = RunningJobs::none().running("j2070");
+        assert!(
+            waits_on_a_running_job(&plan[0], &running),
+            "a row waiting on a running job is one the check may not speak about"
+        );
+        // **And a caller that did NOT narrow still gets the truth rather than a silence**: the edge
+        // is unmet, and the handle is what it is named by — it is what `job_output` is given.
+        assert_eq!(
+            unmet_needs(&plan, &plan[0], &ChildSessions::none(), &running),
+            vec![("j2070".to_string(), NeedFate::JobRunning)],
+            "the edge is unmet while the job runs"
+        );
+        let msg = nag_with(&plan, &ChildSessions::none(), &running).expect("a stuck plan speaks");
+        assert!(
+            msg.contains("the job `j2070`, still running"),
+            "and the line names the job: {msg}"
+        );
+        assert!(
+            !msg.contains("check whether it is stuck"),
+            "a job needs no steering — its settlement is already on its way: {msg}"
+        );
+
+        // **And the lead a reader gets when there IS other work to do.** A blocked row is SAID
+        // under a lead of its own rather than the child's: *check whether it is stuck* about a job
+        // would send the reader to look at a process that is doing exactly what it was started for.
+        let with_work = vec![
+            waiting_on_a_job("push the branch", "j2070"),
+            item("write it up", TodoStatus::Pending),
+        ];
+        let msg =
+            nag_with(&with_work, &ChildSessions::none(), &running).expect("one row can start");
+        assert!(
+            msg.contains("waiting on a job that is still running"),
+            "under a lead of its own, not the child's: {msg}"
+        );
+        assert!(
+            msg.contains("  - write it up"),
+            "while the row that CAN start is the one named: {msg}"
+        );
+
+        // **Ended: the edge is met, and the row is the work the check asks about.**
+        let ended = RunningJobs::none();
+        assert!(
+            !waits_on_a_running_job(&plan[0], &ended),
+            "a job that is not running is not a reason to stay quiet"
+        );
+        let msg = nag_with(&plan, &ChildSessions::none(), &ended).expect("the row is open work");
+        assert!(
+            msg.contains("  - push the branch — yours"),
+            "the row itself is what the check asks about: {msg}"
+        );
+        assert!(
+            !msg.contains("j2070") && !msg.contains("waits on"),
+            "and it is not about the job any more: {msg}"
+        );
+    }
+
+    /// **A handle NOBODY knows is a job that ended** — `TodoCondition::Job`'s own ruling, read as an
+    /// edge: *"a job that is not running — including one this session has never heard of, which is
+    /// what a handle looks like after a restart — is a job that ended"*.
+    ///
+    /// This is the half that keeps the feature from inventing a way to wait for ever: a plan resumed
+    /// after a restart names handles the new daemon has never seen, and every one of them is a job
+    /// that is over. The row is READY, which is what the model is then asked about.
+    #[test]
+    fn a_job_nobody_has_heard_of_counts_as_ended() {
+        let plan = vec![waiting_on_a_job("push the branch", "j-before-the-restart")];
+        // The snapshot a daemon that has just come back hands in: it holds nothing at all.
+        let nothing = RunningJobs::none();
+        assert!(
+            !waits_on_a_running_job(&plan[0], &nothing),
+            "an unknown handle is not a reason to stay quiet"
+        );
+        assert!(
+            unmet_needs(&plan, &plan[0], &ChildSessions::none(), &nothing).is_empty(),
+            "and the edge is MET rather than waiting for ever"
+        );
+        let msg = nag_with(&plan, &ChildSessions::none(), &nothing).expect("the row is open work");
+        assert!(
+            msg.contains("  - push the branch — yours"),
+            "so the row is what the check asks about: {msg}"
+        );
+        assert!(
+            !msg.contains("cannot start yet"),
+            "and nothing is reported as blocked on it: {msg}"
+        );
+    }
+
+    /// **A job edge and a child edge are read by their OWN snapshot, and a daemon full of one says
+    /// nothing about the other** — the compatibility half, said the other way round from the
+    /// child-side test above.
+    ///
+    /// A board that waits on rows is read exactly as it was before either kind existed, whether the
+    /// caller hands in running jobs, running children, or both; and a row waiting on a job is
+    /// unmoved by a snapshot full of children (and the reverse). One handle is one question.
+    #[test]
+    fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
+        let flat = vec![
+            item("first", TodoStatus::Pending),
+            item("second", TodoStatus::Pending),
+        ];
+        let edged = vec![
+            item("run the tests", TodoStatus::Pending),
+            needs("deploy", TodoStatus::Pending, &["run the tests"]),
+        ];
+        let busy = RunningJobs::none().running("j2070").running("j2081");
+        assert_eq!(
+            nag_for(&flat),
+            nag_with(&flat, &ChildSessions::none(), &busy),
+            "no needs at all"
+        );
+        assert_eq!(
+            nag_for(&edged),
+            nag_with(&edged, &ChildSessions::none(), &busy),
+            "row edges"
+        );
+
+        // A row waiting on a JOB is unmoved by a daemon full of CHILDREN, and the two snapshots are
+        // read by their own kinds: `j2070` is not a session and `s-1-sub-2` is not a job.
+        let job_row = vec![waiting_on_a_job("push the branch", "j2070")];
+        let children = ChildSessions::none().running("j2070", child(5 * 60, Some(1), true));
+        assert!(
+            !waits_on_a_running_job(&job_row[0], &RunningJobs::none()),
+            "a session id in the child snapshot is not a job handle"
+        );
+        assert_eq!(
+            nag_with(&job_row, &children, &RunningJobs::none()),
+            nag_with(&job_row, &ChildSessions::none(), &RunningJobs::none()),
+            "the child snapshot says nothing about a job edge"
         );
     }
 
@@ -4292,10 +4773,14 @@ mod tests {
         let children = ChildSessions::none().running("s-other", child(60 * 60, Some(1), true));
         assert_eq!(
             nag_for(&flat),
-            nag_with(&flat, &children),
+            nag_with(&flat, &children, &no_jobs()),
             "no needs at all"
         );
-        assert_eq!(nag_for(&edged), nag_with(&edged, &children), "row edges");
+        assert_eq!(
+            nag_for(&edged),
+            nag_with(&edged, &children, &no_jobs()),
+            "row edges"
+        );
     }
 
     /// **The graph MOVES**: finishing a row is what makes the rows that waited on it ready, so the
@@ -4306,13 +4791,20 @@ mod tests {
             item("first", TodoStatus::Pending),
             needs("second", TodoStatus::Pending, &["first"]),
         ];
-        let (_, named) = unfinished_plan_for(&plan, &plan, None, &ChildSessions::none())
-            .expect("first can start");
+        let (_, named) =
+            unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
+                .expect("first can start");
         assert_eq!(named, "first", "the only ready row is the one asked about");
 
         plan[0].status = TodoStatus::Completed;
-        let (msg, named) = unfinished_plan_for(&plan, &plan, Some("first"), &ChildSessions::none())
-            .expect("second can");
+        let (msg, named) = unfinished_plan_for(
+            &plan,
+            &plan,
+            Some("first"),
+            &ChildSessions::none(),
+            &no_jobs(),
+        )
+        .expect("second can");
         assert_eq!(
             named, "second",
             "the answered row is gone and the graph moved on"
@@ -4333,9 +4825,14 @@ mod tests {
             needs("deploy", TodoStatus::Pending, &["later"]),
             item("later", TodoStatus::Pending),
         ];
-        let (msg, named) =
-            unfinished_plan_for(&plan, &plan, Some("deploy"), &ChildSessions::none())
-                .expect("one row can start");
+        let (msg, named) = unfinished_plan_for(
+            &plan,
+            &plan,
+            Some("deploy"),
+            &ChildSessions::none(),
+            &no_jobs(),
+        )
+        .expect("one row can start");
         assert_eq!(
             named, "later",
             "the row the check was holding to is blocked, so it is not the choice any more"
