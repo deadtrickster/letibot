@@ -32,12 +32,24 @@
 //!   session's head.
 //! * **A review already being served is not spawned twice by a second pass.** The store still says
 //!   `Due` — the row is a request and an attempt in flight is the same row — so the guard that
-//!   answers this is the session's own `reviewing` list, and the assertion is that the second pass
+//!   answers this is the session's own review desk, and the assertion is that the second pass
 //!   starts nothing and writes nothing.
 //! * **A review naming a session this daemon does not hold is left alone.** The row stays as it
 //!   was, and no child is started for it: the pass serves what it holds and nothing else.
 //! * **A row whose backoff has not elapsed is not asked again** — the other half of idempotence,
 //!   and the one the STORE carries (`attempts`/`failed_ms` through `mergequeue::review_retry`).
+//!
+//! # And the verdict the pass writes is the CHILD's own
+//!
+//! The pass starts a reviewer and OPENS the review on the daemon's desk
+//! (`letibot_tools::builtins::verdict::ReviewDesk`); the reviewer hands its verdict in through the
+//! one tool it holds (`review_verdict`), and the next pass writes what it handed in onto the
+//! entry's review row. The parent never reads the child's answer for a decision — a reply in prose
+//! is a failed attempt, and a child that dies without submitting writes nothing at all. Four tests
+//! below are that seam end to end, on the daemon's own door: *a submitted verdict moves the entry
+//! and takes the row off*, *a child of another session cannot submit for this queue*, *an answer
+//! with no submission is not a verdict*, and *a child that dies without submitting writes
+//! nothing*.
 //!
 //! # What it needs
 //!
@@ -111,7 +123,7 @@ struct Asked {
 
 /// **A runner that records what it was asked to start and answers `Running` for ever.**
 ///
-/// A running child is the interesting one: it stays in the harness's `reviewing` list, which is
+/// A running child is the interesting one: it stays on the review desk, which is
 /// the state the second-pass test needs, and it never writes a verdict onto a row.
 struct Recording {
     /// One entry per `start`, in order.
@@ -134,6 +146,54 @@ impl TaskRunner for Recording {
             note: None,
             child: None,
         }
+    }
+}
+
+/// **A runner whose child has ANSWERED, with prose and nothing else.**
+///
+/// The ending this slice is measured by: the reviewer's turn is over, it never called
+/// `review_verdict`, and the queue must record an ATTEMPT rather than read a decision out of what
+/// it wrote. `collect` answers `Done` for ever, which is what the settled slot holds.
+struct Answered {
+    /// `(prompt, role)` per `start`, in order.
+    started: Arc<Mutex<Vec<(String, String)>>>,
+    /// What the child "said". Prose, and deliberately carrying the words the old closing block
+    /// would have been parsed for — so a build that still read it would pass a weaker test.
+    answer: String,
+}
+
+impl TaskRunner for Answered {
+    fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+        let mut g = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        g.push((prompt.to_string(), spec.role.clone()));
+        Ok(format!("sub-{}", g.len()))
+    }
+
+    fn collect(&self, _handle: &str, _timeout: Duration) -> TaskStatus {
+        TaskStatus::Done {
+            answer: self.answer.clone(),
+            child: None,
+        }
+    }
+}
+
+/// **A runner whose child is GONE** — a daemon that restarted mid-review, or a child that died
+/// without a word. `Unknown` is the handle-this-runner-never-minted answer, and it is the fourth
+/// ending a review can have: nothing was written, and the row stays for the queue to ask again.
+struct Gone {
+    /// `(prompt, role)` per `start`, in order.
+    started: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl TaskRunner for Gone {
+    fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+        let mut g = self.started.lock().unwrap_or_else(|e| e.into_inner());
+        g.push((prompt.to_string(), spec.role.clone()));
+        Ok(format!("sub-{}", g.len()))
+    }
+
+    fn collect(&self, _handle: &str, _timeout: Duration) -> TaskStatus {
+        TaskStatus::Unknown
     }
 }
 
@@ -374,7 +434,7 @@ fn a_due_review_is_spawned_as_the_queue_sessions_own_child() {
 /// The store cannot tell the two apart — a request row and an attempt in flight are the same row,
 /// `decision` NULL and `attempts` 0, and `review_retry` says `Due` for both on purpose, because an
 /// outstanding review is re-asked rather than counted. So the second pass sees exactly what the
-/// first one saw, and the guard that answers it is the session's own `reviewing` list. This is
+/// first one saw, and the guard that answers it is the session's own review desk. This is
 /// that guard, measured through the door the daemon uses — and it is the guard the queue session's
 /// own prompt leans on when it tells its model NOT to start a reviewer of its own.
 #[test]
@@ -532,7 +592,7 @@ fn a_review_naming_a_session_this_daemon_does_not_hold_is_left_alone() {
 ///
 /// `mergequeue::review_retry` is the one decision the queue's pass and the host's pass share, and
 /// this is the arm the in-memory list cannot cover: a failed attempt drops the entry out of
-/// `reviewing` (there is no child any more), so without the store's `attempts`/`failed_ms` every
+/// the desk (there is no child any more), so without the store's `attempts`/`failed_ms` every
 /// pass would start a new gatekeeper for a row the queue has already decided to wait on. The
 /// window is `REVIEW_RETRY_BASE_MS`, and the assertion is both halves of it: not now, and again
 /// once the wait is over.
@@ -565,6 +625,344 @@ fn a_row_whose_backoff_has_not_elapsed_is_not_asked_again() {
         sessions.serve_reviews(),
         1,
         "a failed attempt is not the end of the road — the queue asks again after the backoff"
+    );
+}
+
+/// **A verdict the reviewer HANDED IN moves the entry and takes the row off.**
+///
+/// The whole of this slice in one measurement, and the difference from the test above is the
+/// only thing that matters: the child judged, and it said so ITSELF. The pass starts the reviewer
+/// and opens the review on the desk; the reviewer hands its verdict in through the one door it
+/// holds (`review_verdict` → `ReviewDesk::submit` — the call below is that door's own function,
+/// which is what the tool calls with the arguments it salvaged); and the NEXT pass writes it onto
+/// the entry's review row through the same `write_outcome` the parent used to call after parsing
+/// the child's answer.
+///
+/// Four things are asserted, and each is one of the requirements: the store's row carries the
+/// reviewer's own words (so the queue's gate can act on it), the entry is no longer waiting, the
+/// row is off the session's board, and the review is CLOSED — a second verdict from the same
+/// child is refused rather than written twice.
+#[test]
+fn a_submitted_verdict_moves_the_entry_and_takes_the_row_off() {
+    use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
+    let Some(f) = Fixture::new("submitted") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.entry("m-mine", "keep the last record");
+    f.review("m-mine", &f.host, 0, None);
+
+    let mut sessions = f.sessions(&parts);
+    assert_eq!(sessions.serve_reviews(), 1, "the reviewer is started");
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        1,
+        "and the entry is a row on the queue's board while nobody has judged it"
+    );
+
+    // **The child's own act.** `sub-1` is the handle the recording runner handed back, which is
+    // the reviewer's session id — the name its own `review_verdict` call arrives under.
+    let verdict = parts
+        .reviews
+        .submit(
+            "sub-1",
+            Submission {
+                decision: Decision::Accept,
+                reasons: vec!["the test covers it".into()],
+                looked_at: LookedAt {
+                    files: vec!["src/reader.rs".into()],
+                    commands: vec!["git diff base...agent/m-mine".into()],
+                },
+            },
+        )
+        .expect("a reviewer of this queue may hand its verdict in");
+    assert!(
+        verdict.render().contains("agent/m-mine") && verdict.render().contains("accept"),
+        "and what it gets back is its own verdict, rendered: {}",
+        verdict.render()
+    );
+
+    // **And the daemon's own pass writes it** — the same door, the same row, the same store.
+    assert_eq!(
+        sessions.serve_reviews(),
+        0,
+        "a review in flight starts no second child: {:?}",
+        f.asked()
+    );
+    let row = f
+        .store()
+        .merge_review("m-mine")
+        .expect("reads")
+        .expect("the row");
+    assert_eq!(row.decision.as_deref(), Some("accept"), "{row:?}");
+    assert!(row.answered_ms.is_some(), "and it is stamped as answered");
+    assert_eq!(row.reasons, vec!["the test covers it"]);
+    assert_eq!(row.files, vec!["src/reader.rs"]);
+    assert_eq!(row.commands, vec!["git diff base...agent/m-mine"]);
+    assert_eq!(
+        row.attempts, 0,
+        "a verdict is not a failed attempt: {row:?}"
+    );
+
+    // **And the row comes off the board**, because the entry is not waiting for a verdict any
+    // more: the board is a view of the queue and the verdict is what moves the entry.
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        0,
+        "the verdict is what takes the row off: {:?}",
+        sessions
+            .open
+            .get(f.host.as_str())
+            .expect("open")
+            .todo_list()
+    );
+
+    // **And the review is judged ONCE.** A second call from the same child is refused by name,
+    // which is what stops a retry or a change of mind from writing a second judgement.
+    let refused = parts
+        .reviews
+        .submit(
+            "sub-1",
+            Submission {
+                decision: Decision::Reject,
+                reasons: vec!["on reflection".into()],
+                looked_at: LookedAt::default(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        refused.contains("is not reviewing an entry"),
+        "the review is closed with its verdict: {refused}"
+    );
+    assert_eq!(
+        f.store()
+            .merge_review("m-mine")
+            .expect("reads")
+            .expect("the row")
+            .decision
+            .as_deref(),
+        Some("accept"),
+        "and the FIRST verdict is the one on the row"
+    );
+}
+
+/// **A child of some OTHER session cannot submit for this queue.**
+///
+/// The desk answers one question — *is this session a reviewer of an entry this daemon is waiting
+/// for a verdict on* — and it is open only to the children the queue's own session started. A
+/// session that was never asked is refused BY NAME, nothing is recorded, and the pass that runs
+/// afterwards writes nothing: a verdict that reached a queue from a session the queue never asked
+/// would be a judgement nobody commissioned.
+///
+/// **And the reviewer that WAS asked is unaffected** — the refused call closes nothing, so the
+/// same pass still writes the real reviewer's verdict. That is the other half of the same fact:
+/// the door is narrow, and it is not narrow enough to shut the child it was opened for.
+#[test]
+fn a_child_of_another_session_cannot_submit_for_this_queue() {
+    use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
+    let Some(f) = Fixture::new("foreign") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    // **A child of a session that is not this queue's** — registered under the session this
+    // daemon does not hold, which is the fixture's "somebody else".
+    let stranger = "s-elsewhere-sub-1";
+    f.registry
+        .create_under(
+            stranger,
+            "a child of another tree",
+            Sessions::wiring(&f.cfg),
+            Some(f.elsewhere.clone()),
+        )
+        .expect("the stranger's session registers");
+
+    f.entry("m-mine", "keep the last record");
+    f.review("m-mine", &f.host, 0, None);
+    let mut sessions = f.sessions(&parts);
+    assert_eq!(
+        sessions.serve_reviews(),
+        1,
+        "the queue's own reviewer is started"
+    );
+
+    let accept = |why: &str| Submission {
+        decision: Decision::Accept,
+        reasons: vec![why.into()],
+        looked_at: LookedAt::default(),
+    };
+    let refused = parts
+        .reviews
+        .submit(stranger, accept("looks fine from over here"))
+        .unwrap_err();
+    assert!(
+        refused.contains(stranger) && refused.contains("is not reviewing an entry"),
+        "the refusal names the session and what is wrong: {refused}"
+    );
+    assert!(
+        refused.contains("No verdict was recorded"),
+        "and says nothing was recorded: {refused}"
+    );
+
+    // **Nothing was written, and nothing moved.** The stranger's word did not become a verdict.
+    sessions.serve_reviews();
+    let row = f
+        .store()
+        .merge_review("m-mine")
+        .expect("reads")
+        .expect("the row");
+    assert!(
+        row.decision.is_none() && row.answered_ms.is_none() && row.attempts == 0,
+        "a submission from a session the queue never asked left the row exactly as it was: {row:?}"
+    );
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        1,
+        "and the entry is still waiting for a verdict, so its row is still on the board"
+    );
+
+    // **And the reviewer that was asked still can.**
+    parts
+        .reviews
+        .submit("sub-1", accept("the test covers it"))
+        .expect("the queue's own reviewer may still hand its verdict in");
+    sessions.serve_reviews();
+    assert_eq!(
+        f.store()
+            .merge_review("m-mine")
+            .expect("reads")
+            .expect("the row")
+            .decision
+            .as_deref(),
+        Some("accept"),
+        "and that one is written"
+    );
+}
+
+/// **An answer with no submission is not a verdict.**
+///
+/// The reviewer's turn ended and it never called `review_verdict`. What the queue records is a
+/// FAILED ATTEMPT — `decision` NULL, so `mergequeue::review_gate` does not read a word here as a
+/// refusal; `answered_ms` NULL, so the review is still outstanding; the sentence saying what
+/// happened; and the attempt counted, so the queue's own bound retries it rather than parking the
+/// entry for ever. **The prose it wrote is not read for a decision**, and the fixture's prose
+/// carries the exact words the old closing block would have been parsed for: a build that still
+/// read it would land this branch, and this test would fail.
+#[test]
+fn an_answer_with_no_submission_is_not_a_verdict() {
+    let Some(f) = Fixture::new("prose") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.entry("m-mine", "keep the last record");
+    f.review("m-mine", &f.host, 0, None);
+
+    let mut sessions = f.sessions(&parts);
+    // The child that answers in prose instead of handing a verdict in.
+    sessions
+        .open
+        .get_mut(&f.host)
+        .expect("the review queue's session is open")
+        .set_subagents_for_test(Arc::new(Answered {
+            started: f.started.clone(),
+            answer: "I read the diff and the test covers it.\n\nverdict: accept\n\
+                     reasons: - the test covers it\nfiles: src/reader.rs"
+                .into(),
+        }));
+    assert_eq!(sessions.serve_reviews(), 1, "the reviewer is started");
+    // The child has answered by the time the next pass looks.
+    assert_eq!(
+        sessions.serve_reviews(),
+        0,
+        "and no second child is started"
+    );
+
+    let row = f
+        .store()
+        .merge_review("m-mine")
+        .expect("reads")
+        .expect("the row");
+    assert!(
+        row.decision.is_none(),
+        "an answer in prose is not a verdict — `review_gate` reads any word here as a refusal: \
+         {:?}",
+        row.decision
+    );
+    assert!(
+        row.answered_ms.is_none(),
+        "the review is still outstanding: nothing judged the branch"
+    );
+    assert_eq!(row.attempts, 1, "the attempt is counted");
+    assert!(row.failed_ms.is_some(), "and it is stamped");
+    assert!(
+        row.failure.contains("review_verdict") && row.failure.contains("sub-1"),
+        "the sentence names the door that was not used and the child that did not use it: {:?}",
+        row.failure
+    );
+    assert!(
+        !row.reasons.iter().any(|r| r.contains("the test covers it")),
+        "and nothing the child wrote was copied onto the row as evidence: {:?}",
+        row.reasons
+    );
+    // **And the row STAYS on the board**: the entry is still waiting for a verdict, and the
+    // queue's own clock is what asks again (boundedly, by `attempts`/`failed_ms`).
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        1,
+        "still waiting for a verdict"
+    );
+}
+
+/// **A child that dies without submitting writes NOTHING** — the fourth ending, and the one that
+/// must not be mistaken for either of the other three.
+///
+/// A handle this runner no longer knows is a child that is gone: a daemon restarted mid-review,
+/// or a child whose thread ended without a word. It is not a judgement (no `decision`) and it is
+/// not a failed attempt either (`attempts` stays 0 — nothing was spent), so the entry is exactly
+/// as it was: the row stays on the board and the queue starts a new reviewer for it. That is what
+/// makes a restart survivable rather than a review that can never be finished.
+#[test]
+fn a_child_that_dies_without_submitting_writes_nothing() {
+    let Some(f) = Fixture::new("gone") else {
+        return;
+    };
+    let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
+    f.entry("m-mine", "keep the last record");
+    f.review("m-mine", &f.host, 0, None);
+
+    let mut sessions = f.sessions(&parts);
+    sessions
+        .open
+        .get_mut(&f.host)
+        .expect("the review queue's session is open")
+        .set_subagents_for_test(Arc::new(Gone {
+            started: f.started.clone(),
+        }));
+    assert_eq!(sessions.serve_reviews(), 1, "the reviewer is started");
+    // The child is gone by the time the next pass looks, so the review is dropped and nothing is
+    // written — and the pass after that starts a REPLACEMENT, because the entry still waits.
+    assert_eq!(sessions.serve_reviews(), 1, "a gone child is replaced");
+
+    let row = f
+        .store()
+        .merge_review("m-mine")
+        .expect("reads")
+        .expect("the row");
+    assert!(
+        row.decision.is_none() && row.answered_ms.is_none(),
+        "a child that died is not a judgement: {row:?}"
+    );
+    assert_eq!(
+        row.attempts, 0,
+        "and it is not a failed attempt either — nothing was spent, so nothing is stamped: {row:?}"
+    );
+    assert!(
+        row.failure.is_empty(),
+        "there is no failure to read: {row:?}"
+    );
+    assert_eq!(
+        sessions.fill_gatekeeper_board(),
+        1,
+        "and the row is exactly where it was"
     );
 }
 

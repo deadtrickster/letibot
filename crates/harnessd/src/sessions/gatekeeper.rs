@@ -39,11 +39,23 @@
 //! it*, which is what that column was always documented to mean and could not be while the review
 //! ran under the tree the branch came from.
 //!
-//! **Not in — the child's own verdict.** The reviewer answers with a closing block and the harness
-//! parses that answer onto the entry's review row (`Harness::review_outcome` → `write_outcome`).
-//! The seam this slice leaves is named at that write: the child writing the row ITSELF, so the
-//! parent stops reading its answer. Until that lands, the child's verdict and a person's
-//! `/queue approve|veto` are the only two things that take a row off this board.
+//! **In — the child's own verdict, which is what this slice adds.** The reviewer hands its
+//! verdict IN: it holds one tool (`review_verdict`, `crates/tools/src/builtins/verdict.rs`),
+//! calls it with `accept`/`reject`/`needs_human` and its reasons, and the desk that call writes
+//! to is the daemon's own. The queue's pass (`Harness::serve_reviews`) takes the submission and
+//! writes it onto the entry's review row through the same `write_outcome` it always used — so the
+//! STATES, their storage and the per-workspace split never moved into the model, and the child
+//! never holds a store, an entry or a SHA.
+//!
+//! **And the parent no longer reads its answer.** The closing block the review prompt used to ask
+//! for, and the parser that read it (`letibot_tools::gatekeeper::parse_verdict`), are gone: a
+//! reply in prose is not a verdict, and `Harness::review_outcome` counts such an attempt rather
+//! than inventing one. A child that dies without submitting writes nothing at all — the row stays
+//! and the queue starts a new reviewer.
+//!
+//! **So the three things that take a row off this board** are: the child's own verdict, a
+//! person's `/queue approve|veto`, and a verdict written by any other host straight into the
+//! store. All three move the STORE, and the board is a view of it.
 //!
 //! **And not a worktree of its own, deliberately.** A review is spawned as a plain `task` and not a
 //! `task_start`: the reviewer READS a branch (`git diff base...branch` from the repository it is
@@ -82,7 +94,9 @@
 //!
 //! * **[`PROMPT`], appended to this session's system prompt at open** — what the rows are, that a
 //!   review is a `task` child of this session and that the queue's own clock starts it, that the
-//!   row names the child's handle, and that the verdict (not `todo_write`) is what takes a row off.
+//!   row names the child's handle, and that the verdict (not `todo_write`) is what takes a row off
+//!   — and that the verdict is the CHILD's own call, so what this session does with the child is
+//!   `task_result` and `task_message` and nothing else.
 //!   It is frozen with the rest of the prefix, like every other prompt (`ReseatSession` is the
 //!   tree's remedy for a session that opened before a prompt changed).
 //! * **The nag** (`[todo check]`, `unfinished_plan_for`): the row's words, then `— the merge queue's`,
@@ -328,10 +342,10 @@ pub fn reviewer_placement(
 ///
 /// # The seam it states plainly
 ///
-/// The reviewer's answer is parsed by this session's harness and written onto the entry's review
-/// row (`Harness::review_outcome`); the child writing that row ITSELF is the next slice. The
-/// paragraph is written for what is true today — the verdict is what takes a row off, wherever it
-/// is written from — so it does not have to be rewritten when that lands.
+/// The reviewer hands its verdict in ITSELF — `review_verdict`, the one tool a reviewer holds —
+/// and this session does not read its answer for one. The paragraph is written for what is true:
+/// the verdict is what takes a row off, wherever it was written from, and the session's own verbs
+/// on a child are `task_result` and `task_message`.
 pub const PROMPT: &str = "\
 \n\
 You are the review queue. This session is the merge queue's own: the rows on your board marked \
@@ -350,21 +364,24 @@ there.\n\
 \n\
 What you do with a row:\n\
 \n\
-* `task_result` the handle on it, and read what the reviewer found. Its reply ends with a verdict \
-block — `accept`, `reject` or `needs_human` — with the reasons, the files it read and the commands \
-it ran.\n\
+* `task_result` the handle on it, and read what the reviewer found. **The verdict is what takes \
+the row off your board** — and the reviewer hands it in ITSELF: `accept`, `reject` or \
+`needs_human`, with its reasons, through the tool it holds (`review_verdict`). The queue's own \
+clock writes that onto the entry's review row, and the next pass draws the board without it. \
+Nothing you write does it, and **a reviewer that answers in prose without handing a verdict in \
+has judged nothing**: its attempt is counted, the row stays, and the queue asks again. So read \
+its reply for what it found — and do not treat a sentence in it as a verdict, because the queue \
+does not.\n\
 * `task_message` that handle when it is stuck, or when it has missed what the ask was. A message \
 starts a turn in a child that is between turns, which is how a review is corrected rather than \
 abandoned.\n\
-* Nothing else. The verdict is what takes the row off your board: it is read from the reviewer's \
-answer and written onto the entry's review row in the store, and the next pass of the queue's \
-clock draws the board without it. A refusal goes back to the child that did the work — that is \
-the queue's own act and not yours.\n\
+* Nothing else. A refusal goes back to the child that did the work — that is the queue's own act \
+and not yours.\n\
 \n\
 If a row's child is gone and no verdict came of it, the row STAYS: the entry is still waiting for \
-a verdict and the queue will ask again. Say on your own log what you found and leave the row \
-where it is. `/queue approve`, `/queue veto` and `/queue restart` are the operator's verbs, not \
-yours.\n\
+a verdict, and the queue's own clock starts a new reviewer for it — so do not start one yourself. \
+Say on your own log what you found and leave the row where it is. `/queue approve`, `/queue veto` \
+and `/queue restart` are the operator's verbs, not yours.\n\
 \n\
 You may hold a plan of your own on this board like any other session — `todo_write` writes your \
 rows and nobody else's. The queue's rows are not yours to write, and they are never buried: they \
@@ -390,7 +407,8 @@ pub fn prompt(placement: &ReviewerPlacement) -> String {
 
 /// **The rows this daemon's queue is waiting for verdicts on** — one per entry, in the order the
 /// queue would serve them, with no child on any of them. [`waiting`] is the same set as entries,
-/// and the harness marks the ones a review child is working ([`row`], from `Harness::reviewing`).
+/// and the harness marks the ones a review child is working ([`row`], from the review desk —
+/// `Harness`'s `reviews` field).
 ///
 /// A function rather than a call at the fill site because the board is filled from the daemon's
 /// clock and the review pass runs on it too: one reading of *what is waiting*, two callers.
@@ -515,7 +533,8 @@ fn repo_for(entry: &MergeEntry, serving: &Path) -> std::path::PathBuf {
 /// **The child is the only thing here that is not the store's**, and it is why this takes an
 /// argument rather than reading one: `MergeEntry::state` and `ReviewRecord::decision` are where an
 /// entry's state lives, and *which child this session has on this row* is a fact about THIS
-/// session's own children (`Harness::reviewing`), which no other reader of the store has.
+/// session's own children (`Harness`'s review desk), which no other reader of the store
+/// has.
 pub fn row(entry: &MergeEntry, child: Option<&str>) -> TodoItem {
     TodoItem {
         content: format!(
@@ -575,7 +594,7 @@ mod tests {
     /// The seam `review_pass`'s tests use, and for its reason: the child a real runner would start
     /// needs a model, and what this slice is measured by is *whose runner was asked for what*.
     /// `Running` for ever is the interesting answer — it keeps the child in the harness's
-    /// `reviewing` list, which is the state the double-spawn test needs and the state a row is
+    /// desk, which is the state the double-spawn test needs and the state a row is
     /// marked `in progress` in.
     struct Recording {
         /// `(prompt, role)` per `start`, in order.
@@ -995,6 +1014,18 @@ mod tests {
             said.contains("The verdict is what takes the row off your board"),
             "and what DOES take a row off: {said}"
         );
+        // **And that the verdict is the CHILD's own act**, which is the half this slice adds: the
+        // session is told the door the reviewer holds, and that a reply in prose is not a verdict —
+        // because a session that went looking for one in `task_result`'s payload would be reading
+        // exactly what the queue stopped reading.
+        assert!(
+            said.contains("review_verdict"),
+            "and that the reviewer hands its verdict in ITSELF: {said}"
+        );
+        assert!(
+            said.contains("has judged nothing"),
+            "and what an answer in prose means: {said}"
+        );
         // **And it is the session's OWN prompt, not the daemon's** — the ordinary sessions are the
         // composed prompt byte for byte, which is what `OwnSession::prompt`'s `None` means.
         assert!(
@@ -1156,7 +1187,7 @@ mod tests {
         );
 
         // **And the row it is on is the one the store was told about** — the child is this
-        // session's, so `Harness::reviewing` (which `fill_queue_board` reads) has the entry.
+        // session's, so the review desk (which `fill_queue_board` reads) has the entry.
         let row = f.board(&sessions);
         assert_eq!(row.len(), 1, "{row:?}");
         assert_eq!(row[0].status, TodoStatus::InProgress, "{row:?}");
@@ -1165,7 +1196,7 @@ mod tests {
     /// **A second review of the same entry does not double-spawn.**
     ///
     /// The store cannot tell the two apart — a request row and an attempt in flight are the same
-    /// row — so the guard is the session's own `reviewing` list, and this is it, through the door
+    /// row — so the guard is the session's own desk, and this is it, through the door
     /// the daemon uses. This is also why the session's prompt tells its model NOT to start a
     /// reviewer of its own: two children on one row would be two reviewers reading one branch.
     #[test]

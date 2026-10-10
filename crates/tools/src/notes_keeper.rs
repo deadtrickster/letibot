@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | asked with | [`crate::gatekeeper::review_prompt`] | [`keeper_prompt`] |
 //! | the closed set | `accept \| reject \| needs_human` | [`KeeperDecision`] |
-//! | the answer is read by | [`crate::gatekeeper::parse_verdict`] | [`parse_report`] |
+//! | the answer is read by | `review_verdict` → `crate::builtins::verdict::ReviewDesk` | [`parse_report`] |
 //! | its seat | [`crate::runtime::roles::gatekeeper`] | [`crate::runtime::roles::notes_keeper`] |
 //! | the seam the daemon lands on | [`crate::gatekeeper::wake`] | [`wake`] |
 //!

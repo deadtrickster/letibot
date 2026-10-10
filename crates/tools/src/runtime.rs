@@ -1371,15 +1371,30 @@ pub mod roles {
     /// than the artifact — so it is excluded on purpose, for the same reason the
     /// request has no field for a report. See [`crate::gatekeeper`].
     ///
-    /// Five tools against a ceiling of sixteen: `read`, `grep`, `glob`, `bash` and
-    /// `read_spill`. `read_spill` is seated beside `bash` for the same reason
+    /// **And one tool that is not read-only, because the verdict has to go somewhere.**
+    /// `review_verdict` ([`crate::builtins::verdict`]) is the reviewer's own door: the child
+    /// hands its decision, its reasons and its evidence to the daemon that asked it, and the
+    /// daemon writes the entry's review row. It is `Access::Session` and not a write — no file,
+    /// no process, no network — so a reviewer's verdict raises no permission card at the head of
+    /// the tree it runs in, which matters because that child has no head of its own and a review
+    /// that cannot finish unattended is a review that never finishes.
+    ///
+    /// Six tools against a ceiling of sixteen: `read`, `grep`, `glob`, `bash`, `read_spill` and
+    /// `review_verdict`. `read_spill` is seated beside `bash` for the same reason
     /// [`m2_runner`] seats it — a `git diff` on a large branch spills, and a seat
     /// that cannot read back its own spilled output is a seat that cannot review a
     /// large change.
     pub fn gatekeeper() -> Role {
         Role::new(
             "gatekeeper",
-            &["read", "grep", "glob", "bash", "read_spill"],
+            &[
+                "read",
+                "grep",
+                "glob",
+                "bash",
+                "read_spill",
+                crate::builtins::verdict::TOOL,
+            ],
         )
     }
 
@@ -2530,6 +2545,16 @@ mod tests {
                 seat.tools
             );
         }
+        // **And the one tool that is not a read: the door its verdict goes through.** A seat
+        // without it is a reviewer that can judge and cannot say so, which is the state this tree
+        // was in while the parent parsed its answer instead — see `crate::builtins::verdict`.
+        assert!(
+            seat.tools
+                .iter()
+                .any(|t| t == crate::builtins::verdict::TOOL),
+            "the gatekeeper seat must carry its own verdict door: {:?}",
+            seat.tools
+        );
         // The seat is under its own ceiling, so it is seatable.
         assert!(
             seat.tools.len() <= seat.max_tools,

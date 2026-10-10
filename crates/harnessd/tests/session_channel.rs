@@ -633,11 +633,22 @@ fn read_call(path: &str) -> String {
     format!("\n<function=read>\n<parameter=path>\n{path}\n</parameter>\n</function>\n")
 }
 
-/// **The reviewer's own reply**, in the closing block the gatekeeper protocol asks for: a
-/// refusal with one reason, which is the complaint this channel has to carry.
-fn a_refusing_verdict() -> String {
+/// **The reviewer's own call**, in the Qwen dialect's markup: the verdict it reached, handed in
+/// through the one tool a reviewer holds. This is what replaced the closing block the parent used
+/// to parse out of the reply — see `crates/tools/src/builtins/verdict.rs`.
+fn a_refusing_verdict_call() -> String {
     format!(
-        "I read the diff against the brief.\n\nverdict: reject\nreasons:\n- {REFUSAL}\nfiles: none\ncommands: none\n"
+        "\n<function=review_verdict>\n<parameter=verdict>\nreject\n</parameter>\n\
+         <parameter=reasons>\n[\"{REFUSAL}\"]\n</parameter>\n</function>\n"
+    )
+}
+
+/// **The reviewer's own reply AFTER the call** — the prose the prompt asks for once the verdict
+/// is in. It is not read for a decision (the call was), and it is what the session that started
+/// the reviewer reads in `task_result`.
+fn a_refusing_verdict_afterword() -> String {
+    format!(
+        "I read the diff against the brief, and I handed the verdict in. The reason is: {REFUSAL}."
     )
 }
 
@@ -999,10 +1010,10 @@ fn a_session_may_send_a_peer_it_names() {
 /// subagents to completion by nagging them via messages. so it gets queue item - reviews if ok
 /// - puts into merge queue ... and if it is not happy - it sends a message with complaints to
 /// original subagent"*. This is the refusing half, end to end and with no socket: a REAL
-/// child (spawned through `task`, its own thread and its own hub), a real gatekeeper child
-/// answering with a rejecting verdict, `Harness::serve_reviews` writing it, and the complaints
-/// arriving on the CHILD's log as another session's words — with the child's turn running on
-/// them.
+/// child (spawned through `task`, its own thread and its own hub), a real gatekeeper child that
+/// **hands its own verdict in** (a real `review_verdict` call through its own runtime),
+/// `Harness::serve_reviews` writing what it handed in, and the complaints arriving on the
+/// CHILD's log as another session's words — with the child's turn running on them.
 ///
 /// **The recipient is `entry.id`, and not the review row's `session_id`.** The review's own
 /// `session_id` is the session that HOSTED the review — the one whose agent was told to judge
@@ -1018,12 +1029,20 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let main_id = "s-father-of-the-branch";
 
     let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
-    // Three turns, in the order they happen: the child's work, the gatekeeper's verdict, and
-    // the child's turn on the complaints.
+    // Four requests, in the order they happen: the child's work, the gatekeeper's CALL, the
+    // gatekeeper's reply after it, and the child's turn on the complaints. **The call and the
+    // reply are two rounds of one turn**, which is why the reviewer needs two entries here — the
+    // verdict is handed in by a tool call and the prose comes after it.
     let work = a_plain_answer_turn(&parts.vocab, "working", TO_THE_TASK, 30);
-    let verdict = a_plain_answer_turn(&parts.vocab, "reviewing", &a_refusing_verdict(), 30);
+    let verdict = a_tool_call_turn(&parts.vocab, &a_refusing_verdict_call(), 30);
+    let after = a_plain_answer_turn(
+        &parts.vocab,
+        "reviewing",
+        &a_refusing_verdict_afterword(),
+        30,
+    );
     let hearing = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PEER, 30);
-    let stub = Stub::answering(vec![work, verdict, hearing], 3);
+    let stub = Stub::answering(vec![work, verdict, after, hearing], 4);
 
     // **The reviewer stays on this machine.** `Harness::serve_reviews` places a reviewer in a
     // firecode VM where the box can boot one, and this box can — which this test must not do: the

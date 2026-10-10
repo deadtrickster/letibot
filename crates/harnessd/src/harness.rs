@@ -191,6 +191,20 @@ pub struct Parts {
     /// [`Parts`] rather than [`Config`] because it is a live `Arc` and not a value to clone
     /// per session — the same reason [`Parts::tree_watch`] does.
     pub tree_head: Option<std::sync::Arc<crate::answers::Answers>>,
+    /// **The daemon's review desk** — who is reviewing what, and what they have handed in
+    /// ([`letibot_tools::builtins::verdict::ReviewDesk`]).
+    ///
+    /// It rides [`Parts`] for [`Parts::child_boards`]'s reason exactly: a review has two sides in
+    /// two sessions — the queue's session opens it and writes the row, and the gatekeeper child
+    /// hands the verdict in — and the child is a session of its own with a harness of its own. One
+    /// `Arc` for the daemon is what makes those two sides one act; a desk per harness would be a
+    /// different desk on each side of it, and the child's verdict would reach nobody.
+    ///
+    /// **Not a store.** What the desk holds is a submission in flight; the durable row is the
+    /// queue's own (`Store::put_review`), written by the pass that owns that write
+    /// (`Harness::serve_reviews` → `write_outcome`). See the module doc for why the states stay
+    /// where they were.
+    pub reviews: std::sync::Arc<letibot_tools::builtins::verdict::ReviewDesk>,
 }
 
 /// How many ledger rows a resume announces between progress ticks.
@@ -265,6 +279,9 @@ impl Parts {
             // **Nor a parent's head answers**: a root's own are built as its gate is, and a
             // root with no head-wired adjudicator has none to pass down. See `tree_head`.
             tree_head: None,
+            // The daemon's review desk, empty: the queue's session opens a review on it when it
+            // starts a gatekeeper, and the child hands its verdict back through the same one.
+            reviews: std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
         })
     }
 }
@@ -1025,18 +1042,24 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
-/// **What a gatekeeper child's state says about its review**, or `None` while it is still at it.
+/// **What a reviewer child's own state says about its review**, or `None` while it is still at it
+/// — and it can no longer say `verdict`.
 ///
-/// Pure, so the mapping is asserted without a child — and **the two arms are the whole of the
-/// defect this shape fixes.** A gatekeeper's attempt has three endings and they are three
-/// different facts:
+/// Pure, so the mapping is asserted without a child. **The verdict is not here any more, and that
+/// is the whole of this slice**: it is the child's own act, handed in through `review_verdict`
+/// ([`letibot_tools::builtins::verdict::ReviewDesk`]), and `Harness::serve_reviews` reads it off
+/// the desk before it ever looks at the child's state. What is left for this function is what a
+/// child's STATE can say, and every one of its answers is *no verdict*:
 ///
-/// * **A verdict** — the child answered and the answer parses into the protocol's closing block.
-///   This is the only thing that may be written into the row's `decision`, because it is the only
-///   thing that is a judgement.
+/// * **A child that answered in prose anyway** — `Done`, with no submission — is a FAILED ATTEMPT,
+///   exactly as a reply with no readable closing block used to be. Nothing judged the branch; the
+///   sentence says so, `decision` stays NULL, the attempt is counted, and the queue's own bound
+///   retries it (and parks the entry with the sentence on its row once the attempts are spent).
+///   The reply itself is in the reviewer's own session, where a person can read it — and it is not
+///   evidence, which is the point: a label read out of a model's prose is a label somebody
+///   guessed at, and this one decides whether a branch lands.
 /// * **A failed attempt** — the child's turn failed (a provider's `429`, a spawn that could not
-///   happen), or it answered with something [`letibot_tools::gatekeeper::parse_verdict`] cannot
-///   read. **Neither is a verdict**, and both used to be written into `decision` as the words
+///   happen). **Not a verdict**, and it used to be written into `decision` as the words
 ///   `failed`/`unreadable`/`could_not_start`. `mergequeue::review_gate` reads any word outside the
 ///   gatekeeper's closed set as a REFUSAL, so a failure became a park on the entry's row —
 ///   *"the reviewer's verdict on `x` is `failed`, which is not one of accept, reject, needs_human"*
@@ -1044,6 +1067,11 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
 ///   operator's *"4 failed items"*: entries behind a transient condition, with nothing in the
 ///   queue able to say *try that one again*.
 /// * **Still working** — `None`, and the host leaves the row alone.
+///
+/// **A child that DIES without submitting is the fourth ending, and it is not here either**: a
+/// child that is gone is not a judgement, so `serve_reviews` drops the review and writes nothing.
+/// The row stays on the board, the entry is still waiting for a verdict, and the queue's clock
+/// starts a new reviewer — see `Harness::serve_reviews`.
 #[derive(Debug, PartialEq, Eq)]
 enum ReviewOutcome {
     /// A judgement, in the gatekeeper's own closed set.
@@ -1058,27 +1086,42 @@ enum ReviewOutcome {
     Failed { why: String },
 }
 
+impl ReviewOutcome {
+    /// **What a reviewer handed in, as the row's outcome** — the only way a `Verdict` is made.
+    ///
+    /// It takes a [`letibot_tools::gatekeeper::Submission`], which has no branch and no base: the
+    /// words are the reviewer's and the placement is the queue's, and
+    /// [`write_outcome`] writes them onto the row the queue already keyed by the entry.
+    fn handed_in(said: letibot_tools::gatekeeper::Submission) -> Self {
+        ReviewOutcome::Verdict {
+            decision: said.decision.as_str().to_string(),
+            reasons: said.reasons,
+            files: said.looked_at.files,
+            commands: said.looked_at.commands,
+        }
+    }
+}
+
+/// See [`ReviewOutcome`] — what a reviewer child's own state says, which is never a verdict.
 fn review_outcome(
     req: &letibot_tools::gatekeeper::ReviewRequest,
+    child: &str,
     status: letibot_tools::builtins::task::TaskStatus,
 ) -> Option<ReviewOutcome> {
     use letibot_tools::builtins::task::TaskStatus;
     match status {
-        TaskStatus::Done { answer, .. } => Some(
-            match letibot_tools::gatekeeper::parse_verdict(req, &answer) {
-                Ok(v) => ReviewOutcome::Verdict {
-                    decision: v.decision.as_str().to_string(),
-                    reasons: v.reasons,
-                    files: v.looked_at.files,
-                    commands: v.looked_at.commands,
-                },
-                // **A reply with no readable verdict is a failed ATTEMPT, not a word.** The
-                // protocol asks for a closing block and a model that did not give one has not
-                // judged anything; retrying it is the queue's bound's business, and the parse
-                // error is what a person reads.
-                Err(why) => ReviewOutcome::Failed { why },
-            },
-        ),
+        // **A reviewer that answered in prose has judged nothing.** The call is the answer
+        // (`review_verdict`), and a reply without it is an attempt that reached no judgement —
+        // counted, with the sentence a person reads, and retried by the queue's own bound.
+        TaskStatus::Done { .. } => Some(ReviewOutcome::Failed {
+            why: format!(
+                "the reviewer `{child}` answered without handing a verdict in for `{}`: it \
+                 never called `review_verdict`, which is the only door a verdict goes through. \
+                 Its reply is in the reviewer's own session and is not evidence — the entry \
+                 waits for a judgement, and this attempt is counted against it.",
+                req.branch
+            ),
+        }),
         TaskStatus::Failed { why } => Some(ReviewOutcome::Failed { why }),
         TaskStatus::Running { .. } | TaskStatus::Unknown => None,
     }
@@ -1630,10 +1673,18 @@ pub struct Harness {
     /// only from the tool registry and the watcher set, so an interrupt had nothing to reach
     /// its children with — which is the defect, measured, that this exists for.
     subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
-    /// **The merge-queue reviews this session is hosting** — `(entry id, child handle, the
-    /// request)` for each gatekeeper child it started and has not yet heard back from. See
-    /// [`Harness::serve_reviews`].
-    reviewing: Vec<(String, String, letibot_tools::gatekeeper::ReviewRequest)>,
+    /// **The merge-queue reviews this session is hosting** — who is reviewing what, and what
+    /// they have handed in. See [`Harness::serve_reviews`], and
+    /// [`letibot_tools::builtins::verdict::ReviewDesk`] for why it is a shared `Arc` rather than a
+    /// list on this harness.
+    ///
+    /// **The child's verdict arrives HERE, and not in its prose.** The reviewer calls
+    /// `review_verdict`, the desk records what it handed in, and the next pass of this session
+    /// takes it and writes the entry's row. A child that answers in prose without ever calling it
+    /// has judged nothing ([`review_outcome`] counts that attempt rather than inventing one), and
+    /// a child that dies without calling it leaves the row where it is for the queue to ask
+    /// again.
+    reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
     /// **Every gatekeeper child this session has started**, answered or not: a settlement naming
     /// one is the review's, not news for this session's model, and is dropped from the notices
     /// (`Harness::wake`).
@@ -1643,9 +1694,10 @@ pub struct Harness {
     /// all. Now the review is a `task` child of the QUEUE's session (`Harness::serve_reviews`), so
     /// the settlement does arrive at the session that owns the row — and it is still not news,
     /// because `Harness::wake` calls `serve_reviews` FIRST: by the time the notices are built, the
-    /// child's answer has been parsed onto the entry's review row and the row is off this session's
-    /// board. What the queue's session hears about its rows is the BOARD (a row `in progress` with
-    /// the child's handle, or gone), not a sentence about a child that has already been collected.
+    /// verdict the child handed in has been written onto the entry's review row and the row is off
+    /// this session's board. What the queue's session hears about its rows is the BOARD (a row
+    /// `in progress` with the child's handle, or gone), not a sentence about a child that has
+    /// already been collected.
     gatekeepers: std::collections::HashSet<String>,
     /// **The queue entries this session's model has been told need a merge gate**, so each is
     /// said once per daemon. See [`Harness::queue_notices`].
@@ -2692,6 +2744,11 @@ impl Harness {
                 skills: parts.skills.clone(),
                 lsp: parts.lsp.clone(),
                 child_boards: parts.child_boards.clone(),
+                // **And the daemon's review desk**, for the same reason one line up: the child's
+                // own harness registers its own `review_verdict` bound to its own session id
+                // (`Harness::open_with_registry`), and the desk it submits to has to be the one
+                // this session opened the review on.
+                reviews: parts.reviews.clone(),
                 slots: parts.tree_slots.clone().unwrap_or_default(),
                 // Filled below, once this harness has built its own `job_watch` (R58).
                 tree_watch: tree_watch_slot.clone(),
@@ -2738,6 +2795,22 @@ impl Harness {
             .register(Box::new(letibot_tools::builtins::write::Write))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::edit::Edit)))
             .map_err(|e| HarnessError::Setup(format!("registering the write tools: {e}")))?;
+        // **The reviewer's own door, registered for EVERY session.** It has to be here rather
+        // than in the gatekeeper's seat alone, for the reason `merge_gate` is: a role that names
+        // a tool this registry does not hold is REFUSED at resolve, so a session seated
+        // `gatekeeper` — by the review queue, or by a person who typed `--role gatekeeper` —
+        // could not open at all. What makes the tool usable is not the seat but the desk:
+        // `ReviewDesk::submit` answers only a child whose review the review queue's session
+        // opened, and every other caller gets a refusal by name. The id is bound HERE and never
+        // read from the call, so a model cannot hand a verdict in as another session.
+        registry
+            .register(Box::new(
+                letibot_tools::builtins::verdict::ReviewVerdictTool::new(
+                    parts.reviews.clone(),
+                    cfg.session_id.clone(),
+                ),
+            ))
+            .map_err(|e| HarnessError::Setup(format!("registering the review verdict: {e}")))?;
         // **Standing notes, written.** The loop was one-way when standing notes
         // landed (`fb96763`): the operator wrote, the harness injected, the model
         // read. This is the other half — the `notes` tool, scoped to the
@@ -4179,7 +4252,7 @@ impl Harness {
             // The same `Arc` the tool registry has, cloned before it was moved in — see the
             // field: an interrupt has to be able to stop this session's children.
             subagents: subagent_runner,
-            reviewing: Vec::new(),
+            reviews: parts.reviews.clone(),
             gatekeepers: Default::default(),
             gate_told: Default::default(),
             provider,
@@ -7219,7 +7292,7 @@ impl Harness {
     }
 
     /// **The merge queue's reviews this session hosts: start a gatekeeper for each one that has
-    /// none, and write the verdict of each one that has answered.**
+    /// none, and write the verdict of each one that has handed one in.**
     ///
     /// The queue's door (`mergequeue::GatekeeperDoor`) writes a request row naming this session
     /// as the one that reviews it and rings it; this is that session's half. **A gatekeeper is a
@@ -7244,22 +7317,35 @@ impl Harness {
     /// **Idempotent on two pieces of evidence, and both are needed.** The store's
     /// `attempts`/`failed_ms`, through [`crate::mergequeue::review_retry`], says whether an
     /// attempt is *owed* — a row whose last attempt failed is not re-asked until its backoff has
-    /// elapsed, and a row that has been answered is not in `rows` at all. The session's own
-    /// `reviewing` list says whether this daemon is already serving it, which the store cannot
-    /// say: a request row and an attempt in flight are the same row (`decision` NULL,
-    /// `attempts` 0, `failed_ms` NULL). So the two passes above may see the same row as often as
-    /// they like — the store decides what is owed, `reviewing` decides what is already in hand.
-    /// **That guard is what makes "one review per entry" true of a session's children**, and it
-    /// is why the gatekeeper session's prompt tells its model NOT to start a reviewer itself: two
-    /// children on one row would be two reviewers reading one branch.
+    /// elapsed, and a row that has been answered is not in `rows` at all. The review DESK says
+    /// whether this daemon is already serving it, which the store cannot say: a request row and an
+    /// attempt in flight are the same row (`decision` NULL, `attempts` 0, `failed_ms` NULL). So the
+    /// two passes above may see the same row as often as they like — the store decides what is
+    /// owed, the desk decides what is already in hand. **That guard is what makes "one review per
+    /// entry" true of a session's children**, and it is why the gatekeeper session's prompt tells
+    /// its model NOT to start a reviewer itself: two children on one row would be two reviewers
+    /// reading one branch.
     ///
-    /// **A child that comes back is written onto its row, and that is the seam this slice leaves.**
-    /// The reviewer's answer is PARSED here ([`review_outcome`] → `letibot_tools::gatekeeper::parse_verdict`)
-    /// and the verdict is written onto the entry's `merge_review` row by [`write_outcome`]; the
-    /// child writing that row ITSELF — its own verdict, so the parent stops reading its answer —
-    /// is the next slice. What is true either way, and what the board relies on: the row's
-    /// `decision`/`answered_ms` is the only thing that takes an entry off the queue, and so off
-    /// this session's board.
+    /// # Where the verdict comes from, which is the whole of this slice
+    ///
+    /// **The reviewer hands its verdict in ITSELF**, through the one tool a reviewer holds
+    /// (`review_verdict` → [`letibot_tools::builtins::verdict::ReviewDesk`]), and this pass reads
+    /// it off the desk and writes it with [`write_outcome`] — the same door, the same row, the
+    /// same store as before. What the child's own answer can say is now only what its STATE says
+    /// ([`review_outcome`]), and every arm of that is *no verdict*:
+    ///
+    /// * **A verdict handed in** is written onto the entry's `merge_review` row, the refusal goes
+    ///   back to the child that did the work, and the row leaves this session's board. The review
+    ///   is closed with it: a second `review_verdict` from that child is refused by name rather
+    ///   than written twice.
+    /// * **A child that answered in prose anyway** — settled, no submission — is a FAILED ATTEMPT
+    ///   with the sentence on its row; the queue's own bound retries it, and the attempts are the
+    ///   same three the provider's failures spend.
+    /// * **A child that died without submitting** writes nothing at all. The row STAYS on the
+    ///   board, the entry is still waiting for a verdict, and the queue's clock starts a new
+    ///   reviewer — a child that is gone is not a judgement, and it is not a failure either (the
+    ///   next pass starts a replacement, which is what makes a daemon restart mid-review
+    ///   survivable).
     ///
     /// **The reviewer is the one child whose placement is decided FOR it**, and this is where the
     /// decision is spent: `crate::sessions::gatekeeper::reviewer_placement` reads
@@ -7317,7 +7403,7 @@ impl Harness {
         // nagged about is never one whose child is already running.
         let mut moved = false;
         for row in &rows {
-            if self.reviewing.iter().any(|(e, _, _)| *e == row.entry_id) {
+            if self.reviews.is_open_for(&row.entry_id) {
                 continue;
             }
             let Ok(Some(entry)) = store.merge_entry(&row.entry_id) else {
@@ -7341,7 +7427,11 @@ impl Harness {
                     started += 1;
                     moved = true;
                     self.gatekeepers.insert(handle.clone());
-                    self.reviewing.push((row.entry_id.clone(), handle, req));
+                    // **The review is OPENED on the desk, under the handle the child was started
+                    // with** — which is its session id, and therefore the name its own
+                    // `review_verdict` call arrives under. This line is what makes the child's
+                    // verdict reach this queue and no other: the desk answers nobody else.
+                    self.reviews.opened(&me, &handle, &row.entry_id, req);
                 }
                 Err(why) => {
                     // **A gatekeeper that could not start is a FAILED ATTEMPT**, not a verdict and
@@ -7355,43 +7445,69 @@ impl Harness {
                 }
             }
         }
-        // **And write what has come back.**
-        let mut still = Vec::with_capacity(self.reviewing.len());
-        for (entry_id, handle, req) in std::mem::take(&mut self.reviewing) {
-            let Some(row) = rows.iter().find(|r| r.entry_id == entry_id) else {
+        // **And write what has come back — the child's own verdict first, then whatever its
+        // state says.** The order is the point: a reviewer that handed a verdict in HAS judged,
+        // and neither the prose it wrote afterwards nor a turn that died after the call is a
+        // second answer.
+        let open = self.reviews.open(&me);
+        let mut still: Vec<String> = Vec::with_capacity(open.len());
+        for r in open {
+            let letibot_tools::builtins::verdict::Review {
+                child: handle,
+                entry_id,
+                req,
+            } = r;
+            let Some(row) = rows.iter().find(|x| x.entry_id == entry_id) else {
                 // Answered elsewhere, or the entry left the queue: nothing to write — and the row
-                // is off the board for the same reason.
+                // is off the board for the same reason. The review is over.
                 moved = true;
                 continue;
             };
+            // **(1) THE VERDICT THE REVIEWER HANDED IN.** This is the one arm that moves an
+            // entry, and it moves it because the CHILD judged — not because this session read
+            // its prose. The submission is TAKEN, so a second pass cannot write it twice, and
+            // the review is closed with it: a second `review_verdict` from this child is refused
+            // by the desk by name (`ReviewDesk::submit`).
+            if let Some(said) = self.reviews.take_verdict(&handle) {
+                moved = true;
+                // **A refusal is the ball going back, and this is where it goes.** The
+                // operator's model of this queue, in their words: *"gatekeeper reviews and
+                // drives subagents to completion by nagging them via messages. so it gets queue
+                // item - reviews if ok - puts into merge queue ... and if it is not happy - it
+                // sends a message with complaints to original subagent"*. The complaints are
+                // the reviewer's own reasons, which the write below puts on the review row; the
+                // recipient is `entry.id`, the child that did the work. Whether this is a
+                // refusal is read off the submission because the write consumes it.
+                let refused = said.decision != letibot_tools::gatekeeper::Decision::Accept;
+                write_outcome(store, row, ReviewOutcome::handed_in(said));
+                if refused {
+                    self.send_a_refusal_back(store, &entry_id);
+                }
+                continue;
+            }
+            // **(2) OTHERWISE THE CHILD'S OWN STATE DECIDES, and it can only say NO VERDICT.**
             let status = self.subagents.collect(&handle, std::time::Duration::ZERO);
             // A handle this runner no longer knows is a child that is gone: dropped, so the next
             // ring starts a new gatekeeper for the row that is still waiting — and the row goes
             // back to being ordinary work nobody has started, which is what the board must say
-            // about it.
+            // about it. **Nothing is written**, which is the half of this that matters: a child
+            // that died without submitting is not a judgement and not a failure, and the entry
+            // is still waiting for a verdict.
             let gone = status == TaskStatus::Unknown;
-            match review_outcome(&req, status) {
+            match review_outcome(&req, &handle, status) {
                 Some(o) => {
                     moved = true;
-                    // **A refusal is the ball going back, and this is where it goes.** The
-                    // operator's model of this queue, in their words: *"gatekeeper reviews and
-                    // drives subagents to completion by nagging them via messages. so it gets queue
-                    // item - reviews if ok - puts into merge queue ... and if it is not happy - it
-                    // sends a message with complaints to original subagent"*. The complaints are
-                    // the reviewer's own reasons, which the write below puts on the review row; the
-                    // recipient is `entry.id`, the child that did the work. Whether this is a
-                    // refusal is read off the outcome because the write consumes it.
-                    let refused = matches!(&o, ReviewOutcome::Verdict { decision, .. } if decision != "accept");
                     write_outcome(store, row, o);
-                    if refused {
-                        self.send_a_refusal_back(store, &entry_id);
-                    }
                 }
-                None if !gone => still.push((entry_id, handle, req)),
+                None if !gone => still.push(handle),
                 None => moved = true,
             }
         }
-        self.reviewing = still;
+        // **And the desk is told which reviews are still in flight** — every other one is over:
+        // judged, gone, or its entry left the queue. A closed review takes no verdict, which is
+        // what makes a late `review_verdict` from a child that is already judged a refusal rather
+        // than a second write.
+        self.reviews.keep(&me, &still);
         // **And the board, when any of that moved it — and only for the session whose board the
         // queue IS.** `fill_queue_board` is the one writer of the queue's half and it is
         // version-gated (`TodoBoard::set_queue` compares the rows), so a pass that changed nothing
@@ -7457,22 +7573,25 @@ impl Harness {
     ///
     /// **A row a review child is on is marked with that child** ([`gatekeeper::row`]): the child
     /// is a fact about THIS session's own children and nothing in the store holds it, so it is
-    /// read here, from `reviewing`, at the moment the rows are drawn. A pass that started or lost
+    /// read here, from the desk, at the moment the rows are drawn. A pass that started or lost
     /// a child re-fills in the same breath ([`Harness::serve_reviews`]).
     pub fn fill_queue_board(&mut self) -> usize {
         let Some(store) = self.store.as_ref() else {
             return 0;
         };
         let serving = self.serving();
+        // **The reviews in flight, read once** — the desk is a `Mutex` and this walks every row,
+        // so a lookup per row would take it once per entry for one answer that cannot change
+        // under us (this session is the only writer on this thread).
+        let open = self.reviews.open(&self.hub.session_id());
         let rows: Vec<letibot_tokencore::store::TodoItem> =
             crate::sessions::gatekeeper::waiting(store, &serving)
                 .iter()
                 .map(|entry| {
-                    let child = self
-                        .reviewing
+                    let child = open
                         .iter()
-                        .find(|(id, _, _)| id == &entry.id)
-                        .map(|(_, handle, _)| handle.as_str());
+                        .find(|r| r.entry_id == entry.id)
+                        .map(|r| r.child.as_str());
                     crate::sessions::gatekeeper::row(entry, child)
                 })
                 .collect();
@@ -12928,6 +13047,11 @@ struct HarnessTaskRunner {
     /// of children and not the next. Cloned from `Parts` the way every other shared piece
     /// here is.
     child_boards: Arc<crate::child_todos::ChildBoards>,
+    /// **The daemon's review desk, so a gatekeeper child's own harness registers the tool
+    /// against the same desk this session opens its reviews on** — the one thing that makes a
+    /// reviewer's `review_verdict` call reach the queue that asked it. See
+    /// [`Harness::serve_reviews`] and `letibot_tools::builtins::verdict`.
+    reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
     /// The subagents this session has started, in the order it started them.
     /// Shared with every clone of this runner — the thread that runs a child
     /// holds one, and so does the tool that collects it.
@@ -14404,6 +14528,7 @@ impl HarnessTaskRunner {
             skills: parts.skills.clone(),
             lsp: parts.lsp.clone(),
             child_boards: parts.child_boards.clone(),
+            reviews: parts.reviews.clone(),
             slots: parts.tree_slots.clone().unwrap_or_default(),
             // The three cells a SPAWN reads and an enqueue never does: a tree's watcher set,
             // the head's answers, and the daemon's server window. A test that starts no child
@@ -14978,6 +15103,7 @@ impl HarnessTaskRunner {
             // through the same map (`crate::child_todos`). A fresh map per child would make a
             // grandchild unaddressable by everybody above it.
             child_boards: self.child_boards.clone(),
+            reviews: self.reviews.clone(),
             // **The child joins this tree's watcher set** (R58): the parent's own set, which
             // carries the tree's ROOT (for a permission card) and the level above (for what this
             // session cannot drain, and for the ring that says so). The parent is a root at depth
@@ -19994,13 +20120,14 @@ pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod gatekeeper_reviews {
-    //! **The host's half of a merge-queue review** — what a gatekeeper child's state turns into
-    //! on the queue's row (`review_outcome`), the seat it runs in, and the mark a head hides it
-    //! by. The spawn itself is `HarnessTaskRunner::start` with the seat named, which is every
-    //! child's path; what is new is asserted here.
+    //! **The host's half of a merge-queue review** — what a reviewer child's own STATE says about
+    //! its review (`review_outcome`), what a verdict it HANDED IN does to the queue's row, the
+    //! seat it runs in, and the mark a head hides it by. The spawn itself is
+    //! `HarnessTaskRunner::start` with the seat named, which is every child's path; what is new is
+    //! asserted here.
     use super::*;
     use letibot_tools::builtins::task::TaskStatus;
-    use letibot_tools::gatekeeper::ReviewRequest;
+    use letibot_tools::gatekeeper::{Decision, LookedAt, ReviewRequest, Submission};
 
     fn req() -> ReviewRequest {
         ReviewRequest {
@@ -20010,35 +20137,57 @@ mod gatekeeper_reviews {
         }
     }
 
+    /// A verdict as the child hands one over — the shape `review_verdict` builds from its
+    /// arguments, with no branch and no base in it at all.
+    fn handed_in() -> Submission {
+        Submission {
+            decision: Decision::Accept,
+            reasons: vec!["the test covers it".into()],
+            looked_at: LookedAt {
+                files: vec!["src/reader.rs".into()],
+                commands: vec!["git diff abc123...agent/reader".into()],
+            },
+        }
+    }
+
+    /// **A reviewer's own STATE can only say *no verdict*.** This is the pure half of the change:
+    /// the answer that used to be parsed for a closing block is now an answer and nothing more —
+    /// a child that wrote `verdict: accept` in prose and never called `review_verdict` has judged
+    /// nothing, and what the queue records is a failed ATTEMPT with the sentence saying why. The
+    /// other two states are unchanged: a running child and a gone child are both *nobody has
+    /// judged yet*.
     #[test]
-    fn a_gatekeepers_answer_becomes_the_rows_verdict() {
-        let ok = review_outcome(
+    fn a_reviewers_own_state_can_only_say_no_verdict() {
+        let prose = "Read the diff.\n\nverdict: accept\nreasons: - the test covers it\n\
+                     files: src/reader.rs\ncommands: git diff abc123...agent/reader";
+        let outcome = review_outcome(
             &req(),
+            "sub-1",
             TaskStatus::Done {
-                answer: "Read the diff.\n\nverdict: accept\nreasons: - the test covers it\n\
-                         files: src/reader.rs\ncommands: git diff abc123...agent/reader"
-                    .into(),
+                answer: prose.into(),
                 child: None,
             },
         )
         .expect("settled");
-        match ok {
-            ReviewOutcome::Verdict {
-                decision,
-                reasons,
-                files,
-                ..
-            } => {
-                assert_eq!(decision, "accept");
-                assert_eq!(reasons, vec!["the test covers it".to_string()]);
-                assert_eq!(files, vec!["src/reader.rs".to_string()]);
+        let why = match &outcome {
+            ReviewOutcome::Failed { why } => why.clone(),
+            other => {
+                panic!("an answer nobody handed a verdict in with is not a verdict: {other:?}")
             }
-            other => panic!("a readable answer is a verdict: {other:?}"),
-        }
+        };
+        assert!(
+            why.contains("sub-1") && why.contains("review_verdict") && why.contains("agent/reader"),
+            "the sentence names the child, the door and the branch: {why}"
+        );
+        assert!(
+            !why.contains("accept"),
+            "and it does NOT carry the word the prose used, which is the whole point: {why}"
+        );
 
         assert_eq!(
             review_outcome(
                 &req(),
+                "sub-1",
                 TaskStatus::Running {
                     note: None,
                     child: None,
@@ -20046,7 +20195,7 @@ mod gatekeeper_reviews {
             ),
             None
         );
-        assert_eq!(review_outcome(&req(), TaskStatus::Unknown), None);
+        assert_eq!(review_outcome(&req(), "sub-1", TaskStatus::Unknown), None);
     }
 
     /// **A failed attempt is not a verdict, and the row it writes says so.**
@@ -20056,16 +20205,17 @@ mod gatekeeper_reviews {
     /// Weekly/Monthly Limit Exhausted` — a quota, which is weather — and the queue had no way to
     /// try one again, because the failure had been written where a JUDGEMENT goes.
     ///
-    /// This is the row half of that, asserted against a real store: a child that died and a
-    /// reply with no readable verdict in it are both `Failed { why }`, and the row they leave has
-    /// `decision` NULL (so `mergequeue::review_gate` does not read it as a refusal), `answered_ms`
-    /// NULL (so the review is still outstanding), the provider's own words in `failure`, and the
-    /// attempt counted.
+    /// This is the row half of that, asserted against a real store: a child whose turn failed and
+    /// a child that answered in prose without handing a verdict in are both `Failed { why }`, and
+    /// the row they leave has `decision` NULL (so `mergequeue::review_gate` does not read it as a
+    /// refusal), `answered_ms` NULL (so the review is still outstanding), the reason verbatim in
+    /// `failure`, and the attempt counted.
     #[test]
     fn a_failed_attempt_is_not_recorded_as_a_verdict() {
         // The two endings that reach no judgement. The second is the one that used to be the
-        // word `unreadable`: a model that answered outside the protocol has not judged anything
-        // either, and reading its prose as a decision is the same defect one hop along.
+        // word `unreadable`, and it is now the ordinary way a model fails this protocol: an
+        // answer in prose is not a verdict, and reading it as a decision is the same defect one
+        // hop along.
         for status in [
             TaskStatus::Failed {
                 why: "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
@@ -20077,7 +20227,7 @@ mod gatekeeper_reviews {
                 child: None,
             },
         ] {
-            let outcome = review_outcome(&req(), status).expect("settled");
+            let outcome = review_outcome(&req(), "sub-1", status).expect("settled");
             let why = match &outcome {
                 ReviewOutcome::Failed { why } => why.clone(),
                 other => panic!("an attempt that reached no judgement is not a verdict: {other:?}"),
@@ -20135,10 +20285,12 @@ mod gatekeeper_reviews {
         }
     }
 
-    /// **A verdict is still a verdict, and it clears the failure.** The other half of the pair:
-    /// the change above must not have made a real judgement look like an attempt.
+    /// **A verdict a reviewer HANDED IN is written onto the row, and it clears the failure.** The
+    /// other half of the pair: the change above must not have made a real judgement look like an
+    /// attempt — and the judgement now arrives as a `Submission` off the desk, not as a reply this
+    /// session read.
     #[test]
-    fn a_readable_answer_still_writes_the_verdict() {
+    fn a_handed_in_verdict_still_writes_the_verdict() {
         let dir = std::env::temp_dir().join(format!("letibot-review-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -20161,23 +20313,43 @@ mod gatekeeper_reviews {
             commands: Vec::new(),
         };
         store.put_review(&row).expect("the failed-attempt row");
-        let outcome = review_outcome(
-            &req(),
-            TaskStatus::Done {
-                answer: "verdict: accept\nreasons: - the test covers it".into(),
-                child: None,
-            },
-        )
-        .expect("settled");
-        write_outcome(&store, &row, outcome);
+        write_outcome(&store, &row, ReviewOutcome::handed_in(handed_in()));
         let back = store.merge_review("m-2").expect("reads").expect("the row");
         assert_eq!(back.decision.as_deref(), Some("accept"));
         assert!(back.answered_ms.is_some());
+        assert_eq!(
+            back.reasons,
+            vec!["the test covers it"],
+            "the reviewer's own reasons are what the row carries"
+        );
+        assert_eq!(back.files, vec!["src/reader.rs"]);
         assert_eq!(
             back.failure, "",
             "a verdict clears the last attempt's failure"
         );
         assert_eq!(back.failed_ms, None);
+        // **And the queue's own gate reads it as an acceptance** — the whole point of writing the
+        // word the reviewer chose rather than a word this session invented.
+        let entry = letibot_tokencore::store::MergeEntry {
+            id: "m-2".into(),
+            session_id: "s-host".into(),
+            branch: "agent/reader".into(),
+            base_sha: "abc123".into(),
+            priority: letibot_tokencore::store::MergePriority::Subagent,
+            needs: Vec::new(),
+            state: letibot_tokencore::store::MergeState::Waiting,
+            brief: String::new(),
+            evidence: String::new(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: None,
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        assert_eq!(
+            crate::mergequeue::review_gate(&entry, Some(&back)),
+            crate::mergequeue::ReviewGate::Accepted
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

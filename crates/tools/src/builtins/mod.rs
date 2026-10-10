@@ -58,6 +58,7 @@ pub mod skill;
 pub mod task;
 pub mod todo;
 pub mod transcript;
+pub mod verdict;
 pub mod write;
 
 use crate::backend::{DirEntry, ExecBackend};

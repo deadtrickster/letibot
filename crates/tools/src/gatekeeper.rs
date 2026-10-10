@@ -9,21 +9,36 @@
 //!
 //! # What this module is
 //!
-//! The gatekeeper's own half of the merge queue. The queue does not exist yet —
-//! it is being built in its own branch — and this is everything the queue needs to
-//! wake a reviewer: the seat ([`crate::runtime::roles::gatekeeper`]), the brief-first
-//! request ([`ReviewRequest`]), the verdict ([`Verdict`]), and the prompt
-//! ([`review_prompt`]). The one function the queue calls is [`wake`], and it is a
-//! seam: it refuses by name until the queue lands.
+//! The gatekeeper's own half of the merge queue: the seat
+//! ([`crate::runtime::Role::gatekeeper`]), the brief-first request ([`ReviewRequest`]),
+//! the verdict ([`Verdict`]), the prompt ([`review_prompt`]) — and the two doors, which
+//! face opposite ways.
+//!
+//! # The two doors, and which way each one faces
+//!
+//! [`wake`] is the queue's door TO a reviewer: the daemon writes the ask down and rings
+//! the session that hosts the review, and [`Reviewer`] is the daemon's own half of that.
+//! The reviewer's door is the other way, and it is the one the reviewer CALLS:
+//! `review_verdict` ([`crate::builtins::verdict::ReviewVerdictTool`]), carrying a
+//! [`Submission`] to the desk the daemon holds
+//! ([`crate::builtins::verdict::ReviewDesk`]), from which the daemon writes the entry's
+//! review row through the same function it always did.
+//!
+//! **The answer is the child's own act and not something read out of its prose.** The
+//! closing block this prompt used to ask for is gone, and so is the parser that read it:
+//! re-parsing prose to recover a label is how a corpus rots, and the label here decides
+//! whether a branch lands. A reviewer that answers in prose has judged nothing, and the
+//! entry waits — the safe direction, and the one the daemon's own pass reports.
 //!
 //! # What this module deliberately does not do
 //!
-//! - **No queue.** The merge queue is being built in its own branch, and this
-//!   module is the half it wakes. [`wake`] is the seam, marked, and it refuses by
-//!   name until the queue lands.
+//! - **No queue.** The merge queue is its own module in the daemon; this is the half it
+//!   wakes and the half a reviewer answers into.
 //! - **No storage.** There is no table of entries here. An entry is the queue's;
 //!   this module takes one, as a [`ReviewRequest`], and says what a reviewer asked
-//!   with it would be told.
+//!   with it would be told. The desk that holds the handed-in verdicts is not a second
+//!   store either: what it holds is written onto the queue's own row by the queue's own
+//!   daemon, in the same pass that already owns that write.
 
 /// The request the gatekeeper is given: the original brief, verbatim, and the
 /// placement facts.
@@ -178,27 +193,55 @@ impl Verdict {
     }
 }
 
+/// **What a reviewer HANDS IN** — the verdict as the child's own act, and not as prose somebody
+/// else read.
+///
+/// The three fields are the whole of what a reviewer may say, and **there is no field for the
+/// branch or the base**: those are the [`ReviewRequest`]'s, joined to this at the daemon's write
+/// ([`Verdict::for_request`]), so a verdict can never name a SHA the queue did not hand over —
+/// the same structural argument [`ReviewRequest`] makes about the child's report, one direction
+/// over.
+///
+/// It is what `review_verdict` carries
+/// ([`crate::builtins::verdict::ReviewVerdictTool`]), and the only thing that becomes a row's
+/// `decision`. A reply in prose is not one of these and is never read as one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Submission {
+    /// One word out of [`Decision::ALL`], and nothing else: a word outside the set is refused
+    /// by the door rather than defaulted, because guessing `Accept` lands a branch nobody
+    /// accepted and guessing `Reject` parks work nobody rejected.
+    pub decision: Decision,
+    /// Why, in the reviewer's own words.
+    pub reasons: Vec<String>,
+    /// What it actually looked at.
+    pub looked_at: LookedAt,
+}
+
 /// The exact text the gatekeeper is asked with: the brief, the placement, and the
 /// rules.
 ///
 /// The rules are the protocol in the reviewer's own prompt: read the code, do not
-/// fix it, judge the artifact against the ask, and say what you looked at. The
-/// brief is the only framing, and it is there verbatim; the placement names the
-/// branch and base the verdict must carry back.
+/// fix it, judge the artifact against the ask, say what you looked at, and **hand the
+/// verdict in through the one door a reviewer holds**. The brief is the only framing, and
+/// it is there verbatim; the placement names the branch and base the verdict is joined to.
 ///
-/// # The closing block is a SHAPE, and that is a change
+/// # The verdict is a TOOL CALL, and that is the second change here
 ///
-/// This prompt used to end *"End with your verdict: accept, reject, or needs_human —
-/// the reasons, and what you looked at"*, which asks a model for prose and then leaves
-/// whoever reads it to decide what the prose meant. That is exactly the defect this
-/// tree's own store warns about — *"re-parsing prose to recover a label is how a corpus
-/// rots"* — and it would be worse here than in a corpus: the label the queue reads is
-/// the one that decides whether a branch lands.
+/// This prompt has asked two different things of a model. First *"End with your verdict:
+/// accept, reject, or needs_human — the reasons, and what you looked at"*, which asks for
+/// prose and then leaves whoever reads it to decide what the prose meant. Then a closing
+/// block (`verdict:`/`reasons:`/`files:`/`commands:`) read by a parser — better, and still
+/// a label recovered from a model's text by a reader that has to guess where the block
+/// starts, and still exactly the defect this tree's own store warns about: *"re-parsing
+/// prose to recover a label is how a corpus rots"*. It is worse here than in a corpus,
+/// because the label the queue reads is the one that decides whether a branch lands.
 ///
-/// So the prompt states the shape the answer must close with, field by field, and
-/// [`parse_verdict`] reads THAT. A reply that does not close with it is refused by name
-/// rather than guessed at, and the refusal is the safe direction: a verdict nobody can
-/// read is a verdict the queue does not have, and the entry waits.
+/// So the verdict is **`review_verdict`**
+/// ([`crate::builtins::verdict::ReviewVerdictTool`]): the reviewer calls it once, with the
+/// decision and its reasons as arguments, and the call IS the answer. There is no block to
+/// find, no last-line rule, and no prose for anybody to read a decision out of — a reviewer
+/// that answers in prose has judged nothing, and the entry waits (`Harness::review_outcome`
+/// counts that attempt rather than inventing a verdict from it).
 ///
 /// # One command per call, and why the prompt is where that is said
 ///
@@ -250,9 +293,17 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          code\" and not \"did the subagent do what it said it would do\"; it is \
          \"does this change do what the brief asked for, without breaking what was \
          already there\".\n\
-         4. Say what you looked at. Your verdict must name the files you read and \
-         the commands you ran, against the branch and base above. A verdict against \
-         a SHA nobody can name is not evidence.\n\
+         4. **Hand the verdict in with `review_verdict`.** Your verdict is not prose and \
+         it is not a block at the end of your reply: call `review_verdict` ONCE, when you \
+         have judged, with `verdict` one of `accept`, `reject` or `needs_human`, and with \
+         `reasons`, `files` and `commands` — the reasons in your own words, and the files \
+         you read and the commands you ran against the branch and base above, because a \
+         verdict against a SHA nobody can name is not evidence. **That call is the whole \
+         of your answer to the queue**: the row comes off its board because the verdict \
+         reached it, and a reply that ends in prose without that call has judged nothing — \
+         the entry waits and this attempt is counted against it. You may reason in prose \
+         for as long as you like before and after the call, and what you found belongs in \
+         your reply too: the session that started you reads it there.\n\
          5. **One command per call.** Every `bash` call runs exactly one simple \
          command: no `&&`, no `;`, no `|`, no `>` or `<` to a file, no `$(…)` or \
          backticks, and no `cd`-then-command. The permission rules are tested one \
@@ -272,21 +323,9 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          the tool — `bash` takes a `cwd`, and `read`, `grep` and `glob` take a path — \
          rather than `cd`-ing to it first. When you want a shorter output, ask for a \
          narrower command (`git diff --stat`, `git log --oneline -5`) rather than piping \
-         it into `head`. And the `;` in the `commands:` field at the end of this brief is \
-         a LIST SEPARATOR and not a shell operator: each item in it is one simple command, \
-         written the way you ran it.\n\n\
-         You may reason in prose for as long as you like. **Then end your reply with \
-         exactly this block and nothing after it**, one field per line, the labels \
-         spelled exactly as they are here:\n\n\
-         verdict: accept | reject | needs_human\n\
-         reasons: one reason per line, each beginning with `- `\n\
-         files: comma-separated paths, or `none`\n\
-         commands: semicolon-separated commands, or `none`\n\n\
-         `verdict:` is the only line that is required; `reasons:`, `files:` and \
-         `commands:` are read as evidence and an empty one is recorded as nothing \
-         looked at, which is a worse verdict rather than a refused one. A reply \
-         whose closing block is missing or whose verdict is not one of the three \
-         words is refused, and the branch does not land.",
+         it into `head`. And the `commands` field of `review_verdict` is a LIST and not a \
+         shell line: each item in it is ONE simple command, written the way you ran it, \
+         and the list itself is the separator — nothing in it needs a `;`.",
         brief = req.brief,
         branch = req.branch,
         base = req.base_sha,
@@ -385,74 +424,6 @@ impl Reviewer for NoReviewer {
     }
 }
 
-/// **What the reviewer said, read out of the shape the prompt asks for** — the one place a
-/// reply becomes a verdict.
-///
-/// The prompt states a closing block (`verdict:`, `reasons:`, `files:`, `commands:`) and this
-/// reads exactly that, from the LAST `verdict:` line onwards: prose above it is the reviewer
-/// thinking, which is worth reading in the session's transcript and is not evidence.
-///
-/// **A reply without a readable verdict is an `Err`, never a default.** Guessing `accept`
-/// would land a branch nobody accepted and guessing `reject` would park work nobody rejected;
-/// both are worse than saying the verdict could not be read, which leaves the entry waiting
-/// with the reason on its row — the direction the whole queue is built to fail in.
-///
-/// The branch and base come from the request ([`Verdict::for_request`]), so a verdict can
-/// never name a SHA the queue did not hand over.
-pub fn parse_verdict(req: &ReviewRequest, said: &str) -> Result<Verdict, String> {
-    let lines: Vec<&str> = said.lines().collect();
-    let Some(start) = lines.iter().rposition(|l| label(l, "verdict").is_some()) else {
-        return Err(format!(
-            "the reviewer's reply for `{}` has no `verdict:` line, so there is no verdict to \
-             read. The reply is in the reviewer's own session, and the entry waits.",
-            req.branch
-        ));
-    };
-    let word = label(lines[start], "verdict").unwrap_or("").trim();
-    let Some(decision) = Decision::parse(word) else {
-        return Err(format!(
-            "the reviewer's reply for `{}` ends with `verdict: {word}`, which is not one of \
-             {}. A verdict outside the closed set is not a verdict, and the entry waits.",
-            req.branch,
-            Decision::ALL
-                .iter()
-                .map(|d| d.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    };
-    // **Everything after the `verdict:` line is the block, and nothing before it is.** A reply
-    // that kept talking after the block is read as if it had not: the block is the answer.
-    let rest = &lines[start + 1..];
-    let mut reasons: Vec<String> = Vec::new();
-    let mut files: Vec<String> = Vec::new();
-    let mut commands: Vec<String> = Vec::new();
-    for line in rest {
-        if let Some(v) = label(line, "reasons") {
-            reasons.extend(bullets(v));
-        } else if let Some(v) = label(line, "files") {
-            files.extend(commas(v));
-        } else if let Some(v) = label(line, "commands") {
-            commands.extend(semicolons(v));
-        } else if let Some(bullet) = line.trim().strip_prefix("- ") {
-            // **A continuation line under `reasons:`.** The prompt asks for one reason per line,
-            // and a model that writes the label once and then a list has answered the question —
-            // refusing that would be refusing a reply that says exactly what was asked, one
-            // layout over.
-            let b = bullet.trim();
-            if !b.is_empty() {
-                reasons.push(b.to_string());
-            }
-        }
-    }
-    Ok(Verdict::for_request(
-        req,
-        decision,
-        reasons,
-        LookedAt { files, commands },
-    ))
-}
-
 /// The value on a line that begins with `label:`, or `None`. Case-insensitive on the label and
 /// anchored at the start of the line, so a mention of the word `verdict` in the reviewer's own
 /// prose is not mistaken for the field.
@@ -493,19 +464,6 @@ pub(crate) fn commas(v: &str) -> Vec<String> {
         return Vec::new();
     }
     t.split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
-}
-
-/// A semicolon-separated list, on `commas`' rule including `none`.
-fn semicolons(v: &str) -> Vec<String> {
-    let t = v.trim();
-    if t.is_empty() || t.eq_ignore_ascii_case("none") {
-        return Vec::new();
-    }
-    t.split(';')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -566,16 +524,38 @@ mod tests {
         assert!(r.contains("git diff a4fbe70...agent/gatekeeper"), "{r}");
     }
 
-    /// **The prompt states the closing block it will be read by.** The reply's shape is the
-    /// protocol now — see `review_prompt`'s own doc for why prose was not enough — so the four
-    /// labels are asserted to be there, spelled the way `parse_verdict` looks for them.
+    /// **The prompt names the door the verdict goes through, and its three words.** The verdict
+    /// is a tool call now — see `review_prompt`'s own doc for why prose and then a closing block
+    /// were both replaced — so what has to be in the text is the tool's name, the closed set and
+    /// the fields the call takes. A prompt that named none of them would leave a reviewer with
+    /// the only door it holds and no way to know it is the answer.
     #[test]
-    fn the_prompt_states_the_closing_block_the_parser_reads() {
+    fn the_prompt_names_the_door_the_verdict_goes_through() {
         let p = review_prompt(&request());
-        for l in ["verdict:", "reasons:", "files:", "commands:"] {
-            assert!(p.contains(l), "the prompt must state `{l}`:\n{p}");
+        assert!(
+            p.contains("review_verdict"),
+            "the reviewer must be told the tool its verdict goes through:\n{p}"
+        );
+        for word in ["`accept`", "`reject`", "`needs_human`"] {
+            assert!(p.contains(word), "the prompt must name `{word}`:\n{p}");
         }
-        assert!(p.contains("accept | reject | needs_human"), "{p}");
+        for field in ["`reasons`", "`files`", "`commands`"] {
+            assert!(p.contains(field), "the prompt must name `{field}`:\n{p}");
+        }
+        assert!(
+            p.contains("has judged nothing"),
+            "and what a reply that never made the call means:\n{p}"
+        );
+        // **And the block is GONE**, because a second spelling of the answer is a second answer:
+        // a reviewer that wrote the old closing block instead of calling the tool would have
+        // judged nothing, and a prompt that still asked for it would be asking for that.
+        for gone in ["verdict:", "reasons:", "files:", "commands:"] {
+            assert!(
+                !p.contains(gone),
+                "the prompt still asks for the closing block (`{gone}`), which nothing reads \
+                 any more:\n{p}"
+            );
+        }
     }
 
     /// **The prompt states the rule that decides whether a review can run at all**, in its own
@@ -602,10 +582,10 @@ mod tests {
         // where it would look for it.
         assert!(p.contains("`bash` takes a `cwd`"), "{p}");
         assert!(p.contains("rather than piping it into `head`"), "{p}");
-        // **And the one `;` the prompt DOES ask for** — the verdict block's list separator — is
-        // named as a separator, so the rule above cannot be read as forbidding the evidence
-        // field it sits beside.
-        assert!(p.contains("LIST SEPARATOR"), "{p}");
+        // **And the `commands` list is named as a list**, so the rule above cannot be read as
+        // forbidding the evidence field it sits beside: the field is a list of simple commands
+        // and needs no separator, which is the one `;` a reader might have expected.
+        assert!(p.contains("is a LIST and not a shell line"), "{p}");
     }
 
     /// The command shapes the prompt states, **read back out of the prompt's own text**: the
@@ -665,94 +645,19 @@ mod tests {
         }
     }
 
-    /// **A reply in the shape the prompt asks for becomes the verdict it says** — the decision,
-    /// the reasons and the evidence, against the branch and base the queue handed over.
+    /// **The closed set is closed, and one word out is not a verdict.** The parse is the same
+    /// question the door asks (`ReviewDesk::submit` refuses a word outside it), and reading an
+    /// unknown word as `accept` would land a branch nobody accepted — so there is one answer per
+    /// word and `None` for everything else.
     #[test]
-    fn a_reply_in_the_stated_shape_becomes_its_verdict() {
-        let req = request();
-        let said = "I read the diff and the files it touches.\n\n\
-                    verdict: reject\n\
-                    reasons:\n\
-                    - the brief asked for X and the change does Y\n\
-                    - `wake` is not wired to anything\n\
-                    files: crates/tools/src/gatekeeper.rs, crates/harnessd/src/mergequeue.rs\n\
-                    commands: git diff a4fbe70...agent/gatekeeper; cargo test -p letibot-tools\n";
-        let v = parse_verdict(&req, said).expect("the block parses");
-        assert_eq!(v.decision, Decision::Reject);
-        assert_eq!(v.branch, req.branch, "the branch comes from the request");
-        assert_eq!(v.base_sha, req.base_sha, "so does the base");
-        assert_eq!(
-            v.reasons,
-            vec![
-                "the brief asked for X and the change does Y",
-                "`wake` is not wired to anything"
-            ]
-        );
-        assert_eq!(
-            v.looked_at.files,
-            vec![
-                "crates/tools/src/gatekeeper.rs",
-                "crates/harnessd/src/mergequeue.rs"
-            ]
-        );
-        assert_eq!(v.looked_at.commands.len(), 2);
-    }
-
-    /// **The LAST `verdict:` line is the verdict**, and the prose above it is not read: a
-    /// reviewer that thinks out loud about what it might say and then says it has answered, and
-    /// a parser that took the first mention would land on a sentence about a decision the
-    /// reviewer went on to change.
-    #[test]
-    fn the_last_verdict_line_is_the_one_that_counts() {
-        let said = "I considered `verdict: accept` and then read the test file.\n\n\
-                    verdict: needs_human\n\
-                    reasons: - the spec is ambiguous about the retry\n";
-        let v = parse_verdict(&request(), said).expect("the last line is a verdict");
-        assert_eq!(v.decision, Decision::NeedsHuman);
-        assert_eq!(v.reasons, vec!["the spec is ambiguous about the retry"]);
-    }
-
-    /// **A reply with no readable verdict is refused, and never guessed at.** Each of the three
-    /// ways it can be unreadable is its own assertion: no block at all, a word outside the
-    /// closed set, and the empty string. The safe direction is the point — an entry with no
-    /// verdict waits, and it must never land on the strength of a default.
-    #[test]
-    fn a_reply_without_a_readable_verdict_is_refused() {
-        let req = request();
-        for (said, want) in [
-            ("I read it and I think it is fine.", "no `verdict:` line"),
-            ("verdict: probably\n", "not one of"),
-            ("", "no `verdict:` line"),
-        ] {
-            let e = parse_verdict(&req, said).unwrap_err();
-            assert!(e.contains(want), "want {want:?}, got {e:?}");
-            assert!(e.contains("agent/gatekeeper"), "{e}");
+    fn the_decision_words_are_a_closed_set() {
+        for d in Decision::ALL {
+            assert_eq!(Decision::parse(d.as_str()), Some(d));
         }
-        // And the closed set itself has one answer per word.
-        assert_eq!(Decision::parse("accept"), Some(Decision::Accept));
-        assert_eq!(Decision::parse("reject"), Some(Decision::Reject));
-        assert_eq!(Decision::parse("needs_human"), Some(Decision::NeedsHuman));
+        assert_eq!(Decision::ALL.len(), 3, "the set has one word per decision");
         assert_eq!(Decision::parse("Accept"), None, "the words are exact");
         assert_eq!(Decision::parse("maybe"), None);
-    }
-
-    /// **`none` is not a file called `none`.** The prompt names it as the way to say *I looked
-    /// at nothing*, and a verdict that recorded it as evidence would be a verdict claiming to
-    /// have read a file that does not exist.
-    #[test]
-    fn an_empty_evidence_field_is_no_evidence() {
-        let v = parse_verdict(
-            &request(),
-            "verdict: accept\nreasons: none\nfiles: none\ncommands: none\n",
-        )
-        .expect("a verdict with nothing named is still a verdict");
-        assert!(v.reasons.is_empty(), "{:?}", v.reasons);
-        assert!(v.looked_at.files.is_empty(), "{:?}", v.looked_at.files);
-        assert!(
-            v.looked_at.commands.is_empty(),
-            "{:?}",
-            v.looked_at.commands
-        );
+        assert_eq!(Decision::parse(""), None);
     }
 
     /// **The wake hands the request to the door and reports what the door did** — and it refuses
