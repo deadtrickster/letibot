@@ -955,7 +955,34 @@ tui: 691 unit + 23 integration, all passing.
 
 ---
 
-## R70 — Tests: split the largest inline blocks into sibling files; count what is comparable — **OPEN, mechanical**
+## R70 — Tests: split the largest inline blocks into sibling files; count what is comparable — **the split LANDED on `r70-test-files` 2026-10-11, not merged; the small blocks are left**
+
+**Status, 2026-10-11.** Re-measured on main at `7199e5e` first (brace-aware, string- and
+comment-aware): the list below was stale — `mergequeue.rs` is gone (R61 split it, its tests
+already live in `mergequeue/serve/tests.rs` and `mergequeue/review/tests.rs`), `launcher.rs`
+is eight inline blocks of 30-200 lines each, and `sessions.rs`'s 1,470 lines are eight named
+blocks. Moved, one commit each, biggest first (inline test lines → where):
+`tools/adjudicate.rs` 3,517 → `adjudicate/tests/` (mod + grants, gate, supervised, outcomes,
+breaker, history); `tools/builtins/todo.rs` 3,312 → `todo/tests/` (mod + board, needs, nag,
+quotes, children, cap); `harnessd/harness.rs` 3,275 → `harness/tests/` (mod + questions, jobs,
+children, context, intent, misc; beside the existing `harness/queue_e2e.rs`);
+`tokencore/store.rs` 1,955, `harnessd/config.rs` 1,676, `tools/intent.rs` 1,518,
+`tools/builtins/task.rs` 1,108, `tools/authorise.rs` 1,075, `harnessd/jobwatch.rs` 1,029,
+`harnessd/answers.rs` 1,024, `tools/builtins/notes.rs` 912, `tools/mode.rs` 747,
+`harnessd/sessions/gatekeeper.rs` 681 → `<module>/tests.rs`; `harnessd/sessions.rs`'s
+`mod idle_nag` 868 → `sessions/idle_nag.rs`. **Proof, per crate, `cargo test -p X --lib --
+--list`:** tools 939 → 939, harnessd 418 → 418, tokencore 76 → 76; the sorted name lists are
+identical for the `tests.rs` moves, and identical once the theme segment is removed for the
+three topic splits (`adjudicate::tests::gate::x` was `adjudicate::tests::x` — the one path
+change a split by topic makes). All three crates' lib tests pass; build warnings unchanged.
+Token changes beyond whitespace: rustfmt, reflowing the dedented lines, dropped 9 trailing
+commas and collapsed 3 `=> { expr }` match arms; `intent`'s `include_str!("intent.rs")` became
+`"../intent.rs"`. **Left:** 29 inline blocks still over 40% of their file, all under 700
+lines — the largest `vt/screen.rs` 658, `tools/exec/ask.rs` 539, `exec/term.rs` 493,
+`ui/ansi.rs` 478, `harnessd/prompt.rs` 412, `exec/pty.rs` 409 (`vt` and `exec/term|pty` left
+for R60, which is editing them); the rest are 100-370-line blocks in files under 900 lines,
+where a sibling file buys little. `sessions.rs` still has seven named blocks (30-250 lines).
+
 
 The operator: *"maybe worth moving tests out of files? dont know what rust says here. regarding
 tests number - leticl has 7k+ tests"*.
