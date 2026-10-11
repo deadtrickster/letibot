@@ -387,3 +387,90 @@ fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
          report this session stale on every note the operator ever writes"
     );
 }
+
+/// **A head attached BEFORE the harness opens is told, live, after the restored rows.**
+///
+/// The operator, after restarting the pg-noop daemon onto a build whose `todo_write` schema
+/// had grown: *"restarted pg-noop, didnt get offer to reseat, interesting"* — and then *"ok
+/// reseat came … but later"*. The daemon registers its session and binds its socket before
+/// it opens the harness (`cli.rs`: `create_under`, then `Daemon::serve`, then the vocabulary
+/// and `Sessions::open_first`), so a head that reconnects across a restart attaches in that
+/// window. `seat_in` read an empty mailbox; the sentence written a moment later waited there
+/// for the NEXT attach. Every other test in this file opens the harness with no head on it,
+/// which is why none of them saw it.
+///
+/// Asserted on the head's own delivery queue, in order: the sentence arrives, and it arrives
+/// after the last restored row — a live note is filed at the seam it arrives at, so one said
+/// before the republish would be drawn above the whole conversation.
+#[test]
+fn a_head_attached_before_the_harness_opens_is_told_after_the_restored_rows() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("boot-window");
+    let ws = TempDir::new("ws-boot-window");
+    let store = dir.path().join("sessions.db");
+    let session_id = "prefix-boot-window";
+    let cfg = config(&store, session_id, ws.path());
+    let parts = empty_modes(Parts::load(&cfg).expect("the vocabulary must load"));
+    {
+        let (mut h, _registry) = opened(&cfg, &parts);
+        seed(&mut h);
+    }
+
+    // The restart: a build that composes a different prompt for the same seat.
+    let mut changed = cfg.clone();
+    changed
+        .system
+        .push_str("\n\nA new instruction that arrived after this session was seated.");
+
+    // The session is registered and a head is on it before anything is opened — the
+    // reconnecting TUI, in the daemon's boot window.
+    let hub = Hub::new(session_id);
+    let registry = Registry::of(hub.clone());
+    let head = hub.attach(
+        "tui",
+        "operator",
+        letibot_sessionlog::protocol::Caps::default(),
+        0,
+    );
+    assert_eq!(
+        registry.stale_prefix(session_id),
+        None,
+        "the fixture is the boot window: nothing has compared anything yet"
+    );
+
+    let h = Harness::open_with_registry(&parts, changed, hub.clone(), None, None, registry)
+        .expect("the session must open");
+    assert!(h.resumed().is_some(), "the seeded session resumes");
+
+    let events = match hub.next_batch(&head.head_id, 1_000_000) {
+        letibot_sessionlog::hub::Delivery::Events(b) => b.events().to_vec(),
+        other => panic!("the head attached before the open must be fed live, got {other:?}"),
+    };
+    let at = |want: &dyn Fn(&letibot_sessionlog::SessionEvent) -> bool| {
+        events.iter().rposition(|e| want(&e.event))
+    };
+    let told = at(&|e| {
+        matches!(e, letibot_sessionlog::SessionEvent::Warning { code, detail, .. }
+            if code == "prefix_stale" && detail.contains("`/reseat`"))
+    })
+    .unwrap_or_else(|| {
+        panic!(
+            "a head watching when the harness opened was never offered `/reseat` — it would \
+             hear it only on its next attach, which is the operator's \"but later\""
+        )
+    });
+    let last_row = at(&|e| {
+        matches!(
+            e,
+            letibot_sessionlog::SessionEvent::TranscriptAppended { .. }
+        )
+    })
+    .expect("the resume republishes the stored conversation to a head already watching");
+    assert!(
+        told > last_row,
+        "the offer must follow the restored rows, or the head files it at a seam above the \
+         whole conversation: offer at {told}, last row at {last_row}"
+    );
+}

@@ -2135,6 +2135,71 @@ pub struct ReseatReport {
     pub summary_turn: CompactionOutcome,
     pub gained: Vec<String>,
     pub lost: Vec<String>,
+    /// **Tools on both sides whose schema changed** — the case that started the stale-prompt
+    /// notice (`todo_write`'s grown `target`, then its `operator` need kind), and the one the
+    /// gained/lost pair is silent about. Named here so the re-seat's report, and the model's
+    /// copy of it, can say the schema the model now reads is not the one it was using.
+    pub grew: Vec<String>,
+}
+
+/// **Tools seated on both sides whose schema text differs**, sorted — the `grew` half of the
+/// stale-prefix comparison, as one function so the notice and the re-seat's report name the
+/// same tools.
+fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
+    let (was, is) = (tool_schemas(was), tool_schemas(is));
+    is.iter()
+        .filter(|(name, schema)| was.get(*name).is_some_and(|old| old != *schema))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// **What the MODEL is told after the person re-seats its conversation** — the closing half
+/// of the stale-prompt notice it was being sent.
+///
+/// The operator: *"since reseated nag reaches the model and it starts nagging me — the result
+/// — that reseat happened shall reach the model too. and it should start the turn"*. The model
+/// is told, every idle window, that its prompt is stale and that it should keep asking for
+/// `/reseat` until somebody acts; when somebody did, the only trace on its side was a system
+/// row at the top of a forked transcript, and no turn ran to read it. So it went on asking.
+///
+/// Same shape as the stale notice (`nag_notice_naming`): the fact, then what to DO, because
+/// the rule has to travel with the notice. In the harness's voice (`Speaker::Agent`), as the
+/// nag is — this is the daemon reporting an act the person took, never the person's words.
+pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
+    let how = if summarise {
+        format!(
+            "with `/reseat summarise`: the {} tokens of history before this point are replaced \
+             by the summary at the top of the conversation",
+            r.fork.was_tokens
+        )
+    } else {
+        "with `/reseat`: the conversation was carried across as it was, nothing summarised \
+         and nothing dropped"
+            .to_string()
+    };
+    let mut said = format!(
+        "[reseat] The person re-seated this conversation {how}. Message zero is now the prompt \
+         this daemon seats — the system instructions and tool schemas you are reading are the \
+         current ones"
+    );
+    if !r.gained.is_empty() {
+        said.push_str(&format!(". You can now call: {}", r.gained.join(", ")));
+    }
+    if !r.lost.is_empty() {
+        said.push_str(&format!(". No longer seated: {}", r.lost.join(", ")));
+    }
+    if !r.grew.is_empty() {
+        said.push_str(&format!(
+            ". Schemas that changed — read them again before calling: {}",
+            r.grew.join(", ")
+        ));
+    }
+    said.push_str(
+        ". The notice that this conversation speaks a stale prompt no longer applies: stop \
+         asking for `/reseat`. Say in one line that the re-seat landed and what it changes for \
+         you, then carry on with what you were doing.",
+    );
+    said
 }
 
 /// **A renderer over this box's vocabulary, with no session behind it.**
@@ -4244,6 +4309,13 @@ impl Harness {
                         // (`server::seat_in`) reads it and publishes it while the head
                         // that just arrived is watching. See
                         // `Registry::set_stale_prefix`.
+                        //
+                        // **"Every ordinary path" had an exception, and it was the restart.**
+                        // The daemon binds its socket before it opens its first session, so
+                        // a head that reconnects across a restart is attached BEFORE this
+                        // runs — and was told nothing until it attached again. The registry
+                        // now tells a head already watching at the moment the sentence is
+                        // stored, which is the end of `open`, after the restored rows.
                         stale = Some(say);
                     }
 
@@ -4330,10 +4402,8 @@ impl Harness {
             }
         };
 
-        // **What a head attaching to this session should be told**, published where the head
-        // can hear it — see the comment in the resume arm for why it is not said here. A
-        // session no harness has opened has no entry, and this is then a no-op.
-        session_registry.set_stale_prefix(&cfg.session_id, stale);
+        // The sentence is left in the registry at the END of `open`, after the stored
+        // conversation has been republished — see the comment there.
 
         // **The window this session plans its compaction against, written down.** See
         // `StoredSession::context_window`: the number was otherwise knowable only at the
@@ -4604,6 +4674,20 @@ impl Harness {
             let before = h.ancestor_tail();
             h.republish_after("restoring the stored conversation", before);
         }
+        // **What a head attaching to this session should be told**, left in the registry for
+        // `seat_in` — see the comment in the resume arm for why it is not said there. A
+        // session no harness has opened has no entry, and this is then a no-op.
+        //
+        // **HERE, after the republish, and not beside the comparison.** The daemon binds its
+        // socket before it opens the session, so a head that reconnected across a restart is
+        // already attached while this runs — it was handed an empty snapshot and is being sent
+        // every restored row live. `set_stale_prefix` tells such a head at once (the
+        // operator's *"ok reseat came … but later"*: it used to wait for the next attach), and
+        // it must tell it AFTER the rows, because a live note is filed at the seam it arrives
+        // at: said before the republish, it would be drawn above the whole restored
+        // conversation, which on a long session is a screen nobody scrolls to.
+        h.session_registry
+            .set_stale_prefix(&h.cfg.session_id, stale);
         // **R6: a session whose id marks an opencode conversation reads it in.**
         //
         // `oc-` is the namespace mark and the rest is opencode's opaque id
@@ -8449,6 +8533,32 @@ impl Harness {
     /// there is room and a bound of continuations left; a wall the compaction did
     /// not clear still comes back as [`HarnessError::ContextWall`], which is the
     /// honest answer.
+    /// **The turn after a re-seat: the model is told it happened, and answers.**
+    ///
+    /// The operator: *"that reseat happened shall reach the model too. and it should start the
+    /// turn"*. `text` is [`reseated_for_the_model`]'s. The same seam as
+    /// [`Harness::continue_after_wall`] and the plan-check's nag — a user item in the
+    /// harness's own voice (`Speaker::Agent`), never readable as the operator's words — and
+    /// the held deliveries ride in, because this is a turn the model takes anyway.
+    ///
+    /// A re-seat is a command on the worker's queue, so it never runs inside a turn: by the
+    /// time this is called the turn that was running (if any) has ended, and this is the next
+    /// step boundary.
+    pub fn run_after_reseat(&mut self, text: &str) -> Result<Reply, HarnessError> {
+        let mut text = text.to_string();
+        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+            text.push_str("\n\n");
+            text.push_str(&meanwhile);
+        }
+        self.compact_if_at_the_wall();
+        self.trail.begin_turn();
+        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+        self.submit_item(TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text { text }],
+        })
+    }
+
     pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
         let mut text = "Your previous turn was stopped at the context wall and the conversation \
                     was then compacted: the summary above stands in for everything said \
@@ -9227,6 +9337,7 @@ impl Harness {
 
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
+        let grew = grown_schemas(&self.prefix.tools_json, &next.tools_json);
         let items: Vec<TranscriptItem> = self.session.items.clone();
 
         // No summary turn at all — that is the whole point — so the outcome is
@@ -9262,10 +9373,24 @@ impl Harness {
                 summary_turn: outcome,
                 gained: after.difference(&before).cloned().collect(),
                 lost: before.difference(&after).cloned().collect(),
+                grew: grew.clone(),
             })
         })();
         self.compacting = false;
         let mut out = out?;
+        // **And the harness now SPEAKS the prompt the fork landed on** — `reseat` makes the
+        // same swap at the same point, after the fork, for the reason it gives there.
+        //
+        // This line was missing. The fork opened the new transcript under `next`, so a local
+        // turn (which renders from the ledger) spoke the new prompt; but a metered turn is
+        // sent `self.prefix.system` and `self.prefix.tools_json`, so a provider session went
+        // on being handed the OLD tool schemas after a `/reseat` that reported them rebuilt —
+        // until a daemon restart resumed the new transcript under its own stored prefix. And
+        // `reseat_target` compares against `self.prefix`, so a second `/reseat` re-forked a
+        // session that was already on the seated prompt. pg-noop is a deepseek session, and
+        // its `/reseat` at 00:32 on 2026-10-12 was this one.
+        self.prefix = next;
+        self.prefix_id = next_id;
         out.gained.sort();
         out.lost.sort();
         self.publish_settings();
@@ -9300,6 +9425,7 @@ impl Harness {
 
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
+        let grew = grown_schemas(&self.prefix.tools_json, &next.tools_json);
 
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
@@ -9330,6 +9456,7 @@ impl Harness {
                 summary_turn: outcome,
                 gained: after.difference(&before).cloned().collect(),
                 lost: before.difference(&after).cloned().collect(),
+                grew: grew.clone(),
             })
         })();
         self.compacting = false;

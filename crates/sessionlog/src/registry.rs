@@ -1514,10 +1514,41 @@ impl Registry {
     /// the seated prompt, so there is nothing left to say). A session nobody has opened —
     /// every session on disk, and every child served by its own reader — has no entry here
     /// and says nothing, which is the honest answer: no harness has compared anything.
+    ///
+    /// **And a head that is ALREADY watching is told now.** The operator, after a daemon
+    /// restart: *"restarted pg-noop, didnt get offer to reseat, interesting"* — and then
+    /// *"ok reseat came … but later"*. The daemon registers a session and binds its socket
+    /// BEFORE it opens the harness (the vocabulary load and a long resume take seconds), so
+    /// a head that reconnects across a restart is attached during that window: `seat_in`
+    /// found no sentence because none had been written yet, and the one written a moment
+    /// later waited in this mailbox for the NEXT attach. A head attached here hears it
+    /// live, so it files it at the seam it arrives at — the end of the conversation the
+    /// harness has just restored — and draws it.
+    ///
+    /// Published outside the registry's lock (a publish takes the hub's), after the
+    /// sentence is stored. A head whose `seat_in` read the mailbox between the two hears it
+    /// twice, which is a repeated true sentence in a window of microseconds; the order —
+    /// store, then count the heads — is what makes the other interleaving (heard never)
+    /// impossible, because `seat_in` attaches before it reads.
     pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>) {
-        let mut g = self.lock();
-        if let Some(e) = g.entry_mut(session_id) {
-            e.stale_prefix = said;
+        let hub = {
+            let mut g = self.lock();
+            match g.entry_mut(session_id) {
+                Some(e) => {
+                    e.stale_prefix = said.clone();
+                    e.hub.clone()
+                }
+                None => return,
+            }
+        };
+        if let Some(said) = said
+            && hub.attached_heads() > 0
+        {
+            hub.publish(crate::SessionEvent::Warning {
+                code: "prefix_stale".into(),
+                detail: said,
+                compaction: None,
+            });
         }
     }
 

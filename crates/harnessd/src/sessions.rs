@@ -3212,6 +3212,8 @@ impl<'a> Sessions<'a> {
                 };
                 match out {
                     Ok(r) => {
+                        // Composed while the report is whole; said after the head's row.
+                        let to_the_model = crate::harness::reseated_for_the_model(summarise, &r);
                         if let Some(hub) = &hub {
                             let mut said = if summarise {
                                 format!(
@@ -3239,6 +3241,13 @@ impl<'a> Sessions<'a> {
                             }
                             if !lost.is_empty() {
                                 said.push_str(&format!(". It has lost: {}", lost.join(", ")));
+                            }
+                            if !r.grew.is_empty() {
+                                said.push_str(&format!(
+                                    ". Seated on both sides with a schema that changed, which \
+                                     the model now reads: {}",
+                                    r.grew.join(", ")
+                                ));
                             }
                             said.push_str(if summarise {
                                 ". The server's cache for the new prompt is cold, so the \
@@ -3283,6 +3292,27 @@ impl<'a> Sessions<'a> {
                                 detail: said,
                                 compaction,
                             });
+                        }
+                        // **And the model is told, in a turn of its own.** The operator:
+                        // *"since reseated nag reaches the model and it starts nagging me - the
+                        // result - that reseat happened shall reach the model too. and it should
+                        // start the turn"*. The stale-prompt notice reaches the model through the
+                        // plan-check's turn (`nag_notice_naming`), and told it to keep asking
+                        // until the person acted; the person's act reached only the head. This
+                        // is the symmetric half, through the same shared turn tail every door
+                        // uses. A re-seat runs on the worker's queue, never inside a turn, so
+                        // this IS the next step boundary.
+                        //
+                        // The re-seat stands whatever the turn does: its report is returned
+                        // either way, and a turn that fails says so through the tail's own
+                        // `turn_failed` path.
+                        if let Some(Err(e)) = self.turn(session_id, Door::Reseat, |h| {
+                            h.run_after_reseat(&to_the_model).map(Some)
+                        }) {
+                            eprintln!(
+                                "  {session_id}: the turn telling the model about its re-seat \
+                                 failed: {e}"
+                            );
                         }
                         Outcome::Compacted(Box::new(crate::harness::CompactReport {
                             fork: r.fork,

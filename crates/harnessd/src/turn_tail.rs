@@ -69,6 +69,8 @@ pub enum Door {
     Nag(Option<String>),
     /// The turn after the operator's own `!` line.
     OperatorShell,
+    /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
+    Reseat,
 }
 
 impl Door {
@@ -80,6 +82,7 @@ impl Door {
             Door::Wake => "wake",
             Door::Nag(_) => "nag",
             Door::OperatorShell => "bang",
+            Door::Reseat => "reseat",
         }
     }
 

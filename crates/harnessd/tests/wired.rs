@@ -1001,5 +1001,15 @@ fn reingest_writes_no_summary_and_says_so_in_the_note() {
         }
         other => panic!("the note is not first: {other:?}"),
     }
+    // **And the harness now speaks the prompt it re-seated onto.** `reingest` forked onto the
+    // new prefix and left `self.prefix` on the old one, so a metered turn — sent
+    // `self.prefix.system` and `.tools_json` — went on getting the OLD schemas after a
+    // `/reseat` that reported them rebuilt (pg-noop, a deepseek session, 2026-10-12), and a
+    // second `/reseat` re-forked a session that was already re-seated. `reseat_target`
+    // compares against `self.prefix`, so the refusal here is the swap, observed.
+    let Err(err) = h.reingest() else {
+        panic!("a second re-seat found something to do: the harness never adopted the first");
+    };
+    assert!(err.to_string().contains("already carries"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }

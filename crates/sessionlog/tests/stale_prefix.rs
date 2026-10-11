@@ -163,3 +163,65 @@ fn a_session_no_harness_has_opened_says_nothing() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// **A head that attached BEFORE the sentence was stored is told the moment it is.**
+///
+/// The operator, after a daemon restart: *"restarted pg-noop, didnt get offer to reseat,
+/// interesting"* — then *"ok reseat came … but later"*. The daemon registers the session and
+/// serves its socket before the harness opens, so a head reconnecting across the restart
+/// attaches while the mailbox is still empty; `seat_in` correctly said nothing, and the
+/// sentence the harness stored a moment later waited for the next attach. The mailbox now
+/// tells whoever is already watching.
+#[test]
+fn a_head_already_watching_when_the_sentence_is_stored_is_told_then() {
+    let (registry, hub, _server, path) = up("late");
+
+    let (_client, _hello, mut reader) =
+        HeadClient::attach(&path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
+    // The attach is served on the connection's thread; the sentence must not be stored
+    // before the head is registered, or this is the first test over again.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while hub.attached_heads() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the head never registered"
+        );
+        std::thread::yield_now();
+    }
+
+    // The harness finishing its open, in the boot window.
+    registry.set_stale_prefix("s", Some(SAID.to_string()));
+    hub.publish(letibot_sessionlog::testing::warn("marker"));
+
+    let mut told = false;
+    let mut seen = 0usize;
+    loop {
+        let frame: ServerFrame = reader.read().expect("the marker");
+        let ServerFrame::Event(env) = frame else {
+            continue;
+        };
+        if let SessionEvent::Warning {
+            ref code,
+            ref detail,
+            ..
+        } = env.event
+        {
+            if code == "prefix_stale" {
+                assert!(detail.contains("`/reseat`"), "{detail}");
+                told = true;
+            }
+            if code == "test" && env.event == letibot_sessionlog::testing::warn("marker") {
+                break;
+            }
+        }
+        seen += 1;
+        assert!(seen < 1_000, "the marker never arrived");
+    }
+    assert!(
+        told,
+        "a head watching when the sentence was stored was not told — it would hear the \
+         offer only on its next attach, the operator's \"but later\""
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
