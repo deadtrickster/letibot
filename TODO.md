@@ -825,9 +825,12 @@ per door, one assertion list).
   waits behind at most `WAKES_AHEAD_OF_A_DUE_CLOCK` (8) wakes (commands still first);
   `is_root`, `harness_as` and the seat title read `Registry::parent_of`/`title_of` (a resumed
   session is created with its stored parent and name), so an open lists the store 0 times (was 2);
-  `Registry::close` no longer lists the store. **Left for R61:** `Harness::wake`'s store reads
-  (`serve_reviews`, `queue_notices`, `handover_notices`) and `ensure_gatekeeper`'s `list()` title
-  lookup are the queue's.
+  `Registry::close` no longer lists the store. `ensure_gatekeeper`'s title now reads `title_of` (after the
+  rebase onto R61, `d8e9572`). **Left for R61:** `Harness::wake`'s queue reads — `queue_notices`
+  and `handover_notices` each read the whole `review_queue` table (every row ever, filtered in
+  Rust) per wake; their parent walk (`mergequeue::root_session`) is keyed per hop, not a scan.
+  A query filtered to open rows is the queue's change to make; wakes now coalesce, which bounds
+  how often it runs.
 - **R68.7 gatekeeper retry storm — NOT DONE, on purpose**: the gatekeeper's open is being rebuilt
   by R61; re-check there.
 - **The `report(session, code, detail)` sink — NOT DONE.**
