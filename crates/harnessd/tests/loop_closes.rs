@@ -102,9 +102,13 @@ fn config() -> Option<Config> {
         .to_path_buf();
     let mut cfg = Config::for_this_box(repo);
     cfg.socket = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-loop-{}-{}.sock",
+        "letibot-loop-{}-{}.sock-{}",
         std::process::id(),
-        letibot_harnessd::config::now_ns()
+        letibot_harnessd::config::now_ns(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     if let Ok(url) = std::env::var("LETIBOT_COMPLETION_URL") {
         let (h, p) = url.rsplit_once(':').expect("HOST:PORT");

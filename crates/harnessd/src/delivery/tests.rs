@@ -186,12 +186,16 @@ fn the_facts_are_the_open_rows_that_name_the_handle() {
 
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "{tag}-{}-{}",
+        "{tag}-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
