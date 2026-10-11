@@ -1581,6 +1581,31 @@ and the daemon's `memory.high` is not charged for it.
 
 ---
 
+## R77 — An operator's todo lands last and the nag never names it — **OPEN, 2026-10-11**
+
+The operator: *"i added a todo to pg-noop session, but it was placed at the end, and didnt arrive
+the next nag"*. Read in the code:
+
+1. **Placed at the end** — the head appends an operator row to the board; nothing ranks the
+   operator's rows above the model's, so it is simply the last open row.
+2. **Not in the nag** — the add DOES re-arm the clock (`CommandKind::SetOperatorTodos` →
+   `Sessions::rearm_todo_nag`, `crates/harnessd/src/sessions.rs` ~3170), but a plan-check names ONE
+   row: `todo::unfinished_plan_for` (`crates/tools/src/builtins/todo.rs` ~1090) picks the model's
+   `chosen` row or the FIRST ready one, and everything else is "(N more open)". A row at the end
+   is never named, so the model was told "(N more open)" and nothing pointed at what the
+   operator added.
+
+**Proposal:** the operator's open, ready rows rank first when the check picks what to name (the
+model's `chosen` row only after them); the first check after an operator add says so —
+*"[todo check] the operator added: "…""*; optionally an operator add re-arms with a short window
+rather than the full idle one. Subagent boards (`serve_child`'s clock) the same way.
+
+**Done when:** an operator row added at the end of a board with model rows ahead of it is the row
+the next check names, with "the operator added"; a test on `unfinished_plan_for` and one on the
+daemon's re-arm.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
