@@ -37,6 +37,8 @@ letibot-webfetch.workspace = true
 # R6: reading an opencode conversation into this session's rows.
 letibot-opencode.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
+# The metrics writer thread and metrics.db (TODO R81): the daemon is the one that writes it.
+letibot-metrics = { workspace = true, features = ["store"] }
 serde.workspace = true
 # preserve_order for the reason every crate in this tree needs it: a tool call's
 # argument key order becomes prompt bytes on the next turn.

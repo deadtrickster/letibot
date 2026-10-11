@@ -72,6 +72,17 @@ pub enum Door {
 }
 
 impl Door {
+    /// The door as a metrics row names it (`turn.start`'s `name`, TODO R81).
+    pub fn word(&self) -> &'static str {
+        match self {
+            Door::Prompt => "prompt",
+            Door::Message => "message",
+            Door::Wake => "wake",
+            Door::Nag(_) => "nag",
+            Door::OperatorShell => "bang",
+        }
+    }
+
     /// Somebody spoke to the session: a new idle period, and the plan-check may be made again
     /// (*"but certainly not after my message"* — the check is earned back by being spoken to).
     fn is_spoken_to(&self) -> bool {
@@ -136,10 +147,12 @@ pub fn run_turn(
     // **A turn is one prompt however many rounds it takes, so the clock starts here** and is
     // carried through every round and continuation of it.
     h.begin_turn_clock(letibot_sessionlog::event::now_ms());
+    crate::instruments::turn_begins(h, door.word());
     let out = match turn(h) {
         Ok(Some(reply)) => Ok(reply),
         Err(e) => Err(e),
         Ok(None) => {
+            crate::instruments::turn_ends(h, None, 0);
             h.end_turn_clock();
             return None;
         }
@@ -160,6 +173,7 @@ pub fn run_turn(
         let next = h.continue_after_wall();
         out = settle(h, owner, next);
     }
+    crate::instruments::turn_ends(h, Some(&out), walls);
     // A start that outlived its turn would be inherited by the next prompt's first round.
     h.end_turn_clock();
     owner.turn_ended(h, &door);

@@ -192,10 +192,10 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["slapped"], true, "{row}");
     assert_eq!(row["at_wall"], false, "{row}");
-    // In the head's units: the window converted through the ratio the round measured,
-    // which can land a token off the configured figure — the same number the head shows.
+    // **The window as configured** (TODO R81): it used to be converted through the ratio the
+    // round measured and land a token off — every row of the operator's file said `999999`.
     let window = row["window"].as_u64().expect("a measured window");
-    assert!((999_000..=1_000_000).contains(&window), "{row}");
+    assert_eq!(window, 1_000_000, "{row}");
 }
 
 /// **The same sentence AT the wall is true** — no line, and the turn ends where the

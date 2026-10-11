@@ -653,6 +653,7 @@ dependencies = [
  "letibot-dialect-qwen",
  "letibot-flowy",
  "letibot-llama",
+ "letibot-metrics",
  "letibot-opencode",
  "letibot-provider",
  "letibot-sessionlog",

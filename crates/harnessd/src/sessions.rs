@@ -2708,7 +2708,9 @@ impl<'a> Sessions<'a> {
     pub fn compact(&mut self, session_id: &str) -> Result<CompactReport, HarnessError> {
         let hub = self.registry.get(session_id);
         let harness = self.harness(session_id)?;
+        let (started, before) = (std::time::Instant::now(), harness.ledger_len() as u64);
         let out = harness.compact();
+        crate::instruments::operator_compaction(harness, before, started, out.is_ok());
         match out {
             Ok(r) => {
                 // The fabric may have moved since the session opened; after a

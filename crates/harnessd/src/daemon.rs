@@ -175,18 +175,24 @@ impl Daemon {
                     // placement is the liveness test: the round loop is synchronous, so a round in
                     // flight would be holding this very thread and this line could not run. See
                     // `Sessions::sweep_abandoned_calls`.
+                    let pass = std::time::Instant::now();
                     let swept = sessions.sweep_abandoned_calls();
+                    crate::instruments::worker_pass("sweep", pass, swept);
                     if swept > 0 {
                         eprintln!("  swept {swept} abandoned tool call(s)");
                     }
+                    let pass = std::time::Instant::now();
                     let ran = sessions.deliver_due_nags();
+                    crate::instruments::worker_pass("todo-check", pass, ran);
                     if ran > 0 {
                         eprintln!("  todo check -> {ran} session(s)");
                     }
                     // **And a reopened subagent idle past its window goes back to the store**
                     // (R68's idle-child policy, `Config::child_park_after`). On this pass for the
                     // sweep's reason: no round is running, so nothing it holds is mid-call.
+                    let pass = std::time::Instant::now();
                     let parked = sessions.park_idle_children();
+                    crate::instruments::worker_pass("park", pass, parked);
                     if parked > 0 {
                         eprintln!("  parked {parked} idle subagent(s) in the store");
                     }
@@ -218,7 +224,9 @@ impl Daemon {
                             Err(e) => eprintln!("  the review queue's session did not open: {e}"),
                         }
                         sessions.fill_gatekeeper_board();
+                        let pass = std::time::Instant::now();
                         let served = sessions.serve_reviews();
+                        crate::instruments::worker_pass("review", pass, served);
                         if served > 0 {
                             eprintln!("  reviews -> {served} gatekeeper(s)");
                         }
@@ -272,7 +280,9 @@ impl Daemon {
                         // through `turn_tail::run_turn`, which arms the sweep before the turn — so a
                         // door reached some other way (a scripted submit, a test, a future arm)
                         // cannot forget it, which is how the nag door did (R67 item 10).
+                        let (at_ms, at) = (letibot_sessionlog::event::now_ms(), std::time::Instant::now());
                         let outcome = sessions.dispatch(&session_id, &cmd);
+                        crate::instruments::worker_cmd(&session_id, &cmd, at_ms, at, crate::instruments::outcome_of(&outcome));
                         on_reply(&session_id, &cmd, outcome);
                     }
                     Work::Woken(session_id) => {

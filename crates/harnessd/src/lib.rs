@@ -103,6 +103,7 @@ pub mod etalon_map;
 pub mod etalon_oracle;
 pub mod facts;
 pub mod harness;
+pub mod instruments;
 pub mod httphead;
 pub mod jobwatch;
 pub mod leticode_config;

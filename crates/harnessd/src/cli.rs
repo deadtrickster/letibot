@@ -962,6 +962,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // make more over the socket; this one is the daemon's own, and it is opened
     // eagerly so that a dialect which does not fit the vocabulary is a startup
     // error rather than a failure on somebody's first prompt.
+    // **The metrics writer** (TODO R81), before the registry: a session the registry creates
+    // tells the writer its parent, and an emit before the writer is installed is a no-op.
+    crate::instruments::start_writer(&cfg);
     let registry = Registry::new();
     // **The daemon watches its own memory** — `memwatch`. One line a minute in this log, a
     // census when it crosses a step, and a warning on every session.

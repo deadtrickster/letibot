@@ -1635,6 +1635,9 @@ pub struct Harness {
     /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
     /// this is the one field that remembers it.
     nag_choice: Option<String>,
+    /// **This turn's metrics, as it runs** (TODO R81) — begun and closed by the turn tail, fed
+    /// by the round loop. See `crate::instruments`.
+    pub(crate) meter: crate::instruments::TurnMeter,
     /// T21.3's encoder and error signal. Always constructed and always attached —
     /// measuring costs nothing and `Verification::NoEncoder` is a state whose
     /// reason is ours rather than the model's.
@@ -4321,6 +4324,7 @@ impl Harness {
             todos: todo_board,
             todos_version: 0,
             nag_choice: None,
+            meter: Default::default(),
             intent,
             injected,
             monitors,
@@ -7474,6 +7478,7 @@ impl Harness {
         let Some((mut text, named)) = self.nag_notice_naming() else {
             return Ok(None);
         };
+        self.meter.nag(&self.cfg.session_id, named.as_deref(), named.as_deref().and_then(|r| self.row_status(r)), named.as_deref().is_some_and(|r| self.row_is_operators(r)));
         // **R79: a plan-check is a turn the model takes anyway, so it carries the held batch** —
         // which is what reaches a session that has a plan and nobody typing.
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
@@ -7502,6 +7507,33 @@ impl Harness {
             parts: vec![UserPart::Text { text }],
         })
         .map(Some)
+    }
+
+    /// **A board row's status by its words**, as a word — for a nag's follow-up row (TODO R81):
+    /// the turn a check opened touched the row it named when this answers differently after it.
+    /// `None` is a row no longer on the board, which is a touch too.
+    pub(crate) fn row_status(&self, content: &str) -> Option<String> {
+        self.todos
+            .snapshot()
+            .into_iter()
+            .find(|t| t.content == content)
+            .map(|t| format!("{:?}", t.status).to_lowercase())
+    }
+
+    /// Every board row as `(words, status)` — the nag follow-up's read (TODO R81).
+    pub(crate) fn todo_snapshot_words(&self) -> Vec<(String, String)> {
+        self.todos
+            .snapshot()
+            .into_iter()
+            .map(|t| (t.content, format!("{:?}", t.status).to_lowercase()))
+            .collect()
+    }
+
+    fn row_is_operators(&self, content: &str) -> bool {
+        self.todos
+            .snapshot()
+            .iter()
+            .any(|t| t.content == content && t.by == letibot_tokencore::store::TodoBy::Operator)
     }
 
     /// **Stop this session's children, and say so on its own log** — the downward edge, for a
@@ -7965,6 +7997,7 @@ impl Harness {
         // **And a target emergency, or a row parked for a person** (R76 item 1) — the one the
         // queue used to say only on the hubs.
         notices.extend(self.queue_emergency_notices());
+        let queue_n = notices.len();
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();
@@ -7996,6 +8029,7 @@ impl Harness {
         // **R79: only what the work waits on is said here; the rest is HELD**, and a wake with
         // nothing else to say runs no turn (`Ok(None)` below) — a routine completion never
         // starts a turn of its own. See `crate::delivery`.
+        let monitor_n = notices.len() - queue_n;
         let deliveries = self.deliveries();
         // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
         // went onto the queue's row above; telling this session's model that "a subagent you
@@ -8017,6 +8051,7 @@ impl Harness {
         // about its handle — because either alone is unusable: an intent with no fate is a sentence
         // the model cannot act on, and a fate with no intent is the settlement notice it already
         // has.
+        let result_n = notices.len() - queue_n - monitor_n;
         let due = self.due_todo_rows();
         let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
         if !due.is_empty() {
@@ -8031,6 +8066,7 @@ impl Harness {
                 lines.join("\n")
             ));
         }
+        crate::instruments::wake(&mut self.meter, &self.cfg.session_id, &[("queue", queue_n), ("monitor", monitor_n), ("result", result_n), ("due", due.len())], !notices.is_empty());
         if notices.is_empty() {
             return Ok(None);
         }
@@ -8327,7 +8363,9 @@ impl Harness {
             ),
             compaction: None,
         });
-        match self.compact() {
+        let (started, compacted) = (Instant::now(), self.compact());
+        let ok = compacted.is_ok();
+        match compacted {
             Ok(report) => {
                 // The new base measured in its own right — the fork re-bases the anchor
                 // (`roll_resident`), so the after-count is the base's, not the old
@@ -8430,6 +8468,8 @@ impl Harness {
                 });
             }
         }
+        let after = self.session.ledger.len() as u64;
+        crate::instruments::compaction(&self.cfg.session_id, if matches!(why, WallWhy::Tidy) { "pre-wall" } else { "refused-door" }, if ok { "ok" } else { "failed" }, started, r, self.cfg.shown_tokens(after), (resident, after), &unit);
         // It ran. Whether it HELPED is the branch above, in its own words either
         // way; what this answers is the narrower question a caller asks before
         // claiming an attempt was made.
@@ -10296,6 +10336,7 @@ impl Harness {
             // than a file. Never an authorisation and never citable; see
             // `ModelBrief::agent_claim`.
             self.trail.claims(&text);
+            self.meter.round(&self.cfg.session_id, &self.session.transcript_id, &ok.metrics, rendered_at, self.provider.as_ref().map(|p| p.name()));
             metrics.push(ok.metrics);
 
             // **The context claim, checked against what the daemon measured** — R71. Judged
@@ -10392,7 +10433,9 @@ impl Harness {
                 // questioner that ran outside the round loop (the door's own execute path)
                 // would leave an exchange for the next model question to claim.
                 self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
+                let started = Instant::now();
                 let r = self.runtime.invoke(&turn_id, call, &mut self.tool_sink);
+                self.meter.tool(&self.cfg.session_id, &r, started);
                 let mut item = ToolRuntime::transcript_item(&r);
                 // **A question the model asked is an exchange with a person, and the
                 // person's half of it is theirs.** The tool returns the answer; the
@@ -10978,6 +11021,7 @@ impl Harness {
         use crate::context_claim::{REPEATED, Verdict};
         let finding = check.judge(text, self.context_fill())?;
         finding.log(&self.cfg.workspace, &self.cfg.session_id);
+        crate::instruments::context_claim(&self.cfg.session_id, &finding);
         match finding.verdict {
             Verdict::Slap(line) => Some(line),
             Verdict::Repeated(detail) => {
@@ -11010,11 +11054,14 @@ impl Harness {
         // `planning_window`, `at_the_wall` and `shown_tokens` below all read that one number —
         // the slap quotes the fill the operator sees, not the ledger's reasoning-heavy length.
         self.measure_resident();
-        let window = self.cfg.planning_window()?;
+        self.cfg.planning_window()?;
         let resident = self.session.ledger.len() as u64;
         Some(crate::context_claim::Fill {
             resident: self.cfg.shown_tokens(resident),
-            window: self.cfg.shown_tokens(window),
+            // **The window as it was GIVEN** (`shown_wall`, R72's rule for a line), not
+            // `shown_tokens(planning_window())` — a round trip through the ratio, which is where
+            // every row of R71's log got `999999` for a 1,000,000-token window (TODO R81).
+            window: self.cfg.shown_wall().0,
             at_wall: self.cfg.at_the_wall(resident),
         })
     }

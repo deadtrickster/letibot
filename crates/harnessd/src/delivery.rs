@@ -402,6 +402,9 @@ impl DeliveryLog {
 
     /// Append one line per delivery.
     pub fn record(&self, rows: &[Delivered<'_>]) {
+        // The metrics row for each (TODO R81) — here, R79's one record site, so every rule and
+        // door reaches `metrics.db` whether or not this record has a file to write.
+        rows.iter().for_each(|d| crate::instruments::delivered(&self.session, d));
         let Some(path) = &self.path else {
             return;
         };
