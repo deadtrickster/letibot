@@ -77,14 +77,14 @@ pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, Sessio
 pub use log::{LogBounds, SessionLog};
 pub use protocol::{
     Ack, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT, HEAD_RUN_KIND_URL,
-    HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING, PROTOCOL_VERSION, ServerFrame,
-    TermLine, head_run_tool, head_run_verb, operator_line_refusal, operator_shell_command,
-    protocol_skew, send_line, term_command, term_line,
+    HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING, PROTOCOL_VERSION, PaneBrief,
+    ServerFrame, TermLine, head_run_tool, head_run_verb, operator_line_refusal,
+    operator_shell_command, protocol_skew, send_line, term_command, term_line,
 };
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{
-    Bell, CreateError, PromptDriver, Registry, RowSource, SessionBrief, SessionWiring,
-    ShellSuggester, StoredEnd, TerminalDriver,
+    Bell, CreateError, PaneBoundary, PromptDriver, Registry, RowSource, SessionBrief,
+    SessionWiring, ShellSuggester, StoredEnd, TerminalDriver,
 };
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
 pub use view::{

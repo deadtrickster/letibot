@@ -192,12 +192,17 @@ pub enum Action {
     /// [`ClientFrame::TermInput`](letibot_sessionlog::protocol::ClientFrame::TermInput) for why
     /// a decoded-and-re-encoded arrow would be a different byte string to a program that asked
     /// for the application-cursor spelling.
+    ///
+    /// `pane` is the daemon's number for the pane this head is drawing (protocol 44): a session
+    /// may hold several.
     TermInput {
+        pane: u32,
         bytes: Vec<u8>,
     },
     /// **The pane's rectangle moved.** The head's fact — the daemon has no screen — and the
     /// only way the program is told the size it is being drawn at.
     TermResize {
+        pane: u32,
         cols: usize,
         rows: usize,
     },
@@ -209,7 +214,11 @@ pub enum Action {
     /// comes back, and **nothing is sent at all** — which is the operator's own correction:
     /// *"but i dont want it to exit"*. Two acts, one frame, and the destructive one is the one
     /// that has to be spelled out. See [`TermPane`].
-    TermClose,
+    ///
+    /// `pane` is the one the card named — see [`TermAsk::pane`].
+    TermClose {
+        pane: u32,
+    },
     /// **Ask what this session's pane is running.** The answer is
     /// `ServerFrame::TermStatus`, and this is the read that lets a head which is **not drawing**
     /// the pane say that something is running in it — **without a transcript row**, because a

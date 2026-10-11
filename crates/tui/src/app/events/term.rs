@@ -8,7 +8,38 @@ impl App {
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_term_frame(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
-            ServerFrame::TermAttached { command } => {
+            ServerFrame::TermAttached {
+                pane,
+                command,
+                opened,
+            } => {
+                // **Every head learns the pane exists**; only the head holding a pane that is
+                // waiting for its number adopts it. A head drawing another pane, or none, is
+                // told a fact about the session and nothing more.
+                self.term_fact = self.term_fact.with(pane, &command);
+                let adopt = self.term.as_ref().is_some_and(|p| p.pane.is_none());
+                if !adopt {
+                    self.redraw = true;
+                    return Disposition::Control;
+                }
+                // **The number, and the keys that were waiting for it** — see
+                // [`App::pane_input`]. In order, and before anything typed after this frame.
+                if let Some(p) = self.term.as_mut() {
+                    p.pane = Some(pane);
+                    let waiting = std::mem::take(&mut p.waiting);
+                    if !waiting.is_empty() {
+                        self.queued.push(Action::TermInput {
+                            pane,
+                            bytes: waiting,
+                        });
+                    }
+                }
+                if opened {
+                    // The answer to this head's own `!term COMMAND`: the line it typed is
+                    // already on the pane, and the number is all that was missing.
+                    self.redraw = true;
+                    return Disposition::Control;
+                }
                 // **The daemon naming the pane this head attached to**, which is the half of the
                 // attach the head cannot know: it sent `!term` with no command, and the head that
                 // typed the original line may be another one or may have switched away. The
@@ -23,12 +54,11 @@ impl App {
                 if let Some(p) = self.term.as_mut() {
                     p.line = format!("!term {command}");
                 }
-                // **And the fact the head draws when it is not drawing the pane.** An attach is
-                // the daemon answering *what is running* in the same breath as handing over the
-                // screen, so a head that detaches a moment later already knows what to say.
-                self.term_fact = PaneFact::Running(command.clone());
+                // **And the fact the head draws when it is not drawing the pane** was set above,
+                // from the same frame, so a head that detaches a moment later already knows what
+                // to say.
                 self.say(&format!(
-                    "attached to `!term {command}` — the pane this session already has. \
+                    "attached to pane {pane}, `!term {command}`. \
                      ctrl-\\ leaves it running, `!term close` ends it."
                 ));
                 self.redraw = true;
@@ -37,10 +67,11 @@ impl App {
             // **What this session's pane is running, or nothing** — the answer to a read, and
             // the fact a head draws **instead of a row** when it is not drawing the pane (see
             // [`App::pane_behind`] and [`PaneFact`]).
-            ServerFrame::TermStatus { command } => {
-                self.term_fact = match &command {
-                    Some(command) => PaneFact::Running(command.clone()),
-                    None => PaneFact::None,
+            ServerFrame::TermStatus { panes } => {
+                self.term_fact = if panes.is_empty() {
+                    PaneFact::None
+                } else {
+                    PaneFact::Running(panes)
                 };
                 self.redraw = true;
                 // **A `!term close` that was waiting for this answer runs now**, through the same
@@ -49,21 +80,22 @@ impl App {
                 // state and not an `Option`.
                 if self.close_pending {
                     self.close_pending = false;
-                    if let Some(action) = self.begin_close() {
+                    let which = self.close_which.take();
+                    if let Some(action) = self.begin_close(which) {
                         self.queued.push(action);
                     }
                 }
                 Disposition::Control
             }
-            ServerFrame::TermOutput { bytes } => {
+            ServerFrame::TermOutput { pane, bytes } => {
                 // **A pane this head opened, fed its bytes.** Not an event and not counted as
                 // one: `TermOutput` carries no seq, so it is `Control` for the same reason a
                 // `Jobs` reply is — the ack's `rendered`/`filtered` are this head's disclosure
                 // about *the batch*, and this frame is not in any batch.
                 //
                 // **A pane this head did NOT open is dropped, quietly.** The frames are fanned
-                // out to every head of the session like events (one pane per session, see
-                // `TerminalDriver`), and a second head attached to the same session has no
+                // out to every head of the session like events (see `TerminalDriver`), and a
+                // second head attached to the same session has no
                 // rectangle to draw them in. Dropping them is the honest reading of *a pane
                 // this head did not open*, and the alternative — opening a pane from a frame
                 // nobody asked for — would be a screen program appearing on a head that never
@@ -78,15 +110,21 @@ impl App {
                 // second, which is the flicker `term.rs`'s whole diff encoder exists to
                 // remove. The frame is composed and drawn every tick either way — this flag
                 // is about the *glass*, not about whether to draw.
-                if let Some(p) = self.term.as_mut() {
-                    p.screen.feed(&bytes);
+                //
+                // **And only the pane this head holds is fed** (protocol 44): a session's other
+                // panes keep writing, their bytes reach every head, and the daemon keeps their
+                // screens for the `!term N` that comes back to one.
+                if let Some(p) = self.term.as_mut()
+                    && p.pane == Some(pane)
+                {
+                    p.feed(&bytes);
                 }
                 Disposition::Control
             }
-            ServerFrame::TermEnded { reason } => {
+            ServerFrame::TermEnded { pane, reason } => {
                 // **The one place a pane closes, and the reason always comes from the daemon**
-                // — *"the program exited with 3"*, *"you closed the terminal"*, *"a pane is
-                // already open in this session"*. So a head never guesses why its rectangle
+                // — *"the program exited with 3"*, *"you closed the terminal"*, *"there is no pane
+                // 4 running in this session"*. So a head never guesses why its rectangle
                 // came back, and a refusal to start is the same frame as an ending.
                 //
                 // **And it becomes a row, not a notice.** This was `self.say(…)` — a sentence
@@ -103,8 +141,15 @@ impl App {
                 // is where the row they would have seen had they been looking is filed — so
                 // detaching does not hide a death. The only difference is that there is no
                 // rectangle to give back, which `pane_open()` already accounts for.
-                self.term_fact = PaneFact::None;
-                if let Some(p) = self.term.take() {
+                //
+                // **Whose ending** (protocol 44): `None` is a refusal written to this head alone,
+                // which can only be about the pane it is waiting to have numbered; a number is
+                // one pane's, and this head files the row only if that is the pane it holds.
+                if let Some(n) = pane {
+                    self.term_fact = self.term_fact.without(n);
+                }
+                let ours = self.term.as_ref().is_some_and(|p| p.pane == pane);
+                if ours && let Some(p) = self.term.take() {
                     self.file_note(Note::Pane {
                         line: p.line.clone(),
                         said: p.last_rows(),

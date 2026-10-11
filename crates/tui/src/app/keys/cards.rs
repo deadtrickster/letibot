@@ -217,10 +217,12 @@ impl App {
                     // **Nothing is said here.** The card coming down is the act, and the row the
                     // ending files a moment later is the disclosure: a notice on top of the two
                     // would be the third copy of one fact, and it is the one that fades.
-                    if let Some(p) = self.term.as_mut() {
+                    if let Some(p) = self.term.as_mut()
+                        && p.pane == Some(ask.pane)
+                    {
                         p.closing = true;
                     }
-                    Some(Action::TermClose)
+                    Some(Action::TermClose { pane: ask.pane })
                 }
                 // **Anything that is not a deliberate yes is the cancel**, Esc included — the
                 // only shape a destructive confirmation can have. It says what it did NOT do,

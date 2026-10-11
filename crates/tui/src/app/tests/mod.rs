@@ -117,7 +117,14 @@ fn typed(a: &mut App, text: &str) {
 fn pane(a: &mut App, bytes: &[u8]) -> Action {
     typed(a, "!term mc");
     let opened = a.key(Key::Enter).expect("the verb opens a pane");
+    // The daemon numbers the pane before its first byte (protocol 44).
+    a.apply(ServerFrame::TermAttached {
+        pane: 1,
+        command: "mc".into(),
+        opened: true,
+    });
     a.apply(ServerFrame::TermOutput {
+        pane: 1,
         bytes: bytes.to_vec(),
     });
     opened

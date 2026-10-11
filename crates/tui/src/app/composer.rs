@@ -72,8 +72,8 @@ impl App {
                 self.redraw = true;
                 return None;
             }
-            if matches!(what, letibot_sessionlog::TermLine::Close) {
-                return self.begin_close();
+            if let letibot_sessionlog::TermLine::Close(which) = what {
+                return self.begin_close(which);
             }
             self.scroll = 0;
             // **The pane is created now, empty, and the daemon's first bytes fill it.** The

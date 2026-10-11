@@ -41,7 +41,9 @@ fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
     );
 
     a.apply(ServerFrame::TermAttached {
+        pane: 1,
         command: "mc /etc".into(),
+        opened: false,
     });
     assert!(
         a.notice
@@ -51,6 +53,7 @@ fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
         a.notice
     );
     a.apply(ServerFrame::TermOutput {
+        pane: 1,
         bytes: b"\x1b[2J\x1b[Hmc's screen\r\n".to_vec(),
     });
     assert!(
@@ -64,6 +67,7 @@ fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
     // own sentence; this fixture uses the one a deliberate close gets, which is the daemon's
     // wording since protocol 34 — see `harnessd`'s `Terminals::CLOSED`.)
     a.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "you closed the terminal".into(),
     });
     assert!(
@@ -89,7 +93,9 @@ fn attaching_to_a_session_with_no_pane_says_so() {
     typed(&mut a, "!term");
     assert!(a.key(Key::Enter).is_some());
     assert!(a.pane_open());
+    // A refusal is written to the head that asked, before any pane was numbered.
     a.apply(ServerFrame::TermEnded {
+        pane: None,
         reason: "this session has no pane to attach to — `!term COMMAND` starts one. \
                      Nothing was attached."
             .into(),
@@ -132,9 +138,11 @@ fn a_program_that_exits_while_detached_still_leaves_its_ending_row() {
     // It writes while they are away — the frames still arrive, and the head still feeds the
     // screen it is holding. Then it exits.
     a.apply(ServerFrame::TermOutput {
+        pane: 1,
         bytes: b"mc: not found\r\n".to_vec(),
     });
     a.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "the program exited with 127".into(),
     });
 
@@ -192,9 +200,12 @@ fn a_bare_term_line_after_a_detach_attaches_back_to_the_same_run() {
     );
     // The daemon's answer: the same command, and the screen it kept.
     a.apply(ServerFrame::TermAttached {
+        pane: 1,
         command: "mc /etc".into(),
+        opened: false,
     });
     a.apply(ServerFrame::TermOutput {
+        pane: 1,
         bytes: b"\x1b[2J\x1b[Hmc's screen\r\n".to_vec(),
     });
     assert_eq!(

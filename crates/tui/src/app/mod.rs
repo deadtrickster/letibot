@@ -144,6 +144,8 @@ pub struct App {
     /// one — so the line is **held** and the answer runs the same decision. See
     /// [`App::begin_close`].
     pub(crate) close_pending: bool,
+    /// **Which pane the held `!term close` named**, if it named one (`!term close 2`).
+    pub(crate) close_which: Option<u32>,
     pub(crate) session_id: String,
     pub(crate) head_id: String,
     /// The head id the daemon just handed out, for the driver to give the client.
@@ -1516,6 +1518,7 @@ impl App {
             term_fact: PaneFact::Unasked,
             term_ask: None,
             close_pending: false,
+            close_which: None,
             session_id: String::new(),
             head_id: String::new(),
             seated: None,

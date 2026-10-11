@@ -401,9 +401,10 @@ use crate::view::Snapshot;
 /// reaches it: the frame carries a line the operator pressed Enter on, the same rule
 /// [`ClientFrame::OperatorShell`] keeps, and the way in is `!term` at the composer.
 ///
-/// **One pane per session at a time.** A second `TermOpen` while one is live is refused in
-/// [`ServerFrame::TermEnded`]'s sentence rather than replacing the first, because a pane whose
-/// program is silently killed by the next keystroke is a pane that loses work.
+/// **A second `TermOpen` while one is live starts a second pane beside it** (protocol 44) — it
+/// was refused, and before that would have replaced the first; neither is right, because a pane
+/// whose program is killed by the next `!term` is a pane that loses work, and a refusal made the
+/// operator choose. See [`PROTOCOL_VERSION`]'s 44 section.
 /// # 30: the model proposes `!` completions
 ///
 /// [`ClientFrame::SuggestShell`] is a new client frame, so a version-29 daemon would fail to
@@ -662,7 +663,21 @@ use crate::view::Snapshot;
 /// closed enum cannot decode a word it does not know, and a pane that draws the word it is given
 /// cannot be broken that way again. A snapshot that could not be read says so (`unreadable`) and
 /// is never an empty queue.
-pub const PROTOCOL_VERSION: u32 = 43;
+///
+/// # 44: a session may hold several panes (R60 item 2)
+///
+/// *"One pane per session, and no second one. A second `TermOpen` while one is live is refused
+/// in a sentence rather than replacing the running program."* The refusal is gone: a second
+/// `!term` starts a second program beside the first, and both keep running. So every frame about
+/// a pane says **which**: `TermInput`, `TermResize` and `TermClose` carry `pane`, `TermOutput` and
+/// `TermEnded` carry it back, `TermAttached` now also answers an open (`opened: true`, the
+/// pane's number before its first byte) and `TermStatus` lists them all ([`PaneBrief`]). A
+/// version-43 head would fail to decode the first `TermOutput` mid-session and a version-43
+/// daemon would fail to parse the first `TermInput` — the version-4 argument, both ways — so
+/// the number moves. The **layout** question the item also named — two panes on one screen — is
+/// answered by not asking it: a head draws one pane at a time and `!term N` changes which, the
+/// way a terminal multiplexer's windows do.
+pub const PROTOCOL_VERSION: u32 = 44;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -988,7 +1003,7 @@ pub fn term_command(line: &str) -> Option<&str> {
 /// detach (which sends nothing at all) and **ending has to be said**, which is what the bare
 /// word is for. It is a word rather than a second verb or a flag because it has to be
 /// discoverable where the operator already types: the sentence a detach leaves behind names it,
-/// and so does the refusal a second `TermOpen` gets while a pane is live.
+/// and so does an attach's.
 ///
 /// # The cost of a bare word, said rather than discovered
 ///
@@ -1003,12 +1018,20 @@ pub fn term_command(line: &str) -> Option<&str> {
 /// **A whole word, exactly as the verb is.** `!term closed`, `!term close-it` and
 /// `!term closing` are commands, not the ending: the word boundary `term_command` keeps is
 /// the same one, one space, no tabs and no second space.
+///
+/// # A number names a pane (R60 item 2, protocol 44)
+///
+/// A session may hold several panes, so the two words that are *about* a pane take its number:
+/// `!term 2` attaches to pane 2 and `!term close 2` ends it. **A bare number is never a
+/// command**: no program is called `2`, and a line of digits run through `/bin/sh -c` is
+/// *command not found* — so the reading costs nothing a person could have meant. Without a
+/// number each means the pane the head is drawing, or the session's most recent one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TermLine<'a> {
-    /// The verb with nothing after it: the pane this session already has.
-    Attach,
-    /// The verb with `close` after it: **end** the pane.
-    Close,
+    /// The verb with nothing after it, or a pane's number: the pane this session already has.
+    Attach(Option<u32>),
+    /// The verb with `close` after it, and optionally a number: **end** that pane.
+    Close(Option<u32>),
     /// The verb with a command: run it in a new pane.
     Run(&'a str),
 }
@@ -1023,10 +1046,25 @@ pub fn term_line(line: &str) -> Option<TermLine<'_>> {
         // The bare verb is an attach and never a request for the operator's `$SHELL` —
         // `term_command`'s own docs say why. An operator who wants their shell types
         // `!term bash`.
-        "" => TermLine::Attach,
-        "close" => TermLine::Close,
-        command => TermLine::Run(command),
+        "" => TermLine::Attach(None),
+        "close" => TermLine::Close(None),
+        n if pane_number(n).is_some() => TermLine::Attach(pane_number(n)),
+        command => match command
+            .strip_prefix("close ")
+            .and_then(|n| pane_number(n.trim()))
+        {
+            Some(n) => TermLine::Close(Some(n)),
+            None => TermLine::Run(command),
+        },
     })
+}
+
+/// A pane's number as a person types it: digits and nothing else, and not zero.
+fn pane_number(word: &str) -> Option<u32> {
+    if word.is_empty() || !word.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    word.parse().ok().filter(|n| *n > 0)
 }
 
 /// **The line a `!send` line carries, or `None` when it is not one.**
@@ -2148,14 +2186,17 @@ pub enum ClientFrame {
     /// **The way out does not travel here.** `Ctrl-\` is intercepted by the head before any
     /// byte is written, so the program never receives it and cannot trap it — see
     /// [`ClientFrame::TermClose`].
-    TermInput { bytes: Vec<u8> },
+    ///
+    /// **`pane` is the number the daemon gave it** ([`ServerFrame::TermAttached`]), since 44: a
+    /// session may hold several panes and the keys are for the one this head is drawing.
+    TermInput { pane: u32, bytes: Vec<u8> },
     /// **The pane's rectangle moved.** The head's fact, sent down because the daemon has no
     /// screen: the daemon `TIOCSWINSZ`es the pty, the kernel raises `SIGWINCH` for the
     /// program's foreground process group, and the program redraws at the size it now has.
     ///
     /// Its own frame rather than a field on [`ClientFrame::TermInput`], because a resize is
     /// not a keystroke and a terminal's two directions are not one message.
-    TermResize { cols: usize, rows: usize },
+    TermResize { pane: u32, cols: usize, rows: usize },
     /// **Is something running in this session's pane, and what?** — the read behind a head's
     /// own line about a program it is not drawing.
     ///
@@ -2248,7 +2289,18 @@ pub enum ClientFrame {
     /// **Idempotent and quiet when there is no pane**: a head that ends one twice, or ends a
     /// pane that has already ended, gets nothing rather than a refusal, because *"stop"* is
     /// not a request that can be wrong about anything.
-    TermClose,
+    ///
+    /// **`pane` names which**, since 44 — the one the operator confirmed on the card, which
+    /// names it by its number and its command.
+    TermClose { pane: u32 },
+}
+
+/// **One live pane of a session, as [`ServerFrame::TermStatus`] lists it** — its number and
+/// what is running in it (the command, the verb stripped).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneBrief {
+    pub pane: u32,
+    pub command: String,
 }
 
 /// The read mark, as a type.
@@ -2554,7 +2606,10 @@ pub enum ServerFrame {
     /// frames keep their jobs and this one is not a fourth ending: `TermAttached` is an attach
     /// being answered, `TermEnded` is a pane being over, and this is a read — which is why a
     /// head draws a `None` as **nothing at all** rather than as a row.
-    TermStatus { command: Option<String> },
+    ///
+    /// **A list since 44** (R60 item 2): a session may hold several panes, and an empty list is
+    /// what `None` was. Ordered by number, which is the order they were opened in.
+    TermStatus { panes: Vec<PaneBrief> },
     /// **The pane you asked to attach to, and what is running in it.**
     ///
     /// The answer to a [`ClientFrame::TermOpen`] whose line is the bare verb: the daemon
@@ -2569,7 +2624,16 @@ pub enum ServerFrame {
     ///
     /// **It is sent before the replay, and the order matters**: a head that drew the bytes
     /// first and learned what they were afterwards would flash a screen it could not name.
-    TermAttached { command: String },
+    ///
+    /// **Since 44 it also answers a `TermOpen` that started a program** (`opened: true`), sent
+    /// before the program exists: it is how the head learns the pane's NUMBER, which every
+    /// later frame about it carries — a session may hold several (R60 item 2), and a head
+    /// draws one of them.
+    TermAttached {
+        pane: u32,
+        command: String,
+        opened: bool,
+    },
     /// **A pane's program wrote these bytes** — the up direction of the pane's byte stream.
     ///
     /// The answer to [`ClientFrame::TermOpen`], and then as many of these as the program has
@@ -2594,7 +2658,10 @@ pub enum ServerFrame {
     /// keystroke-by-keystroke redraw has no business in a transcript that a model reads and a
     /// store keeps. This is why the pane is a *frame* and not an event — the same distinction
     /// `Filling` and `ToolProgress` make from the other side.
-    TermOutput { bytes: Vec<u8> },
+    ///
+    /// **`pane` says whose**, since 44: the frames are fanned out to every head of the session
+    /// and each head feeds only the pane it is drawing.
+    TermOutput { pane: u32, bytes: Vec<u8> },
     /// **The pane is over, and this is why.** Written once per pane, and it is the answer to
     /// [`ClientFrame::TermOpen`] as much as the end of one: a pane that could not start — no
     /// command after the verb, a pty that would not open, a program that was not there — is a
@@ -2610,7 +2677,10 @@ pub enum ServerFrame {
     ///
     /// **Not the same thing as a `Bye` or a `Rejected`**: the connection is fine, the session
     /// is fine, and the composer gets its rows back.
-    TermEnded { reason: String },
+    ///
+    /// **`pane` is `None` for a pane that never started** — a refusal, written only to the
+    /// head that asked — and the pane's number for one that ended (44).
+    TermEnded { pane: Option<u32>, reason: String },
 }
 
 /// Why a `Rejected` was sent, as a stable code a head can branch on.
@@ -2733,7 +2803,7 @@ mod tests {
                 | ClientFrame::Stop { .. }
                 | ClientFrame::Switch { .. }
                 | ClientFrame::SetOperatorTodos { .. }
-                | ClientFrame::TermClose
+                | ClientFrame::TermClose { .. }
                 | ClientFrame::TermInput { .. }
                 | ClientFrame::TermOpen { .. }
                 | ClientFrame::TermResize { .. }
@@ -2819,8 +2889,12 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 43,
-            "the match above was last reconciled with the frame list at 43 — R61's two queues: \
+            PROTOCOL_VERSION, 44,
+            "the match above was last reconciled with the frame list at 44 — several panes per \
+             session (R60 item 2): `TermInput`, `TermResize`, `TermClose`, `TermOutput` and \
+             `TermEnded` carry the pane's number, `TermAttached` also answers an open, and \
+             `TermStatus` lists every live pane (a version-43 head would fail to decode the first \
+             `TermOutput`, a version-43 daemon the first `TermInput`). 43 was R61's two queues: \
              `ServerFrame::MergeQueue` became `ServerFrame::Queues` (a snapshot of both queues, the \
              leases, the targets' health and the last moves, with its states as WORDS so a state a \
              newer daemon adds never takes a frame down again), and the three `MergeEntry*` events \

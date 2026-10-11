@@ -2493,6 +2493,19 @@ impl Harness {
                             .collect()
                     }),
                 );
+                // **The boundary this session's `!term` pane runs inside** (R60 item 3) —
+                // the one its `bash` calls get, read off this host's confinement at the moment
+                // the pane opens, so a grant made since is in it. Registered here for the
+                // reason the ender above is: this is the half that owns the host. See
+                // `letibot_sessionlog::PaneBoundary`, and `crate::term` for what a pane in a
+                // session with no host does instead.
+                let host = Arc::clone(h);
+                session_registry.bound_panes(
+                    &id,
+                    Arc::new(move |cwd: &std::path::Path, env: &[(String, String)]| {
+                        host.terminal_wrap(cwd, env).map_err(|e| e.to_string())
+                    }),
+                );
             }
             let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
             (Box::new(backend), described, writable, monitors)

@@ -2,6 +2,7 @@
 //! to the person. The pane's way out is [`WAY_OUT`].
 
 use super::*;
+use letibot_vt::MouseTracking;
 
 /// **The way out of a pane: `Ctrl-\`.** See [`TermPane`] for why this byte and not `Esc`.
 ///
@@ -19,53 +20,148 @@ use super::*;
 /// about the stream, and `Link::tick` is where the stream is routed.
 pub const WAY_OUT: u8 = 0x1c;
 
-/// **The operator's mouse, taken out of what a pane's program is sent** (R67 item 6).
+/// **How many rows one wheel notch moves**, in the scrollback or as cursor keys to a program on
+/// the alternate screen. Three, which is what xterm, VTE and this head's own conversation scroll
+/// by — a person's wrist already knows it.
+pub(crate) const WHEEL_ROWS: usize = 3;
+
+/// **One mouse report the operator's terminal sent**, as read off the raw stream.
 ///
-/// rano turns on button and drag tracking (`?1002`) in the SGR encoding (`?1006`) for the
-/// head's own clicks and wheel, so the operator's terminal reports every notch and drag as
-/// `ESC [ < b ; x ; y M` (or `m` on release) — and [`App::pane_keys`] forwarded the raw read
-/// verbatim. A wheel over `!term bash` typed `ESC[<64;30;12M` at the shell's prompt, a drag a
-/// stream of them. `letibot_vt::screen` already rules on this from the other side: the pane
-/// consumes and drops a program's own mouse-mode request, *"the head must not hand a program
-/// the operator's mouse"*. **So no program has mouse mode as far as the pane is concerned, and
-/// the reports are stripped rather than forwarded.**
-///
-/// Also stripped: the legacy X10 report (`ESC [ M` and three bytes), which a terminal that
-/// ignored `?1006` would send instead. Everything else passes through byte for byte. A report
-/// split across two reads is not recognised and would pass through in halves; the decoder
-/// reads the same stream and has the same boundary, and a 100 ms read splitting a 12-byte
-/// report is the rare case, named here rather than buffered for.
-pub(crate) fn without_mouse_reports(raw: &[u8]) -> std::borrow::Cow<'_, [u8]> {
-    /// The end of the report starting at `at`, if one starts there.
-    fn report_end(raw: &[u8], at: usize) -> Option<usize> {
-        let rest = raw.get(at..)?;
-        if rest.starts_with(b"\x1b[<") {
-            let body = &rest[3..];
-            let len = body
-                .iter()
-                .position(|b| !(b.is_ascii_digit() || *b == b';'))?;
-            return matches!(body[len], b'M' | b'm').then_some(at + 3 + len + 1);
-        }
-        if rest.starts_with(b"\x1b[M") && rest.len() >= 6 {
-            return Some(at + 6);
-        }
-        None
+/// `x` and `y` are the terminal's own, one-based, over the whole window — the pane's are worked
+/// out by [`TermPane::route`], which is the one place that knows where the pane was drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Report {
+    /// The button byte, SGR's numbering: `0`–`2` the buttons, `+32` motion, `+64` the wheel, and
+    /// the modifier bits `4`/`8`/`16` as the terminal sent them.
+    pub(crate) button: u16,
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    /// SGR's `m`. The X10 form has no release flag of its own — it says *button 3* — and is read
+    /// into the same shape.
+    pub(crate) release: bool,
+}
+
+impl Report {
+    fn wheel(&self) -> Option<bool> {
+        // 64 is up and 65 down; 66 and 67 are a horizontal wheel, which a pane does not scroll.
+        (self.button & 64 != 0 && self.button & 2 == 0).then_some(self.button & 1 == 0)
     }
-    if !raw.windows(3).any(|w| w == b"\x1b[<" || w == b"\x1b[M") {
-        return std::borrow::Cow::Borrowed(raw);
+
+    fn motion(&self) -> bool {
+        self.button & 32 != 0
     }
-    let mut out = Vec::with_capacity(raw.len());
-    let mut at = 0;
-    while at < raw.len() {
-        match report_end(raw, at) {
-            Some(end) => at = end,
-            None => {
-                out.push(raw[at]);
-                at += 1;
-            }
+}
+
+/// **What [`report_at`] found at one position of a read.**
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Scan {
+    /// A whole report, ending (exclusive) here.
+    Report(Report, usize),
+    /// The start of one that the read ended inside — R74 item 30.
+    Partial,
+    /// Not a report.
+    No,
+}
+
+/// **Is there a mouse report at `at`?** SGR (`ESC [ < b ; x ; y M|m`) and the legacy X10 form
+/// (`ESC [ M` and three bytes, each offset by 32), which a terminal that ignored `?1006` sends.
+pub(crate) fn report_at(raw: &[u8], at: usize) -> Scan {
+    let rest = &raw[at..];
+    // A prefix of a report's introducer that the read ended inside. **`ESC` alone is not one**:
+    // it is the Esc key, a key `vi` and `mc` read on purpose, and holding it for a read that may
+    // not come for a minute would be a key that arrives late. `ESC [` is held, and costs Alt-`[`
+    // the same wait — which is the rare one.
+    if rest == b"\x1b[" {
+        return Scan::Partial;
+    }
+    if let Some(body) = rest.strip_prefix(b"\x1b[<") {
+        let Some(len) = body
+            .iter()
+            .position(|b| !(b.is_ascii_digit() || *b == b';'))
+        else {
+            // Digits to the end of the read: a report the read cut in half — or, past any
+            // plausible length, not a report at all.
+            return if body.len() <= 16 {
+                Scan::Partial
+            } else {
+                Scan::No
+            };
+        };
+        if !matches!(body[len], b'M' | b'm') {
+            return Scan::No;
         }
+        let mut nums = body[..len]
+            .split(|b| *b == b';')
+            .map(|n| std::str::from_utf8(n).ok()?.parse::<usize>().ok());
+        let (Some(Some(b)), Some(Some(x)), Some(Some(y)), None) =
+            (nums.next(), nums.next(), nums.next(), nums.next())
+        else {
+            // Shaped like a report and not one: still the operator's mouse, never the
+            // program's text. Swallowed whole, as the old strip did.
+            return Scan::Report(
+                Report {
+                    button: u16::MAX,
+                    x: 0,
+                    y: 0,
+                    release: true,
+                },
+                at + 3 + len + 1,
+            );
+        };
+        return Scan::Report(
+            Report {
+                button: b.min(u16::MAX as usize) as u16,
+                x,
+                y,
+                release: body[len] == b'm',
+            },
+            at + 3 + len + 1,
+        );
     }
-    std::borrow::Cow::Owned(out)
+    if let Some(body) = rest.strip_prefix(b"\x1b[M") {
+        if body.len() < 3 {
+            return Scan::Partial;
+        }
+        let b = u16::from(body[0].saturating_sub(32));
+        // X10 says *a button was released* as button 3, and says nothing about which.
+        let release = b & 3 == 3 && b & 64 == 0 && b & 32 == 0;
+        return Scan::Report(
+            Report {
+                button: b,
+                x: usize::from(body[1].saturating_sub(32)),
+                y: usize::from(body[2].saturating_sub(32)),
+                release,
+            },
+            at + 6,
+        );
+    }
+    Scan::No
+}
+
+/// **One report, in the encoding the program asked for**, at the pane's own coordinates
+/// (one-based). `None` when the X10 form cannot carry it — a column or row past 223.
+pub(crate) fn encode(r: &Report, sgr: bool, x: usize, y: usize) -> Option<Vec<u8>> {
+    if sgr {
+        let fin = if r.release { 'm' } else { 'M' };
+        return Some(format!("\x1b[<{};{x};{y}{fin}", r.button).into_bytes());
+    }
+    if x > 223 || y > 223 {
+        return None;
+    }
+    // X10 has no release flag: a release is button 3, the modifiers kept.
+    let b = if r.release {
+        (r.button & !3) | 3
+    } else {
+        r.button
+    };
+    Some(vec![
+        0x1b,
+        b'[',
+        b'M',
+        32 + (b as u8),
+        32 + x as u8,
+        32 + y as u8,
+    ])
 }
 
 /// **The pane: a program that owns the screen, drawn in the conversation's rectangle.**
@@ -149,6 +245,23 @@ pub(crate) struct TermPane {
     /// is filed as the row it would have been had the operator been looking. That is the whole
     /// of *detaching is not ending*, and it is why [`App::detach`] drops nothing.
     pub(crate) detached: bool,
+    /// **How far into the scrollback the operator has wheeled**, in rows; `0` is the live screen.
+    /// See [`TermPane::route`] for what moves it and what puts it back.
+    pub(crate) back: usize,
+    /// **Where the pane was last drawn**, in the terminal's cells (zero-based column and row of
+    /// its top-left) — what turns the operator's click into the program's. Recorded by the draw,
+    /// because the draw is the one layer that knows; see [`TermPane::route`].
+    pub(crate) origin: (usize, usize),
+    /// **The start of a mouse report that the read ended inside** (R74 item 30), kept for the
+    /// next read rather than forwarded in halves. See [`report_at`].
+    pub(crate) held: Vec<u8>,
+    /// **The daemon's number for this pane** (protocol 44), `None` between the Enter that put
+    /// the rectangle up and the `TermAttached` that names it. Every frame about a pane carries
+    /// its number, and this head feeds only the one it holds.
+    pub(crate) pane: Option<u32>,
+    /// **Keys typed before the number arrived**, sent in order the moment it does — see
+    /// [`App::pane_input`].
+    pub(crate) waiting: Vec<u8>,
 }
 
 impl TermPane {
@@ -159,6 +272,11 @@ impl TermPane {
             sent: (cols, rows),
             closing: false,
             detached: false,
+            back: 0,
+            origin: (0, 0),
+            held: Vec::new(),
+            pane: None,
+            waiting: Vec::new(),
         }
     }
 
@@ -170,7 +288,149 @@ impl TermPane {
         room: usize,
         palette: rano::style::Palette,
     ) -> Vec<String> {
-        letibot_ui::ansi::pane_rows(&mut self.screen, cols, room, palette)
+        // Clamped here and not only when wheeled: a resize, `ED 3` or a reset can take history
+        // away under a view that was reading it.
+        self.back = self.back.min(self.screen.history_len());
+        letibot_ui::ansi::pane_rows_back(&mut self.screen, cols, room, palette, self.back)
+    }
+
+    /// **The pane's share of one read: the bytes the program is sent**, with the operator's mouse
+    /// taken out and — where the program asked for it — put back in the program's own terms.
+    ///
+    /// # The mouse, and whose it is (R69's open item, R74 item 22)
+    ///
+    /// rano turns on button and drag tracking in the SGR encoding for the head's own clicks and
+    /// wheel, so every notch and drag the operator makes over the pane arrives here as
+    /// `ESC [ < b ; x ; y M`. R67 item 6 found those reaching the program verbatim — a wheel over
+    /// `!term bash` typed `ESC[<64;30;12M` at the prompt — and stripped them all, which was right
+    /// for a program that had not asked and wrong for one that had: `mc`'s click-to-select and
+    /// `less`'s wheel were the named costs. [`letibot_vt::Screen::mouse`] now records what the
+    /// program asked for, so each report is decided here, one at a time:
+    ///
+    /// | the program asked for | a click or drag | a wheel notch |
+    /// |---|---|---|
+    /// | a mouse (`?1000`/`?1002`/`?1003`) | **sent**, at the pane's coordinates, in its encoding (`?1006` or X10), filtered to the level it asked for | **sent** |
+    /// | nothing, on the alternate screen | dropped | **three cursor keys** — `less`, `man`, `vim` scroll by them, which is xterm's *alternate scroll* |
+    /// | nothing, on the main screen | dropped | **the scrollback** (R60 item 1): [`WHEEL_ROWS`] back or forward, and nothing is sent |
+    ///
+    /// A report outside the pane's rectangle is dropped in every row of that table: the operator
+    /// clicked the chrome, and the program has no column there to be told about.
+    ///
+    /// # What puts the scrollback back
+    ///
+    /// **Any byte that is the program's** — a key, a paste, a click it asked for. A person typing
+    /// is talking to the live program, and a view left scrolled back while they type would be a
+    /// screen that does not show what their keys did. Output does not: a program that keeps
+    /// printing while the operator reads back does not yank the page from under them, and the
+    /// rows it pushes past the top are counted into `back` so the page they are reading stays
+    /// put.
+    ///
+    /// # A report the read cut in half (R74 item 30)
+    ///
+    /// The tty is read in coalesced chunks, and a 12-byte report can straddle two of them. It
+    /// used to pass through in halves — the tail as text at the program's prompt. The start of a
+    /// report at the end of a read is now held in [`TermPane::held`] and put in front of the next
+    /// read, where it is either finished (and decided as above) or turns out not to have been a
+    /// report and goes down as the bytes it was.
+    pub(crate) fn route(&mut self, raw: &[u8]) -> Vec<u8> {
+        let mut read = std::mem::take(&mut self.held);
+        read.extend_from_slice(raw);
+        let mut out = Vec::with_capacity(read.len());
+        let mut keyed = false;
+        let mut at = 0;
+        while at < read.len() {
+            match report_at(&read, at) {
+                Scan::Report(r, end) => {
+                    let sent = self.mouse(&r);
+                    keyed |= !sent.is_empty() && self.screen.mouse().tracking != MouseTracking::Off;
+                    out.extend_from_slice(&sent);
+                    at = end;
+                }
+                Scan::Partial => {
+                    self.held = read[at..].to_vec();
+                    break;
+                }
+                Scan::No => {
+                    out.push(read[at]);
+                    keyed = true;
+                    at += 1;
+                }
+            }
+        }
+        if keyed {
+            self.back = 0;
+        }
+        out
+    }
+
+    /// One report, decided — see [`TermPane::route`]'s table. Returns the bytes the program is
+    /// sent for it, which is none at all in most of the table.
+    fn mouse(&mut self, r: &Report) -> Vec<u8> {
+        if r.button == u16::MAX {
+            return Vec::new();
+        }
+        let mode = self.screen.mouse();
+        let (rows, cols) = self.screen.size();
+        // The pane's own coordinates, one-based like the report's: the terminal's column minus
+        // the columns left of the pane.
+        let x =
+            r.x.checked_sub(self.origin.0)
+                .filter(|x| (1..=cols).contains(x));
+        let y =
+            r.y.checked_sub(self.origin.1)
+                .filter(|y| (1..=rows).contains(y));
+        let (Some(x), Some(y)) = (x, y) else {
+            return Vec::new();
+        };
+        if mode.tracking != MouseTracking::Off {
+            let wanted = match (r.wheel(), r.motion()) {
+                (Some(_), _) => true,
+                (None, false) => true,
+                // Motion with a button held is a drag; with none (`b & 3 == 3`) it is a hover.
+                (None, true) if r.button & 3 == 3 => mode.tracking == MouseTracking::Motion,
+                (None, true) => {
+                    matches!(mode.tracking, MouseTracking::Drag | MouseTracking::Motion)
+                }
+            };
+            return if wanted {
+                encode(r, mode.sgr, x, y).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        }
+        let Some(up) = r.wheel() else {
+            return Vec::new();
+        };
+        if self.screen.alternate() {
+            let key: &[u8] = match (up, self.screen.app_cursor_keys()) {
+                (true, false) => b"\x1b[A",
+                (false, false) => b"\x1b[B",
+                (true, true) => b"\x1bOA",
+                (false, true) => b"\x1bOB",
+            };
+            return key.repeat(WHEEL_ROWS);
+        }
+        self.back = if up {
+            (self.back + WHEEL_ROWS).min(self.screen.history_len())
+        } else {
+            self.back.saturating_sub(WHEEL_ROWS)
+        };
+        Vec::new()
+    }
+
+    /// **The program's bytes, into the screen** — and the scrollback view held where the operator
+    /// left it: rows pushed past the top while they read are counted into `back`, so the page
+    /// stays put rather than sliding under them.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) {
+        let before = self.screen.scrolled();
+        self.screen.feed(bytes);
+        if self.back > 0 {
+            let grown = (self.screen.scrolled() - before) as usize;
+            self.back = self
+                .back
+                .saturating_add(grown)
+                .min(self.screen.history_len());
+        }
     }
 
     /// **The last rows the program left on the screen**, for the row its ending becomes.
@@ -226,8 +486,42 @@ pub(crate) enum PaneFact {
     Unasked,
     /// The daemon said this session has no live pane.
     None,
-    /// The daemon said this is running in it.
-    Running(String),
+    /// The daemon said these are running in it, by number — never empty (protocol 44: a
+    /// session may hold several).
+    Running(Vec<letibot_sessionlog::PaneBrief>),
+}
+
+impl PaneFact {
+    /// **This fact with one pane added or renamed** — what a `TermAttached` tells every head.
+    pub(crate) fn with(&self, pane: u32, command: &str) -> PaneFact {
+        let mut list = match self {
+            PaneFact::Running(list) => list.clone(),
+            _ => Vec::new(),
+        };
+        list.retain(|b| b.pane != pane);
+        list.push(letibot_sessionlog::PaneBrief {
+            pane,
+            command: command.to_string(),
+        });
+        list.sort_by_key(|b| b.pane);
+        PaneFact::Running(list)
+    }
+
+    /// **This fact with one pane gone** — what a `TermEnded` tells every head. A list that
+    /// empties is `None`, which is a fact; `Unasked` stays unasked.
+    pub(crate) fn without(&self, pane: u32) -> PaneFact {
+        match self {
+            PaneFact::Running(list) => {
+                let rest: Vec<_> = list.iter().filter(|b| b.pane != pane).cloned().collect();
+                if rest.is_empty() {
+                    PaneFact::None
+                } else {
+                    PaneFact::Running(rest)
+                }
+            }
+            other => other.clone(),
+        }
+    }
 }
 
 /// **The confirmation that ends a pane** — the daemon's own question about killing something,
@@ -265,4 +559,7 @@ pub(crate) struct TermAsk {
     /// the operator typed at the composer when there is one, or `!term <command>` rebuilt from
     /// the daemon's own word when the pane is another head's.
     pub(crate) line: String,
+    /// **Which pane** — the daemon's number, which is what `TermClose` carries. The card names
+    /// it beside the line, so a person ending one of several knows which one.
+    pub(crate) pane: u32,
 }

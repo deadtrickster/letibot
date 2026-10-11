@@ -554,7 +554,11 @@ impl App {
         }
         match (&self.term, &self.term_fact) {
             (Some(p), _) => Some(p.line.clone()),
-            (None, PaneFact::Running(command)) => Some(format!("!term {command}")),
+            (None, PaneFact::Running(list)) if list.len() == 1 => {
+                Some(format!("!term {}", list[0].command))
+            }
+            // **Several, by number** — `!term N` is how each comes back (protocol 44).
+            (None, PaneFact::Running(list)) => Some(crate::app::session::panes_said(list)),
             (None, PaneFact::None | PaneFact::Unasked) => None,
         }
     }
@@ -601,16 +605,17 @@ impl App {
         if p.closing || p.detached {
             return Vec::new();
         }
-        // **Never the operator's mouse** — see [`without_mouse_reports`]. `0x1c` cannot be
-        // inside a report, so stripping first moves no way-out byte.
-        let raw = &*crate::app::term_pane::without_mouse_reports(raw);
+        // **The operator's mouse is decided, report by report, before anything else** — see
+        // [`TermPane::route`]: sent to the program only when it asked for a mouse, turned into
+        // scrollback or cursor keys when it did not, never typed at it as text. `0x1c` cannot be
+        // inside a report, so routing first moves no way-out byte.
+        let routed = self.term.as_mut().expect("just checked").route(raw);
+        let raw = &routed[..];
         match raw.iter().position(|b| *b == WAY_OUT) {
             Some(at) => {
                 let mut out = Vec::new();
                 if at > 0 {
-                    out.push(Action::TermInput {
-                        bytes: raw[..at].to_vec(),
-                    });
+                    out.extend(self.pane_input(&raw[..at]));
                 }
                 // **Detach: nothing leaves the head.** Not a frame and not a keystroke — the
                 // whole point is that the program keeps running and this head stops drawing it.
@@ -618,9 +623,25 @@ impl App {
                 out
             }
             None if raw.is_empty() => Vec::new(),
-            None => vec![Action::TermInput {
-                bytes: raw.to_vec(),
-            }],
+            None => self.pane_input(raw).into_iter().collect(),
+        }
+    }
+
+    /// **Keys for the pane, addressed to its number** — or held until the daemon has given it
+    /// one. A pane is up the moment Enter is pressed and numbered when `TermAttached` lands a
+    /// moment later (protocol 44); `!term nano` + Enter + typing in one read is keys with no
+    /// number yet, and they go down, in order, the moment it arrives (the `TermAttached` arm).
+    pub(crate) fn pane_input(&mut self, bytes: &[u8]) -> Option<Action> {
+        let p = self.term.as_mut()?;
+        match p.pane {
+            Some(pane) => Some(Action::TermInput {
+                pane,
+                bytes: bytes.to_vec(),
+            }),
+            None => {
+                p.waiting.extend_from_slice(bytes);
+                None
+            }
         }
     }
 

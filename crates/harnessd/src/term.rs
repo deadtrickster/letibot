@@ -10,7 +10,8 @@
 //!
 //! | | |
 //! |---|---|
-//! | **the panes** | one per session, held by session id, so a second `TermOpen` is refused rather than replacing a running program |
+//! | **the panes** | several per session, each with a number the session never reuses, so a second `TermOpen` starts a second program beside the first rather than replacing it or being refused (R60 item 2) |
+//! | **the boundary** | the session's own, read off its process host when a pane opens ([`letibot_sessionlog::PaneBoundary`]) — the view a `bash` call gets (R60 item 3) |
 //! | **the workspace** | the session's own, read from the registry — a pane runs where the conversation runs, not where the daemon does |
 //! | **the screen** | [`Pane::log`] — what the program has drawn, kept here and replayed to a head that asks for it (a bare `!term`) |
 //! | **the sink** | [`Sink`], which turns the pty's reader thread's bytes into [`ServerFrame::TermOutput`] on the session's heads |
@@ -56,9 +57,10 @@
 //! the attach is proved by**; the resize is what makes a head that switched sessions get a
 //! program laid out for its own screen.
 //!
-//! # The refusal asks whether a program is *running*, and not whether anybody closed it
+//! # *Is a program running* is [`TermSession::live`], and not whether anybody closed it
 //!
-//! `open` refuses while a pane is live, and the question it asks is
+//! `open` used to refuse while a pane was live (it now runs a second one — see *Several
+//! panes*), and the question it asked, and that `status` and the sweep still ask, is
 //! [`TermSession::live`] — not `closed`. That distinction is the **ghost** the operator hit:
 //! `!term mc` printed one line and exited, nothing had *closed* the pane, so `closed` was
 //! false, so the daemon kept the slot — and the next `!term` in that session was refused
@@ -125,24 +127,43 @@
 //!   The operator's `!` line becomes two rows because it is a *command with a result*; a pane is
 //!   the conversation's rectangle given to a program, and its repaints are not conversation. The
 //!   log [`Pane::log`] keeps is **not a record** — it is the screen, capped at [`SCREEN_LOG`],
-//!   never written to the store and gone when the daemon stops. A *scrollback* (what a program
-//!   drew and then scrolled off) is still not kept, and it is a rendering question (the ring
-//!   would be `letibot_vt`'s) before it is a storage one.
-//! - **TODO: one pane per session, and no second one.** `open` refuses while a pane is live
-//!   rather than replacing it: a program killed by the next keystroke is a program that loses
-//!   work. Two panes on one screen is a layout question this head does not have an answer for.
-//! - **TODO: the pane is not confined.** It runs in the session's workspace with the session's
-//!   terminal environment, and it is **not** put inside the namespace boundary a `bash` call
-//!   gets. `letibot_tools::exec::confine` is the seam and the decision is not made here — see
-//!   the module's own note in `docs/` for what a confined pane would have to keep working
-//!   (`/dev/tty`, the cgroup, the workspace mount) before it is a change and not a regression.
+//!   never written to the store and gone when the daemon stops.
+//! - **The scrollback is the head's screen's, and this log is what refills it** (R60 item 1,
+//!   decided): what scrolled off is a fact only the thing that applies a line feed knows, so the
+//!   ring is `letibot_vt::Screen`'s. An attach replays this log into a fresh screen, which
+//!   rebuilds as much history as [`SCREEN_LOG`] holds — the cap is the scrollback's depth after
+//!   an attach, and that is the cost of the cap, said here.
+//!
+//! # Several panes, one drawn at a time (R60 item 2)
+//!
+//! *"One pane per session, and no second one … Two panes on one screen is a layout question
+//! this head has no answer for."* The refusal was protecting something real — a program killed
+//! by the next `!term` loses its work — and the protection does not need a refusal: a second
+//! `TermOpen` starts a **second** program and the first keeps running. Each pane has a number
+//! ([`Session::next`], never reused in a session while this daemon lives, so a stale number
+//! names nothing rather than the wrong program), every frame carries it, and a head draws one
+//! pane at a time: `!term 2` changes which, `!term` alone comes back to the most recent, and
+//! `!term close 2` ends one. The layout question is answered by not asking it, the way a
+//! terminal multiplexer's windows answer it. The cap is [`MAX_PANES`], said as a refusal.
+//!
+//! # The boundary is the session's (R60 item 3)
+//!
+//! A pane runs inside the namespace view its session's `bash` calls get: the session's harness
+//! installs a [`letibot_sessionlog::PaneBoundary`] at open — its process host's confinement,
+//! read when the pane opens, so a grant made since is in it — and `open` puts that argv in front
+//! of the pane's shell (`letibot_tools::exec::term`'s header has what keeps working inside:
+//! `/dev/tty`, the cgroup, the workspace). An unconfined session's boundary is the empty argv,
+//! which is its commands' own. **A session with no process host installs none**, and its pane
+//! runs on the host as panes always did — that session runs no commands at all, so there is no
+//! boundary of its commands to share; the operator's pane there is the operator's own program
+//! on their own box, which is the argument `exec::term`'s `PANE_HOME` makes.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use letibot_sessionlog::hub::Hub;
-use letibot_sessionlog::protocol::ServerFrame;
+use letibot_sessionlog::protocol::{PaneBrief, ServerFrame};
 use letibot_sessionlog::{Registry, TerminalDriver};
 use letibot_tools::exec::{
     NoScopes, ScopeId, ScopeKind, ScopeTree, TermConfig, TermError, TermSession, TermSink,
@@ -177,7 +198,38 @@ const CLOSED: &str = "you closed the terminal";
 /// the tail began, and for the trim that keeps a cut from being painted as text.
 const SCREEN_LOG: usize = 256 * 1024;
 
-/// **One pane per session, and the pty behind each.** See the module header.
+/// **How many live panes one session may hold.** A cap so a stuck key or a loop of `!term`
+/// lines cannot fill the box with ptys; eight is more programs than a person switches between
+/// by number. The refusal names the panes, so the way out is in the sentence.
+const MAX_PANES: usize = 8;
+
+/// **One session's panes**, by number, and the bookkeeping that numbers them.
+#[derive(Default)]
+struct Session {
+    panes: std::collections::BTreeMap<u32, Pane>,
+    /// The number the next pane gets. Starts at 1 and only grows.
+    next: u32,
+    /// The pane last opened or attached to — what a bare `!term` comes back to.
+    last: Option<u32>,
+}
+
+impl Session {
+    /// **Drop every pane whose program has ended**, ending its scope — see [`Pane`] for why an
+    /// ended pane is kept until here rather than dropped the instant its program exits.
+    fn sweep(&mut self) {
+        self.panes.retain(|_, p| p.session.live());
+    }
+
+    fn live(&self) -> Vec<(u32, &Pane)> {
+        self.panes
+            .iter()
+            .filter(|(_, p)| p.session.live())
+            .map(|(n, p)| (*n, p))
+            .collect()
+    }
+}
+
+/// **Every session's panes, and the pty behind each.** See the module header.
 pub struct Terminals {
     /// **A `Weak` and not an `Arc`, because the registry holds this driver.** The cycle is
     /// real and would be a leak: `Registry::set_terminal` stores an `Arc<dyn TerminalDriver>`
@@ -188,7 +240,7 @@ pub struct Terminals {
     /// The cgroup tree the panes' scopes are opened in, or [`NoScopes`] on a box without
     /// cgroup v2 — see the module header for what degrades and what does not.
     tree: Arc<dyn ScopeTree>,
-    panes: Mutex<HashMap<String, Pane>>,
+    panes: Mutex<HashMap<String, Session>>,
 }
 
 /// A pane: the pty session, what it is running, and **what it has drawn**.
@@ -244,7 +296,7 @@ impl Terminals {
         }
     }
 
-    fn panes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pane>> {
+    fn panes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Session>> {
         self.panes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -276,6 +328,8 @@ impl Terminals {
 struct Sink {
     hub: Arc<Hub>,
     log: Arc<Mutex<Vec<u8>>>,
+    /// The pane's number, on every frame — see the module header's *Several panes*.
+    pane: u32,
 }
 
 impl TermSink for Sink {
@@ -287,12 +341,14 @@ impl TermSink for Sink {
             trim(&mut log);
         }
         self.hub.push_frame(ServerFrame::TermOutput {
+            pane: self.pane,
             bytes: bytes.to_vec(),
         });
     }
 
     fn ended(&self, reason: &str) {
         self.hub.push_frame(ServerFrame::TermEnded {
+            pane: Some(self.pane),
             reason: reason.to_string(),
         });
     }
@@ -325,38 +381,65 @@ impl TerminalDriver for Terminals {
         command: &str,
         cols: usize,
         rows: usize,
-    ) -> Result<(), String> {
-        let mut panes = self.panes();
-        // **A live pane is refused by name, not replaced.** Killing a running program to make
-        // room for the next keystroke is how an operator loses an edited file; the refusal
-        // names the way back and the way out instead — and neither of them is `ctrl-\`, which
-        // now detaches and ends nothing. See `PROTOCOL_VERSION`'s 34 section.
-        //
-        // **`live` and not `closed`** — see the module header's *the ghost*: a program that
-        // exits on its own ends the pane without anybody closing it, and refusing the next
-        // `!term` on that pane is refusing it on nothing.
-        if let Some(p) = panes.get(session_id)
-            && p.session.live()
-        {
+    ) -> Result<u32, String> {
+        let mut all = self.panes();
+        let session = all.entry(session_id.to_string()).or_default();
+        // **Panes whose programs have ended leave nothing to keep**, and this is where their
+        // slots are freed: dropping one ends its scope (which the cgroup has usually already
+        // emptied). `live` and not `closed` — the module header's *the ghost*.
+        session.sweep();
+        // **A live pane is no longer a refusal** (R60 item 2): the new program runs beside it.
+        // What is refused is a session that already has [`MAX_PANES`], by name, with the
+        // numbers that would free one.
+        if session.panes.len() >= MAX_PANES {
+            let held: Vec<String> = session
+                .live()
+                .iter()
+                .map(|(n, p)| format!("{n} `{}`", p.command))
+                .collect();
             return Err(format!(
-                "a pane is already open in this session and `{command}` was not started. \
-                 `!term` comes back to it and `!term close` ends it — a pane that replaced a \
-                 running program would lose whatever that program had not saved."
+                "this session already has {MAX_PANES} panes running ({}), so `{command}` was \
+                 not started. `!term close N` ends one.",
+                held.join(", ")
             ));
         }
-        // **A pane that has already ended leaves nothing to keep**, and this is where the
-        // slot is freed: dropping it ends its scope (which the cgroup has usually already
-        // emptied).
-        panes.remove(session_id);
+
+        let cwd = self.workspace(session_id);
+        let env = letibot_tools::exec::term::env();
+        // **The session's boundary, before anything is opened** (R60 item 3). A boundary that
+        // refuses — a confined session whose view is missing, a workspace outside its own view
+        // — refuses the pane with its own sentence, and nothing has been started that would
+        // then have to be ended. A session that installed none runs its pane on the host: see
+        // the module header for which sessions those are and why.
+        let boundary = self
+            .registry
+            .upgrade()
+            .and_then(|r| r.pane_boundary(session_id));
+        let confine = match &boundary {
+            None => Vec::new(),
+            Some(wrap) => {
+                wrap(&cwd, &letibot_tools::exec::term::confined_env(&env)).map_err(|why| {
+                    format!(
+                        "`{command}` was not started: this session's boundary refused it — {why}"
+                    )
+                })?
+            }
+        };
 
         // **The scope, before the process.** `join_script` writes the pid into `cgroup.procs`
         // and *then* `exec`s, so there is no window in which the program or its children could
         // be forked outside it. A box with no cgroups fails here and the pane runs unscoped —
         // which `TermSession::close` names as its own fallback rather than pretending to own
         // what it cannot reach.
+        session.next = session.next.max(1);
+        let pane = session.next;
         let scope: Option<ScopeId> = self
             .tree
-            .open(ScopeKind::Session, &format!("term-{session_id}"), None)
+            .open(
+                ScopeKind::Session,
+                &format!("term-{session_id}-{pane}"),
+                None,
+            )
             .ok();
 
         let cfg = TermConfig {
@@ -364,12 +447,13 @@ impl TerminalDriver for Terminals {
             // The pane's environment, and **not** the capture's: `console::env_from` forces
             // `PAGER=cat` because a capture has nobody at the keyboard, and a pane has
             // somebody. See `letibot_tools::exec::term::env_from`.
-            env: letibot_tools::exec::term::env(),
-            cwd: self.workspace(session_id),
+            env,
+            cwd,
             cols,
             rows,
             scope,
             tree: Some(self.tree.clone()),
+            confine,
         };
         // **The log is made before the program is**, because the reader thread starts writing
         // into it the moment the pty has a byte — and because the pane that is inserted below
@@ -378,20 +462,41 @@ impl TerminalDriver for Terminals {
         let sink = Arc::new(Sink {
             hub: hub.clone(),
             log: Arc::clone(&log),
+            pane,
         });
-        let session = TermSession::start(&cfg, sink).map_err(|e: TermError| e.to_string())?;
-        panes.insert(
-            session_id.to_string(),
+        // **The number, before the first byte.** Pushed on the same hub the bytes go through,
+        // so no head can see a `TermOutput` for this pane before it knows the pane exists.
+        hub.push_frame(ServerFrame::TermAttached {
+            pane,
+            command: command.to_string(),
+            opened: true,
+        });
+        let started = TermSession::start(&cfg, sink).map_err(|e: TermError| e.to_string());
+        let started = match started {
+            Ok(s) => s,
+            Err(why) => {
+                // The head was told the number; it is told the ending too, under the same one.
+                hub.push_frame(ServerFrame::TermEnded {
+                    pane: Some(pane),
+                    reason: why.clone(),
+                });
+                return Err(why);
+            }
+        };
+        session.next = pane + 1;
+        session.last = Some(pane);
+        session.panes.insert(
+            pane,
             Pane {
-                session,
+                session: started,
                 command: command.to_string(),
                 log,
             },
         );
-        Ok(())
+        Ok(pane)
     }
 
-    /// **Give this head the pane the session already has** — a bare `!term`.
+    /// **Give this head a pane the session already has** — a bare `!term`, or `!term N`.
     ///
     /// Three things, in this order, and each of them is a decision:
     ///
@@ -410,6 +515,9 @@ impl TerminalDriver for Terminals {
     ///    for a head that is behind, so a replay split across frames could be delivered in part
     ///    and a *partial* screen is a corrupt screen where no screen is an honest empty one.
     ///
+    /// **Which pane**: the one named, or — for a bare `!term` — the one last opened or attached
+    /// to, and failing that the newest live one.
+    ///
     /// **A session with no pane is a sentence, not a silence.** The head opened the rectangle
     /// the moment the operator pressed enter (it cannot wait for the daemon without showing the
     /// transcript for as long as the round trip takes), so *there is nothing to attach to* has
@@ -418,60 +526,87 @@ impl TerminalDriver for Terminals {
     fn attach(
         &self,
         session_id: &str,
+        pane: Option<u32>,
         hub: &Arc<Hub>,
         cols: usize,
         rows: usize,
-    ) -> Result<(), String> {
-        let panes = self.panes();
-        let Some(p) = panes.get(session_id) else {
+    ) -> Result<u32, String> {
+        let mut all = self.panes();
+        let Some(session) = all.get_mut(session_id).filter(|s| !s.live().is_empty()) else {
             return Err(
                 "this session has no pane to attach to — `!term COMMAND` starts one. Nothing \
                  was attached."
                     .to_string(),
             );
         };
-        if !p.session.live() {
-            return Err(
-                "the pane in this session is over — its program has exited, so there is \
-                 nothing to attach to. `!term COMMAND` starts a new one."
-                    .to_string(),
-            );
-        }
+        let live: Vec<u32> = session.live().iter().map(|(n, _)| *n).collect();
+        let n = match pane {
+            Some(n) if live.contains(&n) => n,
+            Some(n) => {
+                return Err(format!(
+                    "there is no pane {n} running in this session — the live ones are {}. \
+                     Nothing was attached.",
+                    live.iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            None => session
+                .last
+                .filter(|n| live.contains(n))
+                .unwrap_or(*live.last().expect("checked non-empty")),
+        };
+        session.last = Some(n);
+        let p = &session.panes[&n];
         p.session.resize(cols, rows);
         hub.push_frame(ServerFrame::TermAttached {
+            pane: n,
             command: p.command.clone(),
+            opened: false,
         });
         let screen = p.screen();
         if !screen.is_empty() {
-            hub.push_frame(ServerFrame::TermOutput { bytes: screen });
+            hub.push_frame(ServerFrame::TermOutput {
+                pane: n,
+                bytes: screen,
+            });
         }
-        Ok(())
+        Ok(n)
     }
 
-    /// **What this session's pane is running, or nothing** — the read behind a head's own line
-    /// about a program it is not drawing.
+    /// **What this session's panes are running** — the read behind a head's own line about
+    /// programs it is not drawing.
     ///
-    /// **`live` and not merely *present*, exactly as `open`'s refusal is.** A pane whose program
+    /// **`live` and not merely *present*, exactly as `open`'s sweep is.** A pane whose program
     /// has exited is kept until the next `open` (its scope is still the cgroup that has to be
     /// ended — see [`Pane`]), and reporting it as *running* would put a head's *a pane is
-    /// running `!term mc`* line on the screen for a program that has been gone for a minute. A
-    /// head that asks this question is asking *is something running here*, which is the question
-    /// [`TermSession::live`] answers.
+    /// running `!term mc`* line on the screen for a program that has been gone for a minute.
     ///
     /// The command is the daemon's own string, the one it was handed at `open` — the same one
     /// [`TerminalDriver::attach`] puts on [`ServerFrame::TermAttached`], so the two answers
     /// cannot disagree.
-    fn status(&self, session_id: &str) -> Option<String> {
-        let panes = self.panes();
-        panes
+    fn status(&self, session_id: &str) -> Vec<PaneBrief> {
+        self.panes()
             .get(session_id)
-            .filter(|p| p.session.live())
-            .map(|p| p.command.clone())
+            .map(|s| {
+                s.live()
+                    .into_iter()
+                    .map(|(pane, p)| PaneBrief {
+                        pane,
+                        command: p.command.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), String> {
-        let panes = self.panes();
-        match panes.get(session_id) {
+    fn input(&self, session_id: &str, pane: u32, bytes: &[u8]) -> Result<(), String> {
+        match self
+            .panes()
+            .get(session_id)
+            .and_then(|s| s.panes.get(&pane))
+        {
             Some(p) => p.session.input(bytes).map_err(|e| e.to_string()),
             // No pane: a keystroke nobody is listening for. Quiet, like `close` — a key
             // that arrived a moment after the pane ended is not an error anybody can act on.
@@ -479,17 +614,23 @@ impl TerminalDriver for Terminals {
         }
     }
 
-    fn resize(&self, session_id: &str, cols: usize, rows: usize) -> Result<(), String> {
-        let panes = self.panes();
-        if let Some(p) = panes.get(session_id) {
+    fn resize(&self, session_id: &str, pane: u32, cols: usize, rows: usize) -> Result<(), String> {
+        if let Some(p) = self
+            .panes()
+            .get(session_id)
+            .and_then(|s| s.panes.get(&pane))
+        {
             p.session.resize(cols, rows);
         }
         Ok(())
     }
 
-    fn close(&self, session_id: &str) -> Result<(), String> {
-        let mut panes = self.panes();
-        if let Some(mut p) = panes.remove(session_id) {
+    fn close(&self, session_id: &str, pane: u32) -> Result<(), String> {
+        let taken = self
+            .panes()
+            .get_mut(session_id)
+            .and_then(|s| s.panes.remove(&pane));
+        if let Some(mut p) = taken {
             // **The operator's sentence, set before the kill.** The pty's reader thread
             // composes the `TermEnded` the head will show, and it reads this — so the pane
             // that was closed says *"you closed the terminal"* rather than the signal number
@@ -510,9 +651,11 @@ impl Drop for Terminals {
     /// the same reason: a screen program left running with no pane to draw in is a process
     /// nobody can see and nobody can end.
     fn drop(&mut self) {
-        let mut panes = self.panes();
-        for (_, mut p) in panes.drain() {
-            p.session.close("the daemon stopped");
+        let mut all = self.panes();
+        for (_, session) in all.drain() {
+            for (_, mut p) in session.panes {
+                p.session.close("the daemon stopped");
+            }
         }
     }
 }

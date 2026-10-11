@@ -1299,13 +1299,13 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     // so a person whose head lost the rectangle still has a program running
                     // and nothing to leave. A session with no pane answers with a sentence
                     // through the same `TermEnded` every other unstartable pane uses.
-                    Some(crate::TermLine::Attach) => match registry.terminal() {
+                    Some(crate::TermLine::Attach(pane)) => match registry.terminal() {
                         None => Err("this daemon has no terminal driver, so there is no pane \
                                      to attach to. Nothing was attached."
                             .to_string()),
-                        Some(driver) => {
-                            driver.attach(&seat.hub.session_id(), &seat.hub, cols, rows)
-                        }
+                        Some(driver) => driver
+                            .attach(&seat.hub.session_id(), pane, &seat.hub, cols, rows)
+                            .map(drop),
                     },
                     // **`!term close` is the ending, and it is the head's act.** The head
                     // asks the operator to confirm it and then sends `TermClose` — see
@@ -1314,7 +1314,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     // instead would be this daemon and the head disagreeing about what the
                     // same bytes mean. The sentence names the way to run such a program,
                     // because that is the cost of the word and it is paid in the open.
-                    Some(crate::TermLine::Close) => Err(
+                    Some(crate::TermLine::Close(_)) => Err(
                         "`!term close` is not a command to run: it is how a pane is ENDED, and \
                          the head sends that as its own act (after asking). Nothing ran — a \
                          program called `close` is `!term command close`."
@@ -1324,35 +1324,35 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         None => Err("this daemon has no terminal driver, so there is no pty to \
                                      run a screen program on. Nothing ran."
                             .to_string()),
-                        Some(driver) => {
-                            driver.open(&seat.hub.session_id(), &seat.hub, command, cols, rows)
-                        }
+                        Some(driver) => driver
+                            .open(&seat.hub.session_id(), &seat.hub, command, cols, rows)
+                            .map(drop),
                     },
                 };
                 if let Err(reason) = said {
                     writer
                         .lock()
                         .unwrap()
-                        .write(&ServerFrame::TermEnded { reason })?;
+                        .write(&ServerFrame::TermEnded { pane: None, reason })?;
                 }
             }
             // **The operator's keys, verbatim.** Not a command either, and for a sharper
             // reason than the pane's: a keystroke that queued behind a running turn would be
             // a key that arrives after the thing it was answering.
-            Ok(ClientFrame::TermInput { bytes }) => {
+            Ok(ClientFrame::TermInput { pane, bytes }) => {
                 if let Some(driver) = registry.terminal() {
                     // A failed write is the pty's far end being gone, which the pane's own
                     // reader thread is about to report with a better sentence than this arm
                     // could — so it is dropped here rather than turned into a second ending.
-                    let _ = driver.input(&seat.hub.session_id(), &bytes);
+                    let _ = driver.input(&seat.hub.session_id(), pane, &bytes);
                 }
             }
             // **The pane's rectangle moved** — the head's fact, since the daemon has no
             // screen. `TIOCSWINSZ` on the pty, and the kernel raises `SIGWINCH` for the
             // program's foreground process group by itself.
-            Ok(ClientFrame::TermResize { cols, rows }) => {
+            Ok(ClientFrame::TermResize { pane, cols, rows }) => {
                 if let Some(driver) = registry.terminal() {
-                    let _ = driver.resize(&seat.hub.session_id(), cols, rows);
+                    let _ = driver.resize(&seat.hub.session_id(), pane, cols, rows);
                 }
             }
             // **The operator left.** Idempotent and quiet when there is no pane: *"stop"* is
@@ -1360,9 +1360,9 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             // gets nothing rather than a refusal. The ending itself comes from the driver's
             // reader thread, with the operator's own act in the sentence — see
             // `TermSession::close`.
-            Ok(ClientFrame::TermClose) => {
+            Ok(ClientFrame::TermClose { pane }) => {
                 if let Some(driver) = registry.terminal() {
-                    let _ = driver.close(&seat.hub.session_id());
+                    let _ = driver.close(&seat.hub.session_id(), pane);
                 }
             }
             // **What this session's pane is running, or nothing.** A read, answered on this
@@ -1379,13 +1379,14 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             // no pane* is the true statement, and it is the same one a driver with no pane for
             // this session gives.
             Ok(ClientFrame::TermStatus) => {
-                let command = registry
+                let panes = registry
                     .terminal()
-                    .and_then(|driver| driver.status(&seat.hub.session_id()));
+                    .map(|driver| driver.status(&seat.hub.session_id()))
+                    .unwrap_or_default();
                 writer
                     .lock()
                     .unwrap()
-                    .write(&ServerFrame::TermStatus { command })?;
+                    .write(&ServerFrame::TermStatus { panes })?;
             }
             // **R11's locator, leticl's ask.** A head names one decision and one half of its
             // exchange; the daemon answers with the bytes or with *not recorded*. The same

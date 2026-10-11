@@ -169,11 +169,14 @@ fn read_to_end(r: &mut FrameReader<UnixStream>) -> (Vec<u8>, String) {
     let mut said = Vec::new();
     loop {
         match r.read::<ServerFrame>().expect("a pane frame") {
-            ServerFrame::TermOutput { bytes } => said.extend_from_slice(&bytes),
-            ServerFrame::TermEnded { reason } => return (said, reason),
+            ServerFrame::TermOutput { bytes, .. } => said.extend_from_slice(&bytes),
+            ServerFrame::TermEnded { reason, .. } => return (said, reason),
             // The session's own traffic — a pane moves no seq, but the seat still sends the
-            // hello's events, and skipping them is what makes this a pane assertion.
-            ServerFrame::Event(_) | ServerFrame::TermStatus { .. } => continue,
+            // hello's events, and skipping them is what makes this a pane assertion. The pane's
+            // number (`TermAttached`, protocol 44) carries no bytes either.
+            ServerFrame::Event(_)
+            | ServerFrame::TermStatus { .. }
+            | ServerFrame::TermAttached { .. } => continue,
             other => panic!("expected a pane frame, got {other:?}"),
         }
     }
@@ -184,19 +187,21 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
     let mut said = Vec::new();
     loop {
         match r.read::<ServerFrame>().expect("a pane frame") {
-            ServerFrame::TermOutput { bytes } => {
+            ServerFrame::TermOutput { bytes, .. } => {
                 said.extend_from_slice(&bytes);
                 if String::from_utf8_lossy(&said).contains(needle) {
                     return said;
                 }
             }
-            ServerFrame::TermEnded { reason } => {
+            ServerFrame::TermEnded { reason, .. } => {
                 panic!(
                     "the pane ended ({reason}) before it wrote {needle:?}; it wrote: {:?}",
                     String::from_utf8_lossy(&said)
                 )
             }
-            ServerFrame::Event(_) | ServerFrame::TermStatus { .. } => continue,
+            ServerFrame::Event(_)
+            | ServerFrame::TermStatus { .. }
+            | ServerFrame::TermAttached { .. } => continue,
             other => panic!("expected a pane frame, got {other:?}"),
         }
     }
@@ -350,7 +355,7 @@ fn until_pane(r: &mut FrameReader<UnixStream>) -> ServerFrame {
 fn until_status(r: &mut FrameReader<UnixStream>) -> Option<String> {
     loop {
         match until_pane(r) {
-            ServerFrame::TermStatus { command } => return command,
+            ServerFrame::TermStatus { panes } => return panes.first().map(|b| b.command.clone()),
             _ => continue,
         }
     }
@@ -400,7 +405,7 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
 
     // What is running, first.
     match until_pane(&mut r2) {
-        ServerFrame::TermAttached { command } => assert!(
+        ServerFrame::TermAttached { command, .. } => assert!(
             command.contains("drawn-by-the-program"),
             "the daemon must say what is running in the pane this session has: {command:?}"
         ),
@@ -408,7 +413,7 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     }
     // And then the screen it held, replayed.
     match until_pane(&mut r2) {
-        ServerFrame::TermOutput { bytes } => {
+        ServerFrame::TermOutput { bytes, .. } => {
             let said = String::from_utf8_lossy(&bytes);
             assert!(
                 said.contains("drawn-by-the-program"),
@@ -422,19 +427,20 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     // **And it is a live pane, not a picture**: the attaching head types at it, and the program
     // answers this head.
     w2.write(&ClientFrame::TermInput {
+        pane: 1,
         bytes: b"hi\n".to_vec(),
     })
     .expect("term input");
     let mut said = Vec::new();
     loop {
         match until_pane(&mut r2) {
-            ServerFrame::TermOutput { bytes } => {
+            ServerFrame::TermOutput { bytes, .. } => {
                 said.extend_from_slice(&bytes);
                 if String::from_utf8_lossy(&said).contains("GOT:hi") {
                     break;
                 }
             }
-            ServerFrame::TermEnded { reason } => panic!(
+            ServerFrame::TermEnded { reason, .. } => panic!(
                 "the pane ended ({reason}) before the program answered; it said: {:?}",
                 String::from_utf8_lossy(&said)
             ),
@@ -445,7 +451,8 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     // by the operator. `ctrl-\` is not this: it detaches and sends nothing at all, so the
     // daemon never hears about it and the pane goes on running (asserted in `letibot-tui`'s
     // `term_way_out.rs`, on the socket).
-    w2.write(&ClientFrame::TermClose).expect("term close");
+    w2.write(&ClientFrame::TermClose { pane: 1 })
+        .expect("term close");
     let (_, reason) = read_to_end(&mut r2);
     assert_eq!(reason, "you closed the terminal");
     let _ = std::fs::remove_dir_all(&ws);
@@ -461,7 +468,7 @@ fn attaching_to_a_session_with_no_pane_says_so() {
 
     open(&mut w, "!term", 80, 24);
     match until_pane(&mut r) {
-        ServerFrame::TermEnded { reason } => assert!(
+        ServerFrame::TermEnded { reason, .. } => assert!(
             reason.contains("no pane to attach to"),
             "a session with no pane must say so: {reason}"
         ),
@@ -546,6 +553,7 @@ fn the_operators_bytes_reach_the_program() {
 
     open(&mut w, "!term tr a-z A-Z", 80, 24);
     w.write(&ClientFrame::TermInput {
+        pane: 1,
         bytes: b"hello-pane\n".to_vec(),
     })
     .expect("term input");
@@ -557,63 +565,141 @@ fn the_operators_bytes_reach_the_program() {
     );
     // The deliberate act ends it, and the ending is the operator's own — asserted here so the
     // test does not walk away from a running `tr`.
-    w.write(&ClientFrame::TermClose).expect("term close");
+    w.write(&ClientFrame::TermClose { pane: 1 })
+        .expect("term close");
     let (_, reason) = read_to_end(&mut r);
     assert_eq!(reason, "you closed the terminal");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **A second pane is refused by name, and the first program keeps running.**
+/// **R60 item 2: a second `!term` runs beside the first, and the first keeps running.**
 ///
-/// The refusal is the driver's, not the head's: the daemon owns the pty, so the daemon is the
-/// authority on *is a pane open*. `sleep 30` is chosen so that "the first program is still
-/// alive" is not a race with its own exit — and the test leaves by the operator's own act,
-/// which is also the assertion that the refusal did not end the pane it refused to replace.
+/// *"One pane per session, and no second one. A second `TermOpen` while one is live is refused
+/// in a sentence rather than replacing the running program."* This test used to assert that
+/// refusal (`a pane is already open`). The protection it gave — a running program is not
+/// killed to make room — is kept; the refusal is not: the second program gets pane 2, its bytes
+/// and its ending carry that number, the first is still listed as running, and `!term 1` comes
+/// back to it with its screen.
 #[test]
-fn a_second_pane_is_refused_by_name_while_one_is_live() {
+fn a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number() {
     let _serial = serial();
-    let ws = workspace("one");
-    let registry = daemon("s-one", &ws);
-    let (mut w, mut r) = attach(&registry, "s-one");
+    let ws = workspace("two");
+    let registry = daemon("s-two", &ws);
+    let (mut w, mut r) = attach(&registry, "s-two");
 
-    open(&mut w, "!term sleep 30", 80, 24);
-    open(&mut w, "!term echo second", 80, 24);
+    open(&mut w, "!term sh -c 'printf first-pane; sleep 30'", 80, 24);
+    read_until(&mut r, "first-pane");
+    open(&mut w, "!term echo second-pane", 80, 24);
 
-    let (said, reason) = read_to_end(&mut r);
-    assert!(
-        reason.contains("a pane is already open"),
-        "the second pane was not refused by name: {reason:?}"
-    );
-    assert!(
-        !String::from_utf8_lossy(&said).contains("second"),
-        "the refused command ran anyway: {:?}",
-        String::from_utf8_lossy(&said)
-    );
-
-    // **The first program is still running, and this is the proof.** The refusal left it alone,
-    // so it is ended here by the operator's own act rather than by the test walking away — a
-    // `sleep 30` left behind would outlive the process that owned its cgroup.
-    w.write(&ClientFrame::TermClose).expect("term close");
-    let (_, reason) = read_to_end(&mut r);
+    // Pane 2 is numbered, runs and ends — under its own number.
+    let mut second = Vec::new();
+    let ended = loop {
+        match until_pane(&mut r) {
+            ServerFrame::TermAttached { pane, opened, .. } => {
+                assert_eq!((pane, opened), (2, true), "the second pane is pane 2");
+            }
+            ServerFrame::TermOutput { pane: 2, bytes } => second.extend_from_slice(&bytes),
+            ServerFrame::TermOutput { .. } => {}
+            ServerFrame::TermEnded { pane, reason } => break (pane, reason),
+            other => panic!("expected a pane frame, got {other:?}"),
+        }
+    };
     assert_eq!(
-        reason, "you closed the terminal",
-        "the pane that was refused a second one was still the operator's to end"
+        ended,
+        (Some(2), "the program exited".to_string()),
+        "the second program ran to its own end, and was not refused"
     );
+    assert!(
+        String::from_utf8_lossy(&second).contains("second-pane"),
+        "pane 2's bytes are its program's: {:?}",
+        String::from_utf8_lossy(&second)
+    );
+
+    // The first is still running, and the daemon says so by number.
+    w.write(&ClientFrame::TermStatus).expect("status");
+    match until_pane(&mut r) {
+        ServerFrame::TermStatus { panes } => {
+            assert_eq!(panes.len(), 1, "{panes:?}");
+            assert_eq!(panes[0].pane, 1);
+            assert!(panes[0].command.contains("first-pane"), "{panes:?}");
+        }
+        other => panic!("expected TermStatus, got {other:?}"),
+    }
+
+    // `!term 1` comes back to it, with the screen the daemon kept.
+    open(&mut w, "!term 1", 80, 24);
+    match until_pane(&mut r) {
+        ServerFrame::TermAttached { pane, opened, .. } => assert_eq!((pane, opened), (1, false)),
+        other => panic!("expected TermAttached, got {other:?}"),
+    }
+    match until_pane(&mut r) {
+        ServerFrame::TermOutput { pane: 1, bytes } => {
+            assert!(String::from_utf8_lossy(&bytes).contains("first-pane"))
+        }
+        other => panic!("expected pane 1's screen, got {other:?}"),
+    }
+
+    // And it is the operator's to end, by number.
+    w.write(&ClientFrame::TermClose { pane: 1 })
+        .expect("term close");
+    let (_, reason) = read_to_end(&mut r);
+    assert_eq!(reason, "you closed the terminal");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **The deliberate close is the daemon's act, and it says what the operator did.**
+/// **R60 item 3, through the daemon: a pane runs inside the boundary its session installed.**
 ///
-/// `TermClose` is a frame the program never sees: the head raises a confirmation card for
-/// `!term close`, and sends this when — and only when — the operator answers it with `y`. So
-/// the program is ended by the daemon rather than by a key it could have trapped, and the
-/// sentence is the operator's own act rather than the signal the program died of: *"you closed
-/// the terminal"*, not *"killed by SIGKILL"*.
-///
-/// **`ctrl-\` is deliberately not this**, and the contrast is the whole of protocol 34's
-/// split: leaving a pane sends no frame at all, so the daemon never hears about it and the
-/// program goes on running. That half is asserted where it can be — `letibot-tui`'s
-/// `term_way_out.rs`, whose assertions are on the socket.
+/// The harness installs its process host's boundary on the registry at open
+/// (`Registry::bound_panes`); `Terminals::open` reads it and puts the argv in front of the
+/// pane's shell. Here the boundary is the real one — `Bwrap::project` over the session's
+/// workspace — so a file beside the workspace is ABSENT inside the pane, while the workspace is
+/// there and `/dev/tty` still opens. Before, the daemon had no boundary to ask for and the same
+/// pane read the file. Skips on a box with no usable bubblewrap.
+#[test]
+fn a_pane_runs_inside_the_boundary_its_session_installed() {
+    use letibot_tools::exec::confine::{Bwrap, ConfinePlan, Confinement};
+    let _serial = serial();
+    let root = workspace("confined");
+    let ws = root.join("project");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(root.join("beside"), "secret").unwrap();
+    let bwrap = match Bwrap::project(&ws) {
+        Ok(b) => Arc::new(b),
+        Err(e) => {
+            eprintln!("SKIP: no usable boundary on this box: {e}");
+            return;
+        }
+    };
+    let registry = daemon("s-confined", &ws);
+    registry.bound_panes(
+        "s-confined",
+        Arc::new(move |cwd: &std::path::Path, env: &[(String, String)]| {
+            bwrap
+                .wrap_terminal(&ConfinePlan { cwd, env })
+                .map_err(|e| e.to_string())
+        }),
+    );
+    let (mut w, mut r) = attach(&registry, "s-confined");
+    let line = format!(
+        "!term if [ -e {} ]; then echo SEEN; else echo ABSENT; fi; pwd; \
+         ( : </dev/tty ) 2>/dev/null && echo TTY-OK",
+        root.join("beside").display()
+    );
+    open(&mut w, &line, 80, 24);
+    let (said, reason) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    assert!(
+        text.contains("ABSENT"),
+        "the boundary hid the file: {text:?} ({reason})"
+    );
+    assert!(text.contains(&ws.display().to_string()), "{text:?}");
+    assert!(
+        text.contains("TTY-OK"),
+        "the pane kept its terminal: {text:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn closing_is_the_daemons_act_and_names_the_operator() {
     let _serial = serial();
@@ -622,7 +708,8 @@ fn closing_is_the_daemons_act_and_names_the_operator() {
     let (mut w, mut r) = attach(&registry, "s-left");
 
     open(&mut w, "!term sleep 30", 80, 24);
-    w.write(&ClientFrame::TermClose).expect("term close");
+    w.write(&ClientFrame::TermClose { pane: 1 })
+        .expect("term close");
 
     let (_, reason) = read_to_end(&mut r);
     assert_eq!(
@@ -683,7 +770,8 @@ fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
     );
 
     // And the deliberate close is the one act that changes it.
-    w.write(&ClientFrame::TermClose).expect("term close");
+    w.write(&ClientFrame::TermClose { pane: 1 })
+        .expect("term close");
     let (_, reason) = read_to_end(&mut r);
     assert_eq!(reason, "you closed the terminal");
     w.write(&ClientFrame::TermStatus).expect("status");
@@ -712,7 +800,8 @@ fn a_deliberate_close_frees_the_slot_and_the_next_pane_starts() {
     let (mut w, mut r) = attach(&registry, "s-close-slot");
 
     open(&mut w, "!term sleep 30", 80, 24);
-    w.write(&ClientFrame::TermClose).expect("term close");
+    w.write(&ClientFrame::TermClose { pane: 1 })
+        .expect("term close");
     let (_, reason) = read_to_end(&mut r);
     assert_eq!(
         reason, "you closed the terminal",
@@ -755,7 +844,7 @@ fn a_term_close_line_is_refused_by_name_and_a_name_that_begins_with_it_is_not() 
 
     open(&mut w, "!term close", 80, 24);
     match until_pane(&mut r) {
-        ServerFrame::TermEnded { reason } => {
+        ServerFrame::TermEnded { reason, .. } => {
             assert!(
                 reason.contains("`!term close` is not a command to run"),
                 "the line must be refused as the ending it is: {reason:?}"

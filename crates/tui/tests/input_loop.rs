@@ -57,7 +57,15 @@ fn recording_daemon(path: PathBuf) -> Receiver<ClientFrame> {
         .unwrap();
         while let Ok(f) = r.read::<ClientFrame>() {
             if let ClientFrame::TermOpen { .. } = &f {
+                // The pane's number first, as the real daemon sends it (protocol 44).
+                w.write(&ServerFrame::TermAttached {
+                    pane: 1,
+                    command: "the program".into(),
+                    opened: true,
+                })
+                .unwrap();
                 w.write(&ServerFrame::TermOutput {
+                    pane: 1,
                     bytes: b"\x1b[2J\x1b[Hthe program\r\n".to_vec(),
                 })
                 .unwrap();
@@ -193,7 +201,7 @@ fn the_pane_gets_the_keys_of_a_read_and_none_of_its_mouse_reports() {
     let typed: Vec<u8> = sent(&frames)
         .into_iter()
         .filter_map(|f| match f {
-            ClientFrame::TermInput { bytes } => Some(bytes),
+            ClientFrame::TermInput { bytes, .. } => Some(bytes),
             _ => None,
         })
         .flatten()

@@ -737,40 +737,89 @@ impl App {
     ///
     /// **Nothing here ends anything.** Every arm either raises [`App::term_ask`] or says why it
     /// cannot; the frame leaves when the card is answered with a yes, and never before.
-    pub(crate) fn begin_close(&mut self) -> Option<Action> {
-        match (&self.term, &self.term_fact) {
-            (Some(p), _) => {
-                let line = p.line.clone();
-                self.ask_close(&line);
-                None
+    ///
+    /// **`which` is the number the operator typed** (`!term close 2`, protocol 44), and it is
+    /// checked against what the head holds and what the daemon said, never sent on trust.
+    /// Without one the pane meant is the one this head holds, or the session's only one — and
+    /// with several and no number the line is refused with their numbers, because guessing which
+    /// program to kill is the one guess this card exists to prevent.
+    pub(crate) fn begin_close(&mut self, which: Option<u32>) -> Option<Action> {
+        // This head's own pane, when it is the one meant.
+        if let Some(p) = &self.term
+            && (which.is_none() || which == p.pane)
+        {
+            let Some(pane) = p.pane else {
+                self.say(
+                    "the pane has not started yet — the daemon has not numbered it. Nothing was \
+                     ended; try again in a moment.",
+                );
+                self.redraw = true;
+                return None;
+            };
+            let line = p.line.clone();
+            self.ask_close(&line, pane);
+            return None;
+        }
+        match (self.term_fact.clone(), which) {
+            (PaneFact::Running(list), Some(n)) => match list.iter().find(|b| b.pane == n) {
+                Some(b) => {
+                    let line = format!("!term {}", b.command);
+                    self.ask_close(&line, n);
+                }
+                None => {
+                    self.say(&format!(
+                        "there is no pane {n} running in this session — {}. Nothing was ended.",
+                        panes_said(&list)
+                    ));
+                    self.redraw = true;
+                }
+            },
+            (PaneFact::Running(list), None) if list.len() == 1 => {
+                let line = format!("!term {}", list[0].command);
+                self.ask_close(&line, list[0].pane);
             }
-            (None, PaneFact::Running(command)) => {
-                let line = format!("!term {command}");
-                self.ask_close(&line);
-                None
+            (PaneFact::Running(list), None) => {
+                self.say(&format!(
+                    "this session has {} panes running — {}. `!term close N` says which; \
+                     nothing was ended.",
+                    list.len(),
+                    panes_said(&list)
+                ));
+                self.redraw = true;
             }
-            (None, PaneFact::None) => {
+            (PaneFact::None, _) => {
                 self.say(
                     "this session has no pane to end — `!term COMMAND` starts one, and \
                      `!term` attaches to one that is already running",
                 );
                 self.redraw = true;
-                None
             }
-            (None, PaneFact::Unasked) => {
+            (PaneFact::Unasked, _) => {
                 self.close_pending = true;
+                self.close_which = which;
                 self.say("asking the daemon what this session is running…");
                 self.redraw = true;
-                Some(Action::TermStatus)
+                return Some(Action::TermStatus);
             }
         }
+        None
     }
 
     /// **Raise the confirmation card**, and it is the only place [`App::term_ask`] is set — so
     /// there is one place a pane can be ended from, and it is the one that asks.
-    pub(crate) fn ask_close(&mut self, line: &str) {
+    pub(crate) fn ask_close(&mut self, line: &str, pane: u32) {
+        // A card that names one of several says which by number; one that is the only pane
+        // reads as it always did.
+        let several = matches!(&self.term_fact, PaneFact::Running(l) if l.len() > 1);
+        let line = if several {
+            format!("pane {pane}, {line}")
+        } else {
+            line.to_string()
+        };
+        let line = line.as_str();
         self.term_ask = Some(TermAsk {
             line: line.to_string(),
+            pane,
         });
         self.redraw = true;
     }
@@ -1093,4 +1142,12 @@ pub(crate) struct SessionRow {
     pub(crate) idx: usize,
     /// 0 for a conversation; 1 for a sub-session under it; deeper for a tree.
     pub(crate) depth: usize,
+}
+
+/// **The live panes, as a person reads them**: `1 `!term mc`, 2 `!term nano``.
+pub(crate) fn panes_said(list: &[letibot_sessionlog::PaneBrief]) -> String {
+    list.iter()
+        .map(|b| format!("{} `!term {}`", b.pane, b.command))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

@@ -612,7 +612,8 @@ pub trait ShellSuggester: Send + Sync {
 ///
 /// # Why every method is keyed by the session and not by the head
 ///
-/// **One pane per session**, and the pane is the session's: a screen program is a process in
+/// **Panes are the session's — several since protocol 44, each with a number** (R60 item 2):
+/// a screen program is a process in
 /// the session's workspace, in the session's cgroup, and a second head attached to the same
 /// session draws the same rectangle. The frames are fanned out like events (see
 /// `Hub::push_frame`) and a head with no pane drops them, which is the honest reading of *a
@@ -629,6 +630,10 @@ pub trait TerminalDriver: Send + Sync {
     ///
     /// `Err` is the sentence the operator reads: it becomes [`crate::protocol::ServerFrame::TermEnded`]'s
     /// `reason`, so it must be something a person can act on.
+    ///
+    /// **`Ok` is the new pane's number** (protocol 44): a session may hold several, and the
+    /// driver announces the number on the hub as `TermAttached { opened: true }` before the
+    /// program's first byte, so every frame after it can say which pane it is about.
     fn open(
         &self,
         session_id: &str,
@@ -636,7 +641,7 @@ pub trait TerminalDriver: Send + Sync {
         command: &str,
         cols: usize,
         rows: usize,
-    ) -> Result<(), String>;
+    ) -> Result<u32, String>;
     /// **Give this head the pane the session already has** — a bare `!term`.
     ///
     /// The operator's defect, and the reason the screen has to be the daemon's: a person who
@@ -654,13 +659,17 @@ pub trait TerminalDriver: Send + Sync {
     /// `Err` is a sentence for a session with no pane — the same `TermEnded` a refusal uses,
     /// because a head that asked for a pane and did not get one is in the same place either
     /// way: close the rectangle and say why.
+    ///
+    /// `pane` is the number the operator named (`!term 2`), or `None` for *the session's most
+    /// recent live pane*. `Ok` is the number attached to.
     fn attach(
         &self,
         session_id: &str,
+        pane: Option<u32>,
         hub: &Arc<Hub>,
         cols: usize,
         rows: usize,
-    ) -> Result<(), String>;
+    ) -> Result<u32, String>;
     /// **What this session's pane is running, or nothing** — the answer to
     /// [`crate::protocol::ClientFrame::TermStatus`].
     ///
@@ -681,11 +690,13 @@ pub trait TerminalDriver: Send + Sync {
     ///
     /// **It must not block.** Called on the connection's reader thread, like every other
     /// method here: it takes the driver's own pane table and answers.
-    fn status(&self, session_id: &str) -> Option<String>;
-    /// The operator's keys, verbatim. Quietly ignored when there is no pane.
-    fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), String>;
-    /// The pane's rectangle moved.
-    fn resize(&self, session_id: &str, cols: usize, rows: usize) -> Result<(), String>;
+    ///
+    /// **Every live pane since 44**, by number; empty is what `None` was.
+    fn status(&self, session_id: &str) -> Vec<crate::protocol::PaneBrief>;
+    /// The operator's keys, verbatim, for one pane. Quietly ignored when there is no such pane.
+    fn input(&self, session_id: &str, pane: u32, bytes: &[u8]) -> Result<(), String>;
+    /// One pane's rectangle moved.
+    fn resize(&self, session_id: &str, pane: u32, cols: usize, rows: usize) -> Result<(), String>;
     /// **End the pane.** Ends the pane's scope, which kills the program and everything it
     /// started. Quiet when there is no pane: *"stop"* is not a request that can be wrong.
     ///
@@ -695,7 +706,7 @@ pub trait TerminalDriver: Send + Sync {
     /// nothing); ending is `!term close`, after the head has asked the operator to confirm it.
     /// The confirmation is the head's, deliberately: a daemon that asked its own question
     /// would be a second card with a second set of keys.
-    fn close(&self, session_id: &str) -> Result<(), String>;
+    fn close(&self, session_id: &str, pane: u32) -> Result<(), String>;
 }
 
 /// **Who can write to a running command's stdin** — the answer to `PromptAnswer` and to
@@ -781,6 +792,23 @@ pub trait PromptDriver: Send + Sync {
 /// *it ended nothing because nothing was running* are different answers.
 pub type RunEnder = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
+/// **The boundary a session's `!term` pane runs inside** — given the pane's working directory
+/// and environment, the argv that goes in front of its shell, or the sentence saying why the
+/// pane cannot run (R60 item 3).
+///
+/// A closure for the [`RunEnder`] reason: the boundary is the session's **process host**'s —
+/// its confinement, read as it stands at the moment the pane opens, grants included — and this
+/// crate holds no process host. The session's harness installs one at open
+/// ([`Registry::bound_panes`]) beside its run ender, and the terminal driver asks for it by
+/// session id ([`Registry::pane_boundary`]) when a pane opens.
+///
+/// **No closure is not *no boundary* by accident**: a session with no process host — a VM
+/// placement, a read-only seat — has no command boundary to give, because it runs no commands;
+/// its pane runs as panes always have, and the driver says so where it opens one. An
+/// unconfined session's closure answers an empty argv, which is its commands' own answer.
+pub type PaneBoundary =
+    Arc<dyn Fn(&std::path::Path, &[(String, String)]) -> Result<Vec<String>, String> + Send + Sync>;
+
 /// **Why a stop interrupts the turns it holds** — the reason recorded on the turn it ends.
 ///
 /// One string, named, because it lands in three places a reader can reach — the running
@@ -821,6 +849,9 @@ pub struct Registry {
     /// See [`RunEnder`] for why a stop has to reach the runs and why the daemon is the half
     /// that owns them.
     runs: Mutex<std::collections::HashMap<String, RunEnder>>,
+    /// **One per session that has a process host**, installed by its harness at open beside
+    /// [`Registry::runs`]. See [`PaneBoundary`].
+    panes: Mutex<std::collections::HashMap<String, PaneBoundary>>,
     /// **One per session**, installed by the session's own harness at open — the half that
     /// owns the token counter — and removed with the session ([`Registry::remove`]). See
     /// [`NotesSource`].
@@ -958,6 +989,7 @@ impl Registry {
             }),
             bell: Bell::new(),
             runs: Mutex::new(std::collections::HashMap::new()),
+            panes: Mutex::new(std::collections::HashMap::new()),
             notes: Mutex::new(std::collections::HashMap::new()),
             ended_runs: std::sync::atomic::AtomicBool::new(false),
             source: Mutex::new(None),
@@ -1362,10 +1394,15 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let boundary = self
+            .panes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
-        drop((ender, prompt, notes));
+        drop((ender, prompt, notes, boundary));
         entry.hub.close();
         Some(entry.hub)
     }
@@ -1752,6 +1789,25 @@ impl Registry {
             .lock()
             .expect("run enders")
             .insert(session.to_string(), ender);
+    }
+
+    /// **Install the boundary this session's `!term` panes run inside.** See [`PaneBoundary`].
+    /// A second install replaces the first, as [`Registry::watch_runs`] does: one process host,
+    /// one boundary.
+    pub fn bound_panes(&self, session: &str, boundary: PaneBoundary) {
+        self.panes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_string(), boundary);
+    }
+
+    /// This session's pane boundary, or `None` for a session that installed none.
+    pub fn pane_boundary(&self, session: &str) -> Option<PaneBoundary> {
+        self.panes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .cloned()
     }
 
     /// Close every session and the bell. Every head wakes with `Bye`, every worker

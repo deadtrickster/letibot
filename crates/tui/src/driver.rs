@@ -841,14 +841,14 @@ impl Link {
                     // **The keys, verbatim.** No `client_request_id` and nothing to wait for:
                     // a keystroke has no answer, and the pane's next `TermOutput` is the
                     // program's reply to whatever it did with it.
-                    Action::TermInput { bytes } => {
-                        self.client.term_input(&bytes)?;
+                    Action::TermInput { pane, bytes } => {
+                        self.client.term_input(pane, &bytes)?;
                     }
-                    Action::TermResize { cols, rows } => {
-                        self.client.term_resize(cols, rows)?;
+                    Action::TermResize { pane, cols, rows } => {
+                        self.client.term_resize(pane, cols, rows)?;
                     }
-                    Action::TermClose => {
-                        self.client.term_close()?;
+                    Action::TermClose { pane } => {
+                        self.client.term_close(pane)?;
                     }
                     // **The read behind a head's own line about a program it is not drawing.**
                     // Asked on attach and before a `!term close` the head cannot answer from

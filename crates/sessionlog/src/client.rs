@@ -508,8 +508,9 @@ impl HeadClient {
     /// Bytes and not a keycode — see [`ClientFrame::TermInput`] for why the pane's keyboard
     /// cannot be the head's own decoder. Nothing is returned: a keystroke has no answer, and
     /// the pane's next `TermOutput` is the program's reply to whatever it did with it.
-    pub fn term_input(&mut self, bytes: &[u8]) -> Result<(), ClientError> {
+    pub fn term_input(&mut self, pane: u32, bytes: &[u8]) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::TermInput {
+            pane,
             bytes: bytes.to_vec(),
         })?;
         Ok(())
@@ -517,8 +518,9 @@ impl HeadClient {
 
     /// **The pane's rectangle moved.** The head's fact: the daemon has no screen, so this is
     /// the only way the program is told the size it is being drawn at.
-    pub fn term_resize(&mut self, cols: usize, rows: usize) -> Result<(), ClientError> {
-        self.writer.write(&ClientFrame::TermResize { cols, rows })?;
+    pub fn term_resize(&mut self, pane: u32, cols: usize, rows: usize) -> Result<(), ClientError> {
+        self.writer
+            .write(&ClientFrame::TermResize { pane, cols, rows })?;
         Ok(())
     }
 
@@ -530,8 +532,8 @@ impl HeadClient {
     /// [`ClientFrame::TermClose`] — so this is only ever reached by the head's `!term close`,
     /// and only after its own confirmation card has been answered with a yes. A caller that
     /// sent this on a keystroke would be the defect the split exists to remove.
-    pub fn term_close(&mut self) -> Result<(), ClientError> {
-        self.writer.write(&ClientFrame::TermClose)?;
+    pub fn term_close(&mut self, pane: u32) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::TermClose { pane })?;
         Ok(())
     }
 

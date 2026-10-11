@@ -1439,8 +1439,8 @@ the detail.
 21. R68.7 (the gatekeeper retry storm) is probably moot after R61; not checked.
 
 **R69 — the head's input**
-22. `!term` gets no mouse reports at all; forwarding them when the program asks for mouse mode
-    needs the vt screen to record that mode.
+22. **DONE on `r60-term`**: `letibot_vt::Screen::mouse` records the program's mouse request and
+    the pane forwards a report, translated to the pane, only when it asked — see R60.
 23. Six modal cards (allow-all confirmation, new-todo, password, `!term close`, prompt, key ask)
     are not on the surface stack and have no key tables.
 24. `editor::the_editor_pane_wears_the_heads_frame_not_nanos` failed once at a fixture `unwrap`
@@ -1456,8 +1456,8 @@ the detail.
 28. Item 14: the abandoned-call sweep is linear but still reads the whole transcript each pass (a
     late answer must count).
 29. Item 24: slow test polls left on purpose.
-30. Item 6: a mouse report split across two reads still reaches `!term` (R69's stripping is per
-    read).
+30. **DONE on `r60-term`**: the start of a report a read ends inside is held for the next read
+    (`TermPane::held`) — see R60.
 31. Item 15: the subagent "command dropped" warning is tested only as a pure function.
 32. Item 21: half of it was not a defect. The status marks cite pre-rebase commit hashes.
 
@@ -1476,11 +1476,11 @@ the detail.
 39. R62 — the gate on lubuntu1/2; R61's `GateRunner` is the seam.
 40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
     landed).
-41. R60 — the three things `!term` still does not do.
+41. R60 — the three things `!term` did not do: **built on `r60-term`**, see R60.
 
 ---
 
-## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
+## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
 conversation's rectangle given to the program with the composer keeping its rows. It runs:
@@ -1542,6 +1542,70 @@ term_pane_live` (which is where a real pty, the real driver and the socket meet)
 `cargo test -p letibot-tui --test term_way_out` (whose assertions are on **what the socket
 carried** — the only place *did anything leave the head* can be asked) — and `!term mc` at a
 live head, which is the one check that is not a test and is the operator's.
+
+**Built on `r60-term` (2026-10-11), the three and the two R74 items beside them:**
+
+1. **Scrollback — the ring is the screen's.** A scrollback row is a row a line feed pushed off
+   the top of the main screen, and only the thing that applies the line feed knows that, so the
+   ring is `letibot_vt::Screen`'s (`history`, `HISTORY_ROWS` = 2000, xterm's rules: main screen
+   only, a region starting at the top only, `ED 3`/`RIS` clear it, rows trimmed of trailing
+   blanks; `Screen::view(back)` is the rectangle `back` rows ago). The daemon's 256 KiB log is
+   what *refills* it on an attach, so the cap is the scrollback's depth after one. The head: a
+   wheel notch over a pane whose program asked for no mouse, on the main screen, moves the view
+   3 rows (`TermPane::back`, `letibot_ui::ansi::pane_rows_back`), sends nothing, and the first
+   byte that is the program's snaps back to live; rows printed while reading back are counted
+   into `back` (`Screen::scrolled`) so the page stays put. Tests:
+   `vt … a_line_scrolled_off_the_top_is_kept_and_can_be_read_back` (and two neighbours),
+   `tui … pane::a_wheel_over_a_pane_reads_back_what_scrolled_off_it` (FAILS on main: the notch
+   is stripped and line 40 is gone).
+2. **Several panes per session (protocol 44).** A second `!term` runs beside the first; each
+   pane has a number the session never reuses; `TermInput`/`TermResize`/`TermClose` carry it,
+   `TermOutput`/`TermEnded` carry it back, `TermAttached { pane, command, opened }` also answers
+   an open (the number before the first byte — keys typed before it are held and sent under
+   it), and `TermStatus { panes }` lists them. A head draws one: `!term N` attaches to pane N,
+   bare `!term` to the most recent, `!term close N` ends one (a bare close means the pane the
+   head holds; with several and none held, it names them and asks nothing). Capped at 8 live
+   per session, refused by name. Tests: `harnessd --test term_pane_live
+   a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number` (replaces
+   `a_second_pane_is_refused_by_name_while_one_is_live`, which passes on main — the refusal),
+   `tui … pane::a_head_draws_one_of_several_panes_and_closes_the_one_it_names`,
+   `sessionlog --test term_pane` (the `!term N` / `!term close N` parse).
+3. **The pane runs inside the session's boundary.** The harness installs
+   `Registry::bound_panes(session, PaneBoundary)` beside its run ender — its process host's
+   confinement, read when the pane opens (`HostProcesses::terminal_wrap`), so grants made since
+   are in it — and `Terminals::open` puts that argv between the scope's join and the shell.
+   `Confinement::wrap_terminal` is `wrap` without bwrap's `--new-session`, which is what keeps
+   `/dev/tty` (measured: with it, `/dev/tty` is `ENXIO`); `HOME`/`SSH_AUTH_SOCK` are the view's
+   (`exec::term::confined_env`). Tests: `tools … exec::term::tests::
+   a_confined_pane_sees_only_its_view_and_keeps_its_terminal` (the control in the same test is
+   the job's argv: no ctty), `harnessd --test term_pane_live
+   a_pane_runs_inside_the_boundary_its_session_installed` (FAILS with the boundary not passed:
+   the file beside the workspace is SEEN).
+4. **R74 item 22, mouse mode.** `Screen::mouse()` records `?9/1000/1002/1003` and `?1006`
+   (and `?1` DECCKM); `TermPane::route` decides each report: program asked → sent at the pane's
+   coordinates in its encoding, filtered to its level; nothing asked + alternate screen → the
+   wheel is three cursor keys (`less` scrolls); nothing asked + main screen → scrollback. Test:
+   `tui … pane::a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane`.
+5. **R74 item 30, a report split across reads**: held (`TermPane::held`) and finished by the next
+   read, or sent as the bytes it was. Test: `tui …
+   pane::a_mouse_report_split_across_two_reads_is_put_back_together` (FAILS on main: `l` and
+   then `;5Ms` typed at the program).
+
+**Left, and the operator's:**
+
+- **`!term mc` at a live head**, and now `!term less big.log` (wheel), `!term bash` + `seq 500`
+  (wheel back), two panes and `!term 1`/`!term 2`, and a pane in a confined (`coder`) session.
+  No live tmux check was run for this branch.
+- **A confined pane has no network and no `ttyname`** (the view's own `devpts`): `!term ssh` in
+  a confined session fails as `! ssh` does, and `tty` prints *not a tty*. A session with **no
+  process host** (read-only seat, VM placement) installs no boundary and its pane runs on the
+  host as before — said in `harnessd/src/term.rs`; a ruling if that should be a refusal.
+- **Two heads opening panes in the same session at the same instant** can adopt each other's
+  number (the `TermAttached { opened }` fan-out); a per-connection reply would close it.
+- **A pane this head is not drawing that dies** files no row on this head (it only leaves the
+  status list); the head that held it files it.
+- `ESC [` at the very end of a read is held for the next one (Alt-`[` waits a read); a lone
+  `ESC` is never held.
 
 ---
 

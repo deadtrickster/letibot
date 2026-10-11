@@ -147,7 +147,7 @@ fn the_pane_draws_exactly_the_rows_it_is_given() {
 ///
 /// # And the act is a DETACH — the operator's *"but i dont want it to exit"*
 ///
-/// This test used to assert `Action::TermClose` here, which is the defect the whole split
+/// This test used to assert `Action::TermClose { pane: 1 }` here, which is the defect the whole split
 /// exists to remove: leaving a pane ended its cgroup, so leaving `nano` killed it. What is
 /// asserted now is the negative the requirement is made of — **nothing leaves the head** —
 /// and the positive that makes it a detach rather than a disappearance: the pane is still
@@ -161,6 +161,7 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
     assert_eq!(
         a.pane_keys(&keys),
         vec![Action::TermInput {
+            pane: 1,
             bytes: keys.clone()
         }],
         "the bytes, and not a key this head understood"
@@ -169,6 +170,7 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
     assert_eq!(
         a.pane_keys(b"hi\x1cz"),
         vec![Action::TermInput {
+            pane: 1,
             bytes: b"hi".to_vec()
         }],
         "the bytes before the way out are the last the program gets, the key itself is never \
@@ -234,16 +236,29 @@ fn the_pane_is_never_sent_the_operators_mouse() {
     assert_eq!(
         a.pane_keys(&read),
         vec![Action::TermInput {
+            pane: 1,
             bytes: b"ls\r".to_vec()
         }]
     );
-    // An ordinary escape sequence is not a report and goes down as it came.
+    // An ordinary escape sequence is not a report and goes down as it came. An unfinished
+    // `ESC [ <` at the end of a read is HELD now (R74 item 30) — it is the start of a report the
+    // read cut in half far more often than anything else — and goes down as it was the moment
+    // the next read shows it was not one.
     assert_eq!(
         a.pane_keys(b"\x1b[A\x1b[<"),
         vec![Action::TermInput {
-            bytes: b"\x1b[A\x1b[<".to_vec()
+            pane: 1,
+            bytes: b"\x1b[A".to_vec()
         }],
-        "an arrow, and an unfinished `ESC [ <` that is not a report"
+        "an arrow, and the start of a report held for the next read"
+    );
+    assert_eq!(
+        a.pane_keys(b"q"),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: b"\x1b[<q".to_vec()
+        }],
+        "not a report after all, so it goes down as the bytes it was"
     );
 }
 
@@ -299,11 +314,12 @@ fn ending_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
     assert!(a.term_ask.is_some(), "the confirmation is up");
     assert_eq!(
         a.key(Key::Char('y')),
-        Some(Action::TermClose),
+        Some(Action::TermClose { pane: 1 }),
         "and `y` is the yes"
     );
 
     a.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "you closed the terminal".into(),
     });
     assert!(!a.pane_open(), "the pane is over");
@@ -424,7 +440,7 @@ fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
     }
 
     // And the yes: the frame leaves, and the pane's keys stop while the kill is in flight.
-    assert_eq!(a.key(Key::Char('Y')), Some(Action::TermClose));
+    assert_eq!(a.key(Key::Char('Y')), Some(Action::TermClose { pane: 1 }));
     assert!(a.term_ask.is_none());
     assert!(
         a.pane_keys(b"x").is_empty(),
@@ -449,7 +465,7 @@ fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
     // No pane at all: the daemon said so.
     let mut a = app();
     a.session_id = "s".into();
-    a.apply(ServerFrame::TermStatus { command: None });
+    a.apply(ServerFrame::TermStatus { panes: vec![] });
     typed(&mut a, "!term close");
     assert_eq!(a.key(Key::Enter), None, "nothing is sent");
     assert!(a.term_ask.is_none(), "and no card: there is nothing to end");
@@ -465,7 +481,10 @@ fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
     let mut b = app();
     b.session_id = "s".into();
     b.apply(ServerFrame::TermStatus {
-        command: Some("mc /etc".into()),
+        panes: vec![letibot_sessionlog::PaneBrief {
+            pane: 1,
+            command: "mc /etc".into(),
+        }],
     });
     typed(&mut b, "!term close");
     assert_eq!(b.key(Key::Enter), None);
@@ -474,7 +493,7 @@ fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
         Some("!term mc /etc"),
         "the card names what the daemon says is running"
     );
-    assert_eq!(b.key(Key::Char('y')), Some(Action::TermClose));
+    assert_eq!(b.key(Key::Char('y')), Some(Action::TermClose { pane: 1 }));
 
     // **Not asked yet**: the read goes out and the line is HELD, then the same decision runs
     // on the answer. A head that read this as *no pane* would refuse to end a program the
@@ -490,7 +509,10 @@ fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
     );
     assert!(c.close_pending, "and it holds the line");
     c.apply(ServerFrame::TermStatus {
-        command: Some("nano notes.txt".into()),
+        panes: vec![letibot_sessionlog::PaneBrief {
+            pane: 1,
+            command: "nano notes.txt".into(),
+        }],
     });
     assert!(!c.close_pending, "the answer runs the decision");
     assert_eq!(
@@ -521,7 +543,10 @@ fn the_pane_line_is_drawn_from_the_status_read_and_is_not_a_row() {
     );
 
     a.apply(ServerFrame::TermStatus {
-        command: Some("mc /etc".into()),
+        panes: vec![letibot_sessionlog::PaneBrief {
+            pane: 1,
+            command: "mc /etc".into(),
+        }],
     });
     let frame = a.screen(80, 24);
     assert!(
@@ -536,7 +561,7 @@ fn the_pane_line_is_drawn_from_the_status_read_and_is_not_a_row() {
     );
 
     // The daemon says there is nothing running any more: the line stops being true and goes.
-    a.apply(ServerFrame::TermStatus { command: None });
+    a.apply(ServerFrame::TermStatus { panes: vec![] });
     assert!(
         !a.screen(80, 24)
             .iter()
@@ -554,6 +579,7 @@ fn a_pane_that_ends_on_its_own_closes_the_same_way_a_refusal_does() {
     a.head_id = "h1".into();
     pane(&mut a, b"bye\r\n");
     a.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "the program exited with 3".into(),
     });
     assert!(!a.pane_open());
@@ -571,11 +597,13 @@ fn a_pane_that_ends_on_its_own_closes_the_same_way_a_refusal_does() {
     let mut b = app();
     b.session_id = "s".into();
     b.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "the program exited with 0".into(),
     });
     assert!(b.notice.is_none(), "{:?}", b.notice);
     // The same for the bytes: a pane nobody opened is not opened by them.
     b.apply(ServerFrame::TermOutput {
+        pane: 1,
         bytes: b"nobody's screen".to_vec(),
     });
     assert!(!b.pane_open());
@@ -1044,5 +1072,234 @@ fn a_panes_enter_is_the_panes_even_with_words_in_the_composer() {
     assert!(
         matches!(b.key(Key::Enter), Some(Action::Prompt(t)) if t == "\\"),
         "with no pane open, Enter sends the line"
+    );
+}
+
+/// The frame's text with this head's own escapes taken out, one row per line — what a person
+/// reads off the pane.
+fn pane_text(a: &mut App) -> String {
+    a.screen(80, 12)
+        .iter()
+        .map(|r| seen(r))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **R60 item 1: a program that prints past the pane's rectangle can be read back, by wheel.**
+///
+/// *"No scrollback. A program that scrolls off the pane's rectangle is gone."* Sixty lines into
+/// a pane a dozen rows tall leave the first fifty-odd nowhere — the wheel notch over the pane was
+/// stripped (R67 item 6) and there was no ring to move through. Now the notch moves the view
+/// [`WHEEL_ROWS`](crate::app::term_pane::WHEEL_ROWS) rows back, nothing is sent to the program,
+/// and the first key the operator types is the program's and puts the live screen back.
+#[test]
+fn a_wheel_over_a_pane_reads_back_what_scrolled_off_it() {
+    let mut a = app();
+    let mut out = Vec::new();
+    for i in 1..=60 {
+        out.extend_from_slice(format!("line {i:02}\r\n").as_bytes());
+    }
+    // The pane is drawn at its own size before the program prints, as a real one is: a resize
+    // keeps the top of the grid, and the program — not this test — would redraw on `SIGWINCH`.
+    pane(&mut a, b"");
+    pane_text(&mut a);
+    a.apply(ServerFrame::TermOutput {
+        pane: 1,
+        bytes: out,
+    });
+    let live = pane_text(&mut a);
+    assert!(live.contains("line 60"), "{live}");
+    assert!(!live.contains("line 40"), "{live}");
+
+    // Wheel up, many notches, inside the pane: nothing for the program.
+    for _ in 0..7 {
+        assert!(
+            a.pane_keys(b"\x1b[<64;10;5M").is_empty(),
+            "a wheel notch over a program that asked for no mouse sends it nothing"
+        );
+    }
+    let back = pane_text(&mut a);
+    assert!(
+        back.contains("line 40") && !back.contains("line 60"),
+        "twenty-one rows back, the page shows what scrolled off: {back}"
+    );
+
+    // Wheel down comes forward, and a key snaps to the live screen and goes to the program.
+    assert_eq!(
+        a.pane_keys(b"x"),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: b"x".to_vec()
+        }]
+    );
+    let again = pane_text(&mut a);
+    assert!(again.contains("line 60"), "{again}");
+}
+
+/// **R74 item 22: a program that asked for the mouse is sent it**, at its own coordinates and in
+/// its own encoding — `mc`'s click-to-select, the named cost of R67 item 6's strip. A program on
+/// the alternate screen that asked for nothing gets a wheel notch as cursor keys, which is how
+/// `less` scrolls by wheel.
+#[test]
+fn a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane() {
+    let mut a = app();
+    // `mc`'s own request: button tracking, SGR encoding, on the alternate screen.
+    pane(&mut a, b"\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[2Jpanels");
+    a.screen(80, 12);
+    let (ox, oy) = a.term.as_ref().unwrap().origin;
+    // A press at the terminal's column 10, row 5 — the pane's column 10-ox, row 5-oy.
+    let press = format!("\x1b[<0;{};{}M", 10, 5);
+    assert_eq!(
+        a.pane_keys(press.as_bytes()),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: format!("\x1b[<0;{};{}M", 10 - ox, 5 - oy).into_bytes()
+        }],
+        "the click, at the pane's own column and row"
+    );
+    // `?1000` is presses and releases: a drag is not what it asked for.
+    assert!(a.pane_keys(b"\x1b[<32;11;5M").is_empty());
+    // A click on the header row is not on the pane at all.
+    if oy > 0 {
+        assert!(a.pane_keys(b"\x1b[<0;10;1M").is_empty());
+    }
+
+    // `less` asked for nothing and is on the alternate screen: a notch is three cursor keys.
+    let mut b = app();
+    pane(&mut b, b"\x1b[?1049h\x1b[2J(END)");
+    b.screen(80, 12);
+    assert_eq!(
+        b.pane_keys(b"\x1b[<65;10;5M"),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: b"\x1b[B\x1b[B\x1b[B".to_vec()
+        }]
+    );
+}
+
+/// **R74 item 30: a report the read cut in half still never reaches the program as text.** The
+/// first half is held, the second completes it, and only then is it decided — here, dropped,
+/// because `bash` asked for no mouse. It used to go down in halves: `;12M` typed at the prompt.
+#[test]
+fn a_mouse_report_split_across_two_reads_is_put_back_together() {
+    let mut a = app();
+    pane(&mut a, b"$ ");
+    a.screen(80, 12);
+    assert_eq!(
+        a.pane_keys(b"l\x1b[<0;30"),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: b"l".to_vec()
+        }]
+    );
+    assert_eq!(
+        a.pane_keys(b";5Ms"),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: b"s".to_vec()
+        }],
+        "the second half finished a report and was not typed"
+    );
+    // And a held start that turns out not to be a report goes down as what it was.
+    assert!(a.pane_keys(b"\x1b[").is_empty());
+    assert_eq!(
+        a.pane_keys(b"A"),
+        vec![Action::TermInput {
+            pane: 1,
+            bytes: b"\x1b[A".to_vec()
+        }]
+    );
+}
+
+/// **R60 item 2, the head's half: several panes, one drawn, each named by its number.**
+///
+/// The daemon numbers each pane (protocol 44) and fans every pane's frames out to every head;
+/// a head draws one. So: keys typed before the number arrives wait for it and go down under it;
+/// another pane's bytes do not paint this one; another pane's ending files no row here and
+/// takes it off the list; a bare `!term close` means the pane this head holds and the card says
+/// its number; and `!term close 2` asks about pane 2, whose yes ends pane 2 only.
+#[test]
+fn a_head_draws_one_of_several_panes_and_closes_the_one_it_names() {
+    let mut a = app();
+    let _ = a.screen(80, 24);
+    typed(&mut a, "!term mc");
+    a.key(Key::Enter).expect("the pane opens");
+    // Typed before the daemon numbered the pane: held, not sent unaddressed.
+    assert!(a.pane_keys(b"ab").is_empty(), "no number yet, nothing sent");
+    a.apply(ServerFrame::TermAttached {
+        pane: 3,
+        command: "mc".into(),
+        opened: true,
+    });
+    assert_eq!(
+        a.take_actions(),
+        vec![Action::TermInput {
+            pane: 3,
+            bytes: b"ab".to_vec()
+        }],
+        "the held keys go down under the number, in order"
+    );
+    assert_eq!(
+        a.pane_keys(b"c"),
+        vec![Action::TermInput {
+            pane: 3,
+            bytes: b"c".to_vec()
+        }]
+    );
+
+    // Another pane of the same session: its bytes are not this pane's screen.
+    a.apply(ServerFrame::TermAttached {
+        pane: 2,
+        command: "nano".into(),
+        opened: true,
+    });
+    a.apply(ServerFrame::TermOutput {
+        pane: 2,
+        bytes: b"NANO-SCREEN".to_vec(),
+    });
+    a.apply(ServerFrame::TermOutput {
+        pane: 3,
+        bytes: b"MC-SCREEN".to_vec(),
+    });
+    let frame = a.screen(80, 24).join("\n");
+    assert!(
+        frame.contains("MC-SCREEN") && !frame.contains("NANO-SCREEN"),
+        "{frame}"
+    );
+
+    // Leave, and close with no number: the pane this head holds is the one meant, and with two
+    // running the card says which by number. Cancelled — anything but `y` is.
+    a.pane_keys(b"\x1c");
+    typed(&mut a, "!term close");
+    a.key(Key::Enter);
+    let ask = a.term_ask.clone().expect("a card for the held pane");
+    assert_eq!(ask.pane, 3);
+    assert!(ask.line.starts_with("pane 3, !term mc"), "{}", ask.line);
+    assert_eq!(a.key(Key::Esc), None);
+
+    // A number picks the other one.
+    typed(&mut a, "!term close 2");
+    a.key(Key::Enter);
+    let ask = a.term_ask.clone().expect("a card for pane 2");
+    assert_eq!(ask.pane, 2);
+    assert!(ask.line.contains("nano"), "{}", ask.line);
+    assert_eq!(a.key(Key::Char('y')), Some(Action::TermClose { pane: 2 }));
+    assert!(
+        !a.term.as_ref().unwrap().closing,
+        "ending pane 2 is not ending the pane this head holds"
+    );
+
+    // Pane 2's ending files no row here: it was never this head's to draw.
+    a.apply(ServerFrame::TermEnded {
+        pane: Some(2),
+        reason: "you closed the terminal".into(),
+    });
+    assert!(a.holds_pane(), "this head's own pane is untouched");
+    assert_eq!(
+        a.term_fact,
+        PaneFact::Running(vec![letibot_sessionlog::PaneBrief {
+            pane: 3,
+            command: "mc".into()
+        }])
     );
 }

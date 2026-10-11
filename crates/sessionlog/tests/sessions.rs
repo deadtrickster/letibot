@@ -139,15 +139,24 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::ShellSuggestions { prefix, lines, .. } => {
             format!("ShellSuggestions({prefix}, {} lines)", lines.len())
         }
-        ServerFrame::TermAttached { command } => format!("TermAttached({command})"),
-        ServerFrame::TermOutput { bytes } => format!("TermOutput({} bytes)", bytes.len()),
-        ServerFrame::TermEnded { reason } => format!("TermEnded({reason})"),
-        // **The read's answer, named by what it says rather than by the frame**: `None` is a
-        // session with no pane and that is the half a diagnostic wants to see.
-        ServerFrame::TermStatus { command } => match command {
-            Some(command) => format!("TermStatus({command})"),
-            None => "TermStatus(none)".into(),
-        },
+        ServerFrame::TermAttached { pane, command, .. } => {
+            format!("TermAttached({pane} {command})")
+        }
+        ServerFrame::TermOutput { pane, bytes } => {
+            format!("TermOutput({pane}, {} bytes)", bytes.len())
+        }
+        ServerFrame::TermEnded { reason, .. } => format!("TermEnded({reason})"),
+        // **The read's answer, named by what it says rather than by the frame**: an empty list
+        // is a session with no pane and that is the half a diagnostic wants to see.
+        ServerFrame::TermStatus { panes } if panes.is_empty() => "TermStatus(none)".into(),
+        ServerFrame::TermStatus { panes } => format!(
+            "TermStatus({})",
+            panes
+                .iter()
+                .map(|b| format!("{} {}", b.pane, b.command))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ServerFrame::Resync { .. } => "Resync".into(),
         ServerFrame::Accepted { .. } => "Accepted".into(),
         ServerFrame::Rejected { reason, .. } => format!("Rejected({reason})"),

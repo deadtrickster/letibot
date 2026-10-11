@@ -97,23 +97,36 @@ fn scripted_daemon(path: PathBuf) -> Receiver<ClientFrame> {
                             .trim()
                             .to_string(),
                     );
+                    // The pane's number first, as the real daemon sends it (protocol 44).
+                    w.write(&ServerFrame::TermAttached {
+                        pane: 1,
+                        command: running.clone().unwrap_or_default(),
+                        opened: true,
+                    })
+                    .unwrap();
                     w.write(&ServerFrame::TermOutput {
+                        pane: 1,
                         bytes: b"\x1b[2J\x1b[Hnano's screen\r\n".to_vec(),
                     })
                     .unwrap();
                 }
-                ClientFrame::TermClose => {
+                ClientFrame::TermClose { .. } => {
                     running = None;
                     // The ending the daemon composes for the operator's own act — the same
                     // sentence `Terminals::CLOSED` uses since protocol 34.
                     w.write(&ServerFrame::TermEnded {
+                        pane: Some(1),
                         reason: "you closed the terminal".into(),
                     })
                     .unwrap();
                 }
                 ClientFrame::TermStatus => {
                     w.write(&ServerFrame::TermStatus {
-                        command: running.clone(),
+                        panes: running
+                            .clone()
+                            .map(|command| letibot_sessionlog::PaneBrief { pane: 1, command })
+                            .into_iter()
+                            .collect(),
                     })
                     .unwrap();
                 }
@@ -212,7 +225,7 @@ fn ctrl_backslash_detaches_through_the_drivers_loop() {
     assert!(
         !sent(&frames)
             .iter()
-            .any(|f| matches!(f, ClientFrame::TermClose)),
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "a detach sent a frame that ends the program — that is the defect the split exists \
          to remove"
     );
@@ -267,11 +280,13 @@ fn enter_and_the_way_out_in_one_read_forward_the_enter_and_detach() {
     assert!(
         frames
             .iter()
-            .any(|f| matches!(f, ClientFrame::TermInput { bytes } if bytes == b"\r")),
+            .any(|f| matches!(f, ClientFrame::TermInput { bytes, .. } if bytes == b"\r")),
         "the Enter is the program's — a coalesced read must not detach it away: {frames:?}"
     );
     assert!(
-        !frames.iter().any(|f| matches!(f, ClientFrame::TermClose)),
+        !frames
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "and the way out is a DETACH — nothing that ends anything left the head: {frames:?}"
     );
     assert!(
@@ -374,7 +389,9 @@ fn the_way_out_is_not_eaten_by_the_read_that_opens_the_pane() {
         "the pane opened: {frames:?}"
     );
     assert!(
-        !frames.iter().any(|f| matches!(f, ClientFrame::TermClose)),
+        !frames
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "the way-out byte in the read that opened the pane must not end anything: {frames:?}"
     );
     assert!(
@@ -409,7 +426,7 @@ fn a_bare_term_line_after_a_detach_attaches_back_through_the_drivers_loop() {
     assert!(
         !sent(&frames)
             .iter()
-            .any(|f| matches!(f, ClientFrame::TermClose)),
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "the detach ended nothing"
     );
 
@@ -462,7 +479,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
     assert!(
         !sent(&frames)
             .iter()
-            .any(|f| matches!(f, ClientFrame::TermClose)),
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "the verb ended the program on its own — that is what the confirmation exists to stop"
     );
     let card = a.screen(100, 30);
@@ -482,7 +499,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
     assert!(
         !sent(&frames)
             .iter()
-            .any(|f| matches!(f, ClientFrame::TermClose)),
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "the cancel sent the frame anyway"
     );
     assert!(
@@ -499,7 +516,7 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
     assert!(
         sent(&frames)
             .iter()
-            .any(|f| matches!(f, ClientFrame::TermClose)),
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "the confirmed close never left the head"
     );
     assert!(!a.pane_open(), "the pane is over");
@@ -538,7 +555,9 @@ fn with_no_pane_the_way_out_byte_is_still_nothing() {
     assert_eq!(a.input(), "hello", "the byte is not a character");
     let frames = sent(&frames);
     assert!(
-        !frames.iter().any(|f| matches!(f, ClientFrame::TermClose)),
+        !frames
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "a way out of nothing is not a close: {frames:?}"
     );
     assert!(

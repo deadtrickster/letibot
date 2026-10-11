@@ -749,10 +749,17 @@ impl App {
                 let palette = self.cfg.palette();
                 let (rows, moved) = {
                     let p = self.term.as_mut().expect("just checked");
+                    // **Where it is drawn, for the click that lands on it** — the pane's top-left
+                    // in the terminal's cells, which `TermPane::route` subtracts from a mouse
+                    // report so the program is told about its own column and row.
+                    p.origin = (x, y);
                     let rows = p.rows(w, room, palette);
-                    let moved = (p.sent != (w, room)).then(|| {
+                    // **Only for a pane the daemon has numbered**: until `TermAttached` names it
+                    // there is no pane to tell, and `sent` is left as it was so the first frame
+                    // after the number arrives sends the rectangle.
+                    let moved = p.pane.filter(|_| p.sent != (w, room)).map(|pane| {
                         p.sent = (w, room);
-                        (w, room)
+                        (pane, w, room)
                     });
                     (rows, moved)
                 };
@@ -760,8 +767,12 @@ impl App {
                 // that is known: `room` is `h` minus the chrome and the header, and neither is the
                 // daemon's to compute. A change detector rather than a frame per tick, because a
                 // resize frame per redraw would be a frame per keystroke.
-                if let Some((cols, rows_n)) = moved {
-                    self.queued.push(Action::TermResize { cols, rows: rows_n });
+                if let Some((pane, cols, rows_n)) = moved {
+                    self.queued.push(Action::TermResize {
+                        pane,
+                        cols,
+                        rows: rows_n,
+                    });
                 }
                 rows
             }

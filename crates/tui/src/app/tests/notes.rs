@@ -393,6 +393,7 @@ fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
     let _ = a.screen(80, 24);
     pane(&mut a, b"mc: not found\r\n");
     a.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "the program exited with 127".into(),
     });
     assert!(!a.pane_open());
@@ -427,6 +428,7 @@ fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
     // the redelivery test — otherwise the second `!term mc` would be swallowed by the first.
     pane(&mut a, b"mc: not found\r\n");
     a.apply(ServerFrame::TermEnded {
+        pane: Some(1),
         reason: "the program exited with 127".into(),
     });
     let rows = a

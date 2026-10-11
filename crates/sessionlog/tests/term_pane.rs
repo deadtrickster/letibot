@@ -45,7 +45,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::hub::Hub;
-use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, PaneBrief, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring, TerminalDriver};
 use letibot_sessionlog::server::serve_conn;
 use letibot_sessionlog::term_command;
@@ -108,6 +108,7 @@ impl Canned {
     fn say(&self, bytes: &[u8]) {
         let hub = self.hub.lock().unwrap().clone().expect("a pane was opened");
         hub.push_frame(ServerFrame::TermOutput {
+            pane: 1,
             bytes: bytes.to_vec(),
         });
     }
@@ -115,6 +116,7 @@ impl Canned {
     fn end(&self, reason: &str) {
         let hub = self.hub.lock().unwrap().clone().expect("a pane was opened");
         hub.push_frame(ServerFrame::TermEnded {
+            pane: Some(1),
             reason: reason.to_string(),
         });
     }
@@ -128,7 +130,7 @@ impl TerminalDriver for Canned {
         command: &str,
         cols: usize,
         rows: usize,
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
         self.opened
             .lock()
             .unwrap()
@@ -137,16 +139,17 @@ impl TerminalDriver for Canned {
             return Err(why);
         }
         *self.hub.lock().unwrap() = Some(hub.clone());
-        Ok(())
+        Ok(1)
     }
 
     fn attach(
         &self,
         session_id: &str,
+        _pane: Option<u32>,
         hub: &Arc<Hub>,
         cols: usize,
         rows: usize,
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
         self.attached
             .lock()
             .unwrap()
@@ -162,30 +165,47 @@ impl TerminalDriver for Canned {
         // **What a real driver does, in the order it does it**: what is running, and then the
         // screen it has kept. Both are `push_frame`s, so this is the same door the pty's reader
         // thread uses and the ordering is the one a head sees.
-        hub.push_frame(ServerFrame::TermAttached { command });
+        hub.push_frame(ServerFrame::TermAttached {
+            pane: 1,
+            command,
+            opened: false,
+        });
         hub.push_frame(ServerFrame::TermOutput {
+            pane: 1,
             bytes: b"\x1b[2J\x1b[Hmc's screen".to_vec(),
         });
-        Ok(())
+        Ok(1)
     }
 
     /// **What a real driver answers**: the command it is holding, or nothing. The canned half
     /// keeps the same field `attach` reads, so a test cannot make the two disagree.
-    fn status(&self, _session_id: &str) -> Option<String> {
-        self.running.lock().unwrap().clone()
+    fn status(&self, _session_id: &str) -> Vec<PaneBrief> {
+        self.running
+            .lock()
+            .unwrap()
+            .clone()
+            .map(|command| PaneBrief { pane: 1, command })
+            .into_iter()
+            .collect()
     }
 
-    fn input(&self, _session_id: &str, bytes: &[u8]) -> Result<(), String> {
+    fn input(&self, _session_id: &str, _pane: u32, bytes: &[u8]) -> Result<(), String> {
         self.input.lock().unwrap().push(bytes.to_vec());
         Ok(())
     }
 
-    fn resize(&self, _session_id: &str, cols: usize, rows: usize) -> Result<(), String> {
+    fn resize(
+        &self,
+        _session_id: &str,
+        _pane: u32,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), String> {
         self.resized.lock().unwrap().push((cols, rows));
         Ok(())
     }
 
-    fn close(&self, session_id: &str) -> Result<(), String> {
+    fn close(&self, session_id: &str, _pane: u32) -> Result<(), String> {
         self.closed.lock().unwrap().push(session_id.to_string());
         Ok(())
     }
@@ -272,10 +292,17 @@ fn the_pane_frames_survive_the_wire_byte_for_byte() {
             cols: 97,
             rows: 23,
         },
-        ClientFrame::TermInput { bytes: raw.clone() },
-        ClientFrame::TermResize { cols: 97, rows: 23 },
+        ClientFrame::TermInput {
+            pane: 1,
+            bytes: raw.clone(),
+        },
+        ClientFrame::TermResize {
+            pane: 1,
+            cols: 97,
+            rows: 23,
+        },
         ClientFrame::TermStatus,
-        ClientFrame::TermClose,
+        ClientFrame::TermClose { pane: 1 },
     ];
     for f in down {
         let json = serde_json::to_string(&f).expect("encode");
@@ -284,19 +311,28 @@ fn the_pane_frames_survive_the_wire_byte_for_byte() {
     }
     let up = [
         ServerFrame::TermAttached {
+            pane: 1,
             command: "mc /etc".into(),
+            opened: false,
         },
-        ServerFrame::TermOutput { bytes: raw.clone() },
+        ServerFrame::TermOutput {
+            pane: 1,
+            bytes: raw.clone(),
+        },
         ServerFrame::TermEnded {
+            pane: Some(1),
             reason: "the program exited with 0".into(),
         },
         // **The read's answer in both of its states**, because `None` is the one a codec is
         // most likely to eat: an `Option` that came back as `""` would make *no pane* look
         // like *a pane running the empty command*.
         ServerFrame::TermStatus {
-            command: Some("mc /etc".into()),
+            panes: vec![PaneBrief {
+                pane: 1,
+                command: "mc /etc".into(),
+            }],
         },
-        ServerFrame::TermStatus { command: None },
+        ServerFrame::TermStatus { panes: vec![] },
     ];
     for f in up {
         let json = serde_json::to_string(&f).expect("encode");
@@ -306,11 +342,15 @@ fn the_pane_frames_survive_the_wire_byte_for_byte() {
     // And the bytes really are bytes, not a lossy string: the NUL and the half-character are
     // both still there.
     let back: ServerFrame = serde_json::from_str(
-        &serde_json::to_string(&ServerFrame::TermOutput { bytes: raw }).unwrap(),
+        &serde_json::to_string(&ServerFrame::TermOutput {
+            pane: 1,
+            bytes: raw,
+        })
+        .unwrap(),
     )
     .unwrap();
     match back {
-        ServerFrame::TermOutput { bytes } => {
+        ServerFrame::TermOutput { pane: 1, bytes } => {
             assert_eq!(bytes, vec![0x1b, 0x5b, 0x32, 0x4a, 0, 0xe2, 0x94])
         }
         other => panic!("not TermOutput: {other:?}"),
@@ -350,6 +390,7 @@ fn the_verb_the_command_and_the_rectangle_reach_the_driver() {
     assert_eq!(
         until_term(&mut r),
         ServerFrame::TermOutput {
+            pane: 1,
             bytes: b"\x1b[2J\x1b[Hmc's screen\r\n".to_vec()
         }
     );
@@ -380,10 +421,12 @@ fn keys_are_forwarded_as_bytes_and_are_not_decoded() {
     // character — every shape a keystroke read can have.
     let keys: Vec<u8> = vec![0x1b, b'O', b'A', 0x03, b'x', 0xe2];
     w.write(&ClientFrame::TermInput {
+        pane: 1,
         bytes: keys.clone(),
     })
     .expect("keys");
     w.write(&ClientFrame::TermResize {
+        pane: 1,
         cols: 120,
         rows: 40,
     })
@@ -424,10 +467,11 @@ fn a_pane_writes_no_row_and_moves_no_seq() {
     })
     .expect("open");
     w.write(&ClientFrame::TermInput {
+        pane: 1,
         bytes: b"q".to_vec(),
     })
     .expect("keys");
-    w.write(&ClientFrame::TermClose).expect("close");
+    w.write(&ClientFrame::TermClose { pane: 1 }).expect("close");
     for _ in 0..200 {
         if !driver.closed().is_empty() {
             break;
@@ -470,7 +514,7 @@ fn the_deliberate_close_ends_the_pane_and_never_reaches_the_program() {
     })
     .expect("open");
     // The ending, as the head would report it: a close and no key.
-    w.write(&ClientFrame::TermClose).expect("close");
+    w.write(&ClientFrame::TermClose { pane: 1 }).expect("close");
     for _ in 0..200 {
         if !driver.closed().is_empty() {
             break;
@@ -488,6 +532,7 @@ fn the_deliberate_close_ends_the_pane_and_never_reaches_the_program() {
     assert_eq!(
         until_term(&mut r),
         ServerFrame::TermEnded {
+            pane: Some(1),
             reason: "you closed the terminal".into()
         }
     );
@@ -532,8 +577,8 @@ fn a_detach_sends_nothing_and_leaves_the_pane_live() {
     // head does next — a moment or an hour later — is ask whether the program is still there.
     w.write(&ClientFrame::TermStatus).expect("status");
     match until_term(&mut r) {
-        ServerFrame::TermStatus { command } => assert_eq!(
-            command.as_deref(),
+        ServerFrame::TermStatus { panes } => assert_eq!(
+            panes.first().map(|b| b.command.as_str()),
             Some("nano notes.txt"),
             "a detach must leave the pane running the same program"
         ),
@@ -573,7 +618,7 @@ fn a_term_close_line_is_refused_by_name_and_starts_nothing() {
     })
     .expect("open");
     match until_term(&mut r) {
-        ServerFrame::TermEnded { reason } => {
+        ServerFrame::TermEnded { reason, .. } => {
             assert!(
                 reason.contains("!term command close"),
                 "the refusal must name how to run a program called `close`: {reason}"
@@ -612,7 +657,7 @@ fn the_status_read_answers_what_is_running_or_nothing() {
     w.write(&ClientFrame::TermStatus).expect("status");
     assert_eq!(
         until_term(&mut r),
-        ServerFrame::TermStatus { command: None },
+        ServerFrame::TermStatus { panes: vec![] },
         "a session with no pane answers with nothing, not with a sentence"
     );
 
@@ -622,7 +667,10 @@ fn the_status_read_answers_what_is_running_or_nothing() {
     assert_eq!(
         until_term(&mut r),
         ServerFrame::TermStatus {
-            command: Some("mc /etc".into())
+            panes: vec![PaneBrief {
+                pane: 1,
+                command: "mc /etc".into()
+            }]
         },
         "and a live pane is named with the command the daemon was handed at `TermOpen`"
     );
@@ -645,7 +693,7 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
     })
     .expect("open");
     match until_term(&mut r) {
-        ServerFrame::TermEnded { reason } => assert!(
+        ServerFrame::TermEnded { reason, .. } => assert!(
             reason.contains("no terminal driver"),
             "a daemon with no driver must say so: {reason}"
         ),
@@ -669,7 +717,7 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
         })
         .expect("open");
         match until_term(&mut r) {
-            ServerFrame::TermEnded { reason } => assert!(
+            ServerFrame::TermEnded { reason, .. } => assert!(
                 reason.contains(needle),
                 "`{line}` must be refused with a sentence naming why, got: {reason}"
             ),
@@ -692,7 +740,7 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
     })
     .expect("open");
     match until_term(&mut r) {
-        ServerFrame::TermEnded { reason } => {
+        ServerFrame::TermEnded { reason, .. } => {
             assert_eq!(reason, "no pty: /dev/ptmx is not there")
         }
         other => panic!("expected TermEnded, got {other:?}"),
@@ -732,7 +780,7 @@ fn a_bare_term_line_attaches_to_the_pane_the_session_has() {
 
     // The name of what is running, first.
     match until_term(&mut r) {
-        ServerFrame::TermAttached { command } => assert_eq!(
+        ServerFrame::TermAttached { command, .. } => assert_eq!(
             command, "mc /etc",
             "the daemon was handed the command with the verb stripped, and that is what it \
              can say back"
@@ -741,7 +789,7 @@ fn a_bare_term_line_attaches_to_the_pane_the_session_has() {
     }
     // And then the screen it has kept.
     match until_term(&mut r) {
-        ServerFrame::TermOutput { bytes } => assert!(
+        ServerFrame::TermOutput { pane: 1, bytes } => assert!(
             String::from_utf8_lossy(&bytes).contains("mc's screen"),
             "the driver's replay is what comes back: {bytes:?}"
         ),
@@ -810,10 +858,10 @@ fn the_verb_is_a_whole_word_and_the_parse_is_shared() {
     // re-checks, so the endings and the programs are asserted together — a `close` that fell
     // through to `Run` would be a program started where a pane was meant to end, and the
     // reverse is a pane ended where a program was meant to run.
-    assert_eq!(term_line("!term"), Some(Attach));
-    assert_eq!(term_line("!term   "), Some(Attach));
-    assert_eq!(term_line("!term close"), Some(Close));
-    assert_eq!(term_line("!term   close"), Some(Close));
+    assert_eq!(term_line("!term"), Some(Attach(None)));
+    assert_eq!(term_line("!term   "), Some(Attach(None)));
+    assert_eq!(term_line("!term close"), Some(Close(None)));
+    assert_eq!(term_line("!term   close"), Some(Close(None)));
     assert_eq!(
         term_line("!term nano notes.txt"),
         Some(Run("nano notes.txt"))
@@ -829,6 +877,15 @@ fn the_verb_is_a_whole_word_and_the_parse_is_shared() {
     assert_eq!(term_line("!term command close"), Some(Run("command close")));
     assert_eq!(term_line("!term ./close"), Some(Run("./close")));
     assert_eq!(term_line("!term close foo"), Some(Run("close foo")));
+    // **A number names a pane** (protocol 44): `!term 2` attaches to pane 2 and `!term close 2`
+    // ends it. A bare number is never a command — no program is called `2` — and zero is no
+    // pane's number, so it is left to the shell.
+    assert_eq!(term_line("!term 2"), Some(Attach(Some(2))));
+    assert_eq!(term_line("!term close 12"), Some(Close(Some(12))));
+    assert_eq!(term_line("!term close  3"), Some(Close(Some(3))));
+    assert_eq!(term_line("!term 0"), Some(Run("0")));
+    assert_eq!(term_line("!term 2 3"), Some(Run("2 3")));
+    assert_eq!(term_line("!term close 2x"), Some(Run("close 2x")));
     // Not the verb at all, in either spelling of the parse.
     for line in [
         "!terminal x",
