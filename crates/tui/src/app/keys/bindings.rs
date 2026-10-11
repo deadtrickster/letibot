@@ -466,7 +466,16 @@ impl App {
         }
         let mut out: Vec<String> = parts.into_iter().map(|(l, s)| format!("{l} {s}")).collect();
         out.extend(s.typed_says().map(str::to_string));
-        out.push(s.esc_says().to_string());
+        // **Esc goes back to whatever is under this surface**, and a job's output or a child's
+        // read can be opened from the todos pane's `waits on` link as well as from its own list —
+        // so when the surface below is the todos pane, the bar says so instead of the fixed words.
+        let below = self.surfaces.iter().rev().nth(1).map(|o| o.surface);
+        match (s, below) {
+            (Surface::JobOut | Surface::SubOut, Some(Surface::Todos)) => {
+                out.push("esc back to the todos".to_string())
+            }
+            _ => out.push(s.esc_says().to_string()),
+        }
         out.join(" · ")
     }
 

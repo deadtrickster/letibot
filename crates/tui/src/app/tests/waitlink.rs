@@ -253,7 +253,12 @@ fn w_on_the_selected_row_opens_what_it_waits_on() {
             offset: 0
         })
     );
+    // Esc goes back to the todos, and the bar says so rather than the jobs list's fixed words.
+    let bar = a.surface_hint(Surface::JobOut);
+    assert!(bar.contains("esc back to the todos"), "{bar}");
+    assert!(!bar.contains("esc back to the jobs"), "{bar}");
     a.key(Key::Esc);
+    assert_eq!(a.top_surface(), Some(Surface::Todos));
     a.key(Key::Down);
     a.key(Key::Down);
     assert!(
