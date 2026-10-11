@@ -913,6 +913,13 @@ impl DenialSink for HubDenials {
 ///
 /// That guard is the set's, not this struct's: it is the same question — *is this session
 /// the top of its tree* — and it is answered where the session ids are.
+///
+/// **Since R79 the question here is a different one, and it is asked of roots and children
+/// alike: does the work wait on this result?** Only what it does — a row's `when`/`needs`, a
+/// wait, `wake: "now"`, the failure of one of those — comes in at a round boundary; everything
+/// else is held for the next turn boundary or the starvation cap ([`Deliveries`],
+/// `crate::delivery`). One queue and one sort still mean one delivery: the wake that follows
+/// finds the result taken or held, never untold.
 pub struct HubSteering {
     hub: Arc<Hub>,
     /// Where the speaker of each injected message is recorded. `None` in a test
@@ -927,9 +934,10 @@ pub struct HubSteering {
     /// harness so a firing is delivered exactly once, whether it is picked up
     /// mid-turn here or between turns by [`Harness::wake`].
     monitor_cursor: Arc<AtomicUsize>,
-    /// This session's watcher set, for the settlements it cannot be woken with. `None`
-    /// in a test that has no daemon behind it.
-    job_watch: Option<Arc<JobWatchers>>,
+    /// **This session's results, delivered by R79's rules** — the immediates at every round
+    /// boundary, the held batch only past the starvation cap. `None` in a test that has no
+    /// daemon behind it.
+    deliveries: Option<Deliveries>,
     /// **This session's children** — the tree's downward edge. An `Interrupt` that reaches a
     /// running turn IS this session being stopped, and a supervisor stops its children before
     /// it goes (see [`HarnessTaskRunner`]). `None` in a test with no session behind it.
@@ -947,7 +955,7 @@ impl HubSteering {
             injected: Arc::new(Mutex::new(VecDeque::new())),
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
-            job_watch: None,
+            deliveries: None,
             subagents: None,
             held: VecDeque::new(),
         }
@@ -1168,6 +1176,108 @@ fn completion_notices(done: Vec<JobCompletion>, me: &str) -> Vec<String> {
     out
 }
 
+/// **The held batch, as one note** (R79): the `[meanwhile]` line, then the settlements in
+/// [`completion_notices`]' own words — unchanged, so the head's compact job rows read the groups
+/// under the heading exactly as they read a wake's.
+fn meanwhile_notice(
+    batch: Vec<JobCompletion>,
+    me: &str,
+    rule: crate::delivery::Rule,
+    cap: std::time::Duration,
+) -> String {
+    let mut parts = vec![crate::delivery::meanwhile_heading(batch.len(), rule, cap)];
+    parts.extend(completion_notices(batch, me));
+    parts.join("\n\n")
+}
+
+/// **R79's delivery, for the two places that hand a result to the model** — the round boundary
+/// ([`HubSteering`]) and a turn's start ([`Harness::wake`] and every door that submits a turn).
+///
+/// The decision is [`crate::delivery::decide`], pure and asserted there; this is the part that
+/// reads the session — its watcher set, its board, its record — and turns what the decision said
+/// into notices. Built per use from the harness's own fields, so it holds no state of its own:
+/// what is held lives on the watcher set, which is what a child's stop hands up.
+#[derive(Clone)]
+pub(crate) struct Deliveries {
+    watch: Arc<JobWatchers>,
+    /// The plan the decision reads. `None` in a test with no board.
+    todos: Option<Arc<TodoBoard>>,
+    log: Arc<crate::delivery::DeliveryLog>,
+    cap: std::time::Duration,
+    me: String,
+}
+
+impl Deliveries {
+    pub(crate) fn new(
+        watch: Arc<JobWatchers>,
+        todos: Option<Arc<TodoBoard>>,
+        log: crate::delivery::DeliveryLog,
+        cap: std::time::Duration,
+        me: &str,
+    ) -> Self {
+        Deliveries {
+            watch,
+            todos,
+            log: Arc::new(log),
+            cap,
+            me: me.to_string(),
+        }
+    }
+
+    /// **What must be said now**: the sort, its immediates recorded and worded. Everything else
+    /// is left held.
+    pub(crate) fn immediates(&self, skip: impl Fn(&JobCompletion) -> bool) -> Vec<String> {
+        let rows = self
+            .todos
+            .as_ref()
+            .map(|t| t.snapshot())
+            .unwrap_or_default();
+        let now = crate::delivery::sort(&self.watch, &rows, skip);
+        if now.is_empty() {
+            return Vec::new();
+        }
+        self.log.immediates(&now, std::time::SystemTime::now());
+        completion_notices(now.into_iter().map(|(c, _)| c).collect(), &self.me)
+    }
+
+    /// **The held batch, taken and recorded**, as one `[meanwhile]` note — or `None` when nothing
+    /// is held.
+    pub(crate) fn batch(&self, rule: crate::delivery::Rule) -> Option<String> {
+        let held = self.watch.take_held();
+        if held.is_empty() {
+            return None;
+        }
+        self.log
+            .completions(&held, rule, std::time::SystemTime::now());
+        Some(meanwhile_notice(held, &self.me, rule, self.cap))
+    }
+
+    /// **A round boundary inside a running turn**: the immediates, and the batch only when the
+    /// longest-held result has waited past the cap.
+    pub(crate) fn at_round_boundary(&self) -> Option<String> {
+        let mut parts = self.immediates(|_| false);
+        if crate::delivery::starved(&self.watch, self.cap, std::time::SystemTime::now())
+            && let Some(b) = self.batch(crate::delivery::Rule::Starvation)
+        {
+            parts.push(b);
+        }
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+
+    /// **A turn the model is taking anyway**: whatever is immediate, and everything held.
+    pub(crate) fn at_turn_start(&self) -> Option<String> {
+        let mut parts = self.immediates(|_| false);
+        if let Some(b) = self.batch(crate::delivery::Rule::Batch) {
+            parts.push(b);
+        }
+        (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+
+    pub(crate) fn log_firings(&self, fired: &[letibot_tools::exec::monitor::Firing]) {
+        self.log.firings(fired, std::time::SystemTime::now());
+    }
+}
+
 /// A duration in the words a settlement reads with: `4.4s`, `1m12s`.
 fn human_secs(ms: u64) -> String {
     let secs = ms as f64 / 1000.0;
@@ -1262,18 +1372,20 @@ impl SteeringSource for HubSteering {
         // Then a background job or subagent of THIS session's own that has ended. It is
         // here, above the monitors, because the monitors block below returns early when
         // this session has no monitor registry — and a read-only seat that can only
-        // `task` is exactly the session that has completions and no monitors. For a root
-        // the set returns nothing here (its door is `Harness::wake`); see [`HubSteering`]
-        // for why a child needs this one.
-        if let Some(w) = &self.job_watch {
-            let done = w.take_mid_turn_completions();
-            if !done.is_empty() {
-                let text = completion_notices(done, &self.hub.session_id()).join("\n\n");
-                if let Some(t) = &self.trail {
-                    t.say(Speaker::Agent, &text, Some(Instant::now()));
-                }
-                return Some(SteeringMessage::normal(text));
+        // `task` is exactly the session that has completions and no monitors.
+        //
+        // **R79: only what the work waits on comes in mid-turn**, for a root and a child
+        // alike — a row's `when`/`needs`, a wait, `wake: "now"`, or the failure of one of
+        // those. Everything else is held for the next turn boundary, unless it has been held
+        // past the cap. See `crate::delivery`. (Before R79 a root heard nothing here and
+        // everything as a wake turn after; a child heard everything here.)
+        if let Some(d) = &self.deliveries
+            && let Some(text) = d.at_round_boundary()
+        {
+            if let Some(t) = &self.trail {
+                t.say(Speaker::Agent, &text, Some(Instant::now()));
             }
+            return Some(SteeringMessage::normal(text));
         }
         // Then a monitor that fired while this turn was running. Between turns the
         // same firing arrives through `Harness::wake`; the shared cursor is what
@@ -1290,6 +1402,10 @@ impl SteeringSource for HubSteering {
             return None;
         }
         let text = monitor_notice(&fired);
+        // A firing is immediate by R79's rules and recorded as one.
+        if let Some(d) = &self.deliveries {
+            d.log_firings(&fired);
+        }
         if let Some(t) = &self.trail {
             t.say(Speaker::Agent, &text, Some(Instant::now()));
         }
@@ -3446,6 +3562,10 @@ impl Harness {
         // `None` when the backend cannot start processes: no host, no jobs, no
         // watcher, and every wait keeps its old behaviour.
         let delivering = job_watch.clone();
+        // **And the other half of that fact (R79)**: a wait, a promoted call or `wake: "now"`
+        // tells the same set the result is wanted the moment it ends, so it is not held for the
+        // next break. See `crate::delivery`.
+        let wanting = job_watch.clone();
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate)
@@ -3453,6 +3573,13 @@ impl Harness {
             .with_completion_delivered(std::sync::Arc::new(move |job: &str| {
                 delivering.as_ref().is_some_and(|w| w.delivering(job))
             }))
+            .with_completion_wanted(std::sync::Arc::new(
+                move |job: &str, why: letibot_tools::runtime::WantedNow| {
+                    if let Some(w) = &wanting {
+                        w.want_now(job, why);
+                    }
+                },
+            ))
             // **The operator's own run can be ANSWERED** — see `crate::prompt`.
             //
             // Three reports and one object, and the object is installed on the registry
@@ -5682,8 +5809,20 @@ impl Harness {
     /// they meet is the one place a reader has to look for the mapping.
     fn submit_spoken(&mut self, speaker: Speaker, text: &str) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
+        // **R79: the results held for this break ride in with the turn** — as the harness's
+        // own row, BEFORE the words that started the turn, so what the operator (or a parent)
+        // said is still the last thing the model reads.
+        let mut items = Vec::new();
+        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+            self.trail
+                .say(Speaker::Agent, &meanwhile, Some(Instant::now()));
+            items.push(TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text: meanwhile }],
+            });
+        }
         self.trail.say(speaker, text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
+        items.push(TranscriptItem::User {
             // The same speaker the trail records, one line up (R42).
             speaker: match speaker {
                 Speaker::Operator => letibot_transcript::Speaker::Operator,
@@ -5692,7 +5831,28 @@ impl Harness {
                 Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
             },
             parts: vec![UserPart::Text { text: text.into() }],
-        })
+        });
+        self.submit_items(items)
+    }
+
+    /// This session's watcher set, for a test that stands in for a watcher thread (R79). `None`
+    /// when the session has none.
+    #[doc(hidden)]
+    pub fn job_watchers(&self) -> Option<&Arc<JobWatchers>> {
+        self.job_watch.as_ref()
+    }
+
+    /// **R79's delivery for this session** — see [`Deliveries`]. `None` for a session with no
+    /// watcher set, which has nothing to deliver.
+    pub(crate) fn deliveries(&self) -> Option<Deliveries> {
+        let watch = self.job_watch.clone()?;
+        Some(Deliveries::new(
+            watch,
+            Some(self.todos.clone()),
+            crate::delivery::DeliveryLog::under(&self.cfg.workspace, &self.cfg.session_id),
+            self.cfg.held_results_cap,
+            &self.hub.session_id(),
+        ))
     }
 
     /// This session's monitors, or `None` on a backend that cannot start processes.
@@ -7294,9 +7454,15 @@ impl Harness {
     /// outcome and not a failure: a caller that asked has its answer, and no turn is spent
     /// on a nudge with no finding behind it.
     pub fn nag_turn(&mut self) -> Result<Option<Reply>, HarnessError> {
-        let Some((text, named)) = self.nag_notice_naming() else {
+        let Some((mut text, named)) = self.nag_notice_naming() else {
             return Ok(None);
         };
+        // **R79: a plan-check is a turn the model takes anyway, so it carries the held batch** —
+        // which is what reaches a session that has a plan and nobody typing.
+        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+            text.push_str("\n\n");
+            text.push_str(&meanwhile);
+        }
         // **The choice is remembered HERE, where the check is delivered** — see `nag_notice` for
         // why reading the notice must not.
         if let Some(named) = named {
@@ -7789,6 +7955,10 @@ impl Harness {
                 let fired: Vec<_> = monitors.firings().into_iter().skip(since).collect();
                 self.monitor_cursor.store(settled, Ordering::SeqCst);
                 if !fired.is_empty() {
+                    // Immediate by R79's rules, and recorded as such.
+                    if let Some(d) = self.deliveries() {
+                        d.log_firings(&fired);
+                    }
                     notices.push(monitor_notice(&fired));
                 }
             }
@@ -7805,20 +7975,25 @@ impl Harness {
         // that still arrives here from below is a settlement whose own session stopped
         // before it could be drained ([`JobWatchers::stop`]) — and `completion_notices`
         // is given this session's id so that it is not read as this session's own.
-        let mut done = self
-            .job_watch
-            .as_ref()
-            .map(|w| w.take_completions())
-            .unwrap_or_default();
+        //
+        // **R79: only what the work waits on is said here; the rest is HELD**, and a wake with
+        // nothing else to say runs no turn (`Ok(None)` below) — a routine completion never
+        // starts a turn of its own. See `crate::delivery`.
+        let deliveries = self.deliveries();
         // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
         // went onto the queue's row above; telling this session's model that "a subagent you
         // started has finished" would be a turn about work that is already recorded and already
         // gone from the board. It holds for the QUEUE's session too, and for the same reason — the
         // pass above ran first and the row is answered (see the field's own doc).
-        done.retain(|c| !self.gatekeepers.contains(&c.job));
+        let gatekeepers = &self.gatekeepers;
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
-        notices.extend(completion_notices(done, &self.hub.session_id()));
+        notices.extend(
+            deliveries
+                .as_ref()
+                .map(|d| d.immediates(|c| gatekeepers.contains(&c.job)))
+                .unwrap_or_default(),
+        );
         // **And the rows whose condition just became met.** The same door, because a condition
         // firing is the same kind of fact as a job ending: nothing asked, and the model has to be
         // told. What the line carries is BOTH halves — the row's own words and what the world says
@@ -7841,6 +8016,10 @@ impl Harness {
         }
         if notices.is_empty() {
             return Ok(None);
+        }
+        // **And since a turn runs anyway, the held batch rides in with it** (R79), last.
+        if let Some(batch) = deliveries.and_then(|d| d.batch(crate::delivery::Rule::Batch)) {
+            notices.push(batch);
         }
         let text = notices.join("\n\n");
         // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the
@@ -7898,15 +8077,21 @@ impl Harness {
     /// not clear still comes back as [`HarnessError::ContextWall`], which is the
     /// honest answer.
     pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
-        let text = "Your previous turn was stopped at the context wall and the conversation \
+        let mut text = "Your previous turn was stopped at the context wall and the conversation \
                     was then compacted: the summary above stands in for everything said \
                     before it. Continue the work you were doing, picking up from the \
-                    summary rather than repeating what it already records.";
+                    summary rather than repeating what it already records."
+            .to_string();
+        // R79: a continuation is a turn the model takes anyway — the held batch rides in.
+        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+            text.push_str("\n\n");
+            text.push_str(&meanwhile);
+        }
         self.trail.begin_turn();
-        self.trail.say(Speaker::Agent, text, Some(Instant::now()));
+        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Agent,
-            parts: vec![UserPart::Text { text: text.into() }],
+            parts: vec![UserPart::Text { text }],
         })
     }
 
@@ -9321,7 +9506,12 @@ impl Harness {
     }
 
     fn submit_item(&mut self, item: TranscriptItem) -> Result<Reply, HarnessError> {
-        let items = [item];
+        self.submit_items(vec![item])
+    }
+
+    /// [`Harness::submit_item`] for a turn that opens with more than one row — the held batch
+    /// before the words that started the turn (R79).
+    fn submit_items(&mut self, items: Vec<TranscriptItem>) -> Result<Reply, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session.append_items(&self.engine, &items, &mut sink)?;
         self.reconcile(&mut sink, &items);
@@ -10688,10 +10878,9 @@ impl Harness {
             injected: self.injected.clone(),
             monitors: self.monitors.clone(),
             monitor_cursor: self.monitor_cursor.clone(),
-            // The session's own set, so a child can be told at its round boundary what
-            // nothing will wake it with — and a root's own set answers nothing here, so
-            // R7's wake keeps its monopoly on the root's settlements.
-            job_watch: self.job_watch.clone(),
+            // The session's own set, read by R79's rules: what the work waits on at the
+            // round boundary, the held batch only past the cap.
+            deliveries: self.deliveries(),
             // **And the session's own children, so a stop takes them with it.** See the
             // interrupt arm of `try_next`.
             subagents: Some(self.subagents.clone()),

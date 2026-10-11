@@ -617,7 +617,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
         monitor_cursor: Arc::new(AtomicUsize::new(0)),
-        job_watch: None,
+        deliveries: None,
         subagents: Some(Arc::new(Recording {
             me: "s-root".into(),
             stops: stops.clone(),
@@ -631,7 +631,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
         monitor_cursor: Arc::new(AtomicUsize::new(0)),
-        job_watch: None,
+        deliveries: None,
         subagents: Some(Arc::new(Recording {
             me: "s-child".into(),
             stops: stops.clone(),
@@ -733,6 +733,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
 fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     let text = completion_notice(
         &[JobCompletion {
+            arrived: std::time::SystemTime::UNIX_EPOCH,
             kind: BackgroundKind::Job,
             owner: "s-me".into(),
             job: "j7".into(),
@@ -892,7 +893,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
         monitor_cursor: Arc::new(AtomicUsize::new(0)),
-        job_watch: None,
+        deliveries: None,
         // No children either: what is asserted here is the message's scoping.
         subagents: None,
         held: VecDeque::new(),
@@ -956,7 +957,7 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
         injected: Arc::new(Mutex::new(VecDeque::new())),
         monitors: None,
         monitor_cursor: Arc::new(AtomicUsize::new(0)),
-        job_watch: None,
+        deliveries: None,
         subagents: None,
         held: VecDeque::new(),
     };

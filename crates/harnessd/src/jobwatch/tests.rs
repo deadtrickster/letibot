@@ -60,6 +60,7 @@ fn a_settlement_is_written_into_the_store_and_a_subagent_is_not() {
     }
     let rec = JobRecorder::new(path.clone(), "s-jobs".into(), Weak::new());
     let done = |kind, job: &str, state: &str| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind,
         owner: "s-jobs".into(),
         job: job.into(),

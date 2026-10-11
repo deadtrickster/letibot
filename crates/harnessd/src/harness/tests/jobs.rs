@@ -526,6 +526,7 @@ mod job_tail {
 #[test]
 fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     let settled = |job: &str, slug: Option<&str>| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Job,
         owner: "s-me".into(),
         job: job.into(),
@@ -590,6 +591,7 @@ fn the_tuis_job_notice_fixtures_are_what_completion_notice_writes() {
                ms: u64,
                memory: Option<&str>,
                owner: &str| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Job,
         owner: owner.into(),
         job: id.into(),
@@ -669,6 +671,7 @@ fn the_tuis_job_notice_fixtures_are_what_completion_notice_writes() {
 fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
     let text = completion_notice(
         &[JobCompletion {
+            arrived: std::time::SystemTime::UNIX_EPOCH,
             kind: BackgroundKind::Job,
             owner: "s-me".into(),
             job: "j9".into(),
@@ -705,6 +708,7 @@ fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
 #[test]
 fn a_childs_completion_names_the_child_and_points_at_task_result() {
     let one = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Subagent,
         owner: "s-me".into(),
         job: "s-1-sub-1".into(),
@@ -790,6 +794,7 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
 #[test]
 fn a_settlement_is_two_nouns_out_of_one_channel() {
     let job = |id: &str| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Job,
         owner: "s-me".into(),
         job: id.into(),
@@ -802,6 +807,7 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
         memory: None,
     };
     let child = |id: &str| JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Subagent,
         owner: "s-me".into(),
         job: id.into(),
@@ -864,6 +870,7 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
 #[test]
 fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     let job = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Job,
         owner: "s-child".into(),
         job: "j17".into(),
@@ -935,6 +942,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     // A handed-up GRANDCHILD keeps its own door: `task_result` reads the tree's handle
     // list (`Parts::tree_slots`), so unlike a dead job's output the answer is still there.
     let child = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
         kind: BackgroundKind::Subagent,
         owner: "s-child".into(),
         job: "s-child-sub-1".into(),

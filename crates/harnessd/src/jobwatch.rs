@@ -60,6 +60,10 @@
 //!    [`JobWatchers::take_mid_turn_completions`] at a round boundary for a child,
 //!    which nothing wakens. That is the hop that was missing.
 //!
+//! **Since R79 a drain does not mean a delivery.** Both doors take the queue through
+//! [`crate::delivery::sort`], which hands over at once only what the session's work waits on
+//! and HOLDS the rest ([`JobWatchers::hold`]) for one batch at the next turn boundary.
+//!
 //! The bell is rung for the second one, because a settlement lands **between turns**,
 //! when the worker is blocked in `Registry::next_work` and nothing else would wake it.
 //! It is the same bell monitors ring for a firing, and the ordering rule is the same
@@ -82,10 +86,10 @@
 //! **stopped** is handed up a level ([`JobWatchers::stop`]), and then the ring names the
 //! level above, because that is the session the settlement is now waiting for.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
@@ -93,6 +97,7 @@ use letibot_sessionlog::registry::Bell;
 use letibot_tokencore::store::{JobRecord, Store};
 use letibot_tools::builtins::task::{TaskRunner, TaskStatus};
 use letibot_tools::exec::{JobId, JobState, ProcessHost, Waited};
+use letibot_tools::runtime::WantedNow;
 use letibot_tools::{ToolEvent, ToolEventSink};
 use letibot_transcript::ToolOutcome;
 
@@ -191,6 +196,12 @@ pub struct JobCompletion {
     /// the notice is what makes the wake actionable rather than a nudge; the whole
     /// of it is still in `task_result`, which the notice names.
     pub detail: String,
+    /// **When the settlement was queued** — the moment the watcher saw it end (R79).
+    ///
+    /// What a held result's wait is measured from, by the starvation cap and by the delivery
+    /// record ([`crate::delivery`]). Wall-clock rather than an `Instant` because it is written
+    /// down: a record's `arrived_at` is read by somebody who was not running this process.
+    pub arrived: SystemTime,
 }
 
 /// The per-session set of watched background jobs and subagents.
@@ -265,6 +276,15 @@ pub struct JobWatchers {
     /// Jobs already published, so a late duplicate finish cannot publish a
     /// settlement twice.
     settled: Arc<Mutex<HashSet<String>>>,
+    /// **Settlements taken off the queue and HELD** (R79): nothing in this session's plan waits
+    /// on them, so they are handed over in one batch at the next break rather than one at a time
+    /// into whatever the model is doing. Filled and emptied by [`crate::delivery`]; per session,
+    /// like `completions`, and handed up with it by [`JobWatchers::stop`].
+    held: Arc<Mutex<Vec<JobCompletion>>>,
+    /// **Handles this session has said it wants the moment they end** (R79) — a wait on one, a
+    /// foreground call promoted out from under it, or `wake: "now"` at its start. See
+    /// [`WantedNow`]. Per session: a want is the asking session's, never its tree's.
+    wanted: Arc<Mutex<HashMap<String, WantedNow>>>,
     /// **The tree's ROOT** — the one session in a subagent tree that a head can be attached
     /// to, and therefore the one a permission card can be drawn by.
     ///
@@ -297,6 +317,8 @@ impl JobWatchers {
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
+            held: Arc::new(Mutex::new(Vec::new())),
+            wanted: Arc::new(Mutex::new(HashMap::new())),
             // A root session is its own tree: the root and its own id are one.
             root: hub.session_id(),
         })
@@ -364,6 +386,8 @@ impl JobWatchers {
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
+            held: Arc::new(Mutex::new(Vec::new())),
+            wanted: Arc::new(Mutex::new(HashMap::new())),
             root: hub.session_id(),
         })
     }
@@ -391,6 +415,8 @@ impl JobWatchers {
             stop: Arc::clone(&self.stop),
             watching: Arc::clone(&self.watching),
             settled: Arc::clone(&self.settled),
+            held: Arc::clone(&self.held),
+            wanted: Arc::clone(&self.wanted),
             root: self.root.clone(),
         })
     }
@@ -444,6 +470,10 @@ impl JobWatchers {
             stop: Arc::clone(&self.stop),
             watching: Arc::clone(&tree.watching),
             settled: Arc::clone(&tree.settled),
+            // **Its own**, for the queue's reason: what this session holds and what it asked
+            // for are this session's.
+            held: Arc::clone(&self.held),
+            wanted: Arc::clone(&self.wanted),
             root: tree.root.clone(),
         })
     }
@@ -492,11 +522,82 @@ impl JobWatchers {
     /// Is this session the top of its tree is a question this set can answer from a
     /// field it already carries: only [`JobWatchers::shares_tree`] gives a set a level
     /// above, and the set at the top is the one the daemon built for itself.
+    ///
+    /// **R79: the daemon's round boundary no longer drains through this** — it takes the
+    /// queue through [`crate::delivery::sort`], for a root as for a child, and only what the
+    /// work waits on comes in mid-turn. This stays as the raw routing door the tests below
+    /// assert *whose* queue a settlement lands on.
     pub fn take_mid_turn_completions(&self) -> Vec<JobCompletion> {
         if self.parent.is_none() {
             return Vec::new();
         }
         self.take_completions()
+    }
+
+    /// **Queue a settlement as a watcher would, without the ring** — for a test of the delivery
+    /// rules (R79), which needs a completion in the queue without a process ending. Nothing in
+    /// the daemon calls it: a settlement is queued by its watcher thread.
+    #[doc(hidden)]
+    pub fn queue_for_test(&self, c: JobCompletion) {
+        self.completions
+            .lock()
+            .expect("job completions")
+            .push_back(c);
+    }
+
+    /// **Say this handle's result is wanted the moment it ends** (R79) — the daemon's half of
+    /// [`letibot_tools::runtime::CompletionWanted`]. A want already recorded is not replaced:
+    /// `wake: "now"` and a later wait are both *now*, and the first is the one recorded.
+    pub fn want_now(&self, handle: &str, why: WantedNow) {
+        self.wanted
+            .lock()
+            .expect("wanted results")
+            .entry(handle.to_string())
+            .or_insert(why);
+    }
+
+    /// Whether this handle was asked for, and how — read by [`crate::delivery`]'s sort.
+    pub fn wanted(&self, handle: &str) -> Option<WantedNow> {
+        self.wanted
+            .lock()
+            .expect("wanted results")
+            .get(handle)
+            .copied()
+    }
+
+    /// **Forget a want once its result has been delivered**, so the map holds only what is
+    /// still outstanding.
+    pub fn delivered(&self, handle: &str) {
+        self.wanted.lock().expect("wanted results").remove(handle);
+    }
+
+    /// **Hold these until the next break** (R79). See [`JobWatchers::held`].
+    pub fn hold(&self, more: Vec<JobCompletion>) {
+        if more.is_empty() {
+            return;
+        }
+        self.held.lock().expect("held results").extend(more);
+    }
+
+    /// **Everything held, taken** — the batch, or the set the sort re-reads.
+    pub fn take_held(&self) -> Vec<JobCompletion> {
+        std::mem::take(&mut *self.held.lock().expect("held results"))
+    }
+
+    /// When the longest-held result arrived, or `None` when nothing is held — what the
+    /// starvation cap is read against.
+    pub fn oldest_held(&self) -> Option<SystemTime> {
+        self.held
+            .lock()
+            .expect("held results")
+            .iter()
+            .map(|c| c.arrived)
+            .min()
+    }
+
+    /// How many results are held right now.
+    pub fn held_count(&self) -> usize {
+        self.held.lock().expect("held results").len()
     }
 
     /// **The session at the top of this tree** — the ROOT, which is where a subagent's ask
@@ -569,7 +670,11 @@ impl JobWatchers {
         self.stop.store(true, Ordering::Relaxed);
         let pending: Vec<JobCompletion> = {
             let mut own = self.completions.lock().expect("job completions");
-            own.drain(..).collect()
+            // **What was HELD goes up with the queue** (R79): a held result is one this session
+            // was going to read at its next break, and a stopped session has none.
+            let mut all = self.take_held();
+            all.extend(own.drain(..));
+            all
         };
         // A session at the top of a tree has nowhere to hand anything up to, and a
         // session that drained everything it had leaves nothing to carry.
@@ -931,6 +1036,7 @@ fn watch_one(
                     produced,
                     elapsed_ms,
                     detail: String::new(),
+                    arrived: SystemTime::now(),
                 });
                 settled.lock().expect("job watchers").insert(job.clone());
                 break;
@@ -1051,6 +1157,7 @@ fn settled_here(
         elapsed_ms: 0,
         detail,
         memory: None,
+        arrived: SystemTime::now(),
     });
     settled
         .lock()

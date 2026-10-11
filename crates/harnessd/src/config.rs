@@ -689,6 +689,12 @@ pub struct Config {
     /// follow-up in the same stretch of work finds the child as it left it, short enough that a
     /// tree that churns through hundreds of children holds the few it is using.
     pub child_park_after: Option<std::time::Duration>,
+    /// **The starvation cap on held results** (R79): a job or subagent result nothing in the plan
+    /// waits on is held for the next turn boundary, and a turn that runs longer than this with
+    /// one held gets the batch at its next round boundary anyway. Measured from the moment the
+    /// longest-held result arrived. Default [`crate::delivery::HELD_RESULTS_CAP`], ten minutes —
+    /// the operator's number; see that constant.
+    pub held_results_cap: std::time::Duration,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
@@ -1674,6 +1680,7 @@ impl Config {
             allow_bash: false,
             max_subagent_depth: 3,
             child_park_after: Some(std::time::Duration::from_secs(600)),
+            held_results_cap: crate::delivery::HELD_RESULTS_CAP,
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,

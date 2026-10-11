@@ -96,6 +96,7 @@ pub mod context_claim;
 pub mod corpus;
 pub mod daemon;
 pub mod decision_source;
+pub mod delivery;
 pub mod dialect;
 pub mod etalon;
 pub mod etalon_map;
