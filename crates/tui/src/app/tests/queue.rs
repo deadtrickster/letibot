@@ -1191,3 +1191,55 @@ fn a_click_on_a_queue_row_selects_the_entry_drawn_there() {
     a.key(Key::Enter);
     assert_eq!(a.queue_open.as_deref(), Some("c3"));
 }
+
+/// **The wheel and the page keys scroll the queue, not the conversation hidden under it**
+/// (R67 item 5). The queue pane and an entry's overlay were missing from the chords' pane list,
+/// so a notch over the queue scrolled the transcript underneath and parked it at "holding"; and
+/// the overlay's own PageUp/PageDown arm was dead code, because the chords run first.
+#[test]
+fn the_wheel_and_page_keys_scroll_the_queue_pane_and_its_overlay() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let entries = (0..30)
+        .map(|i| {
+            let mut e = queue_entry(&format!("c{i}"), MergeState::Waiting);
+            e.branch = format!("agent/child-{i}");
+            e
+        })
+        .collect();
+    a.apply(queue_frame(entries, Vec::new()));
+    a.screen(100, 16);
+    assert!(
+        a.pane_len > a.pane_room,
+        "the queue is longer than its window"
+    );
+    assert_eq!(a.key(Key::WheelDown), None);
+    assert_eq!(a.pane_scroll, 3, "a notch scrolls the pane");
+    assert!(a.following(), "the conversation underneath did not move");
+    a.key(Key::PageDown);
+    assert!(a.pane_scroll > 3, "PageDown pages the pane");
+    a.key(Key::WheelUp);
+    a.key(Key::PageUp);
+    assert_eq!(a.pane_scroll, 0);
+    assert!(a.following());
+
+    // The entry's overlay pages the same way.
+    a.key(Key::Enter);
+    assert!(a.queue_open.is_some());
+    a.screen(100, 8);
+    assert!(
+        a.pane_len > a.pane_room,
+        "the overlay is longer than its window"
+    );
+    a.key(Key::PageDown);
+    assert!(a.pane_scroll > 0, "PageDown pages the overlay");
+    a.key(Key::WheelUp);
+    a.key(Key::PageUp);
+    assert_eq!(a.pane_scroll, 0);
+    assert!(
+        a.following(),
+        "the overlay's scroll did not reach the transcript"
+    );
+}

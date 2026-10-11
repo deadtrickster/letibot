@@ -174,13 +174,16 @@ impl App {
                 self.redraw = true;
                 return ControlFlow::Break(None);
             }
-            if matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
-                let page = self.pane_room.max(1);
-                match k {
-                    Key::Up => self.pane_scroll = self.pane_scroll.saturating_sub(1),
-                    Key::Down => self.pane_scroll += 1,
-                    Key::PageUp => self.pane_scroll = self.pane_scroll.saturating_sub(page),
-                    _ => self.pane_scroll += page,
+            // **The arrows only.** The page keys and the wheel are `key_chords`'s, which runs
+            // first and settles them for every pane through `pane_scroll` — the rule
+            // `key_todo_open` writes down. A PageUp/PageDown arm stood here and was dead code that
+            // looked live: the chords took the keys first and, with the queue missing from their
+            // list, scrolled the transcript instead.
+            if matches!(k, Key::Up | Key::Down) {
+                if matches!(k, Key::Up) {
+                    self.pane_scroll = self.pane_scroll.saturating_sub(1);
+                } else {
+                    self.pane_scroll += 1;
                 }
                 // Clamped against the last draw's own numbers: the key handler has no width and
                 // no height, and a scroll clamped against a guess walks past the end.

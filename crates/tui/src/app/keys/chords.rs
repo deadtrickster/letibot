@@ -262,6 +262,12 @@ impl App {
                     // scrolled the transcript underneath it, one pane over from the
                     // same defect the subagent view had.
                     || self.slash_out.is_some()
+                    // **And the merge queue, its list and an entry's overlay** (R67 item 5):
+                    // both draw through `pane_window`, and both were missing here, so the wheel
+                    // or PgUp over the queue scrolled the conversation hidden under it and
+                    // parked it at "holding" — the operator closed the pane into scrollback.
+                    || self.queue_pane
+                    || self.queue_open.is_some()
                 {
                     // **The polarity is the opposite of the transcript's**, and
                     // getting it wrong here made PageDown a no-op that looked
