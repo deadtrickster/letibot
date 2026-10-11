@@ -1523,7 +1523,7 @@ unaffected.
 
 ---
 
-## R76 — A red target nobody's model hears, a gate that runs in the daemon's own memory, and no way for an agent to get itself out — **OPEN, 2026-10-11**
+## R76 — A red target nobody's model hears, a gate that runs in the daemon's own memory, and no way for an agent to get itself out — **OPEN, 2026-10-11; items 1–5 BUILT on `r76-queue` (not merged) — see the end of this entry**
 
 Found on the operator's live pg-noop red main the evening R61 landed (*"how to get out of this red
 main situation? like how to let the system know it is green or rerun?"*, *"looks like the main
@@ -1615,6 +1615,83 @@ left a red-main review `red-main-ec3cb01e8a6f` pointing at a commit that no long
 failing step; that session can re-gate, withdraw a stale review and read the evidence through a
 tool; an amended target supersedes its stale review by itself; a gate's peak memory is in its row
 and the daemon's `memory.high` is not charged for it.
+
+### Built on `r76-queue` (2026-10-11): items 1–5
+
+One commit per item; no store schema change and no wire change (protocol stays 44 — the health
+word, the moves and the warnings are strings already on the wire).
+
+1. **A target emergency reaches a model** (`c1c3bca`). Every pass of a repository's worker rings the
+   project that has to act, once per worker per red tip or parked row
+   (`RepoQueue::ring_the_projects`): `QueueDoor::ring_repository` wakes the root sessions this
+   daemon holds whose workspace is the repository (never the review queue's session, never a
+   subagent; `Registry::held_ids` reads no store) for red / timed out / unjudged targets and the red
+   tip's review blocked or undecided; `ring_project` wakes a branch's root for its review blocked
+   or undecided. The woken session reads the words off the store in `Harness::wake`
+   (`Harness::queue_emergency_notices`, once per daemon), built by `mergequeue::notices`: the
+   failing step and the last 30 lines of its output FIRST, then what is held, then the `queue`
+   tool's ways out and what is the operator's. Hub warnings stay. Tests: `serve::tests::
+   a_red_target_and_a_blocked_review_ring_the_project_once_each`, `harness::queue_e2e::
+   a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_first` (also
+   `RegistryDoor::ring_repository` rings exactly the repository's root).
+2. **The `queue` tool** (`8fd3d47`): `letibot_tools::builtins::queue` over a daemon `QueueDesk`
+   (`mergequeue::desk::SessionQueue`, bound to the session): `status` (both queues, health, the
+   failing step's tail, the lease and whether it is stale), `regate`, `restart`, `withdraw`
+   (recorded as `agent:<session>` with the model's words), `propose_target` — raised as
+   `queue_target_proposed` naming the exact `[queue]\ntarget = "…"` lines and the `leticode.toml`,
+   recorded in the target's history, **no file written**. Schema `Write` (withdraw goes to the
+   gate); `status` narrows to `Read`, the rest to `Session`. Seated in `leticode` (max_tools 29).
+   Tests: `tools … builtins::queue::tests` (withdraw refused by the default boundary, the rest
+   reach the desk), `harnessd … mergequeue::desk::tests::
+   the_model_reads_regates_withdraws_and_only_proposes_the_target`.
+3. **Re-gate** (`831e1dc`): `mergequeue::verbs::regate` writes the health back to `gating` at the
+   tip now (the door the red tip's reviewer already used); the worker gates it on its next pass,
+   and the answer says when no daemon holds the lease. `/queue regate [/REPO] [TARGET]` (a path
+   first is another repository), the pane's `g` on a row (its repository and target), the tool's
+   `regate`. A daemon taking a repository's lease re-gates every target last judged `red`,
+   `blocked` or `timed_out` (`verbs::regate_at_start`). Test: `serve::tests::
+   a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue`; slash grammar in
+   `the_queue_sub_verbs_are_the_persons_and_nothing_else`; the key in `tui … queue`.
+4. **A rewritten target supersedes its stale review** (`805432e`): the review upkeep first
+   withdraws an open/undecided `kind = target` review whose head is gone or is not an ancestor of
+   the target's tip — *"superseded: the target was rewritten from X to Y"* — and the health pass
+   gates the new tip. A tip that only moved forward keeps its review. Test: `serve::tests::
+   an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_one` (an amend,
+   and a blocked review of a commit that does not exist). Also fixed there: two gates started in
+   one millisecond shared a step log (`gate::tempfile_in` now numbers them).
+5. **Gate setup vs code** (`1c13f06`): `mergequeue::setup::setup_failure` — by step (every step
+   before the failing one passed, one a build/test, the failing one neither) or by its words (one
+   step whose output shows a build/test passing, no compile error / failed test / panic / fmt diff,
+   last lines naming a missing thing). Then the health is `blocked` with evidence leading *"the
+   gate's own setup failed at step N of M (`cmd`): …"*, raised `gate_setup_failed` (high, not
+   emergency), no red-tip review, nothing lands; a branch's landing in the same case is parked
+   `blocked`, not `failed`. Tests: `mergequeue::setup::tests` (pg-noop's own output; a failed test,
+   compile error, panic or corpus regression stays red), `serve::tests::
+   a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_nothing`.
+
+**Left:**
+
+- **Nobody held → nobody told.** A ring finds only root sessions this daemon HOLDS; with none open
+  in the repository the notice waits for the next wake of one (said in the daemon's log). Resuming
+  the most recent root from the store (as `ring_project` does for a branch) needs a cheap
+  "roots by workspace" read the store does not have (`list_sessions` is the 0.5 s scan).
+- **Once is per daemon**: the worker's `rung` set and the harness's `gate_told` are in memory, so a
+  restart tells again (it also re-gates, so the telling is about a fresh verdict).
+- **The setup heuristic is words**: by-output it needs cargo's `Finished`/`test result: ok` and a
+  missing-thing phrase in the last 3 lines; a script that says neither stays `red`. A gate could
+  instead declare a setup exit code; not done.
+- `queue_emergency_notices` adds a whole-`review_queue` read to every wake (R74 item 3's cost).
+- `propose_target` is a hub warning plus a history row, not an answerable card.
+- Items 6–7 are another branch's.
+
+**Now, on the live pg-noop case** (after this lands and the daemon serving pg-noop is restarted on
+the build — the restart itself re-gates `main`): the stale `red-main-ec3cb01e8a6f` is withdrawn
+as superseded on the first pass; `main`'s gate reads as *the gate's own setup failed* (no
+`letidb`), not RED. Then either `[queue]` / `target = "feat/memory-engine"` in pg-noop's
+`leticode.toml` (decision 12) and `/queue regate /home/dead/Projects/dbtest/pg-noop
+feat/memory-engine`, or fix `scripts/merge_gate.sh` on `main` and `/queue regate
+/home/dead/Projects/dbtest/pg-noop main`. The project's agent can do the same through `queue`
+(`status`, `regate`, `propose_target`).
 
 ---
 
