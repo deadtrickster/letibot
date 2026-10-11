@@ -2233,12 +2233,13 @@ impl<'a> Sessions<'a> {
         }
         // **Already in the registry** — a head opened it, or a previous pass did — so the name is the
         // one it already carries.
+        // From the registry's entry, not `list()` (R68.6): the entry was created with the stored
+        // row's title above (or by a head's resume, which carries it too), and a rename updates
+        // both — so this is the same name without a read of every stored session, every pass.
         let title = self
             .registry
-            .list()
-            .iter()
-            .find(|b| b.session_id == gatekeeper::SESSION)
-            .map(|b| b.title.clone())
+            .title_of(gatekeeper::SESSION)
+            .filter(|t| !t.is_empty())
             .unwrap_or_else(|| gatekeeper::TITLE.to_string());
         self.open_as(
             gatekeeper::SESSION,
