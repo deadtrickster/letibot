@@ -544,15 +544,25 @@ pub fn view_grant_options() -> Vec<DecisionOption> {
     ]
 }
 
-/// **The memory card's answers** (TODO.md R65): the operator grants what was asked, or not.
-/// No "for the rest of the session" — each ask above the ceiling is its own question, because
-/// what is free changes between them.
+/// **The memory card's answers** (TODO.md R65): the operator grants what was asked, once or for
+/// the session, or not.
+///
+/// **For the session is BOUNDED by the amount on this card**, not a blank cheque: the operator,
+/// on getting the asks one after another — *"i started to get memory asks, session_allow option
+/// is missing"*. The reason it was left out still holds — what is free changes between asks — so
+/// a later ask is waved through only when it is no larger than what was granted AND no larger
+/// than what is free at that moment; anything else asks again ([`AdjudicatedGate::grant_memory`]).
 pub fn memory_grant_options() -> Vec<DecisionOption> {
     vec![
         DecisionOption {
             id: "grant_memory".into(),
             label: "Let this command have it".into(),
             kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "grant_memory_session".into(),
+            label: "Let this session have up to this — ask again above it".into(),
+            kind: OptionKind::AllowSession,
         },
         DecisionOption {
             id: "deny".into(),
@@ -1785,6 +1795,11 @@ pub struct AdjudicatedGate {
     /// asking me about git"*. See [`crate::grant`], and note that the intent set is in
     /// the key because that is what an execution vehicle changes.
     grants: Vec<crate::grant::Grant>,
+    /// **The memory the operator let this session have without asking**, from a
+    /// `grant_memory_session` answer: `Some(Some(bytes))` up to that size, `Some(None)` uncapped,
+    /// `None` nothing granted. Read only by [`AdjudicatedGate::grant_memory`]; cleared with the
+    /// other session grants when the mode changes.
+    memory_session: Option<Option<u64>>,
     /// Shapes the operator approved themselves, with the effect class they approved
     /// them at. See the lookup for the bounds.
     ///
@@ -1884,6 +1899,7 @@ impl AdjudicatedGate {
             agent: "agent".into(),
             mode: crate::mode::UNSEEN_PROJECT,
             grants: Vec::new(),
+            memory_session: None,
             approved_shapes: std::collections::HashMap::new(),
             agent_claim: Box::new(|| None),
             permission: crate::permission::Ruleset::new(),
@@ -2922,6 +2938,17 @@ impl Gate for AdjudicatedGate {
         ask: &crate::exec::memory::MemoryAsk,
     ) -> crate::exec::memory::MemoryGrant {
         use crate::exec::memory::MemoryGrant;
+        // **A session grant covers an ask no larger than it and no larger than what is free.**
+        // Uncapped is covered only by an uncapped grant, and an uncapped ask has no size to hold
+        // against what is free, so the grant itself is the operator's word on it.
+        let covered = match (self.memory_session, ask.bytes) {
+            (Some(None), _) => true,
+            (Some(Some(up_to)), Some(b)) => b <= up_to && b <= ask.available,
+            _ => false,
+        };
+        if covered {
+            return MemoryGrant::Granted;
+        }
         if self.adjudicator.describe().starts_with("none") {
             return MemoryGrant::NotAsked;
         }
@@ -2978,6 +3005,16 @@ impl Gate for AdjudicatedGate {
             DecisionOutcome::Selected { option_id } if option_id == "grant_memory" => {
                 MemoryGrant::Granted
             }
+            DecisionOutcome::Selected { option_id } if option_id == "grant_memory_session" => {
+                // The larger of what was granted before and this, so a second, bigger session
+                // grant widens it and a smaller one never narrows what the operator already gave.
+                self.memory_session = Some(match (self.memory_session, ask.bytes) {
+                    (Some(None), _) | (_, None) => None,
+                    (Some(Some(was)), Some(b)) => Some(was.max(b)),
+                    (None, Some(b)) => Some(b),
+                });
+                MemoryGrant::Granted
+            }
             DecisionOutcome::Selected { .. } => MemoryGrant::Refused(d.basis.clone()),
             _ => MemoryGrant::NotAsked,
         }
@@ -3006,6 +3043,7 @@ impl Gate for AdjudicatedGate {
     fn set_mode(&mut self, mode: crate::mode::Mode) -> Result<usize, String> {
         let dropped = self.grants.len();
         self.grants.clear();
+        self.memory_session = None;
         self.mode = mode;
         Ok(dropped)
     }

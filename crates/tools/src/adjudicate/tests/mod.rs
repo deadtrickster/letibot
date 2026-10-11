@@ -128,5 +128,6 @@ mod breaker;
 mod gate;
 mod grants;
 mod history;
+mod memory;
 mod outcomes;
 mod supervised;
