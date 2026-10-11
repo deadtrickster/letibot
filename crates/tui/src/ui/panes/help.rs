@@ -31,7 +31,12 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "pgup pgdn",
             "scroll the transcript; esc returns to following the stream",
         ),
-        ("wheel", "scroll the transcript; shift+drag selects text"),
+        (
+            "wheel",
+            "scrolls what is in front: a card whose question runs past its window, an open \
+             ctrl-v result, an open pane or listing — and the transcript when none is up. \
+             shift+drag selects text",
+        ),
         (
             "ctrl-a ctrl-e",
             "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks",
@@ -74,11 +79,35 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "click",
-            "in the session list, picks the row under the pointer; enter still switches",
+            "moves the cursor to the row under the pointer — in the session list, a setting \
+             card, the todos pane and the queue pane; enter still acts. On an edit or write row \
+             it opens the change in a popup, the whole file with the edit inline: esc closes it, \
+             ctrl-] takes it to the editor. On the subagents or jobs count in the prompt's top \
+             edge, it opens that pane",
         ),
         (
             "ctrl-t",
             "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves (or click a row), enter reads the row under the cursor whole, tab acts on it (the card, done, unfold), pgup/pgdn scrolls",
+        ),
+        (
+            "ctrl-g  /subagents",
+            "the subagent tree: ↑↓ moves, enter (or o) goes into that subagent's session, p \
+             reads its output without leaving; esc inside a subagent goes back up",
+        ),
+        (
+            "ctrl-q  /jobs",
+            "the background jobs this session started: ↑↓ moves, enter reads a job's output",
+        ),
+        (
+            "ctrl-o",
+            "move the command that is running now to the background — it keeps running as a job",
+        ),
+        ("/todos", "the todos pane, the same as ctrl-t"),
+        (
+            "/queue",
+            "the merge queue: ↑↓ moves (or click a row), enter opens the entry, tab switches \
+             between the review and the merge view; a approves, v vetoes, d drops and r \
+             restarts the entry under the cursor (letters act only on an empty prompt)",
         ),
         (
             "/new [title]",
@@ -96,8 +125,9 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "ctrl-]",
-            "open the newest file this conversation changed in rano, on the change — a click \
-             on an edit or write row opens that one. In the editor, ctrl-] comes back to the \
+            "open the newest file this conversation changed in rano, on the change (a click on \
+             an edit or write row opens that one in the diff popup, and ctrl-] from there is \
+             the editor). In the editor, ctrl-] comes back to the \
              composer (and goes again), alt-s puts your place — and the selection, fenced — \
              in the composer for you to finish and send, alt-p shows the change again, and \
              ctrl-q or ^X closes it, asking first about unsaved edits",

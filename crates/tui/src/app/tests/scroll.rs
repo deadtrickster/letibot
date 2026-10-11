@@ -868,8 +868,10 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
     let shown = b.screen(80, 24).join("\n");
     assert!(!shown.contains("row 0"), "row 0 was skipped: {shown}");
     assert!(shown.contains("row 1"), "{shown}");
+    // The listing's own footer, not the hint bar's `esc closes this`, which names the same key
+    // on the bar for as long as the listing is up.
     assert!(
-        !shown.contains("esc closes"),
+        !shown.contains("esc closes · up/down scrolls"),
         "the footer is below the window: {shown}"
     );
 

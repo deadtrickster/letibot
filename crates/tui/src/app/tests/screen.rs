@@ -668,3 +668,66 @@ fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
         "the click ran the chord's toggle, not just its open"
     );
 }
+
+/// **The help names the keys this head has, as they behave** (R67 item 9). It said a click on
+/// an edit row opens rano (it opens the diff popup), that the wheel scrolls the transcript (it
+/// scrolls whatever is in front), and never mentioned ctrl-g, ctrl-q, ctrl-o, `/queue`,
+/// `/jobs`, `/todos` or `/subagents`.
+#[test]
+fn the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do() {
+    let cfg = plain_cfg(200);
+    let help = crate::ui::panes::help::help_lines(&cfg, 200).join("\n");
+    for needle in [
+        "ctrl-g",
+        "ctrl-q",
+        "ctrl-o",
+        "/queue",
+        "/jobs",
+        "/todos",
+        "/subagents",
+    ] {
+        assert!(
+            help.contains(needle),
+            "help never mentions {needle}:\n{help}"
+        );
+    }
+    assert!(help.contains("diff popup"), "{help}");
+    assert!(
+        !help.contains("wheel    scroll the transcript;")
+            && !help.contains("scroll the transcript; shift+drag"),
+        "the wheel's row still says it scrolls the transcript:\n{help}"
+    );
+}
+
+/// **The bar names the keys of the surface in front** (R67 item 9) — the subagent output over
+/// the tree, a slash listing and the ctrl-v window had no mode of their own. With the output
+/// open over the subagents pane the bar said "enter (or o) opens a subagent", while Enter
+/// re-reads the output and `o` falls through to switching session.
+#[test]
+fn the_bar_names_the_keys_of_the_output_listing_and_window_in_front() {
+    let mut a = app();
+    a.subagents_pane = true;
+    a.sub_out = Some(SubOut {
+        session_id: "sub-1".into(),
+        lines: vec!["out".into()],
+        degraded: false,
+        scroll: 0,
+        spill: None,
+        dropped: 0,
+    });
+    let bar = a.hint_bar(200);
+    assert!(!bar.contains("opens a subagent"), "{bar}");
+    assert!(bar.contains("enter reads it again"), "{bar}");
+
+    let mut a = app();
+    a.slash_out = Some(("/notes".into(), vec!["a note".into()]));
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("↑↓ scrolls"), "{bar}");
+    assert!(!bar.contains("ctrl-s sessions"), "{bar}");
+
+    let mut a = app();
+    a.payload_sel = Some("r.0".into());
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("page the result"), "{bar}");
+    assert!(!bar.contains("ctrl-s sessions"), "{bar}");
+}

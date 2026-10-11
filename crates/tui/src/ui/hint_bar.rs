@@ -22,7 +22,10 @@ impl App {
             None => Line::default(),
         };
         // The order is the order of precedence: the first of these that is true is what the
-        // keys do right now.
+        // keys do right now. **A surface rano has no mode for says its keys in this head's half
+        // (`own`), set in the SAME branch that picks the mode** — so the two halves of the bar
+        // cannot come from two different surfaces.
+        let mut own: Option<&str> = None;
         let mode = if self.quit_card {
             HintMode::QuitCard
         } else if self.detached() {
@@ -30,18 +33,26 @@ impl App {
         } else if self.diff_popup.is_some() && !self.open.is_empty() {
             // **A decision under the diff popup has the card's keys** (`App::key_diff_popup`
             // yields them), so the bar says what the card's keys do; the popup's own keys are
-            // named in this head's half below.
+            // named in this head's half.
+            own = Some("the diff: pgup/pgdn scroll · esc closes it");
             HintMode::Deciding
         } else if self.diff_popup.is_some() {
             // **The popup is a reading screen with no mode of its own in rano**: `Reading`'s
             // tail (`esc closes this`) is true of it, and its keys go in this head's half. It
             // used to fall through to whatever was under it — the conversation's chords, all
             // dead while the popup owns the keyboard.
+            own = Some("↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor");
             HintMode::Reading
         } else if self.editor_focused() {
             HintMode::Editor
         } else if self.editor_drawn() {
             HintMode::EditorBehind
+        } else if self.slash_out.is_some() {
+            // **A slash listing is a reading screen** (R67 item 9) — drawn ahead of help in
+            // `main_area`, and its keys are the arrows and Esc (`key_slash_out`). It had no
+            // branch, so the bar named whatever was under it.
+            own = Some("↑↓ scrolls");
+            HintMode::Reading
         } else if self.help || self.stats {
             HintMode::Reading
         } else if self.picker {
@@ -64,6 +75,14 @@ impl App {
             HintMode::Reading
         } else if self.config_pane {
             HintMode::Config
+        } else if self.sub_out.is_some() {
+            // **A subagent's output, open over the tree** (R67 item 9): its keys are not the
+            // list's. With it up the bar said "enter (or o) opens a subagent" while Enter
+            // re-read the output and `o` fell through to switching session. rano has no mode
+            // for it (`JobOutput`'s tail names → and ←, which this view does not take), so
+            // `Reading` and the keys in this head's half.
+            own = Some("↑↓ scroll · enter reads it again · esc back to the subagents");
+            HintMode::Reading
         } else if self.subagents_pane {
             HintMode::Subagents
         } else if self.job_out.is_some() {
@@ -81,6 +100,13 @@ impl App {
             // lines down. `Reading`'s tail — `esc closes this` — is true of the list, and the
             // keys that matter are named on the left.
             HintMode::Reading
+        } else if self.payload_sel.is_some() && self.open.is_empty() {
+            // **The ctrl-v window** (R67 item 9): the arrows and the page keys page it and Esc
+            // closes it (`key_payload_window`); the composer stays live under it. Below a card,
+            // whose keys come after this window's in `App::key` only for the keys this window
+            // does not take — the card's digits and Enter — so a card keeps its own bar.
+            own = Some("↑↓ pgup/pgdn page the result · home/end its ends · enter still sends");
+            HintMode::Reading
         } else if !self.open.is_empty() {
             HintMode::Deciding
         } else {
@@ -92,13 +118,10 @@ impl App {
         // of the SAME row and is empty while a pane has the keyboard. They lead there on purpose:
         // the bar is over capacity at 80 columns by construction, and the renderer keeps the head,
         // so the keys this pane adds are the ones that survive the cut.
-        let editor = if self.diff_popup.is_some() && !self.open.is_empty() {
-            Line::styled("the diff: pgup/pgdn scroll · esc closes it", Role::Faint)
-        } else if self.diff_popup.is_some() {
-            Line::styled(
-                "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor",
-                Role::Faint,
-            )
+        let editor = if let Some(own) = own {
+            Line::styled(own, Role::Faint)
+        } else if self.help || self.stats {
+            editor
         } else if self.todos_open.is_some() {
             Line::styled(self.todos_open_hint(), Role::Faint)
         } else if self.todos_pane {
