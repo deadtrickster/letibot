@@ -380,6 +380,25 @@ pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'st
     QUEUED
 }
 
+/// **`queued`, and what the daemon is busy with instead, when it has said.**
+///
+/// `filling` is the `what` of the [`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)
+/// the daemon is walking right now. A prompt nothing has taken while one runs is waiting behind
+/// THAT — a `/reseat` holds the worker until its carry is written, and the operator watched a bare
+/// `queued` for 6.5 minutes of one (rano, 2026-10-12) with nothing saying why. The daemon's words
+/// up to a `:` are its short name for the operation (`re-seating: carrying …`), so the mark stays
+/// short enough to leave the prompt room on its row. Any other mark is returned as it is: only a
+/// prompt still in the queue is waiting behind anything.
+pub(crate) fn queued_behind(mark: &str, filling: Option<&str>) -> String {
+    match filling {
+        Some(what) if mark == QUEUED && !what.is_empty() => {
+            let short = what.split_once(':').map_or(what, |(head, _)| head).trim();
+            format!("{QUEUED} behind {short}")
+        }
+        _ => mark.to_string(),
+    }
+}
+
 pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
     // Folded here as well as in `user_block`, and it has to be the same text going in: the
     // pending row is removed when the transcript's user item MATCHES it, so a head that queued

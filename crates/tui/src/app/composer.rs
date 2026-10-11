@@ -261,12 +261,24 @@ impl App {
         // reused, because answering against a half-adopted transcript and then appending
         // the rest would put the conversation in the wrong order (R2's rule with the whole
         // history missing).
-        if self.filling.is_some() {
-            self.set_composer(&text);
-            self.say(
+        //
+        // **Said in the daemon's words for the operation**, because an import is no longer the
+        // only fill: a `/reseat` carrying a long conversation is one too (rano, 2026-10-12,
+        // 6.5 minutes), and a line held under the words *still being imported* during a
+        // re-seat names an operation that is not happening.
+        if let Some((what, ..)) = &self.filling {
+            let said = if what.contains("import") {
                 "the conversation is still being imported — your line is held here. It sends \
-                 when the import is done.",
-            );
+                 when the import is done."
+                    .to_string()
+            } else {
+                format!(
+                    "the daemon is busy {what} — your line is held here. Enter sends it when \
+                     that is done."
+                )
+            };
+            self.set_composer(&text);
+            self.say(&said);
             self.redraw = true;
             return None;
         }

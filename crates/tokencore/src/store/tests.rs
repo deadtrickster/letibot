@@ -2009,3 +2009,157 @@ fn an_operator_question_round_trips_and_the_store_counts_who_is_waiting() {
     assert!(!waiting.contains_key("quiet"));
     assert_eq!(operator_asks(&back).len(), 1);
 }
+
+/// A `n`-row run continuing `ledger`, as [`Store::append_items`] takes it.
+fn rows_for(
+    ledger: &mut TokenLedger,
+    from: usize,
+    n: usize,
+) -> Vec<(TranscriptItem, LedgerRow, Vec<TokenId>)> {
+    (from..from + n)
+        .map(|i| {
+            let toks: Vec<TokenId> = (0..32).map(|t| (i * 32 + t) as TokenId).collect();
+            let row = ledger.append(&format!("it-{i}"), &toks).unwrap().clone();
+            let item = TranscriptItem::Assistant {
+                text: format!("row {i}"),
+                tool_calls: vec![],
+                truncated: false,
+            };
+            (item, row, toks)
+        })
+        .collect()
+}
+
+fn borrowed(
+    rows: &[(TranscriptItem, LedgerRow, Vec<TokenId>)],
+) -> Vec<(&TranscriptItem, &LedgerRow, &[TokenId])> {
+    rows.iter().map(|(i, r, t)| (i, r, t.as_slice())).collect()
+}
+
+/// **A run of rows lands whole or not at all, and the triggers still check every row.**
+///
+/// `append_items` is the batched form of `append_item` that a fork's carry writes through, so
+/// it must refuse exactly what the single form refuses — and refuse it for the WHOLE run: a
+/// chunk that half-landed would leave the harness's `persisted` count disagreeing with the
+/// store, which is the one state a resume cannot rebuild honestly.
+#[test]
+fn a_run_of_rows_lands_whole_or_not_at_all() {
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let first = rows_for(&mut ledger, 0, 10);
+    s.append_items(&tr, 0, borrowed(&first)).unwrap();
+    assert_eq!(s.item_count(&tr).unwrap(), 10);
+
+    // A run whose fourth row leaves a hole in the token stream.
+    let good = rows_for(&mut ledger, 10, 6);
+    let mut bad = good.clone();
+    bad[3].1.tok_offset += 7;
+    assert!(s.append_items(&tr, 10, borrowed(&bad)).is_err());
+    assert_eq!(
+        s.item_count(&tr).unwrap(),
+        10,
+        "none of the refused run's rows landed, not even the three before the bad one"
+    );
+
+    // A run at a seq that skips is refused too.
+    assert!(s.append_items(&tr, 11, borrowed(&good)).is_err());
+    assert_eq!(s.item_count(&tr).unwrap(), 10);
+
+    // And the good continuation lands, readable as the rows it wrote.
+    s.append_items(&tr, 10, borrowed(&good)).unwrap();
+    let back = s.load_transcript(&tr).unwrap();
+    assert_eq!(back.items.len(), 16);
+    assert_eq!(back.items[15].1, good[5].1);
+    assert_eq!(back.items[15].2, good[5].2);
+    // The connection is not left inside a transaction.
+    assert!(s.connection().is_autocommit());
+}
+
+/// **MEASURED: under a competing writer, a row per transaction is what made the re-seat take
+/// minutes, and a run per transaction is not.**
+///
+/// The rano session's `/reseat`, 2026-10-12: 971 rows written from 01:17:48 to 01:24:07, one
+/// autocommit `INSERT` each, on a store a dozen daemons write to. Every row was its own trip
+/// for the file's single write lock, and while another connection holds it each trip pays the
+/// busy handler's back-off. This reproduces the shape with one competitor that holds the lock
+/// most of the time, writes the same 200 rows both ways, and requires the run form to be much
+/// faster. Both numbers are printed, because they are the measurement.
+#[test]
+fn under_a_competing_writer_a_run_is_written_far_faster_than_rows_one_by_one() {
+    let path = std::env::temp_dir().join(format!(
+        "letibot-append-contention-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    struct Clean(std::path::PathBuf);
+    impl Drop for Clean {
+        fn drop(&mut self) {
+            for ext in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{ext}", self.0.display()));
+            }
+        }
+    }
+    let _clean = Clean(path.clone());
+    let s = Store::open(&path).unwrap();
+    let (tr, prefix_id) = seeded(&s);
+    s.put_transcript("tr-2", "sess-1", &prefix_id).unwrap();
+
+    // The other daemons: a connection that takes the write lock, holds it a few
+    // milliseconds, lets go for a moment, and takes it again.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let competitor = {
+        let stop = stop.clone();
+        let path = path.clone();
+        std::thread::spawn(move || {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+            c.execute_batch("CREATE TABLE IF NOT EXISTS competitor (x INTEGER)")
+                .unwrap();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                c.execute_batch("BEGIN IMMEDIATE").unwrap();
+                c.execute("INSERT INTO competitor (x) VALUES (1)", [])
+                    .unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(4));
+                c.execute_batch("COMMIT").unwrap();
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    const N: usize = 200;
+    let mut one = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    let rows = rows_for(&mut one, 0, N);
+    let began = std::time::Instant::now();
+    for (i, (item, row, toks)) in rows.iter().enumerate() {
+        s.append_item(&tr, i as u32, item, row, toks).unwrap();
+    }
+    let one_by_one = began.elapsed();
+
+    let mut run = TokenLedger::new("tr-2", &[1, 2, 3, 4]).unwrap();
+    let rows = rows_for(&mut run, 0, N);
+    let began = std::time::Instant::now();
+    for (k, chunk) in borrowed(&rows).chunks(Store::APPEND_CHUNK).enumerate() {
+        s.append_items(
+            "tr-2",
+            (k * Store::APPEND_CHUNK) as u32,
+            chunk.iter().copied(),
+        )
+        .unwrap();
+    }
+    let in_runs = began.elapsed();
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    competitor.join().unwrap();
+    eprintln!("{N} rows under a competing writer: one by one {one_by_one:?}, in runs {in_runs:?}");
+    assert_eq!(s.item_count(&tr).unwrap(), N as u32);
+    assert_eq!(s.item_count("tr-2").unwrap(), N as u32);
+    assert!(
+        in_runs * 5 < one_by_one,
+        "the run form must not pay the lock per row: one by one {one_by_one:?}, in runs {in_runs:?}"
+    );
+}

@@ -2651,6 +2651,18 @@ impl Store {
     /// A chunk that fails busy is retried whole (nothing of it was committed); a chunk that
     /// fails otherwise stops the append with the rows before it committed, and the error
     /// names the row's `seq`, the way a per-row loop's would.
+    ///
+    /// **Each chunk lands whole or not at all**, and the insert trigger checks every row of it
+    /// exactly as it checks [`Store::append_item`]'s: a chunk that half-landed would leave the
+    /// harness's `persisted` count disagreeing with the store, which is the one state a resume
+    /// cannot rebuild honestly. A caller that wants a run to be one transaction hands it at most
+    /// [`Store::APPEND_CHUNK`] rows (`Harness::persist` does, so that each of its chunks is one
+    /// commit and one progress tick).
+    ///
+    /// The same report made the case a second time, from the head's side: the rano session's
+    /// bare `/reseat`, 2026-10-12 01:17, carried 971 rows whose render took two seconds and
+    /// whose per-row write took from 01:17:48 to 01:24:07, while the head showed the old
+    /// conversation and a `queued` prompt and nothing else.
     pub fn append_items<'a, I>(&self, transcript_id: &str, first_seq: u32, rows: I) -> Result<()>
     where
         I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,

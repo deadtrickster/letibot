@@ -213,6 +213,19 @@ pub struct Parts {
 /// restore's own progress bar was killed by the events carrying it.
 const FILLING_STRIDE: usize = 64;
 
+/// How many transcript rows one store transaction writes (`Harness::persist_reporting`).
+///
+/// One transaction per row made a 971-row `/reseat` take 6.5 minutes on a store a dozen daemons
+/// share; one transaction for everything would hold the box's single write lock for the whole of
+/// a long carry. A chunk is the middle: a handful of lock trips for a whole conversation, and the
+/// lock released often enough that another daemon's write never waits behind more than one chunk.
+///
+/// It IS the store's own chunk ([`letibot_tokencore::store::Store::APPEND_CHUNK`], 64, measured
+/// on the `sessions.db` volume as the hold that lets a competing writer in): one chunk here is
+/// then exactly one `BEGIN IMMEDIATE` transaction in the store, so a committed chunk, a tick of
+/// the carry's `Filling` line and the `persisted` count all mean the same rows.
+const PERSIST_CHUNK: usize = letibot_tokencore::store::Store::APPEND_CHUNK;
+
 impl Parts {
     pub fn load(cfg: &Config) -> Result<Parts, HarnessError> {
         let wiring = cfg.dialect.wiring(cfg.effort.as_deref());
@@ -10117,8 +10130,30 @@ impl Harness {
         body.extend_from_slice(tail_items);
         let tail_turns = wire_turns(tail_items);
 
+        // **A carry the head can watch.** Rendering and writing the new transcript is the long
+        // half of a fork that carries the conversation (`/reseat` carries all of it), and the
+        // worker is inside this command until it ends — so a head with nothing on its screen but
+        // the old conversation and a `queued` prompt was the whole of what the operator saw for
+        // 6.5 minutes on 2026-10-12. Said from the first moment (the render is seconds of its
+        // own on a long conversation), then once per committed chunk below — never per row, so
+        // the head's queue is not flooded (see `FILLING_STRIDE`) — and ended by `total of
+        // total`, which is what clears the line. Only for a carry big enough to be a wait.
+        let carrying = body.len() >= FILLING_STRIDE;
+        let filling_what = if verbatim {
+            "re-seating: carrying the conversation onto the new prompt"
+        } else {
+            "compacting: writing the new transcript"
+        };
+        if carrying {
+            self.filling(filling_what, "rows", 0, body.len() as u64);
+        }
         let mut sink = CapturingSink::new(self.hub.clone());
-        next.append_items(&self.engine, &body, &mut sink)?;
+        if let Err(e) = next.append_items(&self.engine, &body, &mut sink) {
+            if carrying {
+                self.filling(filling_what, "rows", body.len() as u64, body.len() as u64);
+            }
+            return Err(e.into());
+        }
         // The swap is the point of no return, and it is deliberately **after** every
         // store write that could fail: a harness that swapped and then could not
         // persist would be a session whose transcript row exists but whose body does
@@ -10163,7 +10198,25 @@ impl Harness {
                 transcript_id: new_id.clone(),
                 parent_id: old_id.clone(),
             });
-        self.persist()?;
+        // The write, ticking per committed chunk — see "a carry the head can watch" above.
+        let what = filling_what;
+        let hub = self.hub.clone();
+        let total = body.len() as u64;
+        let persisted = self.persist_reporting(&mut |done, of| {
+            if carrying {
+                hub.publish(letibot_sessionlog::SessionEvent::Filling {
+                    what: what.to_string(),
+                    unit: "rows".to_string(),
+                    done,
+                    total: of,
+                });
+            }
+        });
+        if carrying && persisted.is_err() {
+            // The line must not be left walking over a write that stopped.
+            self.filling(what, "rows", total, total);
+        }
+        persisted?;
         // **The stored context size is about the OLD conversation.** It is the
         // last prompt the provider measured, and that prompt no longer exists:
         // this fork replaced the history with a summary. Only a turn can put a
@@ -12081,17 +12134,47 @@ impl Harness {
     }
 
     fn persist(&mut self) -> Result<(), HarnessError> {
+        self.persist_reporting(&mut |_, _| {})
+    }
+
+    /// **The rows not yet written, written in chunks of [`PERSIST_CHUNK`], one transaction
+    /// each** — and `progress(done, total)` told after every chunk, in rows of this call.
+    ///
+    /// It used to be one autocommit `INSERT` per row, which is free for the two or three rows
+    /// a round appends and ruinous for a fork that carries the whole conversation: the rano
+    /// session's `/reseat`, 2026-10-12, spent 6.5 minutes writing 971 rows that took two
+    /// seconds to render. See [`letibot_tokencore::store::Store::append_items`] for where the
+    /// time went. Chunked rather than one transaction for the lot so the write lock every
+    /// daemon on the box shares is held for a bounded stretch at a time, and so a long carry
+    /// can say how far it has got between chunks.
+    ///
+    /// `persisted` advances only after a chunk has committed, so a chunk that fails leaves
+    /// the count at the last row that is really in the store, and the next call retries from
+    /// there.
+    ///
+    /// **A busy store is waited out here, not failed on** (`STORE_BUSY_PATIENCE`): the store
+    /// retries a busy chunk for a minute itself, and past that this loop resyncs `persisted`
+    /// from the store, says `store_busy_wait` on the session's hub at most every two minutes,
+    /// and tries again — giving up only when the session closes or the patience runs out.
+    fn persist_reporting(
+        &mut self,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<(), HarnessError> {
         let Some(store) = &self.store else {
             self.persisted = self.session.ledger.rows().len();
             return Ok(());
         };
         let rows = self.session.ledger.rows();
-        let mut from = self.persisted;
+        let start = self.persisted;
+        let total = rows.len().saturating_sub(start) as u64;
         let started = std::time::Instant::now();
         let mut said_at: Option<std::time::Instant> = None;
-        while from < rows.len() {
-            let mut batch = Vec::with_capacity(rows.len() - from);
-            for (i, row) in rows.iter().enumerate().skip(from) {
+        while self.persisted < rows.len() {
+            let from = self.persisted;
+            let to = (from + PERSIST_CHUNK).min(rows.len());
+            let mut chunk: Vec<(&TranscriptItem, &letibot_tokencore::LedgerRow, &[_])> =
+                Vec::with_capacity(to - from);
+            for (i, row) in rows.iter().enumerate().take(to).skip(from) {
                 let item = self.session.items.get(i).ok_or_else(|| {
                     HarnessError::Store(format!(
                         "ledger row {i} ({}) has no item; the two are supposed to be \
@@ -12104,10 +12187,13 @@ impl Harness {
                     .ledger
                     .item_tokens(i)
                     .ok_or_else(|| HarnessError::Store(format!("no tokens for row {i}")))?;
-                batch.push((item, row, tokens));
+                chunk.push((item, row, tokens));
             }
-            match store.append_items(&self.transcript_id, from as u32, batch) {
-                Ok(()) => from = rows.len(),
+            match store.append_items(&self.transcript_id, from as u32, chunk) {
+                Ok(()) => {
+                    self.persisted = to;
+                    progress((to - start) as u64, total);
+                }
                 // **A busy store is waited for, never died of.** pg-noop's model, 2026-10-12
                 // ~01:20: *"the child died on sqlite: database is locked in the harness's own
                 // store … both cost an agent's worth of work."* The store has already retried
@@ -12116,18 +12202,18 @@ impl Harness {
                 // the wait is past `STORE_BUSY_PATIENCE` — a store wedged for half an hour is a
                 // fault to report, not a contention to sit out.
                 Err(e) if e.is_busy() => {
-                    // Some chunks may have committed before the busy one: resume from what
-                    // the store holds, or the next attempt re-sends a row and the append-only
-                    // trigger refuses it.
+                    // A chunk is one transaction and a busy one committed nothing, but the
+                    // store is the authority: resume from what it holds, or the next attempt
+                    // re-sends a row and the append-only trigger refuses it.
                     if let Ok(n) = store.item_count(&self.transcript_id) {
-                        from = (n as usize).clamp(from, rows.len());
+                        self.persisted = (n as usize).clamp(from, rows.len());
                     }
+                    let at = self.persisted;
                     let waited = started.elapsed();
                     if waited >= STORE_BUSY_PATIENCE {
-                        self.persisted = from;
                         return Err(HarnessError::Store(format!(
-                            "row {from}: {e} — still busy after waiting {}s; nothing from row \
-                             {from} on is stored",
+                            "row {at}: {e} — still busy after waiting {}s; nothing from row \
+                             {at} on is stored",
                             waited.as_secs()
                         )));
                     }
@@ -12137,7 +12223,7 @@ impl Harness {
                             code: "store_busy_wait".into(),
                             detail: format!(
                                 "the session store is busy (`{e}`) — another daemon holds its \
-                                 write lock. Rows from {from} on are kept in memory and written \
+                                 write lock. Rows from {at} on are kept in memory and written \
                                  when it frees; this session is waiting, not failing \
                                  ({}s so far).",
                                 waited.as_secs()
@@ -12146,21 +12232,22 @@ impl Harness {
                         });
                     }
                     if !self.sleep_unless_closed(std::time::Duration::from_secs(5)) {
-                        self.persisted = from;
                         return Err(HarnessError::Store(format!(
-                            "row {from}: {e} — the session closed while waiting for the store"
+                            "row {at}: {e} — the session closed while waiting for the store"
                         )));
                     }
                 }
                 Err(e) => {
                     if let Ok(n) = store.item_count(&self.transcript_id) {
-                        self.persisted = (n as usize).clamp(self.persisted, rows.len());
+                        self.persisted = (n as usize).clamp(from, rows.len());
                     }
-                    return Err(HarnessError::Store(format!("row {from}: {e}")));
+                    return Err(HarnessError::Store(format!(
+                        "rows {from}..{to} ({}..): {e}",
+                        rows[from].item_id
+                    )));
                 }
             }
         }
-        self.persisted = from;
         Ok(())
     }
 

@@ -391,6 +391,13 @@ impl App {
             let mut taken: Vec<String> = Vec::new();
             let open = self.echo_open;
             let unconfirmed = self.unconfirmed.clone();
+            // What the daemon is busy with instead, when it has said: a named fill, or a fold
+            // (`CompactionProgress`), which holds the worker the same way.
+            let filling_now = self
+                .filling
+                .as_ref()
+                .map(|(what, ..)| what.clone())
+                .or_else(|| self.compacting.as_ref().map(|_| "compacting".to_string()));
             // **The pieces the rows above are already drawing, taken out of the queue** —
             // R51 item 15. Computed once for the whole queue rather than asked per entry,
             // because a claim is spent: two entries that read the same must not both claim
@@ -432,10 +439,19 @@ impl App {
                     Some(_) => UNCONFIRMED,
                     None => echo_mark(&unconfirmed, key, false),
                 };
+                // **And WHAT it is queued behind, when the daemon has said.** The rano session,
+                // 2026-10-12: a `/reseat` held the worker for 6.5 minutes and the operator's
+                // `pull` sat under a bare `queued` the whole time, which reads exactly like a
+                // daemon that stopped listening. While the daemon is naming a fill
+                // (`SessionEvent::Filling`), an untaken prompt waits behind THAT, and says so.
+                let mark = match claimed_by {
+                    Some(_) => mark.to_string(),
+                    None => queued_behind(mark, filling_now.as_deref()),
+                };
                 // **The split, at the one place the fact is known.** A remainder has a row
                 // drawing its head, so the rest of it belongs under that row; an entry nothing has
                 // taken waits at the tail until the daemon does.
-                let lines = queued_lines(&drawn, &cfg, mark, open);
+                let lines = queued_lines(&drawn, &cfg, &mark, open);
                 if claimed_by.is_some() {
                     taken.extend(lines);
                 } else {

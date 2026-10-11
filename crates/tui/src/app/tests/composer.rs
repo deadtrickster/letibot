@@ -1770,3 +1770,41 @@ fn a_bang_line_with_no_history_match_leaves_the_text_untouched() {
     assert_eq!(a.input(), "! git", "no match, so nothing changed");
     assert!(a.notice.is_some(), "the refusal is said, not silent");
 }
+
+/// **A prompt queued behind a re-seat says it is waiting behind the re-seat.**
+///
+/// The rano session, 2026-10-12: a bare `/reseat` held the worker for 6.5 minutes while it
+/// carried 971 rows onto the new prompt, and the operator's `pull` sat under a bare `queued`
+/// the whole while — which reads exactly like a daemon that stopped listening. The daemon now
+/// names the carry (`Filling`); an untaken prompt says what it waits behind while that runs,
+/// goes back to `queued` when it ends, and a line typed during it is held in the daemon's own
+/// words for the operation rather than as an import that is not happening.
+#[test]
+fn a_prompt_queued_behind_a_reseat_says_so() {
+    let mut a = app();
+    typed(&mut a, "pull");
+    assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+    let tick = |done: u64| SessionEvent::Filling {
+        what: "re-seating: carrying the conversation onto the new prompt".into(),
+        unit: "rows".into(),
+        done,
+        total: 971,
+    };
+    a.apply(ServerFrame::Event(env(1, tick(0))));
+    let s = a.screen(100, 30).join("\n");
+    assert!(s.contains("queued behind re-seating · pull"), "{s}");
+
+    typed(&mut a, "and then push");
+    assert_eq!(a.key(Key::Enter), None, "held while the carry runs");
+    let s = a.screen(100, 30).join("\n");
+    assert!(s.contains("re-seating"), "{s}");
+    assert!(
+        !s.contains("still being imported"),
+        "a re-seat is not an import: {s}"
+    );
+
+    a.apply(ServerFrame::Event(env(2, tick(971))));
+    let s = a.screen(100, 30).join("\n");
+    assert!(s.contains("queued · pull"), "{s}");
+    assert!(!s.contains("queued behind"), "{s}");
+}
