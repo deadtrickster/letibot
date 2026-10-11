@@ -311,7 +311,7 @@ mod prompt_line_tests {
     /// and fail the requirement, so the second assertion demands the reason too.
     #[test]
     fn the_bash_prompt_closes_the_waiting_behaviour_and_not_only_a_verb() {
-        let d = super::bash::Bash.schema().description;
+        let d = super::bash::Bash::default().schema().description;
         assert!(
             d.contains("do not build your own clock") || d.contains("Do not build your own clock"),
             "the prompt must state the rule about clocks: {d}"

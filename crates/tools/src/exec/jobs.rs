@@ -675,6 +675,25 @@ pub struct Job {
     /// **The way in to this job's stdin**, when it has one. See [`Stdin`]: `/dev/null`
     /// for every job but the operator's own run.
     stdin: Stdin,
+    /// **The memory cap this job runs under**, decided at the spawn (TODO.md R65).
+    memory_cap: MemoryCap,
+    /// What the kernel counted for this job's memory, read once at the settle — before the
+    /// scope that holds the counters can be ended. `None` on a tree with no memory
+    /// controller, and while the job runs.
+    memory_used: Mutex<Option<super::scope::MemoryUse>>,
+}
+
+/// **The cap a job was started under**, as three different facts — because *nobody asked*,
+/// *capped*, and *asked and could not be capped* each need a different sentence in the
+/// result, and the third must never read like the second.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryCap {
+    /// No cap was asked for — the operator's own run, or a host whose caller passed none.
+    NotAsked,
+    /// The kernel holds this many bytes as the job's `memory.max`.
+    Capped(u64),
+    /// A cap was asked for and could not be set; the job runs UNCAPPED, and `why` says so.
+    Uncapped { asked: u64, why: String },
 }
 
 impl Job {
@@ -701,7 +720,31 @@ impl Job {
             capture: Mutex::new(Capture::new(capture_bytes)),
             settled_at: Mutex::new(None),
             stdin,
+            memory_cap: MemoryCap::NotAsked,
+            memory_used: Mutex::new(None),
         }
+    }
+
+    /// The job, started under `cap`. A builder rather than a ninth argument to [`Job::new`]:
+    /// the cap is decided by the host at the spawn and is nobody else's to pass.
+    pub fn with_memory_cap(mut self, cap: MemoryCap) -> Job {
+        self.memory_cap = cap;
+        self
+    }
+
+    pub fn memory_cap(&self) -> &MemoryCap {
+        &self.memory_cap
+    }
+
+    /// What the kernel counted for this job's memory — `None` until it settles, and on a tree
+    /// with no memory controller.
+    pub fn memory_used(&self) -> Option<super::scope::MemoryUse> {
+        *self.memory_used.lock().expect("job memory")
+    }
+
+    /// Recorded by the waiter, once, just before [`Job::settle`].
+    pub fn record_memory(&self, used: super::scope::MemoryUse) {
+        *self.memory_used.lock().expect("job memory") = Some(used);
     }
 
     /// **The way in to this job's stdin.** Cloned out rather than lent, because the

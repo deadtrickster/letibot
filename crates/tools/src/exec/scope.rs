@@ -20,11 +20,15 @@
 //!
 //! # Two kernel facts this depends on, written down because they are the traps
 //!
-//! 1. **No controller is ever enabled in `cgroup.subtree_control`.** cgroup v2's
-//!    "no internal processes" rule only binds a cgroup that has controllers
-//!    delegated to its children; everything here needs is `cgroup.procs`,
-//!    `cgroup.kill` and `cgroup.events`, which are **core** files present in every
-//!    cgroup. Enabling a controller would make the harness's own cgroup illegal.
+//! 1. **The only controller ever enabled is `memory`, and never on a cgroup that
+//!    holds a process.** cgroup v2's "no internal processes" rule only binds a
+//!    cgroup that has controllers delegated to its children. Lifetime needs none —
+//!    `cgroup.procs`, `cgroup.kill` and `cgroup.events` are **core** files present
+//!    in every cgroup — and enabling one on the harness's own cgroup would make it
+//!    illegal. Memory caps (TODO.md R65) need `memory`, so they exist only when the
+//!    daemon was started in a delegated scope of its own and has stepped out of it
+//!    into a leaf ([`delegate_memory`]); the tree is then that leaf's sibling, and
+//!    every directory a scope is opened under holds no process by construction.
 //! 2. **A process joins its cgroup before `exec`, not after `fork`.** See
 //!    [`join_script`]: the wrapper writes its own pid to `cgroup.procs` and *then*
 //!    `exec`s, so there is no window in which a descendant could be forked outside
@@ -369,6 +373,82 @@ pub trait ScopeTree: Send + Sync {
     fn prune(&self) -> usize {
         0
     }
+
+    /// **Whether this tree can cap a scope's memory**, and if not, why — in a sentence the
+    /// model and the operator are shown (TODO.md R65). The default is *no*: a tree that
+    /// cannot cap must not look like one that can, for the reason [`NoScopes`] gives.
+    fn memory_caps(&self) -> Result<(), String> {
+        Err("this host's lifetime mechanism has no memory controller".into())
+    }
+
+    /// Cap `scope`'s memory at `bytes`, swap included (no swap at all — a job paging out to
+    /// a half-gigabyte swap is a box that stops answering before it is killed). The kernel
+    /// kills the scope's processes, and only them, when they reach it.
+    fn cap_memory(&self, _scope: &ScopeId, _bytes: u64) -> Result<(), String> {
+        self.memory_caps()
+    }
+
+    /// What `scope`'s memory did, read from the kernel — before the scope is ended, because
+    /// ending it removes the files this reads.
+    fn memory_use(&self, _scope: &ScopeId) -> Option<MemoryUse> {
+        None
+    }
+}
+
+/// **What a scope's memory did**, as the kernel counted it: the cap it ran under, the most it
+/// ever held, and how many of its processes the kernel killed for reaching the cap.
+///
+/// Every tool result carries this (TODO.md R65 item 5), so the model learns what its
+/// commands cost instead of guessing again next time — and `oom_kills` is what lets a
+/// result say *killed at its memory cap* rather than leaving the model to read `137`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryUse {
+    /// `None` is `memory.max` reading `max`: the scope ran uncapped.
+    pub cap: Option<u64>,
+    /// `memory.peak`, bytes.
+    pub peak: u64,
+    /// `memory.events`' `oom_kill`: processes the kernel killed at the cap.
+    pub oom_kills: u64,
+}
+
+impl MemoryUse {
+    /// Whether the cap is what ended the command.
+    pub fn killed_at_cap(&self) -> bool {
+        self.oom_kills > 0
+    }
+
+    /// The clause a tool result carries: `peak 37 MiB of a 64 MiB cap`.
+    pub fn clause(&self) -> String {
+        match self.cap {
+            Some(cap) => format!(
+                "peak {} of a {} cap",
+                human_bytes(self.peak),
+                human_bytes(cap)
+            ),
+            None => format!("peak {}, uncapped", human_bytes(self.peak)),
+        }
+    }
+}
+
+/// Bytes as a person reads them — `64 MiB`, `1.5 GiB`. Binary units, because `memory.max`
+/// is set in them and a cap read back as `67.1 MB` would look like a different number.
+pub fn human_bytes(b: u64) -> String {
+    const K: f64 = 1024.0;
+    let f = b as f64;
+    if f >= K * K * K {
+        let g = f / (K * K * K);
+        if g.fract() == 0.0 {
+            format!("{g:.0} GiB")
+        } else {
+            format!("{g:.1} GiB")
+        }
+    } else if f >= K * K {
+        format!("{:.0} MiB", f / (K * K))
+    } else if f >= K {
+        format!("{:.0} KiB", f / K)
+    } else {
+        format!("{b} B")
+    }
 }
 
 /// The default: **there is no lifetime mechanism**, and it says so.
@@ -430,6 +510,10 @@ impl ScopeTree for NoScopes {
 pub struct Cgroup2 {
     root: PathBuf,
     open: std::sync::Arc<std::sync::Mutex<Vec<ScopeId>>>,
+    /// Whether scopes under this root can be memory-capped, or why not. See
+    /// [`delegate_memory`]: `Ok` only when the tree hangs off a delegated scope the daemon
+    /// has stepped out of.
+    memory: Result<(), String>,
 }
 
 /// Where a delegated cgroup v2 hierarchy is mounted.
@@ -446,7 +530,14 @@ impl Cgroup2 {
     /// subtree the directory can be mode 755 and owned by the user while the
     /// kernel still refuses, and the reverse. **Guard the fact, not the proxy.**
     pub fn probe() -> Result<Cgroup2, ExecError> {
-        Self::probe_under(&own_cgroup()?)
+        match delegate_memory() {
+            Ok(base) => {
+                let mut t = Self::probe_under(base)?;
+                t.memory = Ok(());
+                Ok(t)
+            }
+            Err(_) => Self::probe_under(&own_cgroup()?),
+        }
     }
 
     /// The probe, against a chosen parent. Tests use this to build a tree that is
@@ -489,6 +580,13 @@ impl Cgroup2 {
         Ok(Cgroup2 {
             root,
             open: Default::default(),
+            memory: Err(match delegate_memory() {
+                Err(why) => why.clone(),
+                Ok(_) => {
+                    "this tree was built under a chosen parent, not the daemon's delegated scope"
+                        .into()
+                }
+            }),
         })
     }
 
@@ -530,6 +628,101 @@ pub(crate) fn populated_at(dir: &Path) -> bool {
 }
 
 /// The harness's own cgroup path, from `/proc/self/cgroup`.
+/// **The leaf the daemon steps into**, inside the scope the launcher started it in.
+pub const DAEMON_LEAF: &str = "daemon";
+
+/// **Make this process's scope able to carry memory caps, once** — or say why it cannot.
+///
+/// TODO.md R65. cgroup v2 caps a cgroup only when its parent has the `memory` controller in
+/// `cgroup.subtree_control`, and a cgroup may have that only while it holds **no process of
+/// its own**. Today's tree is rooted in the daemon's own cgroup, which holds the daemon, so
+/// no scope under it can be capped. The launcher now starts the daemon with `systemd-run
+/// --user --scope -p Delegate=yes` (R64), and this is the daemon's half: step into a leaf
+/// [`DAEMON_LEAF`] of that scope, enable `memory` on the scope, and hand back the scope as
+/// the place the tree goes — a sibling of the daemon, not its child.
+///
+/// **Only when the daemon is ALONE in its cgroup.** A daemon started the old way shares a
+/// tmux window's scope with the shell and the head; moving itself out of it and enabling a
+/// controller there would be reorganising somebody else's cgroup. So any other pid in
+/// `cgroup.procs` is a refusal, and the refusal is the sentence the tool description shows.
+///
+/// Once per process (`OnceLock`): the move is not repeatable, and a second tree in the same
+/// daemon must land in the same place. MEASURED by hand before it was written: in such a
+/// scope a 64 MiB job allocating 200 MB died alone, `oom_kill 1`, `memory.peak` 64 MiB.
+pub fn delegate_memory() -> &'static Result<PathBuf, String> {
+    static DELEGATED: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    DELEGATED.get_or_init(|| {
+        let own = own_cgroup().map_err(|e| e.to_string())?;
+        let me = std::process::id();
+        let procs = std::fs::read_to_string(own.join("cgroup.procs")).map_err(|e| {
+            format!(
+                "`{}` could not be read: {e}",
+                own.join("cgroup.procs").display()
+            )
+        })?;
+        let others = procs
+            .lines()
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .filter(|p| *p != me)
+            .count();
+        if others > 0 {
+            return Err(format!(
+                "this daemon shares its cgroup `{}` with {others} other process(es) — it was not \
+                 started in a scope of its own (the `letibot` launcher does that with \
+                 `systemd-run --user --scope`), so tool calls run UNCAPPED",
+                own.display()
+            ));
+        }
+        let controllers =
+            std::fs::read_to_string(own.join("cgroup.controllers")).unwrap_or_default();
+        if !controllers.split_whitespace().any(|c| c == "memory") {
+            return Err(format!(
+                "the memory controller is not delegated to `{}` (it has: `{}`), so tool calls run \
+                 UNCAPPED",
+                own.display(),
+                controllers.trim()
+            ));
+        }
+        let leaf = own.join(DAEMON_LEAF);
+        let step = std::fs::create_dir_all(&leaf)
+            .and_then(|_| std::fs::write(leaf.join("cgroup.procs"), me.to_string()))
+            .and_then(|_| std::fs::write(own.join("cgroup.subtree_control"), "+memory"));
+        step.map_err(|e| {
+            format!(
+                "the daemon could not step into `{}` and enable `memory` on its scope ({e}), so \
+                 tool calls run UNCAPPED",
+                leaf.display()
+            )
+        })?;
+        Ok(own)
+    })
+}
+
+/// **What a scope's memory did**, asked of the scope's directory with no tree instance —
+/// the job's waiter thread holds the job and not the tree. `None` on a tree with no memory
+/// controller (macOS's process groups, an uncapped cgroup tree has the files and answers).
+pub fn memory_use_of(scope: &ScopeId) -> Option<MemoryUse> {
+    memory_use_at(&scope.path)
+}
+
+/// [`MemoryUse`] for one cgroup directory. `None` when the files are not there — a tree
+/// without the controller, or a scope already removed.
+fn memory_use_at(dir: &Path) -> Option<MemoryUse> {
+    let max = std::fs::read_to_string(dir.join("memory.max")).ok()?;
+    let peak = std::fs::read_to_string(dir.join("memory.peak")).ok()?;
+    let events = std::fs::read_to_string(dir.join("memory.events")).unwrap_or_default();
+    let oom_kills = events
+        .lines()
+        .find_map(|l| l.strip_prefix("oom_kill "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    Some(MemoryUse {
+        cap: max.trim().parse().ok(),
+        peak: peak.trim().parse().ok()?,
+        oom_kills,
+    })
+}
+
 fn own_cgroup() -> Result<PathBuf, ExecError> {
     let text = std::fs::read_to_string("/proc/self/cgroup")
         .map_err(|e| ExecError::NoScopes(format!("`/proc/self/cgroup` could not be read: {e}")))?;
@@ -612,6 +805,16 @@ impl ScopeTree for Cgroup2 {
             None => self.root.clone(),
         };
         let dir = base.join(format!("{}.{}", kind.as_str(), sanitise(name)));
+        // **A capped child needs the controller in its parent's `subtree_control`**, and
+        // only a cgroup holding no process of its own may have one (cgroup v2's
+        // no-internal-processes rule). Every directory a scope is opened UNDER is such a
+        // cgroup: processes only ever join leaves (`join_script`, `migrate` into a fresh
+        // `job-…` scope). Written each time because it is idempotent and a directory made
+        // by an older daemon would otherwise lack it. A failure is not fatal here — the cap
+        // that needs it fails with its own sentence.
+        if self.memory.is_ok() {
+            let _ = std::fs::write(base.join("cgroup.subtree_control"), "+memory");
+        }
         std::fs::create_dir_all(&dir).map_err(|e| ExecError::Cgroup {
             op: "mkdir",
             path: dir.display().to_string(),
@@ -627,6 +830,28 @@ impl ScopeTree for Cgroup2 {
             open.push(id.clone());
         }
         Ok(id)
+    }
+
+    fn memory_caps(&self) -> Result<(), String> {
+        self.memory.clone()
+    }
+
+    fn cap_memory(&self, scope: &ScopeId, bytes: u64) -> Result<(), String> {
+        self.memory.clone()?;
+        let write = |file: &str, value: String| {
+            std::fs::write(scope.path.join(file), value)
+                .map_err(|e| format!("writing `{}` failed: {e}", scope.path.join(file).display()))
+        };
+        write("memory.max", bytes.to_string())?;
+        // Absent on a kernel built without swap accounting, which is no swap to forbid.
+        if scope.path.join("memory.swap.max").exists() {
+            write("memory.swap.max", "0".into())?;
+        }
+        Ok(())
+    }
+
+    fn memory_use(&self, scope: &ScopeId) -> Option<MemoryUse> {
+        memory_use_at(&scope.path)
     }
 
     fn members(&self, scope: &ScopeId) -> Result<Vec<u32>, ExecError> {

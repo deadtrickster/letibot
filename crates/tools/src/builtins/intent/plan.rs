@@ -276,7 +276,8 @@ mod tests {
         // name-not-in-the-registry branch, which keeps the name and hands
         // `resolve_role` a refusal; that is the loud path working, and it would be
         // measuring the gap instead of plan mode.
-        r.register(Box::new(crate::builtins::bash::Bash)).unwrap();
+        r.register(Box::new(crate::builtins::bash::Bash::default()))
+            .unwrap();
         // And the delegation trio, for the same reason one seat later: `m2_coder` seats
         // `task`, `task_result` and `task_message` as of R58 and the 2026-10-06 ruling
         // (*"in the tree all subagents must be addressable by their parents"*), and

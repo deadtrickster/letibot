@@ -747,6 +747,7 @@ impl ExecBackend for HostBackend {
                 // that wants bytes: the operator's own colour is set on the `bash`
                 // path, where the caller is known to be the person.
                 tty: false,
+                memory: None,
             })
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let waited = host

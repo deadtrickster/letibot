@@ -544,6 +544,24 @@ pub fn view_grant_options() -> Vec<DecisionOption> {
     ]
 }
 
+/// **The memory card's answers** (TODO.md R65): the operator grants what was asked, or not.
+/// No "for the rest of the session" — each ask above the ceiling is its own question, because
+/// what is free changes between them.
+pub fn memory_grant_options() -> Vec<DecisionOption> {
+    vec![
+        DecisionOption {
+            id: "grant_memory".into(),
+            label: "Let this command have it".into(),
+            kind: OptionKind::AllowOnce,
+        },
+        DecisionOption {
+            id: "deny".into(),
+            label: "No — it does not start".into(),
+            kind: OptionKind::Deny,
+        },
+    ]
+}
+
 pub fn always_ask_options() -> Vec<DecisionOption> {
     vec![
         DecisionOption {
@@ -2893,6 +2911,75 @@ impl Gate for AdjudicatedGate {
             // not be reached. Both are "nobody decided", which is what the caller
             // has to be told so it does not report a refusal.
             _ => ViewGrant::NotAsked,
+        }
+    }
+
+    /// **The memory ask above the ceiling, as a card the OPERATOR answers.** `AlwaysAsk`, not
+    /// `MayApprove`: the operator's rule is *"if model wants it - must ask me"*, and a guard
+    /// model widening it into an admission would be the model granting itself the box.
+    fn grant_memory(
+        &mut self,
+        ask: &crate::exec::memory::MemoryAsk,
+    ) -> crate::exec::memory::MemoryGrant {
+        use crate::exec::memory::MemoryGrant;
+        if self.adjudicator.describe().starts_with("none") {
+            return MemoryGrant::NotAsked;
+        }
+        let amount = ask
+            .bytes
+            .map(crate::exec::human_bytes)
+            .unwrap_or_else(|| "uncapped".into());
+        let req = AdjudicationRequest {
+            id: self.next_id(),
+            session_id: self.session_id.clone(),
+            turn_id: String::new(),
+            call_id: String::new(),
+            agent: self.agent.clone(),
+            tool: "bash".to_string(),
+            target: ask.command.clone(),
+            class: ActionClass::host(Access::Exec, false, false),
+            prior: Vec::new(),
+            examples: Vec::new(),
+            brief_variant: crate::authorise::BriefVariant::AskedForIt,
+            agent_claim: None,
+            reading: None,
+            shape: None,
+            advice: None,
+            summary: ask.summary(),
+            arguments: serde_json::json!({ "command": ask.command, "memory": amount }),
+            arguments_digest: String::new(),
+            scripts: Vec::new(),
+            boundary_facts: vec![
+                format!(
+                    "{} of {} is free now; the model may take up to {} without asking",
+                    crate::exec::human_bytes(ask.available),
+                    crate::exec::human_bytes(ask.total),
+                    crate::exec::human_bytes(ask.ceiling)
+                ),
+                "the command has NOT started; it starts only if you agree".to_string(),
+                "under its cap the command dies alone when it reaches it; uncapped, a command \
+                 that eats the box is killed by the kernel along with whatever else it picks, \
+                 and that has taken whole terminal windows"
+                    .to_string(),
+            ],
+            kind: RequestKind::Permission,
+            options: memory_grant_options(),
+            on_timeout: OnTimeout::Deny,
+            tier: Tier::AlwaysAsk {
+                rule: "memory_above_ceiling",
+                why: "the operator decides any memory ask above the ceiling".into(),
+            },
+            resolved: true,
+            baseline: format!("a memory ask above the ceiling: {amount}"),
+            trail: crate::authorise::AuthorisationTrail::default(),
+        };
+        let d = self.adjudicator.decide(&req);
+        match &d.outcome {
+            DecisionOutcome::Selected { option_id } if option_id == "grant_memory" => {
+                MemoryGrant::Granted
+            }
+            DecisionOutcome::Selected { .. } => MemoryGrant::Refused(d.basis.clone()),
+            _ => MemoryGrant::NotAsked,
         }
     }
 

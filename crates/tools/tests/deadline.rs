@@ -61,6 +61,7 @@ fn spawn(host: &HostProcesses, command: &str, tty: bool) -> letibot_tools::exec:
         background: false,
         env: vec![],
         tty,
+        memory: None,
     })
     .expect("the run starts")
 }

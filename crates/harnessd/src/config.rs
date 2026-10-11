@@ -676,6 +676,10 @@ pub struct Config {
     /// `[gatekeeper] intents` / `max_scope` in providers.toml. `None` is the
     /// built-in floor, which is what a box that has said nothing gets.
     pub oracle_scope: Option<letibot_tools::authorise::OracleScope>,
+    /// **The memory cap a model's tool call runs under, and the most it may take without the
+    /// operator** — `providers.toml`'s `[memory]` (TODO.md R65). Built-in: 64 MiB, and half of
+    /// what is free.
+    pub memory: letibot_tools::exec::memory::MemoryPolicy,
     /// Layer B's latency budget. The trait's default is 400ms and
     /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
     /// that decides whether a given model can hold the seat at all.
@@ -1608,6 +1612,7 @@ impl Config {
             oracle: None,
             oracle_model: None,
             oracle_scope: None,
+            memory: Default::default(),
             oracle_budget: std::time::Duration::from_millis(400),
             oracle_max_tokens: None,
             oracle_question: crate::oracle::Question::Verdict,

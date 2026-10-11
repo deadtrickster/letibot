@@ -433,6 +433,33 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // missing section, an unreadable file and a malformed address are all "no
     // guard" — this is read at startup and must never be a reason a daemon does not
     // start.
+    // `[memory]`: the cap a model's tool call runs under, and the most it may ask for without
+    // the operator. A malformed value refuses the start BY NAME, for `[gatekeeper]`'s reason
+    // below: a typo that left the built-in in force while the operator believes they set
+    // their own is the banner-says-one-thing defect.
+    {
+        let m = letibot_provider::memory(None);
+        let parse = |key: &str,
+                     v: &Option<String>|
+         -> Result<Option<letibot_tools::exec::memory::Amount>, String> {
+            v.as_deref()
+                .map(|s| {
+                    letibot_tools::exec::memory::Amount::parse(s).map_err(|e| {
+                        format!(
+                            "[memory] {key} in {}: {e}",
+                            letibot_provider::keys::config_file().display()
+                        )
+                    })
+                })
+                .transpose()
+        };
+        if let Some(a) = parse("default", &m.default)? {
+            cfg.memory.default = a;
+        }
+        if let Some(a) = parse("ceiling", &m.ceiling)? {
+            cfg.memory.ceiling = a;
+        }
+    }
     {
         let gk = letibot_provider::gatekeeper(None);
         if let Some(ep) = gk.endpoint.as_deref().and_then(|s| Endpoint::parse(s).ok()) {

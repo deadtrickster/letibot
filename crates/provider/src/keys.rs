@@ -102,6 +102,30 @@ pub struct Gatekeeper {
     pub tools: Vec<String>,
 }
 
+/// **`[memory]`** — the cap a tool call runs under when the model names none, and the most it
+/// may ask for without the operator (TODO.md R65). Raw strings: what they mean (`64M`, `0.5`)
+/// is the tool crate's to parse, and the daemon refuses a malformed one by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemorySection {
+    pub default: Option<String>,
+    pub ceiling: Option<String>,
+}
+
+/// Read `[memory]`. Missing file, missing section, unparseable file: all the built-in policy.
+pub fn memory(file: Option<&Path>) -> MemorySection {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let Ok(parsed) = parse_file(&file) else {
+        return MemorySection::default();
+    };
+    let Some(sec) = parsed.sections.get("memory") else {
+        return MemorySection::default();
+    };
+    MemorySection {
+        default: sec.get("default").cloned(),
+        ceiling: sec.get("ceiling").cloned(),
+    }
+}
+
 /// Read `[gatekeeper]`. A missing file, a missing section and an unparseable file
 /// are all `Gatekeeper::default()` — this is consulted at daemon start and must
 /// never be a reason a daemon does not start.

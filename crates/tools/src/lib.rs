@@ -309,7 +309,7 @@ pub fn runner_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
     let mut reg = read_only_tools(retrieval)?;
-    reg.register(Box::new(builtins::bash::Bash))?;
+    reg.register(Box::new(builtins::bash::Bash::default()))?;
     reg.register(Box::new(builtins::jobs::JobList))?;
     reg.register(Box::new(builtins::jobs::JobOutput))?;
     reg.register(Box::new(builtins::jobs::JobWait))?;

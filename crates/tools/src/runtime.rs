@@ -418,9 +418,29 @@ pub struct InvokeCtx<'a> {
     /// gets none of it). One flag rather than three because it is one fact, and three
     /// flags with the same value are three things a later edit can make disagree.
     pub tty: bool,
+    /// **The gate, for a question the tool must put before it starts** — today only
+    /// [`InvokeCtx::grant_memory`]. `None` on the operator's own run, which has nobody
+    /// left to ask, and in a runtime with no gate.
+    gate: Option<&'a std::sync::Mutex<Box<dyn Gate>>>,
 }
 
 impl InvokeCtx<'_> {
+    /// **Put a memory ask above the ceiling to the operator.** See [`Gate::grant_memory`].
+    /// The gate's lock is taken for the question, as `admit` takes it: a card may wait
+    /// minutes for a person, and a `/mode` typed meanwhile must not move the gate.
+    pub fn grant_memory(
+        &self,
+        ask: &crate::exec::memory::MemoryAsk,
+    ) -> crate::exec::memory::MemoryGrant {
+        match self.gate {
+            Some(g) => g
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .grant_memory(ask),
+            None => crate::exec::memory::MemoryGrant::NotAsked,
+        }
+    }
+
     /// Say that the call is still working. §8.5 requires this to count as liveness,
     /// and a tool that walks a large tree must produce it.
     pub fn progress(&mut self, note: impl Into<String>) {
@@ -761,6 +781,21 @@ pub trait Gate: Send + Sync {
     /// person overrides this.
     fn grant_view(&mut self, _path: &std::path::Path, _tool: &str) -> ViewGrant {
         ViewGrant::NotAsked
+    }
+
+    /// **May this call run with more memory than the model may take on its own?** Asked
+    /// before the command starts, when its `memory` ask is above the ceiling or is
+    /// `uncapped` (TODO.md R65: *"the max is uncapped but if model wants it - must ask
+    /// me"*).
+    ///
+    /// The default is [`crate::exec::memory::MemoryGrant::NotAsked`] for the reason
+    /// [`Gate::grant_view`]'s is: a gate with nobody behind it has not decided, and the
+    /// call does not run on a question nobody answered.
+    fn grant_memory(
+        &mut self,
+        _ask: &crate::exec::memory::MemoryAsk,
+    ) -> crate::exec::memory::MemoryGrant {
+        crate::exec::memory::MemoryGrant::NotAsked
     }
 
     /// Who is adjudicating, for the daemon's startup disclosure.
@@ -2011,6 +2046,7 @@ impl ToolRuntime {
                 // The operator's own run, and only it. `run`'s flag is the whole
                 // distinction between the two entries — see `InvokeCtx::tty`.
                 tty: !gated,
+                gate: gated.then_some(&self.gate),
             };
             tool.invoke(&mut ctx, &args)
         };

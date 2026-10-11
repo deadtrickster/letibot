@@ -41,7 +41,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::ExecError;
 use super::confine::{ConfinePlan, Confinement, Unconfined};
-use super::jobs::{DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, OutputSlice};
+use super::jobs::{DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, MemoryCap, OutputSlice};
 use super::monitor::Monitors;
 use super::scope::{
     Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
@@ -122,6 +122,10 @@ pub struct SpawnRequest {
     /// answer (`! cat`, `! grep x`). It is stated at the spawn and in
     /// [`super::jobs::Stdin`] rather than left to be discovered.
     pub tty: bool,
+    /// **The memory cap the caller decided, in bytes** (TODO.md R65), or `None` for no cap —
+    /// the operator's own run. The host does not choose a number: what is free, the default
+    /// and the ceiling are the tool's business, and the host only makes the kernel hold it.
+    pub memory: Option<u64>,
 }
 
 /// How a wait ended. **Three outcomes and they are never conflated** — a deadline
@@ -1182,6 +1186,18 @@ impl ProcessHost for HostProcesses {
             }
         };
 
+        // **The cap goes on before any process joins**, so there is no instant in which the
+        // command runs uncapped. A cap the tree cannot set does not refuse the command — the
+        // job runs, and its result says UNCAPPED and why (`MemoryCap::Uncapped`), which is the
+        // operator's rule: never silently.
+        let memory_cap = match req.memory {
+            None => MemoryCap::NotAsked,
+            Some(bytes) => match self.tree.cap_memory(&cgroup, bytes) {
+                Ok(()) => MemoryCap::Capped(bytes),
+                Err(why) => MemoryCap::Uncapped { asked: bytes, why },
+            },
+        };
+
         let procs = Cgroup2::procs_path(&cgroup);
         // **The join token, which is the evidence and belongs to the daemon.**
         //
@@ -1404,29 +1420,32 @@ impl ProcessHost for HostProcesses {
             (None, None) => super::jobs::Stdin::none(),
         };
 
-        let job = Arc::new(Job::new(
-            id.clone(),
-            req.command.clone(),
-            // **The name, decided here and never again.** The claim is made at the point
-            // where this spawn can no longer be refused for a reason that leaves no job
-            // behind, so a failed `mkdir` does not consume a name — and the name is fixed
-            // on the record, so a listing an hour later reads the same string it read at
-            // the spawn.
-            req.slug.as_deref().map(|s| self.claim_slug(s)),
-            Lifetime {
-                scope: cgroup,
-                owner: parent.clone(),
-                // **`Asked` only when the model asked.** A foreground command
-                // starts with `None`, and a promotion is what fills this in —
-                // so a job that was moved by the runtime can never be read back
-                // as one the model requested.
-                background: req.background.then_some(Backgrounding::Asked),
-            },
-            req.cwd.clone(),
-            pid,
-            self.capture_bytes,
-            stdin,
-        ));
+        let job = Arc::new(
+            Job::new(
+                id.clone(),
+                req.command.clone(),
+                // **The name, decided here and never again.** The claim is made at the point
+                // where this spawn can no longer be refused for a reason that leaves no job
+                // behind, so a failed `mkdir` does not consume a name — and the name is fixed
+                // on the record, so a listing an hour later reads the same string it read at
+                // the spawn.
+                req.slug.as_deref().map(|s| self.claim_slug(s)),
+                Lifetime {
+                    scope: cgroup,
+                    owner: parent.clone(),
+                    // **`Asked` only when the model asked.** A foreground command
+                    // starts with `None`, and a promotion is what fills this in —
+                    // so a job that was moved by the runtime can never be read back
+                    // as one the model requested.
+                    background: req.background.then_some(Backgrounding::Asked),
+                },
+                req.cwd.clone(),
+                pid,
+                self.capture_bytes,
+                stdin,
+            )
+            .with_memory_cap(memory_cap),
+        );
 
         let out = child.stdout.take();
         let err = child.stderr.take();
@@ -1525,6 +1544,11 @@ impl ProcessHost for HostProcesses {
                 // leave it behind — and removing it after the read is what keeps
                 // `present` and `joined` the same fact for the whole of one job.
                 let _ = std::fs::remove_file(&token);
+                // **Read the kernel's counters before the state settles**: a reader woken by
+                // the settle builds the result, and the result is where the peak is said.
+                if let Some(used) = super::scope::memory_use_of(&waiter.lifetime().scope) {
+                    waiter.record_memory(used);
+                }
                 waiter.settle(state);
             })
             .map_err(|e| ExecError::Spawn(e.to_string()))?;
@@ -1773,6 +1797,18 @@ impl ProcessHost for HostProcesses {
         }
 
         let fresh = self.tree.open(to, &format!("job-{id}"), Some(&target))?;
+        // A promoted job keeps the cap it was started under: the new scope is a new cgroup,
+        // and an uncapped one would be a cap lifted by a move nobody asked to lift it.
+        if let MemoryCap::Capped(bytes) = job.memory_cap()
+            && let Err(why) = self.tree.cap_memory(&fresh, *bytes)
+        {
+            let _ = self.tree.end(&fresh);
+            return Err(ExecError::Cgroup {
+                op: "carry the memory cap to",
+                path: fresh.path.display().to_string(),
+                why,
+            });
+        }
         let migration = match self.tree.migrate(&life.scope, &fresh) {
             Ok(m) => m,
             Err(e) => {
@@ -2204,6 +2240,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![],
                 // No terminal: these are the substrate's own tests, not an operator's run.
                 tty: false,
+                memory: None,
             })
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
@@ -2245,6 +2282,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 background: true,
                 env: vec![],
                 tty: false,
+                memory: None,
             })
             .expect("a cgroup v2 tree was measured above")
         };
@@ -2315,6 +2353,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 env: vec![("BASH_ENV".into(), "/tmp/letibot-absent.rc".into())],
                 // No terminal: the substrate's own test, not an operator's run.
                 tty: false,
+                memory: None,
             })
             .unwrap();
         let waited = h.wait_job(&id, std::time::Duration::from_secs(30)).unwrap();
@@ -2417,6 +2456,7 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 background: false,
                 env: vec![],
                 tty,
+                memory: None,
             })
             .unwrap()
         };

@@ -2839,7 +2839,9 @@ impl Harness {
             )))
             .map_err(|e| HarnessError::Setup(format!("registering the notes tool: {e}")))?;
         registry
-            .register(Box::new(letibot_tools::builtins::bash::Bash))
+            .register(Box::new(letibot_tools::builtins::bash::Bash::with_memory(
+                cfg.memory,
+            )))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobWait)))
@@ -17456,6 +17458,7 @@ mod tests {
                     background: true,
                     env: vec![],
                     tty: false,
+                    memory: None,
                 })
                 .expect("spawn");
             match host.wait_job(&id, Duration::from_secs(30)) {

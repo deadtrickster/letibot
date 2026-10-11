@@ -84,6 +84,7 @@ pub mod console;
 pub mod darwin;
 pub mod host;
 pub mod jobs;
+pub mod memory;
 pub mod monitor;
 pub mod predicate;
 pub mod procs;
@@ -102,7 +103,9 @@ pub use host::{
     DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion, Protected,
     SpawnRequest, Waited, job_label,
 };
-pub use jobs::{DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, OutputSlice, Stdin, job_name};
+pub use jobs::{
+    DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputSlice, Stdin, job_name,
+};
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,
@@ -112,8 +115,8 @@ pub use pty::Pty;
 #[cfg(target_os = "macos")]
 pub use scope::ProcessGroups;
 pub use scope::{
-    Cgroup2, HOST_KILL, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
-    host_tree, live_members,
+    Cgroup2, DAEMON_LEAF, HOST_KILL, MemoryUse, Migration, NoScopes, Reaped, Reaping, ScopeId,
+    ScopeKind, ScopeTree, delegate_memory, host_tree, human_bytes, live_members, memory_use_of,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};

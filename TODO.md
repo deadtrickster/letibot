@@ -122,7 +122,7 @@ the other is inside a 30 s tool call.
 
 ---
 
-## R64 — A runaway process takes its whole window, daemon and session with it — **OPEN, 2026-10-11**
+## R64 — A runaway process takes its whole window, daemon and session with it — **BUILT 2026-10-11 on `memory-caps`; see "Landed" below**
 
 The operator: *"why my pg-noop session died and took byobu window with it?"* MEASURED in the
 journal: four OOM kills in 7 hours on lab2x1 (185 GB, 512 MB swap), each `Failed with result
@@ -150,9 +150,16 @@ the **whole scope** — the window's shell, the TUI, the daemon, every session i
 **Done when:** a tool call that allocates without bound dies alone, with a result that says so,
 and the window, the TUI and the daemon are still there.
 
+**Landed (branch `memory-caps`), MEASURED on lab2x1:** `scripts/letibot` starts the daemon — and
+the one-shot — with `systemd-run --user --scope -p Delegate=yes -p OOMPolicy=continue
+--expand-environment=no` (`scope_run`), falling back to the old way with a line saying tool calls
+run uncapped when there is no user manager. A TUI-started scratch daemon came up in
+`app.slice/letibot-harnessd-<key>-<pid>.scope/daemon`; `tmux kill-window` on its window left it
+running; `letibot --stop` then stopped it and systemd collected the scope.
+
 ---
 
-## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **OPEN, designed by the operator 2026-10-11**
+## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **BUILT 2026-10-11 on `memory-caps` except the items under "Still open"**
 
 The operator: *"the question is how many for 2. I think model should try to decide, so it should
 know the free, how much it can ask and what are the consequences"*.
@@ -217,6 +224,24 @@ written inline as `sh -c 'echo $$ > …'` writes `$` and fails with EINVAL/EIO. 
 
 **Done when:** R64's done-when holds, the model's next call after a kill asks for a different
 cap on its own, and `job_list` shows each job's cap and peak.
+
+**Landed (branch `memory-caps`):** `exec::memory` (the policy: `Amount`, `MemoryPolicy`,
+`Meminfo`, `Ask`, `decide`); `exec::scope::delegate_memory` (the daemon steps into
+`<scope>/daemon` and enables `memory`, refusing by name when it shares its cgroup) called first
+thing in `harnessd`'s `main`; `ScopeTree::{memory_caps, cap_memory, memory_use}`;
+`SpawnRequest::memory` → `memory.max` + `memory.swap.max=0` before any process joins, carried
+across a promotion; the job's `memory.peak`/`oom_kill` read at the settle; `bash`'s `memory`
+argument, the description, the note on every model call's result (cap, peak, box free, what may
+be asked without asking), a dedicated *killed at its memory cap* outcome; `Gate::grant_memory`
+with an `AlwaysAsk` card in `AdjudicatedGate`; `providers.toml` `[memory] default` / `ceiling`,
+a malformed value refusing the start by name. The operator's own `!` run is uncapped.
+MEASURED end to end through deepseek: no `memory` → `killed at its memory cap — peak 64 MiB of a
+64 MiB cap`; `memory: "512M"` → ran, `peak 192 MiB of a 512 MiB cap`.
+`tools/tests/memory_cap.rs` re-runs itself in a delegated scope and asserts both.
+
+**Still open:** `job_list` and a background job's completion notice do not show cap and peak
+yet; the card above the ceiling is built and unit-tested only through the type system — not yet
+answered by a person in a head; the cross-session ledger above.
 
 ---
 

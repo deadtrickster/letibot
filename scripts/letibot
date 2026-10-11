@@ -207,11 +207,44 @@ epoch_fmt() { # epoch_fmt SECONDS FORMAT
 }
 # Run a command as the leader of a new session, detached from this terminal. macOS has the
 # system call and not the command, and perl's POSIX module is on every Mac.
+#
+# **And on Linux, in a systemd scope of its own** (TODO.md R64). `setsid` makes a new
+# SESSION, not a new cgroup: a daemon started from a tmux window stayed in that window's
+# `tmux-spawn-*.scope`, beside the shell and the head, and so did every process its tools
+# started. `DefaultOOMPolicy=stop` then turned one runaway tool process into the whole
+# window going — MEASURED 2026-10-10/11, four OOM kills in seven hours, each logged as
+# `tmux-spawn-….scope: Failed with result 'oom-kill'`, each taking a window, a head and a
+# daemon with it. In its own scope the daemon is out of the window's blast radius.
+#
+# `Delegate=yes` is what lets the daemon carve that scope into its own leaf and a tree of
+# memory-capped jobs (R65) — cgroup v2 will not put a cap on a child of a cgroup that
+# still holds a process, and without delegation the daemon may not write the controls.
+# `OOMPolicy=continue`: a capped job killed at its cap must not stop the daemon's scope.
+# `--expand-environment=no`: systemd-run otherwise rewrites `$X` in the arguments.
+#
+# No user manager (a bare ssh login without lingering, a container): the scope cannot be
+# made, `scope_ok` says so once, and the daemon starts the old way — it then reports its
+# tool calls as UNCAPPED itself, so the fallback is never silent.
+scope_ok() {
+  [ "$HOST_OS" != Darwin ] && command -v systemd-run >/dev/null 2>&1 \
+    && systemd-run --user --scope --quiet --collect --expand-environment=no true >/dev/null 2>&1
+}
+# Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
+scope_run() { # scope_run UNIT-STEM
+  SCOPE_RUN=()
+  if scope_ok; then
+    SCOPE_RUN=(systemd-run --user --scope --quiet --collect --expand-environment=no
+      --unit "$1-$KEY-$$" -p Delegate=yes -p OOMPolicy=continue)
+  elif [ "$HOST_OS" != Darwin ]; then
+    echo "letibot: no systemd user manager here - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
+  fi
+}
 detach() { # detach COMMAND [ARGS...]
   if [ "$HOST_OS" = Darwin ]; then
     /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
   else
-    setsid "$@"
+    scope_run letibot-harnessd
+    ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} setsid "$@"
   fi
 }
 
@@ -1796,7 +1829,11 @@ mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
 # exited before its prompt ran).
 if [ $# -gt 0 ]; then
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
-  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
+  # In a scope of its own too, for `detach`'s reason: its tool calls are as able to eat the
+  # box as a daemon's, and in the terminal's scope a cap cannot be set at all. A scope runs
+  # the command in place, so the one-shot keeps this terminal.
+  scope_run letibot-oneshot
+  exec ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
        --socket "$ONESHOT_SOCK" \
        ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
        --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \

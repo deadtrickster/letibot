@@ -62,13 +62,26 @@ use std::time::Duration;
 use letibot_transcript::Backgrounding;
 use serde_json::Value;
 
+use crate::exec::memory::{Ask, Decision, Meminfo, MemoryAsk, MemoryGrant, MemoryPolicy};
 use crate::exec::predicate::{Verdict, annotation, refusal};
 use crate::exec::terminal;
 use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
 use crate::runtime::{Invocation, InvokeCtx, OperatorRun, Tool};
 use crate::schema::{Access, ToolSchema};
 
-pub struct Bash;
+/// The `bash` tool. It carries the operator's memory policy (TODO.md R65) because the policy
+/// is part of what its description says, and the description is fixed when the session opens.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Bash {
+    memory: MemoryPolicy,
+}
+
+impl Bash {
+    /// `bash` under the operator's `[memory]` settings.
+    pub fn with_memory(memory: MemoryPolicy) -> Bash {
+        Bash { memory }
+    }
+}
 
 /// What goes inline before the cap bites. Both are reported when they do.
 const MAX_INLINE_BYTES: usize = 30_000;
@@ -89,6 +102,110 @@ const MAX_INLINE_LINES: usize = 400;
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// The longest a deadline may be asked for. Matches opencode's 600000 ms ceiling.
 const MAX_TIMEOUT_MS: u64 = 600_000;
+
+/// **The `memory` argument's description**, with the operator's two numbers in it. Rendered
+/// from the policy rather than from what is free, because the schema is part of the
+/// session's stable prefix: the live numbers arrive in every result instead
+/// ([`Meminfo::clause`]).
+fn memory_arg(p: &MemoryPolicy) -> String {
+    format!(
+        "The memory cap for this command: a size (`512M`, `4G`) or a fraction of what is free \
+         when it starts (`0.25`, `25%`). Omitted, the command runs under {}. Up to {} is \
+         granted at once; more than that — or `uncapped` — is put to the operator as a \
+         question first, and the command does not start unless they agree. Every result \
+         reports the command's peak, so you can size the next ask from the last one.",
+        p.default, p.ceiling
+    )
+}
+
+/// **The note every model call's result carries about memory**: what it ran under, what it
+/// peaked at, and what the box has free now — the operator's *"it should know the free, how
+/// much it can ask and what are the consequences"*, said where the model reads it.
+fn memory_note(job: &crate::exec::jobs::Job, policy: &MemoryPolicy) -> Option<String> {
+    use crate::exec::MemoryCap;
+    let box_now = Meminfo::read()
+        .map(|m| format!(" · {}", m.clause(policy)))
+        .unwrap_or_default();
+    let used = job.memory_used();
+    let line = match (job.memory_cap(), used) {
+        (MemoryCap::NotAsked, None) => return None,
+        (MemoryCap::Uncapped { asked, why }, _) => format!(
+            "memory: ran UNCAPPED — {} was asked for and could not be set: {why}",
+            crate::exec::human_bytes(*asked)
+        ),
+        (_, Some(u)) => {
+            let mut l = format!("memory: {}", u.clause());
+            if u.killed_at_cap() {
+                l.push_str(&format!(
+                    "; the kernel killed {} process(es) inside it at the cap",
+                    u.oom_kills
+                ));
+            }
+            l
+        }
+        (MemoryCap::Capped(b), None) => {
+            format!("memory: capped at {}", crate::exec::human_bytes(*b))
+        }
+    };
+    Some(format!("{line}{box_now}"))
+}
+
+impl Bash {
+    /// **The cap this call runs under, or the result that says why it did not start.** The
+    /// rule is [`crate::exec::memory::decide`]'s; this is where an ask above the ceiling is
+    /// put to the operator, before anything is spawned.
+    fn memory_for(
+        &self,
+        ctx: &InvokeCtx<'_>,
+        command: &str,
+        args: &Value,
+    ) -> Result<Option<u64>, Box<Invocation>> {
+        let ask = Ask::parse(args.get("memory").and_then(|v| v.as_str())).map_err(|e| {
+            Box::new(Invocation::failed(
+                "bash's `memory` is not an amount",
+                format!("nothing was run. {e}."),
+            ))
+        })?;
+        // No `/proc/meminfo` (macOS): there is no memory controller to hold a cap either,
+        // and the result says the run was uncapped through the job's own record.
+        let Some(mem) = Meminfo::read() else {
+            return Ok(None);
+        };
+        match crate::exec::memory::decide(&self.memory, ask, &mem) {
+            Decision::Grant(b) => Ok(Some(b)),
+            Decision::Operator { bytes, ceiling } => {
+                let q = MemoryAsk {
+                    command: command.to_string(),
+                    bytes,
+                    ceiling,
+                    available: mem.available,
+                    total: mem.total,
+                };
+                match ctx.grant_memory(&q) {
+                    MemoryGrant::Granted => Ok(bytes),
+                    MemoryGrant::Refused(why) => Err(Box::new(Invocation::not_run(
+                        "the operator refused the memory this call asked for",
+                        format!(
+                            "nothing was run. You asked: {}. The operator said no: {why}. \
+                             Ask for {} or less and it starts at once, or make the work smaller.",
+                            q.summary(),
+                            crate::exec::human_bytes(ceiling)
+                        ),
+                    ))),
+                    MemoryGrant::NotAsked => Err(Box::new(Invocation::not_run(
+                        "nobody could be asked for the memory this call needs",
+                        format!(
+                            "nothing was run. {} — and this session has no one to put that \
+                             question to. Ask for {} or less and it starts at once.",
+                            q.summary(),
+                            crate::exec::human_bytes(ceiling)
+                        ),
+                    ))),
+                }
+            }
+        }
+    }
+}
 
 /// **What deadline this call gets — the one place the choice is made.**
 ///
@@ -231,7 +348,15 @@ impl Tool for Bash {
              in a filesystem view rooted at the workspace: a path outside that view \
              is absent rather than denied, and a result that says a path is not in \
              the view is a fact about the boundary, not about whether anything is \
-             there — asking again with a different spelling will not reach it.",
+             there — asking again with a different spelling will not reach it. \
+             **Every model call runs under a memory cap**: the kernel kills the \
+             command, and only it, when it reaches the cap — the result then says it \
+             was killed at its cap and how much it peaked at. Each result also says \
+             how much the box has free and how much you may ask for. Without a cap, \
+             a command that ate the box would be killed by the kernel's out-of-memory \
+             killer along with whatever else it picked — the session, its daemon and \
+             the operator's terminal window have all gone that way. Set `memory` when \
+             the command needs more than the default, and no more than it needs.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -241,7 +366,8 @@ impl Tool for Bash {
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
-                    "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."}
+                    "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."},
+                    "memory": {"type": "string", "description": memory_arg(&self.memory)}
                 },
                 "required": ["command"]
             }),
@@ -330,6 +456,17 @@ impl Tool for Bash {
                     ctx.backend.describe()
                 ),
             );
+        };
+
+        // **The memory cap, decided before anything starts** (TODO.md R65). The operator's
+        // own run has none: they are watching it, and their own acts are its stop.
+        let memory = if ctx.tty {
+            None
+        } else {
+            match self.memory_for(ctx, command, args) {
+                Ok(m) => m,
+                Err(inv) => return *inv,
+            }
         };
 
         // T21.1 and T21.2. Before anything is started, because the diagnosis is
@@ -470,6 +607,7 @@ impl Tool for Bash {
             // is tokens it reads, `ESC[01;34m` around every directory name is a cost it
             // pays and cannot see, and the text a gate judged is text this shell reads.
             tty: ctx.tty,
+            memory,
         };
         let id = match host.spawn(&req) {
             Ok(id) => id,
@@ -724,6 +862,10 @@ impl Tool for Bash {
             Foreground::State(s) => s,
             Foreground::Promoted(_) => unreachable!("handled above"),
         };
+        // What the kernel counted for this job's memory, read at its settle.
+        let job = host.job_handle(&id);
+        let used = job.as_ref().and_then(|j| j.memory_used());
+        let killed_at_cap = used.is_some_and(|u| u.killed_at_cap());
         let mut inv = match &state {
             // **The deadline, opencode's.** The command outlived `timeout_ms`, so it
             // is **killed**, not promoted. Killing is the point: a command the model
@@ -814,6 +956,23 @@ impl Tool for Bash {
                     launcher_failed.clone().unwrap_or_default()
                 ),
             ),
+            // **Killed at its memory cap** — before the exit code is read as the command's
+            // answer, which `[exit 137]` is not: the kernel ended it for the number this call
+            // ran under. A run that exited 0 with a process killed inside it (`x || true`)
+            // keeps its own answer, and the note below says what was killed.
+            s if killed_at_cap && !matches!(s, JobState::Exited { code: 0 }) => {
+                let u = used.expect("killed_at_cap reads it");
+                Invocation::failed(
+                    format!("`{label}` was killed at its memory cap"),
+                    format!(
+                        "{body}\n\n[the kernel killed `{label}` when it reached its memory cap \
+                         — {}]\n  command: {command}\n\nIt did not crash on its own; it ran out \
+                         of the memory this call was given. Call `bash` again with a larger \
+                         `memory` if the work really needs it, or make the work smaller.",
+                        u.clause()
+                    ),
+                )
+            }
             JobState::Exited { code: 0 } => Invocation::ok(body),
             // A non-zero exit is the COMMAND's answer, not a harness failure, and it
             // is `ok` with the code stated. Reporting it as `failed` would make a
@@ -827,6 +986,12 @@ impl Tool for Bash {
                 format!("{body}\n\nThe process did not exit on its own."),
             ),
         };
+
+        if !ctx.tty
+            && let Some(note) = job.as_deref().and_then(|j| memory_note(j, &self.memory))
+        {
+            inv = inv.with_note(note);
+        }
 
         // **A run that spent over a minute in the foreground says so on its way
         // out** — appended to the result, which is the channel the model reads, so
@@ -1399,7 +1564,7 @@ mod tests {
 
     #[test]
     fn the_description_declares_exec_and_says_how_to_use_the_tool() {
-        let s = Bash.schema();
+        let s = Bash::default().schema();
         assert_eq!(s.access, Access::Exec);
         assert!(!s.access.is_unattended(), "exec must reach the gate");
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);

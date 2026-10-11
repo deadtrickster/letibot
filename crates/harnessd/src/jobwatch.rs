@@ -1222,6 +1222,7 @@ mod tests {
             env: vec![],
             // No terminal: these are the substrate's own tests, not an operator's run.
             tty: false,
+            memory: None,
         })
         .expect("spawn")
     }
