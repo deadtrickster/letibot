@@ -1556,14 +1556,21 @@ mod tests {
     #[test]
     fn a_watched_subagent_is_not_waited_on() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        /// A child that finishes when told, and that writes down the longest wait anybody asked
+        /// of it — the fact "held the floor" is about, read without a clock.
         struct Gate {
             done: Arc<AtomicBool>,
+            longest_wait: Arc<std::sync::Mutex<std::time::Duration>>,
         }
         impl TaskRunner for Gate {
             fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
                 Ok("sub-w".into())
             }
             fn collect(&self, _h: &str, timeout: std::time::Duration) -> TaskStatus {
+                {
+                    let mut l = self.longest_wait.lock().unwrap();
+                    *l = (*l).max(timeout);
+                }
                 let deadline = std::time::Instant::now() + timeout;
                 loop {
                     if self.done.load(Ordering::SeqCst) {
@@ -1586,8 +1593,10 @@ mod tests {
             }
         }
         let run = |watched: bool, done: bool| {
+            let longest_wait = Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
             let runner: Arc<dyn TaskRunner> = Arc::new(Gate {
                 done: Arc::new(AtomicBool::new(done)),
+                longest_wait: longest_wait.clone(),
             });
             let d = crate::backend::tempdir::TempDir::new();
             let backend = crate::backend::HostBackend::new(d.path()).unwrap();
@@ -1607,22 +1616,28 @@ mod tests {
                 },
                 &mut crate::NullToolSink,
             );
-            (r, started.elapsed())
+            let asked = *longest_wait.lock().unwrap();
+            (r, started.elapsed(), asked)
         };
 
-        let (r, took) = run(true, false);
-        assert!(
-            took < std::time::Duration::from_millis(200),
-            "a watched child held the floor for {took:?}"
+        // **The watched child was asked for no wait at all** — the cause, rather than
+        // `elapsed() < 200ms`, which a loaded box trips with the code right (R67 item 19).
+        let (r, _, asked) = run(true, false);
+        assert_eq!(
+            asked,
+            std::time::Duration::ZERO,
+            "a watched child was waited on for {asked:?}"
         );
         assert!(r.payload.contains("nothing to wait for"), "{}", r.payload);
         assert!(r.payload.contains("on its own"), "{}", r.payload);
 
-        let (r, _) = run(true, true);
+        let (r, _, _) = run(true, true);
         assert!(r.payload.contains("the child's answer"), "{}", r.payload);
 
         // Unwatched: the wait it asked for, to the deadline.
-        let (r, took) = run(false, false);
+        // (A LOWER bound is safe on any box: a slow machine only makes it truer.)
+        let (r, took, asked) = run(false, false);
+        assert_eq!(asked, std::time::Duration::from_millis(400));
         assert!(
             took >= std::time::Duration::from_millis(400),
             "an unwatched wait returned early: {took:?}"
@@ -1765,11 +1780,13 @@ mod tests {
     #[test]
     fn starting_a_subagent_does_not_wait_for_it() {
         use std::sync::Arc as StdArc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-        /// A child that never finishes unless this test lets it.
+        /// A child that never finishes unless this test lets it, and that counts every time
+        /// anybody waits on it.
         struct Slow {
             release: StdArc<AtomicBool>,
+            collects: StdArc<AtomicUsize>,
         }
         impl TaskRunner for Slow {
             fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
@@ -1779,6 +1796,7 @@ mod tests {
                 if handle != "sub-slow" {
                     return TaskStatus::Unknown;
                 }
+                self.collects.fetch_add(1, Ordering::SeqCst);
                 let deadline = std::time::Instant::now() + timeout;
                 loop {
                     if self.release.load(Ordering::SeqCst) {
@@ -1802,8 +1820,10 @@ mod tests {
         }
 
         let release = StdArc::new(AtomicBool::new(false));
+        let collects = StdArc::new(AtomicUsize::new(0));
         let runner: Arc<dyn TaskRunner> = Arc::new(Slow {
             release: release.clone(),
+            collects: collects.clone(),
         });
         let tool = TaskTool::new(runner.clone());
         let result = TaskResultTool::new(runner);
@@ -1832,12 +1852,16 @@ mod tests {
 
         // The child is nowhere near done, and `task` comes back anyway —
         // `Backgrounded`, not `Ok`: it is running and has not answered yet.
-        let started = std::time::Instant::now();
+        //
+        // "Did not wait" is asserted as a CAUSE, not a duration: `task` never asked the child
+        // anything (`collect` is the only way to wait on it, and it ran zero times). This was
+        // `elapsed() < 1s`, which a loaded box or a parallel `cargo test` can trip without the
+        // code being wrong (R67 item 19) — and which a `task` that waited 900 ms would pass.
         let r = call(&mut rt, &mut sink, "task", r#"{"prompt": "a long job"}"#);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "{:?}",
-            started.elapsed()
+        assert_eq!(
+            collects.load(Ordering::SeqCst),
+            0,
+            "`task` waited on the child it started"
         );
         assert!(
             matches!(

@@ -1538,11 +1538,18 @@ mod tests {
         assert!(answerer.join().unwrap(), "the head never got the question");
         assert!(got.is_ok(), "{got:?}");
 
-        let held = log.lock().unwrap().clone().expect("the exchange is recorded");
+        let held = log
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the exchange is recorded");
         assert_eq!(held.question.text, q.text, "the question it answered");
         assert_eq!(held.question.options, q.options);
         assert_eq!(held.answer.option, Some(0));
-        assert_eq!(held.by, "deadtrickster", "the answer is attributed to nobody");
+        assert_eq!(
+            held.by, "deadtrickster",
+            "the answer is attributed to nobody"
+        );
 
         // **A refusal records nothing.** No head is attached to this hub, so the ask
         // refuses before anybody is posted to — and the slot it left is the empty one.
@@ -1643,6 +1650,11 @@ mod tests {
             !said.to_lowercase().contains("best judg"),
             "the survey's failure, reproduced: {said}"
         );
+        // **A wall-clock bound, kept on purpose, and generous on purpose** (R67 item 19): the
+        // fact is "did not sit out the deadline", and the only reading of that is a clock. Half
+        // the budget is 15 s of slack over a refusal measured in microseconds — a loaded box
+        // does not stall a lock-and-return for 15 s — while a regression that waits trips it
+        // every time, because it waits all 30.
         assert!(
             took < budget / 2,
             "a session with nobody to ask sat out the deadline: {took:?}"
@@ -1673,6 +1685,7 @@ mod tests {
         let started = std::time::Instant::now();
         let err = asker.ask(&a_question()).expect_err("nobody may answer");
         assert!(matches!(err, AskError::NoHead(_)), "{err:?}");
+        // Half the budget: generous for the reason the sibling test above writes down.
         assert!(
             started.elapsed() < budget / 2,
             "the ask sat out a deadline for an answer nobody was allowed to give"
@@ -1717,10 +1730,13 @@ mod tests {
             },
             0,
         );
-        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(Duration::from_secs(30));
+        let budget = Duration::from_secs(30);
+        let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(budget);
         let started = Instant::now();
         let d = adj.decide(&request());
-        assert!(started.elapsed() < Duration::from_secs(5), "it waited");
+        // Half the budget, not 5 s (R67 item 19): 15 s of slack over a refusal measured in
+        // microseconds, and a regression that waits still trips it, because it waits all 30.
+        assert!(started.elapsed() < budget / 2, "it waited");
         assert_eq!(d.outcome, DecisionOutcome::Unavailable);
         assert!(d.basis.contains("nothing was asked"), "{}", d.basis);
         assert!(
@@ -1899,13 +1915,15 @@ mod tests {
             0,
         );
         let child = Hub::new("s-sub-3");
+        let budget = Duration::from_secs(30);
         let adj = SubagentAdjudicator::new(
             child_ask(),
-            Some(HeadAdjudicator::new(root.clone(), answers).with_budget(Duration::from_secs(30))),
+            Some(HeadAdjudicator::new(root.clone(), answers).with_budget(budget)),
         );
         let started = Instant::now();
         let d = adj.decide(&request());
-        assert!(started.elapsed() < Duration::from_secs(5), "it waited");
+        // Half the budget, not 5 s — see `a_session_with_nobody_who_can_answer_refuses_at_once`.
+        assert!(started.elapsed() < budget / 2, "it waited");
         assert_eq!(d.outcome, DecisionOutcome::Unavailable);
         assert!(d.by.starts_with("gate:no-head"), "{}", d.by);
         // Which child, which session the card belongs to, that nothing was asked, and what to
@@ -2238,9 +2256,12 @@ mod tests {
                 note: None
             },
         ));
-        // And now the wait begins. It must find the answer, not overwrite it —
-        // and must not spend the budget doing so.
-        let started = Instant::now();
+        // And now the wait begins. It must find the answer, not overwrite it.
+        //
+        // **No clock** (R67 item 19; this was `elapsed() < 1s`, which a loaded box trips with
+        // the code right). Nobody else can answer `adj-race`, so `Answered` here can only be
+        // the answer placed above, read without waiting; a wait that overwrote it would find
+        // nothing to wake it and return `TimedOut`. The match is the whole claim.
         match answers.wait("adj-race", Duration::from_secs(10)) {
             Waited::Answered { reply, by } => {
                 assert_eq!(by, "deadtrickster");
@@ -2252,10 +2273,6 @@ mod tests {
             Waited::TimedOut => panic!("the answer was overwritten and the wait timed out"),
             Waited::Cancelled { why } => panic!("cancelled instead of answered: {why}"),
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "it returned immediately rather than waiting out the budget"
-        );
     }
 }
 
