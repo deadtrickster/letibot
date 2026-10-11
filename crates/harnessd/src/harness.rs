@@ -4253,6 +4253,7 @@ impl Harness {
                 ledger,
                 provider,
                 measured: true,
+                scale: sent_scale(&session.ledger, &session.items, ledger, provider, true),
             });
         }
         // **Fill the harness view's slot, now that there is something to disclose.**
@@ -10525,6 +10526,13 @@ impl Harness {
                     ledger: rendered_at,
                     provider: ok.metrics.prompt_tokens,
                     measured: true,
+                    scale: sent_scale(
+                        &self.session.ledger,
+                        &self.session.items,
+                        rendered_at,
+                        ok.metrics.prompt_tokens,
+                        self.provider.is_some(),
+                    ),
                 });
                 self.cfg.ledger_scale = Some((rendered_at, ok.metrics.prompt_tokens));
                 self.measure_resident();
@@ -12055,6 +12063,60 @@ struct WallAnchor {
     provider: u64,
     /// Whether `provider` came from the provider.
     measured: bool,
+    /// **The last measurement as a ratio of what was SENT**: `(sent-sized ledger tokens,
+    /// the provider's count)` of one prompt, reasoning and marks left out of the first.
+    ///
+    /// A metered session's ledger is `Vocab::bytes` — one token per BYTE — so the sent
+    /// rows are not "the provider's size to within 4-17%", they are two to four times
+    /// it. Measured on pg-noop, 2026-10-11: a `/reseat` carried a transcript whose sent
+    /// rows were 1,276,902 bytes, deepseek counted it at 598k, and the estimate fired an
+    /// ordinary fold at "1276902 of 1000000". Every sent-sized delta — the rows after a
+    /// measurement, and a fork's whole new base — goes through this ratio. Carried across
+    /// a fork, because the bytes-per-token of what is sent belongs to the content, not
+    /// to the transcript id. `None` until something measured, or on a local session,
+    /// whose ledger IS the prompt.
+    scale: Option<(u64, u64)>,
+}
+
+impl WallAnchor {
+    /// `sent` ledger tokens in the provider's units, through [`WallAnchor::scale`].
+    fn convert(&self, sent: u64) -> u64 {
+        match self.scale {
+            Some((ledger, provider)) if ledger > 0 => {
+                ((sent as u128 * provider as u128) / ledger as u128) as u64
+            }
+            _ => sent,
+        }
+    }
+}
+
+/// The sent-sized ledger tokens between two row boundaries, `[from, to)` — see
+/// [`sent_since`].
+fn sent_between(
+    ledger: &letibot_tokencore::ledger::TokenLedger,
+    items: &[TranscriptItem],
+    from: u64,
+    to: u64,
+    metered: bool,
+) -> u64 {
+    sent_since(ledger, items, from, metered).saturating_sub(sent_since(ledger, items, to, metered))
+}
+
+/// The measured ratio for a prompt of `ledger_at` ledger tokens counted as `provider`
+/// — `None` on a local session, where the ledger is the prompt.
+fn sent_scale(
+    ledger: &letibot_tokencore::ledger::TokenLedger,
+    items: &[TranscriptItem],
+    ledger_at: u64,
+    provider: u64,
+    metered: bool,
+) -> Option<(u64, u64)> {
+    if !metered || provider == 0 {
+        return None;
+    }
+    let prefix = u64::from(ledger.prefix_len());
+    let sent = prefix + sent_between(ledger, items, prefix, ledger_at, metered);
+    (sent > 0).then_some((sent, provider))
 }
 
 /// **One reading of how big this conversation is, in the units its wall is in** —
@@ -12161,7 +12223,7 @@ fn roll_resident(
 ) -> (WallAnchor, Resident) {
     let len = ledger.len() as u64;
     if anchor.transcript == transcript_now && anchor.ledger <= len {
-        let since = sent_since(ledger, items, anchor.ledger, metered);
+        let since = anchor.convert(sent_since(ledger, items, anchor.ledger, metered));
         return (
             anchor.clone(),
             Resident {
@@ -12172,13 +12234,14 @@ fn roll_resident(
         );
     }
     let prefix = u64::from(ledger.prefix_len());
-    let tokens = prefix + sent_since(ledger, items, prefix, metered);
+    let tokens = anchor.convert(prefix + sent_since(ledger, items, prefix, metered));
     (
         WallAnchor {
             transcript: transcript_now.to_string(),
             ledger: len,
             provider: tokens,
             measured: false,
+            scale: anchor.scale,
         },
         Resident {
             tokens,

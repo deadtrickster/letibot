@@ -53,6 +53,7 @@ impl Wall {
             ledger: self.len(),
             provider,
             measured: true,
+            scale: None,
         }
     }
 }
@@ -151,6 +152,7 @@ fn a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact() 
         ledger: anchor.0,
         provider: anchor.1,
         measured: true,
+        scale: None,
     };
     let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
     assert_eq!(now.tokens, 742_100, "740k + the answer and the notice");
@@ -184,6 +186,7 @@ fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
         ledger: 3_000_000,
         provider: 900_000,
         measured: true,
+        scale: None,
     };
     let (rebased, now) = super::roll_resident(&stale, "t-wall", &w.ledger, &w.items, true);
     assert_eq!(
@@ -204,9 +207,61 @@ fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
         ledger: u64::from(w.ledger.prefix_len()),
         provider: 5_000,
         measured: true,
+        scale: None,
     };
     let (_, local) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, false);
     assert_eq!(local.tokens, w.len(), "ratio 1 by construction");
+}
+
+/// **A fork of a metered session is sized in the provider's units, not the ledger's
+/// bytes.**
+///
+/// MEASURED 2026-10-11, pg-noop's `/reseat`: a metered session's ledger is
+/// `Vocab::bytes`, and the reingested transcript's sent rows came to 1,276,902 of
+/// them. Deepseek had counted the same conversation at 598k, and the estimate fired
+/// "compacting: 1276902 of 1000000 deepseek tokens resident" — an ordinary fold of a
+/// conversation with 400k of its window free, then "≈ 735950" after it, also in bytes.
+/// The last measurement's sent-to-provider ratio carries across the fork.
+#[test]
+fn a_fork_of_a_byte_ledger_is_sized_by_the_last_measured_ratio() {
+    let mut w = Wall::new(120_000);
+    for _ in 0..100 {
+        w.sent(11_569).thought(7_906);
+    }
+    let at = w.len();
+    let scale = super::sent_scale(&w.ledger, &w.items, at, 598_000, true);
+    assert_eq!(
+        scale,
+        Some((1_276_900, 598_000)),
+        "sent bytes, reasoning left out"
+    );
+    let measured = super::WallAnchor {
+        transcript: "t-before-the-reseat".into(),
+        ledger: at,
+        provider: 598_000,
+        measured: true,
+        scale,
+    };
+    // The reseat carries the same rows onto a new transcript.
+    let (rebased, now) = super::roll_resident(&measured, "t-wall", &w.ledger, &w.items, true);
+    assert_eq!(now.tokens, 598_000, "the same conversation, the same count");
+    assert_eq!(rebased.scale, scale, "the ratio rides the fork");
+    let mut cfg = deepseek_window();
+    cfg.ledger_scale = Some((w.len(), now.tokens));
+    assert!(!cfg.should_compact(w.len()), "598k of 1M is not the wall");
+
+    // And a delta after a measurement is converted the same way: 10k bytes sent.
+    w.sent(10_000);
+    let (_, next) =
+        super::roll_resident(&measured, "t-before-the-reseat", &w.ledger, &w.items, true);
+    assert_eq!(next.tokens, 598_000 + 4_683, "10k bytes at 598000/1276900");
+    assert_eq!(next.since, 4_683);
+
+    // Local: no ratio, the ledger is the prompt.
+    assert_eq!(
+        super::sent_scale(&w.ledger, &w.items, at, 598_000, false),
+        None
+    );
 }
 
 /// The closing line names its unit and says when the after-count is an estimate.
