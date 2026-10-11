@@ -310,8 +310,9 @@ impl App {
                 Some("the file has changed since this edit; this is the edit alone".to_string()),
             ),
         };
-        let rows = rano::sidediff::render_edit_view(
-            &without_control_lines(&f.path),
+        let shown_path = without_control_lines(&f.path);
+        let mut rows = rano::sidediff::render_edit_view(
+            &shown_path,
             &without_control_lines(&before),
             &without_control_lines(&after),
             bs,
@@ -319,6 +320,15 @@ impl App {
             &dcfg,
             rano::sidediff::edit_view(split),
         );
+        // **The file is named once, in the popup's top edge.** The renderer heads every edit view
+        // with the file's name — right for a card in the conversation, a repeat inside a frame
+        // that already says it. Dropped only when the first row IS that name.
+        if rows
+            .first()
+            .is_some_and(|l| l.plain().trim() == shown_path.trim())
+        {
+            rows.remove(0);
+        }
         let first = rows.iter().position(changed).unwrap_or(0);
         Layout {
             width,
