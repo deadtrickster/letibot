@@ -504,3 +504,23 @@ That is the whole of it. The remaining divergence is the server's own checkpoint
 behaviour on a hybrid model, which is a measurement of llama.cpp and not a
 violation of the invariant.
 ";
+
+/// **Where a test's scratch directory goes**: the system temp dir — except on macOS, where it is
+/// `/tmp`.
+///
+/// A Unix socket's path has to fit `sockaddr_un.sun_path`: 104 bytes on macOS, 108 on Linux. On
+/// macOS `std::env::temp_dir()` is the per-user `/var/folders/…/T/`, about fifty of those bytes
+/// before a test has named anything, so a scratch dir with a pid and a timestamp in it and a
+/// `harnessd.sock` inside runs past the limit and `bind` refuses it — a test that passes on Linux
+/// and fails on a Mac for a reason that has nothing to do with what it tests. The same length
+/// pushes a path drawn in a pane past the pane's width. `/tmp` is short on both counts.
+pub fn scratch_root() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from("/tmp")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::env::temp_dir()
+    }
+}

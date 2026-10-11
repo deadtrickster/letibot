@@ -101,7 +101,7 @@ fn config() -> Option<Config> {
         .expect("the workspace root is two levels above this crate")
         .to_path_buf();
     let mut cfg = Config::for_this_box(repo);
-    cfg.socket = std::env::temp_dir().join(format!(
+    cfg.socket = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-loop-{}-{}.sock",
         std::process::id(),
         letibot_harnessd::config::now_ns()

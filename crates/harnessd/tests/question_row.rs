@@ -212,7 +212,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = letibot_sessionlog::testing::scratch_root().join(format!(
             "{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -453,7 +453,12 @@ fn a_typed_answer_lands_as_the_operators_own_words() {
         .utterances
         .iter()
         .find(|u| u.text == said)
-        .unwrap_or_else(|| panic!("the typed answer is not in the trail: {:#?}", trail.utterances));
+        .unwrap_or_else(|| {
+            panic!(
+                "the typed answer is not in the trail: {:#?}",
+                trail.utterances
+            )
+        });
     assert_eq!(cited.speaker, Speaker::Operator);
 }
 
@@ -483,7 +488,12 @@ fn an_abstention_lands_as_the_operators_own_row() {
         .utterances
         .iter()
         .find(|u| u.text == "abstain")
-        .unwrap_or_else(|| panic!("the abstention is not in the trail: {:#?}", trail.utterances));
+        .unwrap_or_else(|| {
+            panic!(
+                "the abstention is not in the trail: {:#?}",
+                trail.utterances
+            )
+        });
     assert_eq!(cited.speaker, Speaker::Operator);
     // And the tool said the same thing, which is the pair that keeps the row and the result
     // from disagreeing about what happened.

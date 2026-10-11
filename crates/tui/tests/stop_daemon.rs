@@ -62,7 +62,7 @@ use letibot_tui::ui::render::RenderConfig;
 const SESSION: &str = "s-stop";
 
 fn socket_path(tag: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
+    let mut p = letibot_sessionlog::testing::scratch_root();
     p.push(format!("letibot-stop-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&p);
     p

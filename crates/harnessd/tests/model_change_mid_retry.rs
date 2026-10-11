@@ -455,7 +455,7 @@ fn a_model_change_during_a_retrying_turn_takes_and_the_turn_continues() {
     // The operator's `providers.toml` must not be touched: point the config home at a
     // scratch directory for this process, and take opencode's key store out of reach so
     // the keys this file writes are the ones that resolve.
-    let scratch = std::env::temp_dir().join(format!(
+    let scratch = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-model-change-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

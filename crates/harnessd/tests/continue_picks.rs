@@ -41,8 +41,8 @@ impl Scratch {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("the clock")
             .as_nanos();
-        let p =
-            std::env::temp_dir().join(format!("letibot-continue-{tag}-{}-{n}", std::process::id()));
+        let p = letibot_sessionlog::testing::scratch_root()
+            .join(format!("letibot-continue-{tag}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&p).expect("scratch");
         Scratch(p)
     }

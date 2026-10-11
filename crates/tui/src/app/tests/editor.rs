@@ -94,7 +94,10 @@ fn edited(ws: &Workspace) -> App {
 
 /// rano's ticks until the file it opened has arrived — the loop's job, done here by hand.
 fn settle(a: &mut App) {
-    for _ in 0..1000 {
+    // Up to ten seconds: rano loads on a thread of its own, and under the whole workspace's tests
+    // at once a second was not always enough — the frame test then read an empty buffer. It
+    // returns the moment the load is done, so a quiet run pays nothing for the bound.
+    for _ in 0..10_000 {
         a.editor_tick(Instant::now());
         if !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading()) {
             break;

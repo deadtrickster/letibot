@@ -410,7 +410,7 @@ struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn new(tag: &str) -> TempDir {
-        let p = std::env::temp_dir().join(format!(
+        let p = letibot_sessionlog::testing::scratch_root().join(format!(
             "letibot-{tag}-{}-{}",
             std::process::id(),
             letibot_harnessd::config::now_ns()

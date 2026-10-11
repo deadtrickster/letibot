@@ -56,7 +56,7 @@ use letibot_tui::ui::render::RenderConfig;
 const SESSION: &str = "s-reconnect";
 
 fn socket_path(tag: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
+    let mut p = letibot_sessionlog::testing::scratch_root();
     p.push(format!(
         "letibot-reconnect-{tag}-{}.sock",
         std::process::id()

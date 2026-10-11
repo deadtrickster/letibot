@@ -28,8 +28,8 @@ struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> TempDir {
-        let p =
-            std::env::temp_dir().join(format!("harnessd-standing-{name}-{}", std::process::id()));
+        let p = letibot_sessionlog::testing::scratch_root()
+            .join(format!("harnessd-standing-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("temp dir");
         TempDir(p)

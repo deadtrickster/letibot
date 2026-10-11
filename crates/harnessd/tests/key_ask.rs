@@ -106,7 +106,7 @@ fn scratch() -> PathBuf {
     // all macOS's clock resolves.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let d = std::env::temp_dir().join(format!(
+    let d = letibot_sessionlog::testing::scratch_root().join(format!(
         "lb-key-{}-{:x}-{seq}",
         std::process::id(),
         n as u32

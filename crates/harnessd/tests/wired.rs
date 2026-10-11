@@ -897,7 +897,8 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
         return;
     };
     let system = "SYSTEM-MARKER: you are the guard. ".repeat(40);
-    let dir = std::env::temp_dir().join(format!("letibot-fork-prefix-{}", std::process::id()));
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-fork-prefix-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let store = dir.join("s.db");
 
@@ -960,7 +961,8 @@ fn reingest_writes_no_summary_and_says_so_in_the_note() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let dir = std::env::temp_dir().join(format!("letibot-reingest-{}", std::process::id()));
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-reingest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
 
