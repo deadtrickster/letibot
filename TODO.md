@@ -413,27 +413,35 @@ traced; each was re-checked where marked ✓.
    `Key::Char('r')` ~:736, `'a' | 'v' | 'd'` ~:770) has no empty-composer guard; the subagents
    pane's `o`/`p` do (`self.editor.text().is_empty()`). Typing "deploy" with `/queue` open sends
    `d` and `a` against the selected entry.
+   **DONE** (branch `r67-tui`, `e25a7d5`): `r`/`a`/`v`/`d` guarded on an empty composer; `a_typed_word_reaches_the_composer_and_runs_no_queue_verb`.
 2. **A click in the session picker selects the wrong session.** `panes.rs:~294-308` maps
    `y - (header+2)` to `picker_sel`, but the picker draws two lines per session (row + id line)
    and footer lines fall inside the bound. **The test `a_click_picks_the_row_under_the_pointer…`
    (`app/tests/session.rs:1762`) asserts the wrong row** — fix it with the code. The picker also
    truncates without scrolling.
+   **DONE** (`8774e72`): clicks read `picker_hits`, built from rano's `stop_rows` (row + id line per session; footer picks nothing); the picker now scrolls its cursor into view; the test is rewritten to the right row, plus `the_picker_scrolls_its_cursor_into_view_and_clicks_follow`.
 3. **Clicks on the mode/setting card are mis-mapped.** `ui/screen.rs:393-394` takes
    `mode_first_row` from the top of the chrome, above the lines pushed before the card (`:311`);
    `mode_rows_drawn` counts the MODE row's choices for every subject (`/verbosity`, `/diff`,
    `/models`); wrapped `why` text breaks one-line-per-value.
+   **DONE** (`0b42927`): `mode_hits` from `setting_picker_layout` (rano's `stop_rows`, `why` lines included), placed where the frame put the card; `mode_first_row`/`mode_rows_drawn` removed. Tests: `a_click_on_the_mode_card_lands_under_a_link_line`, `a_click_on_the_verbosity_card_picks_the_value_drawn_there`.
 4. **The diff popup blocks the permission card.** `key_diff_popup` (`keys/mod.rs:132`) runs before
    `key_decision` (`:196`) and returns `Break` for every key; its own comment says cards stay
    answerable. The hint bar has no diff-popup branch.
+   **DONE** (`ccde44b`): with a decision open the popup keeps only Esc/ctrl-c/ctrl-]/wheel/page keys; hint bar gains popup and popup-over-decision branches. `a_decision_under_the_diff_popup_takes_its_keys`.
 5. **Scrolling in the queue pane moves the hidden transcript.** The wheel/PgUp pane list in
    `app/keys/chords.rs:270` omits `queue_pane` and `queue_open`; `key_queue_review`'s PageUp arm
    (`panes.rs:182`) is dead code.
+   **DONE** (`e0252df`): `queue_pane`/`queue_open` in the chords' list, the dead PageUp arm removed. `the_wheel_and_page_keys_scroll_the_queue_pane_and_its_overlay`.
 6. **`!term` gets the operator's raw mouse reports.** `pane_keys` (`keys/mod.rs:719`) forwards SGR
    mouse sequences verbatim, against `crates/vt/src/screen.rs:27`.
+   **DONE** (`e312b44`): SGR and X10 reports stripped before forwarding (no program has mouse mode per `vt/src/screen.rs`). `the_pane_is_never_sent_the_operators_mouse`. A report split across two reads is not recognised (documented).
 7. **Any wheel or click cancels allow-all.** `key_mode_confirm` (`app/keys/cards.rs:25`) treats
    every key as "no".
+   **DONE** (`262867f`): the wheel falls through, a click is swallowed, the card stays up. `the_wheel_and_a_click_leave_the_allow_all_card_standing`.
 8. **`/sessions` and ctrl-s open the picker differently.** `commands.rs:510` neither seeds
    `picker_sel` nor clears `pick`; the chord does both.
+   **DONE** (`e274142`): both call `App::open_session_picker`. `slash_sessions_opens_the_picker_the_way_ctrl_s_does`.
 9. **Help and hints disagree with the bindings.** `ui/panes/help.rs:99` (a click on an edit row
    opens the diff popup, not rano); the hint bar's "ctrl-n notes" (ctrl-n retires every note,
    `chords.rs:162`); help omits ctrl-g, ctrl-q, ctrl-o, `/queue`, `/jobs`, `/todos`,
@@ -441,6 +449,7 @@ traced; each was re-checked where marked ✓.
    mode for `slash_out`, `sub_out`, the diff popup or the payload window**: with `sub_out` open
    over the subagents pane the bar still says "enter (or o) opens a subagent", while Enter
    re-peeks and `o` falls through to switching session.
+   **DONE except one string** (`50ec059`): help fixed (popup, wheel, click, ctrl-g/q/o, `/queue` `/jobs` `/todos` `/subagents`); hint-bar branches for `slash_out`, `sub_out`, the payload window (diff popup in `ccde44b`). **NOT DONE: "ctrl-n notes"** is rano's own `HintMode::Conversation` sentence (external crate, tag v0.8.1) — needs a rano change.
 
 **Daemon (crates/harnessd, crates/tools):**
 
@@ -499,6 +508,7 @@ traced; each was re-checked where marked ✓.
     clock — the fact is about time — at half the 30 s budget, reason written beside each.
 20. **Pre-existing failure:** `tui` `app::tests::detected::a_python_edit_detected_after_a_command_draws_its_diff`
     fails on main (with and without llama).
+    **DONE — a real head bug, environment-dependent** (`c9f3028`): the provenance note was the payload's second `[note]` line, hidden by the fold behind the box's `memory: ran UNCAPPED` note; a folded detected-diff panel now carries its own provenance line.
 
 **Also found, and contained:**
 
@@ -526,6 +536,7 @@ traced; each was re-checked where marked ✓.
     through settings. Existing click tests: the picker (`app/tests/session.rs:1762` — wrong, item 2),
     the count labels (`screen.rs:384-636`), todos (`todos.rs:293-332`), settings, the editor, the
     queue strip (`queue.rs:1049`). The mouse decoder itself is pinned (`keys/input.rs:264-277`).
+    **DONE** (`e25a7d5`): `a_click_on_a_queue_row_selects_the_entry_drawn_there` (the hit test was already right).
 26. **The queue's log repeats `landed <same sha>` 7 and 10 times in a row** — reset rows recognised
     as already on main, logged as landings each pass. Noise that reads like work.
 27. **Linear lookups that grow with the daemon's age**: `Registry::get` scans every entry under
