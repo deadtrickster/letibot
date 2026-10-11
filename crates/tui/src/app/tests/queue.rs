@@ -1113,3 +1113,81 @@ fn the_strip_says_which_view_is_on_and_moves_between_them() {
         "a click on the strip is not a click on an entry: {rows:#?}"
     );
 }
+
+/// **Typing with the queue pane open types; it does not run the pane's verbs** (R67 item 1).
+/// The letters `r`, `a`, `v` and `d` are the pane's only on an empty composer — the guard the
+/// subagents pane's `o`/`p` carry. Before it, every verb letter of a word being typed with
+/// `/queue` open was eaten, and `a`/`d` sent `queue approve`/`queue rm` against the selected row.
+/// The FIRST letter of a word still lands on an empty composer, so the word here is begun with a
+/// letter the pane does not bind; every verb letter after it must reach the composer and send
+/// nothing.
+#[test]
+fn a_typed_word_reaches_the_composer_and_runs_no_queue_verb() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(
+        vec![queue_entry("c1", MergeState::Failed)],
+        Vec::new(),
+    ));
+    a.set_composer("p");
+    for c in ['r', 'a', 'v', 'd'] {
+        assert_eq!(
+            a.key(Key::Char(c)),
+            None,
+            "`{c}` with a line typed is the composer's, not `queue …`"
+        );
+    }
+    assert_eq!(
+        a.editor.text(),
+        "pravd",
+        "every letter reached the composer"
+    );
+    // And on an empty composer the letters are still the pane's.
+    a.set_composer("");
+    assert_eq!(
+        a.key(Key::Char('d')),
+        Some(Action::Slash {
+            line: "queue rm c1".into()
+        })
+    );
+}
+
+/// **A click on a queue row moves the cursor to the row under the pointer, and Enter opens
+/// THAT entry** (R67 item 25) — the hit test reads the stop rows the pane recorded while
+/// drawing, so a row is found where it was drawn. A click in the blank space under the queue
+/// moves nothing.
+#[test]
+fn a_click_on_a_queue_row_selects_the_entry_drawn_there() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut second = queue_entry("c2", MergeState::Waiting);
+    second.branch = "agent/child-two".into();
+    let mut third = queue_entry("c3", MergeState::Waiting);
+    third.branch = "agent/child-three".into();
+    a.apply(queue_frame(
+        vec![queue_entry("c1", MergeState::Waiting), second, third],
+        Vec::new(),
+    ));
+    let rows = a.screen(120, 40);
+    let at = rows
+        .iter()
+        .position(|l| l.contains("agent/child-three"))
+        .expect("the third entry is drawn") as u16;
+    assert_eq!(a.key(Key::Click { x: 6, y: at }), None);
+    assert_eq!(a.queue_sel, 2, "the click selected the row it landed on");
+    let rows = a.screen(120, 40);
+    assert!(
+        rows.iter()
+            .any(|l| l.contains('▸') && l.contains("agent/child-three")),
+        "{rows:#?}"
+    );
+    // A click far below the rows moves nothing.
+    a.key(Key::Click { x: 6, y: 38 });
+    assert_eq!(a.queue_sel, 2);
+    a.key(Key::Enter);
+    assert_eq!(a.queue_open.as_deref(), Some("c3"));
+}

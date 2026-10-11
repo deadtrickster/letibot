@@ -733,7 +733,13 @@ impl App {
                     // are the queue working and `landed` is done; a restart there would be a
                     // frame the daemon refuses, and a head that sent it anyway would be a head
                     // that made the operator wait for a round trip to be told no.
-                    Key::Char('r') => {
+                    //
+                    // **Only on an empty composer**, the guard the subagents pane's `o`/`p` carry
+                    // and every plain letter a pane binds must: the letters are the operator's to
+                    // type first. Without it, typing "deploy" with `/queue` open sent `queue rm`
+                    // on its `d` and `queue approve` on its `a` against whatever row the cursor
+                    // was on (R67 item 1) — every letter was eaten and two of them acted.
+                    Key::Char('r') if self.editor.text().is_empty() => {
                         let e = &self.merge[at];
                         // **The same predicate the review view's verb row draws**
                         // (`ui::panes::queue::verb_moves`): a row that says what `r` would do and
@@ -767,7 +773,11 @@ impl App {
                     // waiting, the three machine-parked states and a person's own `vetoed` — is
                     // a row a person may answer, and what the DAEMON says about it (a live
                     // review attempt, a verdict that already accepts) is the daemon's to say.
-                    Key::Char('a') | Key::Char('v') | Key::Char('d') => {
+                    //
+                    // Guarded on an empty composer, `r`'s own guard above and for the same reason.
+                    Key::Char('a') | Key::Char('v') | Key::Char('d')
+                        if self.editor.text().is_empty() =>
+                    {
                         use crate::ui::panes::queue::{Verb, verb_moves};
                         let e = &self.merge[at];
                         // **The verb's own letter and word**, so the key that was pressed and
