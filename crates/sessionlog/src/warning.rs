@@ -188,6 +188,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // this daemon, and from a head that looks exactly like a queue with nothing to review. Said
     // once per reason (`Sessions::ensure_gatekeeper`), on the daemon's own session.
     ("review_queue_not_open", Class::Failure),
+    // **The merge queue could not reach its store** (R67 item 12) — `database is locked` against
+    // another daemon's connection, or a table it cannot read. It used to END the queue's thread;
+    // now the queue waits, retries and says this once per reason. A Failure: nothing moves while
+    // it stands. Its pair below is Routine by `resume_note`'s rule — the queue doing what it
+    // should, and the line that tells a reader the red one above is over.
+    ("merge_queue_store_error", Class::Failure),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.
@@ -293,6 +299,8 @@ pub const TABLE: &[(&str, Class)] = &[
     // verdicts, which is why they sit together — see `HarnessTaskRunner::enqueue_entry`,
     // whose refusal is the sentence this code carries.
     ("merge_not_queued", Class::Failure),
+    // The merge queue serving again after `merge_queue_store_error` — see that row.
+    ("merge_queue_recovered", Class::Routine),
     // **A FAILURE, and the one code here that is a claim about the corpus rather than about
     // the session.** An operator's own call was admitted and the head that asked went away
     // before reporting what it did, so the record holds an `admit` whose outcome nobody
@@ -775,16 +783,21 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 96 codes, of which **9** are the reader's own input refused.
+    /// **The census, pinned.** 98 codes, of which **9** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_33_routine_9_refused_and_54_failures() {
+    fn the_table_is_34_routine_9_refused_and_55_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **96, not the 93 the last census was taken at.** Three arrivals, all in the red register
+        // **98, not 96.** Two arrivals, one per register, for R67 item 12: the merge queue's
+        // thread no longer ends on a store error, so it says `merge_queue_store_error` (Failure —
+        // nothing moves while it stands) and, when a pass works again, `merge_queue_recovered`
+        // (Routine — the queue doing what it should, and the end of the red line above).
+        //
+        // **95, not the 92 the last census was taken at.** Three arrivals, all in the red register
         // and all R67 item 15's — failures that used to reach only the daemon's stderr:
         // `operator_call_failed` (a door call not admitted, or admitted and not runnable),
         // `operator_shell_on_worker` (a `!` run that could not have its own thread and holds the
@@ -916,12 +929,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 96, "the table's size");
-        assert_eq!(count(Class::Routine), 33);
+        assert_eq!(TABLE.len(), 98, "the table's size");
+        assert_eq!(count(Class::Routine), 34);
         assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
-        assert_eq!(count(Class::Failure), 54);
+        assert_eq!(count(Class::Failure), 55);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 54 of 96 and the middle is 9**, which is why the third register is a
+        // register is 55 of 98 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

@@ -3435,6 +3435,126 @@ pub struct MergeQueueDaemon {
     events: Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send>,
 }
 
+/// **The first wait after a store error in [`MergeQueueDaemon::run`]**, doubled per consecutive
+/// failure up to [`STORE_RETRY_CAP`]. A second: the commonest error is `database is locked`, and
+/// another daemon's write is usually over by then.
+pub const STORE_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// **The longest wait between two attempts** — a minute, so a store that stays broken costs one
+/// attempt a minute and a store that comes back is served within a minute of it.
+pub const STORE_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// **A run of store errors in the queue's loop** — how many in a row, what was last said on the
+/// hubs, and the wait before the next attempt. See [`MergeQueueDaemon::run`].
+#[derive(Default)]
+struct StoreTrouble {
+    /// Consecutive failures; zero while the store answers.
+    failures: u32,
+    /// The reason last published, so a failure that stands is said once and a new one again.
+    said: Option<String>,
+}
+
+impl StoreTrouble {
+    /// One failure: the daemon's log every time, the hubs when the reason is new, and the wait.
+    fn failed(
+        &mut self,
+        doing: &str,
+        e: &letibot_tokencore::store::StoreError,
+        events: &dyn Fn(letibot_sessionlog::SessionEvent),
+    ) -> std::time::Duration {
+        self.failures = self.failures.saturating_add(1);
+        let wait = store_retry_wait(self.failures);
+        let why = e.to_string();
+        eprintln!(
+            "  merge queue: {doing} failed ({why}) — attempt {} failed, trying again in {}s",
+            self.failures,
+            wait.as_secs()
+        );
+        if self.said.as_deref() != Some(why.as_str()) {
+            events(letibot_sessionlog::SessionEvent::Warning {
+                code: "merge_queue_store_error".into(),
+                detail: format!(
+                    "the merge queue could not read or write its store while {doing}: {why}. \
+                     Nothing is lost and nothing moved; the queue keeps trying (the wait doubles \
+                     up to {}s) and says so here when it is serving again.",
+                    STORE_RETRY_CAP.as_secs()
+                ),
+                compaction: None,
+            });
+            self.said = Some(why);
+        }
+        wait
+    }
+
+    /// A pass that worked: the run is over, and if it had been announced, so is its end.
+    fn passed(&mut self, events: &dyn Fn(letibot_sessionlog::SessionEvent)) {
+        if self.said.take().is_some() {
+            eprintln!(
+                "  merge queue: serving again after {} failed attempt(s)",
+                self.failures
+            );
+            events(letibot_sessionlog::SessionEvent::Warning {
+                code: "merge_queue_recovered".into(),
+                detail: format!(
+                    "the merge queue is serving again, after {} failed attempt(s) to reach its \
+                     store.",
+                    self.failures
+                ),
+                compaction: None,
+            });
+        }
+        self.failures = 0;
+    }
+}
+
+/// **The wait before attempt `failures + 1`**: [`STORE_RETRY_FIRST`] doubled per failure after
+/// the first, capped at [`STORE_RETRY_CAP`].
+fn store_retry_wait(failures: u32) -> std::time::Duration {
+    let mut wait = STORE_RETRY_FIRST;
+    for _ in 1..failures {
+        wait = (wait * 2).min(STORE_RETRY_CAP);
+    }
+    wait
+}
+
+/// Sleep `wait`, in one-second slices so a daemon that is stopping is not held for a minute.
+fn sleep_unless_stopped(wait: std::time::Duration, stop: &AtomicBool) {
+    let until = std::time::Instant::now() + wait;
+    while !stop.load(Ordering::Relaxed) {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(std::time::Duration::from_millis(250)));
+    }
+}
+
+/// **What the queue's log says about a landing** — R67 item 26.
+///
+/// `StepOutcome::Landed` carries main's tip, and an entry recognised as ALREADY on main (a reset
+/// row whose branch the project merged by hand, or a handed-over entry the project landed) is
+/// moved to `Landed` at main's CURRENT tip — so a run of such entries in successive passes
+/// logged `landed <the same sha>` 7 and 10 times in a row, which reads like ten merges and was
+/// none. A tip is now logged as a landing once; the same tip again is said for what it is.
+#[derive(Default)]
+struct Landings {
+    last: Option<String>,
+}
+
+impl Landings {
+    fn line(&mut self, tip: &str) -> String {
+        if self.last.as_deref() == Some(tip) {
+            format!(
+                "another entry was already on main at {tip} and is recorded as landed — nothing \
+                 new was merged"
+            )
+        } else {
+            self.last = Some(tip.to_string());
+            format!("landed {tip}")
+        }
+    }
+}
+
 impl MergeQueueDaemon {
     /// Build the daemon over `store`, serving the repo at `repo`, with `gate` as the check
     /// that runs at the tip, `reviewer` as the door an entry's review is asked through, and
@@ -4112,18 +4232,59 @@ impl MergeQueueDaemon {
     /// [`letibot_tools::gatekeeper::wake`] and the door this daemon was built with, and the
     /// verdict comes back through the store on a later pass, which is why the queue's thread
     /// never blocks on a reviewer's turn.
-    pub fn run(&self, stop: &AtomicBool) -> Result<(), letibot_tokencore::store::StoreError> {
-        self.recover()?;
+    ///
+    /// # A store error is weather, not the end (R67 item 12)
+    ///
+    /// This loop used to be `self.recover()?` and `match self.step()?`, so ONE store error ended
+    /// the thread for the rest of the daemon's life and `spawn` printed one line. MEASURED in
+    /// `~/logs/harnessd.log`: `merge queue: the queue could not be served: sqlite: database is
+    /// locked`, three times — each one a daemon left running with no queue, while the pane went
+    /// on drawing the rows as if they were being served. Nine daemons share one `sessions.db`,
+    /// so a lock held past the five-second `busy_timeout` is ordinary, not exceptional.
+    ///
+    /// So an error now waits and tries again, with the wait doubling from [`STORE_RETRY_FIRST`]
+    /// to [`STORE_RETRY_CAP`] and `stop` honoured throughout, and it is SAID on the hubs (the
+    /// `events` broadcast) as `merge_queue_store_error` — at the first failure of a run and when
+    /// the reason changes, not every attempt — and once more as `merge_queue_recovered` when a
+    /// pass succeeds again. Recovery on startup is retried the same way: the first pass is not
+    /// taken until `recover` has run, because a `Taken` row from a dead daemon must become
+    /// `Stale` before anything else reads the queue. This is the stop-gap that keeps today's
+    /// queue alive; R61 req. 4 is the structural answer.
+    pub fn run(&self, stop: &AtomicBool) {
+        let mut recovered = false;
+        let mut trouble = StoreTrouble::default();
+        let mut landings = Landings::default();
         loop {
             if stop.load(Ordering::Relaxed) {
-                return Ok(());
+                return;
             }
-            match self.step()? {
+            if !recovered {
+                match self.recover() {
+                    Ok(_) => recovered = true,
+                    Err(e) => {
+                        let wait = trouble.failed("recovering the queue", &e, &*self.events);
+                        sleep_unless_stopped(wait, stop);
+                        continue;
+                    }
+                }
+            }
+            let outcome = match self.step() {
+                Ok(outcome) => {
+                    trouble.passed(&*self.events);
+                    outcome
+                }
+                Err(e) => {
+                    let wait = trouble.failed("serving the queue", &e, &*self.events);
+                    sleep_unless_stopped(wait, stop);
+                    continue;
+                }
+            };
+            match outcome {
                 StepOutcome::Idle => {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
                 StepOutcome::Landed(tip) => {
-                    eprintln!("  merge queue: landed {tip}");
+                    eprintln!("  merge queue: {}", landings.line(&tip));
                 }
                 StepOutcome::Conflict => {
                     eprintln!("  merge queue: conflict — the worktree stays, with the reason");
@@ -4188,13 +4349,9 @@ impl MergeQueueDaemon {
         std::thread::Builder::new()
             .name("merge-queue".into())
             .spawn(move || {
-                if let Err(e) = self.run(&stop) {
-                    // A queue that cannot be read is said out loud rather than going quiet: an
-                    // empty queue and an unreadable one look identical from the outside, and
-                    // *"that is all the work there is"* is the one thing this module refuses to
-                    // say falsely.
-                    eprintln!("  merge queue: the queue could not be served: {e}");
-                }
+                // A store error no longer ends this: `run` waits, retries and says so on the
+                // hubs, and returns only when `stop` is set.
+                self.run(&stop);
             })
     }
 }
@@ -5849,6 +6006,20 @@ mod tests {
         pub(super) fn sink(&self) -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
             let me = self.clone();
             Box::new(move |e| me.0.lock().unwrap().push(e))
+        }
+
+        /// **The warnings, by code** — what the queue said on the hubs about itself rather than
+        /// about an entry (a store it could not reach, and its recovery).
+        pub(super) fn warnings(&self) -> Vec<String> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    letibot_sessionlog::SessionEvent::Warning { code, .. } => Some(code.clone()),
+                    _ => None,
+                })
+                .collect()
         }
 
         pub(super) fn moves(&self) -> Vec<(String, letibot_sessionlog::event::MergeState, String)> {
@@ -8668,6 +8839,118 @@ mod tests {
             .output()
             .expect("git");
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod store_errors {
+    //! **A store error does not end the queue's thread** — R67 item 12 — and **a landing is
+    //! logged once** — item 26.
+    use super::tests::{RecordingEvents, RecordingReviewer, store_at};
+    use super::*;
+
+    /// The wait doubles from the first and stops at the cap, so a store that stays broken costs one
+    /// attempt a minute and never a spin.
+    #[test]
+    fn the_wait_doubles_and_is_capped() {
+        assert_eq!(store_retry_wait(1), STORE_RETRY_FIRST);
+        assert_eq!(store_retry_wait(2), STORE_RETRY_FIRST * 2);
+        assert_eq!(store_retry_wait(3), STORE_RETRY_FIRST * 4);
+        assert_eq!(store_retry_wait(40), STORE_RETRY_CAP);
+    }
+
+    /// **`landed <same sha>` once, not ten times.** The first sighting of a tip is a landing; the
+    /// same tip again is an entry recognised as already on main, and the line says so.
+    #[test]
+    fn the_same_tip_is_logged_as_a_landing_once() {
+        let mut l = Landings::default();
+        assert_eq!(l.line("abc123"), "landed abc123");
+        let again = l.line("abc123");
+        assert!(!again.starts_with("landed"), "{again}");
+        assert!(again.contains("already on main at abc123"), "{again}");
+        assert_eq!(
+            l.line("def456"),
+            "landed def456",
+            "a new tip is a new landing"
+        );
+    }
+
+    /// **The queue's thread outlives a store it cannot read, says so, and says when it is back.**
+    ///
+    /// The failure is arranged the way a schema the build does not expect looks from the loop: the
+    /// queue's table is renamed away through a second connection, so every `merge_entries` read
+    /// fails, and renamed back. Before the fix `run` returned on the first `?` and the thread was
+    /// gone — `spawn` printed one line to stderr and nothing reached a hub, which is the
+    /// `database is locked` line the log holds three times.
+    #[test]
+    fn a_store_error_is_retried_and_announced_rather_than_ending_the_thread() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-mq-store-errors-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("sessions.db");
+        let events = RecordingEvents::default();
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            dir.clone(),
+            Box::new(|_| GateRun::green()),
+            Box::new(RecordingReviewer {
+                says: Some("asked".into()),
+                ..Default::default()
+            }),
+            events.sink(),
+        );
+        let other = store_at(&db);
+        other
+            .connection()
+            .execute_batch("ALTER TABLE merge_queue RENAME TO merge_queue_away")
+            .expect("the table moves away");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = daemon.spawn(stop.clone()).expect("the thread starts");
+        let wait_for = |code: &str| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < until {
+                if events.warnings().iter().any(|c| c == code) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            false
+        };
+        assert!(
+            wait_for("merge_queue_store_error"),
+            "the store error reached no hub: {:?}",
+            events.warnings()
+        );
+        assert!(
+            !thread.is_finished(),
+            "**one store error ended the queue's thread** — the daemon keeps running with no queue"
+        );
+
+        other
+            .connection()
+            .execute_batch("ALTER TABLE merge_queue_away RENAME TO merge_queue")
+            .expect("the table comes back");
+        assert!(
+            wait_for("merge_queue_recovered"),
+            "the queue never said it was serving again: {:?}",
+            events.warnings()
+        );
+        assert_eq!(
+            events
+                .warnings()
+                .iter()
+                .filter(|c| *c == "merge_queue_store_error")
+                .count(),
+            1,
+            "a failure that stands is said once, not every attempt"
+        );
+        stop.store(true, Ordering::Relaxed);
+        thread.join().expect("the thread ends when told to");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
