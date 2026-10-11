@@ -632,6 +632,107 @@ fn a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not() {
     assert!(project.handover_notices().is_empty(), "said ONCE");
 }
 
+/// **A red target is TOLD to the project's root session's model — once, the failing step and the
+/// end of its output first** (R76 item 1). FAILS before R76: `target_red` was a warning on the
+/// hubs and nothing the session's model reads; pg-noop's agent never heard its `main` was red.
+/// The review of the red tip, blocked, is told the same way; a subagent and the review queue's own
+/// session are told nothing.
+#[test]
+fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_first() {
+    use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
+    let Some(f) = Fixture::new("red-told") else {
+        return;
+    };
+    let (root, _base, _) = repo_with_children(f.dir.path(), &[]);
+    let repository = std::fs::canonicalize(&root).unwrap().display().to_string();
+    let sha = "8b9366aa12ffffffffffffffffffffffffffffff".to_string();
+    let s = f.store();
+    s.set_target_health(
+        &TargetHealth {
+            repository: repository.clone(),
+            target: "main".into(),
+            sha: sha.clone(),
+            state: HealthState::Red,
+            checked_ms: 1,
+            evidence: "`scripts/merge_gate.sh` failed".into(),
+            gate_steps: vec![
+                MergeGateStep {
+                    command: "cargo fmt --check".into(),
+                    outcome: MergeGateOutcome::Passed,
+                    output: String::new(),
+                    started_ms: 0,
+                    elapsed_ms: 0,
+                },
+                MergeGateStep {
+                    command: "scripts/merge_gate.sh".into(),
+                    outcome: MergeGateOutcome::Failed,
+                    output: "running: cargo test\nmerge gate: FAIL: the corpus got worse".into(),
+                    started_ms: 0,
+                    elapsed_ms: 0,
+                },
+            ],
+        },
+        "test",
+    )
+    .unwrap();
+    s.enqueue_review(
+        &NewReview {
+            id: "red-main-old".into(),
+            repository: repository.clone(),
+            target: "main".into(),
+            kind: ReviewKind::Target,
+            session_id: String::new(),
+            branch: "main".into(),
+            worktree: None,
+            base_sha: String::new(),
+            head_sha: sha.clone(),
+            brief: "red".into(),
+            priority: MergePriority::Urgent,
+            fixes: None,
+            evidence: String::new(),
+        },
+        "test",
+        1,
+    )
+    .unwrap();
+    assert!(
+        s.move_review(
+            "red-main-old",
+            ReviewState::Waiting,
+            ReviewState::Blocked,
+            &Move::new("queue", "blocked")
+                .set("failure", "git checkout: fatal: unable to read tree"),
+            2,
+        )
+        .unwrap()
+    );
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions
+        .held("s-parent")
+        .expect("the project's own session");
+    let notices = project.queue_emergency_notices();
+    assert_eq!(notices.len(), 2, "{notices:#?}");
+    let red = &notices[0];
+    assert!(red.starts_with("EMERGENCY"), "{red}");
+    let step = red
+        .find("`scripts/merge_gate.sh`")
+        .expect("the failing step");
+    let tail = red.find("FAIL: the corpus got worse").expect("its tail");
+    let policy = red.find("Nothing lands").expect("then the policy");
+    assert!(
+        step < tail && tail < policy,
+        "the step and its tail FIRST: {red}"
+    );
+    assert!(red.contains("`queue`"), "how to get out: {red}");
+    let blocked = &notices[1];
+    assert!(
+        blocked.contains("red-main-old") && blocked.contains("unable to read tree"),
+        "{blocked}"
+    );
+    assert!(project.queue_emergency_notices().is_empty(), "told ONCE");
+}
+
 // ===== A refusal, at the end that reaches a model =====
 
 /// **A review row of the child `s-parent-sub-1`, under this fixture's `s-parent`**, with the

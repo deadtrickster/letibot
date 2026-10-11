@@ -1339,6 +1339,17 @@ impl Registry {
             .and_then(|e| e.parent_session_id.clone())
     }
 
+    /// **The ids of the sessions this registry holds, and nothing else** — no store read (the
+    /// store's listing is [`Registry::list`]'s, and it costs a scan). For the merge queue, which
+    /// rings the root sessions of a repository whose target went red (R76 item 1).
+    pub fn held_ids(&self) -> Vec<String> {
+        self.lock()
+            .entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// **Whether this registry holds the session at all** — the other half of `parent_of`'s
     /// `None`, for a caller that must tell *top-level* from *not here*.
     pub fn holds(&self, session_id: &str) -> bool {

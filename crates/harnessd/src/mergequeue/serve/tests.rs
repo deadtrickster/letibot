@@ -106,6 +106,7 @@ pub(crate) struct Door {
     pub(crate) events: Mutex<Vec<SessionEvent>>,
     pub(crate) rung: Mutex<usize>,
     pub(crate) projects: Mutex<Vec<String>>,
+    pub(crate) repositories: Mutex<Vec<String>>,
 }
 
 impl QueueDoor for Door {
@@ -118,6 +119,10 @@ impl QueueDoor for Door {
     fn ring_project(&self, session_id: &str) -> Result<String, String> {
         self.projects.lock().unwrap().push(session_id.into());
         Ok(format!("rang {session_id}"))
+    }
+    fn ring_repository(&self, repository: &str) -> Result<String, String> {
+        self.repositories.lock().unwrap().push(repository.into());
+        Ok(format!("rang the roots of {repository}"))
     }
 }
 
@@ -960,6 +965,39 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     );
     run(&q, 1);
     assert_eq!(health().state, HealthState::Green);
+}
+
+/// **A red target rings its project's root sessions, once per red tip; a branch blocked in
+/// review rings the root of its tree, once** (R76 item 1). FAILS before R76: the only door was
+/// `raise`, a warning on every hub that no model reads.
+#[test]
+fn a_red_target_and_a_blocked_review_ring_the_project_once_each() {
+    let w = World::new("ring");
+    commit(&w.repo, "broken", "x\n", "red");
+    let (wt, base, head) = branch(&w.repo, "b", "b.txt");
+    w.enqueue("b", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+    assert_eq!(
+        *w.door.repositories.lock().unwrap(),
+        vec![w.key()],
+        "the red tip rang the repository's roots once"
+    );
+    let r = w.store().review_row("b").unwrap().unwrap();
+    assert!(
+        w.store()
+            .move_review(
+                "b",
+                r.state,
+                ReviewState::Blocked,
+                &Move::new("test", "no reviewer could start").set("failure", "no VM"),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+    run(&q, 3);
+    assert_eq!(*w.door.projects.lock().unwrap(), vec!["s-b".to_string()]);
+    assert_eq!(w.door.repositories.lock().unwrap().len(), 1, "still once");
 }
 
 // ===== The review queue's upkeep =====

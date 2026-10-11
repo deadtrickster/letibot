@@ -58,6 +58,14 @@ pub trait QueueDoor: Send + Sync {
     /// Wake the project session that `session_id` belongs to (its root). What it is told is read
     /// from the store by that session (`Harness::queue_notices`).
     fn ring_project(&self, session_id: &str) -> Result<String, String>;
+    /// **Wake the root sessions of the project `repository` is** — a target emergency has no
+    /// branch and so no session of its own (R76 item 1). What each is told is read from the store
+    /// by that session (`Harness::queue_emergency_notices`), once per red tip or parked row.
+    fn ring_repository(&self, repository: &str) -> Result<String, String> {
+        Err(format!(
+            "this door rings no project session of {repository}"
+        ))
+    }
 }
 
 /// How a project's `[queue]` settings are read — the project's `leticode.toml` in production.
@@ -111,6 +119,10 @@ pub struct RepoQueue {
     repo: PathBuf,
     key: String,
     env: Arc<QueueEnv>,
+    /// **What this worker has already rung a project about** (R76 item 1) — a red tip, a gate
+    /// that could not judge, a row parked for a person — so each is rung once per worker, not
+    /// every two seconds.
+    rung: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl RepoQueue {
@@ -121,6 +133,7 @@ impl RepoQueue {
             repo,
             key,
             env,
+            rung: Default::default(),
         }
     }
 
@@ -238,7 +251,60 @@ impl RepoQueue {
                 worked |= self.land_next(&target, &h, stop)?;
             }
         }
+        self.ring_the_projects()?;
         Ok(if worked { Pass::Worked } else { Pass::Idle })
+    }
+
+    /// **A target emergency reaches a MODEL, not only the heads** (R76 item 1). `raise` is a
+    /// warning on every hub, which heads draw and no model reads: pg-noop's agent never heard its
+    /// `main` was red. So every pass rings the project that has to act — the repository's root
+    /// sessions for the target's own trouble (red, unjudged, timed out; a red tip's review blocked
+    /// or undecided), the branch's root for its review parked for a person — once per tip or per
+    /// parked row. The words are the session's to read off the store
+    /// (`Harness::queue_emergency_notices`), so a ring that arrives twice says nothing twice.
+    fn ring_the_projects(&self) -> Result<(), StoreError> {
+        let mut due: Vec<(String, Option<String>)> = Vec::new();
+        for h in self.store.target_healths()? {
+            if h.repository == self.key && emergency_health(&h) {
+                due.push((
+                    format!("health:{}:{}:{}", h.target, h.sha, h.state.as_str()),
+                    None,
+                ));
+            }
+        }
+        for r in self.store.review_rows(Some(&self.key))? {
+            if !matches!(r.state, ReviewState::Blocked | ReviewState::CannotDecide)
+                || r.evidence.starts_with(super::HANDED_TO_PROJECT)
+            {
+                continue;
+            }
+            let who = match r.kind {
+                ReviewKind::Target => None,
+                ReviewKind::Branch => Some(r.session_id.clone()),
+            };
+            due.push((
+                format!("row:{}:{}:{}", r.id, r.state.as_str(), r.state_ms),
+                who,
+            ));
+        }
+        for (key, session) in due {
+            if !self
+                .rung
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key.clone())
+            {
+                continue;
+            }
+            let rang = match &session {
+                Some(s) if !s.is_empty() => self.env.door.ring_project(s),
+                _ => self.env.door.ring_repository(&self.key),
+            };
+            if let Err(why) = rang {
+                eprintln!("  merge queue: {key}: no project session was rung: {why}");
+            }
+        }
+        Ok(())
     }
 
     // ===== The review queue's upkeep =====
@@ -1167,6 +1233,18 @@ impl RepoQueue {
             eprintln!("  merge queue: after landing `{}`: {kept}", row.branch);
         }
         Ok(())
+    }
+}
+
+/// **A target's health a project has to hear about** (R76 item 1): red, timed out, or unjudged
+/// because the gate's own setup failed. `blocked` for want of a declared gate has its own notice
+/// (`Harness::queue_notices`), and the other blocked causes are the queue's own (a worktree that
+/// could not be made) and are raised on the hubs.
+pub fn emergency_health(h: &TargetHealth) -> bool {
+    match h.state {
+        HealthState::Red | HealthState::TimedOut => true,
+        HealthState::Blocked => h.evidence.starts_with(super::setup::GATE_SETUP_FAILED),
+        _ => false,
     }
 }
 

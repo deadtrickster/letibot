@@ -7354,6 +7354,98 @@ impl Harness {
         out
     }
 
+    /// **A target emergency, told to the model of the project that has to act** (R76 item 1).
+    ///
+    /// The queue raised `target_red`, `queue_blocked` and `queue_needs_human` as warnings on every
+    /// hub — which heads draw and no model reads. pg-noop's `main` went red on 2026-10-11 and the
+    /// project's own agent never heard of it, and could not have got itself out if it had. So a
+    /// ROOT session (never the review queue's own) is told, once per daemon per red tip or parked
+    /// row, with the failing step and the end of its output FIRST:
+    ///
+    /// * its repository's target is red, timed out, or unjudged because the gate's own setup
+    ///   failed (`mergequeue::serve::emergency_health`);
+    /// * the review of its target's red tip is blocked or cannot decide;
+    /// * a branch of its own tree is blocked in review, or its reviewer cannot decide (a branch
+    ///   handed over under `merge_via_session` is [`Harness::handover_notices`]'s instead).
+    ///
+    /// The queue's worker rings the session (`QueueDoor::ring_repository` / `ring_project`); these
+    /// are the words its wake reads.
+    pub fn queue_emergency_notices(&mut self) -> Vec<String> {
+        let me = self.hub.session_id();
+        if self.is_the_queue() {
+            return Vec::new();
+        }
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        if crate::mergequeue::root_session(store, &me) != me {
+            return Vec::new();
+        }
+        let healths: Vec<_> = store
+            .target_healths()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(crate::mergequeue::serve::emergency_health)
+            .collect();
+        let parked: Vec<_> = store
+            .review_rows(None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    letibot_tokencore::store::ReviewState::Blocked
+                        | letibot_tokencore::store::ReviewState::CannotDecide
+                ) && !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
+            })
+            .collect();
+        if healths.is_empty() && parked.is_empty() {
+            return Vec::new();
+        }
+        // The repository this session is the project of — read only when there is news.
+        let mine = crate::mergequeue::repo_of_workspace(&self.cfg.workspace)
+            .and_then(|r| crate::mergequeue::repo_of_worktree(&r))
+            .map(|r| r.display().to_string());
+        let mut out = Vec::new();
+        for h in healths {
+            if mine.as_deref() != Some(h.repository.as_str())
+                || !self.gate_told.insert(format!(
+                    "emergency:{}:{}:{}:{}",
+                    h.repository,
+                    h.target,
+                    h.sha,
+                    h.state.as_str()
+                ))
+            {
+                continue;
+            }
+            out.push(crate::mergequeue::notices::health(&h));
+        }
+        for r in &parked {
+            let ours = match r.kind {
+                letibot_tokencore::store::ReviewKind::Target => {
+                    mine.as_deref() == Some(r.repository.as_str())
+                }
+                letibot_tokencore::store::ReviewKind::Branch => {
+                    !r.session_id.is_empty()
+                        && crate::mergequeue::root_session(store, &r.session_id) == me
+                }
+            };
+            if !ours
+                || !self.gate_told.insert(format!(
+                    "parked:{}:{}:{}",
+                    r.id,
+                    r.state.as_str(),
+                    r.state_ms
+                ))
+            {
+                continue;
+            }
+            out.push(crate::mergequeue::notices::parked(r));
+        }
+        out
+    }
+
     /// **The reviews the queue handed to THIS project's main session** (R61 decision 4's
     /// per-project option, `[queue] merge_via_session = true`): a review that could not run, so
     /// the project gates and merges the branch itself — told once, read off the row.
@@ -7642,6 +7734,9 @@ impl Harness {
         // is *the repository has no gate*, the second is *the queue has given the entry back to
         // you*, and the one that matters to the model reading them is the one that is true.
         notices.extend(self.handover_notices());
+        // **And a target emergency, or a row parked for a person** (R76 item 1) — the one the
+        // queue used to say only on the hubs.
+        notices.extend(self.queue_emergency_notices());
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();

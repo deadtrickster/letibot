@@ -21,6 +21,8 @@
 //! * **[`review`]** — the reviewers, which run on the review queue's SESSION as `task` children,
 //!   their verdicts bound to the head they judged (decision 6), and the enqueue.
 //! * **[`verbs`]** — the operator's `/queue` verbs, approve-over among them (decision 5).
+//! * **[`notices`]** — what a project's model is told when its target is red, unjudged or timed
+//!   out, or a row is parked for a person (R76 item 1).
 //! * **[`setup`]** — a gate that could not judge (its own setup failed after the build and the
 //!   tests passed) told apart from a target that is red (R76 item 5).
 //!
@@ -38,6 +40,7 @@ use letibot_tokencore::store::{MergeRow, ReviewRow, Store, StoreError};
 pub mod gate;
 pub mod git;
 pub mod lease;
+pub mod notices;
 pub mod review;
 pub mod serve;
 pub mod settings;
@@ -371,6 +374,47 @@ impl serve::QueueDoor for RegistryDoor {
         }
         self.registry.bell().ring_wake(&host);
         Ok(format!("the project session `{host}` was rung"))
+    }
+
+    fn ring_repository(&self, repository: &str) -> Result<String, String> {
+        let store = Store::open(&self.store_path).map_err(|e| e.to_string())?;
+        if self.registry.bell().is_closed() {
+            return Err("the daemon is shutting down".into());
+        }
+        let roots = self.roots_of(&store, repository);
+        if roots.is_empty() {
+            return Err(format!(
+                "no root session of {repository} is open in this daemon; the next one that wakes \
+                 there reads it"
+            ));
+        }
+        for r in &roots {
+            self.registry.bell().ring_wake(r);
+        }
+        Ok(format!("rang {}", roots.join(", ")))
+    }
+}
+
+impl RegistryDoor {
+    /// **The root sessions this daemon holds whose workspace is `repository`** — not the review
+    /// queue's own session, and not a subagent (its root is the one that hears).
+    fn roots_of(&self, store: &Store, repository: &str) -> Vec<String> {
+        self.registry
+            .held_ids()
+            .into_iter()
+            .filter(|id| id != crate::sessions::gatekeeper::SESSION)
+            .filter(|id| self.registry.parent_of(id).is_none())
+            .filter(|id| !matches!(store.session_parent(id), Ok(Some(Some(p))) if !p.is_empty()))
+            .filter(|id| {
+                store
+                    .session_workspace(id)
+                    .ok()
+                    .flatten()
+                    .and_then(|w| repo_of_workspace(Path::new(&w)))
+                    .and_then(|r| repo_of_worktree(&r))
+                    .is_some_and(|r| r.display().to_string() == repository)
+            })
+            .collect()
     }
 }
 
