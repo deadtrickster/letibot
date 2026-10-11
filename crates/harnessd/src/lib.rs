@@ -92,6 +92,7 @@ pub mod calibrate;
 pub mod child_todos;
 pub mod cli;
 pub mod config;
+pub mod context_claim;
 pub mod corpus;
 pub mod daemon;
 pub mod decision_source;

@@ -9807,6 +9807,12 @@ impl Harness {
         // is a legitimate answer to the check — `docs/closed-loop.md`'s tolerance
         // band, set at its narrowest until somebody measures a better one.
         let mut nudges_left = 1usize;
+        // **And a model that stops because "my context is full" when it is not** — R71,
+        // `crate::context_claim`. The same budget as the nudge above, and for the same
+        // reason: one line telling the model its measured fill, then — if it says it again
+        // — one warning to the operator, never a second line to the model. Always on: it
+        // is gated by a measurement, not by the prose heuristic `--intent-prose` guards.
+        let mut context_check = crate::context_claim::Check::new();
         // **The encoder for "is this turn getting anywhere".**
         //
         // Per user turn, because "already seen" is a claim about *this* turn — a
@@ -10423,7 +10429,23 @@ impl Harness {
             self.trail.claims(&text);
             metrics.push(ok.metrics);
 
+            // **The context claim, checked against what the daemon measured** — R71. Judged
+            // here, once per round and whichever way the round went, so the log has every
+            // claim; acted on in the two branches below, where the intent check steers.
+            let context_claim = self.judge_context_claim(&mut context_check, &text);
+
             if calls.is_empty() {
+                // **A model that stopped "because the context is full" when it is not.**
+                //
+                // First, ahead of the intent check: the excuse is usually WHY a promise was
+                // not kept, and the measured fill is the more useful of the two lines. It goes
+                // through `append_notice` for the reason the nudge below does — the turn is
+                // over, and a steering message would arrive after the reply — and the loop
+                // continues, which is the half that makes it a correction rather than a report.
+                if let Some(steer) = context_claim {
+                    self.append_notice(&steer)?;
+                    continue;
+                }
                 // **The turn boundary, and the one the error signal is about.**
                 //
                 // A turn that ends with no tool call is exactly T21.3's case —
@@ -10584,6 +10606,14 @@ impl Harness {
                 && let Some(steer) = self.close_the_turn(&turn_id, &appended)
             {
                 nudges_left -= 1;
+                self.injected
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_back(steer);
+            }
+            // And a context claim made by a round that went on to call tools: the model is
+            // still working, so the correction rides the step boundary like the nudge above.
+            if let Some(steer) = context_claim {
                 self.injected
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -11066,6 +11096,54 @@ impl Harness {
     /// idle clock.
     fn close_the_turn_with(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
         steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items)
+    }
+
+    /// **One round's context claim, judged, logged and — for the operator — warned
+    /// about.** The line for the MODEL is returned, for the caller to deliver where the
+    /// round's shape says it goes (a notice after a turn that ended, the step boundary
+    /// for one that is still calling tools). See `crate::context_claim`.
+    fn judge_context_claim(
+        &self,
+        check: &mut crate::context_claim::Check,
+        text: &str,
+    ) -> Option<String> {
+        use crate::context_claim::{REPEATED, Verdict};
+        let finding = check.judge(text, self.context_fill())?;
+        finding.log(&self.cfg.workspace, &self.cfg.session_id);
+        match finding.verdict {
+            Verdict::Slap(line) => Some(line),
+            Verdict::Repeated(detail) => {
+                self.hub.publish(SessionEvent::Warning {
+                    code: REPEATED.into(),
+                    detail,
+                    compaction: None,
+                });
+                None
+            }
+            Verdict::Quiet => None,
+        }
+    }
+
+    /// **The session's fill, as the wall judges it** — the one place a context claim's
+    /// measurement is read, so the day the wall's measurement changes (R72 rewrites
+    /// `planning_window` and the ledger scale) this changes with it and nothing else
+    /// does.
+    ///
+    /// The verdict is the wall's own: `Config::at_the_wall` over the ledger, the
+    /// predicate `compact_at_the_wall` acts on — so the check never calls a claim false
+    /// that the harness would have compacted for. The two numbers the model is told are
+    /// in the units the head shows (`Config::shown_tokens`), because a figure the
+    /// operator cannot find on their own screen is a second disagreement. `None` when the
+    /// window is unknown: not knowing is not a measurement, and a claim cannot be
+    /// checked against it.
+    fn context_fill(&self) -> Option<crate::context_claim::Fill> {
+        let window = self.cfg.planning_window()?;
+        let resident = self.session.ledger.len() as u64;
+        Some(crate::context_claim::Fill {
+            resident: self.cfg.shown_tokens(resident),
+            window: self.cfg.shown_tokens(window),
+            at_wall: self.cfg.at_the_wall(resident),
+        })
     }
 
     /// The authorisation trail this session would show an adjudicator right now.

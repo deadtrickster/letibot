@@ -731,7 +731,7 @@ its risk is size, not absence. Flaky-by-construction tests are R67 items 17–19
 
 ---
 
-## R71 — A model that stops because "my context is full" when it is not gets told so — **OPEN, the operator's ask 2026-10-11**
+## R71 — A model that stops because "my context is full" when it is not gets told so — **LANDED on `r71-context-check` 2026-10-11, not merged; the operator's ask 2026-10-11**
 
 The operator: *"we have similarity for notes and todos, i want to catch stupid things like this -
 "My context is at the wall" when models sometimes stop because yeah "my context is full, my
@@ -807,6 +807,49 @@ is 0.14, the code is 0.18 — `notes_offer.rs:114`.)
 **Done when:** replaying the leticl turn of 10-11 11:48 at its real fill produces the slap with
 the numbers, and the next round continues the work; the 10-07 report produces none; the
 calibration set's positives and negatives are separated by the chosen floor, numbers in the doc.
+
+**LANDED (branch `r71-context-check`, 2026-10-11):**
+
+- **Detection** — `crates/harnessd/src/context_claim.rs`, pure, 11 unit tests. 19 exemplars (the
+  verbatim sentences above and their family) plus 24 background sentences (the other senses of
+  "context", reports of a wall that happened, ordinary agent prose) in one `Corpus` — the
+  background is there for `idf` only, so `context` is not priced at nothing. New
+  `Corpus::of_texts` in `similarity.rs` (the notes' arithmetic without `index_text`); the stale
+  `OFFER_FLOOR 0.14` in that doc now says 0.18 and why.
+- **What sentence-level cosine got wrong, measured:** long sentences bury the excuse in a clause
+  (0.10–0.20), and `MIN_TERM` drops `I`/`my`/`me` — the only words separating *"my context is at
+  the wall"* from *"it hit the context wall"*. So: first person is one term (`myself`; `let me`
+  excluded), the score is the best window of ±5 terms around `context`/`room`, and the window
+  must carry an owner (first person, `remaining`, `fresh`) — the measurement can only check a
+  claim about THIS session.
+- **Calibration** (one read-only scan, 4,547 rows → 747 distinct sentences, hand-labelled):
+  79 positives, 641 negatives, 27 left out as ambiguous. **FLOOR 0.25: 63/79 positives over,
+  0/641 negatives over** (max negative 0.228; 0.22 would buy 4 positives for 3 negatives). The
+  10-07 TRUE report scores 0.000 on its own (no owner in its window), before the measurement is
+  consulted. R71's four verbatim excuses: 0.497, 0.599, 0.719, 0.782. **Not fully separated**:
+  16 positives sit under the floor — four with no owner in the window (*"what remains of this
+  turn's context"*), the rest long sentences with the excuse in a subordinate clause. That is the
+  gap a second tier (embeddings) is owed; the numbers are in the module doc.
+- **Measurement** — `Harness::context_fill`, ONE function: `session.ledger.len()` against
+  `cfg.planning_window()`, verdict `cfg.at_the_wall(resident)`, numbers shown through
+  `cfg.shown_tokens`. **When R72 lands, switch this function to its number** — nothing else reads
+  the fill.
+- **Steering** — `run_rounds` judges once per round: a turn with no tool calls gets the notice
+  through `append_notice` (`Speaker::Agent`), ahead of the intent check, and the loop continues; a
+  round that called tools gets it on the step-boundary queue. Always on. Budget per user turn:
+  one line to the model, then one hub warning `context_claim_repeated` (Failure; census 93/51),
+  then silence. At the wall, or with an unknown window, nothing is said.
+- **Log** — `<workspace>/.letibot/context-claims.jsonl`: sentence, score, resident, window,
+  at_wall, slapped, repeated.
+- **Tests** — `crates/harnessd/tests/context_claim.rs` (canned server, vocab-gated): the leticl
+  11:48 sentence at low fill gets the line with the numbers and a second round runs; the same at
+  the wall ends in one round with nothing said; a repeat after the line is one warning, not a
+  second line.
+
+**Left:** the floor is in-sample — tune it from `context-claims.jsonl`; the 16 missed positives
+want a second tier; no harness-level test of the tool-calling branch (the unit `Check` covers the
+budget, the branch is the intent nudge's own queue); switch `context_fill` to R72's measurement
+when that lands.
 
 ---
 
