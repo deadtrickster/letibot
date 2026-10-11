@@ -7565,8 +7565,11 @@ impl Harness {
         // the operator: *"let main project agent manage it"*.
         let mut notices: Vec<String> = self.queue_notices();
         // **And the entries the queue has handed to this session**, which is the fallback: no
-        // gatekeeper could judge them, or a review refused one and the complaints did not reach the
-        // child, so the project that owns the branch is told — and this is the telling. Second, and
+        // reviewer could judge them, and the project merges such a branch through its own main
+        // session (`[queue] merge_via_session`), so the project that owns the branch is told — and
+        // this is the telling. NOT a refused review: a refusal goes to the child that made the
+        // branch through `mergequeue::review::deliver_refusal`, and one that cannot be delivered
+        // is raised as `refusal_undelivered`, never handed over here. Second, and
         // after the gate notice, because an entry can be in only one of the two states: the first
         // is *the repository has no gate*, the second is *the queue has given the entry back to
         // you*, and the one that matters to the model reading them is the one that is true.
