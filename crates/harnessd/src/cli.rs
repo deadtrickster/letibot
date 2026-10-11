@@ -1022,11 +1022,25 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     registry.set_terminal(std::sync::Arc::new(crate::term::Terminals::new(
         std::sync::Arc::downgrade(&registry),
     )));
+    // **The stored row's parent and name come in with the first session** (R68.6), read once
+    // here at startup: the registry's entry is what every later open asks (`Registry::parent_of`,
+    // `Registry::title_of`) instead of scanning the store, so a session resumed by `--continue`
+    // must arrive knowing whose subagent it is and what the operator named it.
+    let stored = registry.resumable(&cfg.session_id);
+    let title = match (&cfg.title, &stored) {
+        (t, Some(b)) if t.is_empty() => b.title.clone(),
+        (t, _) => t.clone(),
+    };
+    let parent = cfg
+        .parent_session_id
+        .clone()
+        .or_else(|| stored.and_then(|b| b.parent_session_id));
     registry
-        .create(
+        .create_under(
             cfg.session_id.clone(),
-            cfg.title.clone(),
+            title,
             Sessions::wiring(&cfg),
+            parent,
         )
         .map_err(|e| e.to_string())?;
 

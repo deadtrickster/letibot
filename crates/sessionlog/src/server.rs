@@ -1002,7 +1002,16 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             // workspace it was had in, and copying the current
                             // session's would put the wrong root on the picker row
                             // for the whole of its life.
-                            match registry.create(&session_id, &brief.title, brief.wiring) {
+                            // **And its parent, from the same row** (R68.6): the registry's own
+                            // entry is where a worker asks *is this somebody's subagent?*
+                            // (`Registry::parent_of`) instead of re-reading every stored session
+                            // on each open, so a resumed child must arrive knowing it is one.
+                            match registry.create_under(
+                                &session_id,
+                                &brief.title,
+                                brief.wiring,
+                                brief.parent_session_id,
+                            ) {
                                 Ok(_) => ServerFrame::Sessions {
                                     sessions: registry.list(),
                                     current: seat.hub.session_id(),

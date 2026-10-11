@@ -744,3 +744,59 @@ fn a_message_to_a_parked_child_reopens_it_from_the_store() {
     );
     d.registry.close();
 }
+
+// ---------------------------------------------------------------------------
+// R68.6 — opening a session reads no list of the store
+// ---------------------------------------------------------------------------
+
+/// A store source that counts how often the WHOLE store is listed.
+struct CountingSource {
+    inner: Arc<letibot_harnessd::sessions::StoreSessions>,
+    lists: std::sync::atomic::AtomicUsize,
+}
+
+impl letibot_sessionlog::registry::SessionSource for CountingSource {
+    fn list(&self) -> Vec<letibot_sessionlog::registry::StoredBrief> {
+        self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        letibot_sessionlog::registry::SessionSource::list(&*self.inner)
+    }
+}
+
+/// **Opening a session costs no full scan of the store on the worker** (R68.6). The open asked
+/// *is this somebody's subagent?* twice through `Registry::list` (`is_root`, the parent lookup in
+/// `harness_as`) and the seat's title once more — each a `Store::list_sessions` over every
+/// session and its items, under the mutex every head's picker frame takes. MEASURED before: 2
+/// lists for one open; after: 0.
+#[test]
+fn opening_a_session_lists_nothing_from_the_store() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let _one = serial();
+    let dir = TempDir::new("harnessd-no-scan");
+    let path = dir.path.join("sessions.db");
+    let parts = parts_for(&config(ROOT, Endpoint::new("127.0.0.1", 1), &path));
+    let cfg = config(ROOT, Endpoint::new("127.0.0.1", 1), &path);
+    let registry = Registry::new();
+    let source = Arc::new(CountingSource {
+        inner: letibot_harnessd::sessions::StoreSessions::open(&cfg).expect("the store opens"),
+        lists: std::sync::atomic::AtomicUsize::new(0),
+    });
+    registry.set_source(source.clone());
+    registry
+        .create(ROOT, "the root", wiring(&cfg))
+        .expect("the root is created");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    registry
+        .create("s-a-second-session", "another", wiring(&cfg))
+        .expect("created");
+    let before = source.lists.load(std::sync::atomic::Ordering::SeqCst);
+    sessions.open("s-a-second-session").expect("it opens");
+    let scans = source.lists.load(std::sync::atomic::Ordering::SeqCst) - before;
+    assert_eq!(
+        scans, 0,
+        "opening one session listed the whole store {scans} time(s) on the worker"
+    );
+    registry.close();
+}

@@ -84,8 +84,20 @@ struct BellInner {
     /// arrival order across heads and that ordering is a promise, while a wake has
     /// no head and no `client_request_id` to be fair to.
     wakes: VecDeque<String>,
+    /// Wakes served in a row while the caller's clock was already due. See
+    /// [`WAKES_AHEAD_OF_A_DUE_CLOCK`].
+    wakes_while_due: usize,
     closed: bool,
 }
+
+/// **How many wakes a due clock waits behind** before the worker is answered `Idle` (R68.5).
+///
+/// Not zero: a clock that jumped every wake would make the worker's idle pass — a store read for
+/// reviews, a sweep of every session — run between each pair of wakes a tree's settlements
+/// produce together. Not unbounded: that was the starvation — under a storm of wakes the idle arm
+/// never ran at all. Wakes are coalesced per session ([`Bell::ring_wake`]), so this is eight
+/// SESSIONS' worth of machine traffic, after which the clock goes first once.
+pub const WAKES_AHEAD_OF_A_DUE_CLOCK: usize = 8;
 
 /// What a wake was about.
 enum Ring {
@@ -121,9 +133,20 @@ impl Bell {
     ///
     /// It rings no timer and starts no thread. The caller is already blocked in a
     /// `Condvar` on the thing it is watching.
+    ///
+    /// **Coalesced per session** (R68.5): a wake already waiting for this session is the same
+    /// wake. Its whole content is *look at what you own* — one `Harness::wake` drains every
+    /// settlement queued for the session — so a second ring before the first is served would be
+    /// a second pass that finds nothing, and under a storm (children settling, monitors firing,
+    /// relays) the queue grew by one entry per ring and the worker served each one, each of them
+    /// a pass over the store (`Harness::wake`'s reads). Arrival order across sessions is kept:
+    /// the waiting wake keeps its place.
     pub fn ring_wake(&self, session_id: &str) {
         {
             let mut g = self.lock();
+            if g.wakes.iter().any(|w| w == session_id) {
+                return;
+            }
             g.wakes.push_back(session_id.to_string());
         }
         self.cv.notify_all();
@@ -189,10 +212,23 @@ impl Bell {
             if let Some(id) = g.pending.pop_front() {
                 return RingWait::Ring(Ring::Command(id));
             }
+            // **A due clock waits behind at most [`WAKES_AHEAD_OF_A_DUE_CLOCK`] wakes** (R68.5).
+            // Before, the deadline was looked at only when all three queues were empty, so a
+            // steady stream of wakes — children settling, monitors firing — meant `Idle` never
+            // came: the sweep, the plan-check, the review pass and the park clock all waited
+            // behind machine traffic nobody was waiting on. A head's command still outranks the
+            // clock (a person is waiting on it); wakes keep their turn up to the bound, and the
+            // one after the clock is served on the very next call.
+            let due = deadline.is_some_and(|d| Instant::now() >= d);
+            if due && !g.wakes.is_empty() && g.wakes_while_due >= WAKES_AHEAD_OF_A_DUE_CLOCK {
+                g.wakes_while_due = 0;
+                return RingWait::Idle;
+            }
             // **Last**, and deliberately. A wake has nobody waiting on it; a head
             // that pressed enter does. Draining wakes first would let a chatty
             // monitor put itself in front of the operator.
             if let Some(id) = g.wakes.pop_front() {
+                g.wakes_while_due = if due { g.wakes_while_due + 1 } else { 0 };
                 return RingWait::Ring(Ring::Woken(id));
             }
             if g.closed {
@@ -1771,16 +1807,16 @@ impl Registry {
                 .map(|(_, f)| f)
                 .collect();
             let said: Vec<String> = enders.iter().flat_map(|f| f()).collect();
+            // To every hub this registry holds — the ones collected above, not `list()`, which
+            // read every stored session from the source to find the live ones (R68.8).
             if !said.is_empty() {
-                for brief in self.list() {
-                    if let Some(hub) = self.get(&brief.session_id) {
-                        for sentence in &said {
-                            hub.publish(crate::event::SessionEvent::Warning {
-                                code: "daemon_stopping_runs".into(),
-                                detail: sentence.clone(),
-                                compaction: None,
-                            });
-                        }
+                for hub in &hubs {
+                    for sentence in &said {
+                        hub.publish(crate::event::SessionEvent::Warning {
+                            code: "daemon_stopping_runs".into(),
+                            detail: sentence.clone(),
+                            compaction: None,
+                        });
                     }
                 }
             }
@@ -2389,6 +2425,88 @@ mod tests {
             _ => panic!("the operator's prompt goes first even though the wake rang first"),
         }
         assert!(matches!(r.next_work(), Some(Work::Woken(_))));
+    }
+
+    /// **Wakes for one session coalesce while they wait** (R68.5) — one `Harness::wake` drains
+    /// everything the session owns, so a hundred rings before the worker gets there are one pass,
+    /// not a hundred passes over the store. Another session's wake keeps its own place.
+    #[test]
+    fn a_storm_of_wakes_for_one_session_is_one_wake() {
+        let r = reg();
+        r.create("s-a", "", SessionWiring::default()).unwrap();
+        r.create("s-b", "", SessionWiring::default()).unwrap();
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        for _ in 0..100 {
+            r.bell().ring_wake("s-a");
+        }
+        r.bell().ring_wake("s-b");
+        r.bell().ring_wake("s-a");
+        let soon = || Some(Instant::now() + std::time::Duration::from_millis(30));
+        assert!(
+            matches!(r.next_work_until(soon()), WorkOrIdle::Work(Work::Woken(id)) if id == "s-a")
+        );
+        assert!(
+            matches!(r.next_work_until(soon()), WorkOrIdle::Work(Work::Woken(id)) if id == "s-b")
+        );
+        assert!(
+            matches!(r.next_work_until(soon()), WorkOrIdle::Idle),
+            "the storm was served more than once"
+        );
+    }
+
+    /// **The idle clock is not starved by wakes** (R68.5): a due deadline waits behind at most
+    /// [`WAKES_AHEAD_OF_A_DUE_CLOCK`] wakes, is answered `Idle`, and the wake after it is served on
+    /// the next call. A command still goes first: somebody is waiting on it.
+    #[test]
+    fn a_due_clock_waits_behind_a_bounded_run_of_wakes_but_not_of_commands() {
+        let r = reg();
+        let n = WAKES_AHEAD_OF_A_DUE_CLOCK + 2;
+        for i in 0..n {
+            r.create(format!("s-{i}"), "", SessionWiring::default())
+                .unwrap();
+            assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        }
+        for i in 0..n {
+            r.bell().ring_wake(&format!("s-{i}"));
+        }
+        let past = Some(Instant::now());
+        let mut answers = Vec::new();
+        for _ in 0..n + 1 {
+            answers.push(match r.next_work_until(past) {
+                WorkOrIdle::Work(Work::Woken(_)) => "wake",
+                WorkOrIdle::Idle => "idle",
+                _ => "other",
+            });
+        }
+        let mut expected = vec!["wake"; WAKES_AHEAD_OF_A_DUE_CLOCK];
+        expected.push("idle");
+        expected.extend(["wake", "wake"]);
+        assert_eq!(
+            answers, expected,
+            "a due clock waited behind every wake — under a storm it would wait for ever"
+        );
+
+        let a = r.get("s-0").unwrap();
+        let h = a.attach("tui", "dead", Caps::default(), 0);
+        for i in 0..n {
+            r.bell().ring_wake(&format!("s-{i}"));
+        }
+        for _ in 0..WAKES_AHEAD_OF_A_DUE_CLOCK {
+            let _ = r.next_work_until(past);
+        }
+        a.submit(
+            &h.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "hello".into(),
+            },
+        );
+        assert!(
+            matches!(r.next_work_until(past), WorkOrIdle::Work(Work::Command(..))),
+            "the operator's prompt waited behind a timer"
+        );
     }
 
     /// A wake for a session this registry does not hold is dropped, the same way a

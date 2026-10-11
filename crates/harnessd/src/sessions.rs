@@ -742,13 +742,14 @@ struct OwnSession {
 /// its parent and speaks through it: one name, one mind under it at a time. So
 /// the tool and the monitor are given to a session with no `parent_session_id`
 /// and to nothing else.
+///
+/// **Read from the registry's own entry** (R68.6), not from `Registry::list`, which read every
+/// stored session (`Store::list_sessions`, under the store mutex every head's picker frame also
+/// takes) on every open. A child is adopted or created WITH its parent, and a resumed one is
+/// created from its stored row (`ResumeSession`, the daemon's first session in `cli.rs`), so the
+/// entry has the answer.
 fn is_root(registry: &Registry, session_id: &str) -> bool {
-    registry
-        .list()
-        .iter()
-        .find(|b| b.session_id == session_id)
-        .map(|b| b.parent_session_id.is_none())
-        .unwrap_or(true)
+    registry.parent_of(session_id).is_none()
 }
 
 /// **What the daemon can do with a wake for a session** — and which of the three it is.
@@ -961,13 +962,9 @@ impl<'a> Sessions<'a> {
     ) -> Arc<letibot_flowy::InboxCondition> {
         // The title is the session's short address on the fabric — `@seat/title`
         // beside `@seat/id` — so agents on one project can name each other.
-        let title = self
-            .registry
-            .list()
-            .iter()
-            .find(|b| b.session_id == session_id)
-            .map(|b| b.title.clone())
-            .unwrap_or_default();
+        // From the entry (R68.6): the name it was created or resumed with, or the last one a
+        // rename or a derived title put there — not a scan of every stored session.
+        let title = self.registry.title_of(session_id).unwrap_or_default();
         let cond = seat.attach_as(session_id, &title, letibot_flowy::Attention::default());
         *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(letibot_flowy::tool::Attachment {
             seat: seat.clone(),
@@ -1643,12 +1640,8 @@ impl<'a> Sessions<'a> {
             let ws = self.registry.wiring(session_id).workspace;
             // Whether this is somebody's subagent is the registry's fact, not the
             // command line's: a resumed subagent must not be seated as a root.
-            let parent = self
-                .registry
-                .list()
-                .iter()
-                .find(|b| b.session_id == session_id)
-                .and_then(|b| b.parent_session_id.clone());
+            // From the entry, not a scan of the store (R68.6) — see `is_root`.
+            let parent = self.registry.parent_of(session_id);
             let mut cfg = Config {
                 session_id: session_id.to_string(),
                 parent_session_id: parent,

@@ -451,3 +451,40 @@ fn a_queue_that_cannot_be_read_is_said_rather_than_drawn_empty() {
     let bare = Registry::new();
     assert!(bare.queues().unreadable.is_some());
 }
+
+/// **A resumed subagent arrives knowing whose it is** (R68.6) — the parent rides in from the
+/// stored row onto the registry's own entry, which is where a worker now asks
+/// (`Registry::parent_of`) instead of re-reading every stored session on each open. Before, a
+/// resume created the entry with no parent and only `list()`'s merge with the store knew.
+#[test]
+fn a_resumed_subagent_carries_its_parent_on_the_entry() {
+    let r = Registry::new();
+    r.create("live", "", wiring("/home/dead")).unwrap();
+    r.set_source(Arc::new(Disk(Mutex::new(vec![StoredBrief {
+        session_id: "s-old-sub-1".into(),
+        title: "a child".into(),
+        items: 4,
+        last_activity_ms: 1_788_987_703_152,
+        wiring: wiring("/home/dead"),
+        parent_session_id: Some("s-old".into()),
+        context_tokens: None,
+        context_cached: None,
+        stored_end: None,
+    }]))));
+    let server = serve_registry(r.clone(), socket_path("resume-child")).expect("bind");
+    let (mut client, _hello, reader) =
+        HeadClient::attach(server.path(), "live", 0, "tui", "dead", Caps::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pumping = std::thread::spawn(move || pump(reader, tx));
+    client.resume_session("s-old-sub-1").unwrap();
+    let _ = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
+    assert_eq!(
+        r.parent_of("s-old-sub-1").as_deref(),
+        Some("s-old"),
+        "the resumed child's entry does not know its parent, so the worker would seat it as a root"
+    );
+    assert_eq!(r.title_of("s-old-sub-1").as_deref(), Some("a child"));
+    let _ = client.detach();
+    drop(client);
+    let _ = pumping.join();
+}
