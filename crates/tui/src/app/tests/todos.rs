@@ -2523,3 +2523,68 @@ fn keys_typed_in_the_overlay_do_not_reach_the_composer() {
     assert!(a.todos_open.is_some());
     assert_eq!(a.editor.text(), "");
 }
+
+/// **A wait `wait_on` armed shows on the row in the list**, not only in its card.
+///
+/// The operator: *"will todo pane show me that waits are armed?"* — a `wait_on` edge is a `needs`
+/// on a job or a child, and the list's `waits on` slot read only `when`, so a row the model had
+/// parked on `j55` looked exactly like a row nobody had touched.
+#[test]
+fn an_armed_wait_shows_on_the_row() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            TodoEntry {
+                content: "make tier 1 green".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+                needs: vec![TodoNeed::Job {
+                    handle: "j55".into(),
+                }],
+            },
+            TodoEntry {
+                content: "the criterion row".into(),
+                status: TodoStatus::InProgress,
+                by: TodoBy::Model,
+                when: None,
+                needs: vec![TodoNeed::Child {
+                    id: "s-1-sub-9".into(),
+                }],
+            },
+            TodoEntry {
+                content: "nothing armed".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: vec![TodoNeed::Row {
+                    content: "make tier 1 green".into(),
+                }],
+            },
+        ],
+    });
+    a.key(Key::CtrlT);
+    let lines = a.todos_lines(160);
+    let row = |words: &str| {
+        lines
+            .iter()
+            .find(|l| l.contains(words))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert!(
+        row("make tier 1 green").contains("waits on j55"),
+        "{lines:#?}"
+    );
+    assert!(
+        row("the criterion row").contains("waits on s-1-sub-9"),
+        "{lines:#?}"
+    );
+    assert!(
+        !row("nothing armed").contains("waits on"),
+        "an edge on a row is not a wait on a job: {lines:#?}"
+    );
+}

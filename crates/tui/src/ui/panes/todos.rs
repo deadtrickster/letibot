@@ -65,9 +65,17 @@ impl App {
                         content: t.content.clone(),
                         mine,
                         number: mine_at,
+                        // **And a wait `wait_on` armed**, which is a `needs` edge on a job or a
+                        // child, not a `when` — the operator: *"will todo pane show me that waits
+                        // are armed?"*. Before this only the row's card said so. The first such
+                        // edge is the one drawn; the card lists them all.
                         waits_on: match &t.when {
                             Some(TodoCondition::Job { handle }) => Some(handle.clone()),
-                            None => None,
+                            None => t.needs.iter().find_map(|n| match n {
+                                TodoNeed::Job { handle } => Some(handle.clone()),
+                                TodoNeed::Child { id } => Some(id.clone()),
+                                _ => None,
+                            }),
                         },
                         // **The mark follows the STOP, whichever half the row is on.** rano draws
                         // the `▸` from this flag alone, so a model's row left at `false` would be
