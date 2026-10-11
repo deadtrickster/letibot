@@ -2151,6 +2151,30 @@ pub enum SessionEvent {
         /// do not count the same thing and one name for both would be a lie about one.
         unit: String,
     },
+    /// **What this session is holding back from its model right now** (R79): the results nothing
+    /// in the plan waits on, held so a RUNNING turn is not interrupted, counted by kind.
+    ///
+    /// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
+    /// held - somewhere close to Responding ...."*. Published by the daemon every time the held
+    /// set changes — a result held at a round boundary, the set taken at a turn's start, flushed
+    /// when a turn ends, released by the starvation cap — so a head draws the counts it was last
+    /// given and draws nothing once they are all zero. Holding exists only while a turn runs (the
+    /// operator: *"once turn ends no reason to hold"*), so outside a turn this is zero.
+    ///
+    /// **A new variant is a `PROTOCOL_VERSION` bump** (46): an older head has no arm for it and
+    /// would fail to decode the frame mid-stream.
+    ///
+    /// **Ephemeral, like [`SessionEvent::Filling`]**: a count from four minutes ago is a lie about
+    /// now, and what the held results come to is the notice that delivers them.
+    HeldResults {
+        /// Background jobs (`bash` background, a promoted call) held.
+        jobs: u64,
+        /// Subagents (`task`) whose ending is held.
+        subagents: u64,
+        /// How many of those, of either kind, FAILED — a non-zero exit, a signal, a child that
+        /// answered `failed`.
+        failed: u64,
+    },
 }
 
 impl SessionEvent {
@@ -2193,6 +2217,7 @@ impl SessionEvent {
             SessionEvent::JobOutput { .. } => "JobOutput",
             SessionEvent::Filling { .. } => "Filling",
             SessionEvent::CompactionProgress { .. } => "CompactionProgress",
+            SessionEvent::HeldResults { .. } => "HeldResults",
         }
     }
 }

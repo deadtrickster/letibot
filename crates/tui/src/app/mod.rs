@@ -1438,6 +1438,12 @@ pub struct App {
     /// stays. See [`filling_line`] for why this is the daemon's count and not a count of
     /// the rows still lacking a body.
     pub(crate) filling: Option<(String, String, u64, u64)>,
+    /// **What the daemon is holding back from the model right now** — `(jobs, subagents,
+    /// failed)` from the last [`SessionEvent::HeldResults`](letibot_sessionlog::SessionEvent::HeldResults),
+    /// `None` once they are all zero. The operator, 2026-10-11: *"what would be useful is a
+    /// counter of how much and what kind is held - somewhere close to Responding ...."*. Drawn on
+    /// the turn's status row ([`App::held_label`]).
+    pub(crate) held: Option<(u64, u64, u64)>,
     /// **A fold's long wait** ([`SessionEvent::CompactionProgress`](letibot_sessionlog::SessionEvent::CompactionProgress)),
     /// in the compaction's own units.
     ///
@@ -1719,6 +1725,7 @@ impl App {
             bulk: None,
             filling: None,
             compacting: None,
+            held: None,
             auto_compact_off: None,
             nags_paused: None,
             bye: None,

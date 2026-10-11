@@ -1764,3 +1764,71 @@ fn a_message_taken_mid_turn_never_jumps_above_the_reply_it_follows() {
     assert_eq!(settled.matches("the reply so far.").count(), 1, "{settled}");
     assert_eq!(settled.matches("a follow-up").count(), 1, "{settled}");
 }
+
+/// **What the daemon holds back from the model is drawn beside `Responding`, by kind, and only
+/// while something is held.**
+///
+/// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
+/// held - somewhere close to Responding ...."*. The daemon sends `HeldResults` whenever the held
+/// set changes; the head draws the last counts on the turn's status row, names a failure, and
+/// draws nothing once they are all zero.
+#[test]
+fn the_held_counter_rides_the_responding_row_while_something_is_held() {
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_000,
+        testing::turn_started("t1"),
+    )));
+    assert!(!a.turn_status(160).contains("held"), "nothing held yet");
+
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::HeldResults {
+            jobs: 2,
+            subagents: 1,
+            failed: 0,
+        },
+    )));
+    let row = a.turn_status(160);
+    assert!(
+        row.contains("Responding") && row.contains("held: 2 jobs · 1 subagent"),
+        "{row}"
+    );
+    assert!(row.find("Responding") < row.find("held:"), "{row}");
+
+    a.apply(ServerFrame::Event(env(
+        3,
+        SessionEvent::HeldResults {
+            jobs: 1,
+            subagents: 0,
+            failed: 1,
+        },
+    )));
+    assert!(
+        a.turn_status(160).contains("held: 1 job (failed)"),
+        "{}",
+        a.turn_status(160)
+    );
+    a.apply(ServerFrame::Event(env(
+        4,
+        SessionEvent::HeldResults {
+            jobs: 3,
+            subagents: 0,
+            failed: 1,
+        },
+    )));
+    assert!(a.turn_status(160).contains("held: 3 jobs (1 failed)"));
+
+    a.apply(ServerFrame::Event(env(
+        5,
+        SessionEvent::HeldResults {
+            jobs: 0,
+            subagents: 0,
+            failed: 0,
+        },
+    )));
+    let row = a.turn_status(160);
+    assert!(row.contains("Responding") && !row.contains("held"), "{row}");
+}

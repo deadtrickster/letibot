@@ -511,6 +511,7 @@ impl App {
             | SessionEvent::JobOutput { .. }) => self.on_child_event(e, ts),
             e @ (SessionEvent::Filling { .. }
             | SessionEvent::CompactionProgress { .. }
+            | SessionEvent::HeldResults { .. }
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::PromptProgress { .. }
             | SessionEvent::TokensGenerated { .. }

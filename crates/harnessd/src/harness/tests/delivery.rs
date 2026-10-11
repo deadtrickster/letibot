@@ -302,6 +302,57 @@ fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
     );
 }
 
+/// The `HeldResults` events the hub has been handed, in order, as `(jobs, subagents, failed)`.
+fn held_said(hub: &Hub) -> Vec<(u64, u64, u64)> {
+    hub.retained()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            letibot_sessionlog::SessionEvent::HeldResults {
+                jobs,
+                subagents,
+                failed,
+            } => Some((jobs, subagents, failed)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The held set is said on the hub every time it changes, by kind and failures, and only
+/// then.**
+///
+/// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
+/// held - somewhere close to Responding ...."*. A job and a failed subagent held at a round
+/// boundary say `(1, 1, 1)`; a round boundary that changes nothing says nothing (the re-sort takes
+/// the set and puts it back without a dip to zero); delivering it says `(0, 0, 0)`.
+#[test]
+fn the_held_counts_are_said_on_the_hub_when_they_change() {
+    let dir = Scratch::new("r79-held-said");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let mut s = steering(&hub, d.clone());
+
+    w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
+    w.queue_for_test(JobCompletion {
+        kind: BackgroundKind::Subagent,
+        ..settled("s-child", "failed", SystemTime::now())
+    });
+    assert!(s.try_next().is_none(), "both are routine, so both are held");
+    assert_eq!(held_said(&hub), [(1, 1, 1)]);
+
+    assert!(s.try_next().is_none());
+    assert_eq!(
+        held_said(&hub),
+        [(1, 1, 1)],
+        "a boundary that changed nothing said nothing"
+    );
+
+    w.turn_ended();
+    let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
+    assert!(b.batch.is_some());
+    assert_eq!(held_said(&hub), [(1, 1, 1), (0, 0, 0)]);
+}
+
 /// **A `when: job` row's job is delivered at once — to a ROOT too**, at the round boundary of the
 /// turn that is running. (Before R79 a root heard nothing mid-turn: its every settlement waited
 /// for the turn to end and then cost a wake turn.) A routine one beside it stays held.

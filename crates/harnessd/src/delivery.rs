@@ -276,7 +276,7 @@ pub fn sort(
     rows: &[TodoItem],
     skip: impl Fn(&JobCompletion) -> bool,
 ) -> Vec<(JobCompletion, Why)> {
-    let mut all = w.take_held();
+    let mut all = w.take_held_to_resort();
     all.extend(w.take_completions());
     let mut now = Vec::new();
     let mut keep = Vec::new();

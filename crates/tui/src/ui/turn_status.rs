@@ -3,6 +3,7 @@
 use crate::app::*;
 use crate::ui::render::row;
 use rano::agent::turn_status::{Prefill, SLOW_AFTER_MS, TurnStatus};
+use rano::render::Role;
 
 impl App {
     /// The turn's status, inlaid in the composer's bottom border and pinned
@@ -54,7 +55,45 @@ impl App {
             now_ms: self.now_ms,
             slow: self.turn_slow(),
         };
-        row(&status.line(w), self.cfg.palette())
+        let mut line = status.line(w);
+        if let Some(held) = self.held_label() {
+            line.spans
+                .push(rano::render::Span::role(format!(" · {held}"), Role::Faint));
+            line = rano::render::text::truncate_owned(line, w);
+        }
+        row(&line, self.cfg.palette())
+    }
+
+    /// **What the daemon is holding back from the model, in a few words** — `held: 2 jobs · 1
+    /// subagent`, `held: 1 job (failed)` — or `None` when nothing is held.
+    ///
+    /// The operator, 2026-10-11: *"what would be useful is a counter of how much and what kind is
+    /// held - somewhere close to Responding ...."*. Faint, after the turn's own words on its
+    /// status row, because it is a fact about the turn that is running: results are held only so
+    /// a running turn is not interrupted, and they are delivered when it ends.
+    pub(crate) fn held_label(&self) -> Option<String> {
+        let (jobs, subagents, failed) = self.held?;
+        let n = |k: u64, one: &str, many: &str| match k {
+            0 => None,
+            1 => Some(format!("1 {one}")),
+            k => Some(format!("{k} {many}")),
+        };
+        let kinds: Vec<String> = [
+            n(jobs, "job", "jobs"),
+            n(subagents, "subagent", "subagents"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if kinds.is_empty() {
+            return None;
+        }
+        let failed = match failed {
+            0 => String::new(),
+            f if f == jobs + subagents => " (failed)".to_string(),
+            f => format!(" ({f} failed)"),
+        };
+        Some(format!("held: {}{failed}", kinds.join(" · ")))
     }
 
     /// **The turn is slow**: the model should be emitting and nothing has arrived for

@@ -688,7 +688,16 @@ use crate::view::Snapshot;
 /// connection thread, straight into the metrics channel. A version-44 daemon would fail to parse
 /// it — the version-4 argument — so the number moves. The confirmation is a routine `Warning
 /// {code: "feedback"}`, which every head already draws.
-pub const PROTOCOL_VERSION: u32 = 45;
+///
+/// # 46: what is held back from the model (R79)
+///
+/// [`crate::SessionEvent::HeldResults`] — the counts, by kind and failures, of the results a
+/// session is holding so a running turn is not interrupted, published every time that set
+/// changes. The operator, 2026-10-11: *"what would be useful is a counter of how much and what
+/// kind is held - somewhere close to Responding ...."*. A new variant, so a version-45 head would
+/// fail to decode the first one mid-session — the version-4 argument — and the number moves. It
+/// is ephemeral (`scrub::is_interactive`) and folded into no snapshot.
+pub const PROTOCOL_VERSION: u32 = 46;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2854,6 +2863,7 @@ mod tests {
                 | crate::SessionEvent::OperatorCallAllowed { .. }
                 | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::CompactionProgress { .. }
+                | crate::SessionEvent::HeldResults { .. }
                 | crate::SessionEvent::PromptProgress { .. }
                 | crate::SessionEvent::PromptRequested { .. }
                 | crate::SessionEvent::PromptSettled { .. }
@@ -2916,8 +2926,10 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 45,
-            "the match above was last reconciled with the frame list at 45 — `ClientFrame::Feedback`, \
+            PROTOCOL_VERSION, 46,
+            "the match above was last reconciled with the frame list at 46 — \
+             `SessionEvent::HeldResults`, the counts of what a session holds back from its model \
+             (a version-45 head cannot decode it). 45 was `ClientFrame::Feedback`, \
              an operator's mark answered on the connection thread (a version-44 daemon cannot parse \
              it). 44 was several panes per \
              session (R60 item 2): `TermInput`, `TermResize`, `TermClose`, `TermOutput` and \

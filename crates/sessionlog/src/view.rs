@@ -953,6 +953,10 @@ impl SessionView {
             // already keeps both — see `is_interactive` in `scrub.rs`, which strips this
             // from every stored projection for the same reason.
             SessionEvent::CompactionProgress { .. } => {}
+            // **Live-only**, for `CompactionProgress`'s reason: a count stored here would reach a
+            // late head as a fact about now. A head that attaches mid-turn draws nothing until the
+            // held set next changes.
+            SessionEvent::HeldResults { .. } => {}
             // **Not carried, and the reason is the snapshot's**: the queues are daemon-level,
             // and the view is per-session. A head that wants them asks with `ListMergeQueue` and
             // gets the whole snapshot as of now; a move only tells it to ask again.

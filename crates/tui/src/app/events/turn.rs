@@ -33,6 +33,18 @@ impl App {
                 self.redraw = true;
                 Disposition::Rendered
             }
+            // **The held counts, replaced whole** — the daemon sends the set as it is now every
+            // time it changes, so the last one is the truth and all zeros is nothing held.
+            // Ephemeral, so a late head never replays a stale count.
+            SessionEvent::HeldResults {
+                jobs,
+                subagents,
+                failed,
+            } => {
+                self.held = (jobs + subagents > 0).then_some((jobs, subagents, failed));
+                self.redraw = true;
+                Disposition::Rendered
+            }
             SessionEvent::CompactionProgress {
                 half,
                 halves,

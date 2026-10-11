@@ -1972,6 +1972,17 @@ reporting). Applies to children too: a child whose turn ended with results held 
 for them instead of keeping them until its next turn or handing them up when parked. The head folds
 the new heading as before (fixture `job_notice_meanwhile_turn_end.txt`).
 
+**And a held counter on the head (same branch).** The operator: *"what would be useful is a counter
+of how much and what kind is held - somewhere close to Responding ...."*. The daemon publishes
+`SessionEvent::HeldResults { jobs, subagents, failed }` whenever the held set's counts change
+(`JobWatchers::say_held`, from `hold`/`take_held`; the re-sort's take does not publish, so a
+boundary that changes nothing says nothing). Ephemeral, folded into no snapshot: a head that
+attaches mid-turn draws nothing until the set next changes. The TUI draws it faint on the
+Responding row — `held: 2 jobs · 1 subagent`, `held: 1 job (failed)`, `held: 3 jobs (1 failed)` —
+and nothing when all are zero. **PROTOCOL_VERSION 45 → 46** (a new variant): heads and daemons must
+be restarted together. No web head draws a Responding line (`httphead.rs` is an OpenAI-shaped
+endpoint, not a UI), so nothing was added there.
+
 **Left:**
 
 - **"What the model did next"** (point 5) is not recorded — the record has arrival, delivery,

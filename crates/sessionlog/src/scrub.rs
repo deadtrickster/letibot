@@ -97,6 +97,9 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // now. What survives the compaction is the fork and the `compacted` warning —
         // scrubbing this and keeping those is the same split `Filling` makes.
         SessionEvent::CompactionProgress { .. } => true,
+        // Ephemeral, for `Filling`'s reason: a held count is true NOW, and the delivery that ends
+        // the hold is a durable row of its own.
+        SessionEvent::HeldResults { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.

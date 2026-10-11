@@ -281,6 +281,11 @@ pub struct JobWatchers {
     /// into whatever the model is doing. Filled and emptied by [`crate::delivery`]; per session,
     /// like `completions`, and handed up with it by [`JobWatchers::stop`].
     held: Arc<Mutex<Vec<JobCompletion>>>,
+    /// **The held counts last published to the hub** — `(jobs, subagents, failed)` — so
+    /// [`SessionEvent::HeldResults`] goes out when the set CHANGES and not on every touch (a
+    /// re-sort that takes and puts back the same results changes nothing a head draws). Shared
+    /// with `held`, since it describes it.
+    held_said: Arc<Mutex<(u64, u64, u64)>>,
     /// **Handles this session has said it wants the moment they end** (R79) — a wait on one, a
     /// foreground call promoted out from under it, or `wake: "now"` at its start. See
     /// [`WantedNow`]. Per session: a want is the asking session's, never its tree's.
@@ -339,6 +344,7 @@ impl JobWatchers {
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
             held: Arc::new(Mutex::new(Vec::new())),
+            held_said: Arc::new(Mutex::new((0, 0, 0))),
             wanted: Arc::new(Mutex::new(HashMap::new())),
             // A root session is its own tree: the root and its own id are one.
             root: hub.session_id(),
@@ -409,6 +415,7 @@ impl JobWatchers {
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
             held: Arc::new(Mutex::new(Vec::new())),
+            held_said: Arc::new(Mutex::new((0, 0, 0))),
             wanted: Arc::new(Mutex::new(HashMap::new())),
             root: hub.session_id(),
             read: Arc::new(Mutex::new(ReadRecord::default())),
@@ -439,6 +446,7 @@ impl JobWatchers {
             watching: Arc::clone(&self.watching),
             settled: Arc::clone(&self.settled),
             held: Arc::clone(&self.held),
+            held_said: Arc::clone(&self.held_said),
             wanted: Arc::clone(&self.wanted),
             root: self.root.clone(),
             read: Arc::clone(&self.read),
@@ -497,6 +505,7 @@ impl JobWatchers {
             // **Its own**, for the queue's reason: what this session holds and what it asked
             // for are this session's.
             held: Arc::clone(&self.held),
+            held_said: Arc::clone(&self.held_said),
             wanted: Arc::clone(&self.wanted),
             root: tree.root.clone(),
             // Its own, for `held`'s reason: what this session's model has read is its own.
@@ -694,16 +703,61 @@ impl JobWatchers {
     }
 
     /// **Hold these until the next break** (R79). See [`JobWatchers::held`].
+    ///
+    /// Says the held set on the hub afterwards ([`JobWatchers::say_held`]) — also when `more` is
+    /// empty, because the re-sort that calls this may have taken results out
+    /// ([`JobWatchers::take_held_to_resort`]) and promoted every one of them.
     pub fn hold(&self, more: Vec<JobCompletion>) {
-        if more.is_empty() {
-            return;
+        if !more.is_empty() {
+            self.held.lock().expect("held results").extend(more);
         }
-        self.held.lock().expect("held results").extend(more);
+        self.say_held();
     }
 
-    /// **Everything held, taken** — the batch, or the set the sort re-reads.
+    /// **Everything held, taken** — the batch delivered, or the set handed up — and said on the
+    /// hub, which then reads nothing held.
     pub fn take_held(&self) -> Vec<JobCompletion> {
+        let taken = std::mem::take(&mut *self.held.lock().expect("held results"));
+        self.say_held();
+        taken
+    }
+
+    /// **Everything held, taken to be decided again** (`delivery::sort`), WITHOUT saying so on
+    /// the hub: the sort puts back what is still held with [`JobWatchers::hold`], which says the
+    /// result, so a head never sees the set drop to zero and come back within one sort.
+    pub fn take_held_to_resort(&self) -> Vec<JobCompletion> {
         std::mem::take(&mut *self.held.lock().expect("held results"))
+    }
+
+    /// **The held set's counts — jobs, subagents, and how many of them failed.**
+    pub fn held_counts(&self) -> (u64, u64, u64) {
+        let h = self.held.lock().expect("held results");
+        let jobs = h.iter().filter(|c| c.kind == BackgroundKind::Job).count() as u64;
+        let subagents = h.len() as u64 - jobs;
+        let failed = h.iter().filter(|c| crate::delivery::failed(c)).count() as u64;
+        (jobs, subagents, failed)
+    }
+
+    /// **Publish [`SessionEvent::HeldResults`] when the held set's counts changed since the last
+    /// one** — the head's counter beside *Responding* (the operator, 2026-10-11: *"what would be
+    /// useful is a counter of how much and what kind is held - somewhere close to Responding
+    /// ...."*). A set whose hub has gone publishes nothing.
+    fn say_held(&self) {
+        let now = self.held_counts();
+        {
+            let mut said = self.held_said.lock().expect("held counts said");
+            if *said == now {
+                return;
+            }
+            *said = now;
+        }
+        if let Some(hub) = self.hub.upgrade() {
+            hub.publish(SessionEvent::HeldResults {
+                jobs: now.0,
+                subagents: now.1,
+                failed: now.2,
+            });
+        }
     }
 
     /// When the longest-held result arrived, or `None` when nothing is held — what the
