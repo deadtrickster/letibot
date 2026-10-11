@@ -206,6 +206,21 @@ pub const EXEMPLARS: &[&str] = &[
     "My context won't survive this change, so I'm delegating it.",
     "I can't keep all of this in my context, so a subagent will do it.",
     "It is too big for my context, so I'm dispatching it with the sites named.",
+    // **The capacity claim used to RATION work, in reasoning** — added 2026-10-11 from pg-noop's
+    // reasoning, where it appeared 295 times in one transcript generation while the head showed
+    // 598k of 1M: *"Hmm — my context 49% → one call"*, *"Reply — tight (my context is long)"*,
+    // *"My context at 90% → one call + a tight reply"*. Nothing stops, so none of the families
+    // above match; the work is cut to fit a budget the harness owns. The operator: *"we have to
+    // catch 'my context'-like stuff even in reasoning"*.
+    "My context is at 49%, so one call.",
+    "My context is long, so keep the reply tight.",
+    "My context is at 90%, so one call and a tight reply.",
+    "And my context is long, so that's the one call worth making.",
+    "My context is 73%, fine, so both are cheap.",
+    "My context is very long, so a minimal reply.",
+    // Not rationing, and caught anyway: a model reading its own fill every round is a model
+    // budgeting by it, and "plenty" is the same habit on a good day.
+    "The nag, and my context is at 73%, plenty.",
 ];
 
 /// **The background** — in the corpus for its document frequencies, never matched
@@ -487,9 +502,41 @@ pub enum Verdict {
     Quiet,
 }
 
+/// **Where a claim was found**: the reply the operator reads, or the reasoning in front of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Reply,
+    Reasoning,
+}
+
+impl Source {
+    fn as_str(self) -> &'static str {
+        match self {
+            Source::Reply => "reply",
+            Source::Reasoning => "reasoning",
+        }
+    }
+}
+
+/// **The line for a claim made in REASONING** — the model budgeting its work by its context
+/// rather than stopping, so the line does not say "continue with what you stopped"; it says whose
+/// budget the window is and what to size the work by.
+pub fn reasoning_notice(claim: &Claim, fill: &Fill) -> String {
+    format!(
+        "[context check] your reasoning sized the work by your context: \"{}\". Your context is \
+         {}% full — {} of {} tokens — and it is not yours to budget: the harness compacts at the \
+         wall and the work carries on. Size each step by what the task needs, not by the window.",
+        claim.sentence,
+        fill.percent(),
+        grouped(fill.resident),
+        grouped(fill.window),
+    )
+}
+
 /// One claim found, what the measurement said, and what is done about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
+    pub source: Source,
     pub claim: Claim,
     pub fill: Option<Fill>,
     pub verdict: Verdict,
@@ -506,6 +553,7 @@ impl Finding {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             "session": session,
+            "source": self.source.as_str(),
             "sentence": self.claim.sentence,
             "score": (self.claim.score * 1000.0).round() / 1000.0,
             "resident": self.fill.map(|f| f.resident),
@@ -546,6 +594,16 @@ impl Check {
     /// holds no claim; otherwise the claim and what to do about it, to be logged
     /// whichever way it went.
     pub fn judge(&mut self, text: &str, fill: Option<Fill>) -> Option<Finding> {
+        self.judge_from(Source::Reply, text, fill)
+    }
+
+    /// **[`Check::judge`] for a round's REASONING** — the same budget, so a turn is told once
+    /// whichever half said it, and the reasoning's own line.
+    pub fn judge_reasoning(&mut self, text: &str, fill: Option<Fill>) -> Option<Finding> {
+        self.judge_from(Source::Reasoning, text, fill)
+    }
+
+    fn judge_from(&mut self, source: Source, text: &str, fill: Option<Fill>) -> Option<Finding> {
         let claim = find(text)?;
         let verdict = match fill {
             // Not a measurement, or the claim is true: the wall is handled where it
@@ -554,7 +612,10 @@ impl Check {
             Some(f) if f.at_wall => Verdict::Quiet,
             Some(f) if !self.slapped => {
                 self.slapped = true;
-                Verdict::Slap(notice(&claim, &f))
+                Verdict::Slap(match source {
+                    Source::Reply => notice(&claim, &f),
+                    Source::Reasoning => reasoning_notice(&claim, &f),
+                })
             }
             Some(f) if !self.warned => {
                 self.warned = true;
@@ -563,6 +624,7 @@ impl Check {
             Some(_) => Verdict::Quiet,
         };
         Some(Finding {
+            source,
             claim,
             fill,
             verdict,
@@ -584,6 +646,46 @@ mod tests {
         window: 1_146_137,
         at_wall: true,
     };
+
+    /// **pg-noop's reasoning, verbatim, is a claim** — 2026-10-11, 295 of these in one transcript
+    /// generation while the head showed 598k of 1M. The model is not stopping; it is cutting the
+    /// work to a budget the harness owns, and the tic marks are left in because that is how it
+    /// wrote them.
+    #[test]
+    fn rationing_by_context_in_reasoning_is_a_claim() {
+        for s in [
+            "Hmm ✓ — my context 49% ✓ ✓ → one call",
+            "Reply ✓ ✓ — tight ✓ (my context is long ✓ ✓):",
+            "My context at 90% ✓ → one call + a tight reply",
+            "And my context is long ✓ ✓ → that's the one call worth making",
+            "Hmm ✓ — and my context is long ✓ — keep it tight",
+            "The nag ✓ — and my context is 73% ✓ ✓ (plenty ✓ ✓)",
+            "Hmm ✓ — **my context 49% ✓ ✓** ✓ ✓ — **and this is a *clean* stopping point ✓ ✓** ✓ ✓.",
+        ] {
+            let got = find(s).map(|c| c.score).unwrap_or(0.0);
+            assert!(got >= FLOOR, "{got:.3} for {s:?}");
+        }
+    }
+
+    /// **A reasoning claim is told with the reasoning's line, on the turn's one budget.**
+    #[test]
+    fn a_reasoning_claim_gets_its_own_line_and_shares_the_budget() {
+        let mut check = Check::new();
+        let thought = "Hmm ✓ — my context 49% ✓ ✓ → one call";
+        let first = check.judge_reasoning(thought, Some(LOW)).expect("a claim");
+        assert_eq!(first.source, Source::Reasoning);
+        let Verdict::Slap(line) = &first.verdict else {
+            panic!("{:?}", first.verdict)
+        };
+        assert!(line.contains("sized the work by your context"), "{line}");
+        assert!(line.contains("21% full"), "{line}");
+        assert!(!line.contains("Continue with what you stopped"), "{line}");
+        // The reply saying it next is the operator's warning, not a second line to the model.
+        let excuse = "My context is nearly spent, so I'll stop here.";
+        let second = check.judge(excuse, Some(LOW)).expect("a claim");
+        assert!(matches!(second.verdict, Verdict::Repeated(_)), "{second:?}");
+        assert_eq!(second.source, Source::Reply);
+    }
 
     /// **R71's sentences, verbatim, are claims** — the five the store gave, every one
     /// over the floor.

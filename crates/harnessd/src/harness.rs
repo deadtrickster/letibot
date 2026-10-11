@@ -10587,7 +10587,20 @@ impl Harness {
             // **The context claim, checked against what the daemon measured** — R71. Judged
             // here, once per round and whichever way the round went, so the log has every
             // claim; acted on in the two branches below, where the intent check steers.
-            let context_claim = self.judge_context_claim(&mut context_check, &text);
+            // **And the reasoning in front of it**, when the reply holds no claim: a model that
+            // budgets by "my context 49% → one call" says it there and nowhere the operator reads.
+            // A claim found only there is told, never made to keep going — the reply may be whole.
+            let (context_claim, claim_in_reasoning) =
+                match self.judge_context_claim(&mut context_check, &text, false) {
+                    Some(line) => (Some(line), false),
+                    None => {
+                        let thought = reasoning_text(&ok.items);
+                        match self.judge_context_claim(&mut context_check, &thought, true) {
+                            Some(line) => (Some(line), true),
+                            None => (None, false),
+                        }
+                    }
+                };
 
             if calls.is_empty() {
                 // **A model that stopped "because the context is full" when it is not.**
@@ -10597,9 +10610,11 @@ impl Harness {
                 // through `append_notice` for the reason the nudge below does — the turn is
                 // over, and a steering message would arrive after the reply — and the loop
                 // continues, which is the half that makes it a correction rather than a report.
-                if let Some(steer) = context_claim {
-                    self.append_notice(&steer)?;
-                    continue;
+                if let Some(steer) = &context_claim {
+                    self.append_notice(steer)?;
+                    if !claim_in_reasoning {
+                        continue;
+                    }
                 }
                 // **The turn boundary, and the one the error signal is about.**
                 //
@@ -11262,9 +11277,17 @@ impl Harness {
         &mut self,
         check: &mut crate::context_claim::Check,
         text: &str,
+        reasoning: bool,
     ) -> Option<String> {
         use crate::context_claim::{REPEATED, Verdict};
-        let finding = check.judge(text, self.context_fill())?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        let fill = self.context_fill();
+        let finding = match reasoning {
+            false => check.judge(text, fill)?,
+            true => check.judge_reasoning(text, fill)?,
+        };
         finding.log(&self.cfg.workspace, &self.cfg.session_id);
         crate::instruments::context_claim(&self.cfg.session_id, &finding);
         match finding.verdict {
@@ -12201,6 +12224,20 @@ fn sent_since(
         })
         .map(|(row, _)| u64::from(row.tok_len))
         .sum()
+}
+
+/// **A round's reasoning, as one text** — every `Reasoning` item the round produced, in order, for
+/// the context check (R71). The engine streams reasoning as several items; one thought is judged
+/// whole.
+fn reasoning_text(items: &[TranscriptItem]) -> String {
+    items
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::Reasoning { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// **The resident count, rolled forward from `anchor` to the ledger as it stands.**
