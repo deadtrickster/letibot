@@ -2972,9 +2972,12 @@ impl Store {
     /// A setter of its own for the same reason [`Store::set_window`] has one: the two
     /// facts have different lifetimes, and folding them into another setter's
     /// parameter list would say they were written together. This pair is written
-    /// ONCE — when the no-progress guard fires — and `None` clears it for the
-    /// session-naming tests, not for the daemon: nothing in the daemon re-arms a
-    /// guard that has fired, because the finding it recorded does not expire.
+    /// when the wall controller goes `Stuck` (every fold MEASURED still at the wall),
+    /// and `None` clears it when the controller is released — by a measured count
+    /// comfortably below the wall, `/compact` or `/auto-compact on`. It used to be
+    /// written once and never cleared, and on 2026-10-11 it was written on an
+    /// estimate (pg-noop: ≈ 1,039,055, measured 507,355): a finding that cannot
+    /// expire must not be made on a number nobody measured.
     pub fn set_auto_compact_stood_down(&self, id: &str, pair: Option<(u64, u64)>) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE session SET auto_compact_resident = ?2, auto_compact_after = ?3 \

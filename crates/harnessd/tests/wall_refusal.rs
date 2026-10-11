@@ -265,18 +265,20 @@ fn at(warnings: &[(String, String)], code: &str, text: &str) -> usize {
         .unwrap_or_else(|| panic!("no {code} warning saying {text:?} — the log:\n{warnings:#?}"))
 }
 
-/// **THE CHAIN, through the daemon's own door, with the guard already fired.**
+/// **THE CHAIN, through the daemon's own door, with the guard already fired** — and,
+/// since 2026-10-11, released by the first measured count.
 ///
-/// This is the assertion the whole change exists for: `auto_compact` OFF (the
-/// no-progress guard's state, restored from the store the way a restarted
-/// daemon now restores it), a turn refused for context length STILL compacts —
-/// through the forced door, onto the `Cut` fold that deals with a history too
-/// big for a summary in place — and the prompt finishes on the summary rather
-/// than dying at the wall. Before the split, every letter of that sentence was
-/// false: the recovery read the flag, the flag was off, and the session met
-/// the same refusal on every turn for the rest of the daemon's life.
+/// The 2026-10-09 half: the no-progress finding is restored from the store the way a
+/// restarted daemon restores it (now the wall controller's `Stuck`). The 2026-10-11
+/// half: `Stuck` is not for good — the first round measures 5,868 of a 32,768 window,
+/// comfortably below the wall, and the session is re-armed (`re-armed: measured …`),
+/// so the round loop's own wall stop is back and stops round one at the overrun the
+/// ten reads made. That stop is the wall, and the turn tail folds it through the
+/// refused door onto the `Cut` fold (the size calls for it) and the prompt finishes
+/// on the summary. The refusal-while-stuck chain is
+/// `a_refusal_on_a_stuck_session_still_folds`, below.
 #[test]
-fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
+fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
@@ -286,10 +288,7 @@ fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
     let rel = write_the_big_file(&dir);
 
     // The guard's finding is on the row BEFORE the daemon opens, exactly as a
-    // restart would find it — which also proves the restore: without
-    // `restore_auto_compact` the pre-flight below would find the flag ON and
-    // compact before the send, and the refusal the test exists for would never
-    // be sent.
+    // restart would find it — which also proves the restore (asserted below).
     seed_a_stood_down_session(&path, session_id);
 
     let mut cfg = config(&path, session_id);
@@ -324,10 +323,6 @@ fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
     let spare2 = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
     let scripts = vec![
         Reply::Frames(a_turn_of_ten_reads(vocab, &rel)),
-        Reply::Status {
-            code: 400,
-            body: OPENAI_REFUSAL.into(),
-        },
         Reply::Frames(half),
         Reply::Frames(half2),
         Reply::Frames(continued),
@@ -346,30 +341,31 @@ fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
     // The guard's finding came back with the session: the pre-emptive door is
-    // stood down, or none of what follows means what it must.
+    // stood down, or none of what follows means what it must. Since 2026-10-11 the
+    // finding is the wall controller's `Stuck`, not `auto_compact = false` — and a
+    // refusal is folded from `Stuck` too (`crate::wall`), which is this test's chain.
     assert!(
         sessions
             .harness_of(session_id)
-            .is_some_and(|h| !h.config().auto_compact),
-        "the stood-down pair on the row restores as auto_compact = false"
+            .is_some_and(|h| h.wall().is_stuck() && h.config().auto_compact),
+        "the stood-down pair on the row restores as the controller's Stuck"
     );
 
     let out = sessions.submit(session_id, "read big.txt and finish the task");
     assert!(
         out.is_ok(),
-        "the prompt finishes on the summary, past a refused round: {out:?}"
+        "the prompt finishes on the summary, past the wall: {out:?}"
     );
 
     let warnings = warnings_of(&hub);
 
-    // (1) The refusal was classified AS THE WALL — the warning says the
-    // provider refused, and names the provider's own two numbers beside this
-    // box's ledger count, so the operator can compare without guessing units.
-    let refused = at(&warnings, "context_wall", "the PROVIDER refused the prompt");
-    let detail = &warnings[refused].1;
+    // (1) The first round's measured count released the restored Stuck, and the
+    // round loop's wall stop — stood down while stuck — stopped round one.
+    let released = at(&warnings, "auto_compact", "re-armed: measured");
+    let refused = at(&warnings, "context_wall", "stopping this turn");
     assert!(
-        detail.contains("1463497") && detail.contains("1048576"),
-        "the provider's numbers are named, not paraphrased: {detail}"
+        released < refused,
+        "re-armed by a measurement, then the wall: {released} < {refused}"
     );
 
     // (2) The compaction that answered it was FORCED — announced as under
@@ -417,6 +413,93 @@ fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
             .iter()
             .any(|(c, _)| c == "auto_compact_no_progress"),
         "a fold that made room does not trip the no-progress guard: {warnings:#?}"
+    );
+    // (6) And a fold that made room, measured (a local base is measured as it lands),
+    // re-arms the stuck session: the finding is no longer for good.
+    assert!(
+        sessions
+            .harness_of(session_id)
+            .is_some_and(|h| !h.wall().is_stuck()),
+        "a measured fold below the wall releases Stuck"
+    );
+}
+
+/// **A refusal on a STUCK session is still folded** — the 2026-10-09 wedge, against the
+/// controller that replaced the latches.
+///
+/// pg-noop's `s-1789919514688401228` met thirty refusals with a recovery stood down by
+/// the switch that stood the pre-emptive door down; on 2026-10-11 the same session's
+/// `forced_gave_up` stood the refused door down on an estimate. Here the controller is
+/// restored `Stuck`, the very first request is refused (deepseek's measured body), and
+/// the refused door folds anyway — the sliced fold, two halves, the hardest press —
+/// and the prompt finishes on the summary.
+#[test]
+fn a_refusal_on_a_stuck_session_still_folds() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-refused-stuck");
+    let path = dir.path().join("sessions.db");
+    let session_id = "refused-stuck-test";
+    seed_a_stood_down_session(&path, session_id);
+
+    let mut cfg = config(&path, session_id);
+    cfg.context_window = Some(32768);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+
+    let half = a_plain_answer_turn(vocab, "summarising", "the operator asked for a task", 30);
+    let half2 = a_plain_answer_turn(vocab, "summarising", "nothing else happened", 30);
+    let continued = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let spare = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let scripts = vec![
+        Reply::Status {
+            code: 400,
+            body: OPENAI_REFUSAL.into(),
+        },
+        Reply::Frames(half),
+        Reply::Frames(half2),
+        Reply::Frames(continued),
+        Reply::Frames(spare),
+    ];
+    let serv = canned::Canned::serve_replies(scripts, 8);
+    cfg.endpoint = serv.endpoint.clone();
+
+    let registry = Registry::new();
+    registry
+        .create(session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let hub = registry.get(session_id).expect("the hub is the registry's");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+    assert!(
+        sessions
+            .harness_of(session_id)
+            .is_some_and(|h| h.wall().is_stuck()),
+        "restored stuck"
+    );
+
+    let out = sessions.submit(session_id, "finish the task");
+    assert!(
+        out.is_ok(),
+        "a refusal on a stuck session is folded and the prompt finishes: {out:?}"
+    );
+    let warnings = warnings_of(&hub);
+    let refused = at(&warnings, "context_wall", "the PROVIDER refused the prompt");
+    let duress = at(&warnings, "auto_compact", "under duress");
+    let sliced = at(&warnings, "auto_compact", "this one is the sliced fold");
+    let cut = at(&warnings, "auto_compact", "two halves that overlap");
+    assert!(
+        refused < duress && duress <= sliced && sliced < cut,
+        "refused, then folded under duress with the hardest press: {warnings:#?}"
+    );
+    assert_eq!(
+        sessions
+            .harness_of(session_id)
+            .expect("the session is still open")
+            .transcript_id(),
+        format!("{session_id}#t1"),
+        "the stuck session forked onto the fold's base"
     );
 }
 

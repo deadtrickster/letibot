@@ -603,6 +603,47 @@ pub fn wall(session: &str, turn: &str, e: &HarnessError, continues: usize) {
         .emit();
 }
 
+/// **A wall controller transition** (`crate::wall`) — the judgement a fold is given once a
+/// count is MEASURED. Same kind as [`wall`] (the turn stop), told apart by `outcome`:
+/// `helped`, `escalated`, `stuck`, `released`. `n1` is what was folded (0 for a release),
+/// `n2` the measured count, `n3` the window; the fold and, for `escalated`, the next rung
+/// are attributes. The `compaction` row's `after` is the base's estimate; this row is the
+/// measurement it is judged by (pg-noop 2026-10-11: ≈ 1,039,055, measured 507,355).
+pub fn wall_change(session: &str, c: &crate::wall::Change, window: u64, unit: &str) {
+    if !letibot_metrics::enabled() {
+        return;
+    }
+    use crate::wall::Change;
+    let (outcome, fold, next, before, measured) = match *c {
+        Change::Helped {
+            fold,
+            before,
+            measured,
+            ..
+        } => ("helped", fold.name(), "", before, measured),
+        Change::Escalated {
+            fold,
+            next,
+            before,
+            measured,
+        } => ("escalated", fold.name(), next.name(), before, measured),
+        Change::Stuck { before, measured } => ("stuck", "sliced", "", before, measured),
+        Change::Released { measured } => ("released", "", "", 0, measured),
+    };
+    let turn = now_of(session).and_then(|(t, _)| t).unwrap_or_default();
+    Event::new(kind::WALL)
+        .session(session)
+        .turn(&turn, None)
+        .outcome(outcome)
+        .n1(before)
+        .n2(measured)
+        .n3(window)
+        .attr("fold", fold)
+        .attr("next", next)
+        .attr("unit", unit)
+        .emit();
+}
+
 /// **R71's context claim, judged** — beside the jsonl line (dual-written in phase 1). The
 /// sentence travels as the `snippet`, which the writer keeps for this kind by default
 /// (the operator's decision 5) and strips if `[metrics] snippets` says otherwise.

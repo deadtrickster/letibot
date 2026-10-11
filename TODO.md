@@ -1329,6 +1329,85 @@ still appended whole (the next round stops before sending it, and compaction has
 history already past the window); capping a tool result against the room left is the larger
 design, not done here. No live re-run of the tmux check was done on this branch.
 
+**Follow-up (`compact-latch-measured`, 2026-10-11) — the no-progress guard judged an
+ESTIMATE and latched for good; one wall controller, fed only by measured counts.**
+
+MEASURED on pg-noop, `s-1789919514688401228` (deepseek-flash, window 1,000,000, daemon
+built before e834316): `compacting: 941101 of 1000000 deepseek tokens resident (936387 at
+the last round + 4714 appended since)`, then *"⚠ auto-compaction is off: compacted from
+941101 to 1039055 tokens and that is STILL within 62500 of the 1000000 window … and a
+refusal will not force another"*. The first round on `#t18` stored `context_tokens =
+507355` (the head: 504k). The fold halved the session; the guard judged the fork's
+estimate of a base the provider had not seen, and set `auto_compact = false` AND
+`forced_gave_up` — the overrun protection itself — for the daemon's life. Current main
+still judged `at_the_wall(ledger.len())` right after the fork. And the fold that did not
+help enough had nowhere to go: `plan_overrun` picks the sliced fold by SIZE only, 941k
+fit one summary call, so the ordinary fold ran (`plan_fold`: first half summarised,
+second half verbatim — the ~500k that remained), and nothing escalated.
+
+What changed (`crates/harnessd/src/wall.rs`, the glue in `harness.rs`):
+
+- **One state, `Config::wall`** (`WallControl`: state + last measured count), replacing
+  `forced_gave_up`, the guard's `auto_compact = false` and `auto_compact_stood_down`.
+  `auto_compact` is now the operator's switch alone. States: `Armed` → (fold F) →
+  `Awaiting{F}` → measured below the wall → `Armed` ("measured: the F fold of B left
+  N … (estimated ≈ E)"); measured at the wall → `Escalating{next}`; after the sliced
+  fold, still at the wall → `Stuck`. `Stuck` → measured under window − 2×headroom
+  (`RELEASE_HEADROOMS = 2`: 875,000 of 1M) → `Armed` ("re-armed: …"). A fold whose
+  transcript a later fork replaced is dropped.
+- **Only measured counts move it**: `observe_wall`, called at every round's end in
+  `run_rounds` with `prompt_tokens` (children share the loop), and for a LOCAL base
+  right after the fork (its prompt is the ledger, the count is exact). Nothing is judged
+  in `compact_at_the_wall` any more.
+- **The ladder** (`Harness::compact_with(Fold)`): `Ordinary` (what it always was) →
+  `SmallerTail` (the fold's split moved until the verbatim part is at most half —
+  `smaller_tail` — or a tail of half the budget) → `Sliced` (`letibot_turn::plan_cut`:
+  the two-half plan by name, no verbatim part, regardless of size). Local skips the
+  middle rung (no tail to shrink).
+- **A refusal is folded from every state**: the size-chosen fold from `Armed`, the
+  sliced fold from anywhere else, `Stuck` included. `Stuck` stands down only the
+  pre-emptive door and the round loop's wall stop (the trade `auto_compact = false`
+  made). The turn tail's `forced_gave_up` branch is gone.
+- **While a metered base is unmeasured** the pre-emptive door does not fold it again,
+  the round-0 wall stop does not stop the one round that would measure it, and the wall
+  continuation does not close on it.
+- **Estimates are labelled**: `compacted: 941101 → ≈ N deepseek tokens resident,
+  estimated until the next round measures it`, in the `compacted` report too
+  (`Scales::estimated`, both the automatic door and `/compact`).
+- **Visible and reversible**: the `auto-compact` row says `off — the wall controller is
+  stuck …` only for `Stuck` (the head's resident line keys on that), a new `wall` row
+  carries the state and the last measured count; `Stuck` is written to the v19 pair on
+  the session row (now in measured units) and cleared on release; `/auto-compact
+  [on|status]` is the operator's verb (re-arms `Stuck` and a `--no-auto-compact`), and a
+  `/compact` restarts the ladder.
+- Tests: `crates/harnessd/src/wall.rs` (the live case replayed: estimate 1,039,055,
+  measured 507,355, nothing stood down; the ladder in order on measured counts; a
+  refusal folded from every state, `Stuck` included; release under the margin and not
+  just under the wall; a replaced transcript), `the_ladder_rungs_carry_less_verbatim_
+  and_the_sliced_one_ignores_size`, the relabelled `the_compacted_line_is_one_unit_said_
+  once`, and in `tests/wall_refusal.rs` `a_refusal_on_a_stuck_session_still_folds` and
+  `a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall` (was
+  `a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes`; with
+  release, the restored `Stuck` is re-armed by the first round's 5,868 and the round
+  loop's stop is back). Mutations (no release; refused door standing down on `Stuck`;
+  re-folding an unmeasured base) fail them.
+
+**Still open after this follow-up:**
+
+1. **No metered end-to-end test**: a `ProviderConfig` cannot be pointed at the canned
+   server, so the deferral on a metered base is pinned at the controller, not through a
+   deepseek round. No live re-run on pg-noop.
+2. **The unmeasured wait is lost on a restart** (R72 open item 3's neighbour): a restart
+   between a fold and its first round comes back `Armed`, so a base that really is at the
+   wall costs one extra ordinary fold before the ladder climbs.
+3. **A refused turn on a stuck session costs a summary turn every time** — the rate limit
+   `forced_gave_up` was is gone on purpose (a refusal is never left unanswered);
+   `WALL_CONTINUES` still caps it per prompt.
+4. Rows written by the old guard hold its pair in LEDGER tokens; they restore as `Stuck`
+   with those numbers printed until the first measured round decides.
+5. A provider that reports no `prompt_tokens` leaves the wait open on that transcript and
+   the pre-emptive door closed for it; the refused door still answers.
+
 ---
 
 ## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **daemon half LANDED on `r72-wall-units` (2026-10-11); leticl's half OPEN**

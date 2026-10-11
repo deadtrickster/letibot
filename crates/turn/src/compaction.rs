@@ -1052,6 +1052,26 @@ pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Ove
     if resident + MIN_SUMMARY_ROOM <= window {
         return OverrunPlan::NotOverrun;
     }
+    plan_cut(item_tokens, prefix_tokens, window)
+}
+
+/// **The sliced fold, asked for by name rather than by size** — [`plan_overrun`]'s
+/// cut without its size test.
+///
+/// `plan_overrun` chooses the two-half fold only when the history does not fit one
+/// summary call. That is the right test for WHICH fold can run, and the wrong one
+/// for which fold is NEEDED: a history that fits one summary call can still be one
+/// whose ordinary fold (a summary plus a verbatim part) leaves the session at the
+/// wall. MEASURED on pg-noop's `s-1789919514688401228` (deepseek-flash, 1,000,000
+/// window): at 941,101 resident the history fit one summary call, the ordinary fold
+/// ran, and its verbatim half left 507,355 tokens by deepseek's count — and nothing
+/// could reach this fold, although it is the one that carries nothing verbatim. The
+/// wall controller (`letibot_harnessd::wall`) asks for it when the measured count
+/// says the gentler folds did not make room.
+///
+/// The tail is never empty when there is history: a cut that swallows everything
+/// would leave the second summary call with nothing to read.
+pub fn plan_cut(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> OverrunPlan {
     if prefix_tokens + WRITE_ROOM + CUT_MARGIN >= window {
         return OverrunPlan::Hopeless {
             prefix_tokens,
@@ -1097,6 +1117,11 @@ pub fn plan_overrun(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Ove
             break;
         }
         tail_acc = next;
+        tail_from -= 1;
+    }
+    // Only reachable through `plan_cut` (a history that fits whole, so `cut` took all of
+    // it): the second half must read something.
+    if tail_from == item_tokens.len() && cut == item_tokens.len() && cut > 0 {
         tail_from -= 1;
     }
 

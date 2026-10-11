@@ -166,7 +166,12 @@ pub fn run_turn(
     let mut walls = 0;
     while is_wall(&out) && walls < crate::sessions::WALL_CONTINUES {
         h.measure_resident();
-        if !h.config().room_for_next_turn(h.ledger_len() as u64) {
+        // **Not closed on an estimate.** A metered base the provider has not counted is the
+        // fork's estimate, and the continuation's first round is what measures it — the
+        // estimate said ≈ 1,039,055 for a base deepseek counted at 507,355 (pg-noop,
+        // 2026-10-11). Over the window, the provider refuses and the refused door folds,
+        // inside `WALL_CONTINUES`.
+        if !h.base_is_unmeasured() && !h.config().room_for_next_turn(h.ledger_len() as u64) {
             break;
         }
         walls += 1;
@@ -216,10 +221,9 @@ fn settle(
         owner.compacted(h);
     }
     if wall && !attempted {
-        let why = if h.forced_gave_up() {
-            "a forced compaction already ran and gained no room, so this daemon will not spend \
-             another summary turn on it"
-        } else if h.config().context_window.is_none() {
+        // No arm for a refused door that stood down: it never does (`crate::wall`). The
+        // latch that did (`forced_gave_up`) was set on an estimate of a folded base.
+        let why = if h.config().context_window.is_none() {
             "not configured — no --context-window is set, so there is no wall to measure against"
         } else {
             "automatic compaction is off for this session"

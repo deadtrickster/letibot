@@ -1169,6 +1169,28 @@ impl<'a> Sessions<'a> {
                     },
                 }
             }
+            // **The wall controller, by hand** — see [`Slash::AutoCompact`].
+            Slash::AutoCompact { on } => {
+                let Some(h) = self.open.get_mut(session_id) else {
+                    return SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    };
+                };
+                let line = if on {
+                    h.rearm_auto_compact()
+                } else {
+                    format!(
+                        "automatic compaction {}; wall: {}",
+                        if h.config().auto_compact { "on" } else { "off" },
+                        h.wall().row(&h.token_unit())
+                    )
+                };
+                SlashReply {
+                    lines: vec![line],
+                    ok: true,
+                }
+            }
             Slash::Supervise { want, at } => {
                 let Some(h) = self.open.get_mut(session_id) else {
                     return SlashReply {
@@ -3124,6 +3146,9 @@ impl<'a> Sessions<'a> {
                                 before: scale,
                                 after: base.as_ref().and_then(|b| b.1).or(scale),
                                 unit: Some(unit),
+                                estimated: base.as_ref().is_some_and(|(b, _, metered)| {
+                                    *metered && b.measured.is_none()
+                                }),
                             };
                             hub.publish(SessionEvent::Warning {
                                 code: "compacted".into(),
@@ -4200,6 +4225,10 @@ pub(crate) struct Scales {
     pub before: Option<(u64, u64)>,
     pub after: Option<(u64, u64)>,
     pub unit: Option<String>,
+    /// **The after-count is an estimate** — a metered base the provider has not counted
+    /// yet. Said as `≈ N, estimated until the next round measures it`; see
+    /// `crate::wall` for what judging it as a measurement cost (pg-noop, 2026-10-11).
+    pub estimated: bool,
 }
 
 impl From<Option<(u64, u64)>> for Scales {
@@ -4208,6 +4237,7 @@ impl From<Option<(u64, u64)>> for Scales {
             before: scale,
             after: scale,
             unit: None,
+            estimated: false,
         }
     }
 }
@@ -4282,12 +4312,22 @@ pub(crate) fn compaction_said(
     // In the units the operator's header shows; see `Config::shown_tokens`. This
     // line said `1352917 → 11353` beside a header reading 900k, and the operator
     // read the first number as a lie rather than as the other unit.
-    let mut said = format!(
-        "compacted: {} → {} {unit}, on transcript {}.",
-        shown(r.fork.was_tokens),
-        shown_after(r.fork.base_tokens),
-        r.fork.transcript_id
-    );
+    let mut said = if scales.estimated {
+        format!(
+            "compacted: {} → ≈ {} {unit}, estimated until the next round measures it, on \
+             transcript {}.",
+            shown(r.fork.was_tokens),
+            shown_after(r.fork.base_tokens),
+            r.fork.transcript_id
+        )
+    } else {
+        format!(
+            "compacted: {} → {} {unit}, on transcript {}.",
+            shown(r.fork.was_tokens),
+            shown_after(r.fork.base_tokens),
+            r.fork.transcript_id
+        )
+    };
     // **What was carried rather than described.** Zero on a local model, and a
     // non-zero count on a remote one, so the sentence is evidence of which path
     // ran rather than a restatement of the policy (R27).

@@ -218,11 +218,16 @@ fn the_compacted_line_is_one_unit_said_once() {
         since: 0,
     };
     let said = super::compacted_line(937_686, base, "deepseek tokens", true);
+    // **An estimate is labelled as one** (pg-noop, 2026-10-11: ≈ 1,039,055 printed and
+    // judged as if measured; the provider then counted 507,355).
     assert!(
-        said.starts_with("compacted: 937686 → 75408 deepseek tokens resident"),
+        said.starts_with("compacted: 937686 → ≈ 75408 deepseek tokens resident"),
         "{said}"
     );
-    assert!(said.contains("the next round measures it"), "{said}");
+    assert!(
+        said.contains("estimated until the next round measures it"),
+        "{said}"
+    );
     assert_eq!(
         super::compacted_line(240_000, base, "tokens", false),
         "compacted: 240000 → 75408 tokens resident."
@@ -327,4 +332,43 @@ fn a_job_window_names_the_next_offset_until_the_ring_runs_out() {
     assert_eq!(next_job_offset(&slice(992, 1000, 1000, 992, 8)), None);
     // And a window that stopped short of the retained tail still has a page.
     assert_eq!(next_job_offset(&slice(992, 996, 1000, 992, 8)), Some(996));
+}
+
+/// **The rungs above the ordinary fold press harder, and the sliced one is reachable at
+/// any size.** pg-noop, 2026-10-11: 941,101 of 1,000,000 fit one summary call, so
+/// `plan_overrun` said `NotOverrun`, the ordinary fold carried its second half verbatim,
+/// and deepseek measured 507,355 after it. The smaller-tail rung halves that verbatim
+/// part; the sliced rung is the two-half plan with nothing verbatim, asked for by name.
+#[test]
+fn the_ladder_rungs_carry_less_verbatim_and_the_sliced_one_ignores_size() {
+    // A history of forty 23k items, ~920k, under a 1M window.
+    let per_item = vec![23_000u64; 40];
+    let prefix = 20_000;
+    let window = 1_000_000;
+    let ordinary = letibot_turn::plan_fold(&per_item, prefix, window, 62_500)
+        .expect("at the wall, the ordinary fold splits");
+    let verbatim = |split: usize| per_item[split..].iter().sum::<u64>();
+    let smaller = super::smaller_tail(&per_item, prefix, window, ordinary);
+    assert!(
+        verbatim(smaller) * 2 <= verbatim(ordinary) && smaller < per_item.len(),
+        "the smaller tail carries at most half the ordinary fold's verbatim part: \
+         {} of {}",
+        verbatim(smaller),
+        verbatim(ordinary)
+    );
+
+    assert_eq!(
+        letibot_turn::plan_overrun(&per_item, prefix, window),
+        letibot_turn::OverrunPlan::NotOverrun,
+        "by size, the sliced fold is never reached here"
+    );
+    match letibot_turn::plan_cut(&per_item, prefix, window) {
+        letibot_turn::OverrunPlan::Cut { cut, tail_from, .. } => {
+            assert!(
+                tail_from < per_item.len() && tail_from <= cut,
+                "{tail_from} {cut}"
+            );
+        }
+        other => panic!("asked by name, the sliced fold plans a cut: {other:?}"),
+    }
 }

@@ -352,29 +352,24 @@ pub struct Config {
     /// should something be tidied first?* ([`Config::should_compact`]). The other
     /// question, *a turn was just refused for context length, is there a way
     /// forward?*, is answered through [`Config::at_the_wall`] with this flag
-    /// deliberately absent: the no-progress guard turns this flag off without
-    /// freeing anything, and a refusal that met a stood-down compaction would be
+    /// deliberately absent: since 2026-10-11 this flag is the operator's alone (the
+    /// wall controller's `Stuck` is the finding — [`Config::wall`]), and a refusal
+    /// that met a stood-down compaction would be
     /// the wedge of 2026-10-09 (session `s-1789919514688401228`: one compaction,
     /// then thirty provider 400s in a row, none of them recovered) all over
     /// again. See `Sessions::compact_because_refused`.
     pub auto_compact: bool,
-    /// **The pair that stood automatic compaction down** — `(resident, after)`,
-    /// both in LEDGER tokens: the conversation's size going into the compaction
-    /// that made no room, and its size coming out still within a headroom of the
-    /// window. `Some` ⟺ the no-progress guard has fired for this session.
-    ///
-    /// Carried on the config because the config is the per-session object that
-    /// survives being handed around (the store row is written from it at
-    /// [`crate::harness::Harness::stand_down_auto_compact`] and read back at
-    /// [`crate::harness::Harness::restore_auto_compact`]), so a daemon that comes
-    /// back after a restart holds the same fact the row does — measured on
-    /// 2026-10-09: the guard's old `auto_compact = false` lived in memory only, so
-    /// the restart was the one thing that cleared it, silently, in both directions.
-    /// Nothing clears it but a fresh session or a raised window: a manual
-    /// `/compact` does not re-arm the automatic one, and never has.
-    pub auto_compact_stood_down: Option<(u64, u64)>,
+    /// **What this session does at its wall** — the wall controller's state and the last
+    /// count a provider measured (`crate::wall`). Replaced `auto_compact_stood_down`, the
+    /// no-progress guard's latch, on 2026-10-11: the guard judged a fold on an ESTIMATE of
+    /// a base the provider had not seen and latched for good (pg-noop,
+    /// `s-1789919514688401228`: estimated 1,039,055, measured 507,355). `auto_compact` is
+    /// now the operator's switch alone, and the controller's `Stuck` is the finding —
+    /// written to the session row (the v19 pair) so a restart holds it, and released by
+    /// a measured count, by `/compact` or by `/auto-compact on`.
+    pub wall: crate::wall::WallControl,
     /// **The operator's pause of this session's idle plan-check** (`/nag pause`), or `None`
-    /// while the check runs. Carried here for `auto_compact_stood_down`'s reason: the store row
+    /// while the check runs. Carried here for the reason `wall`'s `Stuck` is: the store row
     /// is written from it ([`crate::harness::Harness::pause_nags`]) and read back at open
     /// ([`crate::harness::Harness::restore_nag_pause`]), and the settings row is drawn from it.
     /// See [`crate::nag_pause`].
@@ -1675,7 +1670,7 @@ impl Config {
             context_window: None,
             media_marker: None,
             auto_compact: true,
-            auto_compact_stood_down: None,
+            wall: crate::wall::WallControl::default(),
             nags_paused: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
@@ -2115,21 +2110,37 @@ impl Config {
         // spelling `off — …` is what the head keys on; see its `auto-compact` arm.
         out.push(row(
             "auto-compact",
-            match (self.auto_compact, self.auto_compact_stood_down) {
-                (true, _) => "on".into(),
-                (false, Some((resident, after))) => format!(
-                    "off — the no-progress guard stood it down: compacted {} to {} \
-                     tokens and still no room for the next turn",
-                    self.shown_tokens(resident),
-                    self.shown_tokens(after)
+            match (self.auto_compact, &self.wall.state) {
+                (false, _) => "off".into(),
+                (true, crate::wall::WallState::Stuck { before }) => format!(
+                    "off — the wall controller is stuck: the sliced fold of {before} was \
+                     measured still within {h} of the {w} window (last measured {last}). A \
+                     measured count under {release} re-arms it, as do `/compact` and \
+                     `/auto-compact on`; a turn the provider refuses is still folded",
+                    h = self.shown_wall().1,
+                    w = self.shown_wall().0,
+                    last = self.wall.last_measured.unwrap_or(0),
+                    release = self
+                        .shown_wall()
+                        .0
+                        .saturating_sub(crate::wall::RELEASE_HEADROOMS * self.shown_wall().1),
                 ),
-                (false, None) => "off".into(),
+                (true, _) => "on".into(),
             },
-            if self.auto_compact_stood_down.is_some() {
-                "the no-progress guard, after a compaction that gained no room"
+            if self.wall.is_stuck() {
+                "the wall controller, after every fold was measured still at the wall"
             } else {
                 ""
             },
+            "",
+        ));
+        // **The controller's state and the last measured count, always** — the
+        // `auto-compact` row above keys the head's resident line on `off —`, and this one
+        // is the state behind it in every case, including the ones that are not news.
+        out.push(row(
+            "wall",
+            self.wall.row("tokens"),
+            "the wall controller (measured counts only)",
             "",
         ));
         out.push(row(

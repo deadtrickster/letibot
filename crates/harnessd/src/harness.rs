@@ -66,8 +66,8 @@ use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
     CompactionOutcome, Endpoint, EventSink, Harvest, OverrunPlan, Session, SteeringMessage,
     SteeringSource, TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk,
-    plan_compaction_tail, plan_fold, plan_overrun, run_compaction, summarise_first_half,
-    summarise_overrun, tail_because, tail_split_of,
+    plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail, run_compaction,
+    summarise_first_half, summarise_overrun, tail_because, tail_budget, tail_split_of,
 };
 use sha2::{Digest, Sha256};
 
@@ -399,8 +399,9 @@ impl From<letibot_turn::EngineError> for HarnessError {
 /// thresholds — a copy is the drift this tree deletes:
 ///
 /// * [`WallWhy::Tidy`] — *would the next turn not fit, so should something be
-///   tidied first?* `auto_compact` answers it, and the no-progress guard stands
-///   the flag down precisely to stop this door compacting once per turn for ever.
+///   tidied first?* `auto_compact` (the operator's switch) and the threshold answer
+///   it, and the wall controller (`crate::wall`) stands it down while a folded base
+///   is unmeasured or when every fold was measured still at the wall (`Stuck`).
 /// * [`WallWhy::Refused`] — *a turn was just refused for context length, is there
 ///   a way forward?* The refusal is the evidence, so there is no threshold to
 ///   re-check and no flag to read: the provider measured the prompt against the
@@ -1561,14 +1562,6 @@ pub struct Harness {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
-    /// **The refused door's rate limit** — set when a compaction FORCED by a
-    /// context-length refusal completed and the session is still at the wall,
-    /// which is this history saying no fold can shrink it. One summary turn per
-    /// daemon lifetime is the budget; the pre-emptive flag used to carry this and
-    /// could not, because it also has to stand down while the forced door still
-    /// has work to do (2026-10-09's wedge, exactly). See
-    /// [`Harness::compact_because_refused`].
-    forced_gave_up: bool,
     /// **Where the provider last counted this conversation** (R72) — the anchor the
     /// wall's resident count is rolled forward from. `cfg.ledger_scale` is kept as
     /// the pair `(ledger now, resident now)` that [`Harness::measure_resident`] last
@@ -4309,7 +4302,6 @@ impl Harness {
             last_turn_id: String::new(),
             resumed: resume,
             compacting: false,
-            forced_gave_up: false,
             wall_anchor,
             render: parts.wiring.clone(),
             supplies,
@@ -8327,21 +8319,16 @@ impl Harness {
     /// is the strategy for exactly that state, and it never ran once.
     ///
     /// The refusal itself is the evidence, so there is no threshold to re-check:
-    /// the provider measured the prompt against the real window and said no.
-    /// What bounds THIS door is the guard's own answer — a forced compaction
-    /// that still leaves the session at the wall stands the forced door down too
-    /// (`forced_gave_up`, this daemon's lifetime), so a history no fold can shrink
-    /// cannot spend a summary turn per refused turn. That is the rate limit the
-    /// pre-emptive flag used to be, applied to the door it belongs to.
+    /// the provider measured the prompt against the real window and said no. And
+    /// nothing stands this door down: the latch that used to (`forced_gave_up`, set
+    /// when a forced fold "still left the session at the wall") was set on an
+    /// ESTIMATE of the new base, and on 2026-10-11 it switched the overrun
+    /// protection off for the daemon's life after a fold deepseek then measured at
+    /// half the window. The wall controller (`crate::wall`) picks the fold: the one
+    /// the size calls for when nothing has been tried, the sliced fold from every
+    /// other state, `Stuck` included.
     pub(crate) fn compact_because_refused(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Refused)
-    }
-
-    /// **Whether a forced compaction already ran and gained nothing** — the refused door's latch
-    /// (one summary turn per history no fold can shrink). Read by the shared turn tail to say
-    /// WHY a wall was not compacted.
-    pub(crate) fn forced_gave_up(&self) -> bool {
-        self.forced_gave_up
     }
 
     /// **A parent's or peer's message as a turn, bare** — the words
@@ -8362,15 +8349,16 @@ impl Harness {
         let now = self.measure_resident();
         let resident = self.session.ledger.len() as u64;
         // The one gate the two questions differ by: the PRE-EMPTIVE door reads
-        // `auto_compact` (and the no-progress guard's whole purpose lives there);
-        // the REFUSED door cannot, and reads its own latch instead.
-        let due = match why {
-            WallWhy::Tidy => self.cfg.should_compact(resident),
-            WallWhy::Refused => !self.forced_gave_up,
-        };
-        if !due {
+        // `auto_compact` and the threshold; the REFUSED door reads neither. Which fold,
+        // and whether the pre-emptive door stands down (an unmeasured base, `Stuck`), is
+        // the wall controller's — one state, changed only by measured counts.
+        let refused = matches!(why, WallWhy::Refused);
+        if !refused && !self.cfg.should_compact(resident) {
             return false;
         }
+        let Some(fold) = self.cfg.wall.fold_for(refused, &self.session.transcript_id) else {
+            return false;
+        };
         // **Shown in the operator's units, decided in the ledger's** — the same rule
         // the `Sessions` sibling states: `should_compact` above is the decision,
         // and the line prints the count it was made on, in the window's own units
@@ -8385,18 +8373,26 @@ impl Harness {
         // compacted with the automatic compaction stood down.
         let because = match why {
             WallWhy::Tidy => String::new(),
-            WallWhy::Refused => " The turn before this one was refused for length, so this \\
-                                 compaction is under duress: the refusal is the wall either \\
+            WallWhy::Refused => " The turn before this one was refused for length, so this \
+                                 compaction is under duress: the refusal is the wall either \
                                  way."
                 .into(),
+        };
+        let pressing = match fold {
+            crate::wall::Fold::Ordinary => String::new(),
+            f => format!(
+                " The last fold was measured still at the wall, so this one is the {} fold.",
+                f.name()
+            ),
         };
         // **And it names the session, for the reason the sibling's line does**: the
         // log is one file every daemon appends to, and a child's compaction lines
         // land between its parent's work with nothing to say whose they were.
         eprintln!(
             "  {}: compacting: {r} of {w} {unit} resident{basis}, less than the {h} the \
-             next turn needs",
-            self.cfg.session_id
+             next turn needs; {} fold",
+            self.cfg.session_id,
+            fold.name()
         );
         self.hub.publish(SessionEvent::Warning {
             code: "auto_compact".into(),
@@ -8404,11 +8400,11 @@ impl Harness {
                 "{r} of {w} {unit} resident{basis}, leaving less than the {h} the next \
                  turn needs — compacting now, as one more message so the prefix the \
                  server already holds is reused. This is the wall, not a judgement about \
-                 the conversation.{because}"
+                 the conversation.{because}{pressing}"
             ),
             compaction: None,
         });
-        let (started, compacted) = (Instant::now(), self.compact());
+        let (started, compacted) = (Instant::now(), self.compact_with(fold));
         let ok = compacted.is_ok();
         match compacted {
             Ok(report) => {
@@ -8416,10 +8412,17 @@ impl Harness {
                 // (`roll_resident`), so the after-count is the base's, not the old
                 // history's ratio applied to it.
                 let base = self.measure_resident();
+                // **An estimate is said as one** — `≈`, until the next round measures
+                // it. The report used to print the base's estimate in the same breath
+                // as the measured count it was folded from, and the guard below it
+                // JUDGED that estimate: 1,039,055 for a base deepseek counted at
+                // 507,355 (pg-noop, 2026-10-11).
+                let estimated = self.cfg.wall.awaiting_on(&self.session.transcript_id);
                 let scales = crate::sessions::Scales {
                     before: scale,
                     after: self.cfg.ledger_scale,
                     unit: Some(unit.clone()),
+                    estimated,
                 };
                 self.hub.publish(SessionEvent::Warning {
                     code: "compacted".into(),
@@ -8433,67 +8436,25 @@ impl Harness {
                         h,
                     ))),
                 });
-                let after = self.session.ledger.len() as u64;
-                // **If it did not help, stop trying** — the sibling's guard, for the
-                // sibling's reason: a summary that is itself over the threshold
-                // would compact again next turn, and again, a loop that spends a
-                // turn each time and never lets the conversation continue. Turning
-                // `auto_compact` off also stands down the round-loop wall check for
-                // this session, which is the same trade the daemon's sessions make.
-                //
-                // `at_the_wall`, NOT `should_compact`, because the flag is already
-                // off on the refused door that can reach this arm — reading the
-                // guard through the flag would make it unreachable from exactly the
-                // door the wedge of 2026-10-09 came through. On the pre-emptive
-                // door the two spellings agree (the flag is on, or it would not
-                // have run).
-                if self.cfg.at_the_wall(after) {
-                    // The latch is the REFUSED door's rate limit, and it is the
-                    // refused door's OWN finding or nothing: one forced fold that
-                    // gained nothing says this history will not shrink. A
-                    // PRE-EMPTIVE fold that gained nothing does NOT latch it —
-                    // the ordinary fold keeps a verbatim tail and the refused
-                    // door's `Cut` fold (both halves summarised) is the more
-                    // aggressive strategy that may still cure exactly the case
-                    // the ordinary one failed on. Latching on the tidy door's
-                    // failure would rebuild the wedge one door along.
-                    if matches!(why, WallWhy::Refused) {
-                        self.forced_gave_up = true;
-                    }
-                    self.stand_down_auto_compact(resident, after);
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "auto_compact_no_progress".into(),
-                        detail: format!(
-                            "compacted from {r} to {} tokens and that is STILL within \
-                             {h} of the {w} window, so automatic compaction is now off \
-                             for this session rather than looping once per turn{}. The \
-                             summary itself is near the wall: start a fresh session, or \
-                             raise --context-window if the server really has more.",
-                            self.cfg.shown_tokens(after),
-                            match why {
-                                WallWhy::Tidy => "",
-                                WallWhy::Refused =>
-                                    " — and a refusal will not force \
-                                 another: this fold could not shrink the history",
-                            }
-                        ),
-                        compaction: None,
-                    });
+                // **Whether it helped is not decided here.** It used to be — `at_the_wall`
+                // on the base's estimate, then `auto_compact = false` and the refused
+                // door's latch, for good. A metered base is judged by the first round
+                // that measures it (`observe_wall`, from `run_rounds`); a local one was
+                // judged inside `compact_with`, because its prompt IS the ledger and
+                // the count is exact. Either way the controller said it, once.
+                let cut = if report.fork.truncated {
+                    " The summary was CUT OFF at the model's length limit — it is \
+                     incomplete, and the base says so too."
                 } else {
-                    let cut = if report.fork.truncated {
-                        " The summary was CUT OFF at the model's length limit — it is \
-                         incomplete, and the base says so too."
-                    } else {
-                        ""
-                    };
-                    let said = compacted_line(r, base, &self.token_unit(), self.provider.is_some());
-                    eprintln!("  {}: {said}{cut}", self.cfg.session_id);
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "auto_compact".into(),
-                        detail: format!("{said}{cut}"),
-                        compaction: None,
-                    });
-                }
+                    ""
+                };
+                let said = compacted_line(r, base, &self.token_unit(), self.provider.is_some());
+                eprintln!("  {}: {said}{cut}", self.cfg.session_id);
+                self.hub.publish(SessionEvent::Warning {
+                    code: "auto_compact".into(),
+                    detail: format!("{said}{cut}"),
+                    compaction: None,
+                });
             }
             Err(e) => {
                 // Announced and swallowed, for the same reason as the sibling's: the
@@ -8514,10 +8475,157 @@ impl Harness {
             }
         }
         self.meter_compaction(matches!(why, WallWhy::Tidy), ok, started, (r, resident));
-        // It ran. Whether it HELPED is the branch above, in its own words either
+        // It ran. Whether it HELPED is the controller's, in its own words either
         // way; what this answers is the narrower question a caller asks before
         // claiming an attempt was made.
         true
+    }
+
+    /// **A measured count, into the wall controller — the one place its state changes on
+    /// a measurement, and the one place that says so.**
+    ///
+    /// `count` is in the window's units: a round's `prompt_tokens` (called from
+    /// `run_rounds` at every round's end, children included — they run the same loop),
+    /// or a local base's exact size (from [`Self::compact_with`]). The judgement the
+    /// no-progress guard used to make on the estimate right after the fork is made here,
+    /// on the provider's number: the pg-noop case of 2026-10-11 would have read
+    /// *"measured: the ordinary fold left 507355 of 1000000 deepseek tokens"* and stood
+    /// nothing down.
+    fn observe_wall(&mut self, count: u64) {
+        let (window, headroom) = self.cfg.shown_wall();
+        if window == 0 {
+            return;
+        }
+        let wall = crate::wall::Wall { window, headroom };
+        let metered = self.provider.is_some();
+        let transcript = self.session.transcript_id.clone();
+        let Some(change) = self.cfg.wall.measured(&transcript, count, wall, metered) else {
+            return;
+        };
+        let unit = self.token_unit();
+        crate::instruments::wall_change(&self.cfg.session_id, &change, window, &unit);
+        use crate::wall::Change;
+        let (code, detail) = match change {
+            Change::Helped {
+                fold,
+                before,
+                estimate,
+                measured,
+            } => (
+                "auto_compact",
+                format!(
+                    "measured: the {} fold of {before} left {measured} of {window} {unit} \
+                     (estimated ≈ {estimate} before the provider counted it) — room again.",
+                    fold.name()
+                ),
+            ),
+            Change::Escalated {
+                fold,
+                next,
+                before,
+                measured,
+            } => (
+                "auto_compact",
+                format!(
+                    "measured: the {} fold of {before} left {measured} of {window} {unit}, \
+                     still within {headroom} of the window — the next compaction is the {} \
+                     fold, which keeps less verbatim.",
+                    fold.name(),
+                    next.name()
+                ),
+            ),
+            Change::Stuck { before, measured } => {
+                self.persist_stuck();
+                (
+                    "auto_compact_no_progress",
+                    format!(
+                        "compacted from {before} to {measured} {unit} (MEASURED by the \
+                         provider) and that is STILL within {headroom} of the {window} \
+                         window after every fold — ordinary, smaller tail, sliced — so \
+                         compaction before a turn is off for this session rather than \
+                         looping once per turn. A turn the provider refuses is still \
+                         folded; a measured count under {} re-arms it, as do `/compact` and \
+                         `/auto-compact on`. The summary itself is near the wall: start a \
+                         fresh session, or raise --context-window if the server really \
+                         has more.",
+                        window.saturating_sub(crate::wall::RELEASE_HEADROOMS * headroom)
+                    ),
+                )
+            }
+            Change::Released { measured } => {
+                self.persist_stuck();
+                (
+                    "auto_compact",
+                    format!(
+                        "re-armed: measured {measured} of {window} {unit}, comfortably below \
+                         the wall, so compaction before a turn is on again for this session."
+                    ),
+                )
+            }
+        };
+        eprintln!("  {}: {detail}", self.cfg.session_id);
+        self.hub.publish(SessionEvent::Warning {
+            code: code.into(),
+            detail,
+            compaction: None,
+        });
+        self.publish_settings();
+    }
+
+    /// **The operator's re-arm** — `/auto-compact on`. Clears `Stuck` (and whatever the
+    /// controller was waiting for), and the operator's own `--no-auto-compact` with it:
+    /// the verb says ON. Returns the sentence the verb answers with.
+    pub fn rearm_auto_compact(&mut self) -> String {
+        let was_off = !self.cfg.auto_compact;
+        let was = self.cfg.wall.rearm();
+        self.cfg.auto_compact = true;
+        if was {
+            self.persist_stuck();
+        }
+        self.publish_settings();
+        match (was || was_off, self.cfg.wall.last_measured) {
+            (false, _) => "automatic compaction was already on".into(),
+            (true, Some(n)) => format!(
+                "automatic compaction is on again; the last measured count was {n} {}",
+                self.token_unit()
+            ),
+            (true, None) => "automatic compaction is on again".into(),
+        }
+    }
+
+    /// **Whether the count is the estimate of a metered base no round has measured** —
+    /// the one count no wall judgement is made on (`crate::wall`).
+    pub fn base_is_unmeasured(&self) -> bool {
+        self.provider.is_some() && self.cfg.wall.awaiting_on(&self.session.transcript_id)
+    }
+
+    /// The wall controller's state, for a caller that reports it.
+    pub fn wall(&self) -> &crate::wall::WallControl {
+        &self.cfg.wall
+    }
+
+    /// **The controller's `Stuck` on the session row**, or its absence — the v19 pair is
+    /// the durable half, so a restart comes back stuck exactly when the controller was.
+    fn persist_stuck(&mut self) {
+        let pair = self.cfg.wall.stuck_pair();
+        if let Some(store) = &self.store
+            && let Err(e) = store.set_auto_compact_stood_down(&self.cfg.session_id, pair)
+        {
+            // Said, not swallowed: the in-memory state is right for this process; the
+            // row is what a restart reads.
+            eprintln!(
+                "  {}: could not write the wall controller's state to the store: {e}",
+                self.cfg.session_id
+            );
+            self.hub.publish(SessionEvent::Warning {
+                code: "auto_compact_no_progress".into(),
+                detail: format!(
+                    "the wall controller's state could not be written down: {e}. It holds \
+                     until this daemon stops."
+                ),
+                compaction: None,
+            });
+        }
     }
 
     /// §5.3: change the system prompt mid-session, in the form the dialect can
@@ -8583,9 +8691,34 @@ impl Harness {
     }
 
     pub fn compact(&mut self) -> Result<CompactReport, HarnessError> {
+        self.compact_with(crate::wall::Fold::Ordinary)
+    }
+
+    /// **A compaction with the fold named** — [`Self::compact`] is the ordinary one, the
+    /// one `/compact` asks for; the wall controller names a harder one when a measured
+    /// count said the last did not make room (`crate::wall`).
+    ///
+    /// Every fold that lands is reported to the controller HERE, whoever asked for it,
+    /// so a `/compact` on a stuck session restarts the ladder rather than leaving a state
+    /// about a transcript that is gone. A metered base waits for its first round to be
+    /// measured; a local one is measured now, because its prompt IS the ledger.
+    pub fn compact_with(&mut self, fold: crate::wall::Fold) -> Result<CompactReport, HarnessError> {
+        let before = self.measure_resident().tokens;
         self.compacting = true;
-        let out = self.compact_inner();
+        let out = self.compact_inner(fold);
         self.compacting = false;
+        if out.is_ok() {
+            let base = self.measure_resident();
+            let transcript = self.session.transcript_id.clone();
+            if self.cfg.wall.folded(fold, &transcript, before, base.tokens) {
+                // It was stuck; the row says so until it is told otherwise.
+                self.persist_stuck();
+            }
+            if self.provider.is_none() {
+                self.observe_wall(base.tokens);
+            }
+            self.publish_settings();
+        }
         out
     }
 
@@ -8982,7 +9115,7 @@ impl Harness {
         ))
     }
 
-    fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
+    fn compact_inner(&mut self, fold: crate::wall::Fold) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
 
         // **A compaction re-seats.** It is already forking onto a fresh transcript
@@ -9016,7 +9149,19 @@ impl Harness {
         // Ledger units: `per_item` and `prefix_tokens` below are the ledger's.
         let window = self.cfg.planning_window().unwrap_or(u64::MAX);
 
-        match plan_overrun(&per_item, prefix_tokens, window) {
+        // **The fold the controller named** (`crate::wall`). The ordinary one is what
+        // a compaction always was: the fold the size calls for. The sliced fold is the
+        // two-half plan asked for by NAME — `plan_overrun` reaches it by size only, and
+        // a history that fits one summary call never did, however little the ordinary
+        // fold freed (pg-noop, 2026-10-11: 941,101 folded to 507,355, half verbatim).
+        use crate::wall::Fold;
+        let smaller = fold == Fold::SmallerTail;
+        let plan = if fold == Fold::Sliced {
+            plan_cut(&per_item, prefix_tokens, window)
+        } else {
+            plan_overrun(&per_item, prefix_tokens, window)
+        };
+        match plan {
             // The ordinary path, and the one that runs almost always.
             OverrunPlan::NotOverrun => {
                 // **The tail is planned from the history as it stands BEFORE the
@@ -9039,12 +9184,19 @@ impl Harness {
                 // a 15,000-token tail. Measured 2026-10-10, session
                 // `s-1789462738453908838`: 958,397 in, 100,005 out, and the part of the
                 // conversation that was still live went with it.
-                let fold = self
+                let folded = self
                     .provider
                     .is_some()
                     .then(|| plan_fold(&per_item, prefix_tokens, window, self.cfg.headroom()))
-                    .flatten();
-                if let Some(split) = fold {
+                    .flatten()
+                    .map(|split| {
+                        if smaller {
+                            smaller_tail(&per_item, prefix_tokens, window, split)
+                        } else {
+                            split
+                        }
+                    });
+                if let Some(split) = folded {
                     self.hub.publish(SessionEvent::Warning {
                         code: "auto_compact".into(),
                         detail: format!(
@@ -9113,7 +9265,12 @@ impl Harness {
                 // because a tail here would be resident tokens competing with the
                 // KV pressure that called this compaction in the first place.
                 let remote = self.provider.is_some();
-                let tail_plan = plan_compaction_tail(&items, &per_item, window, remote);
+                // The smaller-tail fold halves the budget; the rest of the plan is the same.
+                let tail_plan = if smaller && remote {
+                    plan_tail(&items, &per_item, tail_budget(window) / 2)
+                } else {
+                    plan_compaction_tail(&items, &per_item, window, remote)
+                };
                 let tail: Vec<TranscriptItem> = match tail_plan.from() {
                     Some(from) => items[from..].to_vec(),
                     None => Vec::new(),
@@ -9166,7 +9323,19 @@ impl Harness {
                 let (harvest, tail, tail_split) = if self.provider.is_some() {
                     // **The reserve is the door's, not the window's**: a history that
                     // fits only by spending `headroom()` is one this arm was asked about.
-                    match plan_fold(&per_item, prefix_tokens, window, self.cfg.headroom()) {
+                    // The sliced fold skips the verbatim half altogether — that half is
+                    // what the gentler folds were measured leaving at the wall.
+                    let split = (fold != Fold::Sliced)
+                        .then(|| plan_fold(&per_item, prefix_tokens, window, self.cfg.headroom()))
+                        .flatten()
+                        .map(|split| {
+                            if smaller {
+                                smaller_tail(&per_item, prefix_tokens, window, split)
+                            } else {
+                                split
+                            }
+                        });
+                    match split {
                         Some(split) => {
                             self.hub.publish(SessionEvent::Warning {
                                 code: "auto_compact".into(),
@@ -9825,9 +9994,20 @@ impl Harness {
             // stop every turn the doors had just let through near the edge. Between rounds
             // it is the reserve, as before — the next round's reply has to fit too.
             let now = (!self.compacting).then(|| self.measure_resident());
+            // **Not on an estimate of a folded base, at round 0, on a metered session**:
+            // that count is the fork's re-based estimate, and the one round that would
+            // replace it with the provider's is this one. Stopping it on the estimate
+            // (pg-noop, 2026-10-11: ≈ 1,039,055, past the window; measured 507,355) is a
+            // wall nothing could ever measure its way out of. If the provider counts it
+            // over, it says so, and the refused door folds.
+            let unmeasured_base = round == 0
+                && self.provider.is_some()
+                && self.cfg.wall.awaiting_on(&self.session.transcript_id);
             if !self.compacting
+                && !unmeasured_base
                 && let Some(window) = self.cfg.planning_window()
                 && self.cfg.auto_compact
+                && !self.cfg.wall.is_stuck()
             {
                 let resident = self.session.ledger.len() as u64;
                 let prefix = u64::from(self.session.ledger.prefix_len());
@@ -10348,6 +10528,13 @@ impl Harness {
                 });
                 self.cfg.ledger_scale = Some((rendered_at, ok.metrics.prompt_tokens));
                 self.measure_resident();
+                // **The measurement the wall controller waits for** — the first round on a
+                // folded base is where "did the fold make room" is answered, by the
+                // provider's own count. Not the summary turn's rounds: those count the
+                // history being folded, not the base.
+                if !self.compacting {
+                    self.observe_wall(ok.metrics.prompt_tokens);
+                }
             }
             // Persisted with the ledger beside the count, so a restart recovers the
             // pair above instead of pairing the count with whatever ledger it has
@@ -11493,84 +11680,37 @@ impl Harness {
         }
     }
 
-    /// **THE GUARD'S ONE ACT, IN ONE PLACE** — switch this session's pre-emptive
-    /// compaction off, remember why, put the why where a restart and a head can
-    /// read it.
+    /// **A resume restores the wall controller's `Stuck`**, from the row it wrote.
     ///
-    /// Called by both no-progress guards (`Sessions::compact_at_wall`'s and this
-    /// file's own `compact_if_at_the_wall` sibling) so the two doors cannot stand
-    /// the same session down differently. Three things happen together or not at
-    /// all, because a reader who finds one without the others has been lied to:
+    /// `restore_provider_choice`'s shape, for its reason: without this call the row
+    /// would only be read on the lazy path a head's switch reaches, and the one resume
+    /// everybody types (`--continue`) would come back re-armed — the finding silently
+    /// unrecorded, which is the loop it exists to stop. And it is no longer for good:
+    /// the first round that measures the session comfortably below the wall releases
+    /// it (`observe_wall`). Returns the sentence a resume should say, or `None` when
+    /// there was nothing to restore.
     ///
-    /// * `auto_compact = false` — the PRE-EMPTIVE door stands down. A wall the
-    ///   provider already refused is still compacted for, through
-    ///   [`Self::compact_because_refused`]; standing this flag down never stood
-    ///   THAT up (2026-10-09's wedge was the two sharing one switch).
-    /// * `auto_compact_stood_down = Some((resident, after))` — the pair, on the
-    ///   config, for the settings row and the resident line a head draws.
-    /// * the pair on the session row — the durable half. The guard's old write
-    ///   was `auto_compact = false` in memory, which a restart silently cleared
-    ///   in both directions: the loop it existed to stop came back, and nothing
-    ///   said the session had ever been stood down.
-    ///
-    /// And `publish_settings`, so the row a head reads on its next `Settings` ask
-    /// says `off —` rather than `true` — the pane is where a person looks first.
-    pub fn stand_down_auto_compact(&mut self, resident: u64, after: u64) {
-        self.cfg.auto_compact = false;
-        self.cfg.auto_compact_stood_down = Some((resident, after));
-        if let Some(store) = &self.store
-            && let Err(e) =
-                store.set_auto_compact_stood_down(&self.cfg.session_id, Some((resident, after)))
-        {
-            // Said, not swallowed: the in-memory fact is set and the daemon behaves
-            // correctly for this process; the row is what a restart and a head read,
-            // and a failed write there is a fact the operator can act on (`/compact`
-            // by hand) rather than infer from a silence.
-            eprintln!(
-                "  {}: could not write the stood-down pair to the store: {e}",
-                self.cfg.session_id
-            );
-            self.hub.publish(SessionEvent::Warning {
-                code: "auto_compact_no_progress".into(),
-                detail: format!(
-                    "automatic compaction is now off for this session, and writing THAT \
-                     down failed: {e}. It is off until this daemon stops; `/compact` does it \
-                     by hand."
-                ),
-                compaction: None,
-            });
-        }
-        self.publish_settings();
-    }
-
-    /// **A resume restores the session's stood-down compaction**, from the row the
-    /// guard wrote.
-    ///
-    /// `restore_provider_choice`'s shape, for its reason: without this call the
-    /// row would only be read on the lazy path a head's switch reaches, and the
-    /// one resume everybody types (`--continue`) would come back with the
-    /// pre-emptive compaction re-armed — the guard's finding silently unrecorded,
-    /// which is the loop it existed to stop. Returns the sentence a resume should
-    /// say, or `None` when there was nothing to restore.
+    /// Rows written before 2026-10-11 hold the old guard's pair in LEDGER tokens; they
+    /// are printed as they are, and the next measured count is what decides.
     pub fn restore_auto_compact(&mut self) -> Option<String> {
-        let (resident, after) = self
+        let (before, measured) = self
             .store
             .as_ref()
             .and_then(|s| s.session(&self.cfg.session_id).ok())
             .flatten()?
             .auto_compact_stood_down?;
         // Idempotent: a second caller (a head switching IN to a live session)
-        // finds the flag already down and says nothing.
-        if !self.cfg.auto_compact && self.cfg.auto_compact_stood_down.is_some() {
+        // finds the controller already stuck and says nothing.
+        if self.cfg.wall.is_stuck() {
             return None;
         }
-        self.cfg.auto_compact = false;
-        self.cfg.auto_compact_stood_down = Some((resident, after));
+        self.cfg.wall.restore_stuck(before, measured);
         self.publish_settings();
         Some(format!(
-            "restored with automatic compaction OFF: a summary that compacted \
-             {resident} to {after} tokens gained no room, and the guard that stopped \
-             the loop is still standing"
+            "restored with compaction before a turn OFF: the wall controller was stuck \
+             (a fold of {before} measured {measured}, still at the wall). A turn the \
+             provider refuses is still folded, and a measured count comfortably below the \
+             wall re-arms it"
         ))
     }
 
@@ -11821,6 +11961,30 @@ fn wall_stops_round(round: usize, resident: u64, prefix: u64, headroom: u64, win
     }
 }
 
+/// **Where the smaller-tail fold splits** — the ordinary fold's split moved later until
+/// the verbatim part is at most half what it was, or the ordinary split unchanged when
+/// the longer first part would not fit one summary call (the next rung, the sliced fold,
+/// is the answer to that).
+///
+/// The ordinary fold (`plan_fold`) summarises the first half of the history BY TOKENS and
+/// carries the second half verbatim: on pg-noop's 941,101 that was the ~500k the provider
+/// then measured. Halving the verbatim part is the step between that and carrying nothing.
+fn smaller_tail(per_item: &[u64], prefix_tokens: u64, window: u64, split: usize) -> usize {
+    let verbatim: u64 = per_item[split..].iter().sum();
+    let mut rest = verbatim;
+    let mut at = split;
+    while at + 1 < per_item.len() && rest > verbatim / 2 {
+        rest -= per_item[at];
+        at += 1;
+    }
+    let first: u64 = per_item[..at].iter().sum();
+    if prefix_tokens + first + letibot_turn::WRITE_ROOM <= window {
+        at
+    } else {
+        split
+    }
+}
+
 /// **The closing line of an automatic compaction**, in one unit, said once: *"compacted:
 /// 937686 → 75408 deepseek tokens resident"*. Shared by both doors (`Harness` and
 /// `Sessions`), so the two cannot word the same fact two ways.
@@ -11829,16 +11993,20 @@ fn wall_stops_round(round: usize, resident: u64, prefix: u64, headroom: u64, win
 /// measures it — the provider has not seen the base yet — and the line says so rather
 /// than printing an estimate beside a measurement as if they were the same kind of
 /// number.
+///
+/// **And it is printed as one** — `≈ N`, *estimated until the next round measures it*.
+/// MEASURED 2026-10-11 on pg-noop: an estimate of 1,039,055 for a base deepseek then
+/// counted at 507,355, printed beside the measured 941,101 as if they were the same kind
+/// of number, and judged as one.
 pub(crate) fn compacted_line(before: u64, after: Resident, unit: &str, metered: bool) -> String {
-    let estimated = if metered && after.measured.is_none() {
-        " (the new base sized as it will be sent; the next round measures it)"
-    } else {
-        ""
-    };
-    format!(
-        "compacted: {before} → {} {unit} resident{estimated}.",
-        after.tokens
-    )
+    if metered && after.measured.is_none() {
+        return format!(
+            "compacted: {before} → ≈ {} {unit} resident, estimated until the next round \
+             measures it (the new base sized as it will be sent).",
+            after.tokens
+        );
+    }
+    format!("compacted: {before} → {} {unit} resident.", after.tokens)
 }
 
 /// **Where the provider last counted this conversation** — the ledger length of the

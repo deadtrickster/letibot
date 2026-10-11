@@ -66,6 +66,7 @@ impl SlashReply {
 /// `crates/tui/src/app.rs`), and completes **these** from a `SettingRow` the daemon
 /// publishes. See [`crate::protocol::DAEMON_VERBS_KEY`].
 pub const VERBS: &[&str] = &[
+    "auto-compact",
     "clear",
     "default-model",
     "flowy",
@@ -153,6 +154,14 @@ pub enum Slash {
     /// **The operator's pause of this session's idle plan-check** — `/nag`, `/nag pause
     /// [DURATION]`, `/nag resume`. See [`crate::nag_pause`].
     Nag(crate::nag_pause::NagVerb),
+    /// **`/auto-compact [on|status]` — the wall controller, by hand.** `on` re-arms the
+    /// compaction before a turn: a `Stuck` controller, and an operator's own
+    /// `--no-auto-compact`. Added 2026-10-11, when an estimate stood pg-noop's
+    /// `s-1789919514688401228` down for the daemon's life and nothing but a restart into
+    /// a fresh session could undo it. `status` (and bare) reports the state.
+    AutoCompact {
+        on: bool,
+    },
     Help(String),
 }
 
@@ -288,6 +297,14 @@ impl Slash {
                 Some(other) => Slash::Help(format!(
                     "/flowy {other}: the verbs are status, login [SEAT] [--addr URL] [--token T | \
                      --token-file PATH] [--new-reader], logout"
+                )),
+            },
+            Some("auto-compact") => match words.get(1).copied() {
+                Some("on") => Slash::AutoCompact { on: true },
+                None | Some("status") => Slash::AutoCompact { on: false },
+                Some(other) => Slash::Help(format!(
+                    "/auto-compact [on|status] — `{other}` is neither; `off` is \
+                     --no-auto-compact at the daemon's start"
                 )),
             },
             Some("clear") => Slash::Clear {

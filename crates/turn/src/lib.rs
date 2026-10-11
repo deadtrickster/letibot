@@ -64,7 +64,7 @@ pub use capture::{CaptureSession, FrameCapture};
 pub use compaction::{
     CompactionOutcome, Harvest, OverrunPlan, SUMMARY_INSTRUCTION, SUMMARY_SECTIONS, TAIL_BECAUSE,
     TailPlan, TailSplit, UNFINISHED_REASONING_NOTICE, WIRE_SECTIONS, WRITE_ROOM,
-    parse_summary_sections, plan_compaction_tail, plan_fold, plan_overrun, plan_tail,
+    parse_summary_sections, plan_compaction_tail, plan_cut, plan_fold, plan_overrun, plan_tail,
     run_compaction, summarise_first_half, summarise_overrun, tail_because, tail_budget,
     tail_split_of,
 };
