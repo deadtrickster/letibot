@@ -70,6 +70,27 @@ impl App {
                 }
                 return None;
             }
+            // **The pointer's own reports** — hover, and the press, drag and release a selection
+            // is made of — before anything a keystroke does: moving the mouse must not dismiss
+            // a notice. A release with no drag is a click, and goes on as one. See `app::pointer`.
+            Key::Hover { x, y } => {
+                self.hover_at(x, y);
+                return None;
+            }
+            Key::Press { x, y } => {
+                self.press_at(x, y);
+                return None;
+            }
+            Key::Drag { x, y } => {
+                self.drag_to(x, y);
+                return None;
+            }
+            Key::Release { .. } => {
+                return match self.release() {
+                    Some(click) => self.key(click),
+                    None => None,
+                };
+            }
             _ => {}
         }
         // **The session's prompts, before a recall starts** — see `refresh_prompt_history`.
@@ -103,6 +124,15 @@ impl App {
         // **`ctrl-e`, settled once, here.** The editor on an empty prompt with nothing in front
         // of it; `End` in every other place, before any card or pane sees the key — so a
         // handler that reads `End` cannot be reached by the editor chord by mistake.
+        // **A click on a key hint is that key**, ahead of every card and pane, because the hint is
+        // drawn ON them: the diff popup owns every key while it is open, and its own `esc closes`
+        // has to be reachable by the pointer. See `app::keyhints`.
+        if let Key::Click { x, y } = k
+            && let Some(hint) = self.key_hint_at(x, y).cloned()
+        {
+            let _ = self.press_hint(hint);
+            return None;
+        }
         let k = match k {
             Key::CtrlE if self.ctrl_e_opens_editor() => {
                 self.open_editor();
@@ -1222,6 +1252,27 @@ pub enum Key {
         x: u16,
         y: u16,
     },
+    /// **The left button went down** — not yet a click: with no motion before the release it
+    /// becomes one ([`Key::Click`]), and with motion it is a selection. See `app::pointer`.
+    Press {
+        x: u16,
+        y: u16,
+    },
+    /// Motion with the left button held.
+    Drag {
+        x: u16,
+        y: u16,
+    },
+    /// The left button came up.
+    Release {
+        x: u16,
+        y: u16,
+    },
+    /// Motion with no button held: what the pointer is over.
+    Hover {
+        x: u16,
+        y: u16,
+    },
 }
 
 impl Key {
@@ -1275,6 +1326,10 @@ impl Key {
             | Key::Wheel { .. }
             | Key::Tab
             | Key::Click { .. }
+            | Key::Press { .. }
+            | Key::Drag { .. }
+            | Key::Release { .. }
+            | Key::Hover { .. }
             | Key::FocusIn
             | Key::FocusOut
             | Key::Background { .. } => {

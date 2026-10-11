@@ -385,7 +385,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
     let term = if args.no_tty {
         Err(())
     } else {
-        Terminal::enter().map_err(|_| ())
+        Terminal::enter_with(any_motion()).map_err(|_| ())
     };
     match term {
         Err(()) => {
@@ -682,7 +682,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<String, Box<dyn std::error::Er
     let term = if args.no_tty {
         None
     } else {
-        Terminal::enter().ok()
+        Terminal::enter_with(any_motion()).ok()
     };
     // **The handshake goes to a thread, and the cat walks while it waits.**
     //
@@ -1014,6 +1014,15 @@ mod probe_tests {
     }
 }
 
+/// **The terminal's modes for this head: every motion reported**, not only the buttons' — what
+/// the pointer is over is drawn (`app::pointer`), and that needs motion with no button held.
+fn any_motion() -> rano::term::Options {
+    rano::term::Options {
+        mouse: rano::term::Mouse::Any,
+        ..Default::default()
+    }
+}
+
 /// **Everything the head writes to the terminal that is not the frame**: the window title, the
 /// tab's progress bar, a desktop notification, a clipboard copy. Once a tick, after the tick —
 /// the app decides what each should be, and the terminal writes only what changed and only
@@ -1026,6 +1035,15 @@ fn outside_the_frame(term: &Terminal, app: &mut App) {
     }
     if let Some(text) = app.take_clipboard() {
         term.copy(&text);
+    }
+    // **The hand over what a click would act on**, the default off it (OSC 22). A terminal that
+    // does not speak it ignores it; the underline says the same thing everywhere.
+    if let Some(hand) = app.take_pointer() {
+        term.write_raw(if hand {
+            b"\x1b]22;pointer\x1b\\"
+        } else {
+            b"\x1b]22;default\x1b\\"
+        });
     }
     for upload in app.take_image_uploads() {
         term.write_raw(&upload);
@@ -1053,6 +1071,15 @@ fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
 /// coming due; so with a pane open this polls for rano's `next_wakeup` first and reads only
 /// when something is there.
 fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>) {
+    // **Keys a click typed come first**, and stand for this read: a click on `esc closes` is the
+    // Esc key, by the route a keypress takes (see `app::keyhints`), and the terminal is read
+    // again on the next pass.
+    let injected = app.take_injected();
+    if !injected.is_empty() {
+        let (keys, _) = app.route(rano::term::decode(&injected));
+        app.editor_tick(Instant::now());
+        return (keys, Vec::new());
+    }
     let (events, raw) = match app.editor_wait() {
         Some(wait) if wait < crate::app::READ_PACE && !term.poll(wait) => (Vec::new(), Vec::new()),
         // **The same read, as bytes.** The pane is a terminal and its program reads the bytes

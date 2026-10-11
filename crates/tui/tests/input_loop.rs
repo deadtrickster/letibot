@@ -152,7 +152,7 @@ fn two_chords_in_one_read_ask_for_both_and_leave_the_second_in_front() {
     );
 }
 
-/// **A click report in a read reaches the card the last frame drew, and the Enter after it in
+/// **A click (press and release) in a read reaches the card the last frame drew, and the Enter after it in
 /// the same read answers what the click selected.** The second ctrl-c opens the quit card; a
 /// press on its second choice selects it; Enter takes it — so the STOP leaves the head, which
 /// is the socket's fact. The click is measured against the frame the tick before drew.
@@ -170,7 +170,8 @@ fn a_click_report_then_enter_in_one_read_answers_the_row_clicked() {
         .iter()
         .position(|l| l.contains("leave and stop the daemon"))
         .unwrap_or_else(|| panic!("the quit card is drawn: {frame:#?}"));
-    let read = format!("{}\r", press(10, y));
+    // A click is the press AND the release: a press alone may yet become a drag (a selection).
+    let read = format!("{}{}\r", press(10, y), press(10, y).replace('M', "m"));
     step(&mut link, &mut a, read.as_bytes());
     let out = sent(&frames);
     assert!(

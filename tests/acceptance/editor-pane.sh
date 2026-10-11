@@ -78,4 +78,18 @@ settle
 expect_not "the change at line 11"
 expect_not "rano 0."
 
+spec "a click on a key hint is that key: the popup's esc closes it"
+click "old 11"
+wait_for "esc closes"
+click "esc closes"
+wait_gone "the change at line 11"
+expect "please fix line eleven"
+
+spec "and the editor's own edge: C-q exit closes the pane"
+press C-]
+wait_for "C-q exit"
+click "C-q exit"
+wait_gone "C-q exit"
+expect "please fix line eleven"
+
 done_spec

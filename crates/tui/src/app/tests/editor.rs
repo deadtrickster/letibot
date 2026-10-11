@@ -1004,3 +1004,230 @@ fn the_diff_popup_names_its_file_once() {
         screen.join("\n")
     );
 }
+
+/// **The popup closes by a click on its own `esc closes`** — the operator, 2026-10-11: *"i open
+/// diff popup by clicking - i cant close it by clicking … all keymap items anywhere must be
+/// clickable"*. The hint is a button that types its key, by the route a keypress takes.
+#[test]
+fn a_click_on_a_key_hint_is_that_key() {
+    fn click_text(a: &mut App, screen: &[String], needle: &str) {
+        let (y, row) = screen
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} is not on the screen: {screen:#?}"));
+        let col = crate::app::keyhints::cells(row)
+            .windows(needle.chars().count())
+            .position(|w| w.iter().collect::<String>() == needle)
+            .expect("the hint's column");
+        a.key(Key::Click {
+            x: col as u16,
+            y: y as u16,
+        });
+        let typed = a.take_injected();
+        assert!(!typed.is_empty(), "the click on {needle:?} typed nothing");
+        for k in a.route(rano::term::decode(&typed)).0 {
+            a.key(k);
+        }
+    }
+    let ws = workspace("hintclick");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    assert!(a.diff_popup.is_some());
+    let screen = a.screen(100, 40);
+    click_text(&mut a, &screen, "esc closes");
+    assert!(
+        a.diff_popup.is_none(),
+        "the popup's `esc closes` did not close it"
+    );
+
+    // The hint bar's `ctrl-g subagents` opens the subagents pane.
+    let screen = a.screen(160, 40);
+    click_text(&mut a, &screen, "ctrl-g subagents");
+    let screen = a.screen(160, 40).join("\n");
+    assert!(screen.contains("subagents"), "{screen}");
+    assert!(
+        a.focused_surface() == Some(crate::app::Surface::Subagents),
+        "{screen}"
+    );
+}
+
+/// **The pointer: hover marks what a click would do, a still press is a click, and a drag
+/// selects and copies** — the operator, 2026-10-11: *"simple mouse selection doesnt work in
+/// letibot - only with shift"*, and *"i want clickable things to be somehow hinted"*.
+#[test]
+fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
+    let ws = workspace("pointer");
+    let mut a = edited(&ws);
+    let mut features = rano::term::Features::default();
+    features.clipboard = true;
+    a.set_features(features);
+    let screen = a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+
+    // A press and a release with no motion between them: the edit row's click, the popup.
+    a.key(Key::Press { x: 10, y: y as u16 });
+    a.key(Key::Release { x: 10, y: y as u16 });
+    assert!(
+        a.diff_popup.is_some(),
+        "a still press-and-release was not a click"
+    );
+
+    // Hover over the popup's `esc closes`: underlined, and the hand asked for.
+    let screen2 = a.screen(100, 40);
+    let (hy, row) = screen2
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("esc closes"))
+        .expect("the popup's footer");
+    let hx = crate::app::keyhints::cells(row)
+        .windows(3)
+        .position(|w| w.iter().collect::<String>() == "esc")
+        .unwrap();
+    a.key(Key::Hover {
+        x: hx as u16,
+        y: hy as u16,
+    });
+    let marked = a.screen(100, 40);
+    assert!(
+        marked[hy].contains("\x1b[4m"),
+        "not underlined: {:?}",
+        marked[hy]
+    );
+    assert_eq!(a.take_pointer(), Some(true), "the hand was not asked for");
+    a.key(Key::Hover { x: 0, y: 0 });
+    assert_eq!(a.take_pointer(), Some(false));
+    a.key(Key::Esc);
+
+    // A drag across the question's row selects it; the release copies it, gutter off.
+    let screen = a.screen(100, 40);
+    let qy = screen
+        .iter()
+        .position(|l| l.contains("please fix line eleven"))
+        .expect("the question");
+    let qx = crate::app::keyhints::cells(&screen[qy])
+        .windows(6)
+        .position(|w| w.iter().collect::<String>() == "please")
+        .unwrap();
+    a.key(Key::Press {
+        x: qx as u16,
+        y: qy as u16,
+    });
+    a.key(Key::Drag {
+        x: (qx + 10) as u16,
+        y: qy as u16,
+    });
+    let during = a.screen(100, 40);
+    assert!(
+        during[qy].contains("\x1b[7m"),
+        "the selection is not drawn: {:?}",
+        during[qy]
+    );
+    a.key(Key::Release {
+        x: (qx + 10) as u16,
+        y: qy as u16,
+    });
+    assert_eq!(a.take_clipboard().as_deref(), Some("please fix"));
+    assert!(a.diff_popup.is_none(), "a drag was taken for a click");
+}
+
+/// **A code block copies as code** — the operator, 2026-10-12: *"can i copy code block without
+/// vertical bars?"*. The block's frame is drawn as text (`┌─ lang`, a `│ ` rail, `└─`), and a
+/// selection across it copies the code alone, its own indentation kept.
+#[test]
+fn a_selected_code_block_copies_without_its_frame() {
+    let hub = Hub::new("s");
+    hub.publish(testing::appended("s.1", "assistant"));
+    hub.record_item(
+        "s.1",
+        TranscriptItem::Assistant {
+            text: "Here it is:\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\nDone."
+                .into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+    );
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    let mut features = rano::term::Features::default();
+    features.clipboard = true;
+    a.set_features(features);
+    let screen = a.screen(100, 30);
+    let top = screen
+        .iter()
+        .position(|l| l.contains("┌─"))
+        .unwrap_or_else(|| panic!("no code block drawn: {screen:#?}"));
+    let bottom = screen
+        .iter()
+        .position(|l| l.contains("└─"))
+        .expect("its foot");
+    a.key(Key::Press {
+        x: 0,
+        y: top as u16,
+    });
+    a.key(Key::Drag {
+        x: 99,
+        y: bottom as u16,
+    });
+    // **The frame is not selectable**: mid-drag, a code line is marked from after its rail, and
+    // the `┌─` row is not marked at all — what is highlighted is what will be copied.
+    let during = a.screen(100, 30);
+    let line = during
+        .iter()
+        .find(|l| l.contains("fn main"))
+        .expect("the code line");
+    let before_mark = &line[..line.find("\x1b[7m").expect("the code line is marked")];
+    let shown: String = crate::app::keyhints::cells(before_mark)
+        .into_iter()
+        .collect();
+    assert!(
+        shown.ends_with("│ "),
+        "the mark starts before the rail ends: {shown:?}"
+    );
+    assert!(
+        !during[top].contains("\x1b[7m"),
+        "the frame row is marked: {:?}",
+        during[top]
+    );
+    a.key(Key::Release {
+        x: 99,
+        y: bottom as u16,
+    });
+    assert_eq!(
+        a.take_clipboard().as_deref(),
+        Some("fn main() {\n    println!(\"hi\");\n}"),
+        "{}",
+        screen.join("\n")
+    );
+    // From the sentence before it to the one after: the prose stays, only the frame goes.
+    let here = screen
+        .iter()
+        .position(|l| l.contains("Here it is:"))
+        .unwrap();
+    let done = screen.iter().position(|l| l.contains("Done.")).unwrap();
+    a.key(Key::Press {
+        x: 0,
+        y: here as u16,
+    });
+    a.key(Key::Drag {
+        x: 99,
+        y: done as u16,
+    });
+    a.key(Key::Release {
+        x: 99,
+        y: done as u16,
+    });
+    let copied = a.take_clipboard().unwrap_or_default();
+    assert!(copied.starts_with("Here it is:"), "{copied:?}");
+    assert!(
+        copied.contains("\nfn main() {\n    println!(\"hi\");\n}\n"),
+        "{copied:?}"
+    );
+    assert!(copied.trim_end().ends_with("Done."), "{copied:?}");
+    assert!(
+        !copied.contains('│') && !copied.contains("┌") && !copied.contains("└"),
+        "{copied:?}"
+    );
+}

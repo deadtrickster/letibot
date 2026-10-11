@@ -130,7 +130,7 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     // costs one GET and makes the refusal the first thing that happens.
     let _ = endpoint();
     let hub = Hub::new("live");
-    let sock = std::env::temp_dir().join(format!(
+    let sock = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-live-{}-{}-{}.sock",
         std::process::id(),
         Instant::now().elapsed().as_nanos(),

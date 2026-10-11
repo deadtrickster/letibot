@@ -147,7 +147,13 @@ fn mouse(m: MouseEvent) -> Option<Key> {
         }),
         // A left-button press is a click: an open picker takes the row under the pointer as
         // its selection, and Enter still does the switching.
-        MouseKind::Press(MouseButton::Left) => Some(Key::Click { x: m.x, y: m.y }),
+        // **A press is not yet a click**: with no motion before the release it is one, and with
+        // motion it is a selection (`app::pointer`). The release and the drag carry the button;
+        // motion with none is hover.
+        MouseKind::Press(MouseButton::Left) => Some(Key::Press { x: m.x, y: m.y }),
+        MouseKind::Drag(MouseButton::Left) => Some(Key::Drag { x: m.x, y: m.y }),
+        MouseKind::Release(_) => Some(Key::Release { x: m.x, y: m.y }),
+        MouseKind::Move => Some(Key::Hover { x: m.x, y: m.y }),
         _ => None,
     }
 }
@@ -308,12 +314,12 @@ mod tests {
                 y: 4
             }]
         );
-        // A left-button press is a click, on 0-based coordinates; drags, motion and releases
-        // are decoded and dropped: a report the head does not act on must never become typed
-        // punctuation.
-        assert_eq!(decode(b"\x1b[<0;3;4M"), vec![Key::Click { x: 2, y: 3 }]);
-        assert_eq!(decode(b"\x1b[<32;3;4M"), Vec::<Key>::new());
-        assert_eq!(decode(b"\x1b[<0;3;4m"), Vec::<Key>::new());
+        // The left button's press, drag and release, and motion with no button, on 0-based
+        // coordinates: a click is a press and a release with nothing between (`app::pointer`).
+        assert_eq!(decode(b"\x1b[<0;3;4M"), vec![Key::Press { x: 2, y: 3 }]);
+        assert_eq!(decode(b"\x1b[<32;3;4M"), vec![Key::Drag { x: 2, y: 3 }]);
+        assert_eq!(decode(b"\x1b[<0;3;4m"), vec![Key::Release { x: 2, y: 3 }]);
+        assert_eq!(decode(b"\x1b[<35;3;4M"), vec![Key::Hover { x: 2, y: 3 }]);
         // Other buttons, the sideways wheel, and anything with a modifier held.
         for report in [
             &b"\x1b[<1;3;4M"[..],
@@ -323,7 +329,6 @@ mod tests {
             b"\x1b[<4;3;4M",
             b"\x1b[<68;3;4M",
             b"\x1b[<80;3;4M",
-            b"\x1b[<35;3;4M",
         ] {
             assert_eq!(decode(report), Vec::<Key>::new(), "{report:?}");
         }

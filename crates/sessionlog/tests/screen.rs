@@ -27,7 +27,7 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
     // **Short**, because macOS caps a socket path at 104 bytes and its temp dir alone is
     // about 50; the nanosecond clock in decimal and a long tag overflowed it (`path must be
     // shorter than SUN_LEN`). The tag is for a human reading `ls`, so ten characters do.
-    std::env::temp_dir().join(format!(
+    letibot_sessionlog::testing::scratch_root().join(format!(
         "lb-scr-{:.10}-{}-{:x}.sock",
         tag,
         std::process::id(),
