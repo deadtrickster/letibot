@@ -69,7 +69,13 @@ fn placement_seam(placement: Placement) -> String {
 /// `placing this session in a firecode VM: io: running firecode: No such file or directory` —
 /// and the parent learned it only from `task_result`, a round later. Now the call is refused
 /// with nothing spawned and `host` named as the way to go on.
-fn placement_arg(args: &serde_json::Value) -> Result<Placement, Invocation> {
+///
+/// `firecode` is the CLI to look for when the caller names one (a test's stub), `None` for the
+/// host's own answer (`$FIRECODE_BIN`, else `firecode` on PATH).
+fn placement_arg(
+    args: &serde_json::Value,
+    firecode: Option<&std::path::Path>,
+) -> Result<Placement, Invocation> {
     let placement = match args.get("where").and_then(|v| v.as_str()) {
         None => return Ok(Placement::Host),
         Some(w) => Placement::parse(w).map_err(|e| {
@@ -80,7 +86,10 @@ fn placement_arg(args: &serde_json::Value) -> Result<Placement, Invocation> {
         })?,
     };
     if placement == Placement::Firecode
-        && let Err(why) = crate::firecode::firecode_available()
+        && let Err(why) = match firecode {
+            Some(bin) => crate::firecode::firecode_available_at(bin.to_path_buf()),
+            None => crate::firecode::firecode_available(),
+        }
     {
         return Err(Invocation::failed(
             "this host cannot place a subagent in a VM",
@@ -640,11 +649,25 @@ impl TaskRunner for NoTaskRunner {
 
 pub struct TaskTool {
     runner: Arc<dyn TaskRunner>,
+    /// The firecode CLI a `where: firecode` call is checked against, when the caller names
+    /// one; `None` is the host's answer ([`crate::firecode::firecode_available`]). A field and
+    /// not `$FIRECODE_BIN` for the reason [`crate::firecode::FirecodeSpec::bin`] is one: a test
+    /// that sets the variable races every other reader of it in the test binary.
+    firecode_bin: Option<std::path::PathBuf>,
 }
 
 impl TaskTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
-        TaskTool { runner }
+        TaskTool {
+            runner,
+            firecode_bin: None,
+        }
+    }
+
+    /// Check `where: firecode` against `bin` rather than the host's `$FIRECODE_BIN`/PATH.
+    pub fn with_firecode_bin(mut self, bin: impl Into<std::path::PathBuf>) -> Self {
+        self.firecode_bin = Some(bin.into());
+        self
     }
 }
 
@@ -710,7 +733,7 @@ impl Tool for TaskTool {
                 }
             },
         };
-        let placement = match placement_arg(args) {
+        let placement = match placement_arg(args, self.firecode_bin.as_deref()) {
             Ok(p) => p,
             Err(refused) => return refused,
         };
@@ -904,7 +927,7 @@ impl Tool for TaskStartTool {
             },
         };
         // Checked before the worktree is arranged: a refusal here leaves nothing behind.
-        let placement = match placement_arg(args) {
+        let placement = match placement_arg(args, None) {
             Ok(p) => p,
             Err(refused) => return refused,
         };
@@ -2066,14 +2089,31 @@ mod tests {
     fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
         use crate::runtime::{Registry, ToolRuntime};
         use letibot_transcript::ToolCall;
-        let mut reg = Registry::new();
+        // A host that has firecode: the tool is told the CLI is a program that is there (the
+        // refusal for a host that has none is the end of this test). Named to the tool, not
+        // put in `$FIRECODE_BIN`: a `set_var` here was read by every other test in this binary
+        // that looked at firecode while this one ran (R67 item 17).
+        let stub =
+            std::env::temp_dir().join(format!("letibot-firecode-stub-{}", std::process::id()));
+        std::fs::write(&stub, "#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let runner: Arc<dyn TaskRunner> = Arc::new(Echo::default());
-        reg.register(Box::new(TaskTool::new(runner.clone())))
-            .unwrap();
-        reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
         let d = crate::backend::tempdir::TempDir::new();
-        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let runtime = |firecode: &std::path::Path| {
+            let mut reg = Registry::new();
+            reg.register(Box::new(
+                TaskTool::new(runner.clone()).with_firecode_bin(firecode),
+            ))
+            .unwrap();
+            reg.register(Box::new(TaskResultTool::new(runner.clone())))
+                .unwrap();
+            let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+            ToolRuntime::new(reg, Box::new(backend))
+        };
+        let mut rt = runtime(&stub);
         let mut sink = crate::NullToolSink;
         let run = |rt: &mut ToolRuntime, sink: &mut crate::NullToolSink, args: &str| {
             rt.invoke(
@@ -2089,16 +2129,6 @@ mod tests {
         };
         // `task` hands back a handle; the spec it parsed is what the subagent was
         // started with, and `task_result` is where the answer comes from.
-        // A host that has firecode: `$FIRECODE_BIN` names a program that is there. (The
-        // refusal for a host that has none is the end of this test.)
-        let stub =
-            std::env::temp_dir().join(format!("letibot-firecode-stub-{}", std::process::id()));
-        std::fs::write(&stub, "#!/bin/sh\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        unsafe { std::env::set_var("FIRECODE_BIN", &stub) };
         let started = run(
             &mut rt,
             &mut sink,
@@ -2128,9 +2158,8 @@ mod tests {
         assert!(p.contains("not a placement"), "{p}");
         // **A host with no firecode refuses the VM at the call**, with nothing spawned and
         // `host` named — not a child that dies at its start. The operator's Mac, 2026-10-08.
-        unsafe { std::env::set_var("FIRECODE_BIN", "/nonexistent/firecode") };
+        let mut rt = runtime(std::path::Path::new("/nonexistent/firecode"));
         let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "vm"}"#);
-        unsafe { std::env::remove_var("FIRECODE_BIN") };
         let _ = std::fs::remove_file(&stub);
         assert!(p.contains("cannot be honoured"), "{p}");
         assert!(p.contains("Nothing was spawned"), "{p}");

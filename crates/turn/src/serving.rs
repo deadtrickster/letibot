@@ -113,12 +113,24 @@ pub fn skip_live_test(endpoint: &Endpoint, what: &str) -> bool {
     if reachable(endpoint) {
         return false;
     }
+    let required = std::env::var("LETIBOT_REQUIRE_MODEL")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    skip_unreachable(endpoint, what, endpoint_is_configured(), required)
+}
+
+/// [`skip_live_test`]'s decision once nothing has answered, with the two environment readings
+/// handed in rather than read. **A parameter so its test sets no variable**: a `set_var` in one
+/// test is seen by every other test in the binary running at that moment, and a `setenv` beside
+/// a C-side `getenv` that std's environment lock does not cover (glibc's own, in DNS lookups or
+/// time zones) is undefined behaviour — R67 item 17.
+fn skip_unreachable(endpoint: &Endpoint, what: &str, configured: bool, required: bool) -> bool {
     // **A configured endpoint that refuses is a failure, not a skip.**
     //
     // MEASURED, and it is why this is here rather than assumed: nothing answers,
     // either way, so the socket cannot tell the two apart. What can is whether
     // `LETIBOT_COMPLETION_URL` was SET — a promise about where the model is.
-    if endpoint_is_configured() {
+    if configured {
         panic!(
             "LETIBOT_COMPLETION_URL points at {}, and nothing answers there, so {} \
              cannot run.\n\n\
@@ -130,9 +142,6 @@ pub fn skip_live_test(endpoint: &Endpoint, what: &str) -> bool {
             what
         );
     }
-    let required = std::env::var("LETIBOT_REQUIRE_MODEL")
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
     if required {
         panic!(
             "LETIBOT_REQUIRE_MODEL is set, and no model server answers at {}.\n\
@@ -576,28 +585,28 @@ mod skip_tests {
 
     /// **The distinction, tested directly**, because neither state can be arranged
     /// on a box that HAS a server: it is set up with an endpoint on a port nothing
-    /// listens on, and the difference is made by the environment alone.
+    /// listens on, and the difference is made by the configuration alone — handed to
+    /// [`skip_unreachable`] as a value, where this test once set and unset
+    /// `LETIBOT_COMPLETION_URL` under every other test in the binary (R67 item 17). That
+    /// also took the run's own `LETIBOT_REQUIRE_MODEL` into the unconfigured case, which a
+    /// run that set it turned into a panic; `required: false` is now what this case says.
     #[test]
     fn a_configured_endpoint_that_refuses_is_a_failure_and_an_unconfigured_one_skips() {
         // Port 9 (discard) is the traditional nothing-listens-here.
         let dead = Endpoint::new("127.0.0.1", 9);
-        let saved = std::env::var_os("LETIBOT_COMPLETION_URL");
+        assert!(!reachable(&dead), "something answers on port 9");
 
         // Configured: the promise was made, so silence is a failure.
-        unsafe { std::env::set_var("LETIBOT_COMPLETION_URL", "http://127.0.0.1:9") };
         let configured_blew =
-            std::panic::catch_unwind(|| skip_live_test(&dead, "This test")).is_err();
+            std::panic::catch_unwind(|| skip_unreachable(&dead, "This test", true, false)).is_err();
 
         // Not configured: nobody promised anything, so silence is absent apparatus.
-        unsafe { std::env::remove_var("LETIBOT_COMPLETION_URL") };
-        let unconfigured_skipped = skip_live_test(&dead, "This test");
+        let unconfigured_skipped = skip_unreachable(&dead, "This test", false, false);
 
-        unsafe {
-            match saved {
-                Some(v) => std::env::set_var("LETIBOT_COMPLETION_URL", v),
-                None => std::env::remove_var("LETIBOT_COMPLETION_URL"),
-            }
-        }
+        // And a run that requires the model refuses the skip even then.
+        let required_blew =
+            std::panic::catch_unwind(|| skip_unreachable(&dead, "This test", false, true)).is_err();
+        assert!(required_blew, "LETIBOT_REQUIRE_MODEL must refuse the skip");
 
         assert!(
             configured_blew,

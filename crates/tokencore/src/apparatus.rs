@@ -84,15 +84,25 @@ use std::path::PathBuf;
 ///   2. the literal path, so a box with neither still gets a concrete name in the
 ///      message rather than an empty string.
 pub fn gguf_path() -> PathBuf {
+    gguf_path_from(
+        std::env::var_os("LETIBOT_VOCAB_GGUF"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`gguf_path`] with `LETIBOT_VOCAB_GGUF` and `HOME` handed in rather than read, so its test
+/// sets no variable (R67 item 17: a `set_var` in a test is seen by every other test running in
+/// the binary at that moment).
+fn gguf_path_from(over: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> PathBuf {
     const UNDER_HOME: &str =
         "models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf";
     const LITERAL: &str =
         "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf";
 
-    if let Ok(p) = std::env::var("LETIBOT_VOCAB_GGUF") {
+    if let Some(p) = over {
         return PathBuf::from(p);
     }
-    let under_home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(UNDER_HOME));
+    let under_home = home.map(|h| PathBuf::from(h).join(UNDER_HOME));
     if let Some(p) = under_home.as_ref().filter(|p| p.is_file()) {
         return p.clone();
     }
@@ -123,10 +133,16 @@ pub fn required() -> bool {
 ///   learns why nothing ran.
 /// * `here` is the caller's own probe. This function never guesses: it is told.
 pub fn present(what: &str, here: bool) -> Option<()> {
+    present_given(what, here, required())
+}
+
+/// [`present`] with [`required`]'s answer handed in rather than read — the seam its test uses,
+/// so the test never sets `LETIBOT_REQUIRE_APPARATUS` under a run that set it for real.
+fn present_given(what: &str, here: bool, required: bool) -> Option<()> {
     if here {
         return Some(());
     }
-    if required() {
+    if required {
         panic!(
             "LETIBOT_REQUIRE_APPARATUS is set, and {what} is not on this machine.\n\n\
              This run does not accept a skip. Either run it where the apparatus is, or \
@@ -166,44 +182,33 @@ pub fn present_gguf() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// **Both branches of `present`, in ONE test — and that is not tidiness.**
+    /// **Both branches of `present`** — and neither sets `LETIBOT_REQUIRE_APPARATUS`.
     ///
-    /// `LETIBOT_REQUIRE_APPARATUS` is a PROCESS-GLOBAL environment variable, and
-    /// libtest runs the tests in a binary in PARALLEL. Written as two tests, one
-    /// setting the variable and one reading it, they race: MEASURED on a full
-    /// `cargo test --workspace --no-fail-fast -- --nocapture` run, both panicked
-    /// with `LETIBOT_REQUIRE_APPARATUS is set` while neither had set it. That flakes
-    /// in CI too, because the race is between the tests and does not depend on the
-    /// ambient environment at all.
-    ///
-    /// So the two branches share one test body and one save/restore, and the
-    /// variable is only ever set inside it.
+    /// The variable is PROCESS-GLOBAL and libtest runs a binary's tests in PARALLEL. Written
+    /// first as two tests, one setting it and one reading it, they raced: MEASURED on a full
+    /// `cargo test --workspace --no-fail-fast -- --nocapture` run, both panicked with
+    /// `LETIBOT_REQUIRE_APPARATUS is set` while neither had set it. Folding them into one test
+    /// with a save/restore narrowed that to this binary, and still unset the variable for a
+    /// moment under a gate run that had set it — the window in which any other test here
+    /// would have skipped where the run demanded a failure (R67 item 17). So the switch is a
+    /// parameter of [`present_given`], and this test reads no environment at all.
     #[test]
     fn present_skips_when_absent_and_fails_when_the_run_demands_the_apparatus() {
-        let saved = std::env::var_os("LETIBOT_REQUIRE_APPARATUS");
-
-        // Present: no skip, no failure, whatever the variable says.
-        assert_eq!(present("a test fixture", true), Some(()));
+        // Present: no skip, no failure, whatever the run demands.
+        assert_eq!(present_given("a test fixture", true, false), Some(()));
+        assert_eq!(present_given("a test fixture", true, true), Some(()));
 
         // Absent, and nobody is demanding it: a skip.
-        unsafe { std::env::remove_var("LETIBOT_REQUIRE_APPARATUS") };
         assert_eq!(
-            present("a test fixture", false),
+            present_given("a test fixture", false, false),
             None,
             "an absent fixture must skip rather than fail when the run does not insist"
         );
 
         // Absent, and the run insists: a FAILURE. This is what makes the skip
         // refusable, so a box that has the apparatus can prove full coverage.
-        unsafe { std::env::set_var("LETIBOT_REQUIRE_APPARATUS", "1") };
-        let blew = std::panic::catch_unwind(|| present("a test fixture", false)).is_err();
-        unsafe { std::env::remove_var("LETIBOT_REQUIRE_APPARATUS") };
-
-        unsafe {
-            if let Some(v) = saved {
-                std::env::set_var("LETIBOT_REQUIRE_APPARATUS", v);
-            }
-        }
+        let blew =
+            std::panic::catch_unwind(|| present_given("a test fixture", false, true)).is_err();
         assert!(
             blew,
             "with LETIBOT_REQUIRE_APPARATUS set, a missing fixture must fail"
@@ -211,18 +216,24 @@ mod tests {
     }
 
     /// `gguf_path` honours the override and never returns an empty path — the
-    /// message a person reads depends on it naming something.
+    /// message a person reads depends on it naming something. The readings are handed to
+    /// [`gguf_path_from`], not set in the environment (R67 item 17).
     #[test]
     fn gguf_path_honours_the_override_and_is_never_empty() {
-        let saved = std::env::var_os("LETIBOT_VOCAB_GGUF");
-        unsafe { std::env::set_var("LETIBOT_VOCAB_GGUF", "/tmp/definitely-not-a-gguf") };
-        assert_eq!(gguf_path(), PathBuf::from("/tmp/definitely-not-a-gguf"));
-        unsafe {
-            match saved {
-                Some(v) => std::env::set_var("LETIBOT_VOCAB_GGUF", v),
-                None => std::env::remove_var("LETIBOT_VOCAB_GGUF"),
-            }
-        }
+        assert_eq!(
+            gguf_path_from(
+                Some("/tmp/definitely-not-a-gguf".into()),
+                Some("/home/x".into())
+            ),
+            PathBuf::from("/tmp/definitely-not-a-gguf")
+        );
+        // With no override, a path is still named — with a HOME or without one.
+        assert!(!gguf_path_from(None, None).as_os_str().is_empty());
+        assert!(
+            !gguf_path_from(None, Some("/nonexistent-home".into()))
+                .as_os_str()
+                .is_empty()
+        );
         assert!(!gguf_path().as_os_str().is_empty());
     }
 }

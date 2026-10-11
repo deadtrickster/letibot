@@ -82,7 +82,14 @@ pub fn firecode_bin() -> PathBuf {
 /// the call the model can act on, not a child that dies at its start with `running firecode:
 /// No such file or directory`. MEASURED 2026-10-08 on the operator's Mac.
 pub fn firecode_available() -> Result<PathBuf, String> {
-    let bin = firecode_bin();
+    firecode_available_at(firecode_bin())
+}
+
+/// [`firecode_available`] for a CLI the caller names, rather than the one `$FIRECODE_BIN`
+/// names. The seam a test uses so it never has to SET `$FIRECODE_BIN`: `set_var` in one test
+/// is read by every other test in the binary that is running at the same moment (R67 item 17),
+/// and a parameter has no such reader.
+pub fn firecode_available_at(bin: PathBuf) -> Result<PathBuf, String> {
     let runnable = |p: &std::path::Path| {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(p)

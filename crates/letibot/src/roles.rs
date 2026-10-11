@@ -175,6 +175,20 @@ pub fn launcher() -> ExitCode {
 /// password was given" on a non-zero exit, so every refusal below is 1 and every
 /// refusal says why on stderr.
 fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
+    askpass_in(
+        args,
+        &std::env::var("LETIBOT_SOCKET").unwrap_or_default(),
+        &std::env::var("LETIBOT_SESSION").unwrap_or_default(),
+        &std::env::var("LETIBOT_COMMAND").unwrap_or_default(),
+    )
+}
+
+/// [`askpass`] with the session it would ask in handed over rather than read from the
+/// environment — so its test says "outside a session" with two empty strings instead of
+/// unsetting `LETIBOT_SOCKET`/`LETIBOT_SESSION` under every other test in the binary
+/// (R67 item 17: the old test's "single-threaded" is not true of `cargo test`, and a `setenv`
+/// beside a C-side `getenv` that std's environment lock does not cover is undefined behaviour).
+fn askpass_in(args: &[std::ffi::OsString], socket: &str, session: &str, command: &str) -> ExitCode {
     use std::io::Write;
 
     use letibot_sessionlog::client::HeadClient;
@@ -184,9 +198,6 @@ fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
         .first()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "[sudo] password:".into());
-    let socket = std::env::var("LETIBOT_SOCKET").unwrap_or_default();
-    let session = std::env::var("LETIBOT_SESSION").unwrap_or_default();
-    let command = std::env::var("LETIBOT_COMMAND").unwrap_or_default();
     if socket.is_empty() || session.is_empty() {
         eprintln!(
             "letibot-askpass: not inside a letibot session (LETIBOT_SOCKET / LETIBOT_SESSION \
@@ -200,14 +211,14 @@ fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
         ..Caps::default()
     };
     let (mut client, _hello, mut reader) =
-        match HeadClient::attach(&socket, &session, u64::MAX, "askpass", "sudo", caps) {
+        match HeadClient::attach(socket, session, u64::MAX, "askpass", "sudo", caps) {
             Ok(x) => x,
             Err(e) => {
                 eprintln!("letibot-askpass: the session's daemon did not take the question: {e}");
                 return ExitCode::FAILURE;
             }
         };
-    if let Err(e) = client.askpass(&prompt, &command) {
+    if let Err(e) = client.askpass(&prompt, command) {
         eprintln!("letibot-askpass: {e}");
         return ExitCode::FAILURE;
     }
@@ -322,25 +333,15 @@ mod tests {
     /// two-minute deadline when a prompt arrived with no session behind it.
     #[test]
     fn askpass_outside_a_session_refuses_rather_than_waiting() {
-        // Both must be unset: with either set the role tries to reach a daemon.
-        let saved = (
-            std::env::var_os("LETIBOT_SOCKET"),
-            std::env::var_os("LETIBOT_SESSION"),
+        // Both empty, which is what an unset `LETIBOT_SOCKET`/`LETIBOT_SESSION` reads as:
+        // with either set the role tries to reach a daemon. Handed in, not unset — see
+        // `askpass_in`.
+        let code = askpass_in(
+            &[std::ffi::OsString::from("[sudo] password for dead: ")],
+            "",
+            "",
+            "",
         );
-        // SAFETY: single-threaded test, and both are restored below.
-        unsafe {
-            std::env::remove_var("LETIBOT_SOCKET");
-            std::env::remove_var("LETIBOT_SESSION");
-        }
-        let code = askpass(&[std::ffi::OsString::from("[sudo] password for dead: ")]);
-        unsafe {
-            if let Some(v) = saved.0 {
-                std::env::set_var("LETIBOT_SOCKET", v);
-            }
-            if let Some(v) = saved.1 {
-                std::env::set_var("LETIBOT_SESSION", v);
-            }
-        }
         assert_eq!(
             code,
             ExitCode::FAILURE,

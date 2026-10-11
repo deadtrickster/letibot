@@ -113,6 +113,19 @@ pub fn set_flag_key(key: impl Into<String>) {
 
 /// The key, and where it came from. Flag beats environment beats file.
 pub fn resolve_key(flag: Option<&str>) -> Result<(String, KeySource), String> {
+    resolve_key_from(flag, |var| std::env::var(var).ok(), providers_file())
+}
+
+/// [`resolve_key`] with the environment and the providers file handed in rather than read.
+/// **So its test sets no variable**: it used to unset `BRAVE_API_KEY` and set
+/// `XDG_CONFIG_HOME` for the rest of the binary's life, under every other test running at that
+/// moment — and a `setenv` beside a C-side `getenv` that std's environment lock does not cover
+/// (glibc's own, in DNS lookups or time zones) is undefined behaviour (R67 item 17).
+fn resolve_key_from(
+    flag: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+    file: Option<std::path::PathBuf>,
+) -> Result<(String, KeySource), String> {
     if let Some(k) = flag
         .map(str::trim)
         .filter(|k| !k.is_empty())
@@ -123,23 +136,22 @@ pub fn resolve_key(flag: Option<&str>) -> Result<(String, KeySource), String> {
         return Ok((k.trim().to_string(), KeySource::Flag));
     }
     for var in ["BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY"] {
-        if let Ok(k) = std::env::var(var)
+        if let Some(k) = env(var)
             && !k.trim().is_empty()
         {
             return Ok((k.trim().to_string(), KeySource::Env(var)));
         }
     }
-    if let Some(p) = providers_file()
-        && let Some(k) = key_from_file(&p).filter(|k| !k.trim().is_empty())
+    if let Some(p) = &file
+        && let Some(k) = key_from_file(p).filter(|k| !k.trim().is_empty())
     {
-        return Ok((k.trim().to_string(), KeySource::File(p)));
+        return Ok((k.trim().to_string(), KeySource::File(p.clone())));
     }
     Err(format!(
         "no Brave key: pass --brave-key, set $BRAVE_API_KEY, or put `key = \"…\"` under \
          `[brave]` in {}. Refusing at attach rather than at the first search, where it \
          would be a 401 that names none of these",
-        providers_file()
-            .map(|p| p.display().to_string())
+        file.map(|p| p.display().to_string())
             .unwrap_or_else(|| "~/.config/letibot/providers.toml".into())
     ))
 }
@@ -293,21 +305,24 @@ mod tests {
 
     #[test]
     fn the_key_is_refused_by_naming_all_three_places() {
-        // SAFETY: single-threaded test binary at this point.
-        unsafe {
-            std::env::remove_var("BRAVE_API_KEY");
-            std::env::remove_var("BRAVE_SEARCH_API_KEY");
-            std::env::set_var(
-                "XDG_CONFIG_HOME",
-                std::env::temp_dir().join("letibot-no-brave"),
-            );
-        }
-        let e = resolve_key(None).expect_err("no key anywhere");
+        // No variable set and a providers file that is not there — handed in, not arranged in
+        // the process environment (see `resolve_key_from`).
+        let nowhere = std::env::temp_dir()
+            .join("letibot-no-brave")
+            .join("letibot")
+            .join("providers.toml");
+        let e =
+            resolve_key_from(None, |_| None, Some(nowhere.clone())).expect_err("no key anywhere");
         assert!(e.contains("--brave-key"), "{e}");
         assert!(e.contains("BRAVE_API_KEY"), "{e}");
         assert!(e.contains("providers.toml"), "{e}");
         // The flag wins, and says so.
-        let (k, from) = resolve_key(Some("from-the-flag")).unwrap();
+        let (k, from) = resolve_key_from(
+            Some("from-the-flag"),
+            |_| Some("from-env".into()),
+            Some(nowhere),
+        )
+        .unwrap();
         assert_eq!(k, "from-the-flag");
         assert_eq!(from, KeySource::Flag);
     }
