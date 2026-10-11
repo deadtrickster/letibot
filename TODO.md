@@ -199,6 +199,19 @@ it with `memory.max=64M`, `memory.swap.max=0`; a child that joins the job and al
 with SIGKILL, `memory.events` `oom_kill 1`, `memory.peak` 64 MB, and nothing else is touched. The
 daemon must not be IN the cgroup whose children get controllers (cgroup v2's no-internal-processes
 rule) — which is why the tree today, rooted in the daemon's own cgroup, cannot carry a cap.
+**OPEN — the operator, same day:** *"then again - depends on who does what - if nothing else going
+then even 80% becomes possible. and if something else going can be changed by other sessions - so
+both sessions can ask 50% independently which means some central daemon that checks it and rejects
+the second ask? no idea yet"*. The defect named: a ceiling read from `MemAvailable` at call time
+does not see a GRANT that has not been USED yet, so two sessions (or two daemons — one per folder)
+can each be granted 50% within a second of each other. A proposal, not a decision: **the kernel is
+already the ledger** — every grant is a `memory.max` on a job cgroup under some daemon's scope, so
+what is promised box-wide is the sum over `letibot*.scope/tree/**/memory.max` (minus what those
+jobs already use, which `MemAvailable` has counted), read under one `flock` in
+`$XDG_RUNTIME_DIR/letibot/` for the check-and-grant. No central daemon; the second ask is judged
+against what is left. Nothing in the per-call cap, the default, the peak report or the operator
+card depends on this, so those can land first.
+
 (Trap met while measuring: `systemd-run` expands `$VAR` and `$$` in its arguments, so a probe
 written inline as `sh -c 'echo $$ > …'` writes `$` and fails with EINVAL/EIO. Use a script.)
 
