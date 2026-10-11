@@ -1894,6 +1894,26 @@ behind a busy worker; (4) alt-g / alt-b mark the current turn good / bad; (5) co
 sentences are kept as text by default while R71's floor is tuned; (6) not answered — built ON by
 default with a config switch to turn it off; (7) a LIVE page served from the box (`letibot stats
 serve`), not an export.
+## R80 — `/clear`: a fresh conversation for the same session — **BUILT on `clear-context` 2026-10-11 (not merged); what is left is at the end of this entry**
+
+The operator, verbatim: *"I need to be able to clear context - fresh reseat without loosing session todos and jobs"*, *"and subagents"*, *"this will allow me to fix model degradation"*. MEASURED the same day on pg-noop: 710k of a 1M window, reasoning full of `✓ ✗ ✓ ✓` glyph spam and repeated boilerplate. `/compact` does not cure that — its summary is written by the drifted model in its own voice and becomes the base every later turn imitates — and `/reseat` carries the drift across verbatim.
+
+**What landed.** `/clear [what to do next]`, a daemon slash verb (no new frame, no protocol bump — it rides `ClientFrame::Slash`, and the head completes it from `DAEMON_VERBS_KEY`):
+
+- A new `<session>#tN` transcript for the SAME session, forked through the one fork body (`Harness::fork_onto`, which `fork_to_summary` now delegates to) onto message zero as `reseat_target` composes it now (prompt, tools, seat, standing notes re-read). No history and no summary.
+- Its only item is an orientation built from STATE, spoken as `Speaker::Agent` (`harness/clear.rs`, `Harness::orientation`): one line saying the operator cleared it and naming the old transcript id (read it with `transcript`), the operator's sentence if one was given, the todo board in `todo_write`'s own words (`todo::board_text`), backgrounded/running jobs (handle, state, age, command), live subagents of this session (handle, state, the brief from the registry title), and `queue status` for the workspace's repository.
+- Everything else carries on because it was never the transcript's: board, process host and job watchers (keyed by session), the subagent runner and the children's registry parent, workspace/seat/mode/notes, queue rows. The stored context count is cleared and the R72 `WallAnchor` re-bases on the new transcript, so the first round measures.
+- A `cleared` warning (Routine; census 112/37) is the boundary row; the head resolves its fork mark on it like `reseated`.
+- A subagent's own `/clear` is answered by its serving thread (`ChildCommand::Clear`); the worker hands a `/clear` for an own-thread session back to that thread rather than opening a second harness.
+
+Tests: `crates/harnessd/tests/clear_context.rs` — todos (both authors), a background job and a mid-turn child; after the clear the transcript is `#t1` with exactly one item, the board is identical, the old transcript loads whole, the count is unmeasured and equals the new base; then the job and the child settle and both completions are delivered by the next wake into `#t1`. And a child's `/clear` forks the child (`#t1`, one item) with no `child_door_refused`.
+
+**Left.**
+1. `/clear <sentence>` quotes the sentence in the orientation and runs no turn; the operator's next prompt starts the work. Whether the sentence should itself be submitted as the operator's prompt is for the operator to rule.
+2. The authorisation trail is not reset: an operator utterance from before the clear can still authorise an act the model can no longer see. Probably it should be; not decided here.
+3. leticl has no `cleared` row code yet (its `+compaction-row-codes+`), and the head does not fold the `cleared` note the way `COMPACTION_ROWS` folds `reseated`.
+4. Not live-tested on a metered provider: the first round after a clear should replace the unmeasured anchor with the provider's count, as it does after a compaction.
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the

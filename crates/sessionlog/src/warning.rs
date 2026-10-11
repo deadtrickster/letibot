@@ -217,6 +217,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.
     ("reseated", Class::Routine),
+    // **`/clear` landed**: the operator's own act, answered — the conversation was replaced by a
+    // fresh one for the same session, and this is the boundary row where the old one ended. A
+    // report of a fork that succeeded, `reseated`'s register one verb along.
+    ("cleared", Class::Routine),
     // The evidence for a refused frame was written where somebody can read it. The
     // refusal is the failure and it is said elsewhere; this is the capture working.
     ("frame_capture_written", Class::Routine),
@@ -685,7 +689,13 @@ mod tests {
         // conversation, so they are rows in it; the operator has asked to see compactions
         // happen more than once, and moving them to the edge would answer that request
         // with silence.
-        for code in ["compacted", "auto_compact", "compact_half", "reseated"] {
+        for code in [
+            "compacted",
+            "auto_compact",
+            "compact_half",
+            "reseated",
+            "cleared",
+        ] {
             assert!(
                 !to_the_alarm(code),
                 "`{code}` changes the conversation and belongs in the record"
@@ -826,15 +836,19 @@ mod the_register_census {
         "todo_move_unresolved",
     ];
 
-    /// **The census, pinned.** 111 codes, of which **11** are the reader's own input refused.
+    /// **The census, pinned.** 112 codes, of which **11** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_36_routine_11_refused_and_64_failures() {
+    fn the_table_is_37_routine_11_refused_and_64_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **112, not 111.** One arrival, Routine: `cleared`, the boundary row `/clear` leaves
+        // where the old conversation ended (`harness/clear.rs`) — a fork that landed, in
+        // `reseated`'s register.
+        //
         // **104, not 102.** Two Failures, R67 item 15: `job_not_recorded` (a background job's
         // row the store refused, which used to be a `let _`) and `merge_queue_unreadable` (a
         // queue the pane could not read, which used to be drawn as an empty queue).
@@ -985,8 +999,8 @@ mod the_register_census {
         //   · **110, not 104**: R61's six — `queue_blocked`, `target_red`, `queue_needs_human`,
         //     `queue_settings_unreadable` and `queue_wrong_build` (Failures) and `queue_lease_lost`
         //     (Routine) — see their rows.
-        assert_eq!(TABLE.len(), 111, "the table's size");
-        assert_eq!(count(Class::Routine), 36);
+        assert_eq!(TABLE.len(), 112, "the table's size");
+        assert_eq!(count(Class::Routine), 37);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 64);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

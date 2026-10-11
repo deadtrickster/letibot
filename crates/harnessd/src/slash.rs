@@ -66,6 +66,7 @@ impl SlashReply {
 /// `crates/tui/src/app.rs`), and completes **these** from a `SettingRow` the daemon
 /// publishes. See [`crate::protocol::DAEMON_VERBS_KEY`].
 pub const VERBS: &[&str] = &[
+    "clear",
     "default-model",
     "flowy",
     "gate",
@@ -89,6 +90,15 @@ pub enum Slash {
         new_reader: bool,
     },
     FlowyLogout,
+    /// **`/clear [what to do next]` — a fresh conversation for the same session.** The
+    /// operator: *"I need to be able to clear context - fresh reseat without loosing session
+    /// todos and jobs"*. The board, jobs, subagents and settings carry on; the history does
+    /// not, not even as a summary. See `harness/clear.rs`.
+    Clear {
+        /// The rest of the line, quoted in the orientation as the operator's — `None` for a
+        /// bare `/clear`.
+        next: Option<String>,
+    },
     /// `/job` lists this session's background jobs; `/job ID` reads what one
     /// wrote. The pane counted those bytes and could not show them.
     Job {
@@ -275,6 +285,14 @@ impl Slash {
                     "/flowy {other}: the verbs are status, login [SEAT] [--addr URL] [--token T | \
                      --token-file PATH] [--new-reader], logout"
                 )),
+            },
+            Some("clear") => Slash::Clear {
+                next: line
+                    .trim_start()
+                    .strip_prefix("clear")
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string),
             },
             Some("tools") => Slash::Tools,
             // Three spellings, because all three are what somebody reaches for.

@@ -31,7 +31,8 @@ impl App {
                 if code == "auto_compact" {
                     self.mark_fork();
                 }
-                if code == "compacted" || code == "reseated" {
+                // `cleared` is the third fork's report (`/clear`), and the same resolution.
+                if code == "compacted" || code == "reseated" || code == "cleared" {
                     self.resolve_fork();
                     // **And the fold is over, so the line that walks stops walking.** The
                     // progress event is ephemeral by construction — it has no "done" — so

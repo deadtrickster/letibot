@@ -2520,6 +2520,17 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
     }
 }
 
+/// **The board as the model reads it, for a reader outside this tool** — the same text a
+/// `todo_write` answers with, so the one place a board is written as prose stays one place.
+///
+/// `/clear` is that reader (`harnessd`'s `harness/clear.rs`): a cleared conversation starts with
+/// the board as it stands, and the board it is shown must be in the words, marks and authors the
+/// model will meet in its next `todo_write` answer — a second rendering would be a second
+/// spelling of the names the model has to quote back.
+pub fn board_text(todos: &[TodoItem]) -> String {
+    render(todos)
+}
+
 /// The list, the way the model wrote it.
 fn render(todos: &[TodoItem]) -> String {
     if todos.is_empty() {

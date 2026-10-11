@@ -1050,6 +1050,36 @@ impl<'a> Sessions<'a> {
                 ok: false,
             },
             Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
+            // **A fresh conversation for this session** — the operator's *"clear context - fresh
+            // reseat without loosing session todos and jobs"*. Through the session's own harness,
+            // opened if it is not, because everything that carries on (the board, the jobs, the
+            // children) lives there; see `harness/clear.rs` for why none of it has to be copied.
+            // A child's own `/clear` never reaches here: its serving thread owns its harness and
+            // answers it there (`serve_child`).
+            Slash::Clear { next } => {
+                let h = match self.harness(session_id) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return SlashReply {
+                            lines: vec![e.to_string()],
+                            ok: false,
+                        };
+                    }
+                };
+                match h.clear_conversation(next.as_deref()) {
+                    Ok(r) => {
+                        h.publish_cleared(&r);
+                        SlashReply {
+                            lines: vec![crate::harness::clear_reply(&r)],
+                            ok: true,
+                        }
+                    }
+                    Err(e) => SlashReply {
+                        lines: vec![e.to_string()],
+                        ok: false,
+                    },
+                }
+            }
             // **The merge queue's person-verbs.** They go through the session's own harness
             // because that is the half that can announce the move on every head's log — an entry
             // moving is the pane's business, and the pane may be open in a session that is not the
@@ -3688,6 +3718,20 @@ impl<'a> Sessions<'a> {
                 Outcome::Ignored
             }
             CommandKind::Slash { line } => {
+                // **A `/clear` aimed at a session its own thread owns is that thread's** — the
+                // interrupt arm's rule and door. Both readers take from one queue, and a worker that
+                // answered it would open a SECOND harness for a subagent whose real one is parked in
+                // `serve_child`, then fork the transcript under it. The child answers its own clear
+                // (`ChildCommand::Clear`), with the harness that holds its board, jobs and children.
+                if matches!(
+                    crate::slash::Slash::parse(line),
+                    crate::slash::Slash::Clear { .. }
+                ) && let Some(hub) = &hub
+                    && hub.owner() == Owner::OwnThread
+                    && hub.give_back_to_its_own_reader(cmd.clone())
+                {
+                    return Outcome::HandedOn;
+                }
                 let line = line.clone();
                 let reply = self.slash(session_id, &line);
                 if let Some(hub) = &hub {

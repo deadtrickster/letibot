@@ -5512,6 +5512,17 @@ impl Harness {
         self.todos.snapshot()
     }
 
+    /// **This session's watcher set** — what queues a background job's or a subagent's
+    /// settlement for THIS session, whichever transcript it is speaking by then.
+    ///
+    /// A turn arms it through its own sink (`JobWatchSink`); this is for a caller that invokes
+    /// a tool outside a turn and still wants the `Backgrounded` outcome watched the same way.
+    /// The `/clear` test is that caller: it starts the job and the child through the runtime,
+    /// clears, and proves the settlements land in the new conversation.
+    pub fn job_watchers(&self) -> Option<Arc<JobWatchers>> {
+        self.job_watch.clone()
+    }
+
     /// **The board's version — the one fact that says the board moved, and from whom.**
     ///
     /// `flush_todos` watches it to decide whether an announcement is owed; a parked
@@ -9014,6 +9025,27 @@ impl Harness {
         onto_id: Option<&str>,
         tail: ForkTail<'_>,
     ) -> Result<ForkReport, HarnessError> {
+        self.fork_onto(outcome, onto, onto_id, tail, None)
+    }
+
+    /// **The fork, with the new transcript's first item handed in** — or `None` for the
+    /// note a compaction or a re-seat writes about itself.
+    ///
+    /// One body for every fork, because everything around the first item is the same
+    /// act whoever asks: the old transcript persisted and kept whole, the store row that
+    /// links the two, the fingerprint, the swap, `TranscriptForked`, the stored context
+    /// count cleared. `/clear` is the one caller with a first item of its own (an
+    /// orientation built from the session's state, spoken as the harness — see
+    /// `harness/clear.rs`), and a second copy of this function for it would be a second
+    /// place for the rules above to drift.
+    pub(crate) fn fork_onto(
+        &mut self,
+        outcome: &CompactionOutcome,
+        onto: Option<&StablePrefix>,
+        onto_id: Option<&str>,
+        tail: ForkTail<'_>,
+        lead: Option<TranscriptItem>,
+    ) -> Result<ForkReport, HarnessError> {
         let tail_items: &[TranscriptItem] = tail.items;
         let tail_split = tail.split;
         let old_id = self.transcript_id.clone();
@@ -9166,23 +9198,26 @@ impl Harness {
                  that is no longer here. Stated rather than left to be discovered."
             ),
         };
-        let note: TranscriptItem = TranscriptItem::System {
-            text: if outcome.summary.is_empty() {
-                format!(
-                    "This conversation was re-seated onto a new prompt: message zero now \
+        let note: TranscriptItem = match lead {
+            Some(item) => item,
+            None => TranscriptItem::System {
+                text: if outcome.summary.is_empty() {
+                    format!(
+                        "This conversation was re-seated onto a new prompt: message zero now \
                      announces the tools this daemon seats, and everything said before \
                      this point follows unchanged from transcript {old_id}. Nothing was \
                      summarised and nothing was dropped."
-                )
-            } else {
-                format!(
-                    "This conversation was compacted: what was said before this point is \
+                    )
+                } else {
+                    format!(
+                        "This conversation was compacted: what was said before this point is \
                      replaced by the summary below, which was written over the full history \
                      of transcript {old_id} and proposed no tool calls.{carried}{mid_exchange}{cut}\n\n{}",
-                    outcome.summary
-                )
+                        outcome.summary
+                    )
+                },
+                origin: SystemOrigin::Update,
             },
-            origin: SystemOrigin::Update,
         };
         // **The recent past is carried over verbatim, not described.**
         //
@@ -12871,6 +12906,9 @@ enum ChildCommand {
     /// [`HarnessTaskRunner`]: a parent owns its children's lifecycle, so the last thing this
     /// session does is stop what it started, and then it goes.
     Stop,
+    /// **`/clear`, answered on the thread that owns this child's harness** — a fresh
+    /// conversation for the child, with its board, jobs, children and parent kept. No turn runs.
+    Clear,
 }
 
 fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
@@ -12893,6 +12931,19 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
         // parent's words in the operator's mouth and let them authorise — which is why this is
         // a variant of its own rather than `Answer`.
         K::Message { .. } => ChildCommand::Hear,
+        // **`/clear` is the one slash verb a child answers itself.** The rest of a session's
+        // machinery is its parent's, but a clear is about THIS conversation's history — the
+        // degradation the operator clears is the child's own — and everything it keeps (the
+        // child's board, jobs and own children, its place under its parent) lives in the
+        // harness this thread owns. See `harness/clear.rs`.
+        K::Slash { line }
+            if matches!(
+                crate::slash::Slash::parse(line),
+                crate::slash::Slash::Clear { .. }
+            ) =>
+        {
+            ChildCommand::Clear
+        }
         // The rest is a session's own machinery — a compaction, a re-seat, a mode, the operator's
         // door — and a child inherits all of it from its parent rather than owning a copy.
         _ => ChildCommand::Leave("a door a child does not own"),
@@ -13324,6 +13375,35 @@ fn serve_child_with(
             ChildCommand::Stop => {
                 sub.stop_children();
                 return ChildExit::Stopped;
+            }
+            // **A clear is not a turn**, so nothing runs after it: the fork lands, the row says
+            // so, and the child waits for its next word as it was waiting before. The same two
+            // publications the daemon's arm makes for a session it holds, so a head attached to
+            // a child reads the same boundary it reads on a root.
+            ChildCommand::Clear => {
+                let next = match &kind {
+                    letibot_sessionlog::CommandKind::Slash { line } => {
+                        match crate::slash::Slash::parse(line) {
+                            crate::slash::Slash::Clear { next } => next,
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let (code, detail) = match sub.clear_conversation(next.as_deref()) {
+                    Ok(r) => {
+                        sub.publish_cleared(&r);
+                        ("slash", format!("/clear\n{}", clear_reply(&r)))
+                    }
+                    Err(e) => ("slash_refused", format!("/clear\n{e}")),
+                };
+                hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: code.into(),
+                    detail,
+                    compaction: None,
+                });
+                // No turn ran and the board did not move — `Leave`'s reading of the clock.
+                turns.rearm(sub, false);
             }
             ChildCommand::Leave(why) => {
                 eprintln!(
@@ -16839,6 +16919,9 @@ mod subagent_model_tests {
 // because it is a test of THIS module's private `HarnessTaskRunner`, and because a crate
 // whose runner is private can only be tested from inside the crate. Its own header says what
 // it closes and what it still cannot reach.
+mod clear;
+pub use clear::{ClearReport, clear_reply};
+
 #[cfg(test)]
 mod queue_e2e;
 
