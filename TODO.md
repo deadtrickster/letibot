@@ -1480,6 +1480,49 @@ the detail.
 
 ---
 
+## R75 — A model's command can drive the operator's panes and doors through the daemon's socket — **OPEN, 2026-10-11, the operator decides later**
+
+Found answering the operator's *"who owns !term process?"* / *"so it means say web head can have
+access to that?"*. The web head (`crates/harnessd/src/httphead.rs`) cannot — it is stateless,
+seated with no tools, no store and no pane frames. The hole is the daemon's unix socket:
+
+- The socket is `srw-------`, the operator's user only (`/run/user/1000/letibot/<key>.sock`).
+- The server answers `!term` attach / run / input / close, `!` lines, `/mode` and the other
+  operator doors (`crates/sessionlog/src/server.rs` ~1300) for **whoever connected** — a "head"
+  is anything that speaks the protocol; there is no identity on the connection.
+- Every model tool call in an UNCONFINED session is handed the way in: `LETIBOT_SOCKET` and
+  `LETIBOT_SESSION` are on every command's environment (`crates/harnessd/src/harness.rs` ~2435),
+  for `letibot-askpass` to put a sudo prompt in front of the head.
+
+So in `leticode` (unconfined, the launcher's default) a model's `bash` call can connect and type
+into the operator's open `!term` pane, or start its own `!term` / `!` line — which runs as the
+OPERATOR's own act and is therefore ungated: the gate judged only the outer command that opened a
+socket. Confined sessions are not exposed (`/run` is a fresh tmpfs inside the boundary).
+
+**The proposal (not decided):** the daemon reads the connecting process from the kernel
+(`SO_PEERCRED` → pid → `/proc/PID/cgroup`); a connection from inside the daemon's own tool-call
+cgroup tree (`letibot.<pid>.<n>/…`, the tree the reaper and the memory caps already use) is a
+model's command, not a head, and gets only the one narrow frame `letibot-askpass` needs (the
+secret ask) — every operator door refused by name: `!`, `!term` and pane input, `/mode`, slash
+verbs, queue verbs. No tokens, no new files; the fact is the one the reaper already trusts.
+Alternatives to weigh: a per-head credential the launcher hands the TUI and never puts on a
+command's environment; or not handing `LETIBOT_SOCKET` to commands at all and giving askpass its
+own narrow socket.
+
+**Related, from the same answer (pane ownership):** a pane is owned by the daemon's `Terminals`
+registry, keyed by session and pane number, each in its own `session.term-<session>-<N>` cgroup
+under the daemon's scope; it ends on `!term close`, its program's exit, or a CLEAN daemon stop.
+Not on the session's close or park (R68's `Sessions::close` does not touch `Terminals`), and a
+daemon killed hard leaves its panes running unowned in its scope. Panes are uncapped (the
+operator's own run). Options: close a session's panes with it; clean up a crashed predecessor's
+`term-*` cgroups at daemon start.
+
+**Done when:** a test connects to the socket from a process placed in the tool tree and is
+refused `!term` input and `!` lines while askpass's ask still works; a head connection is
+unaffected.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
