@@ -776,6 +776,64 @@ calibration set's positives and negatives are separated by the chosen floor, num
 
 ---
 
+## R72 — The wall is judged in a number nobody sees: the head says 740k, compaction says 937k, a restart says 3.45M — **OPEN, 2026-10-11, high: a restart compacted a live session from ~740k to 75k**
+
+The operator: *"leticl head shows me 740k tokens yet it just started compaction citing 900k+
+tokens"*. MEASURED in `~/logs/harnessd.log` for leticl's `s-1791151788256943467` (deepseek-flash,
+window 1,000,000; the store's `model_id` says qwen-3.8-27b, which is whose vocabulary builds the
+ledger):
+
+```
+84902  context wall: stopped after 1 round(s) at 3191928 of 3404045 tokens
+84903  compacting: 937686 of 999999 tokens resident, less than the 62499 the next turn needs
+84904  compacted: 726656 tokens resident now, was 937686.
+       … daemon restarted 11:53:16 (on the operator's restart for the queue-latency fix) …
+85822  compacting: 3454266 of 1000000 tokens resident, less than the 62500 the next turn needs
+85823  compacted: 75408 tokens resident now, was 3454266.
+```
+
+**Three counts of one context, and they disagree:**
+
+1. **The head's 740k** is the provider's own `prompt_tokens` for the last round — what deepseek
+   was actually sent. The truth, for a metered provider.
+2. **The wall's "937,686 of 999,999"** is the LEDGER (3,191,928 tokens in the session's own
+   vocabulary) divided by `ledger_scale`, the ratio `(ledger.len(), prompt_tokens)` learned at the
+   end of the last round (`harness.rs:10253`). The ratio was ~3.4 — not a tokenizer difference:
+   the ledger holds what the provider is not re-sent (reasoning is kept in the ledger and dropped
+   from the request — the comment at `harness.rs:10241`). So the ratio is a property of the
+   reasoning share of the history at one moment, and every reply after it (reasoning-heavy, as
+   deepseek's are) moves the ledger faster than the prompt: the estimate ran ~200k (27%) ahead of
+   the provider's real count, and the session was compacted at ~74% of its real window.
+3. **After the restart, "3,454,266 of 1,000,000"**: `recovered_scale` (`harness.rs:11407`) gives
+   the stored ratio back only if the stored ledger length EQUALS the rebuilt one
+   (`stored_ledger != Some(ledger_now) → None`). Anything appended after the last round's
+   `persist_context` — a notice, a nag, a tool result of a turn that did not end in a round —
+   breaks the equality, the scale is refused, the window goes UNSCALED (`planning_window` returns
+   the raw 1M), and the raw ledger of 3.45M is compared against it. The session was compacted on
+   its first idle pass from what the provider would have counted at ~740k down to 75k. The
+   comment above it (`harness.rs:~4190`) chose this on purpose — *"it compacts early, which is
+   the direction nobody loses a session to"* — but early by 4.6× is losing the session's working
+   context on every restart of a long reasoning-heavy session.
+
+**What it should be:** judge the wall in the provider's units, from the provider's measurement.
+For a metered session the resident size is `last prompt_tokens` + the provider-sized estimate of
+only what was appended SINCE that round and will be sent (non-reasoning items, through the
+tokenizer-only ratio, which is ~1 and stable), not `ledger.len() / ratio`. The same number is the
+one the head shows and the one the compaction line prints — one count, said once. On resume, the
+stored `context_tokens` plus the delta since `context_ledger` (the rows appended after it, sized
+the same way) — not an equality test that turns any later append into the unscaled window.
+
+**Also:** the wall line at 84902 says `3191928 of 3404045` (ledger units) and the next line says
+`937686 of 999999` (provider units) for the same check — two units, adjacent lines, no label.
+Every printed count names its unit.
+
+**Done when:** a replay of this session's last rounds gives the wall the head's number; a
+restart of a session whose last append was a notice recovers its provider-sized resident count
+and does not compact it; a test pins the ledger-heavy-in-reasoning case (ratio 3.4) and the wall
+fires at the window's real edge, not 27% before it.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
