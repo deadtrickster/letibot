@@ -123,25 +123,30 @@ fn a_click_on_the_decision_ladder_and_the_quit_card_selects_that_row() {
     assert_eq!(a.quit_sel, 1);
 }
 
-/// **The ladder's rows are the rows the card drew** — the one layout the head still repeats
-/// rather than reads (rano's `DecisionCard` publishes no row map). At a width that wraps every
-/// rung, each span's first row is the one carrying that option's id.
+/// **A click on a wrapped rung's later row selects that rung.** The rows are rano's
+/// (`DecisionCard::choice_rows`); what is this head's is placing them under the card's content
+/// and the chrome above it. Long labels at a narrow width put each option's id on a row after
+/// its first, which is the row a miscounted offset would give to the wrong rung.
 #[test]
-fn the_decision_ladder_rows_are_the_rows_the_card_drew() {
-    let a = tall_card(false);
-    let d = a.open[0].clone();
-    for w in [30usize, 60, 120] {
-        let (_, pinned) = a.decision_card(&d, w);
-        let spans = a.decision_ladder_spans(&d, w);
-        assert_eq!(spans.len(), d.options.len());
-        for (o, span) in d.options.iter().zip(&spans) {
-            let first: String = pinned[span.start..span.end].join(" ");
-            assert!(
-                first.contains(&o.option_id) || o.option_id.len() + 6 > w,
-                "w={w}: {:?} is not in rows {span:?}: {pinned:#?}",
-                o.option_id
-            );
-        }
+fn a_click_on_a_wrapped_rung_selects_that_rung() {
+    let mut a = tall_card(false);
+    for o in &mut a.open[0].options {
+        o.label = "a label long enough to wrap the rung onto a second row".into();
+    }
+    let ids: Vec<String> = a.open[0]
+        .options
+        .iter()
+        .map(|o| o.option_id.clone())
+        .collect();
+    for (k, id) in ids.iter().enumerate().rev() {
+        let frame = a.screen(50, 30);
+        let y = row_of(&frame, &format!("({id})"));
+        assert!(
+            !frame[usize::from(y)].contains("a label"),
+            "{id:?} is on its rung's first row, so this tests no wrap: {frame:#?}"
+        );
+        a.key(Key::Click { x: 12, y });
+        assert_eq!(a.sel, k, "the click on {id:?} selected rung {}", a.sel);
     }
 }
 

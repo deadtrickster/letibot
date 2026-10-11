@@ -592,7 +592,7 @@ traced; each was re-checked where marked ✓.
    mode for `slash_out`, `sub_out`, the diff popup or the payload window**: with `sub_out` open
    over the subagents pane the bar still says "enter (or o) opens a subagent", while Enter
    re-peeks and `o` falls through to switching session.
-   **DONE except one string** (`50ec059`): help fixed (popup, wheel, click, ctrl-g/q/o, `/queue` `/jobs` `/todos` `/subagents`); hint-bar branches for `slash_out`, `sub_out`, the payload window (diff popup in `ccde44b`). **NOT DONE: "ctrl-n notes"** is rano's own `HintMode::Conversation` sentence (external crate, tag v0.8.1) — needs a rano change.
+   **DONE except one string** (`50ec059`): help fixed (popup, wheel, click, ctrl-g/q/o, `/queue` `/jobs` `/todos` `/subagents`); hint-bar branches for `slash_out`, `sub_out`, the payload window (diff popup in `ccde44b`). ~~**NOT DONE: "ctrl-n notes"**~~ **DONE**: the head generates the conversation's half (`ctrl-n clears notes`), and rano 0.8.2 corrected its own sentence.
 
 **Daemon (crates/harnessd, crates/tools):**
 
@@ -934,18 +934,14 @@ tui: 691 unit + 23 integration, all passing.
 - **`!term` mouse mode.** The pane still gets NO mouse reports (R67 item 6's strip); forwarding
   them, translated to the pane, when the program asked for `?1000`/`?1002`/`?1006` needs the vt
   screen to record the program's mouse modes. Not started.
-- **rano is still the source of the cards' and the editor's bar sentences** (`QuitCard`,
-  `Detached`, `Deciding`, `Pick`, `Editor`, `EditorBehind`), and this head now composes the bar
-  itself for every surface and the conversation because rano's `HintBar` always appends its own
-  tail. What rano would need: a host-supplied tail (`HintMode::Custom(&str)` or `HintBar { tail:
-  Option<String> }`), so the head can generate without re-implementing `HintBar::line`'s
-  centring; and its now-unused stale sentences (`Conversation`'s `ctrl-n notes`, `Todos`'s
-  `enter or tab unfolds`, `Subagents`, `Jobs`, `Queue`, `QueueEntry`, `JobOutput`, `Config`,
-  `SessionPicker`, `Reading`) dropped or corrected.
-- **One layout the head repeats instead of reading**: rano's `DecisionCard` publishes no row map,
-  so `App::decision_ladder_spans` re-wraps the ladder (`the_decision_ladder_rows_are_the_rows_the_
-  card_drew` holds it to rano's output). rano would need `DecisionCard::choice_rows` (as
-  `QuitCard` has) — and `ConfigPane::stop_rows`, which `App::config_stop_rows` likewise mirrors.
+- ~~What rano would need~~ **DONE — rano 0.8.2 adopted** (`rano-0.8.2`): the bar's tail is
+  host-supplied (`HintBar::line_with_tail`, and `hint_bar::centred` for the diff popup), so
+  `ui/hint_bar.rs` no longer copies the centring; `DecisionCard::choice_rows` and
+  `ConfigPane::stop_rows` replace `App::decision_ladder_spans` and the mirrored
+  `App::config_stop_rows`, and the two tests that held the mirrors to rano's output are gone;
+  rano's stale sentences ("ctrl-n notes", Todos' "enter or tab unfolds") are corrected there.
+  rano is still the source of the cards' and the editor's bar sentences (`QuitCard`, `Detached`,
+  `Deciding`, `Pick`, `Editor`, `EditorBehind`), by design.
 - **The modal cards** (`allow-all` confirmation, new-todo card, password, `!term close` ask,
   prompt, key ask) still own every key by being first in `App::key`; they are not on the stack
   and have no tables. They are one-field cards that take the whole keyboard, so the defect class

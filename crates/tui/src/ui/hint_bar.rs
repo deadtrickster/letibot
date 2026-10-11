@@ -7,15 +7,16 @@
 //! rano's stays rano's**: the cards and the editor pane (`HintMode::QuitCard`, `Detached`,
 //! `Deciding`, `Pick`, `Editor`, `EditorBehind`), whose sentences are rano's, pinned by tag.
 //!
-//! It is generated rather than handed to rano because rano's `HintBar` appends its own tail to
-//! whatever this head gives it, and several of those tails were wrong about this head: the
-//! conversation's said `ctrl-n notes` (ctrl-n retires every note), the todos pane's said `enter
-//! or tab unfolds` (Enter reads the row), and a subagent's output, a slash listing, the
-//! standing pane and the ctrl-v window had no sentence at all (R67 item 9).
+//! It is generated rather than left to rano's own conversation tail because only this head
+//! knows its dispatch tables: a subagent's output, a slash listing, the standing pane and the
+//! ctrl-v window have no rano sentence at all (R67 item 9), and the conversation's chords are
+//! this head's. rano lays the bar out either way — `HintBar::line_with_tail` takes the tail
+//! from here, and `hint_bar::centred` draws the diff popup's, whose first half is not the
+//! composer's — so the centring is rano's and is not repeated here (rano 0.8.2).
 
 use crate::app::*;
-use rano::agent::hint_bar::{HintBar, HintMode};
-use rano::render::{Line, Span};
+use rano::agent::hint_bar::{HintBar, HintMode, centred};
+use rano::render::Line;
 use rano::style::Role;
 
 /// **One of the conversation's chords, as the bar names it** — read from the table its dispatch
@@ -88,13 +89,17 @@ impl App {
             // yields them); the popup's own keys lead.
             let own = "the diff: pgup/pgdn scroll · esc closes it";
             return crate::ui::render::row(
-                &centred(Line::styled(own, Role::Faint), HintMode::Deciding.tail(), w),
+                &centred(
+                    Some(&Line::styled(own, Role::Faint)),
+                    HintMode::Deciding.tail(),
+                    w,
+                ),
                 p,
             );
         } else if drawn == Drawn::DiffPopup {
             return crate::ui::render::row(
                 &centred(
-                    editor,
+                    Some(&editor),
                     "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor · esc closes it",
                     w,
                 ),
@@ -126,28 +131,13 @@ impl App {
             }
             None => self.conversation_hint(),
         };
-        crate::ui::render::row(&centred(editor, &tail, w), p)
+        crate::ui::render::row(
+            &HintBar {
+                editor,
+                mode: HintMode::Conversation,
+            }
+            .line_with_tail(&tail, w),
+            p,
+        )
     }
-}
-
-/// **The bar's line**: the composer's half, then this head's, centred and cut to `w` — rano's
-/// `HintBar::line` with the tail this head's own. Centred (the operator, 2026-10-04: *"please
-/// center the keymap bottom line"*); a bar wider than the screen keeps its head, which is the
-/// half naming the first keys.
-fn centred(editor: Line, tail: &str, w: usize) -> Line {
-    let mut line = Line::default();
-    if editor.width() > 0 {
-        line.spans.extend(editor.spans.iter().map(|s| Span {
-            content: s.content.clone(),
-            style: editor.style.patch(&s.style),
-        }));
-        line.push(Span::role(format!(" · {tail}"), Role::Faint));
-    } else {
-        line.push(Span::role(tail.to_string(), Role::Faint));
-    }
-    let pad = w.saturating_sub(line.width()) / 2;
-    if pad > 0 {
-        line.spans.insert(0, Span::raw(" ".repeat(pad)));
-    }
-    rano::render::text::truncate_owned(line, w)
 }

@@ -468,7 +468,8 @@ impl App {
             let stops: Vec<(usize, usize)> = match target {
                 Target::Decision => match self.open.first().cloned() {
                     Some(d) => self
-                        .decision_ladder_spans(&d, w)
+                        .decision_view(&d)
+                        .choice_rows(w)
                         .into_iter()
                         .enumerate()
                         .flat_map(|(k, span)| span.map(move |r| (top + card_rows_len + r, k)))

@@ -203,41 +203,4 @@ impl App {
             });
         }
     }
-
-    /// **The decision ladder's rows**, relative to the first row of the card's answer half —
-    /// each option's span of wrapped lines, laid out exactly as rano's `DecisionCard::split`
-    /// lays them out (`"  ▸ label  (id)"`, wrapped to `w`, the marked row first among equals).
-    ///
-    /// **This is the one place the head repeats a layout instead of reading it**, and it is
-    /// said here rather than hidden: rano's `QuitCard` publishes `choice_rows` and its
-    /// `SessionPicker` and setting card publish `stop_rows`, but `DecisionCard` publishes
-    /// nothing, and it is pinned by tag. `the_decision_ladder_rows_are_the_rows_the_card_drew`
-    /// holds the two together until rano grows the accessor.
-    pub(crate) fn decision_ladder_spans(
-        &self,
-        d: &letibot_sessionlog::view::OpenDecision,
-        w: usize,
-    ) -> Vec<std::ops::Range<usize>> {
-        use rano::agent::text::{clean_line, wrap};
-        let rows: Vec<String> = if d.kind == "question" {
-            d.choices.iter().map(|c| clean_line(c)).collect()
-        } else {
-            d.options
-                .iter()
-                .map(|o| format!("{}  ({})", clean_line(&o.label), clean_line(&o.option_id)))
-                .collect()
-        };
-        let sel = self.sel.min(rows.len().saturating_sub(1));
-        let mut at = 0;
-        rows.iter()
-            .enumerate()
-            .map(|(i, body)| {
-                let mark = if i == sel { "▸" } else { " " };
-                let n = wrap(&format!("  {mark} {body}"), w).len().max(1);
-                let span = at..at + n;
-                at += n;
-                span
-            })
-            .collect()
-    }
 }

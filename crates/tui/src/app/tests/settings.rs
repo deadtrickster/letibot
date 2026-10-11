@@ -964,23 +964,6 @@ fn a_long_config(n: usize) -> App {
     a
 }
 
-/// **`config_sel_line` is the line rano marks**, for every row — the layout is mirrored, and
-/// this is what keeps the mirror honest.
-#[test]
-fn the_config_cursor_line_is_the_line_rano_marks() {
-    let mut a = a_long_config(20);
-    for sel in 0..a.config_rows().len() {
-        a.config_sel = sel;
-        let lines = a.config_lines(100);
-        let at = a.config_sel_line();
-        assert!(
-            lines[at].trim_start().starts_with('▸'),
-            "row {sel}: line {at} is {:?}",
-            lines[at]
-        );
-    }
-}
-
 /// **Down keeps the cursor on the screen, all the way round, and comes back to the top.**
 /// The operator, 2026-10-08: *"if i keep pressing down the selector eventually goes out of
 /// view and doesnt wrap … until i reenter config pane"*.

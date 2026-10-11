@@ -7,7 +7,14 @@ use rano::agent::config::{ConfigPane, ConfigRow};
 
 impl App {
     pub(crate) fn config_lines(&self, w: usize) -> Vec<String> {
-        let pane = ConfigPane {
+        row_strings(&self.config_pane().lines(w), self.cfg.palette())
+    }
+
+    /// **The pane as rano draws it** — the rows this head assembles, the cursor, and the
+    /// session's sentence while it has nothing to list. The lines and the click map's stop
+    /// rows are both read from this one value.
+    pub(crate) fn config_pane(&self) -> ConfigPane {
+        ConfigPane {
             rows: self
                 .config_rows()
                 .into_iter()
@@ -28,7 +35,6 @@ impl App {
                 }
                 .to_string()
             }),
-        };
-        row_strings(&pane.lines(w), self.cfg.palette())
+        }
     }
 }
