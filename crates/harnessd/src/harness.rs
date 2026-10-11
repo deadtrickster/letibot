@@ -2690,6 +2690,24 @@ impl Harness {
         // reason, and all three must see one runner: a second one would hand out handles
         // its sibling cannot collect or stop.
         let subagent_runner = task_runner.clone();
+        // **The merge queue, from the model's side** (R76 item 2) — registered before the session
+        // tools so the real desk is the one seated (`with_session_tools` seats a desk-less one
+        // only where none is). Bound to THIS session, so every move it makes is recorded as
+        // `agent:<session>`; a daemon with no store gets the tool that says so.
+        let queue_desk: Arc<dyn letibot_tools::builtins::queue::QueueDesk> = match &cfg.store {
+            Some(path) => Arc::new(crate::mergequeue::desk::SessionQueue {
+                store_path: path.clone(),
+                session: cfg.session_id.clone(),
+                workspace: cfg.workspace.clone(),
+                registry: session_registry.clone(),
+            }),
+            None => Arc::new(letibot_tools::builtins::queue::NoQueue),
+        };
+        registry
+            .register(Box::new(letibot_tools::builtins::queue::QueueTool::new(
+                queue_desk,
+            )))
+            .map_err(|e| HarnessError::Setup(format!("registering the queue tool: {e}")))?;
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -7648,30 +7666,7 @@ impl Harness {
         named: Option<&str>,
         target: Option<&str>,
     ) -> Result<(String, String), String> {
-        let repo = match named {
-            Some(p) => crate::mergequeue::git::repo_of_worktree(std::path::Path::new(p))
-                .ok_or_else(|| format!("{p} is not a git repository"))?,
-            None => crate::mergequeue::repo_of_workspace(&self.cfg.workspace)
-                .and_then(|r| crate::mergequeue::repo_of_worktree(&r))
-                .ok_or_else(|| {
-                    format!(
-                        "this session's workspace {} names no one git repository; name it: \
-                         `/queue regate /path/to/repo [TARGET]`",
-                        self.cfg.workspace.display()
-                    )
-                })?,
-        };
-        let target = match target {
-            Some(t) => t.to_string(),
-            None => {
-                let settings =
-                    crate::mergequeue::settings::for_repository(&repo).unwrap_or_default();
-                crate::mergequeue::settings::target_for(&repo, &settings).ok_or_else(|| {
-                    format!("{} has no target branch to gate; name one", repo.display())
-                })?
-            }
-        };
-        Ok((repo.display().to_string(), target))
+        crate::mergequeue::desk::resolve(&self.cfg.workspace, named, target)
     }
 
     /// `/queue regate [/REPO] [TARGET]` and the `queue` tool's `regate` — the target's tip gated

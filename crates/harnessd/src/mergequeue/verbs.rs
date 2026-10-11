@@ -157,7 +157,19 @@ pub fn restart(
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
-    let who = by(session);
+    restart_by(store, id, &by(session), events)
+}
+
+/// [`restart`], with the mover named whole — `agent:<session>` for the `queue` tool (R76 item 2),
+/// so the history says a model did it and not the operator.
+pub fn restart_by(
+    store: &Store,
+    id: &str,
+    who: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let who = who.to_string();
+    let actor = who.split(':').next().unwrap_or("operator").to_string();
     match find(store, id)? {
         Found::Review(r) => {
             if !matches!(
@@ -169,7 +181,7 @@ pub fn restart(
             ) {
                 return Err(format!("`{}` is `{}`, not parked", r.id, r.state.as_str()));
             }
-            let why = format!("restarted by the operator (was `{}`)", r.state.as_str());
+            let why = format!("restarted by the {actor} (was `{}`)", r.state.as_str());
             let ok = store
                 .move_review(
                     &r.id,
@@ -203,7 +215,7 @@ pub fn restart(
             ) {
                 return Err(format!("`{}` is `{}`, not parked", m.id, m.state.as_str()));
             }
-            let why = format!("restarted by the operator (was `{}`)", m.state.as_str());
+            let why = format!("restarted by the {actor} (was `{}`)", m.state.as_str());
             let ok = store
                 .move_merge(
                     &m.id,
@@ -340,7 +352,25 @@ pub fn remove(
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
-    let who = by(session);
+    withdraw_by(
+        store,
+        id,
+        &by(session),
+        "withdrawn by the operator; the branch and its worktree stay",
+        events,
+    )
+}
+
+/// **Take a row out, in the mover's own words** — [`remove`]'s body, and the `queue` tool's
+/// `withdraw` (R76 item 2), where `who` is `agent:<session>` and `why` the model's reason.
+pub fn withdraw_by(
+    store: &Store,
+    id: &str,
+    who: &str,
+    why: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let who = who.to_string();
     match find(store, id)? {
         Found::Review(r) => {
             if !matches!(
@@ -353,7 +383,7 @@ pub fn remove(
             ) {
                 return Err(format!("`{}` is `{}`", r.id, r.state.as_str()));
             }
-            let why = "withdrawn by the operator; the branch and its worktree stay".to_string();
+            let why = why.to_string();
             let ok = store
                 .move_review(
                     &r.id,
@@ -369,7 +399,7 @@ pub fn remove(
             announce(events, "review", &r.id, "withdrawn", &why);
             Ok(format!("`{}` withdrawn from the review queue", r.branch))
         }
-        Found::Merge(m) => withdraw_merge(store, &m, "withdrawn by the operator", &who, events),
+        Found::Merge(m) => withdraw_merge(store, &m, why, &who, events),
     }
 }
 

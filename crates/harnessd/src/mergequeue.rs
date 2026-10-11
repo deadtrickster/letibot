@@ -21,6 +21,8 @@
 //! * **[`review`]** — the reviewers, which run on the review queue's SESSION as `task` children,
 //!   their verdicts bound to the head they judged (decision 6), and the enqueue.
 //! * **[`verbs`]** — the operator's `/queue` verbs, approve-over among them (decision 5).
+//! * **[`desk`]** — the `queue` tool's daemon half: what a session's model can do about its
+//!   project's queues, and the target it may only propose (R76 item 2).
 //! * **[`notices`]** — what a project's model is told when its target is red, unjudged or timed
 //!   out, or a row is parked for a person (R76 item 1).
 //! * **[`setup`]** — a gate that could not judge (its own setup failed after the build and the
@@ -37,6 +39,7 @@ use std::thread::JoinHandle;
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{MergeRow, ReviewRow, Store, StoreError};
 
+pub mod desk;
 pub mod gate;
 pub mod git;
 pub mod lease;

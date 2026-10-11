@@ -229,6 +229,14 @@ pub fn with_session_tools(
     // files suggest. Read-only: the agent writes the `AGENTS.md` section with `edit`, which is
     // where the operator's approval is. See `builtins::merge_gate`.
     reg.register(Box::new(builtins::merge_gate::MergeGate))?;
+    // **The merge queue, from the model's side** (R76 item 2). The daemon registers the real one
+    // first, bound to its session and store; anywhere else the seat that names it still resolves,
+    // and the tool says there is no queue behind it rather than being absent.
+    if reg.get(builtins::queue::TOOL).is_none() {
+        reg.register(Box::new(builtins::queue::QueueTool::new(
+            std::sync::Arc::new(builtins::queue::NoQueue),
+        )))?;
+    }
     Ok(reg)
 }
 

@@ -1078,6 +1078,11 @@ pub mod roles {
                 // its files suggest — read-only; the agent writes the AGENTS.md section the
                 // operator chose. The operator: *"let main project agent manage it"*.
                 "merge_gate",
+                // `queue`: the merge queue itself — read it, re-gate the target, restart or
+                // withdraw a row, propose the target (R76 item 2). The operator, on a red `main`
+                // the project's agent never heard of: *"it should be able to get out of it
+                // itself obviously"*.
+                "queue",
                 // **`ask_user_question`: the seat can ask the person, not only tell them.**
                 //
                 // The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask
@@ -1127,7 +1132,10 @@ pub mod roles {
         // prose and reads silence as assent — which is the defect `ask.rs` exists against.
         // The room is this list (27) plus the root session's `flowy` door, so the declared
         // ceiling moves with it, here, where somebody deciding can read it.
-        r.max_tools = 28;
+        // **Twenty-nine since `queue`** (R76 item 2), which takes its own seat for the reason
+        // `merge_gate` did: the project's agent is the one told its target is red, and a seat
+        // that can be told and cannot act sends the operator to type `/queue` for it.
+        r.max_tools = 29;
         r
     }
 
@@ -2706,8 +2714,9 @@ mod tests {
             seat.tools
         );
         // It took its own seat rather than trading for one: nothing left the list when
-        // it arrived, which is the property `max_tools` is declared for.
-        assert_eq!(seat.tools.len(), 27, "{:?}", seat.tools);
+        // it arrived, which is the property `max_tools` is declared for. Twenty-eight since
+        // `queue` (R76 item 2), which took its own seat the same way.
+        assert_eq!(seat.tools.len(), 28, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",
