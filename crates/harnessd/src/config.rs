@@ -558,6 +558,10 @@ pub struct Config {
     /// applied to the child's config at the spawn — and [`Config::vm_copy_source`] is the single
     /// spelling of the decision, read by `Harness::open` when it boots the VM.
     pub vm_source: Option<PathBuf>,
+    /// **The acceptance check this session's VM runs when it is brought down** —
+    /// [`letibot_tools::builtins::task::TaskSpec::vm_verify`], applied at the spawn. Not inherited:
+    /// it is set from each spawn's own spec, so a child's gate is never its parent's by accident.
+    pub vm_verify: Option<String>,
     /// **Whether the review queue's reviewers may be placed in a firecode VM** — the one child
     /// whose placement is decided FOR it rather than by the call that spawns it
     /// (`Harness::serve_reviews`, and see `crate::sessions::gatekeeper::reviewer_placement` for the
@@ -1596,6 +1600,7 @@ impl Config {
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             vm_source: None,
+            vm_verify: None,
             // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**
             // `for_this_box` is what every test in this tree builds from, and the daemon — the one
             // caller that is a live operator's box — arms it in `for_the_daemon`. See the field.
