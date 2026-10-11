@@ -1053,3 +1053,82 @@ fn a_click_on_a_key_hint_is_that_key() {
         "{screen}"
     );
 }
+
+/// **The pointer: hover marks what a click would do, a still press is a click, and a drag
+/// selects and copies** — the operator, 2026-10-11: *"simple mouse selection doesnt work in
+/// letibot - only with shift"*, and *"i want clickable things to be somehow hinted"*.
+#[test]
+fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
+    let ws = workspace("pointer");
+    let mut a = edited(&ws);
+    let mut features = rano::term::Features::default();
+    features.clipboard = true;
+    a.set_features(features);
+    let screen = a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+
+    // A press and a release with no motion between them: the edit row's click, the popup.
+    a.key(Key::Press { x: 10, y: y as u16 });
+    a.key(Key::Release { x: 10, y: y as u16 });
+    assert!(
+        a.diff_popup.is_some(),
+        "a still press-and-release was not a click"
+    );
+
+    // Hover over the popup's `esc closes`: underlined, and the hand asked for.
+    let screen2 = a.screen(100, 40);
+    let (hy, row) = screen2
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("esc closes"))
+        .expect("the popup's footer");
+    let hx = crate::app::keyhints::cells(row)
+        .windows(3)
+        .position(|w| w.iter().collect::<String>() == "esc")
+        .unwrap();
+    a.key(Key::Hover {
+        x: hx as u16,
+        y: hy as u16,
+    });
+    let marked = a.screen(100, 40);
+    assert!(
+        marked[hy].contains("\x1b[4m"),
+        "not underlined: {:?}",
+        marked[hy]
+    );
+    assert_eq!(a.take_pointer(), Some(true), "the hand was not asked for");
+    a.key(Key::Hover { x: 0, y: 0 });
+    assert_eq!(a.take_pointer(), Some(false));
+    a.key(Key::Esc);
+
+    // A drag across the question's row selects it; the release copies it, gutter off.
+    let screen = a.screen(100, 40);
+    let qy = screen
+        .iter()
+        .position(|l| l.contains("please fix line eleven"))
+        .expect("the question");
+    let qx = crate::app::keyhints::cells(&screen[qy])
+        .windows(6)
+        .position(|w| w.iter().collect::<String>() == "please")
+        .unwrap();
+    a.key(Key::Press {
+        x: qx as u16,
+        y: qy as u16,
+    });
+    a.key(Key::Drag {
+        x: (qx + 10) as u16,
+        y: qy as u16,
+    });
+    let during = a.screen(100, 40);
+    assert!(
+        during[qy].contains("\x1b[7m"),
+        "the selection is not drawn: {:?}",
+        during[qy]
+    );
+    a.key(Key::Release {
+        x: (qx + 10) as u16,
+        y: qy as u16,
+    });
+    assert_eq!(a.take_clipboard().as_deref(), Some("please fix"));
+    assert!(a.diff_popup.is_none(), "a drag was taken for a click");
+}

@@ -1025,6 +1025,14 @@ pub struct App {
     pub(crate) hint_rows: Vec<keyhints::HintRow>,
     /// **Keys a click typed**, for the head's next read to take before the terminal's.
     pub(crate) injected: Vec<u8>,
+    /// **What the pointer is over, if a click there would act** — underlined on the frame.
+    pub(crate) hovered: Option<pointer::Hovered>,
+    /// The left button's run since its press.
+    pub(crate) drag: pointer::Drag,
+    /// **The cells a drag selected**, press to pointer — drawn reversed, copied on release.
+    pub(crate) selection: Option<((u16, u16), (u16, u16))>,
+    /// The pointer shape the terminal should switch to, when it changed (the hand or not).
+    pub(crate) pointer_hand: Option<bool>,
     /// **The scroll of the surface on top of the stack** — the one every pane draws through
     /// (`pane_window`) and every key moves. A covered surface keeps its own in its stack entry.
     pub(crate) pane_scroll: usize,
@@ -1691,6 +1699,10 @@ impl App {
             hits: Vec::new(),
             hint_rows: Vec::new(),
             injected: Vec::new(),
+            hovered: None,
+            drag: Default::default(),
+            selection: None,
+            pointer_hand: None,
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
@@ -1941,6 +1953,7 @@ mod keys;
 mod notes;
 mod panes;
 mod pick;
+mod pointer;
 mod prefs;
 mod scroll;
 mod session;

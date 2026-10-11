@@ -46,6 +46,9 @@ impl App {
                 }
             }
         }
+        // **The pointer's marks, last**: the hover underline and the selection. See
+        // `app::pointer`.
+        self.paint_pointer(&mut out);
         if self.hold {
             // **The marker takes the hint bar's row.** It is one row that always exists, so the
             // freeze costs no height and reflows nothing — and it is the row that already talks

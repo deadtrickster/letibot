@@ -47,6 +47,13 @@ pub(crate) struct HintRow {
     pub(crate) hints: Vec<KeyHint>,
 }
 
+impl HintRow {
+    /// The frame row this entry was read from.
+    pub(crate) fn text(&self) -> &str {
+        &self.row
+    }
+}
+
 /// **A row's cells, as text**: escape sequences (CSI, OSC) dropped, one entry per column — a wide
 /// character takes two, the second a placeholder — so a column in the vector is a column on the
 /// glass.

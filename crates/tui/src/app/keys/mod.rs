@@ -70,6 +70,27 @@ impl App {
                 }
                 return None;
             }
+            // **The pointer's own reports** — hover, and the press, drag and release a selection
+            // is made of — before anything a keystroke does: moving the mouse must not dismiss
+            // a notice. A release with no drag is a click, and goes on as one. See `app::pointer`.
+            Key::Hover { x, y } => {
+                self.hover_at(x, y);
+                return None;
+            }
+            Key::Press { x, y } => {
+                self.press_at(x, y);
+                return None;
+            }
+            Key::Drag { x, y } => {
+                self.drag_to(x, y);
+                return None;
+            }
+            Key::Release { .. } => {
+                return match self.release() {
+                    Some(click) => self.key(click),
+                    None => None,
+                };
+            }
             _ => {}
         }
         // **The session's prompts, before a recall starts** — see `refresh_prompt_history`.
@@ -1220,6 +1241,27 @@ pub enum Key {
         x: u16,
         y: u16,
     },
+    /// **The left button went down** — not yet a click: with no motion before the release it
+    /// becomes one ([`Key::Click`]), and with motion it is a selection. See `app::pointer`.
+    Press {
+        x: u16,
+        y: u16,
+    },
+    /// Motion with the left button held.
+    Drag {
+        x: u16,
+        y: u16,
+    },
+    /// The left button came up.
+    Release {
+        x: u16,
+        y: u16,
+    },
+    /// Motion with no button held: what the pointer is over.
+    Hover {
+        x: u16,
+        y: u16,
+    },
 }
 
 impl Key {
@@ -1272,6 +1314,10 @@ impl Key {
             | Key::Wheel { .. }
             | Key::Tab
             | Key::Click { .. }
+            | Key::Press { .. }
+            | Key::Drag { .. }
+            | Key::Release { .. }
+            | Key::Hover { .. }
             | Key::FocusIn
             | Key::FocusOut
             | Key::Background { .. } => {
