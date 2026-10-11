@@ -889,15 +889,22 @@ fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
     // **The one thing a running job DOES add is the offer of `wait_on`** — a sentence appended to
     // the advice, naming a handle this session holds — and it is taken off before comparing: the
     // claim here is about the PLAN's reading, which the offer leaves alone.
+    // The offer runs from its first sentence ("It reads like …", or "If this row is only
+    // waiting …") to the end of the advice line, "Also running: …" included — the line it rides
+    // so the head's fold still folds it.
     let plan_of = |msg: Option<String>| {
-        msg.map(|m| match m.split_once(" If this row is only waiting") {
-            Some((before, after)) => {
-                let (_, rest) = after
-                    .split_once("until it ends.")
-                    .expect("the offer ends its sentence");
-                format!("{before}{rest}")
+        msg.map(|m| {
+            let start = [" It reads like", " If this row is only waiting"]
+                .iter()
+                .filter_map(|s| m.find(s))
+                .min();
+            match start {
+                Some(at) => {
+                    let end = m[at..].find('\n').map_or(m.len(), |n| at + n);
+                    format!("{}{}", &m[..at], &m[end..])
+                }
+                None => m,
             }
-            None => m,
         })
     };
     assert_eq!(
