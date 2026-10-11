@@ -137,3 +137,20 @@ fn a_setting_card_over_a_pane_takes_esc_first() {
         "and only the card"
     );
 }
+
+/// **rano under the diff popup is not drawn, so it has neither the keys nor the mouse** —
+/// `editor_drawn` asked about a `!term` pane only, so `route` would have handed rano the keys of
+/// a screen showing the popup.
+#[test]
+fn the_editor_under_the_diff_popup_takes_no_keys() {
+    let mut a = app();
+    a.open_editor();
+    assert!(a.editor_focused(), "the premise: rano has the keyboard");
+    a.open_diff_popup(&FileRef::file("notes.txt"));
+    assert!(!a.editor_drawn(), "the popup is in front of rano");
+    let (keys, rano_took) = a.route(vec![rano::term::Event::Key(rano::term::KeyEvent::plain(
+        rano::term::KeyCode::Char('x'),
+    ))]);
+    assert!(!rano_took, "rano was handed a key under the popup");
+    assert_eq!(keys, vec![Key::Char('x')]);
+}

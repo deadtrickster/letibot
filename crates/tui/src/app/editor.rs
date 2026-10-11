@@ -193,10 +193,12 @@ impl EditorPane {
 }
 
 impl App {
-    /// **Is the editor pane on the screen** — open, and not covered by a `!term` pane, which
-    /// takes the rectangle and the keyboard first.
+    /// **Is the editor pane on the screen** — open, and not covered by a `!term` pane or the diff
+    /// popup, which `main_area` draws over it. `drawn()`'s answer (R69): this used to ask about
+    /// the `!term` pane only, so with the popup up over rano, `route` would have handed rano the
+    /// keys and the mouse of a screen showing the popup (the review's finding 15).
     pub fn editor_drawn(&self) -> bool {
-        self.edit_pane.as_ref().is_some_and(|p| !p.hidden) && !self.pane_open()
+        self.drawn() == Drawn::Editor
     }
 
     /// **Does the editor pane have the keyboard.**
