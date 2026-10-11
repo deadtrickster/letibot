@@ -1059,6 +1059,10 @@ PROBE=""
 #
 # Field layout, from `/proc/locks`: `4: FLOCK ADVISORY WRITE <pid> <maj:min:inode> 0 EOF`.
 folder_lock_pid() { # prints the pid holding this folder's claim, or fails
+  # Linux only, and failing is the macOS answer rather than an error: there is no
+  # `/proc/locks` and no GNU `stat -c`, so this returns 1 and `daemon_pid` falls back to
+  # the record, exactly as on a Linux box whose `/proc/locks` it cannot read.
+  [ "$HOST_OS" = Darwin ] && return 1
   local lock ino
   lock="${SOCKET%.sock}.lock"
   [ -f "$lock" ] || return 1

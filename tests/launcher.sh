@@ -201,7 +201,7 @@ while True: time.sleep(0.2)
 STUB
   chmod +x "$T/bin/harnessd"
 
-  key="$(printf '%s' "$T/ws" | sha256sum | cut -c1-12)"
+  key="$(printf '%s' "$T/ws" | key12)"
   mkdir -p "$T/run/letibot"
   sock="$T/run/letibot/$key.sock"
   # **A daemon of THIS folder, on its way out**: its argv names our socket, which is how the
