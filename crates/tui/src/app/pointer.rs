@@ -14,8 +14,9 @@
 //!   the far machine's clipboard. A press and a release with no motion
 //!   between them are a click, delivered as the same [`Key::Click`] every click has always been.
 //! * **Motion with no button held** is hover: whatever a click there would act on — a key hint,
-//!   an edit card, a count label, a pane's or a card's row — is underlined, and the terminal is
-//!   asked for the hand pointer (OSC 22) while it is.
+//!   an edit card, a count label, a pane's or a card's row — is drawn a tad brighter, and the
+//!   terminal is asked for the hand pointer (OSC 22) while it is. Not underlined: the operator,
+//!   2026-10-12, *"underline - dont like it"*, *"make text a tad brighter"*.
 //!
 //! Both are drawn onto the finished frame ([`App::paint_pointer`]), after everything else, so no
 //! renderer knows about either.
@@ -117,6 +118,55 @@ pub(crate) fn restyle(row: &str, x0: usize, x1: usize, on: &str, off: &str) -> S
     }
     if inside {
         out.push_str(off);
+    }
+    out
+}
+
+/// **Cells `x0..x1` of a frame row, a tad brighter** — normal intensity and bold, so a faint
+/// hint and an ordinary row both lift, re-applied after every style change inside the run. Where
+/// the run ends, the row's own style is put back exactly — a reset and every style change the
+/// row made before that point, replayed — so nothing after the mark is brightened by it.
+pub(crate) fn brighten(row: &str, x0: usize, x1: usize) -> String {
+    const ON: &str = "\x1b[22;1m";
+    let mut out = String::with_capacity(row.len() + 24);
+    let mut seen = String::new();
+    let mut col = 0usize;
+    let mut inside = false;
+    let close = |out: &mut String, seen: &str| {
+        out.push_str("\x1b[0m");
+        out.push_str(seen);
+    };
+    for p in pieces(row) {
+        match p {
+            Piece::Escape(e) => {
+                out.push_str(e);
+                if e.starts_with("\x1b[") && e.ends_with('m') {
+                    if e == "\x1b[0m" || e == "\x1b[m" {
+                        seen.clear();
+                    } else {
+                        seen.push_str(e);
+                    }
+                    if inside {
+                        out.push_str(ON);
+                    }
+                }
+            }
+            Piece::Cell(c, w) => {
+                if inside && col >= x1 {
+                    close(&mut out, &seen);
+                    inside = false;
+                }
+                if !inside && col >= x0 && col < x1 {
+                    out.push_str(ON);
+                    inside = true;
+                }
+                out.push(c);
+                col += w;
+            }
+        }
+    }
+    if inside {
+        close(&mut out, &seen);
     }
     out
 }
@@ -229,16 +279,36 @@ impl App {
             from: Some((x, y)),
             to: None,
         };
-        self.selection = None;
+        self.drop_selection();
     }
 
     /// Motion with the left button held: the selection runs from the press to here.
+    ///
+    /// **And the view is held from its first motion** — ctrl-p's hold, by itself: the operator,
+    /// 2026-10-12, *"can we auto trigger ctrl-p once selection starts?"*. A turn streaming in
+    /// under a selection moves the text it was made over; held, the frame stays put while the
+    /// events keep folding. Not when the operator already held it: that hold is theirs, and ends
+    /// when they say so.
     pub(crate) fn drag_to(&mut self, x: u16, y: u16) {
         if self.drag.from.is_some() {
+            if self.selection.is_none() && !self.hold {
+                let _ = self.toggle_hold();
+                self.selection_held = true;
+            }
             self.drag.to = Some((x, y));
             self.selection = self.drag.from.map(|f| (f, (x, y)));
             self.hovered = None;
         }
+    }
+
+    /// **The selection goes, and the hold it took with it** — Esc, or a press elsewhere. A hold
+    /// the operator took with ctrl-p is theirs and stays.
+    pub(crate) fn drop_selection(&mut self) -> bool {
+        let had = self.selection.take().is_some();
+        if std::mem::take(&mut self.selection_held) && self.hold {
+            let _ = self.toggle_hold();
+        }
+        had
     }
 
     /// **The left button came up**: the end of a selection, which is copied — or, with no motion
@@ -319,7 +389,14 @@ impl App {
         }
         let n = text.chars().count();
         self.clipboard_out = Some(text);
-        self.say(&format!("copied {n} character(s)"));
+        self.say(&format!(
+            "copied {n} character(s){}",
+            if self.selection_held {
+                " — esc lets the view follow again"
+            } else {
+                ""
+            }
+        ));
     }
 
     /// **The pointer shape the terminal should show**, when it changed: the hand over something
@@ -352,7 +429,7 @@ impl App {
         {
             let cols = h.cols.or_else(|| text_span(&keyhints::cells(row)));
             if let Some((a, b)) = cols {
-                *row = restyle(row, a, b, "\x1b[4m", "\x1b[24m");
+                *row = brighten(row, a, b);
             }
         }
     }
@@ -361,6 +438,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_brightened_run_puts_the_rows_own_style_back_where_it_ends() {
+        // A faint hint: brightened through its own reset, and the separator after it faint again.
+        let row = "\x1b[2mesc closes\x1b[0m\x1b[2m · tab\x1b[0m";
+        let b = brighten(row, 0, 10);
+        assert!(b.starts_with("\x1b[2m\x1b[22;1mesc closes"), "{b:?}");
+        let sep = b.find(" · tab").expect("the separator");
+        assert!(
+            b[..sep].ends_with("\x1b[0m\x1b[2m"),
+            "the separator after the mark is not drawn in the row's own style: {b:?}"
+        );
+        // A run that ends mid-span restores the span's style.
+        let b = brighten("\x1b[38;5;8mabcdef", 1, 3);
+        assert!(b.contains("bc\x1b[0m\x1b[38;5;8md"), "{b:?}");
+    }
 
     #[test]
     fn a_restyle_marks_exactly_its_cells_through_the_rows_own_resets() {

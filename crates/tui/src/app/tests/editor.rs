@@ -1075,7 +1075,7 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
         "a still press-and-release was not a click"
     );
 
-    // Hover over the popup's `esc closes`: underlined, and the hand asked for.
+    // Hover over the popup's `esc closes`: a tad brighter, and the hand asked for.
     let screen2 = a.screen(100, 40);
     let (hy, row) = screen2
         .iter()
@@ -1092,8 +1092,8 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     });
     let marked = a.screen(100, 40);
     assert!(
-        marked[hy].contains("\x1b[4m"),
-        "not underlined: {:?}",
+        marked[hy].contains("\x1b[22;1m") && !marked[hy].contains("\x1b[4m"),
+        "not brightened (or underlined): {:?}",
         marked[hy]
     );
     assert_eq!(a.take_pointer(), Some(true), "the hand was not asked for");
@@ -1229,5 +1229,61 @@ fn a_selected_code_block_copies_without_its_frame() {
     assert!(
         !copied.contains('│') && !copied.contains("┌") && !copied.contains("└"),
         "{copied:?}"
+    );
+}
+
+/// **A drag holds the view, and Esc drops the selection and lets it follow** — the operator,
+/// 2026-10-12: *"can we auto trigger ctrl-p once selection starts?"* and *"cancel selection on
+/// esc"*. A hold the operator took with ctrl-p is theirs: dropping a selection leaves it.
+#[test]
+fn a_drag_holds_the_view_and_esc_lets_it_follow() {
+    let ws = workspace("dragheld");
+    let mut a = edited(&ws);
+    let screen = a.screen(100, 40);
+    let qy = screen
+        .iter()
+        .position(|l| l.contains("please fix line eleven"))
+        .expect("the question");
+    a.key(Key::Press { x: 4, y: qy as u16 });
+    a.key(Key::Drag { x: 8, y: qy as u16 });
+    assert!(a.hold, "a drag did not hold the view");
+    // Still drawn as it moves, on the held frame.
+    let one = a.screen(100, 40);
+    a.key(Key::Drag {
+        x: 14,
+        y: qy as u16,
+    });
+    let two = a.screen(100, 40);
+    assert!(
+        two[qy].contains("\x1b[7m"),
+        "the held frame lost the selection"
+    );
+    assert_ne!(
+        one[qy], two[qy],
+        "the selection did not follow the drag on a held view"
+    );
+    a.key(Key::Release {
+        x: 14,
+        y: qy as u16,
+    });
+    assert!(a.hold, "the copy let go of the hold");
+    // Esc: the selection goes, the view follows, and nothing else took the key.
+    a.key(Key::Esc);
+    assert!(
+        a.selection.is_none() && !a.hold,
+        "esc left the selection or the hold"
+    );
+
+    // The operator's own hold is theirs.
+    let _ = a.toggle_hold();
+    assert!(a.hold);
+    a.key(Key::Press { x: 4, y: qy as u16 });
+    a.key(Key::Drag { x: 9, y: qy as u16 });
+    a.key(Key::Release { x: 9, y: qy as u16 });
+    a.key(Key::Esc);
+    assert!(a.selection.is_none(), "esc left the selection");
+    assert!(
+        a.hold,
+        "dropping a selection released the operator's own ctrl-p hold"
     );
 }

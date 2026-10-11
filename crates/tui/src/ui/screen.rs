@@ -30,7 +30,11 @@ impl App {
             && self.hold_size == (term_w, h)
             && let Some(frame) = &self.hold_frame
         {
-            return frame.clone();
+            // The held frame, with the pointer's marks on it — a selection made on a held view
+            // (and a drag holds the view, `app::pointer`) changes only the rows it marks.
+            let mut out = frame.clone();
+            self.paint_pointer(&mut out);
+            return out;
         }
         let mut out = self.compose_screen(term_w, h);
         // **Every key hint on this frame is a button**, read back off the frame itself — see
@@ -46,9 +50,6 @@ impl App {
                 }
             }
         }
-        // **The pointer's marks, last**: the hover underline and the selection. See
-        // `app::pointer`.
-        self.paint_pointer(&mut out);
         if self.hold {
             // **The marker takes the hint bar's row.** It is one row that always exists, so the
             // freeze costs no height and reflows nothing — and it is the row that already talks
@@ -70,6 +71,10 @@ impl App {
             self.hold_size = (term_w, h);
             self.hold_frame = Some(out.clone());
         }
+        // **The pointer's marks, last** — the hover and the selection — and after the held frame
+        // is kept, so what is kept is the frame itself and the marks are painted on every serve.
+        // See `app::pointer`.
+        self.paint_pointer(&mut out);
         out
     }
 
