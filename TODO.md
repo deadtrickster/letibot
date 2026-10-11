@@ -1781,7 +1781,7 @@ earlier, Up → the previous prompt in the composer.
 
 ---
 
-## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **OPEN, 2026-10-11 — design decided, building**
+## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **BUILT on `r79-batched-delivery` 2026-10-11 (not merged); what was built and what is left are at the end of this entry**
 
 The operator: *"can job and agent results come mid turn? i think you guys are getting distracted
 when this happens"*. Read in the code:
@@ -1822,6 +1822,71 @@ to this design:
    the plan's structure does not capture; the tool result says which applies.
 5. **Measured** (see the metrics item): every delivery recorded with when it arrived, when it was
    delivered, by which rule, and what the model did next.
+
+**Status, branch `r79-batched-delivery` (2026-10-11):**
+
+- **The decision is one pure function** — `crate::delivery::decide` over `Facts` (kind, failed,
+  emergency, an open row's `when: job`, an open row's `needs` job/child, and what the session
+  said it wants: `WantedNow::Awaited` — a `job_wait`/`task_result` on a watched handle, or a
+  foreground call promoted to the background — or `WantedNow::WakeNow`). Order: emergency,
+  monitor, failure of a dependency (`when`/`needs`/awaited), `when_job`, `needed`, `awaited`,
+  `wake_now`, else **held**. A failure nothing depends on is held. `facts_of` matches a row's
+  handle by job id or slug, a child by its handle, open rows (pending/in progress) only.
+- **Held results live on the session's `JobWatchers`** (`hold`/`take_held`), are re-decided at
+  every boundary (`delivery::sort` — a row added or a `job_wait` since promotes a held one), and
+  are handed up with the queue when a child stops.
+- **Delivered as ONE `[meanwhile]` note at the next turn the model takes anyway**: before the
+  operator's prompt (a harness row, so the operator's words stay last), with a parent's message,
+  inside a plan-check nag, a continuation after the wall, or a wake that has something immediate.
+  `Harness::wake` with only held results answers `Ok(None)` — **no wake turn, root or child**.
+  **If nothing ever starts a turn**, they wait: the plan-check carries them for a session with a
+  plan; a session with no plan and no prompt keeps them held (the head's jobs pane already shows
+  every settlement — `JobSettled`/the subagent row are published as before).
+- **Immediate** goes in at the next round boundary of a running turn — **for a root too now**
+  (before, a root heard nothing mid-turn and everything as a wake turn after) — or as a wake turn
+  between turns. Monitors unchanged (both doors), now recorded. The operator's messages are the
+  hub's commands, drained first, untouched. Emergencies are still `queue_emergency_notices` in the
+  wake (unchanged, and they start a turn).
+- **Starvation cap**: `Config::held_results_cap`, default `delivery::HELD_RESULTS_CAP` (10 min),
+  measured from the longest-held result's ARRIVAL (a turn's age would degrade to per-completion
+  delivery ten minutes into any long turn); past it the batch comes in at the next round boundary.
+- **`wake: "now" | "later"`** on `bash` (background) and `task`, default `later`, refused by name
+  if neither; the result ends with which rule applies (`bash::wake_sentence`). `job_wait` /
+  `task_result` on a watched handle now also mark it wanted (`ToolRuntime::with_completion_wanted`,
+  `InvokeCtx::want_completion`), and their "nothing to wait for" sentence says it comes the
+  moment it ends.
+- **The record**: `<workspace>/.letibot/delivery-log.jsonl` (`delivery::DeliveryLog`, the
+  notes-offers shape; no store table, so no schema bump to collide with the metrics work): one line
+  per delivered job/child/monitor — `session, handle, kind, arrived_at_ms, delivered_at_ms,
+  waited_ms, rule (immediate:<why> | batch | starvation), batch`.
+- **The head**: `[meanwhile] ` is a notice tag; the heading folds to `Meanwhile: N results arrived
+  while you were busy`, and the `[job]` groups under it keep the compact two-line rows (fixture
+  `crates/tui/src/app/tests/fixtures/job_notice_meanwhile.txt`, pinned by harnessd's
+  `the_meanwhile_notice_is_the_heads_fixture`, bless with `LETIBOT_BLESS_JOB_NOTICE=1`). No
+  protocol change (44).
+- Tests (each seen failing against a mutation that restores the old behaviour — everything
+  immediate, everything held, no cap, no record, no head fold): `delivery::tests::*` (the table,
+  the board facts, a monitor's record), `harness::tests::delivery::*` (held-then-one-batch in a
+  child's long turn, `when: job` immediate to a root mid-turn, a needed job's failure, `wake: now`
+  and a later wait, the starvation cap with a 300 ms window, the fixture), `tests/delivery.rs`
+  (canned server: a root's wake answers `Ok(None)` for a routine completion and the next prompt
+  carries it before the operator's words; a `needs` completion still wakes a root and the held
+  batch rides along), `bash::tests::wake_is_now_or_later_and_the_result_says_which`, and
+  `a_watched_subagent_is_not_waited_on` now asserts the want.
+
+**Left:**
+
+- **"What the model did next"** (point 5) is not recorded — the record has arrival, delivery,
+  rule and batch size; joining it to the next tool call is the metrics design's.
+- **The before/after measurement** on a session like pg-noop (wake turns caused by routine
+  completions per day) — needs this deployed; the record is what it reads.
+- **A parent that ends its turn "waiting" for a child without saying so** (no `needs` row, no
+  `task_result`, `wake: later`) is not told until its next turn — that is the decision as given;
+  watch the record for `batch` rows of `kind: child` with long `waited_ms`.
+- `task_start` has no `wake` argument (only `task` does); `held_results_cap` is a `Config` field
+  with no providers.toml/CLI knob yet.
+- Emergencies are not in the record (they are not completions) and still reach only a turn
+  boundary, as R76 built them.
 
 ---
 
