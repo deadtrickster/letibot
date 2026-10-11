@@ -680,7 +680,7 @@ per door, one assertion list).
 
 ---
 
-## R69 — The head: one surface stack, hit-testing against what was drawn, per-surface key tables — **OPEN, structural, after R67**
+## R69 — The head: one surface stack, hit-testing against what was drawn, per-surface key tables — **LANDED on `r69-surfaces` 2026-10-11 (not merged) except the items under "Still open" below**
 
 The head reviewer's summary of why clicks "sometimes work": mouse and keys share one entry
 (`key_of`, `app/keys/input.rs:126`) and then go down a hand-ordered list of ~25 `key_*` handlers
@@ -729,6 +729,73 @@ The class, as found:
 a click on every clickable surface against the layout it was drawn with; the driver's mouse
 enable/disable and stdin→`Key` loop (`tui/src/driver.rs`, 4 tests, none about input);
 `ui/screen.rs`, `ui/panes/queue.rs`, `ui/transcript/window.rs` hit maps.
+
+**Landed** (branch `r69-surfaces`, five commits on `aec8cee`):
+
+- `41c94ec` **One surface stack** (`app/surface.rs`). The nine pane `bool`s are gone; the panes and
+  the overlays they open (a todo row, a queue entry, a subagent's and a job's output, a slash
+  listing) are `Surface`s on one stack. `App::drawn()` is the single answer `main_area` draws,
+  `App::key` routes (`key_surface`: only the focused surface is asked; Esc/ctrl-c pop;
+  `Surface::owns_enter` replaces the hand list, queue included) and the hint bar describes. A
+  covered surface keeps its scroll in its stack entry. Chords, verbs and count labels go through
+  `open_surface`/`toggle_surface`; a chord for a covered pane brings it forward. The chrome's
+  cards (decision, quit, setting card) take keys before the surface; the setting card owns its
+  Esc; the ctrl-v window answers only while the conversation is drawn. Tests
+  (`app/tests/surfaces.rs`): `with_two_panes_open_the_keys_reach_the_one_drawn`,
+  `a_pane_under_the_editor_does_not_swallow_the_composers_enter`,
+  `the_queue_pane_owns_enter_even_when_it_is_empty` (all three fail on `aec8cee`), plus the
+  pop/scroll/bring-forward rules.
+- `859b708` **Hit-testing against what was drawn** (`app/hits.rs`, `app/keys/mouse.rs`). Each
+  frame records `(Rect, Target, rows→stops)` with scroll applied — the surface (every pane with a
+  row map; config's computed from rano's layout), the queue strip, the conversation's edit rows,
+  the chrome's card (decision ladder, quit choices, setting values) and the count labels.
+  `key_click` is the one router: topmost rect, that row's stop, that target; a click on nothing
+  falls through; a target a key earlier in the same read took off the screen drops the click.
+  The decoder now yields `Key::Wheel { up, x, y }` and `wheel_at` scrolls the target under the
+  pointer. Subagents, jobs, standing, config, the decision card and the quit card are clickable.
+  The mixed-coordinates case is closed by construction: a click is answered from the last
+  frame's record alone, never combined with the live scroll. Tests (`app/tests/hits.rs`, five
+  fail on `aec8cee`).
+- `f53c1e2` **Per-surface key tables** (`app/keys/bindings.rs`). `Binding = (keys, guard, act,
+  says)`; `key_surface` dispatches through `Surface::bindings`; page keys and the unpositioned
+  wheel reach the same tables from the chords; the pane chords are `Surface::chord`, read by the
+  dispatch and the bar. The hint bar for a surface and for the bare conversation, and `/help`'s
+  pane rows, are generated from the tables (`surface_hint`, `conversation_hint`,
+  `surface_help`). R67 item 9's open string is closed on our side: the bar says `ctrl-n clears
+  notes`. Tests (`app/tests/bindings.rs`): every plain letter carries the empty-composer guard;
+  a word typed over any surface reaches the composer; every binding's words are on the bar and in
+  the help; the bar's chords open their panes.
+- `383a630` **The driver's input loop, with real bytes** (`tests/input_loop.rs`): two chords in
+  one read; a click report and Enter in one read answering the row clicked; a `!term` pane
+  handed a read's keystrokes and none of its mouse reports.
+- `b18732e` `editor_drawn()` is `drawn()`'s answer, so rano under the diff popup takes no keys
+  (finding 15; the test fails on `aec8cee`).
+
+tui: 691 unit + 23 integration, all passing.
+
+**Still open:**
+
+- **`!term` mouse mode.** The pane still gets NO mouse reports (R67 item 6's strip); forwarding
+  them, translated to the pane, when the program asked for `?1000`/`?1002`/`?1006` needs the vt
+  screen to record the program's mouse modes. Not started.
+- **rano is still the source of the cards' and the editor's bar sentences** (`QuitCard`,
+  `Detached`, `Deciding`, `Pick`, `Editor`, `EditorBehind`), and this head now composes the bar
+  itself for every surface and the conversation because rano's `HintBar` always appends its own
+  tail. What rano would need: a host-supplied tail (`HintMode::Custom(&str)` or `HintBar { tail:
+  Option<String> }`), so the head can generate without re-implementing `HintBar::line`'s
+  centring; and its now-unused stale sentences (`Conversation`'s `ctrl-n notes`, `Todos`'s
+  `enter or tab unfolds`, `Subagents`, `Jobs`, `Queue`, `QueueEntry`, `JobOutput`, `Config`,
+  `SessionPicker`, `Reading`) dropped or corrected.
+- **One layout the head repeats instead of reading**: rano's `DecisionCard` publishes no row map,
+  so `App::decision_ladder_spans` re-wraps the ladder (`the_decision_ladder_rows_are_the_rows_the_
+  card_drew` holds it to rano's output). rano would need `DecisionCard::choice_rows` (as
+  `QuitCard` has) — and `ConfigPane::stop_rows`, which `App::config_stop_rows` likewise mirrors.
+- **The modal cards** (`allow-all` confirmation, new-todo card, password, `!term close` ask,
+  prompt, key ask) still own every key by being first in `App::key`; they are not on the stack
+  and have no tables. They are one-field cards that take the whole keyboard, so the defect class
+  does not reach them, but they are a second mechanism.
+- The R61 queue rework will change the queue pane's verbs; its table (`QUEUE` in
+  `keys/bindings.rs`) is where they are declared now.
 
 ---
 
