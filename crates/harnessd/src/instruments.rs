@@ -172,7 +172,11 @@ impl TurnMeter {
             return;
         }
         let inline = r.payload.len() as u64;
-        let full = r.spill.as_ref().map(|s| s.full_bytes as u64).unwrap_or(inline);
+        let full = r
+            .spill
+            .as_ref()
+            .map(|s| s.full_bytes as u64)
+            .unwrap_or(inline);
         Event::new(kind::TOOL_CALL)
             .session(session)
             .turn(self.turn_id(), Some(self.rounds.saturating_sub(1)))
@@ -193,7 +197,13 @@ impl TurnMeter {
     /// **A plan check was delivered as this turn** — `Harness::nag_turn`. `row` is the row it
     /// named and `status` that row's status as the check saw it; [`TurnMeter::end`] says whether
     /// the turn the check opened moved it.
-    pub fn nag(&mut self, session: &str, row: Option<&str>, status: Option<String>, operator_row: bool) {
+    pub fn nag(
+        &mut self,
+        session: &str,
+        row: Option<&str>,
+        status: Option<String>,
+        operator_row: bool,
+    ) {
         if let Some(r) = row {
             self.nag = Some(PendingNag {
                 row: r.to_string(),
@@ -243,7 +253,11 @@ impl TurnMeter {
                 .session(session)
                 .turn(&turn, None)
                 .name("plan-check")
-                .outcome(if now != n.status { "touched" } else { "untouched" })
+                .outcome(if now != n.status {
+                    "touched"
+                } else {
+                    "untouched"
+                })
                 .attr("row", n.row)
                 .attr_opt("status_before", n.status)
                 .attr_opt("status_after", now)
@@ -357,11 +371,7 @@ pub fn turn_ends(
     } else {
         Vec::new()
     };
-    let board = |row: &str| {
-        rows.iter()
-            .find(|(c, _)| c == row)
-            .map(|(_, s)| s.clone())
-    };
+    let board = |row: &str| rows.iter().find(|(c, _)| c == row).map(|(_, s)| s.clone());
     h.meter.end(&session, &transcript, out, board);
 }
 
@@ -370,13 +380,34 @@ fn outcome_word(o: &letibot_transcript::ToolOutcome) -> String {
     // file is the word on the wire and no list here can fall behind the enum.
     serde_json::to_value(o)
         .ok()
-        .and_then(|v| v.get("outcome").and_then(|k| k.as_str()).map(str::to_string))
+        .and_then(|v| {
+            v.get("outcome")
+                .and_then(|k| k.as_str())
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| "other".into())
 }
 
 /// **One command's wait on the worker, and its run** (c12d044) — `Daemon::run`, around
 /// `sessions.dispatch`. n1 is from the head's submit to the dequeue; `dur` the dispatch. The queue
 /// depth the design names (n2) is not read in phase 1: no count of a hub's queue is to hand here.
+/// **A moment on both clocks** — the wall clock a row is stamped with, and the monotonic one a
+/// duration is measured on.
+#[derive(Debug, Clone, Copy)]
+pub struct Clock {
+    pub ms: u64,
+    pub at: Instant,
+}
+
+impl Clock {
+    pub fn now() -> Clock {
+        Clock {
+            ms: letibot_metrics::now_ms(),
+            at: Instant::now(),
+        }
+    }
+}
+
 pub fn outcome_of(o: &crate::sessions::Outcome) -> &'static str {
     use crate::sessions::Outcome;
     match o {
@@ -389,10 +420,17 @@ pub fn outcome_of(o: &crate::sessions::Outcome) -> &'static str {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn worker_cmd(session: &str, cmd: &QueuedCommand, started_ms: u64, started: Instant, outcome: &str) {
+pub fn worker_cmd(
+    session: &str,
+    cmd: &QueuedCommand,
+    at: Clock,
+    outcome: &crate::sessions::Outcome,
+) {
     if !letibot_metrics::enabled() {
         return;
     }
+    let (started_ms, started) = (at.ms, at.at);
+    let outcome = outcome_of(outcome);
     Event::new(kind::WORKER_CMD)
         .at(started_ms)
         .session(session)
@@ -452,6 +490,11 @@ pub fn wake(meter: &mut TurnMeter, session: &str, causes: &[(&str, usize)], ran:
 /// **A result reaching the model** (R79) — the one call in `DeliveryLog::record`, R79's single
 /// record site, so every rule and door it has reaches this file. Mid-turn when the session's
 /// current turn has already run a round: a delivery at a turn's start is not an interruption.
+pub fn delivered_all(session: &str, rows: &[crate::delivery::Delivered<'_>]) {
+    rows.iter().for_each(|d| delivered(session, d));
+}
+
+/// One of [`delivered_all`]'s rows.
 pub fn delivered(session: &str, d: &crate::delivery::Delivered<'_>) {
     if !letibot_metrics::enabled() {
         return;
@@ -470,7 +513,10 @@ pub fn delivered(session: &str, d: &crate::delivery::Delivered<'_>) {
     };
     Event::new(kind::DELIVERY)
         .session(session)
-        .turn(turn.as_deref().unwrap_or(""), (rounds > 0).then(|| rounds - 1))
+        .turn(
+            turn.as_deref().unwrap_or(""),
+            (rounds > 0).then(|| rounds - 1),
+        )
         .dur(waited)
         .name(d.kind.word())
         .outcome(how)
@@ -491,8 +537,7 @@ pub fn compaction(
     door: &str,
     outcome: &str,
     started: Instant,
-    before: u64,
-    after: u64,
+    (before, after): (u64, u64),
     ledger: (u64, u64),
     unit: &str,
 ) {
@@ -523,8 +568,7 @@ pub fn operator_compaction(h: &crate::harness::Harness, before: u64, started: In
         "operator",
         if ok { "ok" } else { "failed" },
         started,
-        c.shown_tokens(before),
-        c.shown_tokens(after),
+        (c.shown_tokens(before), c.shown_tokens(after)),
         (before, after),
         &h.token_unit(),
     );
@@ -582,15 +626,26 @@ pub fn context_claim(session: &str, f: &crate::context_claim::Finding) {
         .n1(f.fill.map(|x| x.resident).unwrap_or(0))
         .n2(f.fill.map(|x| x.window).unwrap_or(0))
         .n3((f.claim.score * 1000.0).round().max(0.0) as u64)
-        .attr("snippet", f.claim.sentence.chars().take(200).collect::<String>())
+        .attr(
+            "snippet",
+            f.claim.sentence.chars().take(200).collect::<String>(),
+        )
         .emit();
 }
 
 /// **The daemon's memory** (R66) — memwatch, every fifth tick and at every census step.
-pub fn mem_sample(rss: u64, live: usize, peak: usize, threads: usize, sessions: usize, heads: usize) {
+pub fn mem_sample(
+    rss: u64,
+    live: usize,
+    peak: usize,
+    threads: usize,
+    census: &[(letibot_sessionlog::hub::HubCensus, usize)],
+) {
     if !letibot_metrics::enabled() {
         return;
     }
+    let sessions = census.len();
+    let heads: usize = census.iter().map(|(c, _)| c.heads).sum();
     const MIB: u64 = 1 << 20;
     Event::new(kind::MEM_SAMPLE)
         .n1(rss / MIB)
@@ -630,7 +685,11 @@ mod tests {
             kind: CommandKind::Prompt { text: "hi".into() },
         };
         let ((), got) = letibot_metrics::capture(|| {
-            worker_cmd("s-1", &cmd, 30_000, Instant::now(), "ok");
+            let at = Clock {
+                ms: 30_000,
+                at: Instant::now(),
+            };
+            worker_cmd("s-1", &cmd, at, &crate::sessions::Outcome::Ignored);
         });
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, kind::WORKER_CMD);
@@ -678,7 +737,12 @@ mod tests {
         let mut meter = TurnMeter::default();
         let ((), got) = letibot_metrics::capture(|| {
             meter.begin("s-w", "wake", 5, Some((10, 100)));
-            wake(&mut meter, "s-w", &[("queue", 0), ("monitor", 0), ("result", 2), ("due", 1)], true);
+            wake(
+                &mut meter,
+                "s-w",
+                &[("queue", 0), ("monitor", 0), ("result", 2), ("due", 1)],
+                true,
+            );
             meter.end("s-w", "tr", Some(&Ok(reply())), |_| None);
         });
         let w = got.iter().find(|e| e.kind == kind::WAKE).unwrap();
@@ -695,11 +759,19 @@ mod tests {
     /// **R77: did the turn a check opened touch the row it named?**
     #[test]
     fn a_nag_follow_up_says_whether_the_named_row_moved() {
-        for (after, want) in [(Some("completed"), "touched"), (Some("pending"), "untouched")] {
+        for (after, want) in [
+            (Some("completed"), "touched"),
+            (Some("pending"), "untouched"),
+        ] {
             let mut meter = TurnMeter::default();
             let ((), got) = letibot_metrics::capture(|| {
                 meter.begin("s-n", "nag", 0, None);
-                meter.nag("s-n", Some("finish the migration"), Some("pending".into()), true);
+                meter.nag(
+                    "s-n",
+                    Some("finish the migration"),
+                    Some("pending".into()),
+                    true,
+                );
                 meter.end("s-n", "tr", Some(&Ok(reply())), |row| {
                     assert_eq!(row, "finish the migration");
                     after.map(str::to_string)

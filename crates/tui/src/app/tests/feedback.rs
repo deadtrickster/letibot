@@ -29,7 +29,11 @@ fn the_three_verbs_send_their_polarity_and_the_note_with_its_tags() {
     let mut a = attached();
     assert_eq!(
         mark(a.command("fb- #distracted got pulled off by j975")),
-        ("bad".into(), "#distracted got pulled off by j975".into(), None)
+        (
+            "bad".into(),
+            "#distracted got pulled off by j975".into(),
+            None
+        )
     );
     assert_eq!(mark(a.command("fb+")), ("good".into(), String::new(), None));
     assert_eq!(

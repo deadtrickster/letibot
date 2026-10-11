@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
-pub use rusqlite::{self, Connection};
 use rusqlite::params;
+pub use rusqlite::{self, Connection};
 
 use crate::{CHANNEL, Emitter, Event, Msg, kind, now_ms};
 
@@ -297,8 +297,8 @@ impl Writer {
                     .filter(|(k, _)| keep_snippet || *k != "snippet")
                     .map(|(k, v)| (k.to_string(), v.clone()))
                     .collect();
-                let attrs = (!attrs.is_empty())
-                    .then(|| serde_json::Value::Object(attrs).to_string());
+                let attrs =
+                    (!attrs.is_empty()).then(|| serde_json::Value::Object(attrs).to_string());
                 st.execute(params![
                     e.ts_ms as i64,
                     e.dur_ms.map(|d| d as i64),
@@ -362,7 +362,8 @@ impl Writer {
     }
 
     fn prune_due(&self, now_ms: u64) -> bool {
-        self.last_prune.is_none_or(|t| now_ms.saturating_sub(t) >= DAY_MS)
+        self.last_prune
+            .is_none_or(|t| now_ms.saturating_sub(t) >= DAY_MS)
     }
 }
 
@@ -375,11 +376,7 @@ pub struct Running {
 /// **Open the file, start the writer, install the emitter.** `Ok(None)` when `[metrics]` is off
 /// or another writer is already installed in this process; an error when the file could not be
 /// opened — which the daemon reports and starts without, never the reverse.
-pub fn start(
-    path: &Path,
-    id: Identity,
-    settings: Settings,
-) -> rusqlite::Result<Option<Running>> {
+pub fn start(path: &Path, id: Identity, settings: Settings) -> rusqlite::Result<Option<Running>> {
     if !settings.enabled {
         return Ok(None);
     }
@@ -498,12 +495,18 @@ mod tests {
             2
         );
         assert_eq!(
-            count(&p, "SELECT COUNT(*) FROM event WHERE attrs->>'snippet' IS NOT NULL"),
+            count(
+                &p,
+                "SELECT COUNT(*) FROM event WHERE attrs->>'snippet' IS NOT NULL"
+            ),
             1,
             "a tool call's snippet is stripped; a context claim's is kept (decision 5)"
         );
         assert_eq!(
-            count(&p, "SELECT COUNT(*) FROM event WHERE daemon = 'box/1/0' AND build = 'test'"),
+            count(
+                &p,
+                "SELECT COUNT(*) FROM event WHERE daemon = 'box/1/0' AND build = 'test'"
+            ),
             2
         );
     }
@@ -547,10 +550,22 @@ mod tests {
         let now = 200 * DAY_MS;
         let old = now - 100 * DAY_MS;
         let batch = vec![
-            Event::new(kind::ROUND).at(old).turn("t-old", Some(0)).name("glm"),
-            Event::new(kind::ROUND).at(old).turn("t-marked", Some(0)).name("glm"),
-            Event::new(kind::FEEDBACK).at(old).turn("t-marked", Some(0)).name("bad"),
-            Event::new(kind::ROUND).at(now - DAY_MS).turn("t-new", Some(0)).name("glm"),
+            Event::new(kind::ROUND)
+                .at(old)
+                .turn("t-old", Some(0))
+                .name("glm"),
+            Event::new(kind::ROUND)
+                .at(old)
+                .turn("t-marked", Some(0))
+                .name("glm"),
+            Event::new(kind::FEEDBACK)
+                .at(old)
+                .turn("t-marked", Some(0))
+                .name("bad"),
+            Event::new(kind::ROUND)
+                .at(now - DAY_MS)
+                .turn("t-new", Some(0))
+                .name("glm"),
         ];
         w.write_batch(&batch).unwrap();
         let gone = w.prune(now).unwrap();
@@ -570,7 +585,10 @@ mod tests {
         );
         // A second prune the same day is a no-op, and the rollup is not counted twice.
         w.prune(now).unwrap();
-        assert_eq!(count(&p, "SELECT SUM(n) FROM daily WHERE kind = 'round'"), 2);
+        assert_eq!(
+            count(&p, "SELECT SUM(n) FROM daily WHERE kind = 'round'"),
+            2
+        );
     }
 
     #[test]
@@ -595,8 +613,8 @@ mod tests {
     fn the_views_load_on_a_read_only_connection() {
         let p = temp("views");
         writer(&p);
-        let c = Connection::open_with_flags(&p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .unwrap();
+        let c =
+            Connection::open_with_flags(&p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         c.execute_batch(VIEWS).unwrap();
         let n: i64 = c
             .query_row("SELECT COUNT(*) FROM turn_end", [], |r| r.get(0))

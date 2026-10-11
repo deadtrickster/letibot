@@ -114,11 +114,8 @@ impl Tap {
                 if self.items.len() >= ITEMS {
                     self.items.pop_front();
                 }
-                self.items.push_back((
-                    item_id.clone(),
-                    self.now.turn_id.clone(),
-                    self.now.round,
-                ));
+                self.items
+                    .push_back((item_id.clone(), self.now.turn_id.clone(), self.now.round));
             }
             _ => {}
         }
@@ -145,12 +142,16 @@ impl Tap {
                 .name(command.as_str())
                 .attr("identity", identity.as_str())
                 .attr("mid_turn", self.now.state != "idle"),
-            SessionEvent::HeadAttached { kind: k, identity, .. } => self
+            SessionEvent::HeadAttached {
+                kind: k, identity, ..
+            } => self
                 .row(session, kind::OPERATOR_ACTION)
                 .name("attach")
                 .attr("head", k.as_str())
                 .attr("identity", identity.as_str()),
-            SessionEvent::HeadDetached { kind: k, identity, .. } => self
+            SessionEvent::HeadDetached {
+                kind: k, identity, ..
+            } => self
                 .row(session, kind::OPERATOR_ACTION)
                 .name("detach")
                 .attr("head", k.as_str())
@@ -231,7 +232,11 @@ pub fn mark(
     // A head whose clock is off by more than a minute either way is not believed: the press
     // time is the point of carrying it, and a wrong one is worse than the receipt time.
     let now_ms = letibot_metrics::now_ms();
-    let at = if at_ms.abs_diff(now_ms) > 60_000 { now_ms } else { at_ms };
+    let at = if at_ms.abs_diff(now_ms) > 60_000 {
+        now_ms
+    } else {
+        at_ms
+    };
     let recorded = letibot_metrics::enabled();
     Event::new(kind::FEEDBACK)
         .at(at)
@@ -366,7 +371,11 @@ mod tests {
                 },
             );
         });
-        assert_eq!(got.len(), 2, "the feedback confirmation is not a warning row");
+        assert_eq!(
+            got.len(),
+            2,
+            "the feedback confirmation is not a warning row"
+        );
         assert_eq!(got[0].kind, kind::WARNING);
         assert_eq!(got[0].name.as_deref(), Some("turn_failed"));
         assert_eq!(got[0].outcome.as_deref(), Some("failure"));

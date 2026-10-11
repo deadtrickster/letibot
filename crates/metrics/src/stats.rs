@@ -236,9 +236,7 @@ pub fn summary(c: &Connection, since: i64) -> Result<Table, String> {
     );
     put(
         "wakes that ran a turn",
-        one(
-            "SELECT COUNT(*) FROM event WHERE kind = 'wake' AND ts_ms >= ?1 AND outcome = 'ran'",
-        )?,
+        one("SELECT COUNT(*) FROM event WHERE kind = 'wake' AND ts_ms >= ?1 AND outcome = 'ran'")?,
     );
     put(
         "nags",
@@ -291,7 +289,14 @@ pub fn waits(c: &Connection, since: i64) -> Result<Table, String> {
     let mut t = Table::new(
         "worker queue wait per command (enqueue → dequeue), and the command's own time",
         &[
-            "build", "verb", "n", "p50_ms", "p95_ms", "max_ms", "over_5s", "run_p95_ms",
+            "build",
+            "verb",
+            "n",
+            "p50_ms",
+            "p95_ms",
+            "max_ms",
+            "over_5s",
+            "run_p95_ms",
         ],
     );
     let mut rows: Vec<_> = by.into_iter().collect();
@@ -606,7 +611,12 @@ mod tests {
                 .attr("note", "#distracted got pulled off")
                 .attr("tags", serde_json::json!(["distracted"])),
         ];
-        for (verb, q) in [("prompt", 10), ("prompt", 20), ("prompt", 9000), ("slash", 5)] {
+        for (verb, q) in [
+            ("prompt", 10),
+            ("prompt", 20),
+            ("prompt", 9000),
+            ("slash", 5),
+        ] {
             batch.push(
                 Event::new(kind::WORKER_CMD)
                     .at(t)
@@ -661,7 +671,11 @@ mod tests {
 
         let tr = turns(&c, since, None, 20).unwrap();
         assert_eq!(tr.rows.len(), 1);
-        assert_eq!(tr.rows[0].last().unwrap(), "bad", "the mark rides with its turn");
+        assert_eq!(
+            tr.rows[0].last().unwrap(),
+            "bad",
+            "the mark rides with its turn"
+        );
 
         let f = feedback(&c, since, Some("s-1"), true).unwrap();
         assert_eq!(f.rows.len(), 1);

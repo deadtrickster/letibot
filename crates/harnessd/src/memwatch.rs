@@ -192,7 +192,7 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
         // R66's number over time (TODO R81): every fifth line — five minutes at the default —
         // and at every census step below.
         if tick % 5 == 1 || rss >= next_step {
-            crate::instruments::mem_sample(rss, live, peak, threads.values().sum(), census.len(), census.iter().map(|(c, _)| c.heads).sum());
+            crate::instruments::mem_sample(rss, live, peak, threads.values().sum(), &census);
         }
 
         // The bounds, asserted.

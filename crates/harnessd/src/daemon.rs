@@ -280,9 +280,9 @@ impl Daemon {
                         // through `turn_tail::run_turn`, which arms the sweep before the turn — so a
                         // door reached some other way (a scripted submit, a test, a future arm)
                         // cannot forget it, which is how the nag door did (R67 item 10).
-                        let (at_ms, at) = (letibot_sessionlog::event::now_ms(), std::time::Instant::now());
+                        let at = crate::instruments::Clock::now();
                         let outcome = sessions.dispatch(&session_id, &cmd);
-                        crate::instruments::worker_cmd(&session_id, &cmd, at_ms, at, crate::instruments::outcome_of(&outcome));
+                        crate::instruments::worker_cmd(&session_id, &cmd, at, &outcome);
                         on_reply(&session_id, &cmd, outcome);
                     }
                     Work::Woken(session_id) => {

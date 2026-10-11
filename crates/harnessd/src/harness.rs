@@ -7478,7 +7478,7 @@ impl Harness {
         let Some((mut text, named)) = self.nag_notice_naming() else {
             return Ok(None);
         };
-        self.meter.nag(&self.cfg.session_id, named.as_deref(), named.as_deref().and_then(|r| self.row_status(r)), named.as_deref().is_some_and(|r| self.row_is_operators(r)));
+        self.meter_nag(named.as_deref());
         // **R79: a plan-check is a turn the model takes anyway, so it carries the held batch** —
         // which is what reaches a session that has a plan and nobody typing.
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
@@ -7507,6 +7507,50 @@ impl Harness {
             parts: vec![UserPart::Text { text }],
         })
         .map(Some)
+    }
+
+    // ---- the metrics instruments' harness half (TODO R81, `crate::instruments`) ----------
+    //
+    // Each call site in this file is one line; what the line needs from the harness is here, in
+    // one block, so a merge that moves a site moves one line.
+
+    fn meter_round(&mut self, m: &letibot_turn::metrics::TurnMetrics, ledger: u64) {
+        let provider = self.provider.as_ref().map(|p| p.name());
+        let (session, transcript) = (&self.cfg.session_id, &self.session.transcript_id);
+        self.meter.round(session, transcript, m, ledger, provider);
+    }
+
+    fn meter_nag(&mut self, named: Option<&str>) {
+        let status = named.and_then(|r| self.row_status(r));
+        let operators = named.is_some_and(|r| self.row_is_operators(r));
+        let session = self.cfg.session_id.clone();
+        self.meter.nag(&session, named, status, operators);
+    }
+
+    /// `causes` in the order `wake` gathers them: queue, monitor, result, due row.
+    fn meter_wake(&mut self, causes: [usize; 4], ran: bool) {
+        let named = ["queue", "monitor", "result", "due"];
+        let causes: Vec<(&str, usize)> = named.into_iter().zip(causes).collect();
+        crate::instruments::wake(&mut self.meter, &self.cfg.session_id, &causes, ran);
+    }
+
+    /// An automatic compaction: `(before, ledger before)`; the after is read here.
+    fn meter_compaction(&self, tidy: bool, ok: bool, started: Instant, before: (u64, u64)) {
+        let after = self.session.ledger.len() as u64;
+        let door = if tidy { "pre-wall" } else { "refused-door" };
+        let outcome = if ok { "ok" } else { "failed" };
+        let shown = (before.0, self.cfg.shown_tokens(after));
+        let unit = self.token_unit();
+        let session = &self.cfg.session_id;
+        crate::instruments::compaction(
+            session,
+            door,
+            outcome,
+            started,
+            shown,
+            (before.1, after),
+            &unit,
+        );
     }
 
     /// **A board row's status by its words**, as a word — for a nag's follow-up row (TODO R81):
@@ -8066,7 +8110,8 @@ impl Harness {
                 lines.join("\n")
             ));
         }
-        crate::instruments::wake(&mut self.meter, &self.cfg.session_id, &[("queue", queue_n), ("monitor", monitor_n), ("result", result_n), ("due", due.len())], !notices.is_empty());
+        let causes = [queue_n, monitor_n, result_n, due.len()];
+        self.meter_wake(causes, !notices.is_empty());
         if notices.is_empty() {
             return Ok(None);
         }
@@ -8468,8 +8513,7 @@ impl Harness {
                 });
             }
         }
-        let after = self.session.ledger.len() as u64;
-        crate::instruments::compaction(&self.cfg.session_id, if matches!(why, WallWhy::Tidy) { "pre-wall" } else { "refused-door" }, if ok { "ok" } else { "failed" }, started, r, self.cfg.shown_tokens(after), (resident, after), &unit);
+        self.meter_compaction(matches!(why, WallWhy::Tidy), ok, started, (r, resident));
         // It ran. Whether it HELPED is the branch above, in its own words either
         // way; what this answers is the narrower question a caller asks before
         // claiming an attempt was made.
@@ -10336,7 +10380,7 @@ impl Harness {
             // than a file. Never an authorisation and never citable; see
             // `ModelBrief::agent_claim`.
             self.trail.claims(&text);
-            self.meter.round(&self.cfg.session_id, &self.session.transcript_id, &ok.metrics, rendered_at, self.provider.as_ref().map(|p| p.name()));
+            self.meter_round(&ok.metrics, rendered_at);
             metrics.push(ok.metrics);
 
             // **The context claim, checked against what the daemon measured** — R71. Judged

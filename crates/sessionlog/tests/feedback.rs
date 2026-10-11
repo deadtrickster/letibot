@@ -68,7 +68,10 @@ fn a_mark_lands_in_metrics_db_on_the_running_turn_and_on_a_read_back_row() {
     let mut said = Vec::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while said.len() < 2 {
-        assert!(std::time::Instant::now() < deadline, "no confirmation: {said:?}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no confirmation: {said:?}"
+        );
         let f: ServerFrame = reader.read().expect("frame");
         if let ServerFrame::Event(env) = f
             && let SessionEvent::Warning { code, detail, .. } = &env.event
@@ -77,9 +80,15 @@ fn a_mark_lands_in_metrics_db_on_the_running_turn_and_on_a_read_back_row() {
             said.push(detail.clone());
         }
     }
-    assert!(said[0].starts_with("marked bad · turn tr#1, round 2"), "{said:?}");
+    assert!(
+        said[0].starts_with("marked bad · turn tr#1, round 2"),
+        "{said:?}"
+    );
     assert!(said[0].contains("#distracted"), "{said:?}");
-    assert!(said[1].contains("round 1"), "the read-back row's round: {said:?}");
+    assert!(
+        said[1].contains("round 1"),
+        "the read-back row's round: {said:?}"
+    );
 
     assert!(letibot_metrics::flush(Duration::from_secs(5)));
     let c = rusqlite_open(&db);
@@ -100,7 +109,13 @@ fn a_mark_lands_in_metrics_db_on_the_running_turn_and_on_a_read_back_row() {
     assert_eq!(
         rows,
         vec![
-            ("bad".into(), pressed as i64, "tr#1".into(), 1, "[\"distracted\"]".into()),
+            (
+                "bad".into(),
+                pressed as i64,
+                "tr#1".into(),
+                1,
+                "[\"distracted\"]".into()
+            ),
             ("good".into(), pressed as i64, "tr#1".into(), 0, "[]".into()),
         ],
         "the head's press time, the prompt's turn (its first round's id), the round"

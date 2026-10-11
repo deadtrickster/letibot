@@ -162,7 +162,11 @@ fn a_turn_emits_its_start_end_rounds_and_tool_call_keyed_by_one_turn_id() {
     let turn = rounds[0].turn_id.clone().expect("a turn id");
     assert_eq!(rounds[0].round, Some(0));
     assert_eq!(rounds[1].round, Some(1));
-    assert_eq!(rounds[1].turn_id.as_deref(), Some(turn.as_str()), "one turn, two rounds");
+    assert_eq!(
+        rounds[1].turn_id.as_deref(),
+        Some(turn.as_str()),
+        "one turn, two rounds"
+    );
     assert!(rounds[0].n[0].unwrap_or(0) > 0, "the prompt's tokens");
     assert_eq!(
         rounds[0].get("server_prompt_tokens"),
@@ -213,7 +217,8 @@ fn a_context_claim_row_carries_the_real_window_and_its_sentence() {
     let mut cfg = config(&dir, "metrics-claim");
     cfg.context_window = Some(1_000_000);
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
-    let excuse = "My context is at the wall, so I'll stop here rather than start a piece I can't finish.";
+    let excuse =
+        "My context is at the wall, so I'll stop here rather than start a piece I can't finish.";
     let serv = canned::Canned::serve_replies(
         vec![
             a_plain_answer(&parts.vocab, excuse, 30),
@@ -224,7 +229,9 @@ fn a_context_claim_row_carries_the_real_window_and_its_sentence() {
     cfg.endpoint = serv.endpoint.clone();
     let mut h = Harness::open(&parts, cfg, Hub::new("metrics-claim")).expect("opens");
     let (_, got) = letibot_metrics::capture(|| {
-        run_turn(&mut h, &mut Bare, Door::Prompt, |h| h.submit("go on").map(Some))
+        run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
+            h.submit("go on").map(Some)
+        })
     });
     let claims = of(&got, kind::CONTEXT_CLAIM);
     assert_eq!(claims.len(), 1, "{got:#?}");

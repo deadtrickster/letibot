@@ -114,7 +114,12 @@ pub fn stats_text(args: &[String]) -> Result<String, String> {
         ["feedback"] => vec![stats::feedback(&c, since, a.session.as_deref(), a.bad)?],
         ["session", id] => vec![stats::session(&c, id)?],
         ["sql", q @ ..] if !q.is_empty() => vec![stats::query(&c, "", &q.join(" "), &[])?],
-        _ => return Err(format!("stats: unknown verb {:?}\n\n{USAGE}", verb.join(" "))),
+        _ => {
+            return Err(format!(
+                "stats: unknown verb {:?}\n\n{USAGE}",
+                verb.join(" ")
+            ));
+        }
     };
     Ok(tables
         .iter()
@@ -193,7 +198,9 @@ pub fn fb(args: &[String]) -> Result<String, String> {
     w.write_batch(&[ev]).map_err(|e| e.to_string())?;
     Ok(match turn {
         Some(t) => format!("marked {polarity} · {session} turn {t}"),
-        None => format!("marked {polarity} · {session} (no finished turn recorded — kept with no turn)"),
+        None => {
+            format!("marked {polarity} · {session} (no finished turn recorded — kept with no turn)")
+        }
     })
 }
 
@@ -217,12 +224,14 @@ mod tests {
             },
             letibot_metrics::store::Settings::default(),
         );
-        w.write_batch(&[letibot_metrics::Event::new(letibot_metrics::kind::TURN_END)
-            .session("s-9")
-            .turn("tr#4", None)
-            .name("glm")
-            .outcome("eos")])
-            .unwrap();
+        w.write_batch(
+            &[letibot_metrics::Event::new(letibot_metrics::kind::TURN_END)
+                .session("s-9")
+                .turn("tr#4", None)
+                .name("glm")
+                .outcome("eos")],
+        )
+        .unwrap();
         p
     }
 
@@ -234,18 +243,43 @@ mod tests {
     fn a_shell_mark_lands_on_the_sessions_last_turn_and_stats_shows_it() {
         let db = temp_db();
         let dbs = db.to_str().unwrap();
-        let said = fb(&s(&["--db", dbs, "--session", "s-9", "-", "#slow", "took", "ages"])).unwrap();
+        let said = fb(&s(&[
+            "--db",
+            dbs,
+            "--session",
+            "s-9",
+            "-",
+            "#slow",
+            "took",
+            "ages",
+        ]))
+        .unwrap();
         assert_eq!(said, "marked bad · s-9 turn tr#4");
         let out = stats_text(&s(&["feedback", "--db", dbs])).unwrap();
-        assert!(out.contains("bad") && out.contains("#slow took ages"), "{out}");
+        assert!(
+            out.contains("bad") && out.contains("#slow took ages"),
+            "{out}"
+        );
         let today = stats_text(&s(&["--db", dbs])).unwrap();
-        assert!(today.contains("marks good / bad / note  0 / 1 / 0"), "{today}");
+        assert!(
+            today.contains("marks good / bad / note  0 / 1 / 0"),
+            "{today}"
+        );
         for verb in ["waits", "deliveries", "tools", "models", "turns"] {
             stats_text(&s(&[verb, "--db", dbs])).unwrap_or_else(|e| panic!("{verb}: {e}"));
         }
-        let q = stats_text(&s(&["sql", "SELECT COUNT(*) AS n FROM feedback", "--db", dbs])).unwrap();
+        let q = stats_text(&s(&[
+            "sql",
+            "SELECT COUNT(*) AS n FROM feedback",
+            "--db",
+            dbs,
+        ]))
+        .unwrap();
         assert!(q.contains("\n1\n"), "{q}");
         assert!(stats_text(&s(&["nonsense", "--db", dbs])).is_err());
-        assert!(fb(&s(&["--db", dbs, "+"])).is_err(), "a mark needs its session");
+        assert!(
+            fb(&s(&["--db", dbs, "+"])).is_err(),
+            "a mark needs its session"
+        );
     }
 }
