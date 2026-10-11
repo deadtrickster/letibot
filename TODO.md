@@ -41,6 +41,57 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## Store busy — a session must never die of `database is locked` — **BUILT on `store-lock-robust` 2026-10-12 (not merged)**
+
+The report, pg-noop's model, 2026-10-12 ~01:20: *"the child died on sqlite: database is locked
+in the harness's own store, which is the second infrastructure ending tonight … Neither is
+something I can fix from inside a session, and both cost an agent's worth of work."* The child
+was `s-1789919514688401228-sub-1791757785761179646`; its last word was
+`store: row 878 (…#t0.878): sqlite: database is locked`, and it left 1352 uncommitted
+insertions in `agent-pgx-2`. The same minute the operator's rano head showed
+`! merge_queue_store_error — … sqlite: database is locked`, which then recovered.
+`~/logs/harnessd.log` has 9 such lines tonight: 7 from the merge queue, 1 a live session's row
+(`s-1789462738453908838 · monitor -> store: row 588`), around a 1.75M-token compaction.
+
+**Evidence.**
+- Every daemon on the box has `busy_timeout` = 30 s (27f8bfe), and the queue's transactions
+  were already `BEGIN IMMEDIATE`; no deferred read-then-write was found on the child's path.
+  So the write lock was unavailable to that connection for 30 s straight.
+- A commit cost **411 ms** on the `sessions.db` volume tonight (`synchronous = FULL`, ext4 on
+  LUKS, several workspace test runs going): 500 one-row autocommits took 205.7 s.
+- The rano `/reseat` copied `#t8`'s ~971 rows into `#t9` (row contents identical, offset by one)
+  with one autocommit per row, 01:17:46 → ~01:24 — ~400 ms apart, the lock re-taken back to back
+  for six and a half minutes. The child died at ~01:19:2x, inside it.
+- SQLite's busy handler is a sleep-and-poll (≤100 ms naps), not a queue: a waiter can lose every
+  race to a writer that re-takes the lock immediately, for the whole 30 s.
+- Secondary: `Store::migrate` read `schema_version` with `.unwrap_or(None)`, so a busy error at
+  open was read as "fresh store" and the current version stamped over an unmigrated file.
+
+**Fixed (branch `store-lock-robust`).**
+1. `store/busy.rs`: every single-statement store write (`Store::exec`) and every queue
+   `BEGIN IMMEDIATE` is retried on `SQLITE_BUSY`/`SQLITE_LOCKED` with backoff (50 ms doubling
+   to 2 s) for `BUSY_RETRY_TOTAL` = 60 s on top of the busy timeout.
+2. `Store::write_tx`: `BEGIN IMMEDIATE`, body, commit — retried whole. `delete_empty_session`
+   uses it; metrics' two transactions are IMMEDIATE too.
+3. `Store::append_items`: many rows in `APPEND_CHUNK` (64) rows per IMMEDIATE transaction.
+   Measured 1000 rows: 6.8 s total, longest hold 0.95 s (per-row: ~411 s).
+4. `Harness::persist` (the child's death site) writes through `append_items` and, when the
+   store is still busy, WAITS — `store_busy_wait` warning on the session's log every 2 min,
+   resyncing from `item_count` — until the store frees, the session closes, or 30 min pass.
+5. `migrate` treats only "no such table" as a fresh store; busy is waited out.
+
+**Still open.**
+- The reseat/re-render copy in `Harness::open_with` (`re-rendered row {i}` loop) still writes
+  one autocommit per row; it belongs to `wt-reseathead`, and `Store::append_items` is the call
+  it should make.
+- `synchronous = FULL` is the reason a commit costs an fsync. `NORMAL` in WAL loses only the
+  last commits on an OS crash (not a process crash) and measured 9 ms/row against 411. That is
+  the operator's call — the module doc chose FULL deliberately.
+- `crates/turn/tests/restore.rs` copies the live 3.9 GB store (+ WAL) on every workspace test
+  run; several ran concurrently tonight and are part of the I/O load that made fsync slow.
+- No harness-level test drives `persist` through a >90 s busy store (the store-level tests
+  cover the retry; a harness test would need a lock held past 30 s + 60 s).
+
 ## R61 — Review and merge are two queues — **BUILT on `r61-queues` 2026-10-11 (not merged); what is left and what the operator should confirm are at the end of this entry**
 
 The operator: *"review is review and merge is merge. separate steps. separate queues."* and

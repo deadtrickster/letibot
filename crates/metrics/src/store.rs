@@ -282,7 +282,11 @@ impl Writer {
                     .or_else(|| e.session_id.as_deref().map(|s| self.root_of(s)))
             })
             .collect();
-        let tx = self.conn.transaction()?;
+        // IMMEDIATE: a deferred transaction that ever reads before it writes is refused at once
+        // by a concurrent writer, busy timeout or not (see tokencore's `store/busy.rs`).
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
             let mut st = tx.prepare_cached(
                 "INSERT INTO event (ts_ms, dur_ms, daemon, build, session_id, root_id, \
@@ -335,7 +339,11 @@ impl Writer {
         // Whole days only: a day is rolled up when every row of it is past the cutoff, so a
         // rollup never counts half a day and then misses the rest.
         let cutoff = cutoff - cutoff % DAY_MS;
-        let tx = self.conn.transaction()?;
+        // IMMEDIATE: a deferred transaction that ever reads before it writes is refused at once
+        // by a concurrent writer, busy timeout or not (see tokencore's `store/busy.rs`).
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(
             "INSERT OR IGNORE INTO daily (day, kind, name, model, outcome, n, sum_dur_ms, \
              max_dur_ms, sum_n1, sum_n2, sum_n3) \

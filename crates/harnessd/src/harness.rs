@@ -2394,6 +2394,12 @@ fn seated_at(ms: i64) -> String {
     )
 }
 
+/// **How long a turn waits for a busy store before its persist gives up** — see
+/// `Harness::persist`. Half an hour: every contention measured on 2026-10-12 cleared inside
+/// seven minutes (the longest, a 971-row reseat copy committing per row), so a store still
+/// locked after this is wedged rather than busy, and saying so is the useful act.
+const STORE_BUSY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// Whether the store already holds this transcript row.
 ///
 /// A `SELECT` through the escape hatch, for the same reason `stored_sessions` in the
@@ -12080,26 +12086,81 @@ impl Harness {
             return Ok(());
         };
         let rows = self.session.ledger.rows();
-        while self.persisted < rows.len() {
-            let i = self.persisted;
-            let row = &rows[i];
-            let item = self.session.items.get(i).ok_or_else(|| {
-                HarnessError::Store(format!(
-                    "ledger row {i} ({}) has no item; the two are supposed to be \
-                     appended together",
-                    row.item_id
-                ))
-            })?;
-            let tokens = self
-                .session
-                .ledger
-                .item_tokens(i)
-                .ok_or_else(|| HarnessError::Store(format!("no tokens for row {i}")))?;
-            store
-                .append_item(&self.transcript_id, i as u32, item, row, tokens)
-                .map_err(|e| HarnessError::Store(format!("row {i} ({}): {e}", row.item_id)))?;
-            self.persisted += 1;
+        let mut from = self.persisted;
+        let started = std::time::Instant::now();
+        let mut said_at: Option<std::time::Instant> = None;
+        while from < rows.len() {
+            let mut batch = Vec::with_capacity(rows.len() - from);
+            for (i, row) in rows.iter().enumerate().skip(from) {
+                let item = self.session.items.get(i).ok_or_else(|| {
+                    HarnessError::Store(format!(
+                        "ledger row {i} ({}) has no item; the two are supposed to be \
+                         appended together",
+                        row.item_id
+                    ))
+                })?;
+                let tokens = self
+                    .session
+                    .ledger
+                    .item_tokens(i)
+                    .ok_or_else(|| HarnessError::Store(format!("no tokens for row {i}")))?;
+                batch.push((item, row, tokens));
+            }
+            match store.append_items(&self.transcript_id, from as u32, batch) {
+                Ok(()) => from = rows.len(),
+                // **A busy store is waited for, never died of.** pg-noop's model, 2026-10-12
+                // ~01:20: *"the child died on sqlite: database is locked in the harness's own
+                // store … both cost an agent's worth of work."* The store has already retried
+                // for a minute on top of its busy timeout; past that the turn WAITS, says so on
+                // the session's own log, and only gives up when the session is going away or
+                // the wait is past `STORE_BUSY_PATIENCE` — a store wedged for half an hour is a
+                // fault to report, not a contention to sit out.
+                Err(e) if e.is_busy() => {
+                    // Some chunks may have committed before the busy one: resume from what
+                    // the store holds, or the next attempt re-sends a row and the append-only
+                    // trigger refuses it.
+                    if let Ok(n) = store.item_count(&self.transcript_id) {
+                        from = (n as usize).clamp(from, rows.len());
+                    }
+                    let waited = started.elapsed();
+                    if waited >= STORE_BUSY_PATIENCE {
+                        self.persisted = from;
+                        return Err(HarnessError::Store(format!(
+                            "row {from}: {e} — still busy after waiting {}s; nothing from row \
+                             {from} on is stored",
+                            waited.as_secs()
+                        )));
+                    }
+                    if said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(120)) {
+                        said_at = Some(std::time::Instant::now());
+                        self.hub.publish(SessionEvent::Warning {
+                            code: "store_busy_wait".into(),
+                            detail: format!(
+                                "the session store is busy (`{e}`) — another daemon holds its \
+                                 write lock. Rows from {from} on are kept in memory and written \
+                                 when it frees; this session is waiting, not failing \
+                                 ({}s so far).",
+                                waited.as_secs()
+                            ),
+                            compaction: None,
+                        });
+                    }
+                    if !self.sleep_unless_closed(std::time::Duration::from_secs(5)) {
+                        self.persisted = from;
+                        return Err(HarnessError::Store(format!(
+                            "row {from}: {e} — the session closed while waiting for the store"
+                        )));
+                    }
+                }
+                Err(e) => {
+                    if let Ok(n) = store.item_count(&self.transcript_id) {
+                        self.persisted = (n as usize).clamp(self.persisted, rows.len());
+                    }
+                    return Err(HarnessError::Store(format!("row {from}: {e}")));
+                }
+            }
         }
+        self.persisted = from;
         Ok(())
     }
 

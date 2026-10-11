@@ -785,11 +785,16 @@ impl Store {
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))?)
     }
 
+    /// **`BEGIN IMMEDIATE`, taken again while the store is busy.** Only the BEGIN is retried,
+    /// and that is enough: once it returns, this connection holds the write lock, and nothing
+    /// the transaction does after it can come back busy. A BEGIN that failed began nothing.
+    /// See `store/busy.rs` for the night this was for: `! merge_queue_store_error — the queues
+    /// could not read or write their store while serving the queues: sqlite: database is
+    /// locked`.
     fn immediate(&self) -> Result<rusqlite::Transaction<'_>> {
-        Ok(rusqlite::Transaction::new_unchecked(
-            &self.conn,
-            TransactionBehavior::Immediate,
-        )?)
+        Ok(super::busy::retry_sql(|| {
+            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+        })?)
     }
 
     // ===== The review queue =====
@@ -1251,7 +1256,7 @@ impl Store {
         if stored != SCHEMA_VERSION {
             return Ok(false);
         }
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE queue_lease SET heartbeat_ms = ?3 WHERE repository = ?1 AND owner = ?2",
             params![repository, owner, now_ms as i64],
         )?;

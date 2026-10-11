@@ -243,6 +243,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // the handling — and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
     ("model_endpoint_retry", Class::Routine),
+    // **The session store was busy and a turn is waiting to write its rows** — another daemon
+    // holds the write lock (`Harness::persist`). Routine by the same rule as the retry above:
+    // the wait IS the handling, nothing is lost (the rows are in memory), and if the store stays
+    // wedged the turn fails under its own name. Before this a busy store ended the turn — and a
+    // child with it, 2026-10-12: "the child died on sqlite: database is locked".
+    ("store_busy_wait", Class::Routine),
     // The operator typed a provider key on the masked card and it was saved — the ask
     // working, said once so the file it went to is on the record.
     ("provider_key_saved", Class::Routine),
@@ -1052,8 +1058,10 @@ mod the_register_census {
         //   · **122, not 120**: `gate_setup_failed` and `gate_killed` (Failures) — a target the
         //     gate could not judge; raised before under a variable code and Failures by default,
         //     now named (R87).
-        assert_eq!(TABLE.len(), 122, "the table's size");
-        assert_eq!(count(Class::Routine), 42);
+        //   · **123, not 122**: `store_busy_wait` (Routine) — a turn waiting out a busy session
+        //     store instead of dying of it; see its row.
+        assert_eq!(TABLE.len(), 123, "the table's size");
+        assert_eq!(count(Class::Routine), 43);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

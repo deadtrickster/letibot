@@ -74,13 +74,15 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use letibot_transcript::TranscriptItem;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Params, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::ledger::LedgerRow;
 use crate::vocab::TokenId;
 
+mod busy;
 mod queues;
+pub use busy::{BUSY_RETRY_TOTAL, is_busy_sql};
 pub use queues::*;
 
 /// Why `session.role` is nullable, and why the comment is here and not in the DDL.
@@ -641,6 +643,13 @@ BEFORE INSERT ON transcript_item BEGIN
     WHERE NEW.tok_len <> LENGTH(NEW.tokens) / 4;
 END;
 "#;
+
+/// The one statement a transcript row is written with, by [`Store::append_item`] and
+/// [`Store::append_items`] alike.
+const APPEND_SQL: &str = "INSERT INTO transcript_item
+   (transcript_id, seq, item_id, kind, item_json,
+    tok_offset, tok_len, h_k, tokens, created_at)
+ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -1664,35 +1673,49 @@ impl Store {
     ///
     /// **This is the stopgap, not the answer.** The structural fix is the shared store splitting
     /// the transcript tables out per session, leaving the queue, the corpus and the session index
-    /// in the one file; and the retry discipline for the writes that cannot simply wait is its own
-    /// change (`ed07d98` is its first half). Neither is a reason to leave children dying in the
-    /// meantime.
+    /// in the one file; and the retry discipline is `store/busy.rs` — every write retried on
+    /// busy for [`BUSY_RETRY_TOTAL`], write transactions `BEGIN IMMEDIATE`, long copies chunked
+    /// by [`Store::append_items`] — because on 2026-10-12 thirty seconds was not enough either:
+    /// a commit cost ~411 ms of fsync and the busy handler is a poll, not a queue.
     pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        // The region is volatile by design, so this file is the only copy of the
-        // tokens. A lost commit is a lost turn.
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.pragma_update(None, "foreign_keys", true)?;
         // WAL lets readers and the writer run at once, but two *writers* still
         // serialise, and rusqlite's default is to fail immediately rather than wait.
         // Two connections exist by design — the worker writes rows, a second one
         // answers a head's list and writes a title — so a rename landing during a
         // turn's `append_item` must wait a moment rather than come back as
         // SQLITE_BUSY on a database that is working exactly as intended.
+        //
+        // The timeout FIRST: `journal_mode` and `migrate` below already touch the file, and
+        // an open that lands while another daemon commits must wait like any other statement
+        // rather than run on rusqlite's default.
         conn.busy_timeout(Self::BUSY_TIMEOUT)?;
+        busy::retry_sql(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
+        // The region is volatile by design, so this file is the only copy of the
+        // tokens. A lost commit is a lost turn.
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        conn.pragma_update(None, "foreign_keys", true)?;
         let store = Store { conn, path };
         store.migrate()?;
         Ok(store)
     }
 
     fn migrate(&self) -> Result<()> {
-        let found: Option<i64> = self
-            .conn
-            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
-            .optional()
-            .unwrap_or(None);
+        // **Only a missing table is a fresh store.** This was `.unwrap_or(None)`, which read
+        // EVERY failure as "no schema yet" — including `database is locked` from an open that
+        // landed on a busy store, after which the arm below stamped the current version over
+        // a store whose migrations had not run. A busy read is waited out; anything else that
+        // is not "no such table" is reported.
+        let found: Option<i64> = match busy::retry_sql(|| {
+            self.conn
+                .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+                .optional()
+        }) {
+            Ok(v) => v,
+            Err(e) if e.to_string().contains("no such table") => None,
+            Err(e) => return Err(e.into()),
+        };
         match found {
             Some(v) if v > SCHEMA_VERSION => {
                 return Err(StoreError::SchemaTooNew {
@@ -2406,7 +2429,7 @@ impl Store {
     /// there. Idempotent because the id is the content.
     pub fn put_stable_prefix(&self, rec: &StablePrefixRecord) -> Result<String> {
         let id = rec.id();
-        self.conn.execute(
+        self.exec(
             "INSERT OR IGNORE INTO stable_prefix
                (id, dialect_sha, system, tools_json, n_tokens, tokens, h_init, vocab_source, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -2437,7 +2460,7 @@ impl Store {
         // has been spoken, and rewriting that would change the history of every
         // transcript hanging off it.
         if !rec.tokens.is_empty() {
-            self.conn.execute(
+            self.exec(
                 "UPDATE stable_prefix SET n_tokens = ?2, tokens = ?3, h_init = ?4
                    WHERE id = ?1 AND n_tokens = 0",
                 params![
@@ -2509,7 +2532,7 @@ impl Store {
     }
 
     pub fn put_session(&self, rec: &SessionRecord) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO session
                (id, title, model_id, dialect_sha, workspace_root, owner, approvers_json,
                 created_at, role, parent_session_id)
@@ -2567,7 +2590,7 @@ impl Store {
         stable_prefix_id: &str,
         fork: Option<(&str, u32)>,
     ) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO transcript
                (id, session_id, parent_transcript_id, forked_at_seq, stable_prefix_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -2596,11 +2619,8 @@ impl Store {
         row: &LedgerRow,
         tokens: &[TokenId],
     ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO transcript_item
-               (transcript_id, seq, item_id, kind, item_json,
-                tok_offset, tok_len, h_k, tokens, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        self.exec(
+            APPEND_SQL,
             params![
                 transcript_id,
                 seq as i64,
@@ -2616,6 +2636,74 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// **Many rows, appended in as few commits as possible** — the same rows, the same
+    /// triggers and the same order [`Store::append_item`] writes them in, `first_seq` onward.
+    ///
+    /// `rows` is `(item, ledger row, tokens)` per row. Committed in chunks of
+    /// [`Store::APPEND_CHUNK`] rows, each its own `BEGIN IMMEDIATE` transaction, so the
+    /// write lock is taken once per chunk instead of once per row and is never held for a
+    /// whole long copy. MEASURED on this box, 2026-10-12, with several workspace test runs
+    /// going: an autocommit costs ~411 ms of fsync under `synchronous = FULL`, so the
+    /// rano reseat's 971 per-row commits held the lock back to back for six and a half
+    /// minutes, which is the window a child died in on `database is locked`.
+    ///
+    /// A chunk that fails busy is retried whole (nothing of it was committed); a chunk that
+    /// fails otherwise stops the append with the rows before it committed, and the error
+    /// names the row's `seq`, the way a per-row loop's would.
+    pub fn append_items<'a, I>(&self, transcript_id: &str, first_seq: u32, rows: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,
+    {
+        let rows: Vec<_> = rows.into_iter().collect();
+        for (c, chunk) in rows.chunks(Self::APPEND_CHUNK).enumerate() {
+            let base = first_seq + (c * Self::APPEND_CHUNK) as u32;
+            // Serialised once, outside the retry: a busy retry re-runs only SQL.
+            let mut encoded = Vec::with_capacity(chunk.len());
+            for (item, row, tokens) in chunk {
+                encoded.push((
+                    item_kind(item),
+                    serde_json::to_string(item)?,
+                    *row,
+                    tokens_to_blob(tokens),
+                ));
+            }
+            self.write_tx(|tx| {
+                let mut st = tx.prepare_cached(APPEND_SQL)?;
+                for (i, (kind, json, row, blob)) in encoded.iter().enumerate() {
+                    let seq = base + i as u32;
+                    st.execute(params![
+                        transcript_id,
+                        seq as i64,
+                        row.item_id,
+                        kind,
+                        json,
+                        row.tok_offset as i64,
+                        row.tok_len as i64,
+                        row.h_k.as_slice(),
+                        blob,
+                        now_ms(),
+                    ])
+                    .map_err(|e| {
+                        if is_busy_sql(&e) {
+                            StoreError::Sql(e)
+                        } else {
+                            StoreError::Refused(format!(
+                                "row {seq} of {transcript_id}: sqlite: {e}"
+                            ))
+                        }
+                    })?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Rows per transaction in [`Store::append_items`]. Small enough that one chunk's commit
+    /// holds the lock for one fsync and a few milliseconds of inserts, large enough that a
+    /// thousand-row copy is sixteen commits rather than a thousand.
+    pub const APPEND_CHUNK: usize = 64;
 
     /// Everything needed to rebuild the ledger.
     pub fn load_transcript(&self, transcript_id: &str) -> Result<LoadedTranscript> {
@@ -2942,7 +3030,7 @@ impl Store {
     /// byte. That is the whole reason renaming is allowed here while
     /// [`Store::append_item`]'s rows cannot be touched at all.
     pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET title = ?2 WHERE id = ?1",
             params![id, (!title.is_empty()).then(|| title.to_string())],
         )?;
@@ -2970,7 +3058,7 @@ impl Store {
     ) -> Result<()> {
         // `i64` on the wire: rusqlite's `ToSql` has no `u64`, and a token count
         // that does not fit an `i64` is not a prompt this box will ever send.
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET context_tokens = ?2, context_cached = ?3, context_ledger = ?4 \
              WHERE id = ?1",
             params![
@@ -2998,7 +3086,7 @@ impl Store {
     pub fn set_window(&self, id: &str, window: Option<u64>) -> Result<()> {
         // `i64` on the wire for the same reason `set_context` gives: rusqlite's `ToSql` has
         // no `u64`, and a window that does not fit an `i64` is not a window any server has.
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET context_window = ?2 WHERE id = ?1",
             params![id, window.map(|w| w as i64)],
         )?;
@@ -3023,7 +3111,7 @@ impl Store {
     /// out of `put_session` also keeps it out of the twenty-odd fixtures that build a
     /// `SessionRecord` to test something else.
     pub fn set_prefix_fingerprint(&self, id: &str, fingerprint: &str) -> Result<()> {
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET prefix_fingerprint = ?2 WHERE id = ?1",
             params![id, fingerprint],
         )?;
@@ -3046,7 +3134,7 @@ impl Store {
     /// estimate (pg-noop: ≈ 1,039,055, measured 507,355): a finding that cannot
     /// expire must not be made on a number nobody measured.
     pub fn set_auto_compact_stood_down(&self, id: &str, pair: Option<(u64, u64)>) -> Result<()> {
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET auto_compact_resident = ?2, auto_compact_after = ?3 \
              WHERE id = ?1",
             params![id, pair.map(|(r, _)| r as i64), pair.map(|(_, a)| a as i64)],
@@ -3065,7 +3153,7 @@ impl Store {
     /// one act (the operator's `/nag`) and cleared by its two ends (the verb, or the pause's own
     /// deadline), and nothing else on the row moves with it.
     pub fn set_nags_paused_until(&self, id: &str, until: Option<i64>) -> Result<()> {
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET nags_paused_until = ?2 WHERE id = ?1",
             params![id, until],
         )?;
@@ -3098,7 +3186,7 @@ impl Store {
     /// session back on the CLI default and the first turn quietly went to a model
     /// nobody chose for that conversation.
     pub fn set_provider_choice(&self, id: &str, choice: Option<&str>) -> Result<()> {
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE session SET provider_choice = ?2 WHERE id = ?1",
             params![id, choice],
         )?;
@@ -3160,7 +3248,7 @@ impl Store {
     /// there is no append, no reorder-by-id, no delta: the model writes what the
     /// list now is, and that is what the store holds.
     pub fn put_todos(&self, session_id: &str, todos: &[TodoItem]) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, ?3)
              ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2, updated_ms = ?3",
             params![session_id, serde_json::to_string(todos)?, now_ms()],
@@ -3218,7 +3306,7 @@ impl Store {
     /// The numbers are not merged: `state`, `produced`, `elapsed_ms` and `redirect` are facts of
     /// the write that is happening, and the later write's are the true ones.
     pub fn put_job(&self, session_id: &str, job: &JobRecord) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO job
                (session_id, handle, command, how, state, produced, elapsed_ms, redirect, updated_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -3269,12 +3357,13 @@ impl Store {
             )));
         }
         // Order matters: `transcript.session_id` is a foreign key and
-        // `foreign_keys` is on.
-        self.conn
-            .execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
-        self.conn
-            .execute("DELETE FROM session WHERE id = ?1", params![id])?;
-        Ok(())
+        // `foreign_keys` is on. One IMMEDIATE transaction, so the two deletes land together
+        // and a busy store is waited for rather than leaving a session with no transcript.
+        self.write_tx(|tx| {
+            tx.execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
+            tx.execute("DELETE FROM session WHERE id = ?1", params![id])?;
+            Ok(())
+        })
     }
 
     /// What a stable prefix was rendered from and by. `None` if it is not here.
@@ -3314,7 +3403,7 @@ impl Store {
     /// for a whole session (see `AdjudicatedGate::next_id`). `false` here means
     /// the row is NOT in the table and never will be.
     pub fn record_adjudication(&self, a: &NewAdjudication) -> Result<bool> {
-        let changed = self.conn.execute(
+        let changed = self.exec(
             "INSERT OR IGNORE INTO adjudication
                (request_id, session_id, turn_id, decided_ms, action, baseline, tier,
                 trail_json, shown, oracle_reply, tool, arguments_json, mode, options_json, agent,
@@ -3393,7 +3482,7 @@ impl Store {
     /// acted on.
     pub fn record_operator_ruling(&self, request_id: &str, kind: &str, note: &str) -> Result<bool> {
         let now = now_ms();
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE adjudication
                 SET operator_kind = ?2,
                     operator_note = ?3,
@@ -3592,7 +3681,7 @@ impl Store {
     /// a row was actually filled, so a backfill can report what it did rather than
     /// what it attempted.
     pub fn backfill_shape(&self, request_id: &str, shape: &str, class: &str) -> Result<bool> {
-        let n = self.conn.execute(
+        let n = self.exec(
             "UPDATE adjudication SET shape = ?2, shape_class = ?3
               WHERE request_id = ?1 AND shape IS NULL",
             rusqlite::params![request_id, shape, class],
@@ -3640,6 +3729,40 @@ impl Store {
             model_decided: one(&format!(
                 "SELECT COUNT(*) FROM adjudication WHERE {MODEL_DECIDED_SQL}"
             ))?,
+        })
+    }
+
+    /// **One autocommit write statement, taken again while the store is busy** — see
+    /// [`busy`](self::busy) for the report this answers and why a retry writes once.
+    ///
+    /// Every write method of this store that is a single statement goes through here; a
+    /// write that is several statements goes through [`Store::write_tx`] instead.
+    fn exec<P: Params + Clone>(&self, sql: &str, p: P) -> rusqlite::Result<usize> {
+        busy::retry_sql(|| self.conn.execute(sql, p.clone()))
+    }
+
+    /// **A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT` — the whole of it taken
+    /// again while the store is busy.**
+    ///
+    /// IMMEDIATE because a deferred transaction that READS first holds a snapshot, and its
+    /// first write must then promote that snapshot to the write lock. SQLite refuses that
+    /// promotion at once when another connection holds the lock — the busy handler is not
+    /// consulted, because the connection is already inside a transaction — so the thirty
+    /// seconds of `BUSY_TIMEOUT` never apply to it. `BEGIN IMMEDIATE` takes the write lock
+    /// before the first read, and waiting for it is what the busy handler does.
+    ///
+    /// The body is run again from the top on a busy failure, so it must be a pure function of
+    /// the store (it is: it is given only the transaction).
+    pub fn write_tx<T>(
+        &self,
+        mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        busy::retry_store(|| {
+            let tx =
+                rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+            let out = body(&tx)?;
+            tx.commit()?;
+            Ok(out)
         })
     }
 
