@@ -100,6 +100,35 @@
 //! of them is a pair on one of the two tables, which is a decision somebody makes, where
 //! inheriting the daemon's environment was one nobody made.
 //!
+//! # The boundary is the session's, and a pane keeps its terminal inside it (R60 item 3)
+//!
+//! *"The pane is not confined. It runs in the session's workspace with the session's terminal
+//! environment and **not** inside the namespace boundary a `bash` call gets. `exec::confine` is
+//! the seam; what a confined pane has to keep working (`/dev/tty`, the cgroup, the workspace
+//! mount) is the whole of the work."* So [`TermConfig::confine`] is the argv the session's own
+//! confinement builds — [`super::confine::Confinement::wrap_terminal`], read off the session's
+//! process host at the moment the pane opens ([`super::HostProcesses::terminal_wrap`]) — and
+//! [`argv`] puts it between the scope's join and the shell, the order the host's own spawn uses.
+//! The three things the item named, and what keeps each one working:
+//!
+//! | | inside the boundary | why it still works |
+//! |---|---|---|
+//! | **`/dev/tty`** | the pty stays the program's controlling terminal | `wrap_terminal` drops bubblewrap's `--new-session`, which exists to take a *job's* terminal away; this pty is the pane's own, so there is nothing of the operator's for `TIOCSTI` to reach |
+//! | **the cgroup** | the program is a member, and [`ScopeTree::end`] still ends it | the join happens on the host before `bwrap` runs, and a cgroup is not a namespace |
+//! | **the workspace mount** | the session's project, read-write at its own path | it is the view's own root, and a pane opens in the workspace — a `cwd` outside the view is the boundary's own refusal, said as the pane's ending |
+//!
+//! **What a confined pane does not have, said rather than discovered.** The operator's home and
+//! agent socket — the view's tmpfs home and its own grants replace them ([`confined_env`]) — and
+//! **the network**, which the session's commands do not have either: `!term ssh host` in a
+//! confined session fails to resolve, for the same reason `! ssh host` does. And a `ttyname`:
+//! the pane's pty lives in the host's `devpts`, the view mounts a fresh one, so `tty` prints
+//! *not a tty* while `/dev/tty` opens — a program that wants the *name* of its terminal (`ssh`
+//! allocating, `screen`) is told there is none.
+//!
+//! **An unconfined session's pane is unconfined**, which is its commands' state too and is said
+//! where the session says it; a session with no process host at all registers no boundary and
+//! its pane runs as it always did — see `letibot_harnessd`'s `term` module.
+//!
 //! # The lifetime is the cgroup's, and the vocabulary is [`super::scope`]'s
 //!
 //! A program that outlives the pane that drew it is a leak, and this tree already has the
@@ -276,6 +305,12 @@ pub struct TermConfig {
     /// nobody owns — a test's, and named as such by [`TermSession::close`].
     pub scope: Option<ScopeId>,
     pub tree: Option<Arc<dyn ScopeTree>>,
+    /// **The boundary the program runs inside**: the argv that goes in front of its shell, as
+    /// [`super::confine::Confinement::wrap_terminal`] built it for the session the pane belongs
+    /// to — the namespace view a `bash` call in that session gets (R60 item 3). Empty is no
+    /// boundary, which is what an unconfined session's own commands get too. See the module
+    /// header's *The boundary*.
+    pub confine: Vec<String>,
 }
 
 impl Default for TermConfig {
@@ -288,6 +323,7 @@ impl Default for TermConfig {
             rows: 24,
             scope: None,
             tree: None,
+            confine: Vec::new(),
         }
     }
 }
@@ -349,31 +385,56 @@ pub fn argv(cfg: &TermConfig) -> Result<(String, Vec<String>), TermError> {
     if cfg.command.trim().is_empty() {
         return Err(TermError::Config("the command is empty".to_string()));
     }
+    // **The boundary goes between the scope and the shell**, which is the host's own order and
+    // for the host's reason: the join writes `cgroup.procs` on the HOST, before any namespace
+    // exists — `/sys/fs/cgroup` is not in the view, so a process that tried to join from inside
+    // would fail the write — and membership survives the crossing because a cgroup is not a
+    // namespace. So: `sh -c <join> … bwrap … -- /bin/sh -c <line>`.
+    let mut line: Vec<String> = cfg.confine.clone();
+    line.extend([SHELL.to_string(), "-c".to_string(), cfg.command.clone()]);
     match &cfg.scope {
-        None => Ok((
-            SHELL.to_string(),
-            vec!["-c".to_string(), cfg.command.clone()],
-        )),
+        None => {
+            let prog = line.remove(0);
+            Ok((prog, line))
+        }
         Some(scope) => Ok((
             SHELL.to_string(),
-            vec![
-                "-c".to_string(),
-                join_script().to_string(),
-                // `$0` for the wrapper, which is only ever a name in a message.
-                "letibot-term".to_string(),
-                Cgroup2::procs_path(scope).display().to_string(),
-                // `$2` is the join token the host uses as *evidence* it can observe. This
-                // module has no use for one — a pane's proof that it started is its own
-                // first byte — so the wrapper's `: > "$2"` is pointed at the null device.
-                // Named rather than silently passed, because a reader who knows `host.rs`
-                // will look for a real file here.
-                "/dev/null".to_string(),
-                SHELL.to_string(),
-                "-c".to_string(),
-                cfg.command.clone(),
-            ],
+            [
+                vec![
+                    "-c".to_string(),
+                    join_script().to_string(),
+                    // `$0` for the wrapper, which is only ever a name in a message.
+                    "letibot-term".to_string(),
+                    Cgroup2::procs_path(scope).display().to_string(),
+                    // `$2` is the join token the host uses as *evidence* it can observe. This
+                    // module has no use for one — a pane's proof that it started is its own
+                    // first byte — so the wrapper's `: > "$2"` is pointed at the null device.
+                    // Named rather than silently passed, because a reader who knows `host.rs`
+                    // will look for a real file here.
+                    "/dev/null".to_string(),
+                ],
+                line,
+            ]
+            .concat(),
         )),
     }
+}
+
+/// **The pane's environment, for a pane inside a boundary**: [`env_from`]'s answer less the two
+/// names the *view* decides.
+///
+/// `HOME` and `SSH_AUTH_SOCK` are on the pane's table because a pane is the operator's program
+/// on the operator's box ([`PANE_HOME`], [`PANE_AGENT`]). Inside a boundary that is no longer
+/// true of either: the view has its own home (a tmpfs, or a directory it was granted) and its
+/// own agent socket or none, and the boundary's argv states both. A pair on the caller's
+/// environment is applied **last** inside it (`confine`'s `build_argv` says so), so passing the
+/// operator's `HOME` through would point the program at a directory the view does not contain
+/// and the operator's agent socket at a path that is not there — or, worse, is.
+pub fn confined_env(env: &[(String, String)]) -> Vec<(String, String)> {
+    env.iter()
+        .filter(|(k, _)| k != PANE_HOME && k != PANE_AGENT)
+        .cloned()
+        .collect()
 }
 
 /// **One program, one pty, one cgroup, one reader thread.**
@@ -737,6 +798,7 @@ mod tests {
             rows: 24,
             scope: None,
             tree: None,
+            confine: Vec::new(),
         };
         let sink = Arc::new(Collected::new());
         let s = TermSession::start(&cfg, sink.clone()).expect("a pane on this box");
@@ -1157,6 +1219,7 @@ mod tests {
             rows: 24,
             scope: None,
             tree: None,
+            confine: Vec::new(),
         };
         let sink = Arc::new(Collected::new());
         let _s = TermSession::start(&cfg, sink.clone()).expect("a pane on this box");
@@ -1207,5 +1270,85 @@ mod tests {
             sink.wait_ended(PATIENCE).as_deref(),
             Some("the program exited with 127")
         );
+    }
+
+    /// **R60 item 3: a pane runs inside the session's boundary, and keeps its terminal there.**
+    ///
+    /// *"The pane is not confined … what a confined pane has to keep working (`/dev/tty`, the
+    /// cgroup, the workspace mount) is the whole of the work."* A pane given its session's
+    /// [`Confinement::wrap_terminal`](super::super::confine::Confinement::wrap_terminal) argv runs
+    /// in the project view — a file beside the project is **absent**, the project is there and
+    /// writable — and `/dev/tty` still opens and still reports the pane's rectangle.
+    ///
+    /// The control is the job's argv, `wrap` and not `wrap_terminal`, in the same test: with
+    /// `--new-session` the same program has no controlling terminal at all — which is what a pane
+    /// would have been had the pane borrowed the job's argv, and the thing a green run must not be
+    /// able to hide.
+    ///
+    /// Skips, and says so, on a box with no usable bubblewrap: the boundary's own probe is the
+    /// judge of that, and a pane test is not the place to re-argue it.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_confined_pane_sees_only_its_view_and_keeps_its_terminal() {
+        use super::super::confine::{Bwrap, ConfinePlan, Confinement};
+        let root =
+            std::env::temp_dir().join(format!("letibot-term-confine-{}", std::process::id()));
+        let project = root.join("project");
+        let beside = root.join("beside");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::write(beside.join("secret"), "x").unwrap();
+        let project = project.canonicalize().unwrap();
+        let bwrap = match Bwrap::project(&project) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("SKIP: no usable boundary on this box: {e}");
+                return;
+            }
+        };
+        let env = vec![
+            ("TERM".to_string(), "xterm-256color".to_string()),
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+        ];
+        const ASK: &str = "if [ -e \"$1/secret\" ]; then echo seen; else echo absent; fi; \
+                           touch ./made && echo wrote; \
+                           if ( : </dev/tty ) 2>/dev/null; then echo \"tty=$(stty size </dev/tty)\"; \
+                           else echo no-ctty; fi; echo done";
+        let run = |wrap: Vec<String>| {
+            let cfg = TermConfig {
+                command: format!("set -- {}; {ASK}", beside.display()),
+                env: env.clone(),
+                cwd: project.clone(),
+                cols: 77,
+                rows: 21,
+                confine: wrap,
+                ..TermConfig::default()
+            };
+            let sink = Arc::new(Collected::new());
+            let s = TermSession::start(&cfg, sink.clone()).expect("a pane on this box");
+            assert!(sink.wait_for("done", PATIENCE), "{:?}", sink.text());
+            drop(s);
+            sink.text()
+        };
+        let plan = ConfinePlan {
+            cwd: &project,
+            env: &env,
+        };
+        let pane = run(bwrap.wrap_terminal(&plan).expect("a pane's argv"));
+        assert!(
+            pane.contains("absent"),
+            "the view holds only the project: {pane:?}"
+        );
+        assert!(pane.contains("wrote"), "the project is writable: {pane:?}");
+        assert!(
+            pane.contains("tty=21 77"),
+            "the pty is the program's controlling terminal inside the boundary: {pane:?}"
+        );
+        let job = run(bwrap.wrap(&plan).expect("a job's argv"));
+        assert!(
+            job.contains("no-ctty"),
+            "the control: a job's argv takes the terminal away: {job:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

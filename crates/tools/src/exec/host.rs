@@ -984,6 +984,26 @@ impl HostProcesses {
             .cloned()
     }
 
+    /// **The argv a `!term` pane is started inside, so it gets the boundary a `bash` call
+    /// gets** (R60 item 3) — read off the confinement as it stands *now*, so a grant made since
+    /// the session opened is in it, exactly as it is for the next command.
+    ///
+    /// [`Confinement::wrap_terminal`] and not `wrap`: the pane's pty is its controlling terminal
+    /// and has to stay so inside the boundary — see that method. Empty for an unconfined host,
+    /// which is [`Unconfined`]'s own answer; a refusal for a host whose boundary is missing,
+    /// which is [`super::confine::NoConfinement`]'s — and a pane in such a session does not run,
+    /// for the same reason its commands do not.
+    pub fn terminal_wrap(
+        &self,
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+    ) -> Result<Vec<String>, ExecError> {
+        self.confine
+            .read()
+            .expect("confinement")
+            .wrap_terminal(&ConfinePlan { cwd, env })
+    }
+
     /// What the boundary is, in its own words.
     pub fn confinement_describe(&self) -> String {
         self.confine.read().expect("confinement").describe()

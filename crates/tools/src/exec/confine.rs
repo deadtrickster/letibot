@@ -965,6 +965,25 @@ pub trait Confinement: Send + Sync {
     fn launcher_failure(&self, _output: &str) -> Option<String> {
         None
     }
+
+    /// **[`Confinement::wrap`] for a program that keeps a terminal of its own** — the `!term`
+    /// pane (R60 item 3), whose pty is its controlling terminal and must stay so inside the
+    /// boundary.
+    ///
+    /// The one difference is the controlling terminal. [`Bwrap`]'s ordinary argv starts the
+    /// command in a new session (`--new-session`), which takes the terminal away so `TIOCSTI`
+    /// cannot push characters into the operator's shell — right for a job, whose stdio is pipes
+    /// and whose session would otherwise be the daemon's. A pane's pty is **its own**: a pty
+    /// the daemon opened for this one program, with nothing on it but the program and the
+    /// keystrokes the operator sends it. Without its controlling terminal a screen program
+    /// loses `/dev/tty` (`ENXIO`), job control and `SIGWINCH` — the whole pane — and what
+    /// `TIOCSTI` could reach is the program's own input, which the program can already write.
+    ///
+    /// The default is `wrap` itself: a confinement with no session to drop has no difference
+    /// to make, and [`Unconfined`] and [`NoConfinement`] answer the same way for both.
+    fn wrap_terminal(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
+        self.wrap(plan)
+    }
 }
 
 /// **Confinement was asked for and is not available.** Every spawn refuses.
@@ -1276,29 +1295,11 @@ impl Confinement for Bwrap {
     }
 
     fn wrap(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
-        // Belt and braces against the one mistake that matters: a `Bwrap` whose
-        // boundary lost a required namespace between the probe and now cannot
-        // produce an argv. There is no code path that mutates it, which is exactly
-        // why the check is cheap enough to keep.
-        if !self.boundary.complete() {
-            return Err(ExecError::NoConfinement(format!(
-                "this boundary is missing a required namespace, so nothing runs \
-                 inside it: {}",
-                self.boundary.describe()
-            )));
-        }
-        if self.boundary.view.outside(plan.cwd) {
-            return Err(ExecError::NotInView {
-                path: plan.cwd.display().to_string(),
-                view: self.boundary.view.summary(),
-            });
-        }
-        Ok(build_argv(
-            &self.helper,
-            &self.boundary.view,
-            &self.boundary.egress,
-            plan,
-        ))
+        self.wrap_with(plan, false)
+    }
+
+    fn wrap_terminal(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
+        self.wrap_with(plan, true)
     }
 
     fn outside_view(&self, path: &Path) -> bool {
@@ -1334,6 +1335,47 @@ impl Confinement for Bwrap {
                 .lines()
                 .next()
                 .unwrap_or("the project")
+        ))
+    }
+}
+
+impl Bwrap {
+    /// [`Confinement::wrap`] and [`Confinement::wrap_terminal`], which differ by one flag: see
+    /// the latter for why a pane keeps its controlling terminal.
+    ///
+    /// **The probe measured the argv WITH `--new-session`**, and the terminal argv is that argv
+    /// less the one flag. What the probe reads — which namespaces were entered, and the two
+    /// seals — does not depend on the session: `setsid` is not a namespace and neither seal is
+    /// granted or withheld by it. So the boundary [`Boundary::describe`] reports is the one the
+    /// pane runs in; the difference is stated here rather than measured twice.
+    fn wrap_with(
+        &self,
+        plan: &ConfinePlan<'_>,
+        controlling_terminal: bool,
+    ) -> Result<Vec<String>, ExecError> {
+        // Belt and braces against the one mistake that matters: a `Bwrap` whose
+        // boundary lost a required namespace between the probe and now cannot
+        // produce an argv. There is no code path that mutates it, which is exactly
+        // why the check is cheap enough to keep.
+        if !self.boundary.complete() {
+            return Err(ExecError::NoConfinement(format!(
+                "this boundary is missing a required namespace, so nothing runs \
+                 inside it: {}",
+                self.boundary.describe()
+            )));
+        }
+        if self.boundary.view.outside(plan.cwd) {
+            return Err(ExecError::NotInView {
+                path: plan.cwd.display().to_string(),
+                view: self.boundary.view.summary(),
+            });
+        }
+        Ok(build_argv_with(
+            &self.helper,
+            &self.boundary.view,
+            &self.boundary.egress,
+            plan,
+            controlling_terminal,
         ))
     }
 }
@@ -1393,6 +1435,18 @@ fn build_argv(
     egress: &Egress,
     plan: &ConfinePlan<'_>,
 ) -> Vec<String> {
+    build_argv_with(helper, view, egress, plan, false)
+}
+
+/// [`build_argv`], and for a pane the same argv without `--new-session` — see
+/// [`Confinement::wrap_terminal`].
+fn build_argv_with(
+    helper: &Path,
+    view: &ViewSpec,
+    egress: &Egress,
+    plan: &ConfinePlan<'_>,
+    controlling_terminal: bool,
+) -> Vec<String> {
     let mut a: Vec<String> = vec![helper.display().to_string()];
     let mut push = |s: &str| a.push(s.to_string());
 
@@ -1417,8 +1471,11 @@ fn build_argv(
     // the join script, and it is free.
     push("--die-with-parent");
     // No controlling terminal, so `TIOCSTI` cannot push characters back into the
-    // operator's shell. Safe here because a job's stdio is pipes.
-    push("--new-session");
+    // operator's shell. Safe here because a job's stdio is pipes — and kept off for a
+    // pane, whose pty is its own: see `Confinement::wrap_terminal`.
+    if !controlling_terminal {
+        push("--new-session");
+    }
 
     // The system roots, read-only and `-try`: a host without `/lib64` is not a
     // failure, and a merged-`/usr` host has symlinks where a split one has
