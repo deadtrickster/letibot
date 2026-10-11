@@ -104,6 +104,32 @@ fn placement_arg(
     Ok(placement)
 }
 
+/// The `verify` argument: an acceptance check firecode runs after a VM-placed child finishes
+/// ([`TaskSpec::vm_verify`]). Refused off a VM, where nothing would run it — taking it silently
+/// would leave the caller believing in a gate that does not exist.
+fn verify_arg(
+    args: &serde_json::Value,
+    placement: Placement,
+) -> Result<Option<String>, Invocation> {
+    let Some(v) = args
+        .get("verify")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(None);
+    };
+    if placement != Placement::Firecode {
+        return Err(Invocation::failed(
+            "`verify` needs `where: firecode`",
+            "the check is run by firecode, after the child finishes and before its VM stops; \
+             a child on the host has no VM to run it in. Nothing was spawned. Add `where: \
+             firecode`, or leave `verify` out and check the child's work yourself.",
+        ));
+    }
+    Ok(Some(v.to_string()))
+}
+
 impl Placement {
     pub fn parse(s: &str) -> Result<Placement, String> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -172,6 +198,17 @@ pub struct TaskSpec {
     /// session, and a child whose VM copied one tree while the caller's record says another is the
     /// same silent-provenance defect as a model name that does not match.
     pub vm_source: Option<PathBuf>,
+    /// **The acceptance check a VM-placed child is held to** — a shell command firecode runs in
+    /// the child's project after the child has finished and before the VM stops, whose exit
+    /// status is the verdict (`firecode up --verify`).
+    ///
+    /// Without it a placed child's "done" is its own word, and a child once answered "the recipe
+    /// is running in the background" while its VM was about to take that run down. The tiers
+    /// that most need placing — an e2e suite, a test stack — are the ones that already have a
+    /// runnable check, so the parent says what it is and the harness, not the child, runs it.
+    /// The verdict comes back in the child's answer, beside where its work was delivered.
+    /// `None` on the host: there is no VM to run it in after the child.
+    pub vm_verify: Option<String>,
 }
 
 /// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
@@ -710,7 +747,8 @@ impl Tool for TaskTool {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
-                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."}
+                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
+                    "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."}
                 },
                 "required": ["prompt"]
             }),
@@ -747,6 +785,10 @@ impl Tool for TaskTool {
             Ok(p) => p,
             Err(refused) => return refused,
         };
+        let vm_verify = match verify_arg(args, placement) {
+            Ok(v) => v,
+            Err(refused) => return refused,
+        };
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
@@ -764,6 +806,7 @@ impl Tool for TaskTool {
             // (`Harness::serve_reviews`); a model's `where: firecode` has no way to name a tree it
             // has not looked at.
             vm_source: None,
+            vm_verify,
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
@@ -900,6 +943,7 @@ impl Tool for TaskStartTool {
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
                     "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
+                    "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
@@ -939,6 +983,10 @@ impl Tool for TaskStartTool {
         // Checked before the worktree is arranged: a refusal here leaves nothing behind.
         let placement = match placement_arg(args, None) {
             Ok(p) => p,
+            Err(refused) => return refused,
+        };
+        let vm_verify = match verify_arg(args, placement) {
+            Ok(v) => v,
             Err(refused) => return refused,
         };
         let model = args
@@ -1019,6 +1067,7 @@ impl Tool for TaskStartTool {
             // A `task_start` works in the worktree it just arranged, so a VM placement copies
             // that — the child's own workspace, which is what `None` means.
             vm_source: None,
+            vm_verify,
         };
         let worktree_spec = WorktreeSpec {
             slug,

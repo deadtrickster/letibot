@@ -133,3 +133,46 @@ fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
     let _ = std::fs::remove_dir_all(&cache);
     let _ = std::fs::remove_dir_all(&src);
 }
+
+/// **The acceptance check is run by firecode, and its verdict is the answer's.** A placed child's
+/// "done" used to be its word; the check is the harness's, run in the VM after the child, and
+/// what `close` says is what firecode recorded. Failed first (the file is not there), then passed.
+#[test]
+fn a_vm_backends_acceptance_check_decides_what_close_says() {
+    if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");
+        return;
+    }
+    let src = std::env::temp_dir().join(format!("letibot-fc-gate-src-{}", std::process::id()));
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.txt"), "hello\n").unwrap();
+    let cache = std::env::temp_dir().join(format!("letibot-fc-gate-cache-{}", std::process::id()));
+
+    for (name, write, says) in [
+        ("gate-fails", false, "ACCEPTANCE CHECK FAILED"),
+        ("gate-passes", true, "ACCEPTANCE CHECK PASSED"),
+    ] {
+        let mut spec = FirecodeSpec::new(&src, name);
+        spec.cache = cache.clone();
+        spec.verify = Some("test -f done.txt".into());
+        let b = FirecodeBackend::up(&spec).expect("up");
+        if write {
+            b.write("done.txt", b"ok\n").unwrap();
+        }
+        let answer = b.close().expect("an answer");
+        eprintln!("{name}: {answer}");
+        assert!(answer.contains(says), "{name}: {answer}");
+        let landed = b.landed();
+        if write {
+            let landed = landed.expect("work was delivered");
+            assert!(answer.contains(&landed.display().to_string()), "{answer}");
+            assert!(
+                landed.join(".firecode-verify.log").exists() || answer.contains("log:"),
+                "the check's log is named"
+            );
+        }
+        drop(b);
+    }
+    let _ = std::fs::remove_dir_all(&cache);
+    let _ = std::fs::remove_dir_all(&src);
+}

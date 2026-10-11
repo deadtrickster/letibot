@@ -275,6 +275,8 @@ pub struct FirecodeBackend {
     /// Why the copy has none of its source's layers, when it has none — a `layer inherit`
     /// this firecode does not have, or one that refused. Said in [`ExecBackend::describe`].
     layers: Option<String>,
+    /// [`FirecodeSpec::verify`], kept to name the check beside its verdict.
+    verify: Option<String>,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -345,6 +347,11 @@ pub struct FirecodeSpec {
     /// caller — a test with a stub — can say which without racing every other reader of
     /// `$FIRECODE_BIN` in the process.
     pub bin: Option<PathBuf>,
+    /// **The acceptance check**, handed to `firecode up --verify`: firecode runs it in the
+    /// project when the VM is brought down, after the child has finished, and records its exit
+    /// status on the run (`runs/<run>/verify-status`). [`ExecBackend::close`] reports that
+    /// verdict, so a placed child's "done" is something the harness ran and not the child's word.
+    pub verify: Option<String>,
 }
 
 impl FirecodeSpec {
@@ -378,6 +385,7 @@ impl FirecodeSpec {
             writable: true,
             exec: true,
             bin: None,
+            verify: None,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -468,11 +476,15 @@ impl FirecodeBackend {
             format!("no layer inheritance ({why}); the guest builds on base-image toolchains")
         });
 
-        let up = std::process::Command::new(&bin)
-            .arg("up")
+        let mut up = std::process::Command::new(&bin);
+        up.arg("up")
             .arg("--project")
             .arg(&project)
-            .args(&spec.up_args)
+            .args(&spec.up_args);
+        if let Some(check) = &spec.verify {
+            up.arg("--verify").arg(check);
+        }
+        let up = up
             .stdin(Stdio::null())
             .output()
             .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;
@@ -516,6 +528,7 @@ impl FirecodeBackend {
             landed: std::sync::Mutex::new(None),
             run,
             layers,
+            verify: spec.verify.clone(),
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
@@ -591,6 +604,33 @@ impl FirecodeBackend {
         std::fs::read_to_string(dir.join("copy_out"))
             .ok()
             .map(|t| t.trim().to_string())
+    }
+
+    /// **The acceptance check's verdict, as firecode recorded it** — `runs/<run>/verify-status`,
+    /// the check's exit status, or `missing` when it never reported. `None` when no check was
+    /// asked for. Worded so a parent cannot read a failure as a pass: the verdict is the
+    /// harness's, and it outranks whatever the child said about its own work.
+    fn verdict(&self) -> Option<String> {
+        let check = self.verify.as_ref()?;
+        let status = self
+            .run_dir()
+            .and_then(|d| std::fs::read_to_string(d.join("verify-status")).ok())
+            .map(|t| t.trim().to_string());
+        let log = self
+            .landed()
+            .map(|p| p.join(".firecode-verify.log").display().to_string())
+            .unwrap_or_else(|| ".firecode-verify.log in the delivered work".into());
+        Some(match status.as_deref() {
+            Some("0") => format!("ACCEPTANCE CHECK PASSED: `{check}` exited 0 (log: {log})."),
+            Some("missing") | Some("") | None => format!(
+                "ACCEPTANCE CHECK GAVE NO VERDICT: `{check}` never reported. Treat the work as \
+                 NOT done, whatever the subagent said."
+            ),
+            Some(code) => format!(
+                "ACCEPTANCE CHECK FAILED: `{check}` exited {code} (log: {log}). The work is NOT \
+                 done, whatever the subagent said."
+            ),
+        })
     }
 
     fn run_dir(&self) -> Option<PathBuf> {
@@ -780,8 +820,12 @@ impl ExecBackend for FirecodeBackend {
             let _ = std::fs::remove_file(&staged);
             return Err(BackendError::Io(String::from_utf8_lossy(&out).into_owned()));
         }
+        // `--project`, always: without it `cp` asks which VM the moment a second one is up -
+        // another child, the operator's own - and the write fails with "2 VMs are running".
         let cp = std::process::Command::new(&self.bin)
             .arg("cp")
+            .arg("--project")
+            .arg(&self.project)
             .arg(&staged)
             .arg(format!("vm:{dir}/"))
             .stdin(Stdio::null())
@@ -819,7 +863,7 @@ impl ExecBackend for FirecodeBackend {
         self.down();
         // Said as what happened to the work, not as the VM's state: "the VM is
         // down" was read by the first model to see it as "the placement failed".
-        Some(match self.landed() {
+        let work = match self.landed() {
             Some(p) => format!(
                 "the subagent's VM finished normally. Everything it wrote is in {} — a copy \
                  of {} as the guest left it. Nothing was applied to the source tree: diff \
@@ -827,17 +871,47 @@ impl ExecBackend for FirecodeBackend {
                 p.display(),
                 self.source.display()
             ),
-            None if self.run_finished() => format!(
-                "the subagent's VM finished normally and changed nothing in its copy of {}, \
-                 so firecode wrote no result directory",
-                self.source.display()
-            ),
-            None => format!(
-                "the subagent's VM was brought down, but neither a result directory beside \
-                 {} nor firecode's record of the run appeared within 10 s; the run's console \
-                 log under firecode's runs directory is the place to look",
-                self.project.display()
-            ),
+            None => match self.copy_out() {
+                // Each of these used to fall through to "nothing appeared within 10 s", which
+                // was false for both: a failed copy-out is the one case where the copy below is
+                // the ONLY place the work is, and a pending one is work still arriving.
+                Some(r) if r.starts_with("failed") => format!(
+                    "the subagent's VM stopped, but firecode's copy-out {r}. The copy the VM was \
+                     booted on is kept at {}, and it is now the only place the work is — read it \
+                     from there",
+                    self.project.display()
+                ),
+                Some(r) if r == "pending" => format!(
+                    "the subagent's VM stopped and firecode is still copying its work out after \
+                     {} s. It is not lost: when the copy finishes, `{}` will say `done <path>`, \
+                     and the path is where the work is",
+                    COPY_OUT_CAP.as_secs(),
+                    self.run_dir()
+                        .map(|d| d.join("copy_out").display().to_string())
+                        .unwrap_or_else(|| "firecode's runs/<run>/copy_out".into())
+                ),
+                Some(r) if r == "none" => format!(
+                    "the subagent's VM finished normally and changed nothing in its copy of {}, \
+                     so firecode wrote no result directory",
+                    self.source.display()
+                ),
+                _ if self.run_finished() => format!(
+                    "the subagent's VM finished normally and changed nothing in its copy of {}, \
+                     so firecode wrote no result directory",
+                    self.source.display()
+                ),
+                _ => format!(
+                    "the subagent's VM was brought down, but neither a result directory beside \
+                     {} nor firecode's record of the run appeared within {} s; the run's console \
+                     log under firecode's runs directory is the place to look",
+                    self.project.display(),
+                    LEGACY_WAIT.as_secs()
+                ),
+            },
+        };
+        Some(match self.verdict() {
+            Some(v) => format!("{work}.\n\n{v}"),
+            None => work,
         })
     }
 
@@ -1418,6 +1492,95 @@ mod tests {
         assert!(
             !root.join("cache").join("child").exists(),
             "the copy is removed once the work landed"
+        );
+    }
+
+    /// **The parent's acceptance check reaches `firecode up`**, as `--verify <command>`, so it is
+    /// firecode - not the child - that runs it when the VM comes down.
+    #[test]
+    fn the_acceptance_check_is_handed_to_firecode_up() {
+        let root = tmp("verify-up");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let fc = root.join("fc");
+        let argv = root.join("up-argv");
+        let arms = format!(
+            "up) printf '%s\\n' \"$@\" > '{a}'; exit 0 ;;\n\
+             info) echo '{{\"run\":\"r1\"}}' ;;\n\
+             layer) exit 0 ;;",
+            a = argv.display()
+        );
+        let bin = stub_firecode(&fc, &arms);
+        let mut spec = spec_with(&src, &root.join("cache"), &bin);
+        spec.verify = Some("make e2e TEST=x".into());
+        let _b = FirecodeBackend::up(&spec).unwrap();
+        let said = std::fs::read_to_string(&argv).unwrap();
+        let args: Vec<&str> = said.lines().collect();
+        let at = args
+            .iter()
+            .position(|a| *a == "--verify")
+            .expect("--verify reaches up");
+        assert_eq!(
+            args.get(at + 1),
+            Some(&"make e2e TEST=x"),
+            "and carries the command whole"
+        );
+    }
+
+    /// **A failed check is the answer's headline**, beside where the work is - read from
+    /// firecode's record of the run, not from anything the child said.
+    #[test]
+    fn the_answer_carries_the_checks_verdict_and_where_the_work_is() {
+        for (status, says) in [
+            ("1", "ACCEPTANCE CHECK FAILED: `make e2e` exited 1"),
+            ("0", "ACCEPTANCE CHECK PASSED: `make e2e` exited 0"),
+            ("missing", "ACCEPTANCE CHECK GAVE NO VERDICT"),
+        ] {
+            let root = tmp(&format!("verdict-{status}"));
+            let src = root.join("src");
+            file(&src.join("a.txt"), 10);
+            let fc = root.join("fc");
+            let delivered = root.join("work");
+            let arms = format!(
+                "{HAPPY}\n\
+                 down) mkdir -p \"$ROOT/runs/r1\" '{d}'; echo '{status}' > \"$ROOT/runs/r1/verify-status\"; \
+                 echo 'done {d}' > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;",
+                d = delivered.display()
+            );
+            let bin = stub_firecode(&fc, &arms);
+            let mut spec = spec_with(&src, &root.join("cache"), &bin);
+            spec.verify = Some("make e2e".into());
+            let b = FirecodeBackend::up(&spec).unwrap();
+            let answer = b.close().unwrap();
+            assert!(answer.contains(says), "for status {status}: {answer}");
+            assert!(
+                answer.contains(&delivered.display().to_string()),
+                "the delivered path is in the answer: {answer}"
+            );
+        }
+    }
+
+    /// **A failed copy-out is said as one**, and points at the copy that is now the only place
+    /// the work is - it used to fall through to "nothing appeared within 10 s".
+    #[test]
+    fn a_failed_copy_out_is_reported_as_a_failure_not_as_silence() {
+        let root = tmp("copy-failed");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let fc = root.join("fc");
+        let arms = format!(
+            "{HAPPY}\n\
+             down) mkdir -p \"$ROOT/runs/r1\"; echo 'failed: no space left' > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;"
+        );
+        let bin = stub_firecode(&fc, &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).unwrap();
+        let answer = b.close().unwrap();
+        assert!(answer.contains("failed: no space left"), "{answer}");
+        assert!(answer.contains("only place the work is"), "{answer}");
+        assert!(!answer.contains("within 10 s"), "{answer}");
+        assert!(
+            root.join("cache").join("child").exists(),
+            "the copy is kept"
         );
     }
 

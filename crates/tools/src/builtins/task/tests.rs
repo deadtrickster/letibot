@@ -792,6 +792,21 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
         collected, "researcher [no write, no exec, no network] @firecode: survey the crates",
         "the spec `task` parsed is the spec the subagent ran under"
     );
+    // An acceptance check is the harness's to run, after the child, in the child's VM - so
+    // it is taken with `where: firecode` and refused without one, never silently dropped.
+    let refused = run(
+        &mut rt,
+        &mut sink,
+        r#"{"prompt": "run the suite", "verify": "make e2e"}"#,
+    );
+    assert!(refused.contains("Add `where: firecode`"), "{refused}");
+    assert!(refused.contains("Nothing was spawned"), "{refused}");
+    let gated = run(
+        &mut rt,
+        &mut sink,
+        r#"{"prompt": "run the suite", "where": "firecode", "verify": "make e2e"}"#,
+    );
+    assert!(gated.contains("started subagent"), "{gated}");
     let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "access": "root"}"#);
     assert!(p.contains("not a downgrade"), "{p}");
     let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "moon"}"#);

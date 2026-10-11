@@ -2402,6 +2402,7 @@ impl Harness {
             spec.writable = may_write;
             spec.exec = may_exec;
             spec.up_args = cfg.vm_args.clone();
+            spec.verify = cfg.vm_verify.clone();
             let fc = letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
                 HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
             })?;
@@ -14126,6 +14127,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             // verbatim: this is the layer that must not invent a value, because the value IS the
             // caller's word about where the work is.
             vm_source: spec.vm_source.clone(),
+            vm_verify: spec.vm_verify.clone(),
         };
         let id = sub_id.clone();
         let spawned = std::thread::Builder::new()
@@ -15425,6 +15427,9 @@ impl HarnessTaskRunner {
         if let Some(src) = &spec.vm_source {
             sub_cfg.vm_source = Some(src.clone());
         }
+        // The parent's acceptance check rides to the child's VM the same way: on the spec, into
+        // the child's config at the spawn, and from there onto `firecode up` (`Harness::open`).
+        sub_cfg.vm_verify = spec.vm_verify.clone();
         // **And the local model's own address, alias and sampling**, after the spread,
         // because `..self.base.clone()` would otherwise put the parent's back.
         if let (Some(e), Some(m)) = (&sub_endpoint, &sub_local) {
