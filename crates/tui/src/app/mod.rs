@@ -131,6 +131,16 @@ pub struct App {
     /// drawn and emptied when anything else is, so a click is only ever measured against rows
     /// that are on the glass. See [`FileRef`].
     pub(crate) file_rows: Vec<(usize, FileRef)>,
+    /// **Which screen rows of the last frame are a job's completion notice**: `(row, index of
+    /// the row in `items`)`, rebuilt with [`App::file_rows`] and by the same rule. A click on
+    /// one opens the notice's whole card (`app::diff_popup`, [`PopupBody::Notice`]).
+    pub(crate) notice_rows: Vec<(usize, usize)>,
+    /// **What this head holds of each ended job's output**, by handle — the second line of a
+    /// completion notice and the tail its popup shows. Filled by a `ReadJobOutput` the window
+    /// sends for a notice on the screen (once per job; see `App::ask_notice_tails`) and by any
+    /// window of the jobs pane that reaches a job's end.
+    pub(crate) job_tails:
+        std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
     /// **What this head believes about the session's pane** — the daemon's answer to
     /// `ClientFrame::TermStatus`, kept because a head that is **not drawing** the pane still has
     /// to say that something is running in it (and a `!term close` has to name what it is about
@@ -1515,6 +1525,8 @@ impl App {
             edit_pane: None,
             edit_area: rano::editor::Area::default(),
             file_rows: Vec::new(),
+            notice_rows: Vec::new(),
+            job_tails: Default::default(),
             term_fact: PaneFact::Unasked,
             term_ask: None,
             close_pending: false,

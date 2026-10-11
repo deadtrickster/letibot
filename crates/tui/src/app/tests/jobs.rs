@@ -105,10 +105,10 @@ fn the_notice_fold_refuses_anything_it_cannot_account_for() {
     }
 }
 
-/// **And the row on the glass is the folded line** — the complaint was about what the operator
+/// **And the row on the glass is the compact card** — the complaint was about what the operator
 /// was reading, so the assertion is on a frame and not only on the function.
 #[test]
-fn a_settled_jobs_row_draws_as_one_line_and_not_as_the_promise() {
+fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -137,10 +137,14 @@ fn a_settled_jobs_row_draws_as_one_line_and_not_as_the_promise() {
         },
     )));
     let screen = a.screen(120, 30).join("\n");
+    // **Two lines since the compact card** (`job_card`): the job, how it ended and what it ran,
+    // then what it wrote — the operator's *"first line is j<id> - slug - truncated cmd and
+    // second line is truncated output"*.
     assert!(
-        screen.contains("Job j57 exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done"),
+        screen.contains("j57 · exited 0 3.0s · sleep 3; echo done"),
         "the row names the job, how it ended and what it ran: {screen}"
     );
+    assert!(screen.contains("⎿ wrote 5 bytes"), "{screen}");
     assert!(
         !screen.contains("you do not need to wait for it"),
         "R7's promise is to the model, not to the person reading the row: {screen}"

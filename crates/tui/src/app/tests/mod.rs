@@ -466,6 +466,7 @@ fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<Stri
         targets: &targets,
         answered: &answered,
         subagents: &[],
+        job_tails: &Default::default(),
         drawn_live: false,
         elapsed_ms: None,
         edit,
@@ -1390,6 +1391,7 @@ mod decisions;
 mod detected;
 mod editor;
 mod hits;
+mod jobcard;
 mod jobs;
 mod misc;
 mod notes;

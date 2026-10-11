@@ -14,13 +14,13 @@ use rano::style::Role;
 
 use super::editor::FileRef;
 use super::*;
+use crate::ui::transcript::job_card::{EndedJob, JobTail, TAIL_BYTES, notice_jobs};
 
-/// The popup's state: the change it shows, where the reader is in it, and the rows it last
-/// laid out (kept per width and diff shape, because a file is re-diffed only when either
-/// changes).
+/// The popup's state: what it shows, where the reader is in it, and the rows it last laid out
+/// (kept per width and diff shape, because a file is re-diffed only when either changes).
 #[derive(Debug, Clone)]
 pub struct DiffPopup {
-    pub(crate) file: FileRef,
+    pub(crate) body: PopupBody,
     /// The first row on the screen, among the popup's body rows.
     pub(crate) scroll: usize,
     /// Whether the first frame has placed the reader on the first change yet. The rows are
@@ -30,6 +30,25 @@ pub struct DiffPopup {
     pub(crate) laid: Option<Layout>,
     /// How many body rows the last frame had, for the paging keys.
     pub(crate) room: usize,
+}
+
+/// **What a popup over the conversation holds.**
+///
+/// A change is the first thing it held. The second is a job's completion notice — the operator,
+/// asking for the notice to be two lines in the transcript: *"click behaves similar to diff
+/// click - popup with full card"*. One popup and not two, because what the reader does with it is
+/// the same — read, scroll, Esc — and a second overlay would be a second set of keys, a second
+/// entry in `drawn()` and a second place the cursor has to be hidden.
+#[derive(Debug, Clone)]
+pub(crate) enum PopupBody {
+    /// An edit or write, read in its whole file.
+    Change(FileRef),
+    /// **A job's completion notice, whole**: the daemon's text as the model read it, and the
+    /// jobs it reports, whose output the popup shows under it when this head holds it.
+    Notice {
+        text: String,
+        jobs: Vec<(bool, EndedJob)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -44,13 +63,202 @@ pub(crate) struct Layout {
 impl App {
     /// Open the popup on `f`.
     pub(crate) fn open_diff_popup(&mut self, f: &FileRef) {
+        self.open_popup(PopupBody::Change(f.clone()));
+    }
+
+    fn open_popup(&mut self, body: PopupBody) {
         self.diff_popup = Some(DiffPopup {
-            file: f.clone(),
+            body,
             scroll: 0,
             placed: false,
             laid: None,
             room: 0,
         });
+    }
+
+    /// **Open row `k`'s completion notice whole** — the click on its compact lines. A job whose
+    /// output this head has not asked for yet is asked for now, so the popup fills in when the
+    /// answer lands. Does nothing for a row that is not a notice this head can read.
+    pub(crate) fn open_notice_popup(&mut self, k: usize) {
+        let Some(text) = self.items.get(k).and_then(agent_row_text) else {
+            return;
+        };
+        let Some(jobs) = notice_jobs(&text) else {
+            return;
+        };
+        let asks: Vec<(String, u64)> = jobs
+            .iter()
+            .filter(|(mine, _)| *mine)
+            .map(|(_, j)| (j.id.clone(), j.produced))
+            .collect();
+        self.ask_tails(asks);
+        self.open_popup(PopupBody::Notice { text, jobs });
+    }
+
+    /// **Ask for the end of each job's output that this head does not hold yet** — `(handle,
+    /// bytes it wrote)`. Once per job: an answer, a refusal and a pending ask all leave a mark
+    /// in `job_tails`, so a notice that stays on the screen is not a read per frame. A job that
+    /// wrote nothing needs no read to say so.
+    ///
+    /// **The tail, not the head.** The offset is [`TAIL_BYTES`] before the end, because a
+    /// build or a test run says how it went in its last lines; the first line of such a window
+    /// may be cut, which is why only its LAST line is drawn on the row.
+    pub(crate) fn ask_tails(&mut self, asks: Vec<(String, u64)>) {
+        if self.session_id.is_empty() {
+            return;
+        }
+        for (job, produced) in asks {
+            if self.job_tails.contains_key(&job) {
+                continue;
+            }
+            if produced == 0 {
+                self.job_tails.insert(job, JobTail::Lines(Vec::new()));
+                continue;
+            }
+            self.job_tails.insert(job.clone(), JobTail::Asked);
+            self.queued.push(Action::ReadJobOutput {
+                job,
+                offset: produced.saturating_sub(TAIL_BYTES),
+            });
+        }
+    }
+
+    /// **A job's tail landed (or was refused)**: kept, and every row that draws it is drawn
+    /// again — the notice rows from the first one that names the job, and the popup if it is
+    /// open on it.
+    pub(crate) fn job_tail_landed(&mut self, job: &str, tail: JobTail) {
+        self.job_tails.insert(job.to_string(), tail);
+        let first = self.items.iter().position(|it| {
+            agent_row_text(it)
+                .and_then(|t| notice_jobs(&t))
+                .is_some_and(|jobs| jobs.iter().any(|(_, j)| j.id == job))
+        });
+        if let Some(k) = first {
+            self.invalidate_history_from(k);
+        }
+        if let Some(p) = self.diff_popup.as_mut()
+            && let PopupBody::Notice { jobs, .. } = &p.body
+            && jobs.iter().any(|(_, j)| j.id == job)
+        {
+            p.laid = None;
+        }
+        self.redraw = true;
+    }
+
+    /// **The notice rows among lines `start..end` of the conversation**, as `(row of the window,
+    /// index of the row in `items`)` — [`App::file_rows_in`]'s walk, for the other row a click
+    /// opens. Asks for the tails of the jobs those rows name, so the rows on the screen are the
+    /// ones whose output is read.
+    pub(crate) fn notice_rows_in(&mut self, start: usize, end: usize) -> Vec<(usize, usize)> {
+        let end = end.min(self.hist_lines.len());
+        let mut out = Vec::new();
+        let mut asks: Vec<(String, u64)> = Vec::new();
+        let mut last: Option<(usize, bool)> = None;
+        for line in start..end {
+            let i = self.spans.partition_point(|sp| sp.at <= line);
+            let Some(sp) = i.checked_sub(1).map(|i| self.spans[i]) else {
+                continue;
+            };
+            if line >= sp.at + sp.lines {
+                continue;
+            }
+            let is_notice = match last {
+                Some((row, is)) if row == sp.row => is,
+                _ => {
+                    let jobs = self
+                        .items
+                        .get(sp.row)
+                        .and_then(agent_row_text)
+                        .and_then(|t| notice_jobs(&t));
+                    if let Some(jobs) = &jobs {
+                        asks.extend(
+                            jobs.iter()
+                                .filter(|(mine, _)| *mine)
+                                .map(|(_, j)| (j.id.clone(), j.produced)),
+                        );
+                    }
+                    last = Some((sp.row, jobs.is_some()));
+                    jobs.is_some()
+                }
+            };
+            if is_notice {
+                out.push((line - start, sp.row));
+            }
+        }
+        self.ask_tails(asks);
+        out
+    }
+
+    /// **The notice popup's rows at `width`**: the notice as the model read it, wrapped — the
+    /// paragraph addressed to the model included, because this is the full card the compact
+    /// rows stand for — and under it, for each job, the end of what it wrote.
+    pub(crate) fn notice_popup_layout(
+        &self,
+        text: &str,
+        jobs: &[(bool, EndedJob)],
+        width: usize,
+    ) -> Layout {
+        use crate::ui::render::wrap;
+        use letibot_ui::text::without_control;
+        let mut rows: Vec<Line> = Vec::new();
+        let push_wrapped = |rows: &mut Vec<Line>, s: &str, role: Option<Role>| {
+            for w in wrap(&without_control(s), width.max(4)) {
+                rows.push(match role {
+                    Some(r) => Line::styled(w, r),
+                    None => Line::raw(w),
+                });
+            }
+        };
+        for l in text.lines() {
+            if l.is_empty() {
+                rows.push(Line::default());
+            } else {
+                push_wrapped(&mut rows, l, None);
+            }
+        }
+        for (mine, j) in jobs {
+            rows.push(Line::default());
+            let label = match &j.slug {
+                Some(s) => format!("{s} · {}", j.id),
+                None => j.id.clone(),
+            };
+            rows.push(Line::styled(
+                format!("what {label} wrote, at its end"),
+                Role::Strong,
+            ));
+            match self.job_tails.get(&j.id) {
+                Some(JobTail::Lines(ls)) if ls.is_empty() => {
+                    push_wrapped(&mut rows, "it wrote nothing", Some(Role::Pending))
+                }
+                Some(JobTail::Lines(ls)) => {
+                    for l in ls {
+                        if l.is_empty() {
+                            rows.push(Line::default());
+                        } else {
+                            push_wrapped(&mut rows, l, None);
+                        }
+                    }
+                }
+                Some(JobTail::Asked) => push_wrapped(&mut rows, "reading…", Some(Role::Pending)),
+                Some(JobTail::Gone(why)) => push_wrapped(&mut rows, why, Some(Role::Pending)),
+                None if !mine => push_wrapped(
+                    &mut rows,
+                    "not readable from this session: the session that started it has stopped",
+                    Some(Role::Pending),
+                ),
+                None if j.produced == 0 => {
+                    push_wrapped(&mut rows, "it wrote nothing", Some(Role::Pending))
+                }
+                None => push_wrapped(&mut rows, "not read", Some(Role::Pending)),
+            }
+        }
+        Layout {
+            width,
+            split: self.diff_split,
+            rows,
+            first: 0,
+            note: None,
+        }
     }
 
     /// **The popup's rows at `width`**: the whole file as a diff against itself before the
@@ -158,10 +366,14 @@ impl App {
             Key::Esc | Key::CtrlC => {
                 self.diff_popup = None;
             }
+            // **`ctrl-]` edits a change**; a notice has no file behind it, so the key is the
+            // popup's and does nothing.
             Key::CtrlBracket => {
-                let f = p.file.clone();
-                self.diff_popup = None;
-                self.open_in_editor(&f);
+                if let PopupBody::Change(f) = &p.body {
+                    let f = f.clone();
+                    self.diff_popup = None;
+                    self.open_in_editor(&f);
+                }
             }
             Key::Up => p.scroll = p.scroll.saturating_sub(1),
             Key::Down => p.scroll = (p.scroll + 1).min(max),

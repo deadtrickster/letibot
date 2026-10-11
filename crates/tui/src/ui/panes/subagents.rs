@@ -89,6 +89,7 @@ impl App {
                 }
             }
         }
+        let no_tails = std::collections::HashMap::new();
         let mut out: Vec<String> = Vec::new();
         // The walk's own separator rule: air where the KIND changes, and none between two activity
         // rows. One rule for the transcript and for this pane, or the pane is a second renderer
@@ -104,6 +105,9 @@ impl App {
                 targets: &targets,
                 answered: &answered,
                 subagents: &self.subagents,
+                // **No tails for a peeked child**: the jobs it names are its own, and this head
+                // asks only for the output of the session it is attached to.
+                job_tails: &no_tails,
                 // No durations, no diffs and no approvals: this head did not watch these calls run,
                 // and the maps that carry them are keyed by THIS session's item ids. The renderer
                 // already says *replayed* for all three rather than inventing one.

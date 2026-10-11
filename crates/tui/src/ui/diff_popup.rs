@@ -1,6 +1,7 @@
 //! **The diff popup, drawn**: an edge naming the file and the change, the whole file as a diff,
 //! and an edge with the popup's own keys. See `app::diff_popup`.
 
+use crate::app::diff_popup::PopupBody;
 use crate::app::*;
 use crate::ui::render::path_span;
 use crate::ui::rows::row;
@@ -11,7 +12,7 @@ impl App {
     /// The popup in the conversation's rectangle, `room` rows of `w` columns exactly.
     pub(crate) fn diff_popup_rows(&mut self, w: usize, room: usize) -> Vec<String> {
         let palette = self.cfg.palette();
-        let Some(file) = self.diff_popup.as_ref().map(|p| p.file.clone()) else {
+        let Some(what) = self.diff_popup.as_ref().map(|p| p.body.clone()) else {
             return Vec::new();
         };
         let split = self.diff_split;
@@ -23,7 +24,10 @@ impl App {
             .and_then(|p| p.laid.as_ref())
             .is_none_or(|l| l.width != inner || l.split != split);
         if stale {
-            let laid = self.diff_popup_layout(&file, inner);
+            let laid = match &what {
+                PopupBody::Change(file) => self.diff_popup_layout(file, inner),
+                PopupBody::Notice { text, jobs } => self.notice_popup_layout(text, jobs, inner),
+            };
             if let Some(p) = self.diff_popup.as_mut() {
                 p.laid = Some(laid);
             }
@@ -45,17 +49,38 @@ impl App {
         // edge names the file the change is in, and a printed path that cannot be clicked is
         // the operator's own report. `Style::of(Role::Strong)` is the register the path was
         // drawn in, and the span is that same span when the terminal has no links.
-        let title = Line::new(vec![
-            path_span(
-                self.cfg.links.as_deref(),
-                &file.path,
-                Style::of(Role::Strong),
+        let (title, keys) = match &what {
+            PopupBody::Change(file) => (
+                Line::new(vec![
+                    path_span(
+                        self.cfg.links.as_deref(),
+                        &file.path,
+                        Style::of(Role::Strong),
+                    ),
+                    Span::raw(format!(" · the change at line {}", file.line)),
+                ]),
+                "esc closes · ↑↓ PgUp PgDn Home End · ctrl-] edits it",
             ),
-            Span::raw(format!(" · the change at line {}", file.line)),
-        ]);
-        let keys = Line::new(vec![Span::raw(
-            "esc closes · ↑↓ PgUp PgDn Home End · ctrl-] edits it",
-        )]);
+            // **The notice names its jobs on the edge**, the way the change names its file.
+            PopupBody::Notice { jobs, .. } => (
+                Line::new(vec![
+                    Span::styled(
+                        jobs.iter()
+                            .map(|(_, j)| j.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                        Style::of(Role::Strong),
+                    ),
+                    Span::raw(if jobs.len() == 1 {
+                        " · a job ended"
+                    } else {
+                        " · jobs ended"
+                    }),
+                ]),
+                "esc closes · ↑↓ PgUp PgDn Home End",
+            ),
+        };
+        let keys = Line::new(vec![Span::raw(keys)]);
         let mut out = Vec::with_capacity(room);
         out.push(row(
             &rano::agent::composer::box_edge(w, '╭', '╮', &title, &Line::default()),

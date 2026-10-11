@@ -66,6 +66,45 @@ impl App {
                         return Disposition::Rendered;
                     }
                 }
+                // **A refused read a completion notice asked for is the notice's answer** —
+                // the head asked on its own, for a row's second line, and a refusal of THAT is
+                // not something the operator did and has to be told about in the record. The
+                // notice says it instead (its popup shows the daemon's words). Matched by the
+                // handle the refusal names, or — for a refusal that names none (*this session
+                // has no process host*) — every notice ask still pending, when no pane is
+                // waiting on a read of its own.
+                if code == "job_output_refused" {
+                    use crate::ui::transcript::job_card::JobTail;
+                    let pending: Vec<String> = self
+                        .job_tails
+                        .iter()
+                        .filter(|(_, t)| matches!(t, JobTail::Asked))
+                        .map(|(j, _)| j.clone())
+                        .collect();
+                    let pane_reading = self.job_out.as_ref().is_some_and(|v| v.loading);
+                    let named: Vec<String> = pending
+                        .iter()
+                        .filter(|j| detail.contains(&format!("`{j}`")))
+                        .cloned()
+                        .collect();
+                    let theirs = if !named.is_empty() {
+                        named
+                    } else if !pane_reading {
+                        pending
+                    } else {
+                        Vec::new()
+                    };
+                    let pane_named = self
+                        .job_out
+                        .as_ref()
+                        .is_some_and(|v| v.loading && theirs.contains(&v.job));
+                    if !theirs.is_empty() && !pane_named {
+                        for j in theirs {
+                            self.job_tail_landed(&j, JobTail::Gone(detail.clone()));
+                        }
+                        return Disposition::Filtered;
+                    }
+                }
                 // A refused job-output read is answered **in the pane that asked**,
                 // which is still open — otherwise it would sit at `reading…` for
                 // ever, waiting for a window that is not coming. The conversation

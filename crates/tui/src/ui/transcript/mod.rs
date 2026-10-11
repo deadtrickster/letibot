@@ -4,6 +4,7 @@ pub mod assistant;
 pub mod blocks;
 pub mod call;
 pub mod item;
+pub mod job_card;
 pub mod live;
 pub mod markers;
 pub mod reasoning;

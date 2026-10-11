@@ -26,7 +26,7 @@ impl App {
         match t {
             Target::Surface(s) => self.focused_surface() == Some(s),
             Target::QueueTab(_) => self.focused_surface() == Some(Surface::Queue),
-            Target::Conversation => self.drawn() == Drawn::Conversation,
+            Target::Conversation | Target::Notice => self.drawn() == Drawn::Conversation,
             Target::Decision => !self.open.is_empty(),
             Target::QuitCard => self.quit_card,
             Target::SettingCard => self.pick.is_some(),
@@ -82,7 +82,13 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
-            (Target::Conversation, None) => return ControlFlow::Continue(()),
+            // **A job's completion notice opens whole** — the operator: *"click behaves similar
+            // to diff click - popup with full card"*.
+            (Target::Notice, Some(k)) => {
+                self.open_notice_popup(k);
+                return ControlFlow::Break(None);
+            }
+            (Target::Conversation | Target::Notice, None) => return ControlFlow::Continue(()),
             (_, None) => return ControlFlow::Break(None),
             (Target::Surface(s), Some(k)) => match s {
                 Surface::Picker => self.picker_sel = k,
@@ -133,8 +139,10 @@ impl App {
         const NOTCH: usize = 3;
         match target {
             Target::Surface(_) | Target::QueueTab(_) => self.scroll_pane(up, NOTCH),
-            Target::Conversation if self.payload_sel.is_some() => self.page_payload(up, NOTCH),
-            Target::Conversation => {
+            Target::Conversation | Target::Notice if self.payload_sel.is_some() => {
+                self.page_payload(up, NOTCH)
+            }
+            Target::Conversation | Target::Notice => {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }

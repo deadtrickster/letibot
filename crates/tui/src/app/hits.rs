@@ -50,6 +50,10 @@ pub(crate) enum Target {
     QueueTab(QueueView),
     /// The conversation itself; its stops are the edit and write rows (`file_rows`).
     Conversation,
+    /// **One row of a job's completion notice**, over the conversation; its one stop is the
+    /// notice's index in `items`. A click opens the notice whole, as a click on an edit row
+    /// opens its change.
+    Notice,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.
@@ -174,6 +178,20 @@ impl App {
                     target: Target::Conversation,
                     stops,
                 });
+                // **The notice rows, over the conversation they sit in** — one rectangle a row,
+                // the whole width, like the conversation's own: later records are on top.
+                for (y, k) in self.notice_rows.clone() {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x: 0,
+                            y,
+                            w: term_w,
+                            h: 1,
+                        },
+                        target: Target::Notice,
+                        stops: vec![(y, k)],
+                    });
+                }
             }
             // rano takes its own mouse reports before `App::key` (`App::route`), a `!term` pane
             // is handed none, and the diff popup owns every key while it is up.

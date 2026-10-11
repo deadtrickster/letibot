@@ -949,6 +949,20 @@ tui: 691 unit + 23 integration, all passing.
 - The R61 queue rework will change the queue pane's verbs; its table (`QUEUE` in
   `keys/bindings.rs`) is where they are declared now.
 
+**Follow-on, the compact job card** (branch `compact-job-card`, not merged). The operator: *"i dont
+need job completion card that huge - first line is j<id> - slug - truncated cmd and second line is
+truncated output. click behaves similar to diff click - popup with full card"*. A `[job]` completion
+notice now draws as two lines a job (`ui/transcript/job_card.rs`): `j<id> · slug · state duration ·
+command` cut to the width, then `⎿` the LAST line the job wrote — read once per job with
+`ReadJobOutput` at the tail when the notice is on screen; until it lands, and for a job this session
+cannot read, the line is `wrote N bytes · memory: …`. The model's text is untouched. A click on either
+line opens the whole notice (the model's paragraph included) plus the output's tail in the diff
+popup, now `PopupBody::{Change, Notice}`; Esc closes it. The old fold failed on exactly the pasted
+notice (a multi-line command and the `memory:` line), which is why it drew raw. The parser is pinned
+to `completion_notice` by fixtures that a `harnessd` test compares byte for byte. Open: no key opens
+either popup from the keyboard (there is no row cursor in the conversation); a notice from before
+the head attached is read only when it is scrolled onto the screen.
+
 ---
 
 ## R70 — Tests: split the largest inline blocks into sibling files; count what is comparable — **the split LANDED on `r70-test-files` 2026-10-11, not merged; the small blocks are left**

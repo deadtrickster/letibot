@@ -116,6 +116,11 @@ pub(crate) struct ItemCtx<'a> {
     /// for itself: what a child was asked. Looked up by handle — see [`subagent_asked`], which
     /// the subagents pane and the notice share so the two cannot describe one child differently.
     pub(crate) subagents: &'a [SubagentState],
+    /// **What this head holds of each ended job's output**, by handle — the second line of a
+    /// completion notice's compact form (see `job_card`). Asked for by the window that draws the
+    /// notice, so a row drawn before the answer lands says what the notice itself knows.
+    pub(crate) job_tails:
+        &'a std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
     /// This row belongs to the turn the live pane is still drawing, so the pane
     /// below owns whatever has not settled and this row draws none of it.
     pub(crate) drawn_live: bool,

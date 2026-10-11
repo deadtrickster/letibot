@@ -565,6 +565,103 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     assert_eq!(named.replace("release-build · ", ""), bare);
 }
 
+/// **The notice, byte for byte, as the TUI's compact card parses it.**
+///
+/// The TUI draws this notice as two lines a job — the operator: *"i dont need job completion
+/// card that huge - first line is j<id> - slug - truncated cmd and second line is truncated
+/// output"* — and to do that it parses the sentence (`crates/tui/src/ui/transcript/job_card.rs`).
+/// A parser of another crate's prose is only as good as the test that ties them, so the two
+/// notices below are written out to fixtures the TUI's tests parse, and compared here byte for
+/// byte. **A change to the sentence fails HERE**, naming the fixture, rather than turning the
+/// operator's compact rows back into six rows of raw notice; re-bless with
+/// `LETIBOT_BLESS_JOB_NOTICE=1 cargo test -p letibot-harnessd job_notice_fixtures` and then make
+/// the TUI's parser read the new shape.
+///
+/// The cases are the hard ones: a command written over several lines (a blank line among them),
+/// the `memory:` clause, a named and an unnamed job in one notice, and the handed-up notice with
+/// its owner on the end of the command.
+#[test]
+fn the_tuis_job_notice_fixtures_are_what_completion_notice_writes() {
+    let job = |id: &str,
+               slug: Option<&str>,
+               command: &str,
+               state: &str,
+               produced: u64,
+               ms: u64,
+               memory: Option<&str>,
+               owner: &str| JobCompletion {
+        kind: BackgroundKind::Job,
+        owner: owner.into(),
+        job: id.into(),
+        command: command.into(),
+        slug: slug.map(str::to_string),
+        state: state.into(),
+        produced,
+        elapsed_ms: ms,
+        detail: String::new(),
+        memory: memory.map(str::to_string),
+    };
+    let mine = completion_notice(
+        &[
+            job(
+                "j1042",
+                Some("build-and-test-null"),
+                "bash -c 'cd /home/dead/Projects/dbtest/pg-noop; echo \"=== building release\"\n  cargo build --release 2>&1 | tail -3\n\n  echo \"=== testing\"; cargo test 2>&1 | tail -5'",
+                "exited 0",
+                1008,
+                174_000,
+                Some("peak 245 MiB of a 8 GiB cap"),
+                "s-me",
+            ),
+            job(
+                "j1043",
+                None,
+                "cargo test -p letibot-tui",
+                "exited 101",
+                0,
+                4_400,
+                None,
+                "s-me",
+            ),
+        ],
+        true,
+    );
+    let theirs = completion_notice(
+        &[job(
+            "j7",
+            Some("release-build"),
+            "sleep 3; echo done",
+            "killed by job_kill",
+            13,
+            3_000,
+            None,
+            "s-child",
+        )],
+        false,
+    );
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/src/app/tests/fixtures");
+    for (name, text) in [
+        ("job_notice_mine.txt", &mine),
+        ("job_notice_theirs.txt", &theirs),
+    ] {
+        let path = dir.join(name);
+        if std::env::var_os("LETIBOT_BLESS_JOB_NOTICE").is_some() {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        let pinned =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(
+            text,
+            &pinned,
+            "`completion_notice` no longer writes what the TUI's compact job card parses ({}); \
+             re-bless the fixture and teach `job_card::ended_jobs` the new shape",
+            path.display()
+        );
+    }
+}
+
 /// A job whose view was already reaped still produces a usable notice: the command
 /// is the one field the durable settlement does not carry, so it is the one that can
 /// be missing, and the notice says so rather than inventing one.

@@ -679,6 +679,9 @@ impl App {
         // the history's own lines are rows of the conversation with a span behind them — the
         // live pane and the tail below them are not — so the map stops where `hist_lines` does.
         self.file_rows = self.file_rows_in(start, end);
+        // **And which are a job's completion notice**, for a click to open whole (see
+        // `notice_rows`) — the same walk, the same window.
+        self.notice_rows = self.notice_rows_in(start, end);
         // **The disclosure is about the HOLD, not about a number** (R36). It used to be
         // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
         // anchored row happens to sit near the END of a shortened transcript has
@@ -695,6 +698,7 @@ impl App {
         {
             out[0] = pin;
             self.file_rows.retain(|(r, _)| *r != 0);
+            self.notice_rows.retain(|(r, _)| *r != 0);
         }
         if !self.following() {
             let behind = total - end;
@@ -704,6 +708,7 @@ impl App {
             out[last] = row(&rano::agent::screens::holding(behind), self.cfg.palette());
             // The banner took that row, so it is no longer a row of any file.
             self.file_rows.retain(|(r, _)| *r != last);
+            self.notice_rows.retain(|(r, _)| *r != last);
         }
         out
     }
@@ -1066,6 +1071,7 @@ impl App {
                             targets: call_targets,
                             answered: &answered,
                             subagents: &self.subagents,
+                            job_tails: &self.job_tails,
                             drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
                             elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
                             edit: call_edits.get(&items[*hist_upto].item_id),

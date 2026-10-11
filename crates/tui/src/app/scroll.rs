@@ -458,6 +458,7 @@ impl App {
                         targets: &targets,
                         answered: &answered,
                         subagents: &self.subagents,
+                        job_tails: &self.job_tails,
                         drawn_live: in_flight.contains(self.items[k].item_id.as_str()),
                         elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
                         edit: self.call_edits.get(&self.items[k].item_id),

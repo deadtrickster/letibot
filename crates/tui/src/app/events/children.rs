@@ -112,6 +112,43 @@ impl App {
                 lines,
                 next,
             } => {
+                // **The end of a job's output, for its completion notice** (`job_card`): a
+                // window that reaches the job's end — `next` is `None` and it holds bytes —
+                // is the job's tail, whoever asked for it. A window that does not (the head
+                // of a long log, or a reaped job's record, which is `0..0` of what it wrote)
+                // says nothing about the end.
+                let pane_reading = self
+                    .job_out
+                    .as_ref()
+                    .is_some_and(|v| v.job == job && v.loading);
+                let asked = matches!(
+                    self.job_tails.get(&job),
+                    Some(crate::ui::transcript::job_card::JobTail::Asked)
+                );
+                let at_end = next.is_none() && to > from;
+                if at_end || (asked && !pane_reading) {
+                    let tail = if at_end {
+                        crate::ui::transcript::job_card::JobTail::Lines(
+                            lines
+                                .iter()
+                                .map(|l| letibot_ui::text::without_control(l))
+                                .collect(),
+                        )
+                    } else if produced == 0 {
+                        crate::ui::transcript::job_card::JobTail::Lines(Vec::new())
+                    } else {
+                        crate::ui::transcript::job_card::JobTail::Gone(format!(
+                            "this session no longer holds what it wrote ({produced} bytes); \
+                             the record says {state}"
+                        ))
+                    };
+                    self.job_tail_landed(&job, tail);
+                }
+                // **The notice's own ask is answered here and goes no further** — unless the
+                // jobs pane is waiting on the same job, whose window this then is.
+                if asked && !pane_reading {
+                    return Disposition::Rendered;
+                }
                 // Taken only when a window is open for *this* job: a head here may
                 // have closed the pane with Esc before the reply landed, and a
                 // window for a job nobody is looking at is nothing to keep.

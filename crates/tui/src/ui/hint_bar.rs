@@ -97,10 +97,18 @@ impl App {
                 p,
             );
         } else if drawn == Drawn::DiffPopup {
+            // **A notice has no file behind it**, so its bar does not offer the editor.
+            let notice = self.diff_popup.as_ref().is_some_and(|d| {
+                matches!(d.body, crate::app::diff_popup::PopupBody::Notice { .. })
+            });
             return crate::ui::render::row(
                 &centred(
                     Some(&editor),
-                    "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor · esc closes it",
+                    if notice {
+                        "↑↓ pgup/pgdn scroll · esc closes it"
+                    } else {
+                        "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor · esc closes it"
+                    },
                     w,
                 ),
                 p,
