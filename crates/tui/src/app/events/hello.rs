@@ -238,7 +238,7 @@ impl App {
                     // it: the switch is the answer to the question the picker
                     // asked, and leaving it up over the session you just joined is
                     // a screen the operator has to dismiss for no reason.
-                    self.picker = false;
+                    self.close_surface(Surface::Picker);
                     self.say(&format!(
                         "switched to {}",
                         self.session_label(&self.session_id)

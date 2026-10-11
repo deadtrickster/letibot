@@ -848,6 +848,7 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
         "/notes".into(),
         (0..40).map(|i| format!("row {i}")).collect(),
     ));
+    b.push_surface(Surface::Listing);
     b.screen(80, 24);
     assert_eq!(b.pane_scroll, 0);
     // Up moves toward the beginning; at the beginning it stays there.
@@ -881,6 +882,7 @@ fn a_key_that_scrolls_a_pane_moves_that_pane_and_not_the_transcript_behind_it() 
         "/notes".into(),
         (0..40).map(|i| format!("row {i}")).collect(),
     ));
+    c.push_surface(Surface::Listing);
     c.screen(80, 24);
     assert_eq!(c.scroll, 0);
     c.key(Key::PageDown);
@@ -1918,6 +1920,7 @@ fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
         spill: None,
         dropped: 0,
     });
+    a.push_surface(Surface::SubOut);
     a.key(Key::WheelUp);
     a.key(Key::PageUp);
     // **A page is a screen here too.** The constant was ten, so this read `13`; a pager's
@@ -1942,10 +1945,10 @@ fn the_wheel_in_the_subagent_view_does_not_move_the_conversation_underneath() {
         "and coming back lands at the tail, not in the scrollback"
     );
     // A screen on top with no scroll of its own swallows the wheel.
-    a.todos_pane = true;
+    a.push_surface(Surface::Todos);
     a.key(Key::WheelUp);
     assert!(a.following(), "a pane on top swallowed the wheel");
-    a.todos_pane = false;
+    a.close_surface(Surface::Todos);
     a.key(Key::WheelUp);
     // **R36 made this the assertion**: the wheel takes the viewport OFF the stream, and
     // `following` is where that state lives. It used to be `scroll == 3` — a count, and

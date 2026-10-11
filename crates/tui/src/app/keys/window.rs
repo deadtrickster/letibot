@@ -19,7 +19,10 @@ impl App {
     /// The same bargain the subagent-output pane makes, and the rule behind both:
     /// whichever surface prints `esc closes` owns Esc, and only one can be up.
     pub(crate) fn key_payload_window(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.payload_sel.is_some() {
+        // **Only while the conversation is what is drawn** (R69): the window is a row of the
+        // conversation opened wide, and a pane or rano over it is a screen whose arrows are its
+        // own — it used to page a window nobody could see under any pane that did not bind ↑↓.
+        if self.payload_sel.is_some() && self.drawn() == Drawn::Conversation {
             /// How far one press pages. The same unit the transcript scrolls by.
             const BY: usize = 10;
             match k {

@@ -5,6 +5,64 @@ use super::*;
 use std::ops::ControlFlow;
 
 impl App {
+    /// **The keys of the surface in front, and of no other** (R69).
+    ///
+    /// The surface is [`App::focused_surface`] — the stack's top, unless a `!term` pane, the diff
+    /// popup or rano is drawn over it — which is the same value `main_area` draws. A pane that is
+    /// open behind another is not asked at all. That is the whole fix for the review's worst
+    /// head finding: `ctrl-t` then `ctrl-g` drew the todos pane while ↑↓ and Enter went to the
+    /// hidden subagents list, and **Enter switched session into a row nobody saw**, because the
+    /// key order (subagents > todos > queue > jobs > standing) was a second list from the draw
+    /// order (todos > queue > standing > subagents > jobs).
+    ///
+    /// # Esc and ctrl-c pop
+    ///
+    /// Whatever the surface did not take for itself. An overlay's Esc goes back to its list
+    /// because the list is the next entry down — not because its handler was placed above the
+    /// block that closed every pane at once, which is what used to hold it there.
+    ///
+    /// # A surface owns Enter, even when it has nothing to act on
+    ///
+    /// The operator, 2026-10-03, having gone to the jobs pane and pressed Enter with a stray
+    /// character in the composer: *"the pane own keyboard in a way, so enter is a pane thing."*
+    /// A surface that names no meaning for Enter (help, `/status`, an empty jobs list) takes it
+    /// anyway. **What is deliberately NOT here** is in [`Surface::owns_enter`]: where a typed
+    /// line IS the answer — a row number, an id prefix — `submit` routes the words and the
+    /// surface keeps the typed path it advertises. The merge queue was missing from the list
+    /// this replaced, so Enter with typed text sent the prompt over an empty queue and opened an
+    /// entry over a non-empty one.
+    pub(crate) fn key_surface(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        let Some(s) = self.focused_surface() else {
+            return ControlFlow::Continue(());
+        };
+        let taken = match s {
+            Surface::SubOut => self.key_sub_out(k),
+            Surface::JobOut => self.key_job_out(k),
+            Surface::Listing => self.key_slash_out(k),
+            Surface::Config => self.key_config_pane(k),
+            Surface::QueueEntry => self.key_queue_review(k),
+            Surface::TodoRow => self.key_todo_open(k),
+            Surface::Picker => self.key_picker(k),
+            Surface::Subagents => self.key_subagents_pane(k),
+            Surface::Todos => self.key_todos_pane(k),
+            Surface::Queue => self.key_queue_pane(k),
+            Surface::Jobs => self.key_jobs_pane(k),
+            Surface::Standing => self.key_standing_pane(k),
+            Surface::Help | Surface::Stats => ControlFlow::Continue(()),
+        };
+        if taken.is_break() {
+            return taken;
+        }
+        match k {
+            Key::Esc | Key::CtrlC => {
+                self.pop_surface();
+                ControlFlow::Break(None)
+            }
+            Key::Enter if s.owns_enter() => ControlFlow::Break(None),
+            _ => ControlFlow::Continue(()),
+        }
+    }
+
     /// **The subagent output view owns the keys while it is open.** Arrows
     /// scroll it like a terminal — up toward the beginning, down back to the
     /// tail — Enter reads the same subagent again, because a running one has
@@ -28,11 +86,6 @@ impl App {
                     let id = self.sub_out.as_ref().unwrap().session_id.clone();
                     self.sub_out_pending = Some(id.clone());
                     return ControlFlow::Break(Some(Action::Peek(id)));
-                }
-                Key::Esc | Key::CtrlC => {
-                    self.sub_out = None;
-                    self.redraw = true;
-                    return ControlFlow::Break(None);
                 }
                 _ => {}
             }
@@ -70,11 +123,6 @@ impl App {
                 Key::Left if self.editor.text().is_empty() => {
                     return ControlFlow::Break(self.job_out_page(false));
                 }
-                Key::Esc | Key::CtrlC => {
-                    self.job_out = None;
-                    self.redraw = true;
-                    return ControlFlow::Break(None);
-                }
                 _ => {}
             }
         }
@@ -88,12 +136,6 @@ impl App {
     pub(crate) fn key_slash_out(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.slash_out.is_some() {
             match k {
-                Key::Esc | Key::CtrlC => {
-                    self.slash_out = None;
-                    self.pane_scroll = 0;
-                    self.redraw = true;
-                    return ControlFlow::Break(None);
-                }
                 // **Up moves toward the beginning, which means DECREASING this
                 // offset.** `pane_scroll` counts rows hidden **above the top** —
                 // `pane_window` is literally `skip(self.pane_scroll)` — so adding to it
@@ -127,7 +169,7 @@ impl App {
     /// Enter changes the row under the cursor when it is one that can change
     /// now, and says why when it is not.
     pub(crate) fn key_config_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.config_pane {
+        {
             match k {
                 Key::Up => {
                     let n = self.config_rows().len().max(1);
@@ -168,12 +210,6 @@ impl App {
     /// this one there.
     pub(crate) fn key_queue_review(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.queue_open.is_some() {
-            if matches!(k, Key::Esc | Key::CtrlC) {
-                self.queue_open = None;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                return ControlFlow::Break(None);
-            }
             // **The arrows only.** The page keys and the wheel are `key_chords`'s, which runs
             // first and settles them for every pane through `pane_scroll` — the rule
             // `key_todo_open` writes down. A PageUp/PageDown arm stood here and was dead code that
@@ -196,42 +232,6 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    pub(crate) fn key_overlays(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if (self.help
-            || self.picker
-            || self.pick.is_some()
-            || self.stats
-            || self.todos_pane
-            || self.subagents_pane
-            || self.jobs_pane
-            || self.queue_pane
-            || self.standing_pane
-            || self.config_pane)
-            && matches!(k, Key::Esc | Key::CtrlC)
-        {
-            self.help = false;
-            self.picker = false;
-            self.pick = None;
-            self.quit_card = false;
-            self.stats = false;
-            self.todos_pane = false;
-            self.subagents_pane = false;
-            self.jobs_pane = false;
-            self.queue_pane = false;
-            self.standing_pane = false;
-            // **A row left open goes with the pane it belongs to**: the overlay's own Esc returns
-            // to the LIST and is handled above this block, so this is the door that catches every
-            // other way the pane can close — and `toggle_todos` is the other door, which clears it
-            // for the same reason.
-            self.todos_open = None;
-            self.config_pane = false;
-            self.sub_out_pending = None;
-            self.redraw = true;
-            return ControlFlow::Break(None);
-        }
-        ControlFlow::Continue(())
-    }
-
     /// **An open session picker owns Up and Down, and Enter on an empty line.**
     ///
     /// After the decision ladder, which keeps precedence while a prompt is up. The
@@ -241,7 +241,7 @@ impl App {
     /// The empty-composer rule is the decision ladder's own: a half-typed id's
     /// Enter still means the id.
     pub(crate) fn key_picker(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.picker && !self.sessions.is_empty() {
+        if !self.sessions.is_empty() {
             let rows = self.session_rows();
             let n = rows.len();
             match k {
@@ -338,7 +338,7 @@ impl App {
     /// *"subagents panel doesnt scroll"*, which was a child appended below the fold and no
     /// key that would bring it up.
     pub(crate) fn key_subagents_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.subagents_pane {
+        {
             let stops = self.subagent_stops();
             if !stops.is_empty() {
                 let n = stops.len();
@@ -389,7 +389,7 @@ impl App {
                                     return ControlFlow::Break(None);
                                 }
                                 let id = row.session_id.clone();
-                                self.subagents_pane = false;
+                                self.close_surface(Surface::Subagents);
                                 return ControlFlow::Break(self.switch_to(id));
                             }
                         }
@@ -458,7 +458,7 @@ impl App {
     /// todos stops (*a typed line IS the answer there*) — and a read that took that Enter would
     /// silently swallow what the operator was writing.
     pub(crate) fn key_todos_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.todos_pane {
+        {
             let stops = self.todos_stops();
             let n = stops.len();
             let at = self.todos_sel.min(n.saturating_sub(1));
@@ -489,8 +489,7 @@ impl App {
                     }
                     row => {
                         self.todos_open = Some(row.clone());
-                        self.pane_scroll = 0;
-                        self.redraw = true;
+                        self.push_surface(Surface::TodoRow);
                         return ControlFlow::Break(None);
                     }
                 },
@@ -591,11 +590,10 @@ impl App {
     /// handler is below them; what it takes is what nothing else wanted.
     pub(crate) fn key_todo_open(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.todos_open.is_some() {
+            // Esc and ctrl-c are the stack's: `App::key_surface` pops this row and the list is
+            // the next entry down.
             if matches!(k, Key::Esc | Key::CtrlC) {
-                self.todos_open = None;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                return ControlFlow::Break(None);
+                return ControlFlow::Continue(());
             }
             if matches!(k, Key::Up | Key::Down) {
                 self.pane_scroll = if matches!(k, Key::Up) {
@@ -636,7 +634,7 @@ impl App {
     /// composer's once `ctrl-]` crosses. Leaving rano puts the list back with its cursor where
     /// it was, which is the round trip the key is for.
     pub(crate) fn key_standing_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.standing_pane && !self.editor_drawn() {
+        {
             if !self.standing.is_empty() {
                 let n = self.standing.len();
                 let at = self.standing_sel.min(n - 1);
@@ -673,7 +671,7 @@ impl App {
     /// row under each entry changes. So the switch moves nothing a reader has to find again —
     /// which is why it is a key on the pane rather than a second pane.
     pub(crate) fn key_queue_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.queue_pane && self.queue_open.is_none() {
+        {
             // **`tab` moves between the two views**, and the strip the pane draws is what says
             // so (`ui::panes::queue::tab_row`). It is deliberately not behind the entries: the
             // strip is drawn for an empty queue too — the pane still says which half you are
@@ -720,8 +718,7 @@ impl App {
                         // evidence and the snapshot carries the verdict, so the overlay is
                         // the two rows the pane already holds, in full.
                         self.queue_open = Some(self.merge[at].id.clone());
-                        self.pane_scroll = 0;
-                        self.redraw = true;
+                        self.push_surface(Surface::QueueEntry);
                         return ControlFlow::Break(None);
                     }
                     // **`r` re-attempts a parked entry's review** — the operator's ask, in
@@ -827,7 +824,7 @@ impl App {
     /// the arrows and Enter cannot disagree — and the arrows scroll the cursor into view, so
     /// a job below the fold is reachable.
     pub(crate) fn key_jobs_pane(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.jobs_pane {
+        {
             let stops = self.job_stops();
             if !stops.is_empty() {
                 let n = stops.len();
@@ -891,7 +888,7 @@ impl App {
                                 loading: true,
                                 error: None,
                             });
-                            self.redraw = true;
+                            self.push_surface(Surface::JobOut);
                             return ControlFlow::Break(Some(Action::ReadJobOutput {
                                 job,
                                 offset: 0,

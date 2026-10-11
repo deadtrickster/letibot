@@ -633,7 +633,7 @@ fn show_the_sessions_pane_tree() {
         family.clone(),
         Hub::new("s-root").snapshot(),
     ));
-    a.picker = true;
+    a.push_surface(Surface::Picker);
     // **A ruler, because the question here is COLUMNS.** *Does the pane render the tree*
     // is a question about which column a row's name starts in, and an eyeball on a frame
     // answers it wrongly at one column per level — which is what the first look did.
@@ -1008,7 +1008,7 @@ fn a_panes_enter_is_the_panes_even_with_words_in_the_composer() {
         "s1",
         vec![daemon_job("j1", "cargo test --workspace", true)],
     ));
-    a.jobs_pane = true;
+    a.push_surface(Surface::Jobs);
     a.set_composer("\\");
     let act = a.key(Key::Enter);
     assert!(

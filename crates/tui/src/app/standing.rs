@@ -115,24 +115,6 @@ fn dir_signature(dir: &std::path::Path) -> Option<(u64, usize)> {
 }
 
 impl App {
-    /// **The standing-notes pane's own toggle — and the only spelling of it.** `/standing`
-    /// ends here, so a chord added later cannot drift from the verb.
-    ///
-    /// Opening asks the daemon for the rows, the way the jobs pane asks for its table: the
-    /// corpus is read fresh on the ask, so a note written since the last base rebuild is a row
-    /// — and the form each file has is the form the *next* section will carry it in, which is
-    /// the honest reading of *verbatim or indexed right now*.
-    pub(crate) fn toggle_standing(&mut self) -> Option<Action> {
-        self.standing_pane = !self.standing_pane;
-        self.pane_scroll = 0;
-        // The watch starts again from whatever the next answer says: the baseline is the
-        // first draw after the rows land, and holding the closed pane's corpus would make
-        // that draw read as a change.
-        self.standing_corpus = None;
-        self.redraw = true;
-        self.standing_pane.then_some(Action::ListNotes)
-    }
-
     /// **The pane row the note at the cursor was DRAWN on**, read out of
     /// [`App::standing_stop_rows`] — the record the pane wrote while drawing, never arithmetic
     /// over the list it drew from. The clamp is the jobs pane's: the list can change under the

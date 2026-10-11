@@ -88,16 +88,11 @@ impl App {
                 self.redraw = true;
                 return ControlFlow::Break(None);
             }
-            Key::CtrlS => {
-                // A toggle: open through the one door `/sessions` uses, close by dropping it.
-                if self.picker {
-                    self.picker = false;
-                    self.redraw = true;
-                    return ControlFlow::Break(None);
-                }
-                return ControlFlow::Break(Some(self.open_session_picker()));
-            }
-            Key::CtrlT => return ControlFlow::Break(self.toggle_todos()),
+            // **The panes' chords, through the one door the verbs use** (`open_surface`), as
+            // toggles of the surface stack: the pane in front closes, a pane behind another comes
+            // to the front.
+            Key::CtrlS => return ControlFlow::Break(self.toggle_surface(Surface::Picker)),
+            Key::CtrlT => return ControlFlow::Break(self.toggle_surface(Surface::Todos)),
             // **Hold the view (R56).** While held the head writes nothing at all, so a
             // mouse selection survives a streaming turn; the second press releases it and
             // says how much arrived while it was held. The whole contract is in
@@ -106,17 +101,14 @@ impl App {
             // Ctrl+G for the subagent tree: R/T/X/L/S/P are taken, A/E/W/U/Y/K/B/F
             // are the composer's readline keys, and the subagent tree is a *view*,
             // not a thing the composer needs a letter for.
-            Key::CtrlG => {
-                self.toggle_subagents();
-                return ControlFlow::Break(None);
-            }
+            Key::CtrlG => return ControlFlow::Break(self.toggle_surface(Surface::Subagents)),
             // Ctrl+Q for the background jobs. J would have been the mnemonic and
             // is line-feed; Q is XON, dead the same way Ctrl+S's XOFF would be —
             // and fixed the same way: cfmakeraw clears IXON, so nothing is
             // listening for flow control and the byte arrives like any other.
-            // The act itself is `toggle_jobs`'s, shared with `/jobs` and a click
+            // The act itself is `toggle_surface`'s, shared with `/jobs` and a click
             // on the count label so the three cannot drift.
-            Key::CtrlQ => return ControlFlow::Break(self.toggle_jobs()),
+            Key::CtrlQ => return ControlFlow::Break(self.toggle_surface(Surface::Jobs)),
             // **R22: clearing your own screen costs one key.**
             //
             // Retiring a note used to be `/notes dismiss all` — the right power in the wrong
@@ -187,7 +179,7 @@ impl App {
             // transcript underneath it instead — which, at the bottom already, looked like
             // nothing happening at all.
             Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown
-                if self.payload_sel.is_some() =>
+                if self.payload_sel.is_some() && self.drawn() == Drawn::Conversation =>
             {
                 let by = match k {
                     Key::WheelUp | Key::WheelDown => 3,
@@ -244,31 +236,18 @@ impl App {
                 // scroll at all. A pane longer than the terminal was a pane
                 // whose tail could not be read: `leticl`'s TODO.md is 98 rows.
                 //
-                // The two pickers are excluded: they are short, and their click
-                // arithmetic is keyed on rows counted from the top of the card.
-                if self.picker || self.pick.is_some() {
+                // The two pickers are excluded: the session picker keeps its cursor in view
+                // itself, and the setting card is short.
+                //
+                // **Which pane is the surface stack's answer** (R69), not a list of fields kept
+                // by hand. The list this replaced was missing the slash listing once and the
+                // merge queue and its overlay once (R67 item 5) — each time the page keys
+                // scrolled the conversation hidden under the pane — and it moved the one shared
+                // offset whichever of several open panes was actually drawn.
+                if self.focused_surface() == Some(Surface::Picker) || self.pick.is_some() {
                     return ControlFlow::Break(None);
                 }
-                if self.help
-                    || self.stats
-                    || self.todos_pane
-                    || self.subagents_pane
-                    || self.jobs_pane
-                    || self.standing_pane
-                    || self.config_pane
-                    // **And the slash listing, which is a document read from its
-                    // head.** It has its own arm for the arrows, and it was missing
-                    // from *this* list — so PageDown while a `/notes` listing was up
-                    // scrolled the transcript underneath it, one pane over from the
-                    // same defect the subagent view had.
-                    || self.slash_out.is_some()
-                    // **And the merge queue, its list and an entry's overlay** (R67 item 5):
-                    // both draw through `pane_window`, and both were missing here, so the wheel
-                    // or PgUp over the queue scrolled the conversation hidden under it and
-                    // parked it at "holding" — the operator closed the pane into scrollback.
-                    || self.queue_pane
-                    || self.queue_open.is_some()
-                {
+                if self.focused_surface().is_some() {
                     // **The polarity is the opposite of the transcript's**, and
                     // getting it wrong here made PageDown a no-op that looked
                     // exactly like the swallowing this replaced. `self.scroll`

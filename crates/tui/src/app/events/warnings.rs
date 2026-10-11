@@ -62,8 +62,7 @@ impl App {
                     let lines: Vec<String> = body.lines().map(|l| without_control(l)).collect();
                     if lines.len() > 3 {
                         self.slash_out = Some((echo.to_string(), lines));
-                        self.pane_scroll = 0;
-                        self.redraw = true;
+                        self.push_surface(Surface::Listing);
                         return Disposition::Rendered;
                     }
                 }

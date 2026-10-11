@@ -677,165 +677,188 @@ impl App {
         let (x, y) = (Self::gutter(self.term_cols), usize::from(has_header));
         self.edit_area = crate::ui::editor::editor_inner(x, y, w, room).into();
         self.file_rows.clear();
-        if self.pane_open() {
-            // **The pane takes the conversation's rectangle and gives it back.**
-            //
-            // First in the chain, and that is a decision rather than an ordering: while a pane
-            // is DRAWN it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
-            // pane drawn *under* it would be a screen the operator could see and not answer.
-            // **A detached pane is not drawn and owns nothing** — the conversation has the
-            // rectangle back, the composer has its keys, and the one line above the composer
-            // says the program is still running (see `let pane`).
-            // The chrome below still draws — the composer keeps its rows and the header keeps
-            // its line, which is the whole requirement — and a card that arrives while a pane
-            // is up waits until the operator leaves with `ctrl-\`.
-            //
-            // **`pane_rows` returns exactly `room`**, so nothing above the pane moves by a line
-            // and nothing below it loses a row. See `TermPane`.
-            let palette = self.cfg.palette();
-            let (rows, moved) = {
-                let p = self.term.as_mut().expect("just checked");
-                let rows = p.rows(w, room, palette);
-                let moved = (p.sent != (w, room)).then(|| {
-                    p.sent = (w, room);
-                    (w, room)
-                });
-                (rows, moved)
-            };
-            // **The program is told the rectangle it is drawn in**, and this is the only place
-            // that is known: `room` is `h` minus the chrome and the header, and neither is the
-            // daemon's to compute. A change detector rather than a frame per tick, because a
-            // resize frame per redraw would be a frame per keystroke.
-            if let Some((cols, rows_n)) = moved {
-                self.queued.push(Action::TermResize { cols, rows: rows_n });
+        // **What is drawn here is `drawn()`'s answer** (R69) — the same value `App::key` routes
+        // on and the hint bar describes, so the three can no longer be three hand-written orders
+        // that disagree about which of several open panes is in front.
+        match self.drawn() {
+            Drawn::Term => {
+                // **The pane takes the conversation's rectangle and gives it back.**
+                //
+                // First in the chain, and that is a decision rather than an ordering: while a pane
+                // is DRAWN it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
+                // pane drawn *under* it would be a screen the operator could see and not answer.
+                // **A detached pane is not drawn and owns nothing** — the conversation has the
+                // rectangle back, the composer has its keys, and the one line above the composer
+                // says the program is still running (see `let pane`).
+                // The chrome below still draws — the composer keeps its rows and the header keeps
+                // its line, which is the whole requirement — and a card that arrives while a pane
+                // is up waits until the operator leaves with `ctrl-\`.
+                //
+                // **`pane_rows` returns exactly `room`**, so nothing above the pane moves by a line
+                // and nothing below it loses a row. See `TermPane`.
+                let palette = self.cfg.palette();
+                let (rows, moved) = {
+                    let p = self.term.as_mut().expect("just checked");
+                    let rows = p.rows(w, room, palette);
+                    let moved = (p.sent != (w, room)).then(|| {
+                        p.sent = (w, room);
+                        (w, room)
+                    });
+                    (rows, moved)
+                };
+                // **The program is told the rectangle it is drawn in**, and this is the only place
+                // that is known: `room` is `h` minus the chrome and the header, and neither is the
+                // daemon's to compute. A change detector rather than a frame per tick, because a
+                // resize frame per redraw would be a frame per keystroke.
+                if let Some((cols, rows_n)) = moved {
+                    self.queued.push(Action::TermResize { cols, rows: rows_n });
+                }
+                rows
             }
-            rows
-        } else if self.diff_popup.is_some() {
-            // **A change opened by a click, read in its whole file** — over the conversation,
-            // under a `!term` pane (which owns the keys first). See `app::diff_popup`.
-            self.diff_popup_rows(w, room)
-        } else if self.edit_pane.as_ref().is_some_and(|p| !p.hidden) {
-            // **The editor pane takes the rectangle next**, under a `!term` pane and over
-            // everything else the conversation's rectangle can hold: it was opened on purpose,
-            // with a click or a chord, and it is what the keys go to while it has them.
-            self.editor_rows(x, y, w, room)
-        } else if let Some((echo, lines)) = self.slash_out.clone() {
-            let p = self.cfg.palette();
-            // **Not sanitised, and the regression is why.** The rows in `slash_out` are
-            // **this head's own composed lines**: `/notes` draws them through
-            // `note_lines_unfolded`, which paints each one with `sgr::RED`, and `/gate`'
-            // and `/job`'s are laid out here by the same kind of code. Running the §3.1
-            // guard over them stripped the head's own colour — the operator's screen
-            // showed ` [31m! gate — a refusal [0m`, an escape's body left as text, and the
-            // wrapping broke because those five columns are not what the terminal
-            // measures.
-            //
-            // §3.1's subject is content this head did **not** write. Whatever a listing
-            // is showing, the strings in this `Vec` went through a renderer that
-            // sanitised its own foreign inputs already — a note's detail, a job's
-            // command, a gate's summary — so there is nothing left here to guard.
-            let mut rows = vec![
-                row(&rano::agent::text::one(echo, Role::Strong), p),
-                String::new(),
-            ];
-            rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
-            rows.push(String::new());
-            rows.push(row(
-                &rano::agent::pane::faint("    esc closes · up/down scrolls"),
-                p,
-            ));
-            self.pane_window(rows, room)
-        } else if self.help {
-            let help = help_lines(&self.cfg, w);
-            self.pane_window(help, room)
-        } else if self.stats {
-            let rows = self.status_lines(w);
-            self.pane_window(rows, room)
-        } else if self.picker {
-            // **A window that keeps the cursor's session on the screen**, and a record of which
-            // screen row is which session's. The list used to be cut at `room` with no scrolling,
-            // so arrows past the cut moved a cursor nobody could see and Enter switched to it.
-            // The click is read off `picker_hits` — the rows this frame actually drew, with the
-            // scroll already in them — and never off arithmetic over the list (R67 item 2).
-            let (rows, spans) = self.picker_layout(w);
-            let sel = self.picker_sel.min(spans.len().saturating_sub(1));
-            let skip = spans.get(sel).map_or(0, |s| s.end.saturating_sub(room));
-            let rows: Vec<String> = rows.into_iter().skip(skip).take(room).collect();
-            let top = usize::from(has_header);
-            let drawn = skip..skip + rows.len();
-            self.picker_hits = spans
-                .iter()
-                .enumerate()
-                .flat_map(|(k, span)| {
-                    span.clone()
-                        .filter(|r| drawn.contains(r))
-                        .map(move |r| (top + r - skip, k))
-                })
-                .collect();
-            rows
-        } else if self.todos_open.is_some() {
-            // **One row, whole, through `pane_window`** so it pages like the panes: a row is written
-            // by a model and can be longer than the screen — the operator's own report is that the
-            // pane showed a truncated title and nothing else — so an overlay that could not be
-            // scrolled would be the same defect with a bigger box. It sits ABOVE the pane's own
-            // branch because it is what the pane's Enter opened, and Esc gives the pane back.
-            //
-            // The file is re-read here as it is for the pane: a repo row's overlay draws from the
-            // same fresh read the list does, so an edit under an open overlay shows the new file
-            // rather than the read the keypress happened to catch.
-            self.refresh_repo_todos();
-            let rows = self.todos_open_lines(w);
-            self.pane_window(rows, room)
-        } else if self.todos_pane {
-            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
-            // has to be measured against: the session header sits above it when the frame is tall
-            // enough for one, and it is not a row of this pane.
-            self.todos_pane_top = usize::from(has_header);
-            // One `stat` before the draw: the file is edited while this pane is
-            // open, which is the case the open-time read could not see.
-            self.refresh_repo_todos();
-            let rows = self.todos_lines(w);
-            self.pane_window(rows, room)
-        } else if self.config_pane {
-            let rows = self.config_lines(w);
-            self.pane_window(rows, room)
-        } else if self.sub_out.is_some() {
-            let mut rows = self.sub_out_lines(room);
-            rows.truncate(room);
-            rows
-        } else if self.job_out.is_some() {
-            let mut rows = self.job_out_lines(room);
-            rows.truncate(room);
-            rows
-        } else if self.queue_open.is_some() {
-            // **The overlay, through `pane_window`** so it scrolls like the panes: an entry's
-            // evidence is the gate's own captured output, which is up to four kilobytes of
-            // text, and a detail view that could not be scrolled would be a view that showed
-            // the first screenful of a failure and nothing else.
-            let rows = self.queue_out_lines(w);
-            self.pane_window(rows, room)
-        } else if self.queue_pane {
-            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
-            // is measured against — the same record the todos pane keeps, for the same reason.
-            self.queue_pane_top = usize::from(has_header);
-            let rows = self.queue_lines(w);
-            self.pane_window(rows, room)
-        } else if self.standing_pane {
-            let rows = self.standing_lines(w);
-            self.pane_window(rows, room)
-        } else if self.subagents_pane {
-            let rows = self.subagents_lines(w);
-            self.pane_window(rows, room)
-        } else if self.jobs_pane {
-            let rows = self.jobs_lines(w);
-            self.pane_window(rows, room)
-        } else {
-            let rows = self.body_window(room);
-            // The window's rows, as the terminal's: the header is above them.
-            for (row, _) in &mut self.file_rows {
-                *row += y;
+            Drawn::DiffPopup => {
+                // **A change opened by a click, read in its whole file** — over the conversation,
+                // under a `!term` pane (which owns the keys first). See `app::diff_popup`.
+                self.diff_popup_rows(w, room)
             }
-            rows
+            Drawn::Editor => {
+                // **The editor pane takes the rectangle next**, under a `!term` pane and over
+                // everything else the conversation's rectangle can hold: it was opened on purpose,
+                // with a click or a chord, and it is what the keys go to while it has them.
+                self.editor_rows(x, y, w, room)
+            }
+            Drawn::Surface(Surface::Listing) => {
+                let (echo, lines) = self.slash_out.clone().unwrap_or_default();
+                let p = self.cfg.palette();
+                // **Not sanitised, and the regression is why.** The rows in `slash_out` are
+                // **this head's own composed lines**: `/notes` draws them through
+                // `note_lines_unfolded`, which paints each one with `sgr::RED`, and `/gate`'
+                // and `/job`'s are laid out here by the same kind of code. Running the §3.1
+                // guard over them stripped the head's own colour — the operator's screen
+                // showed ` [31m! gate — a refusal [0m`, an escape's body left as text, and the
+                // wrapping broke because those five columns are not what the terminal
+                // measures.
+                //
+                // §3.1's subject is content this head did **not** write. Whatever a listing
+                // is showing, the strings in this `Vec` went through a renderer that
+                // sanitised its own foreign inputs already — a note's detail, a job's
+                // command, a gate's summary — so there is nothing left here to guard.
+                let mut rows = vec![
+                    row(&rano::agent::text::one(echo, Role::Strong), p),
+                    String::new(),
+                ];
+                rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
+                rows.push(String::new());
+                rows.push(row(
+                    &rano::agent::pane::faint("    esc closes · up/down scrolls"),
+                    p,
+                ));
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Help) => {
+                let help = help_lines(&self.cfg, w);
+                self.pane_window(help, room)
+            }
+            Drawn::Surface(Surface::Stats) => {
+                let rows = self.status_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Picker) => {
+                // **A window that keeps the cursor's session on the screen**, and a record of which
+                // screen row is which session's. The list used to be cut at `room` with no scrolling,
+                // so arrows past the cut moved a cursor nobody could see and Enter switched to it.
+                // The click is read off `picker_hits` — the rows this frame actually drew, with the
+                // scroll already in them — and never off arithmetic over the list (R67 item 2).
+                let (rows, spans) = self.picker_layout(w);
+                let sel = self.picker_sel.min(spans.len().saturating_sub(1));
+                let skip = spans.get(sel).map_or(0, |s| s.end.saturating_sub(room));
+                let rows: Vec<String> = rows.into_iter().skip(skip).take(room).collect();
+                let top = usize::from(has_header);
+                let drawn = skip..skip + rows.len();
+                self.picker_hits = spans
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(k, span)| {
+                        span.clone()
+                            .filter(|r| drawn.contains(r))
+                            .map(move |r| (top + r - skip, k))
+                    })
+                    .collect();
+                rows
+            }
+            Drawn::Surface(Surface::TodoRow) => {
+                // **One row, whole, through `pane_window`** so it pages like the panes: a row is written
+                // by a model and can be longer than the screen — the operator's own report is that the
+                // pane showed a truncated title and nothing else — so an overlay that could not be
+                // scrolled would be the same defect with a bigger box. It sits ABOVE the pane's own
+                // branch because it is what the pane's Enter opened, and Esc gives the pane back.
+                //
+                // The file is re-read here as it is for the pane: a repo row's overlay draws from the
+                // same fresh read the list does, so an edit under an open overlay shows the new file
+                // rather than the read the keypress happened to catch.
+                self.refresh_repo_todos();
+                let rows = self.todos_open_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Todos) => {
+                // **Where the pane's own first row goes on the screen**, which is what a click's `y`
+                // has to be measured against: the session header sits above it when the frame is tall
+                // enough for one, and it is not a row of this pane.
+                self.todos_pane_top = usize::from(has_header);
+                // One `stat` before the draw: the file is edited while this pane is
+                // open, which is the case the open-time read could not see.
+                self.refresh_repo_todos();
+                let rows = self.todos_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Config) => {
+                let rows = self.config_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::SubOut) => {
+                let mut rows = self.sub_out_lines(room);
+                rows.truncate(room);
+                rows
+            }
+            Drawn::Surface(Surface::JobOut) => {
+                let mut rows = self.job_out_lines(room);
+                rows.truncate(room);
+                rows
+            }
+            Drawn::Surface(Surface::QueueEntry) => {
+                // **The overlay, through `pane_window`** so it scrolls like the panes: an entry's
+                // evidence is the gate's own captured output, which is up to four kilobytes of
+                // text, and a detail view that could not be scrolled would be a view that showed
+                // the first screenful of a failure and nothing else.
+                let rows = self.queue_out_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Queue) => {
+                // **Where the pane's own first row goes on the screen**, which is what a click's `y`
+                // is measured against — the same record the todos pane keeps, for the same reason.
+                self.queue_pane_top = usize::from(has_header);
+                let rows = self.queue_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Standing) => {
+                let rows = self.standing_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Subagents) => {
+                let rows = self.subagents_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Jobs) => {
+                let rows = self.jobs_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Conversation => {
+                let rows = self.body_window(room);
+                // The window's rows, as the terminal's: the header is above them.
+                for (row, _) in &mut self.file_rows {
+                    *row += y;
+                }
+                rows
+            }
         }
     }
 }

@@ -6,68 +6,6 @@ use letibot_sessionlog::StoredEnd;
 use letibot_sessionlog::registry::short_id;
 
 impl App {
-    /// **The session picker's one door** — `ctrl-s` and `/sessions` both open it here, so the two
-    /// spellings cannot drift. They had (R67 item 8): `/sessions` set `picker` and nothing else,
-    /// so it left a setting card (`pick`) open under it — two lists on the screen, one set of
-    /// arrows — and its cursor wherever an earlier list had left it, while `ctrl-s` did both.
-    ///
-    /// * **The two pickers are never open together**: opening this one closes the setting card,
-    ///   so the screen holds one list and the arrows mean one thing.
-    /// * **The cursor starts where you are**, so Enter on an untouched list is a no-op and the
-    ///   arrows move from a row that means something — through the same enumeration the arrows
-    ///   and Enter read. The session this head is in is always a row (`session_rows` shows the
-    ///   chain down to it whatever is collapsed), so this position always exists.
-    /// * **It asks for a fresh list** rather than drawing the one from the attach: sessions are
-    ///   a shared thing, and a picker showing what was true when this head connected hides the
-    ///   session somebody else just started.
-    pub(crate) fn open_session_picker(&mut self) -> Action {
-        self.picker = true;
-        self.pick = None;
-        self.picker_sel = self
-            .session_rows()
-            .iter()
-            .position(|r| self.sessions[r.idx].session_id == self.session_id)
-            .unwrap_or(0);
-        self.redraw = true;
-        Action::ListSessions
-    }
-
-    /// The same, for the subagent tree — `/subagents` and `ctrl-g`.
-    ///
-    /// **And the fold runs on the way in.** The pane used to be built only by the live
-    /// `Subagent` events, and the comment here used to claim *"the tree is folded from
-    /// durable `Subagent` events, which a snapshot carries"* — **which was not true of this
-    /// daemon** (`SessionEvent::Subagent` was folded into nothing at all by the view: see
-    /// the arm in `letibot_sessionlog::view`, which now folds it). So a head that attached
-    /// after the spawns drew an empty pane and no count, and the only thing that could ever
-    /// fill it was a later spawn — the operator: *"i just restarted the head and the
-    /// subagents list is gone … when you started new subagents the subagents pane
-    /// refreshed"*. Two durable halves now feed it: the snapshot's own children, and the
-    /// daemon's session list — so [`App::fold_subagents`] reads it here, where the rows are
-    /// about to be looked at.
-    pub(crate) fn toggle_subagents(&mut self) {
-        self.subagents_pane = !self.subagents_pane;
-        self.pane_scroll = 0;
-        self.fold_subagents();
-        self.redraw = true;
-    }
-
-    /// **The jobs pane's own toggle — and the only spelling of it.** `ctrl-q`, `/jobs` and
-    /// a click on the jobs count label all end here, so the three cannot drift the way a
-    /// second copy of "open the pane" drifts: one of them asking for the table and the
-    /// others forgetting is exactly the defect §6's rule ("both spellings end in the same
-    /// function") exists to close.
-    ///
-    /// Opening asks the daemon for the table, the way the todos pane asks for its rows:
-    /// the process table is the daemon's and a head that drew its own version drew a stale
-    /// one. Later changes arrive as `JobSettled`.
-    pub(crate) fn toggle_jobs(&mut self) -> Option<Action> {
-        self.jobs_pane = !self.jobs_pane;
-        self.pane_scroll = 0;
-        self.redraw = true;
-        self.jobs_pane.then_some(Action::ListJobs)
-    }
-
     /// **The pane's rows, as ONE enumeration** — the arrows, Enter, `p`, the drawn `▸` and the
     /// scroll all read this and nothing else.
     ///

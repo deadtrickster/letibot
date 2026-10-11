@@ -295,18 +295,10 @@ impl App {
             && self.diff_popup.is_none()
             && self.payload_sel.is_none()
             && !self.pane_open()
-            && self.slash_out.is_none()
-            && !self.help
-            && !self.stats
-            && !self.picker
-            && !self.todos_pane
-            && !self.config_pane
-            && self.sub_out.is_none()
-            && self.job_out.is_none()
-            && self.queue_open.is_none()
-            && !self.queue_pane
-            && !self.subagents_pane
-            && !self.jobs_pane
+            // **No surface on the stack**, open or covered — every one of them reads `End` as its
+            // own key, and this used to be a list of eleven fields that the standing pane was
+            // missing from.
+            && self.surfaces.is_empty()
     }
 
     /// **`ctrl-e` on an empty prompt: the editor, on any file — and away again.**

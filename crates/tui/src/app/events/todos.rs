@@ -24,7 +24,7 @@ impl App {
                     self.seed_todos();
                 }
                 self.redraw = true;
-                if self.todos_pane {
+                if self.is_open(Surface::Todos) {
                     Disposition::Rendered
                 } else {
                     Disposition::Filtered

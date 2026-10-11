@@ -777,7 +777,7 @@ impl App {
 
     pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
         if id == self.session_id {
-            self.picker = false;
+            self.close_surface(Surface::Picker);
             self.redraw = true;
             self.say("already here");
             return None;

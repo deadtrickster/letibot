@@ -268,35 +268,6 @@ impl App {
         }
     }
 
-    /// **`/todos` and `ctrl-p`, as one action.**
-    ///
-    /// A pane with a chord and no word is unreachable from a pipe and unteachable by
-    /// `/help`, and two spellings of one action must not be two implementations.
-    ///
-    /// Returns the bootstrap read when the pane is opening: the daemon's todo list
-    /// rides no snapshot, so a head that attached after the model last wrote has to ask.
-    /// Later changes arrive as `TodosUpdated` and need no asking.
-    pub(crate) fn toggle_todos(&mut self) -> Option<Action> {
-        self.todos_pane = !self.todos_pane;
-        // A pane opens at its top. Kept per-pane would be four fields that each go
-        // stale; one field reset on every open is the same behaviour with nothing to
-        // forget.
-        self.pane_scroll = 0;
-        // **And a row left open goes with the pane.** The overlay's own Esc already returns to
-        // the list, so this is the door that cannot be reached while it is up — but a pane
-        // closed by any other means must not leave a row standing over the screen it belonged
-        // to, which is `/queue`'s rule for its own overlay.
-        self.todos_open = None;
-        self.redraw = true;
-        if self.todos_pane {
-            // Read at open, and re-read on every draw the file has moved under — see
-            // `refresh_repo_todos`. The file is the operator's to edit, and a pane
-            // showing an old read of it is a pane that lies quietly.
-            self.refresh_repo_todos();
-        }
-        self.todos_pane.then_some(Action::ListTodos)
-    }
-
     /// **EVERY ROW OF THE TODOS PANE THE CURSOR MAY LAND ON, in the order the pane draws them** —
     /// leticl's `todos-stops`, and the ONE enumeration everything about the cursor reads.
     ///

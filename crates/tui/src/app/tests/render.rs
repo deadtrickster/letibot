@@ -658,7 +658,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
         vec![daemon_job("j1", &format!("cargo test{HOSTILE}"), false)],
     ));
 
-    b.jobs_pane = true;
+    b.push_surface(Surface::Jobs);
     b.apply(ServerFrame::Event(env(
         1,
         SessionEvent::Subagent {
@@ -671,7 +671,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             answer: None,
         },
     )));
-    b.subagents_pane = true;
+    b.push_surface(Surface::Subagents);
     b.apply(ServerFrame::Event(env(
         2,
         SessionEvent::TodosUpdated {
@@ -684,7 +684,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             }],
         },
     )));
-    b.todos_pane = true;
+    b.push_surface(Surface::Todos);
     b.apply(ServerFrame::Event(env(
         3,
         SessionEvent::SessionRenamed {
@@ -712,10 +712,16 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
         ("todos", 2),
         ("slash listing", 3),
     ] {
-        b.jobs_pane = only == 0;
-        b.subagents_pane = only == 1;
-        b.todos_pane = only == 2;
-        b.slash_out = (only == 3).then(|| ("/notes".into(), b.notes_lines()));
+        b.close_all_surfaces();
+        match only {
+            0 => b.push_surface(Surface::Jobs),
+            1 => b.push_surface(Surface::Subagents),
+            2 => b.push_surface(Surface::Todos),
+            _ => {
+                b.slash_out = Some(("/notes".into(), b.notes_lines()));
+                b.push_surface(Surface::Listing);
+            }
+        }
         // The header carries the renamed session's title whatever pane is up, so
         // every one of these frames also exercises the title.
         let shown = b.screen(160, 40);
@@ -932,6 +938,7 @@ fn a_slash_listing_does_not_strip_the_colour_the_head_composed_into_it() {
     );
     // Now draw it through the listing, which is where the sanitiser was applied.
     a.slash_out = Some(("/notes".into(), rows));
+    a.push_surface(Surface::Listing);
     a.pane_scroll = 0;
     let shown = a.screen(100, 30).join("\n");
     assert!(

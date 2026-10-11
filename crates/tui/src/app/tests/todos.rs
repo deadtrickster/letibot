@@ -39,7 +39,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
             todos: vec![row("my own row", TodoBy::Operator)],
         },
     )));
-    a.todos_pane = true;
+    a.push_surface(Surface::Todos);
 
     // **The add control**, which is where the cursor starts.
     a.todos_sel = 0;
@@ -140,7 +140,7 @@ fn ctrl_t_opens_the_todos_pane_and_esc_closes_it() {
     );
     // And Esc is "go back", before the composer sees it.
     a.key(Key::Esc);
-    assert!(!a.todos_pane);
+    assert!(!a.is_open(Surface::Todos));
     // Toggling twice does not ask twice without opening in between.
     assert_eq!(a.key(Key::CtrlT), Some(Action::ListTodos));
     assert_eq!(a.key(Key::CtrlT), None);
@@ -1098,7 +1098,7 @@ fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
             ],
         },
     )));
-    a.todos_pane = true;
+    a.push_surface(Surface::Todos);
     let screen = a.screen(110, 40).join("\n");
     // **Once each.** The duplicate is the defect, so a count is the assertion.
     for content in ["seat the tool", "push leticl to github"] {
@@ -1157,7 +1157,7 @@ fn each_half_of_the_board_says_when_it_is_the_empty_one() {
             }],
         },
     )));
-    a.todos_pane = true;
+    a.push_surface(Surface::Todos);
     let screen = a.screen(110, 40).join("\n");
     // **One list now, so there is one empty sentence** — and the operator's row is drawn with
     // its author beside it.
@@ -2146,7 +2146,7 @@ fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
     a.key(Key::Esc);
     assert!(a.todos_open.is_none(), "esc leaves the row");
     assert!(
-        a.todos_pane,
+        a.is_open(Surface::Todos),
         "esc goes back to the list, not out of everything"
     );
     let screen = a.screen(100, 30).join("\n");
@@ -2163,7 +2163,7 @@ fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
     );
     // And a second Esc closes the pane, which is the pair the queue entry's overlay keeps.
     a.key(Key::Esc);
-    assert!(!a.todos_pane, "the second esc closes the pane");
+    assert!(!a.is_open(Surface::Todos), "the second esc closes the pane");
 }
 
 /// **Enter reads one of the operator's OWN rows and TAB toggles it.**

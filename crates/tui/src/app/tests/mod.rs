@@ -1140,11 +1140,13 @@ fn edit_row(edit: Option<letibot_sessionlog::event::ToolEdit>) -> CallRow {
 /// Flip the diff view the way the operator does now: the config pane's
 /// first row. `/diff` is gone — one place to change a setting, not two.
 fn flip_diff_view(a: &mut App) {
-    let was = a.config_pane;
-    a.config_pane = true;
+    let was = a.is_open(Surface::Config);
+    a.push_surface(Surface::Config);
     a.config_sel = 0;
     a.key(Key::Enter);
-    a.config_pane = was;
+    if !was {
+        a.close_surface(Surface::Config);
+    }
 }
 
 fn edit_excerpt() -> letibot_sessionlog::event::ToolEdit {
@@ -1397,6 +1399,7 @@ mod session;
 mod settings;
 mod standing;
 mod subagents;
+mod surfaces;
 mod todos;
 mod tools;
 mod transcript;

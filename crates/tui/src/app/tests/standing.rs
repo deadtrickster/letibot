@@ -98,7 +98,7 @@ fn the_pane_draws_the_indexes_abstract_and_the_files_own_size_and_age() {
     let mut a = app();
     a.session_id = "s1".into();
     assert_eq!(a.command("standing"), Some(Action::ListNotes));
-    assert!(a.standing_pane);
+    assert!(a.is_open(Surface::Standing));
     // Nothing has arrived: the pane says so rather than drawing a corpus nobody sent.
     let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains("standing notes"), "{screen}");
@@ -279,7 +279,10 @@ fn leaving_rano_lands_back_on_the_notes_list() {
     ))]);
     a.editor_tick(Instant::now());
     assert!(a.edit_pane.is_none(), "rano's exit closed the pane");
-    assert!(a.standing_pane, "and the list is what was under it");
+    assert!(
+        a.is_open(Surface::Standing),
+        "and the list is what was under it"
+    );
     let screen = a.screen(120, 24).join("\n");
     assert!(screen.contains("standing notes"), "{screen}");
     assert_eq!(a.standing_sel, 1, "the cursor is where the reader left it");

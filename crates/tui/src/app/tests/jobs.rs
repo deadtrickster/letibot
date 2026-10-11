@@ -630,7 +630,7 @@ fn enter_on_a_job_row_reads_its_output() {
         vec![daemon_job("j7", "cargo test", false)],
     ));
     a.key(Key::CtrlQ);
-    assert!(a.jobs_pane);
+    assert!(a.is_open(Surface::Jobs));
     // **The job is settled, so it sits under the folded `finished` group**: Enter on the
     // group row (where the cursor starts) unfolds it, and one Down lands on the job.
     a.key(Key::Enter);
@@ -643,7 +643,7 @@ fn enter_on_a_job_row_reads_its_output() {
         })
     );
     assert!(
-        a.jobs_pane,
+        a.is_open(Surface::Jobs),
         "the jobs list stays behind the overlay, so esc returns to it"
     );
     assert!(
@@ -664,7 +664,7 @@ fn enter_on_a_job_row_asks_the_daemon_for_that_jobs_output() {
         ],
     ));
     a.key(Key::CtrlQ);
-    assert!(a.jobs_pane);
+    assert!(a.is_open(Surface::Jobs));
     assert!(
         a.jobs_lines(100).join("\n").contains("\u{25b8}"),
         "a cursor is drawn"
@@ -830,7 +830,10 @@ fn the_job_output_event_fills_the_overlay_and_it_pages() {
     // Esc returns to the jobs list, which never closed.
     a.key(Key::Esc);
     assert!(a.job_out.is_none());
-    assert!(a.jobs_pane, "esc goes back to jobs, not out of everything");
+    assert!(
+        a.is_open(Surface::Jobs),
+        "esc goes back to jobs, not out of everything"
+    );
 }
 
 /// **A refused read is answered in the pane, not left at `reading…`.** A job can

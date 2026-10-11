@@ -508,7 +508,7 @@ impl App {
             return None;
         }
         if matches!(cmd, "sessions" | "s") {
-            return Some(self.open_session_picker());
+            return self.open_surface(Surface::Picker);
         }
         if let Some(id) = cmd.strip_prefix("switch ") {
             return self.pick(id.trim());
@@ -547,8 +547,8 @@ impl App {
                 // is a no-op; the answer arriving does not re-seed it, so an
                 // arrow pressed while the ask was in flight is not undone.
                 self.pick = Some(Pick::Mode);
-                self.picker = false;
-                self.config_pane = false;
+                self.close_surface(Surface::Picker);
+                self.close_surface(Surface::Config);
                 self.seed_pick();
                 self.redraw = true;
                 return Some(Action::Settings);
@@ -580,17 +580,9 @@ impl App {
                 };
                 return self.notes_command(verb, rest);
             }
-            "help" | "h" | "?" => {
-                self.help = !self.help;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                None
-            }
+            "help" | "h" | "?" => self.toggle_surface(Surface::Help),
             // Where the bottom border's telemetry went. See `App::stats`.
             "status" | "stats" => {
-                self.stats = !self.stats;
-                self.pane_scroll = 0;
-                self.redraw = true;
                 // **Opening the screen IS the acknowledgement** (R51 item 17). The `⚠` on the
                 // composer's edge is a pointer at these numbers, so the act of going to read them
                 // is what clears it — there is no separate key, and there should not be: a second
@@ -601,11 +593,9 @@ impl App {
                 // opened it by accident and did not look has still not read the numbers — but they
                 // also cannot have missed them, because the screen is the thing they were looking
                 // at. The asymmetry that matters is the one `Counters::exceeds` holds: a counter
-                // that moves AFTER this brings the mark straight back.
-                if self.stats {
-                    self.acknowledge_counters();
-                }
-                None
+                // that moves AFTER this brings the mark straight back. That is
+                // `open_surface`'s arm for `Stats`.
+                self.toggle_surface(Surface::Stats)
             }
             "think" | "r" => {
                 self.reasoning = self.reasoning.flip();
@@ -642,8 +632,8 @@ impl App {
                 let rest = verb_arg(cmd, "verbosity").unwrap_or("").trim().to_string();
                 if rest.is_empty() {
                     self.pick = Some(Pick::Verbosity);
-                    self.picker = false;
-                    self.config_pane = false;
+                    self.close_surface(Surface::Picker);
+                    self.close_surface(Surface::Config);
                     self.seed_pick();
                     self.redraw = true;
                     return None;
@@ -656,8 +646,8 @@ impl App {
                 let rest = verb_arg(cmd, "diff").unwrap_or("").trim().to_string();
                 if rest.is_empty() {
                     self.pick = Some(Pick::Diff);
-                    self.picker = false;
-                    self.config_pane = false;
+                    self.close_surface(Surface::Picker);
+                    self.close_surface(Surface::Config);
                     self.seed_pick();
                     self.redraw = true;
                     return None;
@@ -671,36 +661,15 @@ impl App {
             // read. It goes through the same function as the card and the long spelling, so the
             // three cannot disagree.
             "v" => return self.set_verbosity("v"),
-            "config" | "settings" => {
-                self.config_pane = !self.config_pane;
-                self.config_sel = 0;
-                self.pane_scroll = 0;
-                // One list on the screen at a time, the same rule the pickers
-                // keep between themselves.
-                if self.config_pane {
-                    self.pick = None;
-                }
-                self.redraw = true;
-                // Opening asks the daemon for its settings; the head's own are
-                // already here. A pane drawn from the last answer would show the
-                // mode the session had when this head attached.
-                if self.config_pane && !self.session_id.is_empty() {
-                    return Some(Action::Settings);
-                }
-                None
-            }
-            // **`/jobs` is `toggle_jobs`'s other spelling** — the same function the chord
-            // and a click on the count label run, so the three cannot drift.
-            "jobs" => self.toggle_jobs(),
+            // One list on the screen at a time, and the settings asked for on the way in — both
+            // in `open_surface`'s arm for `Config`.
+            "config" | "settings" => self.toggle_surface(Surface::Config),
+            // **`/jobs` is `ctrl-q`'s other spelling** — the same function the chord and a click
+            // on the count label run, so the three cannot drift.
+            "jobs" => self.toggle_surface(Surface::Jobs),
             // **The merge queue**, and it is not this session's: there is one `main` and one
             // queue, so the pane asks for the whole thing and the daemon answers with it.
-            "queue" => {
-                self.queue_pane = !self.queue_pane;
-                self.queue_open = None;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                self.queue_pane.then_some(Action::ListMergeQueue)
-            }
+            "queue" => self.toggle_surface(Surface::Queue),
             // **`/standing` — the standing notes, and it is not `/notes`.**
             //
             // The word is the module's own: `standing_notes` is what the harness reads into
@@ -709,7 +678,7 @@ impl App {
             // side's observations, and the TUI broadcasts head notices under the same name."*
             // `/notes` is the head's own disclosures, numbered for `/notes dismiss N`, and it
             // keeps meaning that. A pane over the corpus takes the corpus's word.
-            "standing" => self.toggle_standing(),
+            "standing" => self.toggle_surface(Surface::Standing),
             // **§6: the panes and the promote, reachable as verbs.**
             //
             // Each of these had a chord and no word, which is two problems: a head
@@ -717,14 +686,11 @@ impl App {
             // reach them at all, and `/help` cannot teach a chord it has no name for.
             // The chords stay, because they are faster; both spellings end in the same
             // function, so they cannot drift.
-            "todos" => self.toggle_todos(),
+            "todos" => self.toggle_surface(Surface::Todos),
             _ if verb_arg(cmd, "todo").is_some() => {
                 return self.todo_command(verb_arg(cmd, "todo").unwrap_or(""));
             }
-            "subagents" => {
-                self.toggle_subagents();
-                None
-            }
+            "subagents" => self.toggle_surface(Surface::Subagents),
             "promote" => self.promote(),
             // **`/peek ID` reads one subagent's scrollback into the pane the tree's
             // Enter opens.** The id is the daemon's and an id it does not hold is
@@ -825,8 +791,8 @@ impl App {
                         return None;
                     }
                     self.pick = Some(Pick::Model);
-                    self.picker = false;
-                    self.config_pane = false;
+                    self.close_surface(Surface::Picker);
+                    self.close_surface(Surface::Config);
                     // Seeded to what answers now, so Enter on an untouched list
                     // is a no-op — the same courtesy the mode picker pays.
                     self.seed_pick();
@@ -1172,8 +1138,7 @@ impl App {
             "" => {
                 let lines = self.notes_lines();
                 self.slash_out = Some(("/notes".to_string(), lines));
-                self.pane_scroll = 0;
-                self.redraw = true;
+                self.push_surface(Surface::Listing);
                 None
             }
             "restore" | "back" | "undismiss" => {

@@ -414,7 +414,7 @@ fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
         y: hits.row as u16,
     });
     assert!(
-        a.subagents_pane,
+        a.is_open(Surface::Subagents),
         "the click opened the pane its count names"
     );
     let screen = a.screen(100, 24).join("\n");
@@ -469,7 +469,10 @@ fn a_click_on_the_jobs_label_opens_the_jobs_pane_and_asks_for_its_table() {
         Some(Action::ListJobs),
         "the click ran the chord's act, table and all"
     );
-    assert!(a.jobs_pane, "the click opened the pane its count names");
+    assert!(
+        a.is_open(Surface::Jobs),
+        "the click opened the pane its count names"
+    );
 }
 
 /// **A click one column outside a label opens nothing.** The labels are targets because
@@ -531,7 +534,10 @@ fn a_click_one_column_off_the_labels_opens_nothing() {
             "a click off every label acted"
         );
     }
-    assert!(!a.subagents_pane && !a.jobs_pane, "some pane opened anyway");
+    assert!(
+        !a.is_open(Surface::Subagents) && !a.is_open(Surface::Jobs),
+        "some pane opened anyway"
+    );
 }
 
 /// **A head with nothing in flight draws the edge but no label, and no click along it
@@ -562,7 +568,7 @@ fn a_head_with_nothing_running_has_no_label_to_click() {
             "a click on a label-less edge opened something"
         );
     }
-    assert!(!a.subagents_pane && !a.jobs_pane);
+    assert!(!a.is_open(Surface::Subagents) && !a.is_open(Surface::Jobs));
 }
 
 /// **A truncated edge keeps only the labels it actually drew.** The edge truncates from
@@ -648,7 +654,7 @@ fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
         },
     )));
     a.key(Key::CtrlG);
-    assert!(a.subagents_pane);
+    assert!(a.is_open(Surface::Subagents));
     // The pane covers the conversation, not the composer: the edge and its label are
     // still drawn, and still recorded.
     let screen = a.screen(100, 24);
@@ -664,7 +670,7 @@ fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
         y: hits.row as u16,
     });
     assert!(
-        !a.subagents_pane,
+        !a.is_open(Surface::Subagents),
         "the click ran the chord's toggle, not just its open"
     );
 }
@@ -706,7 +712,7 @@ fn the_help_names_every_pane_chord_and_what_a_click_and_the_wheel_do() {
 #[test]
 fn the_bar_names_the_keys_of_the_output_listing_and_window_in_front() {
     let mut a = app();
-    a.subagents_pane = true;
+    a.push_surface(Surface::Subagents);
     a.sub_out = Some(SubOut {
         session_id: "sub-1".into(),
         lines: vec!["out".into()],
@@ -715,12 +721,14 @@ fn the_bar_names_the_keys_of_the_output_listing_and_window_in_front() {
         spill: None,
         dropped: 0,
     });
+    a.push_surface(Surface::SubOut);
     let bar = a.hint_bar(200);
     assert!(!bar.contains("opens a subagent"), "{bar}");
     assert!(bar.contains("enter reads it again"), "{bar}");
 
     let mut a = app();
     a.slash_out = Some(("/notes".into(), vec!["a note".into()]));
+    a.push_surface(Surface::Listing);
     let bar = a.hint_bar(200);
     assert!(bar.contains("↑↓ scrolls"), "{bar}");
     assert!(!bar.contains("ctrl-s sessions"), "{bar}");

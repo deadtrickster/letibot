@@ -95,7 +95,7 @@ fn ctrl_g_opens_the_subagent_tree_and_esc_closes_it() {
     assert!(screen.contains("running"), "{screen}");
 
     a.key(Key::Esc);
-    assert!(!a.subagents_pane);
+    assert!(!a.is_open(Surface::Subagents));
 }
 
 /// **A fresh head rebuilds the subagent pane AND the count out of the daemon's own
@@ -306,7 +306,7 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
     // **Down a level: Enter IS the switch.**
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
     assert!(
-        !a.subagents_pane,
+        !a.is_open(Surface::Subagents),
         "switching closes the pane it was opened from"
     );
     a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
@@ -339,7 +339,10 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
         Some(Action::Switch("s".into())),
         "a single Esc did not climb out of the subagent"
     );
-    assert!(a.subagents_pane, "esc goes up TO the subagents list");
+    assert!(
+        a.is_open(Surface::Subagents),
+        "esc goes up TO the subagents list"
+    );
 
     // The parent's `Hello` — which is what a switch is answered with — carries the
     // list, so the pane and the count are rebuilt rather than wait for an event.
@@ -367,7 +370,7 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
     let mut a = inside_a_subagent();
     a.key(Key::CtrlG);
     assert_eq!(a.key(Key::Esc), None);
-    assert!(!a.subagents_pane, "esc closed the pane");
+    assert!(!a.is_open(Surface::Subagents), "esc closed the pane");
     assert_eq!(
         a.session_id, "s-sub-1",
         "esc also switched out of the session"
@@ -578,7 +581,7 @@ fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it(
         a.key(Key::Char('o')),
         Some(Action::Switch("s-sub-1".into()))
     );
-    assert!(!a.subagents_pane, "switching closes the pane");
+    assert!(!a.is_open(Surface::Subagents), "switching closes the pane");
 
     a.apply(hello(
         "s-sub-1",
@@ -643,7 +646,10 @@ fn an_opening_subagent_is_listed_but_cannot_be_entered() {
         None,
         "`p` read a session that is not open"
     );
-    assert!(a.subagents_pane, "the pane stays where the operator was");
+    assert!(
+        a.is_open(Surface::Subagents),
+        "the pane stays where the operator was"
+    );
     assert!(a.sub_out_pending.is_none(), "nothing was asked for");
 
     // Open now: the same row, and Enter goes there.
@@ -700,7 +706,7 @@ fn enter_on_a_subagent_row_switches_into_its_session() {
         Some(Action::Switch("s-sub-1".into())),
         "Enter read the row instead of going to it"
     );
-    assert!(!a.subagents_pane, "switching closes the pane");
+    assert!(!a.is_open(Surface::Subagents), "switching closes the pane");
     assert!(
         a.sub_out_pending.is_none(),
         "Enter asked for the output; that is `p`'s job now"
@@ -731,7 +737,10 @@ fn p_reads_a_subagents_output_without_moving_the_head() {
     a.key(Key::CtrlG);
     assert_eq!(a.key(Key::Char('p')), Some(Action::Peek("s-sub-1".into())));
     assert_eq!(a.sub_out_pending.as_deref(), Some("s-sub-1"));
-    assert!(a.subagents_pane, "the tree stays open under the read");
+    assert!(
+        a.is_open(Surface::Subagents),
+        "the tree stays open under the read"
+    );
     assert!(a.session_id.is_empty(), "reading moved the head");
 }
 
@@ -859,7 +868,7 @@ fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
     // descent arm added below the panes did not take it.
     a.key(Key::Esc);
     assert!(a.sub_out.is_none());
-    assert!(a.subagents_pane, "back to the tree");
+    assert!(a.is_open(Surface::Subagents), "back to the tree");
     // Enter is the way in now, and `o` is the same act under the key this pane has
     // always used for it.
     assert!(matches!(

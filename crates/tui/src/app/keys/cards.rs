@@ -507,6 +507,14 @@ impl App {
                     self.mode_sel = at;
                     return ControlFlow::Break(self.take_pick(choices[at].clone()));
                 }
+                // **Esc leaves the setting alone and closes the card** — the card's own key now,
+                // because the card is in front of any surface (R69); it used to be one arm of a
+                // block that closed every pane and card at once.
+                Key::Esc | Key::CtrlC => {
+                    self.pick = None;
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
                 Key::Click { y, .. } => {
                     // Off the last frame's record (`mode_hits`): a value's row and the `why`
                     // wrapped under it both pick it, anything else picks nothing, and the record

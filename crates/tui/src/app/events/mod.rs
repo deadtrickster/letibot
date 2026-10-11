@@ -568,12 +568,12 @@ impl App {
                 scroll.saturating_sub(by)
             }
         };
-        if let Some(v) = self.sub_out.as_mut() {
-            v.scroll = moved(v.scroll);
-        } else if let Some(v) = self.job_out.as_mut() {
-            v.scroll = moved(v.scroll);
-        } else {
-            return false;
+        // **The one on top, and only while it is drawn** (R69): an output under another pane,
+        // or under rano, is not on the screen and does not move.
+        match (self.focused_surface(), &mut self.sub_out, &mut self.job_out) {
+            (Some(Surface::SubOut), Some(v), _) => v.scroll = moved(v.scroll),
+            (Some(Surface::JobOut), _, Some(v)) => v.scroll = moved(v.scroll),
+            _ => return false,
         }
         self.redraw = true;
         true

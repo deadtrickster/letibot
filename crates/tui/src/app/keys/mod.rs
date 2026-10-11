@@ -148,34 +148,23 @@ impl App {
             return None;
         }
 
-        if let ControlFlow::Break(r) = self.key_sub_out(&k) {
+        // **The cards in the chrome, in front of the surface** (R69). A decision, the quit card
+        // and a setting card are questions drawn by the composer, on the screen whatever holds the
+        // rectangle above them, and their keys come first: the order used to be a list in which
+        // the config pane, the output views and the overlays sat ABOVE the decision card while the
+        // other panes sat below it, so whether ↑↓ moved the card's ladder depended on which pane
+        // happened to be open.
+        if let ControlFlow::Break(r) = self.key_decision(&k) {
             return r;
         }
-
-        if let ControlFlow::Break(r) = self.key_job_out(&k) {
+        if let ControlFlow::Break(r) = self.key_quit_card(&k) {
             return r;
         }
-
-        if let ControlFlow::Break(r) = self.key_slash_out(&k) {
+        if let ControlFlow::Break(r) = self.key_pick(&k) {
             return r;
         }
-
-        if let ControlFlow::Break(r) = self.key_config_pane(&k) {
-            return r;
-        }
-        if let ControlFlow::Break(r) = self.key_queue_review(&k) {
-            return r;
-        }
-
-        // **The todo row the pane's Enter opened**, above the block that closes every pane on
-        // Esc: its Esc means *back to the list*, and below that block it would close the pane and
-        // leave the row standing over an empty screen — the rule `key_queue_review` is placed by.
-        // See `key_todo_open`.
-        if let ControlFlow::Break(r) = self.key_todo_open(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_overlays(&k) {
+        // **The surface in front, and nothing behind it** — see [`App::key_surface`].
+        if let ControlFlow::Break(r) = self.key_surface(&k) {
             return r;
         }
         // **Esc while parked in the scrollback means "follow the stream again"**,
@@ -191,40 +180,6 @@ impl App {
             return None;
         }
         if let ControlFlow::Break(r) = self.key_payload_window(&k) {
-            return r;
-        }
-        if let ControlFlow::Break(r) = self.key_decision(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_picker(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_quit_card(&k) {
-            return r;
-        }
-        if let ControlFlow::Break(r) = self.key_pick(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_subagents_pane(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_todos_pane(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_queue_pane(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_jobs_pane(&k) {
-            return r;
-        }
-
-        if let ControlFlow::Break(r) = self.key_standing_pane(&k) {
             return r;
         }
         // **A click on a count label opens the pane its count names** — the operator's ask:
@@ -244,13 +199,10 @@ impl App {
         if let Key::Click { x, y } = k
             && let Some(label) = self.box_top_label_at(x, y)
         {
-            match label {
-                CountLabel::Subagents => {
-                    self.toggle_subagents();
-                    return None;
-                }
-                CountLabel::Jobs => return self.toggle_jobs(),
-            }
+            return self.toggle_surface(match label {
+                CountLabel::Subagents => Surface::Subagents,
+                CountLabel::Jobs => Surface::Jobs,
+            });
         }
         // **Up with an empty composer recalls the queued line.**
         //
@@ -348,38 +300,12 @@ impl App {
             }
         }
 
-        // **An open pane owns Enter, even when it has nothing to act on.**
-        //
-        // The operator, 2026-10-03, having gone to the jobs pane and pressed Enter with a
-        // stray character in the composer: *"the pane own keyboard in a way, so enter is a
-        // pane thing."* That is the rule this arm is, and it is the rule the arms above now
-        // keep — each of them used to gate its own Enter on `editor.text().is_empty()`, so
-        // **a pane's Enter silently became "send what I was typing"** the moment there was
-        // anything in the composer. What they read as a keystroke aimed at the pane was
-        // sent to the model.
-        //
-        // This is the second half of that: the panes whose blocks above are conditional on
-        // having rows (`jobs_pane && !self.jobs.is_empty()`, and the subagent tree's twin)
-        // do not run at all over an empty list, and `help`, `stats` and the two overlay
-        // screens have no Enter arm. Without this, Enter in an empty jobs pane is still the
-        // composer's, which is the same defect with one row fewer on the screen.
-        //
-        // **What is deliberately NOT here.** The pickers, the mode picker, the decision
-        // ladder and the todos stops: for those, a typed line IS the answer — a row number,
-        // an id prefix, a name — and `submit` routes it to the right one and holds the
-        // words. Swallowing Enter there would break the typed path those panes advertise.
-        // The rule is *the pane owns the key*, not *the composer is dead*: a pane that
-        // names no meaning for Enter takes it anyway, and one that names a meaning for the
-        // typed line keeps it.
-        //
-        // **Nor is the ctrl-v window**, which was here and should not have been. It is not
-        // an overlay over the composer; it is a row of the conversation opened wide, with
-        // the composer live underneath and no Enter of its own to lose. Holding Enter for
-        // it meant the operator could not send until they closed it: *"untill i hit ctrl-v
-        // again - i couldnt sent my new prompt"*. A typed line now goes, and the window
-        // closes with it — the reader has moved on to the next turn, and the arrows go
-        // back to the conversation and the composer's history. An empty Enter still does
-        // nothing, as it does with no window open.
+        // **The ctrl-v window does not own Enter.** It is not an overlay over the composer; it
+        // is a row of the conversation opened wide, with the composer live underneath and no
+        // Enter of its own to lose. Holding Enter for it meant the operator could not send until
+        // they closed it: *"untill i hit ctrl-v again - i couldnt sent my new prompt"*. A typed
+        // line now goes, and the window closes with it. An empty Enter still does nothing, as it
+        // does with no window open. (Which SURFACES own Enter is `Surface::owns_enter`.)
         if matches!(k, Key::Enter) && self.payload_sel.is_some() {
             if self.editor.text().trim().is_empty() {
                 return None;
@@ -388,16 +314,6 @@ impl App {
             self.payload_page = 0;
             self.invalidate_history();
             self.redraw = true;
-        }
-        if matches!(k, Key::Enter)
-            && (self.help
-                || self.stats
-                || self.jobs_pane
-                || self.subagents_pane
-                || self.standing_pane
-                || self.slash_out.is_some())
-        {
-            return None;
         }
 
         // **A single Esc inside a subagent's session is the way back UP the tree.**
@@ -475,8 +391,7 @@ impl App {
             // found by id once the parent's `Hello` has rebuilt the list
             // ([`App::fold_subagents`]), because an index taken now would be an index
             // into the rows of the session being left.
-            self.subagents_pane = true;
-            self.pane_scroll = 0;
+            self.push_surface(Surface::Subagents);
             self.up_from = Some(self.session_id.clone());
             return self.switch_to(parent);
         }

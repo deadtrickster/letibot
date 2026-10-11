@@ -172,7 +172,7 @@ impl App {
         // before the decision arm and before the prompt arm, because while a picker
         // is on the screen a bare `2` means the second session and cannot sensibly
         // mean anything else.
-        if self.picker {
+        if self.focused_surface() == Some(Surface::Picker) {
             return self.pick(text.trim());
         }
         // The mode picker takes the line the same way — a row number or a name

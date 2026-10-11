@@ -66,7 +66,7 @@ fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
         Some(Action::Settings),
         "opening asks the daemon"
     );
-    assert!(a.config_pane);
+    assert!(a.is_open(Surface::Config));
     let screen = a.screen(120, 30).join("\n");
     assert!(screen.contains("diff view"), "{screen}");
     assert!(screen.contains("split"), "{screen}");
@@ -148,7 +148,7 @@ fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
         eprintln!("{}", a.screen(120, 30).join("\n"));
     }
     a.key(Key::Esc);
-    assert!(!a.config_pane);
+    assert!(!a.is_open(Surface::Config));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -306,23 +306,24 @@ fn a_row_number_answers_the_ask_the_mode_card_and_the_quit_card() {
 #[test]
 fn no_pane_lets_the_wheel_through_to_the_conversation() {
     let panes: [(&str, fn(&mut App)); 9] = [
-        ("help", |a| a.help = true),
-        ("picker", |a| a.picker = true),
+        ("help", |a| a.push_surface(Surface::Help)),
+        ("picker", |a| a.push_surface(Surface::Picker)),
         ("mode_picker", |a| a.pick = Some(Pick::Mode)),
-        ("stats", |a| a.stats = true),
-        ("todos_pane", |a| a.todos_pane = true),
+        ("stats", |a| a.push_surface(Surface::Stats)),
+        ("todos_pane", |a| a.push_surface(Surface::Todos)),
         // **And the row the pane's Enter opened**, which is the newest screen on top of the
         // transcript and therefore the newest one that can forget: the page keys and the wheel are
         // the chords' for any open pane, and they move `pane_scroll` — the field this overlay is
         // drawn through — so a notch there moves the overlay's window and not the conversation
         // under it (`key_todo_open` says which handler owns which key).
         ("todos_open", |a| {
-            a.todos_pane = true;
+            a.push_surface(Surface::Todos);
             a.todos_open = Some(TodoStop::Theirs("a row".into()));
+            a.push_surface(Surface::TodoRow);
         }),
-        ("subagents_pane", |a| a.subagents_pane = true),
-        ("jobs_pane", |a| a.jobs_pane = true),
-        ("config_pane", |a| a.config_pane = true),
+        ("subagents_pane", |a| a.push_surface(Surface::Subagents)),
+        ("jobs_pane", |a| a.push_surface(Surface::Jobs)),
+        ("config_pane", |a| a.push_surface(Surface::Config)),
     ];
     for (name, set) in panes {
         let mut a = app();
@@ -581,14 +582,17 @@ fn bare_mode_opens_the_picker_seeded_to_the_current_mode() {
     a.apply(mode_settings("always-ask", MODES));
     // The two pickers are never open together: each opener closes the other.
     a.key(Key::CtrlS);
-    assert!(a.picker);
+    assert!(a.is_open(Surface::Picker));
     assert_eq!(
         a.command("mode"),
         Some(Action::Settings),
         "opening asks the daemon for fresh rows"
     );
     assert!(a.pick == Some(Pick::Mode));
-    assert!(!a.picker, "one list on the screen at a time");
+    assert!(
+        !a.is_open(Surface::Picker),
+        "one list on the screen at a time"
+    );
     assert_eq!(
         a.mode_sel, 1,
         "the cursor starts on the mode the session is under"

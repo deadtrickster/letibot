@@ -12,7 +12,7 @@ impl App {
     /// the prompt you type next lands there.
     pub(crate) fn pick(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
-            self.picker = false;
+            self.close_surface(Surface::Picker);
             self.redraw = true;
             return None;
         }

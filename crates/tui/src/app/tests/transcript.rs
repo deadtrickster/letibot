@@ -1445,7 +1445,7 @@ fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else()
     assert_eq!(a.reasoning, Fold::Folded, "ctrl-n moved the thinking fold");
     assert_eq!(a.tools, Fold::Folded, "ctrl-n moved the tool-output fold");
     assert!(
-        !a.jobs_pane && !a.todos_pane && !a.picker,
+        !a.is_open(Surface::Jobs) && !a.is_open(Surface::Todos) && !a.is_open(Surface::Picker),
         "ctrl-n opened a pane"
     );
     assert!(!a.raw_calls, "ctrl-n toggled the raw view");
@@ -7493,7 +7493,7 @@ fn the_jobs_pane_shows_the_running_ones_first_and_folds_the_finished_ones() {
             daemon_job("j3", "sleep 9", false),
         ],
     ));
-    a.jobs_pane = true;
+    a.push_surface(Surface::Jobs);
     let frame = a.jobs_lines(100);
     let joined = frame.join("\n");
     assert!(joined.contains("finished (2)"), "{joined}");

@@ -371,23 +371,23 @@ fn the_panes_and_the_promote_are_reachable_as_verbs() {
     // `/todos` opens the pane and asks the daemon for the list, exactly as `ctrl-t`.
     let mut a = app();
     assert_eq!(a.submit("/todos".into()), Some(Action::ListTodos));
-    assert!(a.todos_pane);
+    assert!(a.is_open(Surface::Todos));
     // …and closes it again, with no read the second time — a read on the way out
     // would be a round trip for a screen that is going away.
     assert_eq!(a.submit("/todos".into()), None);
-    assert!(!a.todos_pane);
+    assert!(!a.is_open(Surface::Todos));
     // The chord and the verb agree.
     let mut b = app();
     assert_eq!(b.key(Key::CtrlT), Some(Action::ListTodos));
-    assert!(b.todos_pane, "the chord opens the same pane");
+    assert!(b.is_open(Surface::Todos), "the chord opens the same pane");
 
     // The subagent tree is the same shape: no bootstrap read, because the tree is
     // folded from durable `Subagent` events a snapshot already carries.
     let mut c = app();
     assert_eq!(c.submit("/subagents".into()), None);
-    assert!(c.subagents_pane);
+    assert!(c.is_open(Surface::Subagents));
     c.submit("/subagents".into());
-    assert!(!c.subagents_pane);
+    assert!(!c.is_open(Surface::Subagents));
 
     // `/peek ID` reads one subagent, and remembers it is waiting so Esc can cancel.
     let mut d = app();
@@ -487,7 +487,7 @@ fn a_verb_the_head_has_never_heard_of_goes_to_the_daemon_unjudged() {
     let mut b = app();
     b.session_id = "s1".into();
     assert_eq!(b.submit("/status".into()), None, "/status opens a pane");
-    assert!(b.stats, "and it really opened it");
+    assert!(b.is_open(Surface::Stats), "and it really opened it");
     assert_eq!(b.submit("/quit".into()), Some(Action::Quit));
     // …and `models` with no argument is the menu, not a daemon round trip.
     let mut c = app();

@@ -434,13 +434,13 @@ fn every_listed_slash_command_is_one_this_head_answers() {
         // `/subagents` does neither, which is correct behaviour and a wrong test.
         let panes = |a: &App| {
             (
-                a.help,
-                a.stats,
-                a.picker,
-                a.todos_pane,
-                a.subagents_pane,
-                a.jobs_pane,
-                a.config_pane,
+                a.is_open(Surface::Help),
+                a.is_open(Surface::Stats),
+                a.is_open(Surface::Picker),
+                a.is_open(Surface::Todos),
+                a.is_open(Surface::Subagents),
+                a.is_open(Surface::Jobs),
+                a.is_open(Surface::Config),
                 a.pick == Some(Pick::Mode),
                 a.pick == Some(Pick::Model),
                 // **R38 added two settings to the same card**, so a verb that opens one
@@ -646,14 +646,17 @@ fn ctrl_q_and_slash_jobs_toggle_the_pane_and_esc_closes_it() {
     let mut a = App::new(plain_cfg(80));
     // Opening asks the daemon for its table; closing asks nothing.
     assert_eq!(a.key(Key::CtrlQ), Some(Action::ListJobs));
-    assert!(a.jobs_pane);
+    assert!(a.is_open(Surface::Jobs));
     assert_eq!(a.key(Key::CtrlQ), None);
-    assert!(!a.jobs_pane);
+    assert!(!a.is_open(Surface::Jobs));
 
     assert_eq!(a.command("jobs"), Some(Action::ListJobs));
-    assert!(a.jobs_pane);
+    assert!(a.is_open(Surface::Jobs));
     a.key(Key::Esc);
-    assert!(!a.jobs_pane, "esc closes the pane like the other screens");
+    assert!(
+        !a.is_open(Surface::Jobs),
+        "esc closes the pane like the other screens"
+    );
 }
 
 /// **A verb has to be the whole word.** The operator: *"/models doesnt work —

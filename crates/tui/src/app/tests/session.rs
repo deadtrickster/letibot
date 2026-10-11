@@ -241,7 +241,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         2,
         "a sub-session was discarded on the way in"
     );
-    a.picker = true;
+    a.push_surface(Surface::Picker);
 
     // **Collapsed by default**, which is the whole reason the default is not noisy.
     assert_eq!(a.session_rows().len(), 1, "the child is shown unexpanded");
@@ -2223,7 +2223,7 @@ fn slash_sessions_opens_the_picker_the_way_ctrl_s_does() {
             a.command("sessions")
         };
         assert_eq!(sent, Some(Action::ListSessions), "{open}");
-        assert!(a.picker, "{open}");
+        assert!(a.is_open(Surface::Picker), "{open}");
         assert!(a.pick.is_none(), "{open} closes the setting card");
         assert_eq!(a.picker_sel, 1, "{open} seeds the cursor on this session");
     }

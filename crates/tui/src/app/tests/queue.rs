@@ -12,7 +12,7 @@ fn the_queue_pane_asks_for_the_queue_and_draws_what_comes_back() {
     let mut a = app();
     a.session_id = "s1".into();
     assert_eq!(a.command("queue"), Some(Action::ListMergeQueue));
-    assert!(a.queue_pane);
+    assert!(a.is_open(Surface::Queue));
     // Nothing has arrived: the pane says so rather than drawing a queue nobody sent.
     let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains("merge queue"), "{screen}");
@@ -29,7 +29,7 @@ fn the_queue_pane_asks_for_the_queue_and_draws_what_comes_back() {
 
     // Closing it asks for nothing and puts the conversation back.
     assert_eq!(a.command("queue"), None);
-    assert!(!a.queue_pane);
+    assert!(!a.is_open(Surface::Queue));
     assert!(!a.screen(100, 24).join("\n").contains("merge queue"));
 }
 
@@ -63,7 +63,7 @@ fn esc_leaves_the_entry_overlay_with_the_queue_still_behind_it() {
     a.key(Key::Esc);
     assert!(a.queue_open.is_none(), "esc leaves the overlay");
     assert!(
-        a.queue_pane,
+        a.is_open(Surface::Queue),
         "esc goes back to the queue, not out of everything"
     );
     assert!(!a.screen(100, 24).join("\n").contains("merge queue · entry"));

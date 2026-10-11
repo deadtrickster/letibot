@@ -230,8 +230,7 @@ impl App {
                     }
                 }
                 self.slash_out = Some(("diagnostic".to_string(), lines));
-                self.pane_scroll = 0;
-                self.redraw = true;
+                self.push_surface(Surface::Listing);
                 Disposition::Control
             }
             ServerFrame::RowFetched { .. } => Disposition::Control,
@@ -272,7 +271,9 @@ impl App {
                     spill,
                     dropped,
                 });
-                self.redraw = true;
+                // **On top of whatever is drawn** — the tree it was read from, or the
+                // conversation for a `/peek` typed with no pane open — so Esc goes back to it.
+                self.push_surface(Surface::SubOut);
                 Disposition::Rendered
             }
             // Only ever written to an `askpass` head; a TUI that sees one has a

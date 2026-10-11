@@ -26,17 +26,21 @@ impl App {
         // (`own`), set in the SAME branch that picks the mode** — so the two halves of the bar
         // cannot come from two different surfaces.
         let mut own: Option<&str> = None;
+        // **The surface in front is `drawn()`'s answer** (R69), the value `main_area` draws and
+        // `App::key` routes on — so the bar cannot describe a pane that is open behind another.
+        let drawn = self.drawn();
+        let surface = self.focused_surface();
         let mode = if self.quit_card {
             HintMode::QuitCard
         } else if self.detached() {
             HintMode::Detached
-        } else if self.diff_popup.is_some() && !self.open.is_empty() {
+        } else if drawn == Drawn::DiffPopup && !self.open.is_empty() {
             // **A decision under the diff popup has the card's keys** (`App::key_diff_popup`
             // yields them), so the bar says what the card's keys do; the popup's own keys are
             // named in this head's half.
             own = Some("the diff: pgup/pgdn scroll · esc closes it");
             HintMode::Deciding
-        } else if self.diff_popup.is_some() {
+        } else if drawn == Drawn::DiffPopup {
             // **The popup is a reading screen with no mode of its own in rano**: `Reading`'s
             // tail (`esc closes this`) is true of it, and its keys go in this head's half. It
             // used to fall through to whatever was under it — the conversation's chords, all
@@ -47,99 +51,75 @@ impl App {
             HintMode::Editor
         } else if self.editor_drawn() {
             HintMode::EditorBehind
-        } else if self.slash_out.is_some() {
-            // **A slash listing is a reading screen** (R67 item 9) — drawn ahead of help in
-            // `main_area`, and its keys are the arrows and Esc (`key_slash_out`). It had no
-            // branch, so the bar named whatever was under it.
-            own = Some("↑↓ scrolls");
-            HintMode::Reading
-        } else if self.help || self.stats {
-            HintMode::Reading
-        } else if self.picker {
-            HintMode::SessionPicker
         } else if self.pick.is_some() {
+            // **The cards in the chrome are in front of the surface** — they take their keys
+            // first in `App::key` — so the bar describes the card while one is up.
             HintMode::Pick
-        } else if self.todos_open.is_some() {
-            // **The row's overlay is a READING screen**, like the standing pane's: it has no field on
-            // it and its keys are the arrows and the page keys. rano keeps the bar's tail sentences
-            // and is pinned by tag, so `Reading`'s tail (`esc closes this`) is taken and this head's
-            // own half says what the keys do — exactly as the pane's own branch below does.
-            HintMode::Reading
-        } else if self.todos_pane {
-            // **The todos pane's keys, composed HERE.** rano keeps the bar's tail sentences and is
-            // pinned by tag, and its `HintMode::Todos` sentence says *enter or tab unfolds* — true of
-            // rano's pane, false of this one, where those two keys open the card on the add row,
-            // read a row whole (enter) and act on it (tab). So this pane takes `Reading`'s tail (`esc
-            // closes this`, which is true of it) and its own keys go in the half this head owns,
-            // exactly as the queue pane's verbs and the standing-notes pane do below.
-            HintMode::Reading
-        } else if self.config_pane {
-            HintMode::Config
-        } else if self.sub_out.is_some() {
-            // **A subagent's output, open over the tree** (R67 item 9): its keys are not the
-            // list's. With it up the bar said "enter (or o) opens a subagent" while Enter
-            // re-read the output and `o` fell through to switching session. rano has no mode
-            // for it (`JobOutput`'s tail names → and ←, which this view does not take), so
-            // `Reading` and the keys in this head's half.
-            own = Some("↑↓ scroll · enter reads it again · esc back to the subagents");
-            HintMode::Reading
-        } else if self.subagents_pane {
-            HintMode::Subagents
-        } else if self.job_out.is_some() {
-            HintMode::JobOutput
-        } else if self.queue_open.is_some() {
-            HintMode::QueueEntry
-        } else if self.queue_pane {
-            HintMode::Queue
-        } else if self.jobs_pane {
-            HintMode::Jobs
-        } else if self.standing_pane {
-            // **`Reading` and not a mode of its own.** rano keeps the bar's tail sentences and
-            // is pinned by tag, so a new pane has no `HintMode` to take; the head's half of the
-            // bar is where this pane's own keys go, exactly as the queue pane's verbs do a few
-            // lines down. `Reading`'s tail — `esc closes this` — is true of the list, and the
-            // keys that matter are named on the left.
-            HintMode::Reading
-        } else if self.payload_sel.is_some() && self.open.is_empty() {
-            // **The ctrl-v window** (R67 item 9): the arrows and the page keys page it and Esc
-            // closes it (`key_payload_window`); the composer stays live under it. Below a card,
-            // whose keys come after this window's in `App::key` only for the keys this window
-            // does not take — the card's digits and Enter — so a card keeps its own bar.
-            own = Some("↑↓ pgup/pgdn page the result · home/end its ends · enter still sends");
-            HintMode::Reading
         } else if !self.open.is_empty() {
             HintMode::Deciding
+        } else if let Some(s) = surface {
+            match s {
+                // **A slash listing is a reading screen** (R67 item 9): its keys are the arrows
+                // and Esc.
+                Surface::Listing => {
+                    own = Some("↑↓ scrolls");
+                    HintMode::Reading
+                }
+                Surface::Help | Surface::Stats => HintMode::Reading,
+                Surface::Picker => HintMode::SessionPicker,
+                // **The row's overlay and the todos pane are READING screens in rano's terms**:
+                // rano keeps the bar's tail sentences and is pinned by tag, and its
+                // `HintMode::Todos` sentence says *enter or tab unfolds* — false of this pane.
+                // So `Reading`'s tail (`esc closes this`) and this head's own half.
+                Surface::TodoRow | Surface::Todos => HintMode::Reading,
+                Surface::Config => HintMode::Config,
+                // **A subagent's output, open over the tree** (R67 item 9): its keys are not the
+                // list's.
+                Surface::SubOut => {
+                    own = Some("↑↓ scroll · enter reads it again · esc back to the subagents");
+                    HintMode::Reading
+                }
+                Surface::Subagents => HintMode::Subagents,
+                Surface::JobOut => HintMode::JobOutput,
+                Surface::QueueEntry => HintMode::QueueEntry,
+                Surface::Queue => HintMode::Queue,
+                Surface::Jobs => HintMode::Jobs,
+                // **`Reading` and not a mode of its own**: rano is pinned by tag, so a new pane
+                // has no `HintMode` to take; its keys go in this head's half.
+                Surface::Standing => HintMode::Reading,
+            }
+        } else if self.payload_sel.is_some() {
+            // **The ctrl-v window** (R67 item 9): the arrows and the page keys page it and Esc
+            // closes it (`key_payload_window`); the composer stays live under it.
+            own = Some("↑↓ pgup/pgdn page the result · home/end its ends · enter still sends");
+            HintMode::Reading
         } else {
             HintMode::Conversation
         };
-        // **The queue pane's person-verbs, in the half of the bar this head owns.** rano owns
-        // `HintMode::Queue`'s tail sentence (the pane's own keys — enter, the arrows, esc — and
-        // rano is pinned by tag), so `a`/`v`/`d`/`r` go in the `editor` half, which is the left half
-        // of the SAME row and is empty while a pane has the keyboard. They lead there on purpose:
-        // the bar is over capacity at 80 columns by construction, and the renderer keeps the head,
-        // so the keys this pane adds are the ones that survive the cut.
+        // **The panes' own keys, in the half of the bar this head owns.** rano owns each mode's
+        // tail sentence and is pinned by tag, so what a pane adds goes in the `editor` half,
+        // which is the left half of the SAME row and is empty while a pane has the keyboard.
+        // They lead there on purpose: the bar is over capacity at 80 columns by construction,
+        // and the renderer keeps the head, so the keys a pane adds are the ones that survive.
+        let cards_up = self.pick.is_some() || !self.open.is_empty();
         let editor = if let Some(own) = own {
             Line::styled(own, Role::Faint)
-        } else if self.help || self.stats {
+        } else if cards_up {
             editor
-        } else if self.todos_open.is_some() {
-            Line::styled(self.todos_open_hint(), Role::Faint)
-        } else if self.todos_pane {
-            Line::styled(self.todos_hint(), Role::Faint)
-        } else if self.queue_pane && self.queue_open.is_none() {
-            Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
-        } else if self.standing_pane && !self.editor_drawn() {
-            // **Where Enter goes, said on the bar.** The key opens the note in rano, which is a
-            // different place from this list, and a reader who pressed it looking for an
-            // overlay of this head's would otherwise be surprised by the whole screen changing.
-            //
-            // **And not while rano is drawn over the list**, which is the state Enter leaves
-            // behind: these keys are off then (`App::key_standing_pane`), and the bar must not
-            // name keys that do nothing — the editor's own half is what the left of the row is
-            // for then.
-            Line::styled("↑↓ moves · enter opens the note in the editor", Role::Faint)
         } else {
-            editor
+            match surface {
+                Some(Surface::TodoRow) => Line::styled(self.todos_open_hint(), Role::Faint),
+                Some(Surface::Todos) => Line::styled(self.todos_hint(), Role::Faint),
+                Some(Surface::Queue) => {
+                    Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
+                }
+                // **Where Enter goes, said on the bar.** The key opens the note in rano, which
+                // is a different place from this list.
+                Some(Surface::Standing) => {
+                    Line::styled("↑↓ moves · enter opens the note in the editor", Role::Faint)
+                }
+                _ => editor,
+            }
         };
         crate::ui::render::row(&HintBar { editor, mode }.line(w), self.cfg.palette())
     }

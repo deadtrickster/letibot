@@ -98,9 +98,6 @@ pub struct App {
     /// unified renderer is the fallback at every width, which is what makes it
     /// safe to flip on a narrow terminal.
     pub diff_split: bool,
-    /// The config pane (`/config`): every setting this head and its session run
-    /// under, the runtime-editable ones editable in place.
-    pub(crate) config_pane: bool,
     pub(crate) config_sel: usize,
     /// Where the head's own choices are written. `None` is a head with no
     /// config directory, and the pane says so instead of pretending to save.
@@ -722,12 +719,6 @@ pub struct App {
     /// What the theme `head.toml` names could not supply, held from `apply_theme` until
     /// `load_prefs` says every problem of the file in one notice.
     pub(crate) theme_problems: Vec<String>,
-    pub(crate) help: bool,
-    /// The session picker, which is a screen like `help` rather than a mode with a
-    /// cursor. Same argument as the folds: there is one input surface here and it
-    /// is a line, so the affordance is *typing the number you can see* — which also
-    /// means the picker needs no keymap of its own and works over a pipe.
-    pub(crate) picker: bool,
     /// **The setting being chosen, or nothing.** One field for every setting card, because
     /// "one list on the screen at a time" was a rule four openers kept by hand — each one
     /// clearing the other three — and R38 added two more subjects to it: hand-kept
@@ -824,46 +815,6 @@ pub struct App {
     /// they count what this session has in flight, and a click on one opens the pane its
     /// count names — exactly the act the label's chord has always done.
     pub(crate) box_top_hits: Option<BoxTopHits>,
-    /// The todos pane, a screen like the picker: the session's plan (what the
-    /// model last wrote through `todo_write`) and the repo's own queue
-    /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
-    /// different lists, and the pane says which is which).
-    pub(crate) todos_pane: bool,
-    /// The subagent tree pane, a screen like `todos`: the subagents this session
-    /// spawned, their state and their prompt. `ctrl-g`.
-    pub(crate) subagents_pane: bool,
-    /// The background-jobs pane, a screen like the other two: the jobs this
-    /// session started, running and settled. `ctrl-q`.
-    pub(crate) jobs_pane: bool,
-    /// **The merge-queue pane** — the operator's *"we need a gated merge to main"* made
-    /// visible: every entry the daemon is serving toward main, what state it is in, how old it
-    /// is, and why it is where it is. `/queue`.
-    ///
-    /// **No chord, and that is a decision rather than an omission.** The head's own bar says
-    /// the chords are over capacity at eighty columns and that *which* of them are visible is a
-    /// decision — so a sixth pane takes the verb, which every pane already has and which a head
-    /// driven over a pipe can reach.
-    pub(crate) queue_pane: bool,
-    /// **The standing-notes pane** — the notes the harness reads into the system prompt, one row
-    /// each, in the order the section carries them. `/standing`.
-    ///
-    /// The operator, handed a note's path in a conversation: *"yeah you gave md name but it is
-    /// not clickable"*, then *"i mean do the usual - notes pane"*. This is that pane, and the
-    /// field it exists for is the FORM: which notes the prompt was given whole and which arrived
-    /// as an index because they did not fit the budget — a fact that was, until this, visible
-    /// nowhere outside the model's own prompt.
-    ///
-    /// **Its Enter opens a note in the editor pane**, which is the same rano every other file in
-    /// this head opens in — see [`App::open_note`] — and the list stays open under it, so leaving
-    /// rano lands back on these rows.
-    ///
-    /// **No chord, for the queue pane's reason one field up**, and one more of its own: the word
-    /// this pane needs is *standing*, and every chord that could spell it is spent — `ctrl-n` and
-    /// `/notes` are this head's own disclosures (`Note::Warned`, numbered for `/notes dismiss N`)
-    /// and must keep meaning that, the readline keys own `a`–`z`, and the two control bytes the
-    /// C0 tail had spare went to the editor crossing and `attach anyway`. A seventh pane takes
-    /// the verb.
-    pub(crate) standing_pane: bool,
     /// **The standing notes, as the daemon last answered `ListNotes`** — the index's own rows.
     ///
     /// The path, the abstract and the form are the daemon's (decided with the session's token
@@ -1057,6 +1008,11 @@ pub struct App {
     /// listing, and a listing belongs on a screen you open and close. `(title,
     /// lines)`, `None` when the pane is shut.
     pub(crate) slash_out: Option<(String, Vec<String>)>,
+    /// **The surface stack** (R69): what holds the conversation's rectangle, top last. See
+    /// `app::surface` for the rule and for the nine `bool`s it replaced.
+    pub(crate) surfaces: Vec<Open>,
+    /// **The scroll of the surface on top of the stack** — the one every pane draws through
+    /// (`pane_window`) and every key moves. A covered surface keeps its own in its stack entry.
     pub(crate) pane_scroll: usize,
     /// What the last draw of a pane measured: how many rows it had, and how many
     /// fitted. Kept so a cursor moved by a keypress can scroll itself into view —
@@ -1108,21 +1064,6 @@ pub struct App {
     /// Whether any turn this head saw carried a cost at all. Distinguishes "free,
     /// so nothing to show" from "metered and nothing has finished yet".
     pub(crate) spent_seen: bool,
-    /// The head's own instrumentation, as a screen: `/status`.
-    ///
-    /// Every counter it shows was added because something was measured going
-    /// wrong, and every one of them used to live on the **bottom border of the
-    /// chat window** — `seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 ·
-    /// scrubbed 0 · resync 0 · s-1789023464202470853 h3`, in the operator's frame,
-    /// on every frame, next to the thing they are typing into. That is the wrong
-    /// place for a number that is zero: it costs a row of attention for ever in
-    /// exchange for being noticed once.
-    ///
-    /// So the border keeps only the alarm — the counters that are *not* zero, in
-    /// the attention role — and this screen keeps everything, with a line under
-    /// each counter saying what it means. Reachable, which is the obligation, and
-    /// not resident, which was never part of it.
-    pub(crate) stats: bool,
     pub(crate) quit: bool,
     /// Set whenever a full repaint is wanted regardless of the diff.
     pub(crate) redraw: bool,
@@ -1568,7 +1509,6 @@ impl App {
             cfg,
             visibility: Visibility::starting(),
             diff_split: true,
-            config_pane: false,
             config_sel: 0,
             prefs_path: None,
             settings: Vec::new(),
@@ -1672,8 +1612,6 @@ impl App {
             notice: None,
             notice_until: None,
             theme_problems: Vec::new(),
-            help: false,
-            picker: false,
             pick: None,
             mode_confirm: None,
             todo_draft: None,
@@ -1686,11 +1624,6 @@ impl App {
             pick_unseeded: false,
             mode_hits: Vec::new(),
             box_top_hits: None,
-            todos_pane: false,
-            subagents_pane: false,
-            jobs_pane: false,
-            queue_pane: false,
-            standing_pane: false,
             standing: Vec::new(),
             standing_sel: 0,
             standing_stop_rows: Vec::new(),
@@ -1724,6 +1657,7 @@ impl App {
             repo_sel: 0,
             repo_open: false,
             slash_out: None,
+            surfaces: Vec::new(),
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
@@ -1732,7 +1666,6 @@ impl App {
             payload_sel: None,
             spent_micros: 0,
             spent_seen: false,
-            stats: false,
             quit: false,
             redraw: false,
             hold: false,
@@ -1974,6 +1907,7 @@ mod prefs;
 mod scroll;
 mod session;
 pub(crate) mod standing;
+mod surface;
 mod term_pane;
 mod todos;
 mod turn;
@@ -1992,6 +1926,7 @@ pub(crate) use pick::*;
 pub(crate) use prefs::*;
 pub(crate) use scroll::*;
 pub use session::*;
+pub(crate) use surface::*;
 pub use term_pane::*;
 pub(crate) use todos::*;
 pub(crate) use turn::*;
