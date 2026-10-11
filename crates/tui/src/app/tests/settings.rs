@@ -428,6 +428,29 @@ fn a_stray_key_cancels_the_allow_all_confirmation() {
     }
 }
 
+/// **The pointer answers nothing on the allow-all card** (R67 item 7). A wheel step or a click
+/// is not a keystroke aimed at the composer; it used to cancel the card, so scrolling up to
+/// reread what allow-all means said *allow-all cancelled*. The card stays up through both, and
+/// `y` still confirms after them.
+#[test]
+fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
+    let mut a = App::new(plain_cfg(120));
+    a.apply(mode_settings("always-ask", &["always-ask", "allow-all"]));
+    assert_eq!(a.take_mode("allow-all".into()), None);
+    for k in [Key::WheelUp, Key::WheelDown, Key::Click { x: 3, y: 2 }] {
+        let named = format!("{k:?}");
+        assert_eq!(a.key(k), None, "{named} sent the mode");
+        assert!(a.mode_confirm.is_some(), "{named} answered the question");
+    }
+    assert_eq!(
+        a.key(Key::Char('y')),
+        Some(Action::Mode {
+            name: "allow-all".into(),
+            consented: true
+        })
+    );
+}
+
 /// **An older daemon greens what it always greened.** No `models.keyless` row means
 /// a daemon from before it existed, and the fallback is `local` alone — which is
 /// precisely the behaviour this head had before, so nothing reads as newly broken.

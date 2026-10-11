@@ -21,8 +21,20 @@ impl App {
     ///
     /// Everything else still cancels, Esc included, so a key aimed at the
     /// composer is still a no.
+    ///
+    /// **The pointer is not a key, and it answers nothing** (R67 item 7). A wheel step and a
+    /// click arrive through the same `Key` as a keystroke, and this card used to take them as
+    /// "no": `/mode allow-all`, then a scroll up to reread what allow-all means, and the card
+    /// said *allow-all cancelled*. The wheel now goes on to scroll whatever it scrolls with the
+    /// card still up, and a click is swallowed with the card still up — it is not an answer,
+    /// and letting it through could act on a surface under a question this consequential.
     pub(crate) fn key_mode_confirm(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if self.mode_confirm.is_some() {
+            match k {
+                Key::WheelUp | Key::WheelDown => return ControlFlow::Continue(()),
+                Key::Click { .. } => return ControlFlow::Break(None),
+                _ => {}
+            }
             let name = self.mode_confirm.take().unwrap();
             self.redraw = true;
             return ControlFlow::Break(match k {
