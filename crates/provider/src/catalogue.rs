@@ -189,6 +189,35 @@ fn model_version(name: &str) -> (Vec<u64>, usize) {
     (version, written_after)
 }
 
+/// **One file's parse, kept until the file changes** — the cache behind [`Catalogue::load`].
+///
+/// Keyed by path, modification time and length, so a refreshed file is read again and an
+/// unchanged one is not: the `stat` is the whole cost of a hit. A file that cannot be stat'ed or
+/// read is an `Err`, exactly as [`Catalogue::read`] answers it, so `load`'s chain falls through
+/// the same way it always did. **Only successes are kept**: a broken file is tried again next
+/// time, because the fix for it is somebody writing a good one.
+pub fn cached_read(path: &Path) -> Result<std::sync::Arc<Catalogue>, String> {
+    use std::sync::{Arc, Mutex};
+    type Key = (PathBuf, Option<std::time::SystemTime>, u64);
+    static PARSED: Mutex<Vec<(Key, Arc<Catalogue>)>> = Mutex::new(Vec::new());
+    let meta = std::fs::metadata(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let key: Key = (path.to_path_buf(), meta.modified().ok(), meta.len());
+    if let Some((_, c)) = PARSED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, _)| *k == key)
+    {
+        return Ok(c.clone());
+    }
+    let c = Arc::new(Catalogue::read(path)?);
+    let mut g = PARSED.lock().unwrap_or_else(|e| e.into_inner());
+    // One entry per PATH: the version this replaces is stale by construction.
+    g.retain(|(k, _)| k.0 != key.0);
+    g.push((key, c.clone()));
+    Ok(c)
+}
+
 impl Catalogue {
     /// Read the catalogue, or an empty one. **Never an error**: a missing
     /// catalogue is a fact about this box, not a reason for a session to refuse to
@@ -198,23 +227,30 @@ impl Catalogue {
     /// own cache, then opencode's, then the snapshot. **Each step falls through on
     /// any failure** — a broken file at the front must not hide a working one
     /// behind it, and the operator's report was about a chain with no floor at all.
-    pub fn load() -> Catalogue {
-        if let Some(p) = override_path()
-            && let Ok(c) = Catalogue::read(&p)
+    ///
+    /// # Read once per version of the file, not once per call (R67 item 16)
+    ///
+    /// opencode's copy is ~5 MiB of JSON, and this was called from `Config::settings` — every
+    /// session open — and from every `/models`, provider switch and subagent model: each call
+    /// read and parsed the whole file again. memwatch's large-allocation log is where it showed.
+    /// So a file's parse is kept, keyed by its path, modification time and length
+    /// ([`cached_read`]), and handed out as an `Arc`: a call whose file has not changed is a
+    /// `stat` and a reference count, and a file that was refreshed (opencode rewrites it,
+    /// `scripts/refresh-models-snapshot.sh` writes ours) is read again on the next call after.
+    pub fn load() -> std::sync::Arc<Catalogue> {
+        for p in [override_path(), cache_path(), opencode_path()]
+            .into_iter()
+            .flatten()
         {
-            return c;
+            if let Ok(c) = cached_read(&p) {
+                return c;
+            }
         }
-        if let Some(p) = cache_path()
-            && let Ok(c) = Catalogue::read(&p)
-        {
-            return c;
-        }
-        if let Some(p) = opencode_path()
-            && let Ok(c) = Catalogue::read(&p)
-        {
-            return c;
-        }
-        Catalogue::snapshot()
+        static SNAPSHOT_PARSED: std::sync::OnceLock<std::sync::Arc<Catalogue>> =
+            std::sync::OnceLock::new();
+        SNAPSHOT_PARSED
+            .get_or_init(|| std::sync::Arc::new(Catalogue::snapshot()))
+            .clone()
     }
 
     /// **The floor, on its own** — what a box with no opencode, no cache and no
@@ -447,6 +483,50 @@ mod tests {
         }
       }
     }"#;
+
+    /// **An unchanged file is parsed once; a changed one is parsed again** — R67 item 16. Every
+    /// session open called `load`, which read and parsed opencode's ~5 MiB catalogue each time.
+    /// The second call on an unchanged file must hand back the SAME parse (no read), and a file
+    /// that was rewritten must be read again.
+    #[test]
+    fn a_file_is_parsed_once_until_it_changes() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-catalogue-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(&path, SAMPLE).unwrap();
+
+        let first = cached_read(&path).expect("it parses");
+        let again = cached_read(&path).expect("it parses");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &again),
+            "an unchanged file was read and parsed a second time"
+        );
+        assert_eq!(
+            first.model("deepseek", "deepseek-chat").unwrap().context,
+            1_000_000
+        );
+
+        // A refresh: a different file under the same name (a different length, so the key moves
+        // even on a filesystem whose clock cannot tell the two writes apart).
+        std::fs::write(
+            &path,
+            r#"{"deepseek": {"id": "deepseek", "models": {
+                 "deepseek-chat": {"limit": {"context": 128000, "output": 8000}}}}}"#,
+        )
+        .unwrap();
+        let refreshed = cached_read(&path).expect("it parses");
+        assert_eq!(
+            refreshed
+                .model("deepseek", "deepseek-chat")
+                .unwrap()
+                .context,
+            128_000,
+            "a rewritten file was answered from the old parse"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// **The newest model wins — and a PLAIN name still beats a decorated one.**
     ///
