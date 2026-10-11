@@ -134,6 +134,34 @@ pub fn memory(file: Option<&Path>) -> MemorySection {
     }
 }
 
+/// **`[metrics]`** — the event table's switch, its retention and the kinds that keep a snippet
+/// (TODO.md R81, `docs/metrics.md` §2.7). Raw strings, like `[memory]`'s: what they mean is
+/// `letibot_metrics::store::Settings::from_raw`'s to decide, and a missing key is its default
+/// (on, 90 days, the context claim's sentence kept).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetricsSection {
+    pub enabled: Option<String>,
+    pub keep_days: Option<String>,
+    pub snippets: Option<String>,
+}
+
+/// Read `[metrics]`. Missing file, missing section, unparseable file: all the defaults — a
+/// metrics setting is never a reason a daemon does not start.
+pub fn metrics(file: Option<&Path>) -> MetricsSection {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let Ok(parsed) = parse_file(&file) else {
+        return MetricsSection::default();
+    };
+    let Some(sec) = parsed.sections.get("metrics") else {
+        return MetricsSection::default();
+    };
+    MetricsSection {
+        enabled: sec.get("enabled").cloned(),
+        keep_days: sec.get("keep_days").cloned(),
+        snippets: sec.get("snippets").cloned(),
+    }
+}
+
 /// Read `[gatekeeper]`. A missing file, a missing section and an unparseable file
 /// are all `Gatekeeper::default()` — this is consulted at daemon start and must
 /// never be a reason a daemon does not start.
@@ -1025,6 +1053,22 @@ mod tests {
         let fleet = local_models(Some(&f));
         assert_eq!(fleet.len(), 1);
         assert_eq!(fleet[0].model, "glm-5.3-flash");
+    }
+
+    /// `[metrics]` is read as raw strings beside the provider sections, and a file without it
+    /// is the defaults — never a refusal.
+    #[test]
+    fn the_metrics_section_is_read_raw_and_absent_is_default() {
+        let f = tmp_providers(
+            "metrics_section",
+            "[glm]\nkey = \"k\"\n\n[metrics]\nenabled = false\nkeep_days = 30\n",
+        );
+        let m = metrics(Some(&f));
+        assert_eq!(m.enabled.as_deref(), Some("false"));
+        assert_eq!(m.keep_days.as_deref(), Some("30"));
+        assert_eq!(m.snippets, None);
+        let none = tmp_providers("metrics_absent", "[glm]\nkey = \"k\"\n");
+        assert_eq!(metrics(Some(&none)), MetricsSection::default());
     }
 
     fn tmp_providers(tag: &str, body: &str) -> std::path::PathBuf {

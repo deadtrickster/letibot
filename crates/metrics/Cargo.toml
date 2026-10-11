@@ -1,0 +1,19 @@
+[package]
+name = "letibot-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# **The file, and only for whoever writes or reads it.** Without this the crate is the event
+# type and the bounded channel — what the log, the protocol and the turn engine emit through —
+# and it links no SQLite, so the head (which depends on `letibot-sessionlog`) gets none either.
+# The daemon turns it on for the writer thread; `letibot stats` for the reader.
+store = ["dep:rusqlite"]
+
+[dependencies]
+serde_json.workspace = true
+rusqlite = { version = "0.40", optional = true }

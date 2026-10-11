@@ -685,6 +685,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-metrics"
+version = "0.3.0"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-opencode"
 version = "0.3.0"
 dependencies = [
