@@ -235,6 +235,22 @@ pub(crate) fn detected_diff_rows(
             cfg.palette(),
         ));
     }
+    // **Folded, the panel says how it was obtained itself** (R67 item 20). The tool's own
+    // sentence — *"the diff beside it was detected afterwards, not made by `edit`"* — is a
+    // `[note]` line in the row's payload, and a folded row shows the payload's FIRST line only.
+    // Any note ahead of it hides it: MEASURED on a head whose daemon shares its cgroup, the
+    // first line was the `memory: ran UNCAPPED` note and the provenance was `… +1 lines`, so
+    // the folded row drew a diff under `Ran` with nothing saying the command had made it.
+    // Open, the payload's note is on the screen and is not said twice.
+    if !fold.is_open() {
+        out.extend(row_strings(
+            &[rano::agent::text::one(
+                "  detected afterwards — the command changed this file; not made by `edit`",
+                rano::style::Role::Faint,
+            )],
+            cfg.palette(),
+        ));
+    }
     out
 }
 

@@ -212,6 +212,13 @@ fn a_detected_panel_folds_the_way_an_edits_does() {
         !folded.iter().any(|r| r.contains("line 24")),
         "the tail is what the count above stands for: {folded:?}"
     );
+    // **Folded, the panel carries its own provenance** — the payload's note can be cut by the
+    // fold whenever another note precedes it (see `detected_diff_rows`), and a diff under `Ran`
+    // with nothing saying how it was obtained reads as the model's `edit`.
+    assert!(
+        folded.iter().any(|r| r.contains("detected afterwards")),
+        "the folded panel says how it was obtained: {folded:?}"
+    );
 
     let open = crate::ui::detected_diff_rows(&e, target, 116, &cfg, true, Fold::Open);
     assert!(
