@@ -193,7 +193,7 @@ const QUEUE: &[Binding] = &[
         &[On::Enter],
         Always,
         Act::Open,
-        Text("opens the entry: its ask, the gate's words, the reviewer's verdict"),
+        Text("opens the row: the ask, the verdict, the gate's words, every move"),
     ),
     b(&[On::Tab], Always, Act::View, Text("switches the view")),
     b(

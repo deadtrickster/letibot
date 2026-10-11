@@ -280,25 +280,13 @@ impl App {
     /// **The pane row the entry at the cursor was DRAWN on**, read out of
     /// [`App::queue_stop_rows`] — the record the pane wrote while drawing, never arithmetic over
     /// the queue. The sibling of [`App::jobs_row_of`], and the clamp is the same: the queue can
-    /// move under the cursor (a `MergeEntryAdded` arriving), and an arrow pressed against a
+    /// move under the cursor (a `QueueMoved` re-read), and an arrow pressed against a
     /// shorter queue must land on a row rather than on an index that no longer exists.
     pub(crate) fn queue_row_of(&self) -> usize {
         let at = self
             .queue_sel
             .min(self.queue_stop_rows.len().saturating_sub(1));
         self.queue_stop_rows.get(at).copied().unwrap_or(0)
-    }
-
-    /// **The verdict on one entry, as the wire spells it**, or `None` when nobody has asked.
-    ///
-    /// `None` is *no review row at all* and `Some` with `decision: None` is *asked and not
-    /// answered*: the pane draws them differently, because the first is a queue nobody has
-    /// looked at and the second is a queue that is being looked at now.
-    pub(crate) fn review_of(
-        &self,
-        entry_id: &str,
-    ) -> Option<&letibot_sessionlog::event::MergeReview> {
-        self.merge_reviews.iter().find(|r| r.entry_id == entry_id)
     }
 
     /// **The visible slice of a pane**, and the two numbers the scroll keys need.

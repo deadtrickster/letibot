@@ -79,14 +79,13 @@ impl App {
                 }
                 Disposition::Control
             }
-            // **The merge queue, whole, and the reviewer's verdicts beside it.** The queue is
-            // daemon-level, so there is no `session_id` to check against this head's — the
-            // `session_id` on an entry is its origin and not a filter, which is why the same
-            // frame reaches a head attached to any session.
-            ServerFrame::MergeQueue { entries, reviews } => {
-                self.merge = entries;
-                self.merge_reviews = reviews;
-                self.queue_sel = self.queue_sel.min(self.merge.len().saturating_sub(1));
+            // **Both queues, whole** (R61) — the daemon's one snapshot, kept as it came. The
+            // queues are daemon-level, so the same frame reaches a head attached to any session.
+            ServerFrame::Queues { snapshot } => {
+                self.queues = snapshot;
+                self.queues_got_ms = self.now_ms.max(1);
+                let n = self.queue_rows().len();
+                self.queue_sel = self.queue_sel.min(n.saturating_sub(1));
                 self.redraw = true;
                 Disposition::Control
             }

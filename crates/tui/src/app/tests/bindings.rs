@@ -27,7 +27,6 @@ fn every_plain_letter_binding_waits_for_an_empty_composer() {
 /// for, driven through the keys, for every surface a person can type over.
 #[test]
 fn a_word_typed_over_any_surface_reaches_the_composer() {
-    use letibot_sessionlog::event::MergeState;
     for s in Surface::ALL {
         // The todo row read whole takes every key while it is up, on purpose: a reading surface
         // with no field on it must not grow a draft under it (`TODO_ROW`'s last binding).
@@ -37,10 +36,10 @@ fn a_word_typed_over_any_surface_reaches_the_composer() {
         let mut a = app();
         a.session_id = "s1".into();
         running_child(&mut a);
-        a.apply(queue_frame(
-            vec![queue_entry("c1", MergeState::Waiting)],
+        a.apply(queue_frame(queues(
+            vec![queue_review_row("c1", "waiting")],
             Vec::new(),
-        ));
+        )));
         a.push_surface(s);
         let mut sent = Vec::new();
         // From its second letter on, a word is a typed line, and no letter in it is a verb. (Its

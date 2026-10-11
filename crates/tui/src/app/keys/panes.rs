@@ -5,7 +5,7 @@
 
 use super::bindings::Act;
 use super::*;
-use crate::ui::panes::queue::{Verb, merge_state_word, verb_moves};
+use crate::ui::panes::queue::{QRow, Selected, Verb, verb_moves};
 use std::ops::ControlFlow;
 
 /// The next stop from `at` in a list of `n`, wrapping — the one rule every list's arrows keep.
@@ -160,7 +160,7 @@ impl App {
                 self.scroll_into_view(self.todos_row_of());
             }
             Surface::Queue => {
-                let n = self.merge.len();
+                let n = self.queue_rows().len();
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
@@ -218,11 +218,10 @@ impl App {
                 // **What Enter opens is the ENTRY, and everything the queue knows about it**: the
                 // ask it was produced under, the state and its reason, and the verdict's evidence
                 // — the two rows the pane already holds, in full.
-                let n = self.merge.len();
-                if n == 0 {
+                let Some(row) = self.queue_selected() else {
                     return ControlFlow::Continue(());
-                }
-                self.queue_open = Some(self.merge[self.queue_sel.min(n - 1)].id.clone());
+                };
+                self.queue_open = Some(self.queue_row_id(row));
                 self.push_surface(Surface::QueueEntry);
                 ControlFlow::Break(None)
             }
@@ -419,33 +418,29 @@ impl App {
     /// **Only on an empty composer**, the binding's guard: typing "deploy" with `/queue` open
     /// sent `queue rm` on its `d` and `queue approve` on its `a` (R67 item 1).
     fn queue_verb(&mut self, verb: Verb) -> ControlFlow<Option<Action>> {
-        let n = self.merge.len();
-        if n == 0 {
+        let Some(row) = self.queue_selected() else {
             return ControlFlow::Continue(());
-        }
-        let e = &self.merge[self.queue_sel.min(n - 1)];
-        if !verb_moves(verb, e.state) {
-            let said = if verb == Verb::Restart {
-                format!(
-                    "`{}` is `{}` — only a parked entry (failed, conflict, stale, vetoed) is \
-                     restarted by hand; a waiting one is what the queue's own retry is for.",
-                    e.branch,
-                    merge_state_word(e.state)
-                )
-            } else {
-                format!(
-                    "`{}` is `{}` — a person's verb moves an entry that is waiting or parked, \
-                     never one the queue has taken (it is mid-merge) or landed (it is merged). \
-                     Nothing was sent.",
-                    e.branch,
-                    merge_state_word(e.state)
-                )
-            };
+        };
+        let (selected, branch) = match row {
+            QRow::Review(i) => (
+                Selected::Review(&self.queues.reviews[i]),
+                self.queues.reviews[i].branch.clone(),
+            ),
+            QRow::Merge(i) => (
+                Selected::Merge(&self.queues.merges[i]),
+                self.queues.merges[i].branch.clone(),
+            ),
+        };
+        if let Err(why) = verb_moves(verb, &selected) {
+            let said = format!(
+                "`{branch}`: {} does nothing here — {why}. Nothing was sent.",
+                verb.word()
+            );
             self.say(&said);
             self.redraw = true;
             return ControlFlow::Break(None);
         }
-        let line = format!("queue {} {}", verb.word(), e.id);
+        let line = format!("queue {} {}", verb.word(), self.queue_row_id(row));
         ControlFlow::Break(Some(Action::Slash { line }))
     }
 

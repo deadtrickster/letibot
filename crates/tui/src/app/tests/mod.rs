@@ -1289,38 +1289,50 @@ fn seeded_head(dir: &std::path::Path, template: &str, workspace: &str) -> App {
     a
 }
 
-// ===== The merge queue pane =====
+// ===== The queues pane (R61) =====
 //
-// The pane is the HEAD's half of the queue, and it is drawn from two arrivals: the
-// snapshot the daemon answers `ListMergeQueue` with, and the `MergeEntryAdded` /
-// `MergeEntryMoved` events that keep it current. These tests are about this head's side
-// of that — what it asks for, what it folds, and what it draws — and not about the queue
-// itself, which is `harnessd`'s and is tested where it lives.
+// The pane is the HEAD's half of the queues, drawn from the daemon's one snapshot
+// (`ServerFrame::Queues`); a `QueueMoved` event asks for it again. These tests are about what
+// this head asks for, what it keeps and what it draws — the queues themselves are `harnessd`'s.
 
-fn queue_entry(
-    id: &str,
-    state: letibot_sessionlog::event::MergeState,
-) -> letibot_sessionlog::event::MergeEntry {
-    letibot_sessionlog::event::MergeEntry {
+/// **One review row**, as the snapshot carries it.
+fn queue_review_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueReview {
+    letibot_sessionlog::event::QueueReview {
         id: id.into(),
+        repository: "/home/dead/Projects/letibot/letibot".into(),
+        target: "main".into(),
+        kind: "branch".into(),
         session_id: "s1".into(),
-        branch: "agent/child-one".into(),
-        base_sha: "abc123".into(),
-        priority: letibot_sessionlog::event::MergePriority::Subagent,
-        needs: Vec::new(),
-        state,
+        branch: format!("agent/{id}"),
+        state: state.into(),
+        head_sha: "abc1234567890".into(),
+        evidence: format!("{id} is {state}"),
         brief: "make the widget blue".into(),
-        evidence: String::new(),
         created_ms: 1_000,
-        updated_ms: 1_000,
-        worktree: None,
-        landed_sha: None,
-        gate_steps: Vec::new(),
+        state_ms: 2_000,
+        ..Default::default()
     }
 }
 
-/// **One gate step, as the landing records it** — `af2144b`'s row, one per step `main`
-/// declared, and what the pane's merge half is drawn from.
+/// **One merge row**, as the snapshot carries it.
+fn queue_merge_row(id: &str, state: &str) -> letibot_sessionlog::event::QueueMerge {
+    letibot_sessionlog::event::QueueMerge {
+        id: id.into(),
+        review_id: id.trim_start_matches("m-").into(),
+        repository: "/home/dead/Projects/letibot/letibot".into(),
+        target: "main".into(),
+        branch: format!("agent/{}", id.trim_start_matches("m-")),
+        state: state.into(),
+        approved_sha: "abc1234567890".into(),
+        approved_by: "reviewer:sub-1".into(),
+        evidence: format!("{id} is {state}"),
+        created_ms: 1_000,
+        state_ms: 2_000,
+        ..Default::default()
+    }
+}
+
+/// **One gate step**, as the landing records it.
 fn gate_step(
     command: &str,
     outcome: letibot_sessionlog::event::MergeGateOutcome,
@@ -1331,53 +1343,35 @@ fn gate_step(
         command: command.into(),
         outcome,
         output: output.into(),
-        // A step that ran: the landing stamps every row it ran with the clock it started on.
         started_ms: 1_000,
         elapsed_ms,
     }
 }
 
-fn queue_review(entry_id: &str, decision: Option<&str>) -> letibot_sessionlog::event::MergeReview {
-    letibot_sessionlog::event::MergeReview {
-        entry_id: entry_id.into(),
-        session_id: "reviewer".into(),
-        branch: "agent/child-one".into(),
-        base_sha: "abc123".into(),
-        asked_ms: 2_000,
-        answered_ms: decision.map(|_| 3_000),
-        decision: decision.map(str::to_string),
-        failure: String::new(),
-        reasons: vec!["the ask is met and the tests pass".into()],
-        files: vec!["crates/widget.rs".into()],
-        commands: vec!["cargo test -p widget".into()],
+/// **A snapshot**, read at `at_ms`.
+fn queues(
+    reviews: Vec<letibot_sessionlog::event::QueueReview>,
+    merges: Vec<letibot_sessionlog::event::QueueMerge>,
+) -> letibot_sessionlog::event::QueueSnapshot {
+    letibot_sessionlog::event::QueueSnapshot {
+        at_ms: 62_000,
+        reviews,
+        merges,
+        leases: vec![letibot_sessionlog::event::QueueLeaseView {
+            repository: "/home/dead/Projects/letibot/letibot".into(),
+            owner: "lab/4242/1".into(),
+            pid: 4242,
+            host: "lab".into(),
+            build: "harnessd 0.3.0".into(),
+            heartbeat_ms: 60_000,
+            acquired_ms: 1_000,
+        }],
+        ..Default::default()
     }
 }
 
-/// **A review whose ATTEMPT failed** — asked for, no verdict, and the provider's own words on
-/// the row. The operator's four entries were in exactly this shape, and the pane drew them as
-/// *the reviewer has been asked and has not answered*: the failure was invisible without opening
-/// the store.
-fn queue_review_failed(entry_id: &str, failure: &str) -> letibot_sessionlog::event::MergeReview {
-    letibot_sessionlog::event::MergeReview {
-        entry_id: entry_id.into(),
-        session_id: "reviewer".into(),
-        branch: "agent/child-one".into(),
-        base_sha: "abc123".into(),
-        asked_ms: 2_000,
-        answered_ms: None,
-        decision: None,
-        failure: failure.into(),
-        reasons: Vec::new(),
-        files: Vec::new(),
-        commands: Vec::new(),
-    }
-}
-
-fn queue_frame(
-    entries: Vec<letibot_sessionlog::event::MergeEntry>,
-    reviews: Vec<letibot_sessionlog::event::MergeReview>,
-) -> ServerFrame {
-    ServerFrame::MergeQueue { entries, reviews }
+fn queue_frame(snapshot: letibot_sessionlog::event::QueueSnapshot) -> ServerFrame {
+    ServerFrame::Queues { snapshot }
 }
 
 mod asks;

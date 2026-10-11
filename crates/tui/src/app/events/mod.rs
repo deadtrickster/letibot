@@ -36,7 +36,7 @@ impl App {
             frame @ (ServerFrame::Sessions { .. }
             | ServerFrame::Jobs { .. }
             | ServerFrame::StandingNotes { .. }
-            | ServerFrame::MergeQueue { .. }
+            | ServerFrame::Queues { .. }
             | ServerFrame::ShellSuggestions { .. }
             | ServerFrame::Todos { .. }
             | ServerFrame::Settings { .. }) => self.on_lists(frame),
@@ -503,10 +503,9 @@ impl App {
             | SessionEvent::HeadDetached { .. }
             | SessionEvent::ScreenRequested { .. }
             | SessionEvent::CommandIssued { .. }) => self.on_session_event(e),
-            e @ (SessionEvent::TodosUpdated { .. }
-            | SessionEvent::MergeEntryAdded { .. }
-            | SessionEvent::MergeEntryMoved { .. }
-            | SessionEvent::MergeEntryRemoved { .. }) => self.on_todo_event(e),
+            e @ (SessionEvent::TodosUpdated { .. } | SessionEvent::QueueMoved { .. }) => {
+                self.on_todo_event(e)
+            }
             e @ (SessionEvent::Subagent { .. }
             | SessionEvent::JobSettled { .. }
             | SessionEvent::JobOutput { .. }) => self.on_child_event(e, ts),

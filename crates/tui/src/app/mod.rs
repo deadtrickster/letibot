@@ -834,18 +834,20 @@ pub struct App {
     /// open is a change the pane can notice and answer for. `None` until the first draw after
     /// the rows land, which is the baseline rather than a change. See [`standing::Corpus`].
     pub(crate) standing_corpus: Option<standing::Corpus>,
-    /// **The merge queue, as the daemon last answered `ListMergeQueue`** — the daemon's own
-    /// rows, never this head's reconstruction, for the reason `jobs` is: the queue is the
-    /// daemon's and a head that folded its own version out of the events would draw a stale one
-    /// after any event it missed. The `MergeEntryAdded`/`MergeEntryMoved` events carry the
-    /// changes; this is the snapshot they start from.
-    pub(crate) merge: Vec<letibot_sessionlog::event::MergeEntry>,
-    /// **The reviewer's verdicts, beside the entries** — see `MergeReview` for why they travel
-    /// apart rather than inside an entry: an entry can have no review at all, and *nobody asked*
-    /// is a different fact from *asked and unanswered*.
-    pub(crate) merge_reviews: Vec<letibot_sessionlog::event::MergeReview>,
-    /// **Which entry row the cursor is on** — an index into `merge`, and the same enumeration
-    /// the drawn `▸`, the arrows and Enter read, so they cannot disagree.
+    /// **Both queues, as the daemon last answered `ListMergeQueue`** (R61) — the review queue,
+    /// the merge queue, who serves each repository and how recently it said so, the targets'
+    /// health and the last moves: the daemon's own snapshot, never a reconstruction. A
+    /// `QueueMoved` event asks for it again; a read that failed is in its `unreadable`.
+    pub(crate) queues: letibot_sessionlog::event::QueueSnapshot,
+    /// **When this head received `queues`**, by its own clock — an age the pane draws is the
+    /// snapshot's own (`at_ms` minus the row's stamp) plus how long ago the snapshot arrived.
+    /// `0` until one has arrived, which the pane says rather than drawing an empty queue.
+    pub(crate) queues_got_ms: u64,
+    /// When the pane last asked for a snapshot, so an open pane re-reads the heartbeats every
+    /// few seconds and not on every frame.
+    pub(crate) queues_asked_ms: u64,
+    /// **Which row the cursor is on** — an index into the CURRENT view's rows
+    /// (`App::queue_rows`), the same enumeration the drawn `▸`, the arrows and Enter read.
     pub(crate) queue_sel: usize,
     /// **The pane row each entry was DRAWN on** — the record the arrows scroll by, never
     /// arithmetic over the list. See `jobs_stop_rows` for the defect this avoids.
@@ -859,10 +861,10 @@ pub struct App {
     /// [`App::queue_tab_at`].
     pub(crate) queue_tabs: Option<QueueTabs>,
     /// **The entry whose detail overlay is open, by id**, until Esc. By ID and not by index:
-    /// a `MergeEntryMoved` event can move the queue under the overlay while it is up, and an
+    /// a re-read after a `QueueMoved` can move the queue under the overlay while it is up, and an
     /// index would then point at whichever entry slid into that slot.
     ///
-    /// The overlay reads the entry and its review out of `merge`/`merge_reviews` at DRAW time,
+    /// The overlay reads the entry and its review out of `queues` at DRAW time,
     /// so a move while it is open shows the new state rather than the state at the keypress.
     pub(crate) queue_open: Option<String>,
     /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
@@ -1623,8 +1625,9 @@ impl App {
             standing_sel: 0,
             standing_stop_rows: Vec::new(),
             standing_corpus: None,
-            merge: Vec::new(),
-            merge_reviews: Vec::new(),
+            queues: Default::default(),
+            queues_got_ms: 0,
+            queues_asked_ms: 0,
             queue_sel: 0,
             queue_stop_rows: Vec::new(),
             queue_view: QueueView::default(),
