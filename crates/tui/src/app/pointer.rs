@@ -129,34 +129,45 @@ fn text_span(cs: &[char]) -> Option<(usize, usize)> {
     Some((a, b))
 }
 
-/// **The selection's lines without the frame they were drawn in** — the operator, 2026-10-12:
-/// *"can i copy code block without vertical bars?"*, and *"in some software i see things like
-/// borders code blocks not making into clipboard without shift"*. A code block is drawn as
-/// `┌─ lang`, a `│ ` rail on each line and `└─`; a quote has the same rail; the operator's own
-/// rows carry `▌ `. The frame rows are dropped and the rail is cut off the front of a line —
-/// with the indent before it, which is the frame's, and none of the code's own after it.
-/// Shift+drag is still the terminal's own selection, frame and all, for whoever wants it.
-fn undecorated(lines: &[String]) -> Vec<String> {
-    lines
-        .iter()
-        .filter(|l| {
-            let t = l.trim();
-            !(t == "┌─" || t.starts_with("┌─ ") || t == "└─" || t.starts_with("└─ ("))
-        })
-        .map(|l| {
-            let lead = l.len() - l.trim_start().len();
-            let rest = &l[lead..];
-            for rail in ["│ ", "▌ "] {
-                if let Some(code) = rest.strip_prefix(rail) {
-                    return code.to_string();
-                }
-            }
-            if rest == "│" || rest == "▌" {
-                return String::new();
-            }
-            l.clone()
-        })
-        .collect()
+/// **Which cells of a row are the row's content** — what a selection can take, as
+/// `(first, one past last)`, or `None` for a row that is all frame.
+///
+/// The operator, 2026-10-12: *"in say opencode i cant even select the bars, it is like selecting
+/// text in the editor doesnt put line numbers"*. So the frame is not selectable at all, rather
+/// than copied and stripped: a code block's `┌─ lang` and `└─` rows and a pane's or popup's
+/// `╭─`/`╰─` edges are none of a selection's, a `│ ` rail (a code block, a quote, a box's side)
+/// or the operator's `▌ ` bar is skipped, a box row's right side too, and the head's own gutter is
+/// never content. What the selection highlights is exactly what it copies.
+fn content_span(cs: &[char], gutter: usize) -> Option<(usize, usize)> {
+    let blank = |c: char| c == ' ' || c == '\0';
+    let Some(a) = cs.iter().position(|c| !blank(*c)) else {
+        // A blank row inside a selection is a blank line of it.
+        return Some((gutter.min(cs.len()), gutter.min(cs.len())));
+    };
+    let first = cs[a];
+    if matches!(first, '┌' | '└' | '╭' | '╰') {
+        return None;
+    }
+    let start = if matches!(first, '│' | '▌' | '┃') {
+        let after = a + 1;
+        if cs.get(after) == Some(&' ') {
+            after + 1
+        } else {
+            after
+        }
+    } else {
+        gutter.min(a)
+    };
+    let r = cs.iter().rposition(|c| !blank(*c)).unwrap_or(a);
+    let end = if r > start && matches!(cs[r], '│' | '┃') {
+        cs[..r]
+            .iter()
+            .rposition(|c| !blank(*c))
+            .map_or(start, |e| (e + 1).max(start))
+    } else {
+        r + 1
+    };
+    Some((start, end.max(start)))
 }
 
 impl App {
@@ -273,24 +284,21 @@ impl App {
                 break;
             };
             let cs = keyhints::cells(row.text());
-            let from = if y == y0 { x0 } else { 0 };
-            let to = if y == y1 {
-                (x1 + 1).min(cs.len())
-            } else {
-                cs.len()
+            // A frame row is none of the selection's: no line, not even an empty one.
+            let Some((s, e)) = content_span(&cs, gutter) else {
+                continue;
             };
-            let mut line: String = cs
+            let from = if y == y0 { x0.max(s) } else { s };
+            let to = if y == y1 { (x1 + 1).min(e) } else { e };
+            let line: String = cs
                 .get(from.min(cs.len())..to.max(from).min(cs.len()))
                 .unwrap_or(&[])
                 .iter()
                 .filter(|c| **c != '\0')
                 .collect();
-            if from == 0 && line.starts_with(&" ".repeat(gutter)) {
-                line = line[gutter..].to_string();
-            }
             lines.push(line.trim_end().to_string());
         }
-        let text = undecorated(&lines).join("\n");
+        let text = lines.join("\n");
         (!text.trim().is_empty()).then_some(text)
     }
 
@@ -324,10 +332,18 @@ impl App {
     /// frame does, so no renderer has to know about the pointer.
     pub(crate) fn paint_pointer(&self, frame: &mut [String]) {
         if let Some(((x0, y0), (x1, y1))) = self.selection_span() {
+            let gutter = Self::gutter(self.term_cols);
             for y in y0..=y1.min(frame.len().saturating_sub(1)) {
-                let from = if y == y0 { x0 } else { 0 };
-                let to = if y == y1 { x1 + 1 } else { usize::MAX };
-                frame[y] = restyle(&frame[y], from, to, "\x1b[7m", "\x1b[27m");
+                // Only the row's content is marked — the frame is not selectable (see
+                // `content_span`), so the bars a selection crosses stay as they are drawn.
+                let Some((s, e)) = content_span(&keyhints::cells(&frame[y]), gutter) else {
+                    continue;
+                };
+                let from = if y == y0 { x0.max(s) } else { s };
+                let to = if y == y1 { (x1 + 1).min(e) } else { e };
+                if from < to {
+                    frame[y] = restyle(&frame[y], from, to, "\x1b[7m", "\x1b[27m");
+                }
             }
             return;
         }

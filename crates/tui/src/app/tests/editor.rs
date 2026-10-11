@@ -1171,6 +1171,26 @@ fn a_selected_code_block_copies_without_its_frame() {
         x: 99,
         y: bottom as u16,
     });
+    // **The frame is not selectable**: mid-drag, a code line is marked from after its rail, and
+    // the `┌─` row is not marked at all — what is highlighted is what will be copied.
+    let during = a.screen(100, 30);
+    let line = during
+        .iter()
+        .find(|l| l.contains("fn main"))
+        .expect("the code line");
+    let before_mark = &line[..line.find("\x1b[7m").expect("the code line is marked")];
+    let shown: String = crate::app::keyhints::cells(before_mark)
+        .into_iter()
+        .collect();
+    assert!(
+        shown.ends_with("│ "),
+        "the mark starts before the rail ends: {shown:?}"
+    );
+    assert!(
+        !during[top].contains("\x1b[7m"),
+        "the frame row is marked: {:?}",
+        during[top]
+    );
     a.key(Key::Release {
         x: 99,
         y: bottom as u16,
