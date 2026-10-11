@@ -1886,6 +1886,14 @@ export + artifact or `letibot stats serve`.
 
 ---
 
+
+**The operator's decisions, 2026-10-11:** (1) a separate `~/.local/share/letibot/metrics.db`, not a
+table in the store; (2) raw rows kept 90 days, summaries and marked turns forever; (3) feedback on
+its OWN protocol message (protocol 45), handled on the connection thread so a mark is not delayed
+behind a busy worker; (4) alt-g / alt-b mark the current turn good / bad; (5) context-claim
+sentences are kept as text by default while R71's floor is tuned; (6) not answered — built ON by
+default with a config switch to turn it off; (7) a LIVE page served from the box (`letibot stats
+serve`), not an export.
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
