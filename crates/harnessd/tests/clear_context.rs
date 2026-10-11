@@ -374,10 +374,23 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     stub.release(usize::MAX);
     std::fs::write(&go, b"").expect("the job's go file");
 
-    // (3) and (4): both settlements reach the NEW conversation through the next wakes.
+    // (3) and (4): both settlements reach the NEW conversation. **Under R79 a routine result is
+    // HELD** — nothing on this board waits on the job or the child, so neither may start a turn of
+    // its own (`Harness::wake` answers `Ok(None)`) — and it rides in with the next turn the model
+    // takes anyway, as one `[meanwhile]` batch. So the loop wakes (which delivers anything that IS
+    // immediate) and, once both have had time to settle, takes the one turn a person would: a
+    // prompt. What is asserted is unchanged — the settlements land in the cleared conversation.
     let began = Instant::now();
+    let mut prompted = false;
     loop {
         let _ = parent.harness.wake().expect("the wake runs");
+        if !prompted && began.elapsed() > Duration::from_secs(2) {
+            parent
+                .harness
+                .submit("carry on")
+                .expect("the prompt's turn runs");
+            prompted = true;
+        }
         let texts: Vec<String> = parent
             .harness
             .items()
