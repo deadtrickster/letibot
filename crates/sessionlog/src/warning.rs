@@ -388,6 +388,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // from the row, the title, the seat. Facts about where you are.
     ("resume_note", Class::Routine),
     ("open_note", Class::Routine),
+    // **What a daemon restart brought back, or only reminded the model of** (the operator: *"we
+    // should bring subagents back … and restart automatically"*). A fact about where the session
+    // stands after a restart the operator made; a child that could NOT come back is said in the
+    // detail and to the model, and is not a fault of this session.
+    ("restart_restored", Class::Routine),
+    ("restart_reminded", Class::Routine),
     // **The session's message 0 is not the one this daemon would compose now** — the
     // system instructions, the tool schemas or the seat it hands a session have changed
     // since this one was seated, and a session keeps the prefix it was created with. A
@@ -1060,8 +1066,10 @@ mod the_register_census {
         //     now named (R87).
         //   · **123, not 122**: `store_busy_wait` (Routine) — a turn waiting out a busy session
         //     store instead of dying of it; see its row.
-        assert_eq!(TABLE.len(), 123, "the table's size");
-        assert_eq!(count(Class::Routine), 43);
+        //   · **125, not 123**: `restart_restored` and `restart_reminded` (Routine) — what a
+        //     daemon restart brought back or only reminded the model of (TODO R85).
+        assert_eq!(TABLE.len(), 125, "the table's size");
+        assert_eq!(count(Class::Routine), 45);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

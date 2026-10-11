@@ -1947,6 +1947,13 @@ pub struct Harness {
     /// `in progress` with the child's handle, or gone), not a sentence about a child that has
     /// already been collected.
     gatekeepers: std::collections::HashSet<String>,
+    /// **What this session's model is owed about the children a restart brought back** — one
+    /// `[restart]` line per child that was resumed or could not be (`crate::subagent_record`).
+    /// Filled by [`Harness::restore_after_restart`] when the session is opened, and said by the next
+    /// turn the session takes ([`Harness::wake`], or a restarted child's own continuation).
+    restart_notices: Vec<String>,
+    /// The monitor names live at the last [`Harness::sync_monitor_records`], sorted.
+    monitors_seen_live: Vec<String>,
     /// **The queue entries this session's model has been told about** — that its repository needs a
     /// merge gate, or that no gatekeeper can judge its branch — so each is said once per daemon.
     /// See [`Harness::queue_notices`] and [`Harness::handover_notices`].
@@ -3142,6 +3149,16 @@ impl Harness {
                 queue_desk,
             )))
             .map_err(|e| HarnessError::Setup(format!("registering the queue tool: {e}")))?;
+        // **`task_resume`** — the operator, 2026-10-12: *"we should bring subagents back"*, and past
+        // the restore threshold *"remind the model … this is what you wre running and how to
+        // restart that"*. The reminder names this one call. Registered here rather than in
+        // `with_session_tools` because only the daemon's runner records children to bring back;
+        // a registry without it has nothing for the verb to act on.
+        registry
+            .register(Box::new(
+                letibot_tools::builtins::task::TaskResumeTool::new(task_runner.clone()),
+            ))
+            .map_err(|e| HarnessError::Setup(format!("registering task_resume: {e}")))?;
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -3202,7 +3219,16 @@ impl Harness {
                     letibot_tools::builtins::jobs::JobKill::with_tasks(subagent_runner.clone()),
                 ))
             })
-            .and_then(|_| registry.register(Box::new(letibot_tools::builtins::monitor::Monitor)))
+            .and_then(|_| {
+                // **The monitor tool, recorded** — each declaration's own arguments go to the
+                // store, so a daemon restart can make the same call again (`crate::restart`).
+                registry.register(Box::new(crate::restart::RecordingMonitor {
+                    inner: letibot_tools::builtins::monitor::Monitor,
+                    path: cfg.store.clone(),
+                    session_id: cfg.session_id.clone(),
+                    instance: session_registry.instance().to_string(),
+                }))
+            })
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
@@ -3811,7 +3837,11 @@ impl Harness {
             // **This session's own id, not the tree's**, for the reason the queue is per
             // session: a job a child backgrounded is the child's row, in the child's session.
             if let Some(path) = store.as_ref().and_then(|s| s.path()) {
-                w.record_jobs_into(path.to_path_buf(), cfg.session_id.clone());
+                w.record_jobs_into(
+                    path.to_path_buf(),
+                    cfg.session_id.clone(),
+                    session_registry.instance(),
+                );
             }
         }
         let tool_sink = JobWatchSink::new(
@@ -4660,6 +4690,8 @@ impl Harness {
             subagents: subagent_runner,
             reviews: parts.reviews.clone(),
             gatekeepers: Default::default(),
+            restart_notices: Vec::new(),
+            monitors_seen_live: Vec::new(),
             gate_told: Default::default(),
             provider,
             key_wanted,
@@ -8399,7 +8431,15 @@ impl Harness {
         // because both arrive as `Work::Woken`.
         // **And the queue's entries that wait for a merge gate**, said to this session's model —
         // the operator: *"let main project agent manage it"*.
+        // **A wake is where a monitor's firing (or expiry) is seen**, so the store's record of
+        // what is watching is brought up to date here (`crate::restart`).
+        self.sync_monitor_records();
         let mut notices: Vec<String> = self.queue_notices();
+        // **And the children a restart brought back** — the operator's *"we should bring
+        // subagents back … and restart automatically"*: the model is told, in one line each,
+        // which came back and which could not. Counted with the queue's notices: both are facts
+        // the daemon found in the store rather than settlements that arrived.
+        notices.append(&mut self.restart_notices);
         // **And the entries the queue has handed to this session**, which is the fallback: no
         // reviewer could judge them, and the project merges such a branch through its own main
         // session (`[queue] merge_via_session`), so the project that owns the branch is told — and
@@ -8541,6 +8581,317 @@ impl Harness {
             }
             out
         })
+    }
+
+    /// **A subagent brought back after a daemon restart carries on** — the operator, 2026-10-12:
+    /// *"we should bring subagents back - i cant afford to wait till they finish. we should record
+    /// them (session persist anyway) and restart automatically"*.
+    ///
+    /// The session was reopened from the store under its own id, so the conversation is the
+    /// child's own; what it lacks is the turn that was in flight. This is that turn, opened by
+    /// `notice` (`crate::subagent_record::child_notice`) in the harness's own voice — the shape of
+    /// [`Harness::continue_after_wall`]: `Speaker::Agent`, never an authorisation, never readable
+    /// as the operator's words. A child of THIS child that was brought back too is said in the
+    /// same turn ([`Harness::restore_after_restart`]), and so is anything held for it.
+    pub fn continue_after_restart(&mut self, notice: &str) -> Result<Reply, HarnessError> {
+        let mut parts = vec![notice.to_string()];
+        parts.append(&mut self.restart_notices);
+        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+            parts.push(meanwhile);
+        }
+        let text = parts.join("\n\n");
+        self.trail.begin_turn();
+        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+        self.submit_item(TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text { text }],
+        })
+    }
+
+    /// **What this session was running when its daemon stopped — restored, or reminded** — called
+    /// once, when the session is opened (`Sessions::harness_as`, `Sessions::open_first_with_seat`,
+    /// and a resumed child's own `run_to_completion`). See `crate::restart` for the whole of it.
+    ///
+    /// The operator, 2026-10-12: *"to make restarts as much painless as possible - by default we
+    /// restore agents, monitors, and remind the model about jobs. Now, if some threshold passed -
+    /// say more than 1 hours after the stop, we start to simply remind the model stating that time
+    /// passed and this is what you wre running and how to restart that"* — and *"this is the case
+    /// for when harnessd stopped of course"*: only records a daemon that is GONE wrote are read, so
+    /// a session opened by the daemon that holds its records (an attach after a long idle, a
+    /// `/resume`) does nothing here.
+    ///
+    /// Everything it decides is one notice: queued for this session's next turn
+    /// ([`Harness::restart_notices`] — the daemon rings the session right after the open, so that
+    /// turn is now), published on the hub as `restart_restored` or `restart_reminded` for the
+    /// operator, and printed on the daemon's log. Every child resumed or re-delivered is watched by
+    /// this session's own watcher set, so its completion arrives exactly as a fresh child's does.
+    ///
+    /// `None` when there was nothing to do — the ordinary open.
+    pub fn restore_after_restart(&mut self) -> Option<String> {
+        use letibot_tools::builtins::task::{RestartFate, RestoreMode};
+        let path = self.cfg.store.clone()?;
+        let store = Store::open(&path).ok()?;
+        let me = self.session_registry.instance().to_string();
+        let back_ms = self.session_registry.started_ms();
+        let sid = self.cfg.session_id.clone();
+
+        // **What a gone daemon left**, and which daemon that was. Read before anything is
+        // touched, so the down time is decided once for the whole session.
+        let runs: Vec<_> = store
+            .subagent_runs_of(&sid)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| {
+                r.instance != me
+                    && (r.state == "running"
+                        || (matches!(r.state.as_str(), "done" | "failed") && !r.delivered))
+            })
+            .collect();
+        let monitors: Vec<_> = store
+            .monitors_of(&sid)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.live && m.instance != me)
+            .collect();
+        let mut jobs = Vec::new();
+        for job in store.jobs(&sid).unwrap_or_default() {
+            if job.state != "running" {
+                continue;
+            }
+            // A subagent's handle is backgrounded through the same sink and has a `job` row too;
+            // it is the child record's business, not a job's.
+            if store.subagent_run(&job.handle).ok().flatten().is_some() {
+                continue;
+            }
+            let ctx = store.job_context(&sid, &job.handle).ok().flatten();
+            if ctx.as_ref().is_some_and(|c| c.instance == me) {
+                continue;
+            }
+            if ctx.is_none() && job.command.is_empty() {
+                continue;
+            }
+            jobs.push((job, ctx));
+        }
+        if runs.is_empty() && monitors.is_empty() && jobs.is_empty() {
+            return None;
+        }
+
+        // **How long the daemon was down**: from the latest stop among the daemons these records
+        // came from, to this daemon's start.
+        let mut instances: Vec<(String, u64)> = Vec::new();
+        for (inst, at) in runs
+            .iter()
+            .map(|r| (r.instance.clone(), r.updated_ms))
+            .chain(monitors.iter().map(|m| (m.instance.clone(), m.updated_ms)))
+            .chain(
+                jobs.iter()
+                    .filter_map(|(_, c)| c.as_ref().map(|c| (c.instance.clone(), c.started_ms))),
+            )
+        {
+            match instances.iter_mut().find(|(i, _)| *i == inst) {
+                Some((_, t)) => *t = (*t).max(at),
+                None => instances.push((inst, at)),
+            }
+        }
+        let stop = instances
+            .iter()
+            .map(|(i, at)| crate::restart::stop_of(&store, i, *at))
+            .max_by_key(|s| s.at_ms)
+            .unwrap_or(crate::restart::Stopped {
+                at_ms: back_ms,
+                estimated_from: Some("nothing (no record said when)"),
+            });
+        let down = std::time::Duration::from_millis(back_ms.saturating_sub(stop.at_ms));
+        let restore = down < self.cfg.restore_within;
+        let mode = if restore {
+            RestoreMode::Resume
+        } else {
+            RestoreMode::Remind
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut said: Vec<String> = Vec::new();
+
+        // **Subagents.**
+        for c in self.subagents.resume_recorded(mode) {
+            let name = format!("`{}` ({})", c.handle, c.title);
+            match &c.fate {
+                RestartFate::Resumed => {
+                    if let Some(w) = &self.job_watch {
+                        w.watch(c.handle.clone());
+                    }
+                    lines.push(crate::subagent_record::parent_resumed_line(&name));
+                    said.push(format!("subagent {name}: resumed"));
+                }
+                RestartFate::Settled => {
+                    // The settlement itself is the notice the watcher queues; a second line about
+                    // it would tell the model the same thing twice.
+                    if let Some(w) = &self.job_watch {
+                        w.watch(c.handle.clone());
+                    }
+                    said.push(format!(
+                        "subagent {name}: had finished, its result not yet delivered — delivering it"
+                    ));
+                }
+                RestartFate::NotResumed { why } => {
+                    lines.push(crate::subagent_record::parent_not_resumed_line(&name, why));
+                    said.push(format!("subagent {name}: NOT resumed — {why}"));
+                }
+                RestartFate::Reminded { worktree, branch } => {
+                    lines.push(crate::subagent_record::parent_reminded_line(
+                        &name,
+                        &c.handle,
+                        worktree.as_deref(),
+                        branch.as_deref(),
+                    ));
+                    said.push(format!("subagent {name}: reminded, not resumed"));
+                }
+            }
+        }
+
+        // **Monitors.** One that had already run out its TTL before the stop is closed quietly:
+        // it would have ended on its own, restart or none.
+        let rt = self.runtime.clone();
+        for m in monitors {
+            let _ = store.end_monitor(&sid, &m.name);
+            if m.declared_ms.saturating_add(m.ttl_ms) <= stop.at_ms {
+                continue;
+            }
+            if !restore {
+                lines.push(format!(
+                    "- monitor `{}` was watching; re-arm it with {} if it still matters.",
+                    m.name,
+                    crate::restart::monitor_call(&m)
+                ));
+                said.push(format!("monitor `{}`: reminded, not re-armed", m.name));
+                continue;
+            }
+            // **The same call, made again.** It was gated when the model first made it; this
+            // re-establishes that declaration rather than making a new one, so it goes through the
+            // door with no gate (the operator's own runs use it for the same reason: nobody is
+            // left to ask). The recording wrapper writes the new declaration under this daemon.
+            let call = ToolCall {
+                id: format!("restart-monitor-{}", m.name),
+                name: "monitor".into(),
+                arguments: m.args_json.clone(),
+            };
+            let r = rt.invoke_operator("restart", &call, &mut letibot_tools::NullToolSink);
+            if r.outcome == letibot_transcript::ToolOutcome::Ok {
+                lines.push(format!(
+                    "- monitor `{}` was re-armed with the call that declared it ({}); its TTL \
+                     starts again from now.",
+                    m.name,
+                    crate::restart::monitor_call(&m)
+                ));
+                said.push(format!("monitor `{}`: re-armed", m.name));
+            } else {
+                let why = r
+                    .payload
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches('.')
+                    .to_string();
+                lines.push(format!(
+                    "- monitor `{}` could NOT be re-armed — {why}. It was declared with {}; what \
+                     it watched may be gone.",
+                    m.name,
+                    crate::restart::monitor_call(&m)
+                ));
+                said.push(format!("monitor `{}`: NOT re-armed — {why}", m.name));
+            }
+        }
+
+        // **Jobs: reminded, never re-run.**
+        let rows = self.todos.snapshot();
+        for (job, ctx) in jobs {
+            let slug = ctx.as_ref().and_then(|c| c.slug.clone());
+            let waiting = crate::restart::rows_waiting_on(&rows, &job.handle, slug.as_deref());
+            let ran = ctx
+                .as_ref()
+                .map(|c| stop.at_ms.saturating_sub(c.started_ms));
+            lines.push(crate::restart::job_line(
+                &job,
+                slug.as_deref(),
+                ctx.as_ref().map(|c| c.cwd.as_str()),
+                ran,
+                &waiting,
+            ));
+            said.push(format!(
+                "job `{}`: reminded (not re-run){}",
+                job.handle,
+                if waiting.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} waiting row(s) released", waiting.len())
+                }
+            ));
+            // **Said once**: the row stops reading `running`, so the next open does not remind
+            // again and the pane does not draw a job nobody runs.
+            let mut lost = job.clone();
+            lost.state = "lost at restart".into();
+            let _ = store.put_job(&sid, &lost);
+        }
+
+        let mut text = crate::restart::header(&stop, back_ms, self.cfg.restore_within, restore);
+        if !lines.is_empty() {
+            text.push('\n');
+            text.push_str(&lines.join("\n"));
+        }
+        if !restore {
+            text.push_str(
+                "\nNothing above is running now. Bring back only what still matters: \
+                 `task_resume` for a subagent, `monitor` for a watch, `bash` for a job.",
+            );
+        }
+        for line in &said {
+            eprintln!("  {sid} · restart: {line}");
+        }
+        self.hub.publish(SessionEvent::Warning {
+            code: if restore {
+                "restart_restored"
+            } else {
+                "restart_reminded"
+            }
+            .into(),
+            detail: format!(
+                "{}\n{}",
+                text.lines().next().unwrap_or(""),
+                said.iter()
+                    .map(|l| format!("  - {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            compaction: None,
+        });
+        self.restart_notices.push(text.clone());
+        Some(text)
+    }
+
+    /// **Monitors this daemon recorded that are no longer live** are closed in the store, so a
+    /// restart re-arms only what was really watching. Called where a firing, a retirement or an
+    /// expiry has just been seen (a wake, a turn's end).
+    fn sync_monitor_records(&mut self) {
+        let (Some(monitors), Some(path)) = (&self.monitors, &self.cfg.store) else {
+            return;
+        };
+        let mut live = monitors.live_names();
+        live.sort();
+        // **Only when the live set moved** — a wake is frequent and a store open is not free, and
+        // the only change this records is a monitor leaving the live set.
+        if live == self.monitors_seen_live {
+            return;
+        }
+        self.monitors_seen_live = live.clone();
+        let me = self.session_registry.instance();
+        let Ok(store) = Store::open(path) else {
+            return;
+        };
+        for m in store.monitors_of(&self.cfg.session_id).unwrap_or_default() {
+            if m.live && m.instance == me && !live.contains(&m.name) {
+                let _ = store.end_monitor(&self.cfg.session_id, &m.name);
+            }
+        }
     }
 
     /// **The turn after the wall, without a human typing "continue".**
@@ -14115,11 +14466,24 @@ pub(crate) struct TaskSlot {
     /// not gone: its whole session is in the store, so [`HarnessTaskRunner::send`] reopens it
     /// rather than refusing a message to "a thread that has ended".
     parked: std::sync::atomic::AtomicBool,
+    /// **The child's row in the store** (`crate::subagent_record`), moved when this slot
+    /// settles or is stopped — what a daemon that comes up after this one reads to bring the
+    /// child back. `None` for a slot with no store behind it (a test, a storeless run, the review
+    /// queue's reviewers) and for a settlement re-delivered after a restart.
+    record: Option<crate::subagent_record::SubagentRecord>,
 }
 
 impl TaskSlot {
+    fn recorded(owner: &str, record: Option<crate::subagent_record::SubagentRecord>) -> TaskSlot {
+        TaskSlot {
+            record,
+            ..TaskSlot::new(owner)
+        }
+    }
+
     fn new(owner: &str) -> TaskSlot {
         TaskSlot {
+            record: None,
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
                 // **The reading is attached where it is ASKED for, not settled here.** A value
@@ -14203,6 +14567,11 @@ impl TaskSlot {
     /// later cannot be recorded as the child having answered.
     fn kill(&self) {
         self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
+        // **And the store hears it now**, not when the turn winds down: a daemon that dies in
+        // between must not bring back a child somebody stopped.
+        if let Some(record) = &self.record {
+            record.killed();
+        }
     }
 
     /// **The status as the slot holds it**, for a test that has to assert a settlement happened —
@@ -14228,6 +14597,15 @@ impl TaskSlot {
 
     fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
         let status = self.as_settled(status);
+        // **The record moves with the slot**, from this one place every settlement passes
+        // through — see `SubagentRecord::settled` for the one judgement it makes (a stop during
+        // an orderly shutdown is the daemon's ending, not the child's).
+        if let Some(record) = &self.record {
+            record.settled(
+                &status,
+                self.killed.load(std::sync::atomic::Ordering::SeqCst),
+            );
+        }
         *self.state.lock().expect("task slot") = status;
         self.settled.notify_all();
     }
@@ -15669,6 +16047,292 @@ impl HarnessTaskRunner {
             .map(|(_, s)| s.clone())
     }
 
+    /// **This runner's store, for the children's records** — the same lazily opened connection
+    /// the merge queue's enqueue uses (`merge_store`), so a runner holds one. `None` without a
+    /// store: nothing is recorded and nothing can be brought back.
+    fn run_store(&self) -> Option<crate::subagent_record::RunStore> {
+        self.base
+            .store
+            .as_ref()
+            .map(|path| crate::subagent_record::RunStore {
+                path: path.clone(),
+                cell: self.merge_store.clone(),
+            })
+    }
+
+    /// **Write a fresh child's row** — `running`, owned by this daemon, with the subtask and the
+    /// spawn's description — and hand back the record its slot moves. See
+    /// `crate::subagent_record`.
+    ///
+    /// **The review queue's reviewers are not recorded.** The queue keeps its own lease and starts
+    /// a reviewer for every row nobody is working, so a reviewer resumed beside the one the queue
+    /// starts would be two verdicts on one branch. Their parent is the queue's own session.
+    ///
+    /// A row that cannot be written is said on the daemon's log and the child starts anyway: the
+    /// record is what a RESTART needs, and refusing the spawn over it would cost the work now for
+    /// the sake of a restart that may never come.
+    fn record_start(
+        &self,
+        sub_id: &str,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+    ) -> Option<crate::subagent_record::SubagentRecord> {
+        if self.base.session_id == crate::sessions::gatekeeper::SESSION {
+            return None;
+        }
+        let store = self.run_store()?;
+        let now = letibot_sessionlog::registry::now_ms();
+        let run = letibot_tokencore::store::SubagentRun {
+            child_id: sub_id.to_string(),
+            parent_id: self.base.session_id.clone(),
+            state: "running".into(),
+            prompt: prompt.to_string(),
+            spec_json: crate::subagent_record::RecordedSpec::of(spec).to_json(),
+            instance: self.registry.instance().to_string(),
+            resumes: 0,
+            outcome: None,
+            delivered: false,
+            started_ms: now,
+            updated_ms: now,
+        };
+        if let Err(why) = store.with(|s| s.put_subagent_run(&run).map_err(|e| e.to_string())) {
+            eprintln!(
+                "  {sub_id} · not recorded ({why}); it runs, and a daemon restart will not bring \
+                 it back"
+            );
+            return None;
+        }
+        Some(crate::subagent_record::SubagentRecord {
+            store,
+            child: sub_id.to_string(),
+            registry: self.registry.clone(),
+        })
+    }
+
+    /// **The child's thread, for a fresh child and a resumed one alike** — the slot, the thread
+    /// that runs [`HarnessTaskRunner::run_to_completion`], and the refusal when the thread cannot
+    /// start. `restart` is `Some` for a child brought back after a daemon restart: the notice its
+    /// continued turn opens with.
+    fn spawn_child(
+        &self,
+        sub_id: String,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+        record: Option<crate::subagent_record::SubagentRecord>,
+        restart: Option<String>,
+    ) -> Result<String, String> {
+        let slot = Arc::new(TaskSlot::recorded(&self.base.session_id, record));
+        self.slots
+            .lock()
+            .expect("task slots")
+            .push((sub_id.clone(), slot.clone()));
+
+        let me = self.clone();
+        let prompt = prompt.to_string();
+        // The whole spec, carried through verbatim — the worktree `task_start` arranged (the
+        // child's workspace is the worktree, not the parent's tree), and the tree a VM placement
+        // copies, which is the caller's word about where the work is and must not be invented
+        // at this layer.
+        let spec = spec.clone();
+        let id = sub_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!(
+                "subagent-{}",
+                letibot_sessionlog::registry::short_id(&sub_id)
+            ))
+            .spawn(move || {
+                let slot2 = slot.clone();
+                // **The settlement is the function's own now** (see `AnswerOnce`): it happens as
+                // the turn ends, because what follows — a host child serving its own queue until
+                // the hub closes — does not end until the daemon does. There is nothing for this
+                // thread to do with the answer; the slot already has it.
+                //
+                // **Except for a refusal that came before the guard existed.** The checks at the
+                // top of `run_to_completion` — the seat, the model door, the local vocabulary,
+                // the child's window — return before `AnswerOnce` is made, and their sentence
+                // used to be dropped right here: the slot stayed `Running` with no thread behind
+                // it, and `task_result` waited out its whole timeout to report a child "still
+                // working" that had never been created. The operator, on a stroppy session whose
+                // `where: firecode` child did exactly that: *"it hanged on task_result wtf"*.
+                let ran = me.run_to_completion(
+                    &id,
+                    &prompt,
+                    &spec,
+                    &slot,
+                    &mut |n| slot2.note(n),
+                    restart.as_deref(),
+                );
+                finish_child_thread(&slot, ran);
+                // **And this is where the child's thread ends — the fact stopping needs.** See
+                // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
+                // asked more), so `stop_all` cannot read "has an answer" as "is gone".
+                slot.mark_exited();
+            });
+        if let Err(e) = spawned {
+            // Nothing is running; say so rather than handing back a handle for a
+            // child that was never started.
+            self.slots
+                .lock()
+                .expect("task slots")
+                .retain(|(h, _)| h != &sub_id);
+            return Err(format!("the subagent thread could not be started: {e}"));
+        }
+        Ok(sub_id)
+    }
+
+    /// **The children a daemon that is gone left behind, brought back** — the operator's *"we
+    /// should bring subagents back … and restart automatically"*.
+    ///
+    /// Reads this session's records and acts on each by [`crate::subagent_record::decide`]:
+    ///
+    /// * **mid-task** — its row is stamped with this daemon and one more resume, and the child is
+    ///   spawned by [`HarnessTaskRunner::spawn_child`] under its own id with its recorded spec, so
+    ///   its session is reopened from the store in its own worktree and its turn continues with
+    ///   the restart notice;
+    /// * **settled, never delivered** — a slot already holding the answer, which the parent's
+    ///   watcher (armed by `Harness::restore_after_restart`) delivers as it would any settlement;
+    /// * **not to be resumed** — the row is marked `abandoned` with the reason, which is the
+    ///   sentence the parent is told.
+    ///
+    /// Stamping the row with this daemon is what keeps a second open of the same parent inside
+    /// this daemon from bringing the child back twice.
+    /// **Spawn one recorded child again under its own id** — the one body behind the automatic
+    /// restore and `task_resume`. The row is stamped with this daemon and one more resume first,
+    /// so a second open of the parent in this daemon leaves it alone.
+    fn resume_run(
+        &self,
+        store: &crate::subagent_record::RunStore,
+        run: &letibot_tokencore::store::SubagentRun,
+        spec: letibot_tools::builtins::task::TaskSpec,
+    ) -> Result<(), String> {
+        let mut row = run.clone();
+        row.state = "running".into();
+        row.instance = self.registry.instance().to_string();
+        row.resumes = run.resumes + 1;
+        row.outcome = None;
+        store.with(|s| s.put_subagent_run(&row).map_err(|e| e.to_string()))?;
+        // A slot left by an earlier life of this handle in this daemon (an exited thread) is
+        // replaced, so `task_result` reads the child that is running now.
+        self.slots
+            .lock()
+            .expect("task slots")
+            .retain(|(h, s)| h != &run.child_id || !s.has_exited());
+        let record = crate::subagent_record::SubagentRecord {
+            store: store.clone(),
+            child: run.child_id.clone(),
+            registry: self.registry.clone(),
+        };
+        let notice = crate::subagent_record::child_notice(letibot_sessionlog::registry::now_ms());
+        match self.spawn_child(
+            run.child_id.clone(),
+            &run.prompt,
+            &spec,
+            Some(record),
+            Some(notice),
+        ) {
+            Ok(_) => Ok(()),
+            Err(why) => {
+                let mut row = row;
+                row.state = "abandoned".into();
+                row.outcome = Some(why.clone());
+                let _ = store.with(|s| s.put_subagent_run(&row).map_err(|e| e.to_string()));
+                Err(why)
+            }
+        }
+    }
+
+    fn bring_back_recorded(
+        &self,
+        mode: letibot_tools::builtins::task::RestoreMode,
+    ) -> Vec<letibot_tools::builtins::task::RestartedChild> {
+        use crate::subagent_record::{Decision, decide};
+        use letibot_tools::builtins::task::{RestartFate, RestartedChild};
+        let Some(store) = self.run_store() else {
+            return Vec::new();
+        };
+        let runs = match store.with(|s| {
+            s.subagent_runs_of(&self.base.session_id)
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(runs) => runs,
+            Err(why) => {
+                eprintln!(
+                    "  {} · its subagents' records could not be read ({why}); none were resumed",
+                    self.base.session_id
+                );
+                return Vec::new();
+            }
+        };
+        let me = self.registry.instance().to_string();
+        let mut out = Vec::new();
+        for run in runs {
+            let handle = run.child_id.clone();
+            let held = self.slot(&handle).is_some() || self.registry.get(&handle).is_some();
+            let title = subagent_title(&run.prompt);
+            let restamp = |state: &str, resumes: u32, outcome: Option<String>| {
+                let mut row = run.clone();
+                row.state = state.to_string();
+                row.instance = me.clone();
+                row.resumes = resumes;
+                row.outcome = outcome;
+                if let Err(why) =
+                    store.with(|s| s.put_subagent_run(&row).map_err(|e| e.to_string()))
+                {
+                    eprintln!("  {handle} · its record could not be updated ({why})");
+                }
+            };
+            match decide(&run, &me, held, |p| std::path::Path::new(p).is_dir(), mode) {
+                Decision::Leave => {}
+                Decision::Deliver(status) => {
+                    restamp(&run.state, run.resumes, run.outcome.clone());
+                    let slot = Arc::new(TaskSlot::new(&self.base.session_id));
+                    slot.settle(status);
+                    slot.mark_exited();
+                    self.slots
+                        .lock()
+                        .expect("task slots")
+                        .push((handle.clone(), slot));
+                    out.push(RestartedChild {
+                        handle,
+                        title,
+                        fate: RestartFate::Settled,
+                    });
+                }
+                Decision::Abandon { why } => {
+                    restamp("abandoned", run.resumes, Some(why.clone()));
+                    out.push(RestartedChild {
+                        handle,
+                        title,
+                        fate: RestartFate::NotResumed { why },
+                    });
+                }
+                Decision::Resume { spec } => {
+                    let fate = match self.resume_run(&store, &run, spec) {
+                        Ok(()) => RestartFate::Resumed,
+                        Err(why) => RestartFate::NotResumed { why },
+                    };
+                    out.push(RestartedChild {
+                        handle,
+                        title,
+                        fate,
+                    });
+                }
+                Decision::Remind { spec } => {
+                    restamp("paused", run.resumes, None);
+                    out.push(RestartedChild {
+                        handle,
+                        title,
+                        fate: RestartFate::Reminded {
+                            worktree: spec.worktree.as_ref().map(|w| w.path.clone()),
+                            branch: spec.worktree.as_ref().map(|w| w.branch.clone()),
+                        },
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// **Load and seat another model's tokenizer for a child** — the spawn half of
     /// [`LocalSwitch::OtherWeights`].
     ///
@@ -15793,67 +16457,55 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if !(role.is_empty() || role == "coder") {
             Seat::parse(role)?;
         }
-        let slot = Arc::new(TaskSlot::new(&self.base.session_id));
-        self.slots
-            .lock()
-            .expect("task slots")
-            .push((sub_id.clone(), slot.clone()));
+        // **Recorded before the thread exists** (the operator: *"we should record them … and
+        // restart automatically"*): a daemon that dies while this child is still opening must
+        // know it had one. See `crate::subagent_record`.
+        let record = self.record_start(&sub_id, prompt, spec);
+        self.spawn_child(sub_id, prompt, spec, record, None)
+    }
 
-        let me = self.clone();
-        let prompt = prompt.to_string();
-        let spec = letibot_tools::builtins::task::TaskSpec {
-            role: spec.role.clone(),
-            downgrade: spec.downgrade.clone(),
-            placement: spec.placement,
-            model: spec.model.clone(),
-            // The worktree `task_start` arranged, when it did: the child's workspace is
-            // the worktree, not the parent's tree. `None` for a plain `task`.
-            worktree: spec.worktree.clone(),
-            // **And the tree a VM placement copies, which the caller decided** — `None` for every
-            // caller but the review queue, which names the entry's repository so a reviewer is not
-            // booted on a copy of the folder the daemon happens to sit in. Carried through
-            // verbatim: this is the layer that must not invent a value, because the value IS the
-            // caller's word about where the work is.
-            vm_source: spec.vm_source.clone(),
-            vm_verify: spec.vm_verify.clone(),
+    /// **Bring back the children a daemon that is gone left mid-task** — see
+    /// `crate::subagent_record` and [`HarnessTaskRunner::bring_back_recorded`].
+    fn resume_recorded(
+        &self,
+        mode: letibot_tools::builtins::task::RestoreMode,
+    ) -> Vec<letibot_tools::builtins::task::RestartedChild> {
+        self.bring_back_recorded(mode)
+    }
+
+    /// **`task_resume`: bring back ONE child a daemon that is gone left unfinished** — and the
+    /// door the automatic restore goes through too ([`HarnessTaskRunner::resume_run`]). The
+    /// rule for what may come back is `crate::subagent_record::resumable`.
+    fn resume(&self, handle: &str) -> Result<String, String> {
+        let Some(store) = self.run_store() else {
+            return Err(format!(
+                "this session has no store, so it holds no record of `{handle}`. Nothing was \
+                 spawned."
+            ));
         };
-        let id = sub_id.clone();
-        let spawned = std::thread::Builder::new()
-            .name(format!(
-                "subagent-{}",
-                letibot_sessionlog::registry::short_id(&sub_id)
-            ))
-            .spawn(move || {
-                let slot2 = slot.clone();
-                // **The settlement is the function's own now** (see `AnswerOnce`): it happens as
-                // the turn ends, because what follows — a host child serving its own queue until
-                // the hub closes — does not end until the daemon does. There is nothing for this
-                // thread to do with the answer; the slot already has it.
-                //
-                // **Except for a refusal that came before the guard existed.** The checks at the
-                // top of `run_to_completion` — the seat, the model door, the local vocabulary,
-                // the child's window — return before `AnswerOnce` is made, and their sentence
-                // used to be dropped right here: the slot stayed `Running` with no thread behind
-                // it, and `task_result` waited out its whole timeout to report a child "still
-                // working" that had never been created. The operator, on a stroppy session whose
-                // `where: firecode` child did exactly that: *"it hanged on task_result wtf"*.
-                let ran = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
-                finish_child_thread(&slot, ran);
-                // **And this is where the child's thread ends — the fact stopping needs.** See
-                // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
-                // asked more), so `stop_all` cannot read "has an answer" as "is gone".
-                slot.mark_exited();
-            });
-        if let Err(e) = spawned {
-            // Nothing is running; say so rather than handing back a handle for a
-            // child that was never started.
-            self.slots
-                .lock()
-                .expect("task slots")
-                .retain(|(h, _)| h != &sub_id);
-            return Err(format!("the subagent thread could not be started: {e}"));
-        }
-        Ok(sub_id)
+        let run = store
+            .with(|s| s.subagent_run(handle).map_err(|e| e.to_string()))?
+            .filter(|r| r.parent_id == self.base.session_id)
+            .ok_or_else(|| {
+                format!(
+                    "this session started no subagent `{handle}` that the store remembers; \
+                     `task_result` with no `task` lists the ones it did. Nothing was spawned."
+                )
+            })?;
+        let held = self
+            .slot(handle)
+            .is_some_and(|s| !s.has_exited() && !s.is_parked())
+            || self.registry.get(handle).is_some();
+        let spec = crate::subagent_record::resumable(&run, self.registry.instance(), held, |p| {
+            std::path::Path::new(p).is_dir()
+        })?;
+        self.resume_run(&store, &run, spec)?;
+        Ok(format!(
+            "`{handle}` is resumed in its own session — the same conversation{}, role and model — \
+             and its turn continues with a restart notice. Its answer reaches you on its own when \
+             it finishes; `task_result` with task=\"{handle}\" shows where it has got to.",
+            run_place(&run)
+        ))
     }
 
     /// **Arrange the tree, then start the child** — the `task_start` door.
@@ -16816,6 +17468,7 @@ impl HarnessTaskRunner {
         spec: &letibot_tools::builtins::task::TaskSpec,
         slot: &TaskSlot,
         progress: &mut dyn FnMut(&str),
+        restart: Option<&str>,
     ) -> Result<String, String> {
         use letibot_tools::builtins::task::Placement;
         let role = spec.role.as_str();
@@ -17370,6 +18023,11 @@ impl HarnessTaskRunner {
         // **The branch is the deliverable, said in the brief and checked as each turn ends.** The
         // rule rides the child's task (see `worktree_brief`), and the same fact is read when the
         // turn is about to end (`Harness::set_deliverable`): one nudge if the tree is dirty.
+        //
+        // **Set for a RESUMED child too**: its placement comes back with it (`RecordedSpec`
+        // keeps the worktree), and a child brought back after a restart that is not checked
+        // at its turns' ends is exactly the child the deliverable rule exists for — it was
+        // interrupted mid-work, so its tree is the likeliest of all to hold uncommitted work.
         sub.set_deliverable(the_deliverable.clone());
         let brief = match &the_deliverable {
             Some(d) => format!(
@@ -17378,9 +18036,30 @@ impl HarnessTaskRunner {
             ),
             None => prompt.to_string(),
         };
+        // **A RESUMED child carries on; a fresh one is asked.** `restart` is the notice a child
+        // brought back after a daemon restart reads (`crate::subagent_record`): its session was
+        // reopened from the store under the same id just above, so the conversation it is
+        // continuing is its own (its brief, the worktree rule included, is already in it). A
+        // child whose daemon died before its first row was written has nothing to continue, and
+        // is asked its task as if for the first time.
+        if restart.is_some() {
+            // **And a child of a child comes back with its parent** — this session's own records
+            // are read the way a root's are when the daemon opens it.
+            sub.restore_after_restart();
+        }
+        let restart = restart.filter(|_| {
+            sub.resumed().is_some()
+                && sub
+                    .items()
+                    .iter()
+                    .any(|i| matches!(i, TranscriptItem::User { .. }))
+        });
         let first =
             crate::turn_tail::run_turn(&mut sub, &mut turns, crate::turn_tail::Door::Prompt, |h| {
-                h.submit(&brief).map(Some)
+                match restart {
+                    Some(notice) => h.continue_after_restart(notice).map(Some),
+                    None => h.submit(&brief).map(Some),
+                }
             })
             .expect("a prompt always runs a turn");
         let reply = match first {
@@ -17483,6 +18162,15 @@ impl HarnessTaskRunner {
 /// The deterministic half needs no flag because it cannot fire unless the model used
 /// `todo` or `goal`, and those are seated only by a role that names them. A default
 /// `letibot` session is behaviourally identical with it on.
+/// `, worktree `…` on branch `…`` for a child placed in a worktree, empty otherwise.
+fn run_place(run: &letibot_tokencore::store::SubagentRun) -> String {
+    crate::subagent_record::RecordedSpec::from_json(&run.spec_json)
+        .ok()
+        .and_then(|r| r.worktree)
+        .map(|w| format!(", worktree `{}` on branch `{}`", w.path, w.branch))
+        .unwrap_or_default()
+}
+
 fn steer_for_turn(
     ledger: &IntentLedger,
     prose: bool,

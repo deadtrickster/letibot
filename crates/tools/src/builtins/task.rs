@@ -698,6 +698,71 @@ pub trait TaskRunner: Send + Sync {
     fn live_children(&self) -> usize {
         0
     }
+
+    /// **Bring back the children a daemon that is gone left running** — called once, when this
+    /// session is opened by a daemon.
+    ///
+    /// The operator, 2026-10-12: *"we should bring subagents back - i cant afford to wait till
+    /// they finish. we should record them (session persist anyway) and restart automatically"*.
+    /// A runner records each child it starts; this reads those records for children whose task
+    /// had not ended when their daemon went down, and resumes each one in its own session — or
+    /// says why it did not. A runner that records nothing has nothing to bring back.
+    ///
+    /// `mode` is the daemon's decision about the down time (the operator: *"if some threshold
+    /// passed - say more than 1 hours after the stop, we start to simply remind the model"*):
+    /// [`RestoreMode::Resume`] brings each child back, [`RestoreMode::Remind`] only reports it, so
+    /// the model can decide and bring it back itself with [`TaskRunner::resume`].
+    fn resume_recorded(&self, _mode: RestoreMode) -> Vec<RestartedChild> {
+        Vec::new()
+    }
+
+    /// **Bring back ONE child a daemon that is gone left unfinished** — the `task_resume` door,
+    /// and the same door the automatic restore goes through. `Ok` is the sentence for the model;
+    /// `Err` is why it was not brought back, with nothing spawned.
+    fn resume(&self, handle: &str) -> Result<String, String> {
+        Err(format!(
+            "no subagent runner that records children is installed here, so `{handle}` cannot \
+             be resumed. Nothing was spawned."
+        ))
+    }
+}
+
+/// **Whether a restart brings children back, or only says what they were doing.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreMode {
+    /// The daemon was down a short while: bring each mid-task child back.
+    Resume,
+    /// It was down long enough that the world may have moved on: report each child and how to
+    /// bring it back with `task_resume`, and leave the decision to the model.
+    Remind,
+}
+
+/// **What a parent's open did with one child a previous daemon left behind** — see
+/// [`TaskRunner::resume_recorded`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartedChild {
+    /// The child's handle, which is also its session id.
+    pub handle: String,
+    /// The subtask's first line, for the sentence a person reads.
+    pub title: String,
+    pub fate: RestartFate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartFate {
+    /// It was mid-task, and it is running again in its own session.
+    Resumed,
+    /// It had already settled and its parent had not been handed the settlement: it is handed
+    /// over now, and nothing is respawned.
+    Settled,
+    /// It was mid-task and was NOT brought back; `why` is the sentence.
+    NotResumed { why: String },
+    /// It was mid-task, the daemon was down past the restore threshold, and it was left for the
+    /// model to bring back (`task_resume`) — where it was working, so the reminder can say.
+    Reminded {
+        worktree: Option<String>,
+        branch: Option<String>,
+    },
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.
@@ -1470,6 +1535,71 @@ impl Tool for TaskMessageTool {
             // that knows whether the child heard it, and a tool that reformatted its refusal
             // into a success is the defect this tree already paid for once.
             Err(why) => Invocation::failed(format!("subagent `{handle}` was not messaged"), why),
+        }
+    }
+}
+
+/// `task_resume` — bring back a subagent a daemon restart left unfinished, in ONE call.
+///
+/// The operator, 2026-10-12: *"if some threshold passed - say more than 1 hours after the stop,
+/// we start to simply remind the model stating that time passed and this is what you wre running
+/// and how to restart that"*. The reminder names this call; it resumes the child in its own
+/// session (same id, same transcript, same worktree and branch, same role and model), continues
+/// its turn with a restart notice, and its result reaches this session the way any child's does.
+/// It is also the door the daemon's own automatic restore goes through.
+pub struct TaskResumeTool {
+    runner: Arc<dyn TaskRunner>,
+}
+
+impl TaskResumeTool {
+    pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
+        TaskResumeTool { runner }
+    }
+}
+
+impl Tool for TaskResumeTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "task_resume",
+            "Bring back a subagent that a daemon restart left unfinished. Give `task` (its \
+             handle, which is its session id). It resumes in its own session — same \
+             conversation, worktree, branch, role and model — and carries on from where it \
+             was; collect it with `task_result` as before. Refused by name for a child that is \
+             running, finished, or that this session did not start.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "The handle of the subagent to bring back."}
+                },
+                "required": ["task"]
+            }),
+            // `Session`, as `task` is: it restarts a child session of this one.
+            Access::Session,
+        )
+    }
+
+    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
+        let Some(handle) = args.get("task").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "task_resume needs the `task` handle",
+                "call `task_resume` with `task` set to the subagent's handle.",
+            );
+        };
+        let handle = handle.trim();
+        match self.runner.resume(handle) {
+            // **`Backgrounded`, as `task`'s is** — the child is working again and has not
+            // answered, and the outcome is what arms this session's watcher for its result.
+            Ok(said) => Invocation::backgrounded(
+                handle.to_string(),
+                std::time::Duration::ZERO,
+                letibot_transcript::Backgrounding::Asked,
+                format!(
+                    "carry on — `{handle}`'s answer is delivered to you on its own when it \
+                     finishes. `task_result` with task=\"{handle}\" shows where it has got to."
+                ),
+                said,
+            ),
+            Err(why) => Invocation::failed(format!("subagent `{handle}` was not resumed"), why),
         }
     }
 }

@@ -1030,6 +1030,11 @@ impl<'a> Sessions<'a> {
             .or_insert_with(crate::bangrun::State::new)
             .clone();
         harness.set_bang_state(bang);
+        // **And what the last daemon left running comes back with it, or is reminded** — the
+        // operator: *"we should bring subagents back - i cant afford to wait till they finish"*.
+        // Before the ring below, so the wake it causes carries the `[restart]` notice. See
+        // `crate::restart`.
+        harness.restore_after_restart();
         sessions.open.insert(id.clone(), harness);
         sessions.declare_flowy_monitor(&id, cond);
         // **AND THE DAEMON'S OWN FIRST SESSION ARMS ITS CLOCK TOO.** This constructor inserts into
@@ -1912,6 +1917,10 @@ impl<'a> Sessions<'a> {
                 .or_insert_with(crate::bangrun::State::new)
                 .clone();
             h.set_bang_state(bang);
+            // **What a daemon that is gone left running is brought back, or reminded,** as the
+            // session is opened — before the ring below, so the wake carries the `[restart]`
+            // notice. See `crate::restart`.
+            h.restore_after_restart();
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
             // **A SESSION THAT HAS JUST BEEN BUILT IS PUT TO WORK, WHICH ARMING IS NOT.**

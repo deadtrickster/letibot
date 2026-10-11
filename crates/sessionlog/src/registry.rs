@@ -440,6 +440,20 @@ pub struct SessionWiring {
     pub workspace: String,
 }
 
+/// A fresh [`Registry::instance`]: pid, wall clock in nanoseconds, and a per-process counter.
+fn mint_instance() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "d-{}-{nanos}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 /// The last eight characters of a session id, with a leading ellipsis.
 ///
 /// Ids are minted `format!("s-{}", now_ns())`, so two made on the same afternoon
@@ -945,6 +959,13 @@ pub struct Registry {
     /// the session ([`Registry::remove`]). See [`PromptDriver`] for why it is keyed by session
     /// and not held once.
     prompts: Mutex<std::collections::HashMap<String, Arc<dyn PromptDriver>>>,
+    /// **Which daemon this is** — minted once per registry, and a daemon has exactly one. See
+    /// [`Registry::instance`].
+    instance: String,
+    /// When this registry — this daemon — came up, in ms since the epoch.
+    started_ms: u64,
+    /// See [`Registry::is_stopping`].
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 /// What the worker was woken for.
@@ -1065,7 +1086,29 @@ impl Registry {
             suggester: Mutex::new(None),
             terminal: Mutex::new(None),
             prompts: Mutex::new(std::collections::HashMap::new()),
+            instance: mint_instance(),
+            started_ms: now_ms(),
+            stopping: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// **This daemon's instance id** — distinct for every registry ever built, across processes
+    /// and within one.
+    ///
+    /// The fact it answers is *was this written by the daemon I am, or by one before me?* — which
+    /// is what a parent opening its children's records has to know: a child recorded `running` by
+    /// THIS instance is live in this process (or settled here), and one recorded by another
+    /// instance was lost when that daemon went down and is the one to bring back (the operator:
+    /// *"we should bring subagents back … and restart automatically"*). A pid alone is not it —
+    /// pids are reused, and one test process builds many registries — so the pid, the clock and
+    /// a counter together.
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+
+    /// **When this daemon came up** — the end of a previous daemon's down time.
+    pub fn started_ms(&self) -> u64 {
+        self.started_ms
     }
 
     /// A registry holding one hub that already exists. The single-session case,
@@ -1959,6 +2002,10 @@ impl Registry {
     /// question, asked of the hub) — and even if one were handed over, the daemon's own arm
     /// for it between turns is `interrupt_idle`, not a prompt.
     pub fn close(&self) {
+        // **Said first, before any turn is interrupted**: a subagent whose turn the interrupts
+        // below end must be able to tell its daemon's stop from a person's (`is_stopping`).
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let hubs: Vec<Arc<Hub>> = self
             .lock()
             .entries
@@ -2024,6 +2071,14 @@ impl Registry {
 
     pub fn is_closed(&self) -> bool {
         self.bell.is_closed()
+    }
+
+    /// **This daemon has begun to stop** — set at the very start of [`Registry::close`], before
+    /// the turns in flight are interrupted, so whatever those interrupts end can tell the daemon's
+    /// stop from a person's. `is_closed` becomes true only at the END of `close`, after the
+    /// interrupts are out, which is too late for a turn that settles in between.
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

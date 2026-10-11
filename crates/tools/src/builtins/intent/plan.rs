@@ -298,6 +298,10 @@ mod tests {
             no_runner.clone(),
         )))
         .unwrap();
+        r.register(Box::new(crate::builtins::task::TaskResumeTool::new(
+            no_runner.clone(),
+        )))
+        .unwrap();
         // And `task_start`, for the same reason one seat later: `m2_coder` seats it
         // beside `task` (the operator's ask — *"we will need a new tool - task_start
         // or what that will arrange worktree, firecode and subagent"*), and

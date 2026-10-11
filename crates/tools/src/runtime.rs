@@ -1021,6 +1021,7 @@ pub mod roles {
                 "task",
                 "task_result",
                 "task_message",
+                "task_resume",
                 "task_start",
                 "read",
                 "grep",
@@ -1079,6 +1080,7 @@ pub mod roles {
                 "task",
                 "task_result",
                 "task_message",
+                "task_resume",
                 // `task_start` beside `task`: the operator's ask — *"we will need a new
                 // tool - task_start or what that will arrange worktree, firecode and
                 // subagent"*. A seat that can start a child but not arrange its placement
@@ -1178,7 +1180,11 @@ pub mod roles {
         // **Twenty-nine since `queue`** (R76 item 2), which takes its own seat for the reason
         // `merge_gate` did: the project's agent is the one told its target is red, and a seat
         // that can be told and cannot act sends the operator to type `/queue` for it.
-        r.max_tools = 29;
+        // **Thirty since `task_resume`** (the operator, 2026-10-12: *"we should bring subagents
+        // back"*), which takes its own seat beside `task_message`: the restart reminder names it
+        // as the one call that brings a child back, and a seat that is told and cannot act is the
+        // same defect `queue` was seated against.
+        r.max_tools = 30;
         r
     }
 
@@ -1378,6 +1384,7 @@ pub mod roles {
                 "task",
                 "task_result",
                 "task_message",
+                "task_resume",
                 "task_start",
             ],
         )
@@ -2769,7 +2776,8 @@ mod tests {
         // It took its own seat rather than trading for one: nothing left the list when
         // it arrived, which is the property `max_tools` is declared for. Twenty-eight since
         // `queue` (R76 item 2), which took its own seat the same way.
-        assert_eq!(seat.tools.len(), 28, "{:?}", seat.tools);
+        // Twenty-nine since `task_resume`.
+        assert_eq!(seat.tools.len(), 29, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

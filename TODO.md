@@ -2114,6 +2114,54 @@ What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut o
    repository's merge-queue lease; only the project's own daemon serves its queue.
 3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
 
+## R85 — A daemon restart brings back subagents and monitors, and reminds the model of jobs — **BUILT on `subagents-survive-restart` 2026-10-12 (not merged); store schema 26, no protocol bump. What is left is at the end of this entry.**
+
+The operator, 2026-10-12: *"and here is one more thing about restart - we should bring subagents
+back - i cant afford to wait till they finish. we should record them (session persist anyway) and
+restart automatically"*. Then, widening it: *"on restoring agents - in fact to make restarts as much
+painless as possible - by default we restore agents, monitors, and remind the model about jobs.
+Now, if some threshold passed - say more than 1 hours after the stop, we start to simply remind the
+model stating that time passed and this is what you wre running and how to restart that."* And the
+scope: *"this is the case for when harnessd stopped of course"*.
+
+**What was wrong.** A subagent was a thread of the daemon that spawned it and a slot in that
+daemon's memory; the task journal is a dashboard file rewritten from memory. Its session was in the
+store, but nothing said it was mid-task. Restarting the daemon to pick up a build lost every running
+child (and every monitor; a background job's handle only came back as "gone").
+
+**What is recorded** (schema 26, `tokencore::store::subagents`, all additive):
+`subagent_run` (one row per child: parent, subtask verbatim, the spawn's spec — role, downgrade,
+placement, model, worktree path/branch/base, VM source/check — state, owning daemon instance, crash
+count, outcome, delivered), `session_monitor` (each `monitor` call's own arguments, live flag),
+`job_context` (a background job's slug, cwd, owning instance; the `job` row now gets its command at
+start too), `daemon_life` (each daemon's start, 30 s heartbeat, orderly stop).
+
+**What happens at a start** (`harnessd::restart`, `harnessd::subagent_record`): when a session is
+opened, the records written by a daemon that is GONE are read (records stamped with the running
+daemon's instance are left alone — an attach after a long idle restores nothing). Down time = that
+daemon's stop (exact for an orderly stop; its last heartbeat, said as an estimate, after a crash) to
+this daemon's start. Under `--restore-within` (default 3600 s): mid-task children are resumed in
+their own session/worktree with `[restart] the daemon restarted while you were working …` and their
+completion reaches the parent as before; live monitors are re-declared with their own call (one
+that cannot be is reported); jobs are never re-run, the model is reminded with the exact `bash` call
+and the rows that waited on them (their wait is released). Over it: nothing is restored; one
+reminder lists everything with the one call that brings it back (`task_resume`, new, for a child).
+Either way the notice is a turn, and the hub gets `restart_restored` / `restart_reminded`.
+
+**Edge cases, each tested** (`crates/harnessd/tests/restart_restore.rs`): worktree gone (reported,
+not respawned), finished-but-undelivered (delivered, not respawned), nested (resumed by its parent's
+own open), crash loop (3 resumes without an orderly stop → abandoned, parent told), operator-killed
+(never resumed), a child whose daemon died while it was opening (asked its task again).
+
+**Still open:**
+1. Only children started on a build with this change are recorded; a daemon of an older build left
+   no rows, so its children are not brought back by the first restart onto this build.
+2. A firecode (VM) child is not resumed: its VM copy does not survive. It is reported instead.
+3. A re-armed monitor's TTL starts again from the restart (it is the same call made again).
+4. Monitor re-arm runs without the permission gate (the declaration was gated when the model made
+   it); the operator may want that the other way.
+5. The review queue's reviewers are not recorded (the queue re-serves its own rows).
+
 ## R77 — An operator's todo lands last and the nag never names it — **BUILT on `r77-operator-todos` 2026-10-11 (not merged). What was built and what is left are at the end of this entry.**
 
 The operator: *"i added a todo to pg-noop session, but it was placed at the end, and didnt arrive

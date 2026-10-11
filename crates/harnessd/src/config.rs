@@ -705,6 +705,13 @@ pub struct Config {
     /// longest-held result arrived. Default [`crate::delivery::HELD_RESULTS_CAP`], ten minutes —
     /// the operator's number; see that constant.
     pub held_results_cap: std::time::Duration,
+    /// **How long a daemon may have been down for a session's work to be restored on its own**
+    /// (`crate::restart`). Under it, subagents are resumed and monitors re-armed; over it, nothing
+    /// is restored and the model is reminded of what was running and how to bring each back. The
+    /// operator: *"if some threshold passed - say more than 1 hours after the stop, we start to
+    /// simply remind the model"*. Default [`crate::restart::RESTORE_WITHIN`], one hour;
+    /// `--restore-within SECONDS` sets it.
+    pub restore_within: std::time::Duration,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
@@ -1715,6 +1722,7 @@ impl Config {
             max_subagent_depth: 3,
             child_park_after: Some(std::time::Duration::from_secs(600)),
             held_results_cap: crate::delivery::HELD_RESULTS_CAP,
+            restore_within: crate::restart::RESTORE_WITHIN,
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,

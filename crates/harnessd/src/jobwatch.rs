@@ -362,9 +362,9 @@ impl JobWatchers {
     /// value is read when a queue is BUILT — per watch, well after this — so a recorder set a
     /// line after `new` reaches every queue that follows it. Nothing can be watched in between:
     /// a watch is armed by a tool result, and no tool has run at that point in a session's life.
-    pub fn record_jobs_into(&self, path: std::path::PathBuf, session_id: String) {
+    pub fn record_jobs_into(&self, path: std::path::PathBuf, session_id: String, instance: &str) {
         *self.recorder.lock().expect("job recorder") =
-            Some(JobRecorder::new(path, session_id, self.hub.clone()));
+            Some(JobRecorder::new(path, session_id, self.hub.clone()).owned_by(instance));
     }
 
     /// **A job is a row from the moment it exists, not from the moment it ends.**
@@ -391,6 +391,17 @@ impl JobWatchers {
         };
         if let Some(rec) = g.as_ref() {
             rec.start(handle, how, ran_for_ms);
+            // **And what a restart's reminder needs to say how to run it again** — the command,
+            // its name and its directory, read from the live view while the job exists (the
+            // operator: *"remind the model about jobs"*). See `crate::subagent_record`.
+            let view = self
+                .host
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .and_then(|h| h.jobs().into_iter().find(|j| j.id.0 == handle));
+            if let Some(view) = view {
+                rec.context(handle, &view.command, view.slug.clone(), &view.cwd);
+            }
         }
     }
 
@@ -613,12 +624,24 @@ impl JobWatchers {
     /// *delivered* is true rather than inferred. Keyed by the handle and by the slug, because a
     /// row's `TodoNeed::Job` may name either.
     pub fn read_now(&self, done: &[JobCompletion]) {
-        let mut r = self.read.lock().expect("read record");
-        let at = r.turns_ended;
-        for c in done {
-            r.seen.insert(c.job.clone(), (c.arrived, at));
-            if let Some(slug) = &c.slug {
-                r.seen.insert(slug.clone(), (c.arrived, at));
+        {
+            let mut r = self.read.lock().expect("read record");
+            let at = r.turns_ended;
+            for c in done {
+                r.seen.insert(c.job.clone(), (c.arrived, at));
+                if let Some(slug) = &c.slug {
+                    r.seen.insert(slug.clone(), (c.arrived, at));
+                }
+            }
+        }
+        // **And a subagent's settlement is marked delivered in the store**, because this is the
+        // one place *the model has been told* is true. A daemon that goes down between a child
+        // settling and its parent being told brings that settlement back on the parent's next
+        // open (`crate::subagent_record`) — and a delivered one must not come back a second time.
+        let recorder = self.recorder.lock().expect("job recorder").clone();
+        if let Some(rec) = recorder {
+            for c in done.iter().filter(|c| c.kind == BackgroundKind::Subagent) {
+                rec.subagent_delivered(&c.job);
             }
         }
     }
@@ -1029,6 +1052,8 @@ pub struct JobRecorder {
     /// Opened on the first write, because the queue that holds this is built per watch and a
     /// store opened at construction would be opened for every job that is never backgrounded.
     store: Arc<Mutex<Option<Store>>>,
+    /// The daemon instance that owns these jobs — see [`JobRecorder::owned_by`].
+    instance: String,
 }
 
 impl JobRecorder {
@@ -1038,7 +1063,48 @@ impl JobRecorder {
             session_id,
             hub,
             store: Arc::new(Mutex::new(None)),
+            instance: String::new(),
         }
+    }
+
+    /// The daemon instance (`Registry::instance`) its job contexts are stamped with.
+    pub fn owned_by(mut self, instance: &str) -> Self {
+        self.instance = instance.to_string();
+        self
+    }
+
+    /// **A background job's command, name and directory**, written while it runs — the `job`
+    /// row's command (which the start alone could not fill) and the `job_context` row.
+    fn context(&self, handle: &str, command: &str, slug: Option<String>, cwd: &str) {
+        let redirect = letibot_tools::builtins::output_redirect_path(command);
+        self.with_store(handle, "its context", |store| {
+            store
+                .put_job(
+                    &self.session_id,
+                    &JobRecord {
+                        handle: handle.to_string(),
+                        command: command.to_string(),
+                        how: String::new(),
+                        state: "running".to_string(),
+                        produced: 0,
+                        elapsed_ms: 0,
+                        redirect,
+                    },
+                )
+                .and_then(|_| {
+                    store.put_job_context(
+                        &self.session_id,
+                        &letibot_tokencore::store::JobContext {
+                            handle: handle.to_string(),
+                            slug,
+                            cwd: cwd.to_string(),
+                            instance: self.instance.clone(),
+                            started_ms: letibot_sessionlog::registry::now_ms(),
+                        },
+                    )
+                })
+                .map_err(|e| e.to_string())
+        });
     }
 
     /// **A row that did not land, said on the session's log** — see the type's doc.
@@ -1085,6 +1151,16 @@ impl JobRecorder {
         if let Err(why) = out {
             self.not_recorded(handle, what, &why);
         }
+    }
+
+    /// **A subagent's settlement has reached its parent's model** — see
+    /// [`JobWatchers::read_now`]. A handle the store has no subagent row for writes nothing.
+    fn subagent_delivered(&self, handle: &str) {
+        self.with_store(handle, "its delivery", |store| {
+            store
+                .deliver_subagent_run(handle)
+                .map_err(|e| e.to_string())
+        });
     }
 
     /// **The start: a `running` row, with what this side knows.** See

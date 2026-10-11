@@ -285,6 +285,10 @@ fn usage() -> String {
      \x20                           than withdrawn -- a capability that exists but is\n\
      \x20                           hidden manufactures the workaround. 0 refuses\n\
      \x20                           every `task` call\n\
+     \x20 --restore-within 3600     seconds the daemon may have been down for a\n\
+     \x20                           session's subagents and monitors to be restored on\n\
+     \x20                           their own at the next start; past it the model is\n\
+     \x20                           only reminded of what was running\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
@@ -693,6 +697,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cfg.max_subagent_depth = next()?
                     .parse()
                     .map_err(|e| format!("--max-subagent-depth: {e}"))?
+            }
+            // **How long the daemon may have been down for a session's work to come back on its
+            // own** — see `crate::restart`. Seconds, because it is a span an operator types.
+            "--restore-within" => {
+                cfg.restore_within = std::time::Duration::from_secs(
+                    next()?
+                        .parse()
+                        .map_err(|e| format!("--restore-within: {e}"))?,
+                )
             }
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not
@@ -1527,6 +1540,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let http_parts = parts.clone();
     let http_cfg = cfg.clone();
 
+    // **This daemon's life, written down** — its start now, a heartbeat while it runs, and its
+    // stop on the orderly path below — so the next daemon can say how long it was down
+    // (`crate::restart`). Before the first session opens, because that open reads the LAST
+    // daemon's life to decide what to restore.
+    let lifeline = crate::restart::Lifeline::start(cfg.store.clone(), registry.clone());
     let mut sessions =
         match Sessions::open_first_with_seat(&parts, cfg, registry.clone(), seat.clone()) {
             Ok(s) => s,
@@ -1720,6 +1738,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
             eprintln!("  {said}");
         }
+        lifeline.stopped();
         if let Some(seat) = &seat {
             seat.stop();
         }
@@ -1801,6 +1820,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
         eprintln!("  {said}");
     }
+    // **The orderly stop, with its exact time** — what the next daemon measures its down time from.
+    lifeline.stopped();
     drop(sessions);
     drop(seat);
     Ok(0)
