@@ -345,6 +345,15 @@ pub const TABLE: &[(&str, Class)] = &[
     ("queue_settings_unreadable", Class::Failure),
     ("queue_wrong_build", Class::Failure),
     ("queue_lease_lost", Class::Routine),
+    // **A review waiting for a free VM slot** (TODO R86): firecode had no free tap for its
+    // reviewer, so the row went back to `waiting` with no attempt counted and is asked again in
+    // 1, 2, 5 and then every 5 minutes. Routine: the queue handling a hiccup, said ONCE per wait
+    // — the hub row of 2026-10-12 was a red `queue_blocked` for a shortage that ended minutes
+    // later. A wait past thirty minutes is `queue_vm_slots_exhausted`, a Failure: slots are not
+    // freeing on their own, and the sentence carries firecode's `sudo` lines that raise the
+    // ceiling.
+    ("queue_waiting_for_vm", Class::Routine),
+    ("queue_vm_slots_exhausted", Class::Failure),
     // **A FAILURE, and the one code here that is a claim about the corpus rather than about
     // the session.** An operator's own call was admitted and the head that asked went away
     // before reporting what it did, so the record holds an `admit` whose outcome nobody
@@ -1030,10 +1039,12 @@ mod the_register_census {
         //   · **115, not 114**: `feedback` (Routine) — an operator's mark taken (TODO R81).
         //   · **118, not 115**: `waiting_on_operator` and `todo_answer_refused` (Failures) and
         //     `operator_question_settled` (Routine) — a todo row that waits on the operator.
-        assert_eq!(TABLE.len(), 118, "the table's size");
-        assert_eq!(count(Class::Routine), 41);
+        //   · **120, not 118**: `queue_waiting_for_vm` (Routine) and `queue_vm_slots_exhausted`
+        //     (Failure) — a review waiting for a free VM slot, and that wait gone long (R86).
+        assert_eq!(TABLE.len(), 120, "the table's size");
+        assert_eq!(count(Class::Routine), 42);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 66);
+        assert_eq!(count(Class::Failure), 67);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 64 of 114 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the

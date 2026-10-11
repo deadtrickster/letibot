@@ -39,6 +39,13 @@
 //! | `queue_blocked`, a reviewer that could not start | every hub | reviewer could not start |
 //! | `queue_blocked`, a review that cannot run | every hub | cannot run |
 //! | `refusal_undelivered` | every hub | refused, told nobody |
+//! | `queue_waiting_for_vm`, no free VM slot for the reviewer | every hub | waiting for a VM slot |
+//! | `queue_vm_slots_exhausted`, that wait past 30 minutes | every hub | VM slots exhausted |
+//!
+//! `queue_needs_human` and `queue_blocked` (attempts spent) have two shapes each: the daemon's
+//! since TODO R86 (*"stops for a person: the reviewer could not decide at HEAD — "DECISIVE" …"*,
+//! *"is BLOCKED: N attempts to review it at HEAD ended without a verdict — …"*) and the one
+//! before it, which an older daemon still writes.
 //!
 //! An APPROVED review, a superseded one and a withdrawn one say nothing to a session or a hub —
 //! they are `QueueMoved` events, which the queue pane reads and the conversation does not draw —
@@ -80,6 +87,12 @@ pub(crate) enum Verdict {
     CouldNotStart,
     /// Refused, and the complaints reached nobody.
     RefusedToldNobody,
+    /// **Waiting for a free VM slot** — firecode had none for the reviewer; not blocked, no
+    /// attempt counted (`queue_waiting_for_vm`, TODO R86).
+    WaitingForVm,
+    /// **A VM-slot wait gone long** — slots are not freeing on their own
+    /// (`queue_vm_slots_exhausted`).
+    SlotsExhausted,
 }
 
 impl Verdict {
@@ -93,6 +106,8 @@ impl Verdict {
             Verdict::CannotRun => "cannot run",
             Verdict::CouldNotStart => "reviewer could not start",
             Verdict::RefusedToldNobody => "refused, told nobody",
+            Verdict::WaitingForVm => "waiting for a VM slot",
+            Verdict::SlotsExhausted => "VM slots exhausted",
         }
     }
 
@@ -102,7 +117,9 @@ impl Verdict {
         let state = match self {
             Verdict::CouldNotDecide => "cannot_decide",
             Verdict::Refused | Verdict::Vetoed | Verdict::RefusedToldNobody => "rejected",
+            Verdict::WaitingForVm => "waiting",
             Verdict::Blocked
+            | Verdict::SlotsExhausted
             | Verdict::HandedOver
             | Verdict::CannotRun
             | Verdict::CouldNotStart => "blocked",
@@ -182,7 +199,13 @@ pub(crate) const SESSION: SessionKind = SessionKind {
 
 /// **And its hub warnings.**
 pub(crate) const WARNING: WarningKind = WarningKind {
-    codes: &["queue_needs_human", "queue_blocked", "refusal_undelivered"],
+    codes: &[
+        "queue_needs_human",
+        "queue_blocked",
+        "refusal_undelivered",
+        "queue_waiting_for_vm",
+        "queue_vm_slots_exhausted",
+    ],
     read: warning_card,
 };
 
@@ -370,13 +393,39 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
             decisive(why),
         ));
     }
+    if let Some(r) = detail.strip_prefix("VM SLOTS EXHAUSTED: the review of `") {
+        // `queue_vm_slots_exhausted`: `… (`ID`) has waited N min for a free VM slot (BUSY). …`
+        let (branch, r) = ticked(r)?;
+        let r = r.strip_prefix(" (`")?;
+        let (_, r) = r.split_once("`) has waited ")?;
+        let (mins, r) = r.split_once(" min for a free VM slot (")?;
+        let (busy, _) = r.split_once("). ")?;
+        return Some(Review::new(
+            Verdict::SlotsExhausted,
+            branch.to_string(),
+            Some(format!("waited {mins} min, {}", busy_words(busy))),
+        ));
+    }
     let r = detail.strip_prefix("the review of `")?;
-    let (branch, r) = ticked(r)?;
+    let (name, r) = ticked(r)?;
+    // The red tip's `queue_needs_human`: `` main`'s red tip (`ID`) stops for a person… ``.
+    if let Some(r) = r.strip_prefix("'s red tip (`") {
+        let (_, r) = r.split_once("`) ")?;
+        let (head, reason) = stops_for_a_person(r)?;
+        return Some(Review::new(
+            Verdict::CouldNotDecide,
+            format!("{name}'s red tip {head}"),
+            reason,
+        ));
+    }
     let r = r.strip_prefix(" (`")?;
     let (_, r) = r.split_once("`) ")?;
-    let branch = branch.to_string();
+    let branch = name.to_string();
+    if let Some((_, reason)) = stops_for_a_person(r) {
+        return Some(Review::new(Verdict::CouldNotDecide, branch, reason));
+    }
     if let Some(r) = r.strip_prefix("cannot decide — ") {
-        // `queue_needs_human`: `BY could not decide at SHA: REASONS. `/queue approve …`
+        // `queue_needs_human` before R86: `BY could not decide at SHA: REASONS. `/queue approve …`
         let (_, r) = r.split_once(" could not decide at ")?;
         let (_, reasons) = r.split_once(": ")?;
         let (reasons, _) = reasons.rsplit_once(". `/queue approve ")?;
@@ -386,11 +435,44 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
             decisive(reasons),
         ));
     }
+    if let Some(r) = r.strip_prefix("is BLOCKED: ") {
+        // `queue_blocked`, attempts spent: `N attempts to review it at HEAD ended without a
+        // verdict — no reviewer judged the branch: (1) …; (n) LAST.[ Each was a reviewer that
+        // could not be PLACED …] `/queue restart …`
+        let (n, r) = r.split_once(" attempts to review it at ")?;
+        let (head, r) = r.split_once(" ended without a verdict — ")?;
+        let spent = format!("{n} attempts at {head} ended without a verdict");
+        let cause = if r.contains("could not be PLACED") {
+            Some("the reviewer's VM did not start".to_string())
+        } else {
+            let (list, _) = r.split_once(" `/queue restart ")?;
+            let last = list.rsplit_once("; (").map_or(list, |(_, l)| l);
+            let last = last.split_once(") ").map_or(last, |(_, l)| l);
+            decisive(last.trim_end_matches('.'))
+        };
+        return Some(Review::new(
+            Verdict::Blocked,
+            branch,
+            Some(match cause {
+                Some(c) => format!("{spent} — {c}"),
+                None => spent,
+            }),
+        ));
+    }
     if let Some(r) = r.strip_prefix("is BLOCKED after ") {
-        // `N attempts without a verdict: WHY `/queue restart …`
+        // Before R86: `N attempts without a verdict: WHY `/queue restart …`
         let (_, why) = r.split_once(" attempts without a verdict: ")?;
         let (why, _) = why.rsplit_once(" `/queue restart ")?;
         return Some(Review::new(Verdict::Blocked, branch, decisive(why)));
+    }
+    if let Some(r) = r.strip_prefix("is waiting for a free VM slot: ") {
+        // `queue_waiting_for_vm`: `BUSY. It is not blocked and no attempt is counted; …`
+        let (busy, _) = r.split_once(". It is not blocked")?;
+        return Some(Review::new(
+            Verdict::WaitingForVm,
+            branch,
+            Some(busy_words(busy)),
+        ));
     }
     if let Some(why) = r.strip_prefix("cannot run and is BLOCKED: ") {
         let (why, _) = why
@@ -402,6 +484,22 @@ pub(crate) fn warning_review(detail: &str) -> Option<Review> {
         return Some(Review::new(Verdict::RefusedToldNobody, branch, None));
     }
     None
+}
+
+/// **`stops for a person: the reviewer could not decide at HEAD — "DECISIVE" (BY; …`** — the
+/// head, and the decisive sentence's first clause.
+fn stops_for_a_person(r: &str) -> Option<(String, Option<String>)> {
+    let r = r.strip_prefix("stops for a person: the reviewer could not decide at ")?;
+    let (head, r) = r.split_once(" — \"")?;
+    let (said, _) = r.split_once("; every reason is on the row)")?;
+    let (said, _) = said.rsplit_once("\" (")?;
+    Some((head.to_string(), decisive(said)))
+}
+
+/// *"4 of 4 VM slots are busy"* as the line says it: *"4 of 4 busy"*.
+fn busy_words(busy: &str) -> String {
+    busy.replace(" VM slots are busy", " busy")
+        .replace("every VM slot is busy", "every slot busy")
 }
 
 /// **The decisive reason's first clause** — the operator's example: *"for "could not decide"

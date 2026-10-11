@@ -18,6 +18,8 @@
 //!   clone a VM reviewer is booted on.
 //! * **[`carry`]** — the gitignored inputs a project's gate needs (`[queue] gate_carry`), copied
 //!   into the landing tree, and the sentence a failed gate's notice adds when they are missing.
+//! * **[`capacity`]** — a reviewer firecode could not place for want of a free VM slot: a wait,
+//!   not an attempt; and the words a review that stops for a person says about why.
 //! * **[`serve`]** — the queues' own threads: a supervisor per daemon and a worker per
 //!   repository whose lease it holds. The review queue's upkeep (deadlines, claims, raises), the
 //!   target's health (gated on every change, coalesced — decision 10), and the landings.
@@ -42,6 +44,7 @@ use std::thread::JoinHandle;
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{MergeRow, ReviewRow, Store, StoreError};
 
+pub mod capacity;
 pub mod carry;
 pub mod desk;
 pub mod gate;

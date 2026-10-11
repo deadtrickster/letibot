@@ -213,24 +213,160 @@ pub fn refusal_undelivered(r: &ReviewRow, missed: &str) -> String {
     )
 }
 
-/// **`queue_needs_human`**: the reviewer could not decide (`review::verdict`); `why` is the
-/// move's own words, `BY could not decide at SHA: REASONS`.
-pub fn needs_human(r: &ReviewRow, why: &str) -> String {
+/// **`queue_needs_human`**: the reviewer could not decide (`review::verdict`). A review that
+/// stops because its reviewer could not decide says THAT — the head, the sentence the verdict
+/// turned on (`decisive`: the reviewer's own words, chosen by `capacity::decisive_reason`, not
+/// paraphrased), how many times reviewers could not decide on this branch and at which heads
+/// (`heads`, oldest first, this one included), and the operator's verbs. A failure to place or
+/// run a reviewer is not mentioned: it is not why this row stopped. The hub row of 2026-10-12
+/// named a placement error for a branch whose history was three `could not decide` verdicts
+/// (TODO R86).
+pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) -> String {
+    let short = |s: &str| s.chars().take(7).collect::<String>();
+    let decisive = if decisive.is_empty() {
+        "it gave no reasons"
+    } else {
+        decisive
+    };
+    let times = if heads.len() > 1 {
+        format!(
+            " That is {} × could not decide on this branch (at {}); every one was a verdict, \
+             none a review that failed to run.",
+            heads.len(),
+            heads
+                .iter()
+                .map(|h| short(h))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        String::new()
+    };
+    match r.kind {
+        ReviewKind::Branch => format!(
+            "the review of `{branch}` (`{id}`) stops for a person: the reviewer could not decide at \
+             {head} — \"{decisive}\" ({by}; every reason is on the row).{times} What the operator \
+             can do: `/queue approve {id}` approves it over the reviewer at its head now (the \
+             merge gate still runs); `/queue veto {id} WHY` sends it back to its author with your \
+             words; `/queue rm {id}` withdraws it. A changed ask is answered on the branch: a new \
+             head goes back to review by itself.",
+            branch = r.branch,
+            id = r.id,
+            head = short(&r.head_sha),
+        ),
+        ReviewKind::Target => format!(
+            "the review of `{target}`'s red tip (`{id}`) stops for a person: the reviewer could \
+             not decide at {head} — \"{decisive}\" ({by}; every reason is on the row).{times} \
+             `/queue regate` gates the tip again once the cause is gone; `/queue rm {id}` \
+             withdraws the review.",
+            target = r.target,
+            id = r.id,
+            head = short(&r.head_sha),
+        ),
+    }
+}
+
+/// **Why a review's attempts ran out, in one sentence a person can act on** — the row's
+/// `failure` and the heart of [`blocked_after`]: every counted attempt at this head by its gist
+/// (`capacity::gist`: firecode's `error:` sentence, not its banner), oldest first; and, when
+/// every one was a reviewer whose VM did not start (`placement`), that it was placement and not
+/// a judgement of the branch.
+pub fn attempts_spent(attempts: u32, head: &str, gists: &[String], placement: bool) -> String {
+    let listed = gists
+        .iter()
+        .enumerate()
+        .map(|(i, g)| format!("({}) {g}", i + 1))
+        .collect::<Vec<_>>()
+        .join("; ");
     format!(
-        "the review of `{}` (`{}`) cannot decide — {why}. `/queue approve {}` \
-         approves it (the merge gate still runs), `/queue veto {} WHY` sends it \
-         back, `/queue rm {}` drops it.",
+        "{attempts} attempts to review it at {} ended without a verdict — no reviewer judged \
+         the branch: {listed}.{}",
+        head.chars().take(7).collect::<String>(),
+        if placement {
+            " Each was a reviewer that could not be PLACED (its VM did not start), not a \
+             judgement of the branch."
+        } else {
+            ""
+        }
+    )
+}
+
+/// **`queue_blocked`**: the attempts ran out without a verdict (`review::Pool::attempt_failed`);
+/// `spent` is [`attempts_spent`].
+pub fn blocked_after(r: &ReviewRow, spent: &str) -> String {
+    format!(
+        "the review of `{}` (`{}`) is BLOCKED: {spent} `/queue restart {}` asks again; `/queue \
+         approve {}` approves it over the reviewer (the merge gate still runs); `/queue rm {}` \
+         withdraws it.",
         r.branch, r.id, r.id, r.id, r.id
     )
 }
 
-/// **`queue_blocked`**: the attempts ran out without a verdict (`review::Pool::attempt_failed`).
-pub fn blocked_after(r: &ReviewRow, attempts: u32, why: &str) -> String {
+/// **A capacity wait's move and `failure`** (`review::Pool::wait_for_slot`) — it LEADS with
+/// `capacity::WAITING_FOR_SLOT`, which the claim and `capacity::streak` read; `long` is the
+/// minutes waited when this refusal is the one that raised [`vm_slots_exhausted`].
+pub fn capacity_wait(
+    r: &ReviewRow,
+    busy: &str,
+    delay_min: u64,
+    nth: u32,
+    long: Option<u64>,
+) -> String {
+    let mut why = format!(
+        "{} for `{}`: {busy} — no attempt is counted; asked again in {delay_min} min (refusal \
+         {nth} in a row)",
+        super::capacity::WAITING_FOR_SLOT,
+        r.branch,
+    );
+    if let Some(waited) = long {
+        why.push_str(&format!(
+            "; {} — waiting {waited} min",
+            super::capacity::SLOTS_EXHAUSTED
+        ));
+    }
+    why
+}
+
+/// **`queue_waiting_for_vm`** (Routine, once per wait): firecode had no free slot for the
+/// reviewer, and the review waits — not blocked, no attempt counted. `busy` is
+/// `VmCapacity::busy_line` (*"4 of 4 VM slots are busy"*).
+pub fn waiting_for_vm(r: &ReviewRow, busy: &str) -> String {
     format!(
-        "the review of `{}` (`{}`) is BLOCKED after {attempts} attempts without a \
-         verdict: {why} `/queue restart {}` asks again; `/queue approve {}` \
-         approves it over the reviewer (the merge gate still runs).",
-        r.branch, r.id, r.id, r.id
+        "the review of `{}` (`{}`) is waiting for a free VM slot: {busy}. It is not blocked and \
+         no attempt is counted; it is asked again in 1, 2 and 5 minutes, then every 5, until a \
+         slot frees.",
+        r.branch, r.id
+    )
+}
+
+/// **`queue_vm_slots_exhausted`** (once, past `capacity::LONG_WAIT_MS`): slots are not freeing
+/// on their own; `ceiling` is firecode's own `sudo` lines, verbatim, when its refusal had them.
+pub fn vm_slots_exhausted(
+    r: &ReviewRow,
+    waited_min: u64,
+    busy: &str,
+    ceiling: &[String],
+) -> String {
+    let ceiling = if ceiling.is_empty() {
+        "firecode's refusal names the `sudo ip tuntap add` lines that raise it".to_string()
+    } else {
+        format!(
+            "firecode's own lines raise it, once, in a terminal: {}",
+            ceiling
+                .iter()
+                .map(|l| format!("`{l}`"))
+                .collect::<Vec<_>>()
+                .join(" then ")
+        )
+    };
+    format!(
+        "{}: the review of `{}` (`{}`) has waited {waited_min} min for a free VM slot ({busy}). \
+         Free a slot (`firecode ps`; a tap keeps carrier while ANY VM holds it, an orphaned one \
+         included), or raise the ceiling — {ceiling}. The review keeps waiting and is asked \
+         again every 5 minutes; this is said once.",
+        super::capacity::SLOTS_EXHAUSTED.to_uppercase(),
+        r.branch,
+        r.id,
     )
 }
 
@@ -481,11 +617,17 @@ mod tests {
         };
         let child_gone = "`s-1789919514688401228-sub-1791743034603570463`: no session \
                           `s-1789919514688401228-sub-1791743034603570463` is live in this daemon";
-        let needs_human_why = format!(
-            "reviewer:s-gatekeeper-sub-17917 could not decide at {}: {}",
-            r.head_sha,
-            r.reasons.join("; ")
-        );
+        // Three reviewers whose VM did not start, as `attempt_failed` counts them.
+        let placement_failures = [
+            "the reviewer `s-gatekeeper-sub-17918` failed: placing this session in a firecode VM: \
+             io: running firecode: No such file or directory",
+            "the reviewer `s-gatekeeper-sub-17919` failed: placing this session in a firecode VM: \
+             io: firecode up refused (exit status: 1): [firecode] starting a VM and leaving it up \
+             (log: /home/dead/Projects/firecode/runs/up.Xq81aa.log)\n[firecode] the VM failed to \
+             start:\n[firecode] error: the image rootfs.ext4 does not mount. Rebuild it.",
+            "the reviewer `s-gatekeeper-sub-17920` failed: placing this session in a firecode VM: \
+             io: running firecode: No such file or directory",
+        ];
         let could_not_start_why = format!(
             "a reviewer for `{}` could not start: the VM did not boot: no KVM on this host",
             r.branch
@@ -521,14 +663,56 @@ mod tests {
             ("review_handed_over_notice.txt", handed_over(&handed)),
             (
                 "review_needs_human_warning.txt",
-                needs_human(&r, &needs_human_why),
+                needs_human(
+                    &r,
+                    "reviewer:s-gatekeeper-sub-17917",
+                    &crate::mergequeue::capacity::decisive_reason(&r.reasons),
+                    &[
+                        "2cefd4b97b287d1aaf6cafe6bfdc70af696575a2".to_string(),
+                        "2ef5c95fa50f185772144660a54c769d695cfd06".to_string(),
+                        r.head_sha.clone(),
+                    ],
+                ),
+            ),
+            (
+                "review_needs_human_red_tip_warning.txt",
+                needs_human(
+                    &red_tip,
+                    "reviewer:s-gatekeeper-sub-17930",
+                    &crate::mergequeue::capacity::decisive_reason(&red_tip.reasons),
+                    std::slice::from_ref(&red_tip.head_sha),
+                ),
             ),
             (
                 "review_blocked_after_warning.txt",
                 blocked_after(
                     &r,
-                    3,
-                    "the reviewer `s-gatekeeper-sub-17920` vanished without a verdict",
+                    &attempts_spent(
+                        3,
+                        &r.head_sha,
+                        &placement_failures
+                            .iter()
+                            .map(|w| crate::mergequeue::capacity::gist(w))
+                            .collect::<Vec<_>>(),
+                        true,
+                    ),
+                ),
+            ),
+            (
+                "review_waiting_for_vm_warning.txt",
+                waiting_for_vm(&r, "4 of 4 VM slots are busy"),
+            ),
+            (
+                "review_vm_slots_exhausted_warning.txt",
+                vm_slots_exhausted(
+                    &r,
+                    31,
+                    "4 of 4 VM slots are busy",
+                    &[
+                        "sudo ip tuntap add dev fccode5 mode tap user $(id -u)".to_string(),
+                        "sudo ip addr add 172.16.5.1/30 dev fccode5 && sudo ip link set fccode5 up"
+                            .to_string(),
+                    ],
                 ),
             ),
             (

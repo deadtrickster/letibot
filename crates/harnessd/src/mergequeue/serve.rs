@@ -459,9 +459,12 @@ impl RepoQueue {
             .iter()
             .filter(|r| r.state == ReviewState::Reviewing)
             .count();
+        // A row waiting for a free VM slot is held until its not-before time (`capacity`): no
+        // attempt was spent on it, and claiming it every pass would only ask firecode again.
         let mut waiting: Vec<&ReviewRow> = rows
             .iter()
             .filter(|r| r.state == ReviewState::Waiting)
+            .filter(|r| !super::capacity::held_until(&r.failure, r.deadline_ms, now))
             .collect();
         waiting.sort_by_key(|r| {
             (

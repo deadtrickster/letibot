@@ -34,6 +34,7 @@ use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus, WorktreeSp
 use letibot_tools::builtins::verdict::ReviewDesk;
 use letibot_tools::gatekeeper::{Decision, ReviewRequest};
 
+use super::capacity;
 use super::gate::now_ms;
 use super::git;
 use super::notices;
@@ -95,6 +96,15 @@ impl Pool<'_> {
     }
 
     /// An attempt that reached no verdict: back to `waiting`, counted; the third is a raise.
+    ///
+    /// **What "3 attempts" means** (R61 defects 10 and 11, requirement 4): attempts to RUN a
+    /// review of one head that ended without a verdict — a reviewer that died, vanished, answered
+    /// without handing a verdict in, ran past its deadline, or could not be placed for a real
+    /// reason. It bounds infrastructure retries (148 reviewer sessions for 21 rows) so that a
+    /// review that cannot run is raised instead of retried in silence. It is NOT a limit on
+    /// verdicts — a `needs_human` stops the row for a person by itself, and a new head starts
+    /// the count again — and a reviewer firecode had no free slot for is not an attempt at all
+    /// ([`Pool::wait_for_slot`]).
     fn attempt_failed(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
         let attempts = r.attempts + 1;
         let base = Move::new(self.me, why.clone())
@@ -105,14 +115,99 @@ impl Pool<'_> {
             .set("attempts", attempts)
             .set("failure", why.clone());
         if attempts >= MAX_REVIEW_ATTEMPTS {
-            let ok = self.mv(r, ReviewState::Blocked, base)?;
+            let said = self.blocked_sentence(r, attempts, &why);
+            let ok = self.mv(r, ReviewState::Blocked, base.set("failure", said.clone()))?;
             if ok {
-                self.raise("queue_blocked", notices::blocked_after(r, attempts, &why));
+                self.raise("queue_blocked", notices::blocked_after(r, &said));
             }
             Ok(ok)
         } else {
             self.mv(r, ReviewState::Waiting, base)
         }
+    }
+
+    /// **Why a review is blocked, in one sentence a person can act on** — every counted attempt
+    /// at this head, by its own gist (firecode's `error:` line, not its banner), oldest first;
+    /// and, when every one was the reviewer's VM failing to start, that it was placement and not
+    /// a judgement of the branch.
+    fn blocked_sentence(&self, r: &ReviewRow, attempts: u32, last: &str) -> String {
+        let history = self.store.transitions("review", &r.id).unwrap_or_default();
+        // The counted failures are the moves from `reviewing` back to `waiting` that were not a
+        // capacity wait, since the count was last reset (a restart, a new head: a move INTO
+        // `waiting` from anywhere but `reviewing`).
+        let mut earlier: Vec<String> = Vec::new();
+        for t in history.iter().rev() {
+            let from = t.from_state.as_deref().unwrap_or("");
+            if t.to_state == "waiting" && from == "reviewing" {
+                if !t.why.starts_with(capacity::WAITING_FOR_SLOT) {
+                    earlier.push(t.why.clone());
+                }
+            } else if (t.to_state == "waiting" && from != "waiting") || t.from_state.is_none() {
+                break;
+            }
+        }
+        earlier.reverse();
+        let keep = (attempts as usize).saturating_sub(1);
+        let skip = earlier.len().saturating_sub(keep);
+        let mut all: Vec<String> = earlier.into_iter().skip(skip).collect();
+        all.push(last.to_string());
+        let placement = all
+            .iter()
+            .all(|w| w.contains("placing this session in a firecode VM"));
+        let gists: Vec<String> = all.iter().map(|w| capacity::gist(w)).collect();
+        notices::attempts_spent(attempts, &r.head_sha, &gists, placement)
+    }
+
+    /// **firecode had no free slot for the reviewer** — not an attempt, and not a block: the row
+    /// goes back to `waiting` with a not-before time ([`capacity::retry_after_ms`]), says so once
+    /// in the routine register, and raises once when the wait is long. See [`capacity`].
+    fn wait_for_slot(&self, r: &ReviewRow, cap: &capacity::VmCapacity) -> Result<bool, StoreError> {
+        let history = self.store.transitions("review", &r.id)?;
+        let streak = capacity::streak(&history);
+        let nth = streak.refusals + 1;
+        let now = now_ms();
+        let since = streak.since_ms.unwrap_or(now);
+        let waited = now.saturating_sub(since);
+        let delay = capacity::retry_after_ms(nth);
+        let long = waited >= capacity::LONG_WAIT_MS && !streak.raised;
+        let why = notices::capacity_wait(
+            r,
+            &cap.busy_line(),
+            delay / 60_000,
+            nth,
+            long.then_some(waited / 60_000),
+        );
+        let ok = self.mv(
+            r,
+            ReviewState::Waiting,
+            Move::new(self.me, why.clone())
+                .owned_by(self.me)
+                .set("owner", "")
+                .clear("reviewer")
+                .set("deadline_ms", now + delay)
+                .set("failure", why),
+        )?;
+        if !ok {
+            return Ok(false);
+        }
+        if nth == 1 {
+            self.raise(
+                "queue_waiting_for_vm",
+                notices::waiting_for_vm(r, &cap.busy_line()),
+            );
+        }
+        if long {
+            self.raise(
+                "queue_vm_slots_exhausted",
+                notices::vm_slots_exhausted(
+                    r,
+                    waited / 60_000,
+                    &cap.busy_line(),
+                    &cap.raise_ceiling,
+                ),
+            );
+        }
+        Ok(true)
     }
 }
 
@@ -144,6 +239,11 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                     // The row moved under us (a deadline, a person): this reviewer is nobody's.
                     let _ = p.runner.kill(&handle);
                 }
+                out.moved = true;
+            }
+            Err(why) if capacity::vm_capacity(&why).is_some() => {
+                let cap = capacity::vm_capacity(&why).unwrap_or_default();
+                p.wait_for_slot(r, &cap)?;
                 out.moved = true;
             }
             Err(why) => {
@@ -203,7 +303,15 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
             }
             TaskStatus::Failed { why } => {
                 out.moved = true;
-                p.attempt_failed(&r, format!("the reviewer `{child}` failed: {why}"))?;
+                match capacity::vm_capacity(&why) {
+                    // **No free slot is a wait, not an attempt** (see `capacity`).
+                    Some(cap) => {
+                        p.wait_for_slot(&r, &cap)?;
+                    }
+                    None => {
+                        p.attempt_failed(&r, format!("the reviewer `{child}` failed: {why}"))?;
+                    }
+                }
             }
             TaskStatus::Unknown => {
                 out.moved = true;
@@ -345,7 +453,10 @@ fn verdict(
                 ReviewState::CannotDecide,
                 judged("needs_human", why.clone()),
             )? {
-                p.raise("queue_needs_human", notices::needs_human(r, &why));
+                p.raise(
+                    "queue_needs_human",
+                    undecided_sentence(p, r, &by, &said.reasons),
+                );
             }
         }
         (ReviewKind::Target, Decision::Accept) => {
@@ -382,6 +493,22 @@ fn verdict(
         }
     }
     Ok(())
+}
+
+/// **A review that stops because its reviewer could not decide says THAT** — the head, the
+/// sentence the verdict turned on (the reviewer's own words, chosen, not paraphrased), how many
+/// times reviewers could not decide on this branch and at which heads, and what the operator can
+/// do with the verbs the queue has. A failure to place or run a reviewer is not mentioned: it is
+/// not why this row stopped (the hub row of 2026-10-12 named a placement error for a branch whose
+/// history was three `could not decide` verdicts — see `capacity`). The words are
+/// [`notices::needs_human`]'s.
+fn undecided_sentence(p: &Pool, r: &ReviewRow, by: &str, reasons: &[String]) -> String {
+    let heads = p
+        .store
+        .transitions("review", &r.id)
+        .map(|h| capacity::undecided_heads(&h))
+        .unwrap_or_default();
+    notices::needs_human(r, by, &capacity::decisive_reason(reasons), &heads)
 }
 
 /// **Decision 11**: the reviewer of the red tip opens a fix branch, through the queue like any
@@ -538,3 +665,6 @@ pub fn enqueue_finished(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod capacity_tests;

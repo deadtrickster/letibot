@@ -30,6 +30,9 @@ const BLOCKED_AFTER: &str = include_str!("fixtures/review_blocked_after_warning.
 const COULD_NOT_START: &str = include_str!("fixtures/review_could_not_start_warning.txt");
 const CANNOT_RUN: &str = include_str!("fixtures/review_cannot_run_warning.txt");
 const REFUSAL_UNDELIVERED: &str = include_str!("fixtures/review_refusal_undelivered_warning.txt");
+const NEEDS_HUMAN_RED_TIP: &str = include_str!("fixtures/review_needs_human_red_tip_warning.txt");
+const WAITING_FOR_VM: &str = include_str!("fixtures/review_waiting_for_vm_warning.txt");
+const SLOTS_EXHAUSTED: &str = include_str!("fixtures/review_vm_slots_exhausted_warning.txt");
 /// The red target's notice, for a row that holds both.
 const RED_NOTICE: &str = include_str!("fixtures/red_main_notice.txt");
 
@@ -108,8 +111,8 @@ fn warning_shapes() -> Vec<(&'static str, &'static str, String)> {
             "queue_blocked",
             BLOCKED_AFTER,
             format!(
-                "review · {BRANCH} · blocked · the reviewer `s-gatekeeper-sub-17920` vanished \
-                 without a verdict · click for details"
+                "review · {BRANCH} · blocked · 3 attempts at 9d3e5a7 ended without a verdict — \
+                 the reviewer's VM did not start · click for details"
             ),
         ),
         (
@@ -132,6 +135,26 @@ fn warning_shapes() -> Vec<(&'static str, &'static str, String)> {
             "refusal_undelivered",
             REFUSAL_UNDELIVERED,
             format!("review · {BRANCH} · refused, told nobody · click for details"),
+        ),
+        (
+            "queue_needs_human",
+            NEEDS_HUMAN_RED_TIP,
+            "review · main's red tip 60bf819 · could not decide · BUT neither commit's own gate \
+             run was kept… · click for details"
+                .to_string(),
+        ),
+        (
+            "queue_waiting_for_vm",
+            WAITING_FOR_VM,
+            format!("review · {BRANCH} · waiting for a VM slot · 4 of 4 busy · click for details"),
+        ),
+        (
+            "queue_vm_slots_exhausted",
+            SLOTS_EXHAUSTED,
+            format!(
+                "review · {BRANCH} · VM slots exhausted · waited 31 min, 4 of 4 busy · click for \
+                 details"
+            ),
         ),
     ]
 }
@@ -159,6 +182,8 @@ fn the_readers_read_every_shape_the_queue_writes() {
         (COULD_NOT_START, Verdict::CouldNotStart),
         (CANNOT_RUN, Verdict::CannotRun),
         (REFUSAL_UNDELIVERED, Verdict::RefusedToldNobody),
+        (WAITING_FOR_VM, Verdict::WaitingForVm),
+        (SLOTS_EXHAUSTED, Verdict::SlotsExhausted),
     ] {
         let r = warning_review(detail).unwrap_or_else(|| panic!("{detail}"));
         assert_eq!(r.verdict, verdict, "{detail}");
@@ -421,7 +446,7 @@ fn a_shape_the_reader_does_not_know_falls_back() {
         ),
         (
             "queue_blocked",
-            &*BLOCKED_AFTER.replace("is BLOCKED after", "is STUCK after"),
+            &*BLOCKED_AFTER.replace("is BLOCKED: ", "is STUCK: "),
         ),
         ("queue_lease_lost", NEEDS_HUMAN),
     ] {
@@ -431,4 +456,65 @@ fn a_shape_the_reader_does_not_know_falls_back() {
         assert!(joined.contains(code), "{code}: drawn as a note: {joined}");
         assert!(a.card_rows.is_empty(), "{code}");
     }
+}
+
+/// **A review waiting for a VM slot is drawn as waiting, not as a fault** — the hub row of
+/// 2026-10-12 was a red `queue_blocked` for a shortage that ended minutes later (TODO R86). The
+/// wait is in the queue pane's `waiting` register; the long wait in the failure register.
+#[test]
+fn a_vm_slot_wait_is_drawn_as_waiting_and_its_long_wait_as_a_failure() {
+    assert_eq!(Verdict::WaitingForVm.role(), Role::Pending);
+    assert_eq!(Verdict::SlotsExhausted.role(), Role::Failure);
+    let w = warning_review(WAITING_FOR_VM).expect("the wait parses");
+    assert_eq!(w.reason.as_deref(), Some("4 of 4 busy"));
+    let x = warning_review(SLOTS_EXHAUSTED).expect("the long wait parses");
+    assert_eq!(x.reason.as_deref(), Some("waited 31 min, 4 of 4 busy"));
+}
+
+/// **A stop says its real reason, in one line**: three `could not decide` at three heads draw as
+/// the decisive `BUT` clause, and a block whose attempts were not placement failures carries the
+/// last attempt's own words, not firecode's banner.
+#[test]
+fn the_new_stop_shapes_carry_their_real_reason() {
+    let r = warning_review(NEEDS_HUMAN).expect("needs_human parses");
+    assert_eq!(r.verdict, Verdict::CouldNotDecide);
+    assert_eq!(
+        r.reason.as_deref(),
+        Some("BUT the ask's acceptance cannot be met on this base…")
+    );
+    let not_placement = "the review of `agent/x` (`x`) is BLOCKED: 3 attempts to review it at \
+         abc1234 ended without a verdict — no reviewer judged the branch: (1) the reviewer `a` \
+         vanished without a verdict; (2) the reviewer `b` vanished without a verdict; (3) the \
+         reviewer `c` was still at it at its deadline and was stopped. `/queue restart x` asks \
+         again; `/queue approve x` approves it over the reviewer (the merge gate still runs); \
+         `/queue rm x` withdraws it.";
+    let b = warning_review(not_placement).expect("blocked parses");
+    assert_eq!(b.verdict, Verdict::Blocked);
+    assert_eq!(
+        b.reason.as_deref(),
+        Some(
+            "3 attempts at abc1234 ended without a verdict — the reviewer `c` was still at it at \
+             its deadline and was stopped"
+        )
+    );
+}
+
+/// **An older daemon's shapes still draw** — a head can be newer than the daemon it watches.
+#[test]
+fn the_shapes_before_r86_still_draw() {
+    let old_blocked = "the review of `agent/x` (`x`) is BLOCKED after 3 attempts without a \
+         verdict: the reviewer `c` vanished without a verdict `/queue restart x` asks again; \
+         `/queue approve x` approves it over the reviewer (the merge gate still runs).";
+    let b = warning_review(old_blocked).expect("the old block parses");
+    assert_eq!(b.verdict, Verdict::Blocked);
+    assert_eq!(
+        b.reason.as_deref(),
+        Some("the reviewer `c` vanished without a verdict")
+    );
+    let old_needs_human = "the review of `agent/x` (`x`) cannot decide — reviewer:s-1 could not \
+         decide at abc: It is right. BUT it cannot land here. `/queue approve x` approves it (the \
+         merge gate still runs), `/queue veto x WHY` sends it back, `/queue rm x` drops it.";
+    let n = warning_review(old_needs_human).expect("the old needs_human parses");
+    assert_eq!(n.verdict, Verdict::CouldNotDecide);
+    assert_eq!(n.reason.as_deref(), Some("BUT it cannot land here"));
 }

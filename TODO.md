@@ -314,6 +314,53 @@ pane draws both queues…`. Per requirement and decision, with the test that fai
 
 ---
 
+## R86 — A reviewer with no free VM slot is not an attempt, and a stop says its real reason — **BUILT on `review-capacity-and-block-reason` 2026-10-12 (not merged)**
+
+The hub row, on pg-noop's session, 2026-10-12 ~00:56:
+
+> `queue_blocked — the review of agent/panic-groupingsets-join
+> (s-1789919514688401228-sub-1791743034603570463) is BLOCKED after 3 attempts without a verdict:
+> the reviewer s-gatekeeper-sub-1791759365511364772 failed: placing this session in a firecode VM:
+> io: firecode up refused (exit status: 1): [firecode] starting a VM and leaving it up (log:
+> /home/dead/Projects/firecode/runs/up.6DSWx1.log)`
+
+The operator asked to *"investigate"*, then *"fix them now"*.
+
+**What the store's history says** (`queue_transition` for that row, read-only): the branch had
+twelve reviews over four hours — rejects, an approve, and three `could not decide` (2cefd4b,
+2ef5c95, 8e4b727: *"the patches are right BUT the ask's acceptance cannot be met on this base"*).
+Those did NOT count as the three attempts: every new head resets the count. The three attempts
+were three reviewers at ONE head (26713ff) that firecode refused to boot at 22:55:34, 22:56:04 and
+22:58:30 — *"this run needs tap fccode5, and creating one needs root … 4 tap(s) exist and 4 have
+carrier, so the slots below this one were taken"* — and two of the four taps were free minutes
+later. A transient capacity shortage spent R61's whole attempt budget in three minutes (defect
+11's *"infrastructure failures spend 3 attempts in ~5 min"*, again) and raised a red row whose
+only quoted line was firecode's banner.
+
+**R61's "3 attempts", read**: attempts to RUN a review of one head that ended without a verdict
+(defect 10: 148 reviewer sessions for 21 rows; requirement 4: a review that cannot run is raised,
+not retried in silence). Not a limit on verdicts, and not a wait for a resource.
+
+**Fixed** (`harnessd/src/mergequeue/capacity.rs`, `review.rs`):
+
+1. firecode's capacity refusal (it has no exit code of its own — `die` is `exit 1`) is recognised
+   by its words, whitespace collapsed: *"needs tap … creating one needs root"* or *"the slots
+   below this one were taken"*, with `firecode` in the text, and not when 0 taps exist. The row
+   goes back to `waiting` with NO attempt counted and a not-before time (1, 2, 5, then every 5
+   minutes), says `queue_waiting_for_vm` once (Routine) with how many slots are busy, and raises
+   `queue_vm_slots_exhausted` once (Failure) past 30 minutes with firecode's own `sudo` lines. The
+   wait is read off the row's history, so a restart neither forgets it nor repeats it. A real
+   placement failure still counts and blocks on the third.
+2. `queue_blocked` lists every counted attempt by its gist (firecode's `error:` sentence, not its
+   banner) and says when all were placement failures. `queue_needs_human` says *could not decide*
+   at which head, the reviewer's decisive sentence (`BUT …`), how many times on this branch and at
+   which heads, and the verbs (`/queue approve|veto|rm`); a placement failure is not mentioned.
+
+**Left**: a retry when a VM the daemon knows of ends (the timer is the only trigger); `notices.rs`'s
+parked-row text for a model reads `failure`, which now carries the full blocked sentence.
+
+---
+
 ## R62 — The gate runs locally and on the fleet, never on GitHub — **OPEN, 2026-10-11**
 
 The operator: *"this is mostly local concern - i've been rate limited on github recently with
