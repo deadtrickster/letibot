@@ -44,6 +44,7 @@ impl App {
             // **The anchor's map goes with the lines it describes.** A stale span would
             // place the viewport inside a frame that no longer exists.
             self.spans.clear();
+            self.note_cards.clear();
             self.hist_upto = 0;
             self.hist_floor = 0;
             self.hist_first_class = None;
@@ -75,6 +76,7 @@ impl App {
         // By ROW, not by position: a row that rendered to nothing has no span, so the two
         // lists are not parallel and `truncate` here would drop the wrong ones.
         self.spans.retain(|s| s.row < k);
+        self.note_cards.retain(|c| c.at < mark.lines);
         self.hist_upto = k;
         self.note_upto = mark.note_upto;
         self.hist_class = mark.class;
@@ -584,6 +586,9 @@ impl App {
             self.hist_lines = block;
             for sp in &mut self.spans {
                 sp.at += shifted;
+            }
+            for c in &mut self.note_cards {
+                c.at += shifted;
             }
             fresh.extend(self.spans.drain(..));
             self.spans = fresh;

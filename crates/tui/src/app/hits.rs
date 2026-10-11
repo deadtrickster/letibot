@@ -54,6 +54,9 @@ pub(crate) enum Target {
     /// notice's index in `items`. A click opens the notice whole, as a click on an edit row
     /// opens its change.
     Notice,
+    /// **One red target's warning, drawn as a line** (`red_card`); its one stop is the card's
+    /// index in `note_cards`. A click opens the detail whole, in the same popup.
+    NoteCard,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.
@@ -190,6 +193,18 @@ impl App {
                         },
                         target: Target::Notice,
                         stops: vec![(y, k)],
+                    });
+                }
+                for (y, i) in self.card_rows.clone() {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x: 0,
+                            y,
+                            w: term_w,
+                            h: 1,
+                        },
+                        target: Target::NoteCard,
+                        stops: vec![(y, i)],
                     });
                 }
             }

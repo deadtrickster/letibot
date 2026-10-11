@@ -26,7 +26,9 @@ impl App {
         match t {
             Target::Surface(s) => self.focused_surface() == Some(s),
             Target::QueueTab(_) => self.focused_surface() == Some(Surface::Queue),
-            Target::Conversation | Target::Notice => self.drawn() == Drawn::Conversation,
+            Target::Conversation | Target::Notice | Target::NoteCard => {
+                self.drawn() == Drawn::Conversation
+            }
             Target::Decision => !self.open.is_empty(),
             Target::QuitCard => self.quit_card,
             Target::SettingCard => self.pick.is_some(),
@@ -88,7 +90,15 @@ impl App {
                 self.open_notice_popup(k);
                 return ControlFlow::Break(None);
             }
-            (Target::Conversation | Target::Notice, None) => return ControlFlow::Continue(()),
+            // **And a red target's warning opens whole** — the operator: *"a one-line similar
+            // to job - with a popup"*.
+            (Target::NoteCard, Some(i)) => {
+                self.open_card_popup(i);
+                return ControlFlow::Break(None);
+            }
+            (Target::Conversation | Target::Notice | Target::NoteCard, None) => {
+                return ControlFlow::Continue(());
+            }
             (_, None) => return ControlFlow::Break(None),
             (Target::Surface(s), Some(k)) => match s {
                 Surface::Picker => self.picker_sel = k,
@@ -139,10 +149,12 @@ impl App {
         const NOTCH: usize = 3;
         match target {
             Target::Surface(_) | Target::QueueTab(_) => self.scroll_pane(up, NOTCH),
-            Target::Conversation | Target::Notice if self.payload_sel.is_some() => {
+            Target::Conversation | Target::Notice | Target::NoteCard
+                if self.payload_sel.is_some() =>
+            {
                 self.page_payload(up, NOTCH)
             }
-            Target::Conversation | Target::Notice => {
+            Target::Conversation | Target::Notice | Target::NoteCard => {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }

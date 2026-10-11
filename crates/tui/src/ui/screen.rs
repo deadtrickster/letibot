@@ -733,6 +733,7 @@ impl App {
         self.edit_area = crate::ui::editor::editor_inner(x, y, w, room).into();
         self.file_rows.clear();
         self.notice_rows.clear();
+        self.card_rows.clear();
         // **What is drawn here is `drawn()`'s answer** (R69) — the same value `App::key` routes
         // on and the hint bar describes, so the three can no longer be three hand-written orders
         // that disagree about which of several open panes is in front.
@@ -918,6 +919,9 @@ impl App {
                     *row += y;
                 }
                 for (row, _) in &mut self.notice_rows {
+                    *row += y;
+                }
+                for (row, _) in &mut self.card_rows {
                     *row += y;
                 }
                 rows

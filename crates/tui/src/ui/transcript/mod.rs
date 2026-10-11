@@ -8,6 +8,7 @@ pub mod job_card;
 pub mod live;
 pub mod markers;
 pub mod reasoning;
+pub mod red_card;
 pub mod tool_result;
 pub mod turn;
 pub mod user;

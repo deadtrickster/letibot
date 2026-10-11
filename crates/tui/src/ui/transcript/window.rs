@@ -682,6 +682,8 @@ impl App {
         // **And which are a job's completion notice**, for a click to open whole (see
         // `notice_rows`) — the same walk, the same window.
         self.notice_rows = self.notice_rows_in(start, end);
+        // **And which are a red target's warning, drawn as one line** (`red_card`).
+        self.card_rows = self.card_rows_in(start, end);
         // **The disclosure is about the HOLD, not about a number** (R36). It used to be
         // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
         // anchored row happens to sit near the END of a shortened transcript has
@@ -699,6 +701,7 @@ impl App {
             out[0] = pin;
             self.file_rows.retain(|(r, _)| *r != 0);
             self.notice_rows.retain(|(r, _)| *r != 0);
+            self.card_rows.retain(|(r, _)| *r != 0);
         }
         if !self.following() {
             let behind = total - end;
@@ -709,6 +712,7 @@ impl App {
             // The banner took that row, so it is no longer a row of any file.
             self.file_rows.retain(|(r, _)| *r != last);
             self.notice_rows.retain(|(r, _)| *r != last);
+            self.card_rows.retain(|(r, _)| *r != last);
         }
         out
     }
@@ -853,6 +857,7 @@ impl App {
             unconfirmed,
             echo_open,
             spans,
+            note_cards,
             visibility,
             dismissed,
             ..
@@ -891,7 +896,19 @@ impl App {
                     if !hist_lines.is_empty() {
                         hist_lines.push(String::new());
                     }
-                    hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
+                    // **A red target's warning is a card's one line** (`red_card`), and a
+                    // click on it opens the detail whole: where it is, kept for the click map.
+                    let drawn = note_lines(&cfg, &notes[*note_upto].1);
+                    if let Note::Warned(w) = &notes[*note_upto].1
+                        && red_row(&cfg, &notes[*note_upto].1).is_some()
+                    {
+                        note_cards.push(crate::app::diff_popup::NoteCard {
+                            at: hist_lines.len(),
+                            lines: drawn.len(),
+                            text: w.detail.clone(),
+                        });
+                    }
+                    hist_lines.extend(drawn);
                     *hist_class = Some(RowClass::Other);
                 }
                 *note_upto += 1;

@@ -3,6 +3,7 @@
 
 use crate::ui::render::trim_to;
 use crate::ui::transcript::job_card::compact_notice;
+use crate::ui::transcript::red_card::compact_emergency;
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::{TranscriptItem, UserPart};
@@ -43,6 +44,16 @@ pub(crate) fn user_row_lines(
             // second line is truncated output"*. The whole card is a click away (the notice
             // popup); see `job_card` for the shape and for where the output line comes from.
             let cols = session_text_cols(it.ts, cfg);
+            // **A red merge target is ONE line** — the operator, of the `EMERGENCY —` notice and
+            // the warning above it: *"please make all this: … a one-line similar to job - with a
+            // popup"*. The whole notice, the gate's output with it, is the same click away the
+            // job card's is; see `red_card`.
+            if let Some(lines) = compact_emergency(&text, subagents, job_tails, cols) {
+                return (
+                    RowClass::Other,
+                    session_alarm_block(&lines.join("\n"), it.ts, cfg),
+                );
+            }
             if let Some(lines) = compact_notice(&text, subagents, job_tails, cols) {
                 return (
                     RowClass::Other,

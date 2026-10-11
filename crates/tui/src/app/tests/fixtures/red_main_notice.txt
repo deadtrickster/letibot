@@ -1,0 +1,38 @@
+EMERGENCY — `main` at 60bf819c3342 in /home/dead/Projects/firecode is RED: its own merge gate fails there.
+
+The failing step is 1 of 1, `bin/firecode test`. The end of its output:
+
+```
+test scene::tests::case_085 ... ok
+test scene::tests::case_086 ... ok
+test scene::tests::case_087 ... ok
+test scene::tests::case_088 ... ok
+test scene::tests::case_089 ... ok
+test scene::tests::case_090 ... ok
+test scene::tests::case_091 ... ok
+test scene::tests::case_092 ... ok
+test scene::tests::case_093 ... ok
+test scene::tests::case_094 ... ok
+test scene::tests::case_095 ... ok
+test scene::tests::frame_matches_golden ... FAILED
+
+failures:
+
+---- scene::tests::frame_matches_golden stdout ----
+thread 'scene::tests::frame_matches_golden' panicked at crates/scene/src/tests.rs:212:5:
+assertion `left == right` failed: frame 14 differs from the golden
+  left: "d41d8cd98f00b204"
+ right: "9e107d9d372bb682"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    scene::tests::frame_matches_golden
+
+test result: FAILED. 96 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.17s
+
+error: test failed, to rerun pass `-p firecode-scene --lib`
+[gate memory: peak 1.6 GiB of a 40.9 GiB cap]
+```
+
+Nothing lands on `main` until it is green again (only a branch opened to fix it does). The red tip is first in the review queue (`red-main-60bf819c3342`); a reviewer looks for what in `main`'s history broke it. With the `queue` tool you can read both queues and the gate's evidence (`action: "status"`), gate the tip again once the cause is gone — a flake, the machine, a gate fixed outside the target (`"regate"`), withdraw a row that no longer means anything (`"withdraw"`), and restart a parked one (`"restart"`). If the gate is wrong for this branch — it names another branch's artifact, or the project lands on another branch — say so: `"propose_target"` puts the `[queue] target` line of the project's `leticode.toml` to the operator, whose decision it is.

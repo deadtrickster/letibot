@@ -1399,6 +1399,7 @@ mod misc;
 mod notes;
 mod pane;
 mod queue;
+mod redcard;
 mod render;
 mod screen;
 mod scroll;

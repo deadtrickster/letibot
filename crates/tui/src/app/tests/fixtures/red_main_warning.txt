@@ -1,0 +1,117 @@
+EMERGENCY: `main` is RED at 60bf819c33425f282d547ffa2df5e2d840a75bef in /home/dead/Projects/firecode. The merge queue lands nothing until it is green again (a fix branch excepted); the red tip is first in review; enqueueing and other reviews go on. `bin/firecode test` failed:
+… [12500 byte(s) dropped from the front]
+test scene::tests::case_000 ... ok
+test scene::tests::case_001 ... ok
+test scene::tests::case_002 ... ok
+test scene::tests::case_003 ... ok
+test scene::tests::case_004 ... ok
+test scene::tests::case_005 ... ok
+test scene::tests::case_006 ... ok
+test scene::tests::case_007 ... ok
+test scene::tests::case_008 ... ok
+test scene::tests::case_009 ... ok
+test scene::tests::case_010 ... ok
+test scene::tests::case_011 ... ok
+test scene::tests::case_012 ... ok
+test scene::tests::case_013 ... ok
+test scene::tests::case_014 ... ok
+test scene::tests::case_015 ... ok
+test scene::tests::case_016 ... ok
+test scene::tests::case_017 ... ok
+test scene::tests::case_018 ... ok
+test scene::tests::case_019 ... ok
+test scene::tests::case_020 ... ok
+test scene::tests::case_021 ... ok
+test scene::tests::case_022 ... ok
+test scene::tests::case_023 ... ok
+test scene::tests::case_024 ... ok
+test scene::tests::case_025 ... ok
+test scene::tests::case_026 ... ok
+test scene::tests::case_027 ... ok
+test scene::tests::case_028 ... ok
+test scene::tests::case_029 ... ok
+test scene::tests::case_030 ... ok
+test scene::tests::case_031 ... ok
+test scene::tests::case_032 ... ok
+test scene::tests::case_033 ... ok
+test scene::tests::case_034 ... ok
+test scene::tests::case_035 ... ok
+test scene::tests::case_036 ... ok
+test scene::tests::case_037 ... ok
+test scene::tests::case_038 ... ok
+test scene::tests::case_039 ... ok
+test scene::tests::case_040 ... ok
+test scene::tests::case_041 ... ok
+test scene::tests::case_042 ... ok
+test scene::tests::case_043 ... ok
+test scene::tests::case_044 ... ok
+test scene::tests::case_045 ... ok
+test scene::tests::case_046 ... ok
+test scene::tests::case_047 ... ok
+test scene::tests::case_048 ... ok
+test scene::tests::case_049 ... ok
+test scene::tests::case_050 ... ok
+test scene::tests::case_051 ... ok
+test scene::tests::case_052 ... ok
+test scene::tests::case_053 ... ok
+test scene::tests::case_054 ... ok
+test scene::tests::case_055 ... ok
+test scene::tests::case_056 ... ok
+test scene::tests::case_057 ... ok
+test scene::tests::case_058 ... ok
+test scene::tests::case_059 ... ok
+test scene::tests::case_060 ... ok
+test scene::tests::case_061 ... ok
+test scene::tests::case_062 ... ok
+test scene::tests::case_063 ... ok
+test scene::tests::case_064 ... ok
+test scene::tests::case_065 ... ok
+test scene::tests::case_066 ... ok
+test scene::tests::case_067 ... ok
+test scene::tests::case_068 ... ok
+test scene::tests::case_069 ... ok
+test scene::tests::case_070 ... ok
+test scene::tests::case_071 ... ok
+test scene::tests::case_072 ... ok
+test scene::tests::case_073 ... ok
+test scene::tests::case_074 ... ok
+test scene::tests::case_075 ... ok
+test scene::tests::case_076 ... ok
+test scene::tests::case_077 ... ok
+test scene::tests::case_078 ... ok
+test scene::tests::case_079 ... ok
+test scene::tests::case_080 ... ok
+test scene::tests::case_081 ... ok
+test scene::tests::case_082 ... ok
+test scene::tests::case_083 ... ok
+test scene::tests::case_084 ... ok
+test scene::tests::case_085 ... ok
+test scene::tests::case_086 ... ok
+test scene::tests::case_087 ... ok
+test scene::tests::case_088 ... ok
+test scene::tests::case_089 ... ok
+test scene::tests::case_090 ... ok
+test scene::tests::case_091 ... ok
+test scene::tests::case_092 ... ok
+test scene::tests::case_093 ... ok
+test scene::tests::case_094 ... ok
+test scene::tests::case_095 ... ok
+test scene::tests::frame_matches_golden ... FAILED
+
+failures:
+
+---- scene::tests::frame_matches_golden stdout ----
+thread 'scene::tests::frame_matches_golden' panicked at crates/scene/src/tests.rs:212:5:
+assertion `left == right` failed: frame 14 differs from the golden
+  left: "d41d8cd98f00b204"
+ right: "9e107d9d372bb682"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    scene::tests::frame_matches_golden
+
+test result: FAILED. 96 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.17s
+
+error: test failed, to rerun pass `-p firecode-scene --lib`
+[gate memory: peak 1.6 GiB of a 40.9 GiB cap]

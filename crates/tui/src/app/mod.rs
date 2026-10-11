@@ -135,6 +135,13 @@ pub struct App {
     /// the row in `items`)`, rebuilt with [`App::file_rows`] and by the same rule. A click on
     /// one opens the notice's whole card (`app::diff_popup`, [`PopupBody::Notice`]).
     pub(crate) notice_rows: Vec<(usize, usize)>,
+    /// **The notes the walk drew as a card's one line** — a `target_red` warning — with where
+    /// their line is in `hist_lines` and the detail the popup shows whole. Kept with the history
+    /// it indexes: truncated where the history is, shifted where a fill prepends to it.
+    pub(crate) note_cards: Vec<crate::app::diff_popup::NoteCard>,
+    /// **Which screen rows of the last frame are one of those lines**: `(row, index into
+    /// [`App::note_cards`])`, rebuilt with [`App::notice_rows`]. A click opens the detail whole.
+    pub(crate) card_rows: Vec<(usize, usize)>,
     /// **What this head holds of each ended job's output**, by handle — the second line of a
     /// completion notice and the tail its popup shows. Filled by a `ReadJobOutput` the window
     /// sends for a notice on the screen (once per job; see `App::ask_notice_tails`) and by any
@@ -1546,6 +1553,8 @@ impl App {
             edit_area: rano::editor::Area::default(),
             file_rows: Vec::new(),
             notice_rows: Vec::new(),
+            note_cards: Vec::new(),
+            card_rows: Vec::new(),
             job_tails: Default::default(),
             term_fact: PaneFact::Unasked,
             term_ask: None,

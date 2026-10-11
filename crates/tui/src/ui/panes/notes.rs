@@ -107,11 +107,38 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
 /// ending whole. See `rano::agent::notes::Note::lines`.
 ///
 /// **And a compaction is ONE line**, whatever `NOTE_LINES` says: see [`COMPACTION_ROWS`].
+///
+/// **And a red merge target is ONE line too** ([`red_row`]).
 pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
+    if let Some(rows) = red_row(cfg, n) {
+        return rows;
+    }
     match compaction_row(cfg, n) {
         Some(rows) => rows,
         None => row_strings(&note_view(n).lines(cfg.width), cfg.palette()),
     }
+}
+
+/// **A `target_red` warning, as one line** — the operator, of the paragraph it drew with the
+/// gate's output under it: *"please make all this: … a one-line similar to job - with a
+/// popup"*. `‼ main RED at 60bf819c · firecode · bin/firecode test failed · click for details`,
+/// the head in the failure register; a click opens the detail whole (`App::note_cards`), and
+/// `/notes` lists it unfolded as before. `None` for any other note, and for a `target_red`
+/// whose detail `red_card::warning_tip` cannot read — that one is drawn as it always was.
+pub(crate) fn red_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
+    use rano::render::{Line, Span};
+    use rano::style::Role;
+    let Note::Warned(w) = n else { return None };
+    let line = crate::ui::transcript::red_card::warning_line(&w.code, &w.detail, cfg.width)?;
+    let (head, rest) = match line.find(" · ") {
+        Some(at) => line.split_at(at),
+        None => (line.as_str(), ""),
+    };
+    let row = Line::new(vec![
+        Span::role(head.to_string(), Role::Failure),
+        Span::raw(rest.to_string()),
+    ]);
+    Some(row_strings(&[row], cfg.palette()))
 }
 
 /// **The compaction rows this head draws as ONE line** — the operator's ask, and the one

@@ -15,6 +15,7 @@ use rano::style::Role;
 use super::editor::FileRef;
 use super::*;
 use crate::ui::transcript::job_card::{EndedJob, JobTail, TAIL_BYTES, notice_jobs};
+use crate::ui::transcript::red_card::is_red_row;
 
 /// The popup's state: what it shows, where the reader is in it, and the rows it last laid out
 /// (kept per width and diff shape, because a file is re-diffed only when either changes).
@@ -51,6 +52,15 @@ pub(crate) enum PopupBody {
     },
 }
 
+/// **A note drawn as a card's one line** — where the line is in `hist_lines`, and the text the
+/// popup shows whole. See [`App::note_cards`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NoteCard {
+    pub(crate) at: usize,
+    pub(crate) lines: usize,
+    pub(crate) text: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Layout {
     pub(crate) width: usize,
@@ -79,12 +89,17 @@ impl App {
     /// **Open row `k`'s completion notice whole** — the click on its compact lines. A job whose
     /// output this head has not asked for yet is asked for now, so the popup fills in when the
     /// answer lands. Does nothing for a row that is not a notice this head can read.
+    ///
+    /// **A red target's notice opens the same way** (`red_card`): its text whole, the gate's
+    /// output with it, and no jobs under it.
     pub(crate) fn open_notice_popup(&mut self, k: usize) {
         let Some(text) = self.items.get(k).and_then(agent_row_text) else {
             return;
         };
-        let Some(jobs) = notice_jobs(&text) else {
-            return;
+        let jobs = match notice_jobs(&text) {
+            Some(jobs) => jobs,
+            None if is_red_row(&text) => Vec::new(),
+            None => return,
         };
         let asks: Vec<(String, u64)> = jobs
             .iter()
@@ -93,6 +108,34 @@ impl App {
             .collect();
         self.ask_tails(asks);
         self.open_popup(PopupBody::Notice { text, jobs });
+    }
+
+    /// **Open the note card `i` whole** — the click on a `target_red` warning's one line: the
+    /// detail as the daemon raised it, the gate's output included, in the job card's popup.
+    pub(crate) fn open_card_popup(&mut self, i: usize) {
+        let Some(card) = self.note_cards.get(i) else {
+            return;
+        };
+        let text = card.text.clone();
+        self.open_popup(PopupBody::Notice {
+            text,
+            jobs: Vec::new(),
+        });
+    }
+
+    /// **The note-card lines among lines `start..end` of the conversation**, as `(row of the
+    /// window, index into `note_cards`)` — [`App::notice_rows_in`] for the notes.
+    pub(crate) fn card_rows_in(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
+        let end = end.min(self.hist_lines.len());
+        let mut out = Vec::new();
+        for (i, c) in self.note_cards.iter().enumerate() {
+            for line in c.at..c.at + c.lines {
+                if line >= start && line < end {
+                    out.push((line - start, i));
+                }
+            }
+        }
+        out
     }
 
     /// **Ask for the end of each job's output that this head does not hold yet** — `(handle,
@@ -165,11 +208,8 @@ impl App {
             let is_notice = match last {
                 Some((row, is)) if row == sp.row => is,
                 _ => {
-                    let jobs = self
-                        .items
-                        .get(sp.row)
-                        .and_then(agent_row_text)
-                        .and_then(|t| notice_jobs(&t));
+                    let text = self.items.get(sp.row).and_then(agent_row_text);
+                    let jobs = text.as_deref().and_then(notice_jobs);
                     if let Some(jobs) = &jobs {
                         asks.extend(
                             jobs.iter()
@@ -177,8 +217,10 @@ impl App {
                                 .map(|(_, j)| (j.id.clone(), j.produced)),
                         );
                     }
-                    last = Some((sp.row, jobs.is_some()));
-                    jobs.is_some()
+                    // A red target's notice is a notice too (`red_card`).
+                    let is = jobs.is_some() || text.as_deref().is_some_and(is_red_row);
+                    last = Some((sp.row, is));
+                    is
                 }
             };
             if is_notice {

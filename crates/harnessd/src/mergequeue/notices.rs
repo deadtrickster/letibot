@@ -150,3 +150,82 @@ pub fn parked(r: &ReviewRow) -> String {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use letibot_tokencore::store::HealthState;
+
+    /// **The red `main` the operator pasted**, as the store holds it: `bin/firecode test` failed
+    /// at 60bf819c in firecode, its output cut at the front the way `gate::tail` cuts it and
+    /// ending with the gate's memory line.
+    fn firecode_red() -> TargetHealth {
+        let mut out = String::from("… [12500 byte(s) dropped from the front]\n");
+        for i in 0..96 {
+            out.push_str(&format!("test scene::tests::case_{i:03} ... ok\n"));
+        }
+        out.push_str(
+            "test scene::tests::frame_matches_golden ... FAILED\n\nfailures:\n\n---- \
+             scene::tests::frame_matches_golden stdout ----\nthread \
+             'scene::tests::frame_matches_golden' panicked at crates/scene/src/tests.rs:212:5:\n\
+             assertion `left == right` failed: frame 14 differs from the golden\n  left: \
+             \"d41d8cd98f00b204\"\n right: \"9e107d9d372bb682\"\nnote: run with \
+             `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    \
+             scene::tests::frame_matches_golden\n\ntest result: FAILED. 96 passed; 1 failed; 0 \
+             ignored; 0 measured; 0 filtered out; finished in 4.17s\n\nerror: test failed, to \
+             rerun pass `-p firecode-scene --lib`\n[gate memory: peak 1.6 GiB of a 40.9 GiB cap]",
+        );
+        TargetHealth {
+            repository: "/home/dead/Projects/firecode".into(),
+            target: "main".into(),
+            sha: "60bf819c33425f282d547ffa2df5e2d840a75bef".into(),
+            state: HealthState::Red,
+            checked_ms: 1,
+            evidence: format!("`bin/firecode test` failed:\n{out}"),
+            gate_steps: vec![MergeGateStep {
+                command: "bin/firecode test".into(),
+                outcome: MergeGateOutcome::Failed,
+                output: out,
+                started_ms: 1,
+                elapsed_ms: 61_000,
+            }],
+        }
+    }
+
+    /// **The TUI's red-card fixtures are what the daemon writes** — the session notice
+    /// [`health`] says, and the `target_red` warning `RepoQueue::target_went_red` raises (its
+    /// sentence spelled here as `serve.rs` spells it). `red_card` in the TUI parses these to draw
+    /// each as one line; a reworded notice fails here before it falls back on a screen. Re-bless
+    /// with `LETIBOT_BLESS_RED_CARD=1`, and teach `red_card` the new shape if it moved a part it
+    /// keys on (the opening, the target, the sha, the repository, the failing step).
+    #[test]
+    fn the_tuis_red_card_fixtures_are_what_the_queue_writes() {
+        let h = firecode_red();
+        let notice = health(&h);
+        let warning = format!(
+            "EMERGENCY: `{}` is RED at {} in {}. The merge queue lands nothing until it is \
+             green again (a fix branch excepted); the red tip is first in review; \
+             enqueueing and other reviews go on. {}",
+            h.target, h.sha, h.repository, h.evidence
+        );
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/src/app/tests/fixtures");
+        for (name, text) in [
+            ("red_main_notice.txt", &notice),
+            ("red_main_warning.txt", &warning),
+        ] {
+            let path = dir.join(name);
+            if std::env::var_os("LETIBOT_BLESS_RED_CARD").is_some() {
+                std::fs::write(&path, text).unwrap();
+            }
+            let pinned = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(
+                text,
+                &pinned,
+                "the queue no longer writes what the TUI's red card parses ({})",
+                path.display()
+            );
+        }
+    }
+}

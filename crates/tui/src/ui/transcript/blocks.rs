@@ -28,6 +28,37 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
     row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
+/// **A session row that opens with an emergency line**, drawn as [`session_block`] draws one —
+/// the label, the faint text, the clock — with the alarm's head (`‼ main RED at 60bf819c`) in the
+/// failure register, the queue pane's `‼ EMERGENCY`. The lines are the caller's, already cut to
+/// [`session_text_cols`]; see `red_card`.
+pub(crate) fn session_alarm_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+    use crate::ui::transcript::red_card::ALARM;
+    use rano::render::Span;
+    use rano::style::Role;
+    let block = SessionBlock {
+        text: text.to_string(),
+        stamp: clock_time(ts),
+    };
+    let mut lines = block.lines(cfg.width);
+    for l in &mut lines {
+        let Some(i) = l.spans.iter().position(|s| s.content.starts_with(ALARM)) else {
+            continue;
+        };
+        let content = std::mem::take(&mut l.spans[i].content);
+        let (head, rest) = match content.find(" · ") {
+            Some(at) => content.split_at(at),
+            None => (content.as_str(), ""),
+        };
+        let mut spans = vec![Span::role(head.to_string(), Role::Failure)];
+        if !rest.is_empty() {
+            spans.push(Span::role(rest.to_string(), Role::Faint));
+        }
+        l.spans.splice(i..=i, spans);
+    }
+    row_strings(&lines, cfg.palette())
+}
+
 /// **The columns a `session ·` row's own text has** — its label and its trailing clock taken
 /// off.
 ///
