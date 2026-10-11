@@ -331,7 +331,7 @@ fn tempdir() -> Dir {
     // in this process starting in the same one got the same directory, seeded the corpus
     // twice, and read `matched: 2` — measured 2026-10-07 under a full workspace run.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
+    let p = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-decisions-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

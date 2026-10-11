@@ -55,7 +55,7 @@ struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> TempDir {
-        let p = std::env::temp_dir().join(format!(
+        let p = letibot_sessionlog::testing::scratch_root().join(format!(
             "harnessd-prefix-{name}-{}-{}",
             std::process::id(),
             letibot_harnessd::config::now_ns()

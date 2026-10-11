@@ -34,7 +34,7 @@ libc = "0.2"
 # **And the terminal** (`rano::term`): raw mode, the row-diffing painter, the input decoder,
 # the kitty graphics and OSC 8 protocols. rano reads the bytes into what was *pressed*; what a
 # key *means* stays here, in `app::key_of`.
-rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.8.2" }
+rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.8.3" }
 
 [dev-dependencies]
 # **The real tool runtime, for the one test that has to drive one.** A change detected

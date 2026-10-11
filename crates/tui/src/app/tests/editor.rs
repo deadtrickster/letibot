@@ -94,7 +94,10 @@ fn edited(ws: &Workspace) -> App {
 
 /// rano's ticks until the file it opened has arrived — the loop's job, done here by hand.
 fn settle(a: &mut App) {
-    for _ in 0..1000 {
+    // Up to ten seconds: rano loads on a thread of its own, and under the whole workspace's tests
+    // at once a second was not always enough — the frame test then read an empty buffer. It
+    // returns the moment the load is done, so a quiet run pays nothing for the bound.
+    for _ in 0..10_000 {
         a.editor_tick(Instant::now());
         if !a.edit_pane.as_ref().is_some_and(|p| p.ed.loading()) {
             break;
@@ -920,4 +923,51 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
         "{}",
         screen.join("\n")
     );
+}
+
+/// **rano stays inside the frame: two columns in from each side, like the diff popup.** The
+/// operator, 2026-10-11: *"text goes beyond it, column number sits on it. text should be confined
+/// within vertical lines, even if they are invisible"*. The pane was given the frame's width less
+/// the LEFT indent only, so its last column was the frame's own: a long line ran to the corner and
+/// the `Ln/Col` readout sat on it.
+#[test]
+fn the_editor_keeps_two_columns_clear_on_the_right_of_its_frame() {
+    let ws = workspace("margin");
+    std::fs::write(ws.0.join(FILE), format!("{}\nshort\n", "x".repeat(300))).unwrap();
+    let mut a = app();
+    a.session_id = "s".into();
+    a.screen(100, 30);
+    a.key(Key::CtrlE);
+    route_text(&mut a, &ws.0.join(FILE).display().to_string());
+    a.route(vec![key(KeyCode::Enter, Mods::NONE)]);
+    settle(&mut a);
+    let screen = a.screen(100, 30);
+    let plain: Vec<String> = screen.clone();
+    let top = plain
+        .iter()
+        .position(|l| l.contains('╭'))
+        .expect("the frame's top edge");
+    let bottom = plain
+        .iter()
+        .position(|l| l.contains('╰'))
+        .expect("the frame's bottom edge");
+    let right = plain[top].chars().count() - 1;
+    assert!(plain[top].ends_with('╮'), "{:?}", plain[top]);
+    assert!(
+        plain[top + 1..bottom].iter().any(|l| l.contains("xxxx")),
+        "the long line is drawn: {plain:#?}"
+    );
+    assert!(
+        plain[top + 1..bottom].iter().any(|l| l.contains("Ln 1")),
+        "{plain:#?}"
+    );
+    for l in &plain[top + 1..bottom] {
+        let cells: Vec<char> = l.chars().collect();
+        for col in right - 1..=right {
+            assert!(
+                cells.get(col).is_none_or(|c| *c == ' '),
+                "column {col} of the frame's margin is drawn on: {l:?}"
+            );
+        }
+    }
 }

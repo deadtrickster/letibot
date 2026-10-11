@@ -13,7 +13,8 @@ use std::time::Instant;
 /// A directory to put notes in, emptied first. Its own name per test, so two of these cannot
 /// collide on a parallel run.
 fn corpus(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lb-standing-{}-{name}", std::process::id()));
+    let d = letibot_sessionlog::testing::scratch_root()
+        .join(format!("lb-standing-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d

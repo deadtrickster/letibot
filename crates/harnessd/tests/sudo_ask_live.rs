@@ -106,7 +106,7 @@ fn scratch(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
+    let dir = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-sudo-ask-live-{tag}-{}-{n}",
         std::process::id()
     ));

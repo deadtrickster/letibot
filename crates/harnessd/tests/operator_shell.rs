@@ -103,7 +103,7 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-bang-{tag}-{}-{n}.sock",
         std::process::id()
     ))
@@ -443,7 +443,8 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
 
     // The double. `#!/usr/bin/python3` because the exec host clears the environment
     // and pins PATH — an absolute interpreter is the one spelling that survives.
-    let dir = std::env::temp_dir().join(format!("letibot-bang-askpass-{}", std::process::id()));
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-bang-askpass-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let double = dir.join("askpass-double");
     std::fs::write(

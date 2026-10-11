@@ -342,7 +342,7 @@ fn tempdir() -> Dir {
     // A counter as well as the clock: macOS's clock resolves microseconds, and two tests
     // in this process sharing a directory share a corpus (as decisions_tool.rs did).
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
+    let p = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-transcript-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

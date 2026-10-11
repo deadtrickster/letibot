@@ -99,7 +99,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = letibot_sessionlog::testing::scratch_root().join(format!(
             "{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -191,7 +191,9 @@ fn seed(path: &Path, parts: &Parts, session_id: &str) {
             title: Some("the session a restart found".into()),
             model_id: WANTED.name().into(),
             dialect_sha: renders_template(parts),
-            workspace_root: std::env::temp_dir().display().to_string(),
+            workspace_root: letibot_sessionlog::testing::scratch_root()
+                .display()
+                .to_string(),
             owner: "dead".into(),
             approvers: vec![],
             role: None,

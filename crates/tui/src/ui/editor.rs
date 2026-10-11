@@ -15,13 +15,16 @@ fn cells(n: usize) -> u16 {
 }
 
 /// **Where rano draws inside the pane's frame**: under the top edge, over the bottom one, and
-/// two columns in — the diff popup's own indent, so the two read as one kind of thing. The one
-/// rectangle both the drawing and the mouse routing use (`App::edit_area`).
+/// two columns in from each side — the diff popup's own indent, so the two read as one kind of
+/// thing. The one rectangle both the drawing and the mouse routing use (`App::edit_area`).
 pub(crate) fn editor_inner(x: usize, y: usize, w: usize, room: usize) -> Rect {
     Rect::new(
         cells(x + 2),
         cells(y + 1),
-        cells(w.saturating_sub(2)),
+        // Two columns off EACH side, not the left alone: the frame's corners are its first and
+        // last columns, so `w - 2` put rano's last column on the right edge — a long line ran to
+        // the corner and `Ln/Col` sat on it.
+        cells(w.saturating_sub(4)),
         cells(room.saturating_sub(2)),
     )
 }

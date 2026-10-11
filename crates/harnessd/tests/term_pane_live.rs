@@ -84,7 +84,8 @@ fn workspace(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let p = std::env::temp_dir().join(format!("letibot-pane-{tag}-{}-{n}", std::process::id()));
+    let p = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-pane-{tag}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&p).expect("a workspace to run in");
     // The canonical path, because `/tmp` is a symlink on some boxes and `pwd` prints where the
     // process really is — a comparison against the un-canonicalised name would fail for a

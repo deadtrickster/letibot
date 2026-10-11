@@ -22,7 +22,8 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
     }
     // The operator's providers.toml must not be touched: point the config home
     // at a scratch directory for this process.
-    let scratch = std::env::temp_dir().join(format!("letibot-slash-it-{}", std::process::id()));
+    let scratch = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-slash-it-{}", std::process::id()));
     std::fs::create_dir_all(scratch.join("letibot")).unwrap();
     // SAFETY: this test binary is single-threaded at this point; nothing else
     // reads the environment concurrently.

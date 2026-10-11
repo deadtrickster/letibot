@@ -23,7 +23,8 @@ fn the_shim_routes_sudo_to_askpass_and_a_wrong_password_is_refused_not_a_tty_err
     }
     // `install()` finds the helper beside the daemon binary; here we only need the
     // shim it writes, so point $LETIBOT_ASKPASS at a script of our own.
-    let dir = std::env::temp_dir().join(format!("letibot-sudo-live-{}", std::process::id()));
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-sudo-live-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fake_askpass = dir.join("askpass.sh");
     std::fs::write(

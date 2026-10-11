@@ -137,7 +137,7 @@ fn socket_path(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-sudo-ask-{tag}-{}-{n}.sock",
         std::process::id()
     ))
@@ -270,7 +270,8 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
 
     let socket = socket_path("served");
     let cfg = config("sudo-ask-served", &socket);
-    let dir = std::env::temp_dir().join(format!("letibot-sudo-ask-{}", std::process::id()));
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-sudo-ask-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let double = write_sudo_double(&dir, &helper);
 

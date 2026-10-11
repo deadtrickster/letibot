@@ -26,11 +26,15 @@ fn vocab() -> Vocab {
     Vocab::bytes([], [])
 }
 
+/// **A scratch dir of this test's own** — one per CALL, not per name: twenty tests ask for
+/// `dir("none")`, and `line!()` here is this line, the same for every caller, so they shared one
+/// path and raced each other's `remove_dir_all` and `create_dir_all` ("temp dir: File exists").
 fn dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let d = letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-standing-{}-{}-{name}",
         std::process::id(),
-        line!()
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("temp dir");

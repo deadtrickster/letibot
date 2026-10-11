@@ -113,7 +113,7 @@ fn start(home: &Path) -> Daemon {
 
 fn scratch() -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let d = std::env::temp_dir().join(format!(
+    let d = letibot_sessionlog::testing::scratch_root().join(format!(
         "lb-hist-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

@@ -447,7 +447,7 @@ struct TempDir {
 
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = letibot_sessionlog::testing::scratch_root().join(format!(
             "harnessd-model-switch-{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

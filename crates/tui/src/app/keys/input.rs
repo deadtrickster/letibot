@@ -171,6 +171,22 @@ mod tests {
         rano::term::decode::paste_open(b)
     }
 
+    /// **The numpad's Enter is Enter** — the operator, 2026-10-11: *"the numpad enter can't enter
+    /// subagent"*, *"access cards too"*. Under the kitty keyboard this head asks for, a terminal
+    /// reports the keypad by its own codes (`KP_ENTER` is `CSI 57414 u`), which decoded to nothing
+    /// until rano 0.8.3; the keypad's digits are digits too, so a card's number can be typed on it.
+    #[test]
+    fn the_numpad_enter_and_digits_are_the_keys_on_them() {
+        assert_eq!(decode(b"\x1b[57414u"), vec![Key::Enter]);
+        assert_eq!(
+            decode(b"\x1bOM"),
+            vec![Key::Enter],
+            "the application-keypad spelling"
+        );
+        assert_eq!(decode(b"\x1b[57400u"), vec![Key::Char('1')]);
+        assert_eq!(decode(b"\x1b[57420u"), vec![Key::Down]);
+    }
+
     #[test]
     fn arrows_and_control_keys_decode() {
         assert_eq!(decode(b"\x1b[A"), vec![Key::Up]);
@@ -479,8 +495,9 @@ mod tests {
         assert_eq!(one(b"\x1b[9;2u"), vec![Key::Tab]);
         // A plain key the protocol chose to report anyway.
         assert_eq!(one(b"\x1b[97u"), vec![Key::Char('a')]);
-        // The keypad's private-use codes have no legacy spelling, and are not typed.
-        assert_eq!(one(b"\x1b[57399u"), Vec::<Key>::new());
+        // The keypad's private-use codes are the keys printed on it (rano 0.8.3): see
+        // `the_numpad_enter_and_digits_are_the_keys_on_them`.
+        assert_eq!(one(b"\x1b[57399u"), vec![Key::Char('0')]);
         // An arrow is still the legacy CSI under flag 1.
         assert_eq!(one(b"\x1b[A"), vec![Key::Up]);
     }
