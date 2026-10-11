@@ -1523,6 +1523,64 @@ unaffected.
 
 ---
 
+## R76 — A red target nobody's model hears, a gate that runs in the daemon's own memory, and no way for an agent to get itself out — **OPEN, 2026-10-11**
+
+Found on the operator's live pg-noop red main the evening R61 landed (*"how to get out of this red
+main situation? like how to let the system know it is green or rerun?"*, *"looks like the main
+agent doesnt get these main emergencies. also, it should be able to get out of it itself
+obviously, but first - when ran via tools cargo on that project dies with 64mb cap, does it apply
+to gate?"*).
+
+**What happened, MEASURED in the store:** pg-noop's `main` tip `8b9366aa12` is `red`: every step of
+`scripts/merge_gate.sh` passed (fmt, check, test, clippy, build) and then it failed *"no binary at
+…/.git/letibot-landing/target/release/letidb after a successful build"* — `main` builds `pgnoop`;
+the script names `letidb`, which is what `feat/memory-engine` builds. The queue gates `main`
+because pg-noop has no `[queue] target` (R61 decision 12 says pg-noop lands on
+`feat/memory-engine`; nobody wrote it into its config). An amend of `main` (ec3cb01 → 62b0296)
+left a red-main review `red-main-ec3cb01e8a6f` pointing at a commit that no longer exists:
+`queue_blocked — git checkout … ec3cb01…: fatal: unable to read tree`. leticl's `main` is
+`blocked`: its AGENTS.md has no `## Merge gate`.
+
+1. **A target emergency never reaches a model.** `target_red` (and `queue_blocked`) go out through
+   `raise()` (`mergequeue/serve.rs:146`) — a `Warning` broadcast on every hub, which heads draw and
+   no model reads. The project's own session never learns its target is red. Deliver it as a
+   MESSAGE to the project's root session (the mechanism `deliver_refusal` uses), with the gate's
+   failing step and its tail, once per red tip.
+2. **The agent cannot get itself out.** `/queue` verbs are a head's; the model has no queue tool.
+   Give it one (gated like any tool): re-gate the target's tip, withdraw a stale review, read the
+   target's health and the gate's evidence, and propose/set the project's `[queue] target`
+   (setting config may be an operator ask).
+3. **No re-gate at all** (R74 #4): a target is re-gated only when its tip CHANGES; a daemon
+   restart does not re-gate a tip already judged red. `/queue regate` for the operator, and the
+   tool verb for the model.
+4. **A rewritten target leaves a review of a commit that no longer exists**, which then blocks.
+   When the target's tip is not a descendant of a red-main review's head (amend, force-push,
+   reset), withdraw that review automatically (*"superseded: the target was rewritten"*) and gate
+   the new tip.
+5. **A gate that cannot judge is told apart from a target that is broken.** A failure after every
+   build/test step passed (a missing artifact, a path the script assumes) is the GATE's setup, not
+   the code; say so (*"the gate's own setup failed at step N"*) rather than *"RED"* at emergency
+   severity — or at least put the failing step's last lines first in the message.
+6. **The gate runs in the daemon's own memory.** `mergequeue/gate.rs` `run_step` starts each step
+   with a plain `Command::new("sh")` (own process group, no cgroup join), so it inherits the
+   daemon's cgroup — the `<scope>/daemon` leaf with the daemon's 16 GiB `memory.high` (R64/R66).
+   A heavy `cargo test --release` in a gate counts against the DAEMON's budget and throttles every
+   session it serves. Run gate steps in a scope of their own in the tool tree (a sibling of the
+   daemon), with a gate-sized cap from config (`[memory] gate`), and say the gate's peak in its
+   row.
+7. **The 64 MiB default kills cargo through the tools** (the operator: *"when ran via tools cargo on
+   that project dies with 64mb cap"*). The cap is doing its job, but the model learns only after
+   the kill. Options: a per-project `[memory] default` (leticode.toml) so a Rust project starts at
+   a few GiB; a hint in the bash description for build tools; or a learned per-command default
+   from the peaks the results already report (R65 item 5).
+
+**Done when:** a red target puts one message in the project session's conversation with the
+failing step; that session can re-gate, withdraw a stale review and read the evidence through a
+tool; an amended target supersedes its stale review by itself; a gate's peak memory is in its row
+and the daemon's `memory.high` is not charged for it.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
