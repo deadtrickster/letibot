@@ -292,18 +292,16 @@ impl App {
                     return ControlFlow::Break(self.switch_to(id));
                 }
                 Key::Click { y, .. } => {
-                    // The same arithmetic the screen did: the optional session
-                    // header takes a row, then the picker's title and a blank,
-                    // then the sessions. Only a row the last render actually
-                    // drew is trusted — `picker_rows_drawn` knows where
-                    // `truncate(room)` cut the list off, so a click into the
-                    // blank space under a truncated list moves nothing.
-                    let header_rows =
-                        usize::from(self.screen_rows >= 6 && !self.session_id.is_empty());
-                    let first = header_rows + 2;
-                    let row = usize::from(*y).saturating_sub(first);
-                    if row < self.picker_rows_drawn.saturating_sub(2) {
-                        self.picker_sel = row.min(n - 1);
+                    // Off the last frame's record of which row is which session's
+                    // (`picker_hits`, see `App::picker_layout`): the session's own line and the
+                    // id line under it both pick it, and anything else — the title, the footer,
+                    // the blank space under a short list — picks nothing.
+                    if let Some(&(_, k)) = self
+                        .picker_hits
+                        .iter()
+                        .find(|(row, _)| *row == usize::from(*y))
+                    {
+                        self.picker_sel = k.min(n - 1);
                         self.redraw = true;
                     }
                     return ControlFlow::Break(None);

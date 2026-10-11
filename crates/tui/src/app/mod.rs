@@ -189,12 +189,12 @@ pub struct App {
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
     pub(crate) picker_sel: usize,
-    /// How many rows the picker block actually drew on the last screen: the
-    /// two title lines plus the sessions that survived `truncate(room)`. A
-    /// click is only trusted for a row this count proves was on screen — a
-    /// click into the blank space below a truncated list must not select a
-    /// session nobody can see.
-    pub(crate) picker_rows_drawn: usize,
+    /// **Which session each screen row of the last picker frame belongs to**: `(y, k)` for
+    /// every row drawn for session row `k` — its own line and the id line under it. A click
+    /// is only trusted for a row this record proves was on the screen, so a click on the
+    /// title, the footer or the blank space under the list selects nothing. See
+    /// [`App::picker_layout`].
+    pub(crate) picker_hits: Vec<(usize, usize)>,
     /// The terminal height the last screen was composed for, so a click can
     /// redo the header-row arithmetic the screen did without a repaint.
     pub(crate) screen_rows: usize,
@@ -1591,7 +1591,7 @@ impl App {
             subagents: Vec::new(),
             jobs: Vec::new(),
             picker_sel: 0,
-            picker_rows_drawn: 0,
+            picker_hits: Vec::new(),
             screen_rows: 0,
             completion: None,
             shell_ask: std::collections::HashMap::new(),

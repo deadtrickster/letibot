@@ -9,8 +9,36 @@ use rano::agent::picker::{SessionPicker, SessionRow as PickRow, SettingPicker, S
 
 impl App {
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
+        self.picker_layout(w).0
+    }
+
+    /// **The picker's rows, and which content rows belong to which session** — `spans[k]` is
+    /// the range of rows session row `k` (an index into [`App::session_rows`], the order
+    /// `picker_sel` counts in) was drawn on.
+    ///
+    /// rano draws TWO lines per session — the row, then its id and workspace — and a footer
+    /// under the list, and it records where each session's first line landed
+    /// (`PaneLines::stop_rows`). A session's span runs from its stop to the next one, and the
+    /// last one's to the blank line rano puts above the footer; so a click on the id line picks
+    /// the session it is the id of, and a click on the footer picks nothing. The click used to
+    /// be `y - (header + 2)` as a session INDEX, one row per session, so clicking the second
+    /// session selected the third and every id line selected the next one (R67 item 2).
+    pub(crate) fn picker_layout(&self, w: usize) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
         let content = self.session_picker().content(w);
-        row_strings(&content.lines, self.cfg.palette())
+        let stops = &content.stop_rows;
+        let spans = stops
+            .iter()
+            .enumerate()
+            .map(|(k, &start)| {
+                let end = stops.get(k + 1).copied().unwrap_or_else(|| {
+                    (start + 1..content.lines.len())
+                        .find(|&r| content.lines[r] == rano::render::text::Line::default())
+                        .unwrap_or(content.lines.len())
+                });
+                start..end
+            })
+            .collect();
+        (row_strings(&content.lines, self.cfg.palette()), spans)
     }
 
     /// **The session list's facts, in rano's words** — through the ONE enumeration

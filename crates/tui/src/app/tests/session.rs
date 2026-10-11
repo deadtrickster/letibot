@@ -1758,6 +1758,11 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }
 
+/// **A click picks the session DRAWN under the pointer** (R67 item 2). This test used to encode
+/// the bug: it clicked y=5 and expected index 2 ("three"), because the handler counted one screen
+/// row per session while rano draws two — the row and its id line. y=5 is "two"'s row. The rows
+/// are found on the frame rather than counted here, so the test cannot drift from the drawing
+/// the way the arithmetic did.
 #[test]
 fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
     let mut a = app();
@@ -1771,32 +1776,82 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
         Hub::new("s").snapshot(),
     ));
     assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
-    a.screen(110, 24);
-    // The session header takes row 0, the picker's title and blank take
-    // two more, so the first session row is y=3 — 0-based, the decoder
-    // having taken the wire's one off.
-    a.key(Key::Click { x: 10, y: 5 });
-    assert_eq!(a.picker_sel, 2);
+    let frame = a.screen(110, 24);
+    let at = |needle: &str| {
+        frame
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is drawn: {frame:#?}")) as u16
+    };
+    // The session header takes row 0, the picker's title and blank two more: "one" is y=3,
+    // its id line y=4, "two" y=5, and "three" y=7.
+    assert_eq!(at("two"), 5, "{frame:#?}");
+    a.key(Key::Click {
+        x: 10,
+        y: at("two"),
+    });
+    assert_eq!(a.picker_sel, 1, "y=5 is the second session's row");
     let row = a
         .screen(110, 24)
         .into_iter()
-        .find(|l| l.contains("three") && l.contains('▸'))
+        .find(|l| l.contains("two") && l.contains('▸'))
         .unwrap();
     assert!(
         row.contains('▸'),
         "the mark moved to the clicked row: {row}"
     );
-    a.key(Key::Click { x: 0, y: 3 });
+    // **The id line under a session picks THAT session**, not the next one.
+    a.key(Key::Click { x: 8, y: at("s3") });
+    assert_eq!(a.picker_sel, 2, "a click on three's id line picks three");
+    a.key(Key::Click {
+        x: 0,
+        y: at("1  one"),
+    });
     assert_eq!(a.picker_sel, 0);
-    // A click into the blank space under the list moves nothing: the row
-    // was truncated away, so selecting it would switch to a session
-    // nobody saw.
-    a.key(Key::Click { x: 4, y: 12 });
+    // A click on the footer, or into the blank space under the list, moves nothing.
+    a.key(Key::Click {
+        x: 4,
+        y: at("enter switches"),
+    });
+    assert_eq!(a.picker_sel, 0);
+    a.key(Key::Click { x: 4, y: 15 });
     assert_eq!(a.picker_sel, 0);
     // Select and confirm stay two acts: the click only moves the mark.
-    a.key(Key::Click { x: 4, y: 5 });
+    a.key(Key::Click {
+        x: 4,
+        y: at("three"),
+    });
     assert_eq!(a.picker_sel, 2);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
+}
+
+/// **The picker scrolls to keep its cursor on the screen**, and a click is measured against the
+/// scrolled frame. It used to be cut at the window with no scrolling, so the arrows walked a
+/// cursor below the cut and Enter switched to a session nobody could see.
+#[test]
+fn the_picker_scrolls_its_cursor_into_view_and_clicks_follow() {
+    let mut a = app();
+    let mut list = vec![brief("s", "zero", true)];
+    for i in 1..20 {
+        list.push(brief(&format!("s{i}"), &format!("name{i:02}"), false));
+    }
+    a.apply(hello("s", list, Hub::new("s").snapshot()));
+    a.key(Key::CtrlS);
+    a.screen(110, 16);
+    for _ in 0..15 {
+        a.key(Key::Down);
+    }
+    assert_eq!(a.picker_sel, 15);
+    let frame = a.screen(110, 16);
+    let y = frame
+        .iter()
+        .position(|l| l.contains("name15"))
+        .unwrap_or_else(|| panic!("the cursor's row is on the screen: {frame:#?}"));
+    assert!(frame[y].contains('▸'), "{frame:#?}");
+    // A click two sessions up in the scrolled frame picks that session.
+    let up = frame.iter().position(|l| l.contains("name13")).unwrap() as u16;
+    a.key(Key::Click { x: 10, y: up });
+    assert_eq!(a.picker_sel, 13);
 }
 
 /// **A provider switch reaches a head that was already attached.**

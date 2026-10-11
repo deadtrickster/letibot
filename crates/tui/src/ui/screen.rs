@@ -738,9 +738,26 @@ impl App {
             let rows = self.status_lines(w);
             self.pane_window(rows, room)
         } else if self.picker {
-            let mut rows = self.picker_lines(w);
-            rows.truncate(room);
-            self.picker_rows_drawn = rows.len();
+            // **A window that keeps the cursor's session on the screen**, and a record of which
+            // screen row is which session's. The list used to be cut at `room` with no scrolling,
+            // so arrows past the cut moved a cursor nobody could see and Enter switched to it.
+            // The click is read off `picker_hits` — the rows this frame actually drew, with the
+            // scroll already in them — and never off arithmetic over the list (R67 item 2).
+            let (rows, spans) = self.picker_layout(w);
+            let sel = self.picker_sel.min(spans.len().saturating_sub(1));
+            let skip = spans.get(sel).map_or(0, |s| s.end.saturating_sub(room));
+            let rows: Vec<String> = rows.into_iter().skip(skip).take(room).collect();
+            let top = usize::from(has_header);
+            let drawn = skip..skip + rows.len();
+            self.picker_hits = spans
+                .iter()
+                .enumerate()
+                .flat_map(|(k, span)| {
+                    span.clone()
+                        .filter(|r| drawn.contains(r))
+                        .map(move |r| (top + r - skip, k))
+                })
+                .collect();
             rows
         } else if self.todos_open.is_some() {
             // **One row, whole, through `pane_window`** so it pages like the panes: a row is written
