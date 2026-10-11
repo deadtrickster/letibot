@@ -922,10 +922,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // a pane that opens must answer while it is open. The queue is daemon-level,
                 // so there is no `session_id` — the `session_id` on each entry is the entry's
                 // origin, not a filter.
-                let f = ServerFrame::MergeQueue {
-                    entries: registry.merge_entries(),
-                    reviews: registry.merge_reviews(),
-                };
+                let (entries, reviews) = registry.merge_queue_for(&seat.hub.session_id());
+                let f = ServerFrame::MergeQueue { entries, reviews };
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::NewSession {

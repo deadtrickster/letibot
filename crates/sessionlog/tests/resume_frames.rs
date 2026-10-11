@@ -411,3 +411,46 @@ fn an_oc_id_is_created_for_import_rather_than_refused_as_unknown() {
     drop(client);
     let _ = pumping.join();
 }
+
+/// A store whose merge queue cannot be read — the case the pane used to draw as empty.
+struct BrokenQueue;
+
+impl SessionSource for BrokenQueue {
+    fn list(&self) -> Vec<StoredBrief> {
+        Vec::new()
+    }
+    fn set_title(&self, _session_id: &str, _title: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn merge_entries(&self) -> Result<Vec<letibot_sessionlog::event::MergeEntry>, String> {
+        Err("sqlite: database is locked".into())
+    }
+}
+
+/// **An unreadable queue is said on the asking head's session, not drawn as empty** — R67 item 15.
+/// The source used to print the failure to the daemon's stderr and answer an empty list, which
+/// the pane cannot tell from a queue with nothing in it.
+#[test]
+fn a_queue_that_cannot_be_read_is_said_rather_than_drawn_empty() {
+    let r = Registry::new();
+    r.create("live", "", wiring("/home/dead")).unwrap();
+    r.set_source(Arc::new(BrokenQueue));
+    let (entries, reviews) = r.merge_queue_for("live");
+    assert!(entries.is_empty() && reviews.is_empty());
+    let said: Vec<String> = r
+        .get("live")
+        .unwrap()
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            letibot_sessionlog::SessionEvent::Warning { code, detail, .. }
+                if code == "merge_queue_unreadable" =>
+            {
+                Some(detail.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "one half failed, one sentence: {said:?}");
+    assert!(said[0].contains("database is locked"), "{said:?}");
+}

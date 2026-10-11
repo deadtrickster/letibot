@@ -4499,20 +4499,18 @@ impl SessionSource for StoreSessions {
     /// entry with a reason on it — the one thing the queue's own read refuses to do, and this
     /// is that read, one hop out.
     ///
-    /// **A read that FAILED is said, not answered as empty.** The trait has no room for an
-    /// error, and the alternative to a line here is a head drawing an empty queue over a store
-    /// that could not be read — two states that look identical from the outside, which is
-    /// exactly the confusion the `Corrupt` variants exist to prevent.
-    fn merge_entries(&self) -> Vec<letibot_sessionlog::event::MergeEntry> {
+    /// **A read that FAILED is an `Err`, not an empty list** — the two look identical from the
+    /// outside, which is exactly the confusion the `Corrupt` variants exist to prevent. The trait
+    /// had no room for an error and this answered empty with a stderr line, so the pane drew an
+    /// empty queue over a store that could not be read (R67 item 15); now the registry says it
+    /// on the asking head's session ([`Registry::merge_queue_for`]).
+    fn merge_entries(&self) -> Result<Vec<letibot_sessionlog::event::MergeEntry>, String> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let rows = match g.merge_entries() {
-            Ok(rows) => rows,
-            Err(e) => {
-                eprintln!("  merge queue: the queue could not be read: {e}");
-                return Vec::new();
-            }
-        };
-        crate::mergequeue::wire_queue(&rows)
+        let rows = g.merge_entries().map_err(|e| {
+            eprintln!("  merge queue: the queue could not be read: {e}");
+            e.to_string()
+        })?;
+        Ok(crate::mergequeue::wire_queue(&rows))
     }
 
     /// **The reviewer's verdicts, whole, for a head's bootstrap read** — the other half of what
@@ -4522,16 +4520,13 @@ impl SessionSource for StoreSessions {
     /// is said out loud rather than answered as empty, because a pane drawing no verdicts over a
     /// store that could not be read is the same confusion between *nobody asked* and *nothing is
     /// there* that the whole queue is written to avoid.
-    fn merge_reviews(&self) -> Vec<letibot_sessionlog::event::MergeReview> {
+    fn merge_reviews(&self) -> Result<Vec<letibot_sessionlog::event::MergeReview>, String> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let rows = match g.reviews() {
-            Ok(rows) => rows,
-            Err(e) => {
-                eprintln!("  merge queue: the verdicts could not be read: {e}");
-                return Vec::new();
-            }
-        };
-        crate::mergequeue::wire_reviews(&rows)
+        let rows = g.reviews().map_err(|e| {
+            eprintln!("  merge queue: the verdicts could not be read: {e}");
+            e.to_string()
+        })?;
+        Ok(crate::mergequeue::wire_reviews(&rows))
     }
 
     fn list(&self) -> Vec<StoredBrief> {

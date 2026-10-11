@@ -313,7 +313,8 @@ impl JobWatchers {
     /// line after `new` reaches every queue that follows it. Nothing can be watched in between:
     /// a watch is armed by a tool result, and no tool has run at that point in a session's life.
     pub fn record_jobs_into(&self, path: std::path::PathBuf, session_id: String) {
-        *self.recorder.lock().expect("job recorder") = Some(JobRecorder::new(path, session_id));
+        *self.recorder.lock().expect("job recorder") =
+            Some(JobRecorder::new(path, session_id, self.hub.clone()));
     }
 
     /// **A job is a row from the moment it exists, not from the moment it ends.**
@@ -730,64 +731,102 @@ impl SettlementQueue {
 /// connection is ordinary here rather than a workaround (WAL plus the five-second
 /// `busy_timeout` are what make it harmless).
 ///
-/// **A failure here is reported nowhere and kills nothing.** The notice is what a run depends
-/// on; the row is the history. So a write that fails leaves a missing row — the honest state —
-/// where a panic would take the watcher thread down and lose the settlement as well.
+/// **A failure here kills nothing, and it is SAID.** The notice is what a run depends on; the
+/// row is the history. So a write that fails leaves a missing row — the honest state — where a
+/// panic would take the watcher thread down and lose the settlement as well. It used to be
+/// reported nowhere (`let _ = store.put_job(…)`), and R67 item 15 is why it is not: this row is
+/// what a restart's `due_todo_rows` reads to decide whether a `when: job` row is due, so a row
+/// that silently did not land is a condition that silently never fires. The failure goes to the
+/// session's hub as `job_not_recorded`, through a `Weak` for the module's reason (a watcher must
+/// not keep a session alive).
 #[derive(Clone)]
 pub struct JobRecorder {
     path: std::path::PathBuf,
     session_id: String,
+    /// Where a write that failed is said. `Weak::new()` for a recorder nobody is watching.
+    hub: Weak<Hub>,
     /// Opened on the first write, because the queue that holds this is built per watch and a
     /// store opened at construction would be opened for every job that is never backgrounded.
     store: Arc<Mutex<Option<Store>>>,
 }
 
 impl JobRecorder {
-    pub fn new(path: std::path::PathBuf, session_id: String) -> Self {
+    pub fn new(path: std::path::PathBuf, session_id: String, hub: Weak<Hub>) -> Self {
         JobRecorder {
             path,
             session_id,
+            hub,
             store: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// **A row that did not land, said on the session's log** — see the type's doc.
+    fn not_recorded(&self, handle: &str, what: &str, why: &str) {
+        eprintln!(
+            "  {} · job {handle}: {what} was not recorded: {why}",
+            self.session_id
+        );
+        if let Some(hub) = self.hub.upgrade() {
+            hub.publish(SessionEvent::Warning {
+                code: "job_not_recorded".into(),
+                detail: format!(
+                    "background job `{handle}`: {what} could not be written to the store ({why}). \
+                     The job itself is unaffected; what is missing is its row in the jobs \
+                     history, and a todo row waiting on it may not be released after a restart."
+                ),
+                compaction: None,
+            });
         }
     }
 
     /// **The store, opened on first use and handed to the closure.** One place, because two
     /// writers share it, and the open is lazy because a queue is built per watch: a store opened
     /// at construction would be opened for every job that is never backgrounded.
-    fn with_store(&self, f: impl FnOnce(&Store)) {
+    fn with_store(&self, handle: &str, what: &str, f: impl FnOnce(&Store) -> Result<(), String>) {
         let Ok(mut g) = self.store.lock() else {
             return;
         };
         if g.is_none() {
             match Store::open(&self.path) {
                 Ok(s) => *g = Some(s),
-                Err(_) => return,
+                Err(e) => {
+                    drop(g);
+                    self.not_recorded(handle, what, &format!("the store did not open: {e}"));
+                    return;
+                }
             }
         }
-        if let Some(store) = g.as_ref() {
-            f(store);
+        let out = match g.as_ref() {
+            Some(store) => f(store),
+            None => return,
+        };
+        drop(g);
+        if let Err(why) = out {
+            self.not_recorded(handle, what, &why);
         }
     }
 
     /// **The start: a `running` row, with what this side knows.** See
     /// [`JobWatchers::record_start`] for why a job is a row before it ends.
     fn start(&self, handle: &str, how: &str, ran_for_ms: u64) {
-        self.with_store(|store| {
-            let _ = store.put_job(
-                &self.session_id,
-                &JobRecord {
-                    handle: handle.to_string(),
-                    // **Not knowable here.** `ToolEvent::Finished` carries no arguments, so the
-                    // command is read at the SETTLEMENT — the last moment it exists — and an
-                    // empty field never erases a recorded one.
-                    command: String::new(),
-                    how: how.to_string(),
-                    state: "running".to_string(),
-                    produced: 0,
-                    elapsed_ms: ran_for_ms,
-                    redirect: None,
-                },
-            );
+        self.with_store(handle, "its start", |store| {
+            store
+                .put_job(
+                    &self.session_id,
+                    &JobRecord {
+                        handle: handle.to_string(),
+                        // **Not knowable here.** `ToolEvent::Finished` carries no arguments, so the
+                        // command is read at the SETTLEMENT — the last moment it exists — and an
+                        // empty field never erases a recorded one.
+                        command: String::new(),
+                        how: how.to_string(),
+                        state: "running".to_string(),
+                        produced: 0,
+                        elapsed_ms: ran_for_ms,
+                        redirect: None,
+                    },
+                )
+                .map_err(|e| e.to_string())
         });
     }
 
@@ -809,19 +848,21 @@ impl JobRecorder {
             return;
         }
         let redirect = letibot_tools::builtins::output_redirect_path(&c.command);
-        self.with_store(|store| {
-            let _ = store.put_job(
-                &self.session_id,
-                &JobRecord {
-                    handle: c.job.clone(),
-                    command: c.command.clone(),
-                    how: String::new(),
-                    state: c.state.clone(),
-                    produced: c.produced,
-                    elapsed_ms: c.elapsed_ms,
-                    redirect,
-                },
-            );
+        self.with_store(&c.job, "its settlement", |store| {
+            store
+                .put_job(
+                    &self.session_id,
+                    &JobRecord {
+                        handle: c.job.clone(),
+                        command: c.command.clone(),
+                        how: String::new(),
+                        state: c.state.clone(),
+                        produced: c.produced,
+                        elapsed_ms: c.elapsed_ms,
+                        redirect,
+                    },
+                )
+                .map_err(|e| e.to_string())
         });
     }
 }
@@ -1079,6 +1120,35 @@ mod tests {
     use letibot_tools::exec::{HostProcesses, ScopeKind, SpawnRequest};
     use std::time::Instant;
 
+    /// **A row the store refuses is said on the session's hub** — R67 item 15: `put_job` was a
+    /// `let _`, so a job whose row never landed was a fact nobody heard, and a `when: job` todo row
+    /// waiting on it would not be released after a restart. The refusal here is the foreign key:
+    /// no session row, so `job.session_id` names nothing.
+    #[test]
+    fn a_row_the_store_refuses_is_said_on_the_hub() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-recorder-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let hub = Hub::new("s-nobody");
+        let rec = JobRecorder::new(path, "s-nobody".into(), Arc::downgrade(&hub));
+        rec.start("j1", "asked", 0);
+        let said: Vec<String> = hub
+            .retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning { code, detail, .. } if code == "job_not_recorded" => {
+                    Some(detail.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said.len(), 1, "the refused row reached no hub: {said:?}");
+        assert!(said[0].contains("`j1`"), "{said:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **A settlement leaves a row, and a subagent does not.**
     ///
     /// The recorder is the piece with logic in it — a filter, a lazy connection, an upsert — and
@@ -1106,7 +1176,7 @@ mod tests {
             })
             .unwrap();
         }
-        let rec = JobRecorder::new(path.clone(), "s-jobs".into());
+        let rec = JobRecorder::new(path.clone(), "s-jobs".into(), Weak::new());
         let done = |kind, job: &str, state: &str| JobCompletion {
             kind,
             owner: "s-jobs".into(),

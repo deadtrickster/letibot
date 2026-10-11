@@ -201,6 +201,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // what is missing, and a fired condition left unwritten fires again after a restart.
     ("calls_abandoned", Class::Failure),
     ("todos_not_stored", Class::Failure),
+    // **A background job's row did not land** (`JobRecorder`, R67 item 15) — the job is fine and
+    // its history is not, and a `when: job` todo row may not be released after a restart. And
+    // **the merge queue could not be read for a pane** — an empty pane that means *unread*.
+    // Failures both: the durable half, or the reading, did not happen.
+    ("job_not_recorded", Class::Failure),
+    ("merge_queue_unreadable", Class::Failure),
     // **Refused, both: the reader's own act, answered.** A `/todo` move naming a row the model has
     // since rewritten, and a command a subagent does not run (`!`, a slash command, a mode, a todo
     // edit sent to a child — its parent owns them). Nothing but the line they sent is at stake,
@@ -802,16 +808,20 @@ mod the_register_census {
         "todo_move_unresolved",
     ];
 
-    /// **The census, pinned.** 102 codes, of which **11** are the reader's own input refused.
+    /// **The census, pinned.** 104 codes, of which **11** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_34_routine_11_refused_and_57_failures() {
+    fn the_table_is_34_routine_11_refused_and_59_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **102, not 98.** Four arrivals for R67 item 15's harness half: `calls_abandoned` and
+        // **104, not 102.** Two Failures, R67 item 15: `job_not_recorded` (a background job's
+        // row the store refused, which used to be a `let _`) and `merge_queue_unreadable` (a
+        // queue the pane could not read, which used to be drawn as an empty queue).
+        //
+        // **101, not 97.** Four arrivals for R67 item 15's harness half: `calls_abandoned` and
         // `todos_not_stored` are Failures (a call that did not run; a plan the store did not take),
         // and `todo_move_unresolved` and `child_door_refused` move the middle register from 9 to
         // 11 — each is the reader's own line answered (a move naming a row that is gone; a door a
@@ -954,12 +964,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 102, "the table's size");
+        assert_eq!(TABLE.len(), 104, "the table's size");
         assert_eq!(count(Class::Routine), 34);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 57);
+        assert_eq!(count(Class::Failure), 59);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 57 of 102 and the middle is 9**, which is why the third register is a
+        // register is 59 of 104 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }
