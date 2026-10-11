@@ -44,6 +44,9 @@ fn no_cgroups(e: &letibot_tools::exec::ExecError, test: &str) {
         msg.contains("nothing would reap it") || msg.contains("cgroup"),
         "a refusal must name what was missing: {msg}"
     );
+    // Announced through `apparatus` so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the skip; an
+    // `eprintln!` and a `return` it could not see (R67 item 18).
+    letibot_tokencore::apparatus::absent("a cgroup v2 subtree this user may write");
 }
 
 // ------------------------------------------------------------------ T21.1

@@ -40,10 +40,28 @@ macro_rules! confined {
     };
 }
 
+/// What a skip in this file names, for [`letibot_tokencore::apparatus::absent`].
+const CGROUP: &str = "a cgroup v2 subtree this user may write (the process-lifetime tree)";
+const BOUNDARY: &str =
+    "a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)";
+
+/// **A skip the require-switch can refuse.** These early returns used to be an `eprintln!` and
+/// a `return`, which `LETIBOT_REQUIRE_APPARATUS=1` could not see — so a gate run on a box that
+/// had lost its cgroup v2 delegation or its user namespaces reported this whole file green
+/// having measured none of it (R67 item 18). Through `apparatus::absent` the skip is loud
+/// without the switch and a failure with it.
+fn absent(what: &str) {
+    letibot_tokencore::apparatus::absent(what)
+}
+
 /// The assertion for the branch where this box cannot confine. It is not "nothing
 /// to see here": the refusal has to name what was missing and has to say that
 /// nothing was run, because the whole entry is that a boundary which silently is
 /// not there is worse than none.
+///
+/// The refusal is asserted FIRST and then the absence is announced through [`absent`], so a
+/// box without a boundary still checks the refusal, and a run that demands the boundary
+/// (`LETIBOT_REQUIRE_APPARATUS=1`) fails rather than passing on the refusal half alone.
 fn no_boundary(e: &ExecError, test: &str) {
     eprintln!("{test}: no usable boundary on this host, asserting on the refusal instead: {e}");
     let m = format!("{e}");
@@ -58,6 +76,7 @@ fn no_boundary(e: &ExecError, test: &str) {
             || m.contains("userns"),
         "a refusal must name the mechanism that was missing: {m}"
     );
+    absent(BOUNDARY);
 }
 
 // ------------------------------------------------------- rule 1: fail closed
@@ -114,8 +133,8 @@ fn a_host_with_no_confinement_refuses_every_spawn_and_starts_nothing() {
         std::env::temp_dir(),
         Box::new(NoConfinement::new("no boundary on this host")),
     ) else {
-        eprintln!("no cgroup v2 subtree here; the confinement refusal is still asserted above");
-        return;
+        // The confinement refusal is still asserted above.
+        return absent(CGROUP);
     };
     let before = host.scopes().len();
     let e = host
@@ -161,8 +180,7 @@ fn a_bash_call_on_a_refusing_boundary_says_nothing_ran_and_is_not_a_denial() {
             "`bwrap` is not on `PATH` in this fixture",
         )),
     ) else {
-        eprintln!("no cgroup v2 subtree here");
-        return;
+        return absent(CGROUP);
     };
     // The path a tool actually takes: `spawn` fails, and `bash` renders it.
     let e = host
@@ -271,8 +289,7 @@ fn a_partial_boundary_describes_itself_as_partial_through_the_whole_stack() {
 
     let Ok(host) = HostProcesses::confined(std::env::temp_dir(), Box::new(PartiallyConfined(b)))
     else {
-        eprintln!("no cgroup v2 subtree here");
-        return;
+        return absent(CGROUP);
     };
     let d = ProcessHost::describe(&host);
     assert!(d.contains("PARTIALLY"), "the host must say partial: {d}");
@@ -303,7 +320,10 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
             assert!(d.contains("NOT CONFINED"), "{d}");
             assert!(d.contains("whole filesystem"), "{d}");
         }
-        Err(e) => eprintln!("no cgroup v2 subtree here: {e}"),
+        Err(e) => {
+            eprintln!("{e}");
+            absent(CGROUP);
+        }
     }
 
     // The confined one: the **same function**, and a different sentence, because
@@ -326,6 +346,7 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
                 m.contains("was NOT run") || m.contains("nothing would reap it"),
                 "the refusal must say nothing ran: {m}"
             );
+            absent(BOUNDARY);
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -336,8 +357,7 @@ fn unconfined_is_a_declared_state_and_not_an_absent_one() {
     // The third of the three states. It must be distinguishable from "asked for and
     // missing", and the difference has to reach a reader.
     let Ok(host) = HostProcesses::new(std::env::temp_dir()) else {
-        eprintln!("no cgroup v2 subtree here");
-        return;
+        return absent(CGROUP);
     };
     let d = ProcessHost::describe(&host);
     assert!(d.contains("NOT CONFINED"), "{d}");
@@ -792,9 +812,8 @@ fn a_forwarded_agent_socket_is_in_the_view_at_a_fixed_path_and_the_key_is_not() 
         }
     };
     let Ok(host) = HostProcesses::confined(&project, Box::new(b)) else {
-        eprintln!("no cgroup v2 subtree here");
         let _ = std::fs::remove_dir_all(&dir);
-        return;
+        return absent(CGROUP);
     };
     let id = host
         .spawn(&SpawnRequest {
@@ -872,9 +891,9 @@ fn the_cgroup_still_owns_a_confined_process_and_reaps_it() {
 
 #[test]
 fn a_cwd_outside_the_view_refuses_before_anything_is_started() {
-    let Ok(b) = Bwrap::project(std::env::temp_dir()) else {
-        eprintln!("no usable boundary on this host");
-        return;
+    let b = match Bwrap::project(std::env::temp_dir()) {
+        Ok(b) => b,
+        Err(e) => return no_boundary(&e, "a_cwd_outside_the_view_refuses"),
     };
     let e = b
         .wrap(&ConfinePlan {
@@ -909,15 +928,16 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
     // wrong in one direction only, and that direction is a visible failure.
     let dir = std::env::temp_dir().join(format!("letibot-env-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("dir");
-    let Ok(b) = Bwrap::project(&dir) else {
-        eprintln!("no usable boundary on this host");
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
+    let b = match Bwrap::project(&dir) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return no_boundary(&e, "the_environment_is_cleared");
+        }
     };
     let Ok(host) = HostProcesses::confined(&dir, Box::new(b)) else {
-        eprintln!("no cgroup v2 subtree here");
         let _ = std::fs::remove_dir_all(&dir);
-        return;
+        return absent(CGROUP);
     };
     // SAFETY: set before the spawn, removed after; this test spawns a process, not
     // a thread that reads the environment.
@@ -966,10 +986,12 @@ fn a_tmpfs_home_is_declared_with_its_cost_and_a_declared_home_persists() {
     let home = dir.join("home");
     std::fs::create_dir_all(&project).expect("project");
 
-    let Ok(tmpfs) = Bwrap::probe(ViewSpec::project_only(&project), Egress::Denied) else {
-        eprintln!("no usable boundary on this host");
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
+    let tmpfs = match Bwrap::probe(ViewSpec::project_only(&project), Egress::Denied) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return no_boundary(&e, "a_tmpfs_home_is_declared");
+        }
     };
     // The cost is stated, because a build cache that is empty every run is a
     // slowdown somebody will otherwise spend an evening on.

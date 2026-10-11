@@ -143,6 +143,9 @@ fn host() -> Option<HostProcesses> {
                 format!("{e}").contains("cgroup"),
                 "a refusal must name what was missing: {e}"
             );
+            // Through `apparatus`, so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the skip (R67
+            // item 18).
+            letibot_tokencore::apparatus::absent("a cgroup v2 subtree this user may write");
             None
         }
     }
@@ -249,10 +252,12 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
 #[test]
 fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
     let Some(host) = host() else { return };
-    if !std::path::Path::new("/usr/bin/su").exists() {
-        eprintln!("deadline: no /usr/bin/su on this box — nothing to measure");
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "/usr/bin/su (a root process this daemon may not signal)",
+        std::path::Path::new("/usr/bin/su").exists(),
+    ) else {
         return;
-    }
+    };
     // `tty: true` is the operator's own run: **its own terminal**, whose master the daemon
     // holds and writes to. That is what `su` blocks on for a password it will never be given —
     // and since the terminal is `su`'s *controlling* terminal as well, it may be `/dev/tty` it

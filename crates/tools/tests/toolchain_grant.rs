@@ -127,7 +127,10 @@ fn the_boundary_says_what_a_grant_costs() {
     let probed = Bwrap::probe(v, Egress::Denied);
     let _ = std::fs::remove_dir_all(&dir);
     let Ok(b) = probed else {
-        return eprintln!("no usable boundary on this host");
+        // Through `apparatus`, so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the skip (R67 item 18).
+        return letibot_tokencore::apparatus::absent(
+            "a usable confinement boundary (bwrap, an unprivileged user namespace)",
+        );
     };
     let d = b.describe();
     eprintln!("--- describe ---\n{d}\n");
