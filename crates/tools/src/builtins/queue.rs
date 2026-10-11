@@ -140,9 +140,10 @@ impl Tool for QueueTool {
                 format!("call `queue` with `action` = {ACTIONS}."),
             );
         };
+        // The refusal is boxed: an `Invocation` is large, and it is the rare arm.
         let need = |field: &str| {
             text(args, field).ok_or_else(|| {
-                Invocation::failed(
+                Box::new(Invocation::failed(
                     format!("`{action}` needs `{field}`"),
                     match field {
                         "id" => "name the row by the id `queue` with `action: \"status\"` shows."
@@ -152,7 +153,7 @@ impl Tool for QueueTool {
                             .to_string(),
                         _ => format!("give `{field}`."),
                     },
-                )
+                ))
             })
         };
         let said = match action {
@@ -164,15 +165,15 @@ impl Tool for QueueTool {
                 .regate(text(args, "repository"), text(args, "target")),
             "restart" => match need("id") {
                 Ok(id) => self.desk.restart(id),
-                Err(refused) => return refused,
+                Err(refused) => return *refused,
             },
             "withdraw" => match (need("id"), need("why")) {
                 (Ok(id), Ok(why)) => self.desk.withdraw(id, why),
-                (Err(refused), _) | (_, Err(refused)) => return refused,
+                (Err(refused), _) | (_, Err(refused)) => return *refused,
             },
             "propose_target" => match (need("target"), need("why")) {
                 (Ok(t), Ok(why)) => self.desk.propose_target(t, why),
-                (Err(refused), _) | (_, Err(refused)) => return refused,
+                (Err(refused), _) | (_, Err(refused)) => return *refused,
             },
             other => {
                 return Invocation::failed(

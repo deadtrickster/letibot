@@ -731,6 +731,23 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
         "{blocked}"
     );
     assert!(project.queue_emergency_notices().is_empty(), "told ONCE");
+    // **And the daemon's door rings exactly the repository's root** — `s-elsewhere` is held by
+    // the same registry and is no session of this repository.
+    let door = crate::mergequeue::RegistryDoor {
+        registry: f.registry.clone(),
+        store_path: f.db.clone(),
+    };
+    let rang = crate::mergequeue::serve::QueueDoor::ring_repository(&door, &repository)
+        .expect("the project's root is rung");
+    assert!(
+        rang.contains("s-parent") && !rang.contains("s-elsewhere"),
+        "{rang}"
+    );
+    assert!(
+        crate::mergequeue::serve::QueueDoor::ring_repository(&door, "/no/such/repository")
+            .is_err(),
+        "a repository with no root here rings nobody, and says so"
+    );
 }
 
 // ===== A refusal, at the end that reaches a model =====
