@@ -1020,6 +1020,11 @@ pub struct App {
     /// **The last frame's click targets** (R69) — see `app::hits`. Rebuilt by every frame and
     /// read by every click and every wheel step that knows where the pointer is.
     pub(crate) hits: Vec<Hit>,
+    /// **The last frame's key hints** — every `key label` on the glass, a button that types its
+    /// key. See `app::keyhints`.
+    pub(crate) hint_rows: Vec<keyhints::HintRow>,
+    /// **Keys a click typed**, for the head's next read to take before the terminal's.
+    pub(crate) injected: Vec<u8>,
     /// **The scroll of the surface on top of the stack** — the one every pane draws through
     /// (`pane_window`) and every key moves. A covered surface keeps its own in its stack entry.
     pub(crate) pane_scroll: usize,
@@ -1684,6 +1689,8 @@ impl App {
             slash_out: None,
             surfaces: Vec::new(),
             hits: Vec::new(),
+            hint_rows: Vec::new(),
+            injected: Vec::new(),
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
@@ -1929,6 +1936,7 @@ mod editor;
 mod events;
 mod feedback;
 mod hits;
+mod keyhints;
 mod keys;
 mod notes;
 mod panes;

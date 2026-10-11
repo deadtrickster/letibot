@@ -33,6 +33,9 @@ impl App {
             return frame.clone();
         }
         let mut out = self.compose_screen(term_w, h);
+        // **Every key hint on this frame is a button**, read back off the frame itself — see
+        // `app::keyhints`. Before the links pass, which only adds escapes.
+        self.scan_hints(&out);
         // **Every `http(s)://` on the frame is a link** (OSC 8) where the terminal speaks it —
         // the reply, the tool output, a note: one pass over the finished frame rather than one
         // per renderer, so no renderer can be the one that forgot.

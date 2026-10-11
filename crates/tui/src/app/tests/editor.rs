@@ -1004,3 +1004,52 @@ fn the_diff_popup_names_its_file_once() {
         screen.join("\n")
     );
 }
+
+/// **The popup closes by a click on its own `esc closes`** — the operator, 2026-10-11: *"i open
+/// diff popup by clicking - i cant close it by clicking … all keymap items anywhere must be
+/// clickable"*. The hint is a button that types its key, by the route a keypress takes.
+#[test]
+fn a_click_on_a_key_hint_is_that_key() {
+    fn click_text(a: &mut App, screen: &[String], needle: &str) {
+        let (y, row) = screen
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} is not on the screen: {screen:#?}"));
+        let col = crate::app::keyhints::cells(row)
+            .windows(needle.chars().count())
+            .position(|w| w.iter().collect::<String>() == needle)
+            .expect("the hint's column");
+        a.key(Key::Click {
+            x: col as u16,
+            y: y as u16,
+        });
+        let typed = a.take_injected();
+        assert!(!typed.is_empty(), "the click on {needle:?} typed nothing");
+        for k in a.route(rano::term::decode(&typed)).0 {
+            a.key(k);
+        }
+    }
+    let ws = workspace("hintclick");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    assert!(a.diff_popup.is_some());
+    let screen = a.screen(100, 40);
+    click_text(&mut a, &screen, "esc closes");
+    assert!(
+        a.diff_popup.is_none(),
+        "the popup's `esc closes` did not close it"
+    );
+
+    // The hint bar's `ctrl-g subagents` opens the subagents pane.
+    let screen = a.screen(160, 40);
+    click_text(&mut a, &screen, "ctrl-g subagents");
+    let screen = a.screen(160, 40).join("\n");
+    assert!(screen.contains("subagents"), "{screen}");
+    assert!(
+        a.focused_surface() == Some(crate::app::Surface::Subagents),
+        "{screen}"
+    );
+}

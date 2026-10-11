@@ -1053,6 +1053,15 @@ fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
 /// coming due; so with a pane open this polls for rano's `next_wakeup` first and reads only
 /// when something is there.
 fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>) {
+    // **Keys a click typed come first**, and stand for this read: a click on `esc closes` is the
+    // Esc key, by the route a keypress takes (see `app::keyhints`), and the terminal is read
+    // again on the next pass.
+    let injected = app.take_injected();
+    if !injected.is_empty() {
+        let (keys, _) = app.route(rano::term::decode(&injected));
+        app.editor_tick(Instant::now());
+        return (keys, Vec::new());
+    }
     let (events, raw) = match app.editor_wait() {
         Some(wait) if wait < crate::app::READ_PACE && !term.poll(wait) => (Vec::new(), Vec::new()),
         // **The same read, as bytes.** The pane is a terminal and its program reads the bytes

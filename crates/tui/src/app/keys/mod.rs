@@ -103,6 +103,15 @@ impl App {
         // **`ctrl-e`, settled once, here.** The editor on an empty prompt with nothing in front
         // of it; `End` in every other place, before any card or pane sees the key — so a
         // handler that reads `End` cannot be reached by the editor chord by mistake.
+        // **A click on a key hint is that key**, ahead of every card and pane, because the hint is
+        // drawn ON them: the diff popup owns every key while it is open, and its own `esc closes`
+        // has to be reachable by the pointer. See `app::keyhints`.
+        if let Key::Click { x, y } = k
+            && let Some(hint) = self.key_hint_at(x, y).cloned()
+        {
+            let _ = self.press_hint(hint);
+            return None;
+        }
         let k = match k {
             Key::CtrlE if self.ctrl_e_opens_editor() => {
                 self.open_editor();
