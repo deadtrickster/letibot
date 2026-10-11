@@ -975,7 +975,7 @@ children, context, intent, misc; beside the existing `harness/queue_e2e.rs`);
 identical for the `tests.rs` moves, and identical once the theme segment is removed for the
 three topic splits (`adjudicate::tests::gate::x` was `adjudicate::tests::x` — the one path
 change a split by topic makes). All three crates' lib tests pass; build warnings unchanged.
-Token changes beyond whitespace: rustfmt, reflowing the dedented lines, dropped 9 trailing
+Token changes beyond whitespace: rustfmt, reflowing the dedented lines, dropped 8 trailing
 commas and collapsed 3 `=> { expr }` match arms; `intent`'s `include_str!("intent.rs")` became
 `"../intent.rs"`. **Left:** 29 inline blocks still over 40% of their file, all under 700
 lines — the largest `vt/screen.rs` 658, `tools/exec/ask.rs` 539, `exec/term.rs` 493,
