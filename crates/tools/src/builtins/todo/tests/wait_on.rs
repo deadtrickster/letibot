@@ -350,3 +350,49 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
     .unwrap();
     assert!(!said.contains("wait_on"), "{said}");
 }
+
+/// **The offer names the running job the row is LIKE, not the first handle in the table.**
+///
+/// pg-noop, 2026-10-11: the check named the first running job, the model attached it to the
+/// operator's row, and the next check asked about its own criterion row again. The operator:
+/// *"the nag can check if there are running jobs and subagents and do similarity checks on
+/// subagents prompts and job description"*.
+#[test]
+fn the_offer_names_the_running_job_most_like_the_row() {
+    let plan = vec![operator_row(
+        "correctness gate must PASS in RATCHET=0 — rerun scripts/correctness_gate.sh",
+        TodoStatus::InProgress,
+    )];
+    let jobs = RunningJobs::none()
+        .about(
+            "j12",
+            "pg-timing: cargo bench --bench timing > /tmp/pgt.log",
+        )
+        .running("j12")
+        .about("j55", "gate: RATCHET=0 scripts/correctness_gate.sh")
+        .running("j55")
+        .about(
+            "s-1-sub-9",
+            "Widen the JSON and UUID type mapping in the engine",
+        )
+        .subagent("s-1-sub-9");
+    let said = nag_with(&plan, &ChildSessions::none(), &jobs).unwrap();
+    assert!(
+        said.contains(r#""job": "j55""#),
+        "the gate job, not j12 which sorts first: {said}"
+    );
+    assert!(said.contains("It reads like `j55`"), "{said}");
+    assert!(
+        said.contains("Also running: `j12`"),
+        "the others are named: {said}"
+    );
+    assert_eq!(said.lines().count(), 3, "still one advice line: {said}");
+
+    // Nothing alike: the likeliest is still offered, and nothing claims a likeness.
+    let unrelated = RunningJobs::none()
+        .about("j12", "cargo bench")
+        .running("j12");
+    let said = nag_with(&plan, &ChildSessions::none(), &unrelated).unwrap();
+    assert!(said.contains(r#""job": "j12""#), "{said}");
+    assert!(!said.contains("reads like"), "{said}");
+}

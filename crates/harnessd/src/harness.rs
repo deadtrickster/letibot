@@ -7319,7 +7319,11 @@ impl Harness {
         if let Some(host) = self.runtime.backend.processes() {
             for view in host.jobs() {
                 if view.state.is_running() {
-                    jobs = jobs.running(view.id.0);
+                    let about = match &view.slug {
+                        Some(slug) => format!("{slug}: {}", view.command),
+                        None => view.command.clone(),
+                    };
+                    jobs = jobs.about(view.id.0.clone(), about).running(view.id.0);
                 }
             }
         }
@@ -7327,7 +7331,9 @@ impl Harness {
             if entry.parent == self.cfg.session_id
                 && matches!(entry.state.as_str(), "opening" | "running")
             {
-                jobs = jobs.subagent(entry.name);
+                jobs = jobs
+                    .about(entry.name.clone(), entry.prompt)
+                    .subagent(entry.name);
             }
         }
         jobs

@@ -1008,6 +1008,10 @@ impl ChildSessions {
 pub struct RunningJobs {
     live: BTreeSet<String>,
     subagents: BTreeSet<String>,
+    /// **What each one is about**, by handle: a job's slug and command, a child's prompt. Read only
+    /// by [`RunningJobs::likeliest_wait`], so the check's offer names the job a row is LIKE rather
+    /// than the first handle in the table.
+    about: BTreeMap<String, String>,
 }
 
 impl RunningJobs {
@@ -1042,6 +1046,77 @@ impl RunningJobs {
     /// `wait_on` takes it under (`job` or `child`) and its handle; a job before a subagent, and the
     /// first of each in handle order, so the check's sentence is the same sentence for the same
     /// facts.
+    /// **What a running job or child is about** — its slug and command, or the prompt it was
+    /// given — for [`RunningJobs::likeliest_wait`]. A handle with no description still counts as
+    /// running; it just cannot be matched.
+    pub fn about(mut self, handle: impl Into<String>, text: impl Into<String>) -> Self {
+        self.about.insert(handle.into(), text.into());
+        self
+    }
+
+    /// **The running jobs and children, the one most like `row` first** — the check's offer of
+    /// `wait_on`. The operator, on pg-noop: *"the nag can check if there are running jobs and
+    /// subagents and do similarity checks on subagents prompts and job description"*. Before
+    /// this the offer named the first handle in the table, so pg-noop attached its one wait to the
+    /// wrong row and the next check asked again.
+    ///
+    /// Each entry is `(field, handle, about, score)`; `score` is a cosine over terms weighed by a
+    /// SMOOTHED idf across the row and the candidates, `ln(1 + (n+1)/df)`. The plain `ln(n/df)` of
+    /// [`crate::similarity::Corpus`] gives a term the row shares with the only running job a weight
+    /// of zero — exactly the term that says they are about the same thing. Ties keep jobs before
+    /// children and handle order, so the same facts give the same sentence.
+    pub fn likeliest_wait(&self, row: &str) -> Vec<(&'static str, &str, &str, f64)> {
+        let candidates: Vec<(&'static str, &str)> = self
+            .live
+            .iter()
+            .map(|h| ("job", h.as_str()))
+            .chain(self.subagents.iter().map(|c| ("child", c.as_str())))
+            .collect();
+        let text = |h: &str| self.about.get(h).map(String::as_str).unwrap_or("");
+        let docs: Vec<Vec<String>> = std::iter::once(crate::similarity::terms(row))
+            .chain(
+                candidates
+                    .iter()
+                    .map(|(_, h)| crate::similarity::terms(text(h))),
+            )
+            .collect();
+        let mut df: BTreeMap<&str, f64> = BTreeMap::new();
+        for d in &docs {
+            for t in d.iter().map(String::as_str).collect::<BTreeSet<_>>() {
+                *df.entry(t).or_insert(0.0) += 1.0;
+            }
+        }
+        let n = docs.len() as f64;
+        let vec = |d: &[String]| -> BTreeMap<String, f64> {
+            let mut v: BTreeMap<String, f64> = BTreeMap::new();
+            for t in d {
+                *v.entry(t.clone()).or_insert(0.0) += 1.0;
+            }
+            for (t, w) in v.iter_mut() {
+                *w *= (1.0 + (n + 1.0) / df.get(t.as_str()).copied().unwrap_or(1.0)).ln();
+            }
+            v
+        };
+        let cos = |a: &BTreeMap<String, f64>, b: &BTreeMap<String, f64>| -> f64 {
+            let dot: f64 = a.iter().filter_map(|(t, x)| b.get(t).map(|y| x * y)).sum();
+            let na = a.values().map(|x| x * x).sum::<f64>().sqrt();
+            let nb = b.values().map(|x| x * x).sum::<f64>().sqrt();
+            if na == 0.0 || nb == 0.0 {
+                0.0
+            } else {
+                dot / (na * nb)
+            }
+        };
+        let q = vec(&docs[0]);
+        let mut out: Vec<(&'static str, &str, &str, f64)> = candidates
+            .iter()
+            .zip(&docs[1..])
+            .map(|((kind, h), d)| (*kind, *h, text(h), cos(&q, &vec(d))))
+            .collect();
+        out.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+        out
+    }
+
     pub fn something_to_wait_on(&self) -> Option<(&'static str, &str)> {
         self.live
             .iter()
@@ -1053,6 +1128,35 @@ impl RunningJobs {
                     .next()
                     .map(|id| ("child", id.as_str()))
             })
+    }
+}
+
+/// **The sentence a job's or subagent's start result ends with: attach the wait NOW.**
+///
+/// The moment a row starts waiting is the moment its job starts, and the end-of-turn check is the
+/// wrong place to learn about `wait_on`: measured on pg-noop, 2026-10-11, the check offered it on 2
+/// of 62 asks (it can only offer while something runs) and the model took the first offer — on the
+/// wrong row. Said here, beside the handle, it costs nothing to a call that no row waits on.
+pub fn attach_now(field: &str, handle: &str) -> String {
+    format!(
+        " If a row on your plan is waiting on this, attach it now — `todo_write` {{\"wait_on\": \
+         [{{\"content\": \"<that row, quoted exactly>\", \"{field}\": \"{handle}\"}}]}} — and the \
+         end-of-turn check stays quiet about that row until this ends."
+    )
+}
+
+/// **How alike a row and a running job must be for the check to say the row "reads like" it.**
+/// Below it the offer still names the likeliest one, without claiming they are related.
+const LIKE_FLOOR: f64 = 0.15;
+
+/// A job's or child's description cut to one clause for the check's line — the line is folded by
+/// the head as one, so it cannot grow a paragraph per running job.
+fn said_short(about: &str) -> String {
+    let one: String = about.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one.chars().count() {
+        0 => "no description".into(),
+        n if n <= 80 => one,
+        _ => format!("{}…", one.chars().take(79).collect::<String>()),
     }
 }
 
@@ -1392,12 +1496,29 @@ pub fn unfinished_plan_for(
     // (`tui`'s `folded_notice`) folds a `[todo check]` group only when every line after the
     // bullet is the advice it recognises, so a new line here would unfold every check that
     // carries it.
-    let offer = match (&next.by, jobs.something_to_wait_on()) {
-        (TodoBy::Model | TodoBy::Operator, Some((kind, handle))) => format!(
-            " If this row is only waiting on a running job or subagent, attach the wait instead of \
-             answering — `todo_write` {{\"wait_on\": [{{\"content\": \"<the text above>\", \
-             \"{kind}\": \"{handle}\"}}]}} — and this check stays quiet until it ends."
-        ),
+    let offer = match (&next.by, jobs.likeliest_wait(&next.content).as_slice()) {
+        (TodoBy::Model | TodoBy::Operator, [(kind, handle, about, score), rest @ ..]) => {
+            let like = if *score >= LIKE_FLOOR {
+                format!(" It reads like `{handle}` ({}).", said_short(about))
+            } else {
+                String::new()
+            };
+            let others: Vec<String> = rest
+                .iter()
+                .take(2)
+                .map(|(_, h, a, _)| format!("`{h}` ({})", said_short(a)))
+                .collect();
+            let others = match others.is_empty() {
+                true => String::new(),
+                false => format!(" Also running: {}.", others.join(", ")),
+            };
+            format!(
+                "{like} If this row is only waiting on a running job or subagent, attach the wait \
+                 instead of answering — `todo_write` {{\"wait_on\": [{{\"content\": \"<the text \
+                 above>\", \"{kind}\": \"{handle}\"}}]}} — and this check stays quiet until it \
+                 ends.{others}"
+            )
+        }
         _ => String::new(),
     };
     // **AND WHAT CANNOT START IS SAID, not merely skipped.** A blocked row is invisible to the ask

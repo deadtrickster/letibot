@@ -834,7 +834,8 @@ impl Tool for TaskTool {
             format!(
                 "carry on — `{handle}`'s answer is delivered to you on its own when it \
                  finishes, so there is nothing to wait for. `task_result` with \
-                 task=\"{handle}\" and no `timeout_ms` shows where it has got to."
+                 task=\"{handle}\" and no `timeout_ms` shows where it has got to.{}",
+                crate::builtins::todo::attach_now("child", &handle)
             ),
             format!(
                 "started subagent `{handle}` as `{}`.\n  subtask: {}\n\nIt is working \
@@ -1119,8 +1120,9 @@ impl Tool for TaskStartTool {
             format!(
                 "carry on — `{0}`'s answer is delivered to you on its own when it \
                  finishes, so there is nothing to wait for. `task_result` with \
-                 task=\"{0}\" and no `timeout_ms` shows where it has got to.",
-                handle.handle
+                 task=\"{0}\" and no `timeout_ms` shows where it has got to.{1}",
+                handle.handle,
+                crate::builtins::todo::attach_now("child", &handle.handle)
             ),
             format!(
                 "started subagent `{}` as `{}` in {}.\n  subtask: {}\n  path: {}\n  \

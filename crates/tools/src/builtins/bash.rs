@@ -788,7 +788,8 @@ impl Tool for Bash {
                 Duration::ZERO,
                 Backgrounding::Asked,
                 format!(
-                    "carry on — `{label}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}"
+                    "carry on — `{label}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}{}",
+                    crate::builtins::todo::attach_now("job", &id.0)
                 ),
                 format!(
                     "started `{label}` in the background.\n  command: {command}\n{named}  \
@@ -897,7 +898,7 @@ impl Tool for Bash {
                 None => format!(
                     "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far."
                 ),
-            };
+            } + &crate::builtins::todo::attach_now("job", &id.0);
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 p.ran_for,
