@@ -116,6 +116,20 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 /// [`NAG_REPEAT_CAP`].
 const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
 
+/// **How long after a turn the idle arm looks for a tool call nothing answered.**
+///
+/// A grace and not zero, for the reason [`Sessions::arm_sweep`] gives: the turn has returned, and a
+/// sweep in the same instant would be looking at a transcript whose last append may not be
+/// published yet.
+///
+/// Named because THREE doors pass it, and they are the three that run a turn on the worker's
+/// thread: the command arm and the wake arm in `Daemon::run`, and [`Sessions::deliver_due_nags`]
+/// here. It used to be a literal at the command's call site alone, which is how a wake-driven turn
+/// came to leave no deadline behind at all — see the comment on the wake arm in `Daemon::run` —
+/// and then a `daemon.rs` constant the nag door could not see, which is how the same defect came
+/// back on the third door (R67 item 10). It lives beside the clock it arms so every door can.
+pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
+
 /// **How often this daemon reads the store for the merge-queue reviews its sessions are owed.**
 ///
 /// The queue's ring ([`crate::mergequeue::GatekeeperDoor`]) is the fast path, and it only reaches
@@ -595,6 +609,14 @@ impl TodoNagClock {
         }
     }
 
+    /// **Change the window of a clock that already exists** — the door [`Sessions::set_nag_window`]
+    /// goes through, for a test that must drive a delivery on a session `open_first` already
+    /// armed at the production window. The deadline already armed is left alone; the next
+    /// `rearm` reads the new window.
+    pub fn set_window(&mut self, window: Duration) {
+        self.window = window;
+    }
+
     /// **The deadline arrived and is being answered** — `serve_child`'s half of the
     /// disarm `due_now` performs for the worker, which learns the same fact from
     /// `OwnWork::TimedOut` instead.
@@ -658,6 +680,11 @@ pub struct Sessions<'a> {
     /// and [`TodoNagClock`] (the one clock, shared with the thread that serves a
     /// subagent).
     nags: HashMap<String, TodoNagClock>,
+    /// **The window a session's clock is made with** — [`TODO_NAG_AFTER`] in every daemon, and
+    /// a field only so a test can drive a delivery without sleeping through a minute. See
+    /// [`Sessions::set_nag_window`], and [`TodoNagClock::with_window`] for the same seam one
+    /// level down.
+    nag_window: Duration,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
     /// **When to next read the store for the merge-queue reviews this daemon's sessions are
@@ -832,6 +859,7 @@ impl<'a> Sessions<'a> {
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
             nags: HashMap::new(),
+            nag_window: TODO_NAG_AFTER,
             sweep_at: None,
             // Due at once: the first idle pass looks. A daemon that started between a review's
             // ask and its wake has the row and nothing else, and this is what finds it.
@@ -2062,12 +2090,11 @@ impl<'a> Sessions<'a> {
             &self.parts.tasks,
             letibot_sessionlog::registry::now_ms(),
         );
-        self.nags.entry(session_id.to_string()).or_default().rearm(
-            &rows,
-            Instant::now(),
-            &children,
-            &jobs,
-        );
+        let window = self.nag_window;
+        self.nags
+            .entry(session_id.to_string())
+            .or_insert_with(|| TodoNagClock::with_window(window))
+            .rearm(&rows, Instant::now(), &children, &jobs);
     }
 
     /// The operator has spoken to SESSION: a new idle period, and the check may be made again.
@@ -2352,11 +2379,30 @@ impl<'a> Sessions<'a> {
         });
     }
 
-    /// Send every check whose deadline has passed, and answer how many ran.
-    ///
-    /// A check is a TURN — the model reads the plan and can act on it — so it goes through the
-    /// same tail every other turn does (`after_turn`), which is what re-arms or stands the clock
-    /// down afterwards.
+    /// **When the abandoned-call sweep is due**, or `None` when nothing has armed it — the one
+    /// clock in [`Sessions::next_nag_at`] that a turn's door owes, read on its own so a test can
+    /// ask whether a door armed IT rather than whether some clock is armed (the plan-check is
+    /// re-armed by `after_turn` on every door, and would answer for a door that forgot this one).
+    pub fn sweep_due_at(&self) -> Option<Instant> {
+        self.sweep_at
+    }
+
+    /// **The window every session's idle plan-check is made with, from now on** — the tests'
+    /// door, as [`TodoNagClock::with_window`] is one level down: a delivery has to be drivable
+    /// without sleeping through [`TODO_NAG_AFTER`]. Clocks that already exist take the new
+    /// window, and every session this daemon holds is re-armed with it, so a session
+    /// `open_first` armed at the production minute comes due at the new one.
+    pub fn set_nag_window(&mut self, window: Duration) {
+        self.nag_window = window;
+        for clock in self.nags.values_mut() {
+            clock.set_window(window);
+        }
+        let ids: Vec<String> = self.open.keys().cloned().collect();
+        for id in ids {
+            self.rearm_todo_nag(&id);
+        }
+    }
+
     /// **Sweep every session for a tool call nothing will ever answer.**
     ///
     /// Called from the daemon's own idle arm, which is the same place the todo check is delivered —
@@ -2382,6 +2428,21 @@ impl<'a> Sessions<'a> {
         settled
     }
 
+    /// Send every check whose deadline has passed, and answer how many ran.
+    ///
+    /// A check is a TURN — the model reads the plan and can act on it — so it goes through the
+    /// same tail every other turn does (`after_turn`), which is what re-arms or stands the clock
+    /// down afterwards.
+    ///
+    /// **And it arms what the other two doors arm**, which it did not (R67 item 10). A nag turn
+    /// dispatches tool calls exactly as a prompt's does, so it can strand one exactly as a
+    /// prompt's does — and it runs on the idle arm right AFTER [`Sessions::sweep_abandoned_calls`]
+    /// spent `sweep_at`, so a call it stranded was looked at by nothing: the worker went back to
+    /// a wait whose only deadline was the nag's own repeat, minutes away, and that only for a plan
+    /// still open. That is the wake arm's defect of 2026-10-10 (`daemon.rs`, the comment on
+    /// [`SWEEP_AFTER`]) on the third door. So the sweep is armed before the turn, as the command
+    /// and wake arms arm it, and the monitor wake after it, as `run_prompt` arms it: a monitor
+    /// the nag turn declared is a monitor whose firing must wake the session.
     pub fn deliver_due_nags(&mut self) -> usize {
         let now = Instant::now();
         let due: Vec<String> = self
@@ -2392,13 +2453,21 @@ impl<'a> Sessions<'a> {
         let mut ran = 0;
         for session_id in due {
             let hub = self.registry.get(&session_id);
+            let notice = match self.open.get_mut(&session_id) {
+                Some(h) => h.nag_notice(),
+                None => continue,
+            };
+            // Nothing to say after all — the plan moved between the arming and the clock — is no
+            // turn, and a door that runs no turn owes no sweep.
+            if notice.is_none() {
+                continue;
+            }
+            self.arm_sweep(SWEEP_AFTER);
             let Some(harness) = self.open.get_mut(&session_id) else {
                 continue;
             };
-            let notice = harness.nag_notice();
             let out = match harness.nag_turn() {
                 Ok(Some(reply)) => Ok(reply),
-                // nothing to say after all — the plan moved between the arming and the clock
                 Ok(None) => continue,
                 Err(e) => Err(e),
             };
@@ -2406,6 +2475,7 @@ impl<'a> Sessions<'a> {
                 clock.said(notice, Instant::now());
             }
             self.publish_title(&session_id);
+            self.arm_wake(&session_id);
             let out = self.after_turn(&session_id, &hub, out);
             match out {
                 Ok(_) => ran += 1,

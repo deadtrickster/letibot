@@ -47,19 +47,7 @@ use letibot_sessionlog::server::{ServerHandle, serve_registry};
 use crate::harness::HarnessError;
 use letibot_sessionlog::registry::{Work, WorkOrIdle};
 
-use crate::sessions::{Outcome, Sessions};
-
-/// **How long after a turn the idle arm looks for a tool call nothing answered.**
-///
-/// A grace and not zero, for the reason [`Sessions::arm_sweep`] gives: the turn has returned, and a
-/// sweep in the same instant would be looking at a transcript whose last append may not be
-/// published yet.
-///
-/// Named because TWO arms pass it, and they are the two arms that run a turn on this thread: the
-/// command arm and the wake arm. It used to be a literal at the command's call site alone, which is
-/// how a wake-driven turn came to leave no deadline behind at all — see the comment on the wake arm
-/// in [`Daemon::run`].
-const SWEEP_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+use crate::sessions::{Outcome, SWEEP_AFTER, Sessions};
 
 /// The write end of the self-pipe, for the signal handler. An `AtomicI32` because
 /// that is what a handler may touch; `-1` means no handler is installed.
