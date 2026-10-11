@@ -477,14 +477,14 @@ struct Entry {
 
 struct Inner {
     /// Every session, in the order it arrived — the order `list` and `broadcast` walk.
-    /// **Pushed only through [`Inner::push`]**, which keeps [`Inner::index`] in step.
+    /// **Pushed only through [`Inner::push`] and taken only through [`Inner::take`]**, which
+    /// keep [`Inner::index`] in step.
     entries: Vec<(String, Entry)>,
     /// **A session id's position in `entries`** — R67 item 27. Every lookup used to be
     /// `entries.iter().find(..)` under the registry lock: a linear scan on every `get`, from
-    /// every hub's publish path and every head's frame, over a table that only grows (a
-    /// subagent's entry stays for the daemon's life). Nothing removes from `entries` today,
-    /// so a position is stable; the day something does (R68's `Registry::remove`), this
-    /// index is the second thing it has to update.
+    /// every hub's publish path and every head's frame, over a table that only grew (a
+    /// subagent's entry stayed for the daemon's life). [`Inner::take`] — R68's
+    /// `Registry::remove` — is the one removal, and it rewrites the positions it shifts.
     index: HashMap<String, usize>,
     /// The session a head that names none gets. The last one anybody *used*, not
     /// the last one created: a head that reattaches after a crash wants the session
@@ -786,7 +786,8 @@ pub struct Registry {
     /// that owns them.
     runs: Mutex<std::collections::HashMap<String, RunEnder>>,
     /// **One per session**, installed by the session's own harness at open — the half that
-    /// owns the token counter — and never removed. See [`NotesSource`].
+    /// owns the token counter — and removed with the session ([`Registry::remove`]). See
+    /// [`NotesSource`].
     notes: Mutex<std::collections::HashMap<String, NotesSource>>,
     /// **`close` is not idempotent where the enders are concerned.** It is called by the
     /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending
@@ -808,9 +809,9 @@ pub struct Registry {
     /// [`TerminalDriver`]. `None` in every head and every test that predates `!term`, and a
     /// `TermOpen` then answers with a pane that is over and the reason it is.
     terminal: Mutex<Option<Arc<dyn TerminalDriver>>>,
-    /// **One per session**, installed by the session's own harness at open and never
-    /// removed — a session this registry holds is a session that lives for the daemon's
-    /// life. See [`PromptDriver`] for why it is keyed by session and not held once.
+    /// **One per session**, installed by the session's own harness at open and removed with
+    /// the session ([`Registry::remove`]). See [`PromptDriver`] for why it is keyed by session
+    /// and not held once.
     prompts: Mutex<std::collections::HashMap<String, Arc<dyn PromptDriver>>>,
 }
 
@@ -878,6 +879,30 @@ impl Inner {
     fn push(&mut self, id: String, entry: Entry) {
         self.index.insert(id.clone(), self.entries.len());
         self.entries.push((id, entry));
+    }
+
+    /// **The one way OUT of `entries`** (R68.3), and the second thing R67 item 27's index said a
+    /// removal would have to update. `Vec::remove` rather than `swap_remove`, because `entries`
+    /// is arrival order and `list` and `broadcast` walk it in that order — a picker that
+    /// reshuffled whenever a subagent finished would move the row under the operator's cursor.
+    /// So every position after the removed one shifts down by one, and the index is rewritten
+    /// for exactly those. O(sessions) per removal, which is once per session's life.
+    fn take(&mut self, id: &str) -> Option<Entry> {
+        let at = self.index.remove(id)?;
+        let (_, entry) = self.entries.remove(at);
+        for (i, (later, _)) in self.entries.iter().enumerate().skip(at) {
+            self.index.insert(later.clone(), i);
+        }
+        if self.default_id == id {
+            // The session a bare attach lands on is gone: the most recent one left is the
+            // honest successor, and none is the empty id every head already handles.
+            self.default_id = self
+                .entries
+                .last()
+                .map(|(id, _)| id.clone())
+                .unwrap_or_default();
+        }
+        Some(entry)
     }
 }
 
@@ -1230,6 +1255,85 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    /// **The session that spawned this one**, from this registry's own entry — `None` for a
+    /// top-level session AND for one this registry does not hold (R68.6).
+    ///
+    /// The reader `created_ms` and `wiring` already had beside them, and the one that was
+    /// missing: every open asked *is this somebody's subagent?* through [`Registry::list`],
+    /// which reads the whole store (`Store::list_sessions`, a correlated scan over every session
+    /// and its transcript items) under the store mutex every head's picker frame also takes — two
+    /// or three full scans per session open, on the worker. The entry has the answer: a child is
+    /// adopted or created WITH its parent, and a resumed one is created from its stored row,
+    /// which carries the parent.
+    pub fn parent_of(&self, session_id: &str) -> Option<String> {
+        self.lock()
+            .entry(session_id)
+            .and_then(|e| e.parent_session_id.clone())
+    }
+
+    /// **Whether this registry holds the session at all** — the other half of `parent_of`'s
+    /// `None`, for a caller that must tell *top-level* from *not here*.
+    pub fn holds(&self, session_id: &str) -> bool {
+        self.lock().has(session_id)
+    }
+
+    /// **The session's title as this registry holds it** — the name it was created or adopted
+    /// with, or the last one [`Registry::set_title`] put there. `None` for a session it does not
+    /// hold. One entry lookup, for `parent_of`'s reason: the picker's title is
+    /// [`Registry::list`]'s business (where the store's name wins), and a caller that needs one
+    /// session's name must not pay for every session's row to get it.
+    pub fn title_of(&self, session_id: &str) -> Option<String> {
+        self.lock().entry(session_id).map(|e| e.title.clone())
+    }
+
+    /// **Forget a session: its entry, its run ender, its prompt driver and its notes source —
+    /// and close its hub** (R68.3).
+    ///
+    /// Nothing removed a session before this. `entries` only grew, so every subagent's hub — its
+    /// log and its view — lived for the daemon's life; `runs` kept each session's ender, a
+    /// closure holding that session's `Arc<HostProcesses>` (its whole job table, up to 8 MiB of
+    /// capture a job); `prompts` and `notes` kept closures into its harness. R66 measured the
+    /// sum: ~12 MB and two threads per finished subagent, never released, across a tree that
+    /// started 519 of them.
+    ///
+    /// **The hub is closed here, not left to the caller**, because a removed hub that stayed open
+    /// is the one state worse than either: a head attached to it would wait on a log nothing will
+    /// ever write to, with no `Bye`. Closing wakes every head with [`crate::hub::Delivery::Closed`]
+    /// and the session's own reader with `OwnWork::Closed`.
+    ///
+    /// **The run ender is dropped, not called.** It ends the session's runs, which is a stop's
+    /// act ([`Registry::close`]); the caller that removes a session has already decided what
+    /// happens to its runs — the harness that owns them closes its backend — and calling the
+    /// ender here would reap a second time what that close reaped once.
+    ///
+    /// Returns the hub, so a caller can still read its final state; `None` when the registry did
+    /// not hold the session, which is not an error — a close that raced another close.
+    pub fn remove(&self, session_id: &str) -> Option<Arc<Hub>> {
+        let entry = self.lock().take(session_id)?;
+        // Each map under its own lock, never under the registry's — the ordering `close` keeps.
+        let ender = self
+            .runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
+        let prompt = self
+            .prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
+        let notes = self
+            .notes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
+        // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
+        // `HostProcesses` ends its deadline thread), and none of them may run under a registry
+        // mutex another thread is waiting on.
+        drop((ender, prompt, notes));
+        entry.hub.close();
+        Some(entry.hub)
+    }
+
     /// **When this daemon opened this session**, or `None` for one it does not hold.
     ///
     /// One entry lookup under the lock, and a reader of its own rather than `brief` for that
@@ -1296,8 +1400,8 @@ impl Registry {
 
     /// **Install a session's standing-notes source.** Called by the session's own harness at
     /// open — it is the half that owns the token counter, which is what decides the form each
-    /// note has — and never removed: a session this registry holds lives for the daemon's
-    /// life. See [`NotesSource`] for why this is a closure and a live read.
+    /// note has — and removed with the session ([`Registry::remove`]). See [`NotesSource`] for
+    /// why this is a closure and a live read.
     pub fn set_notes_source(&self, session_id: &str, source: NotesSource) {
         self.notes
             .lock()
@@ -1726,7 +1830,7 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::CommandKind;
+    use crate::hub::{CommandKind, Delivery};
     use crate::protocol::Caps;
     use crate::testing;
 
@@ -1812,6 +1916,75 @@ mod tests {
             }
             other => panic!("the child's own reader must still find its prompt: {other:?}"),
         }
+    }
+
+    /// **A removed session is gone from every table, its hub is closed, and the sessions after
+    /// it are still found by id** (R68.3) — the index R67 item 27 added is rewritten for every
+    /// position the removal shifted, and `list` keeps arrival order.
+    #[test]
+    fn a_removed_session_leaves_every_table_and_the_rest_are_still_found() {
+        let r = reg();
+        for id in ["s-a", "s-b", "s-c", "s-d"] {
+            r.create(id, id, SessionWiring::default()).unwrap();
+        }
+        let b = r.get("s-b").unwrap();
+        let head = b.attach("tui", "dead", Caps::default(), 0);
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ended.clone();
+        r.watch_runs(
+            "s-b",
+            Arc::new(move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Vec::new()
+            }),
+        );
+        r.set_notes_source("s-b", Arc::new(Vec::new));
+        r.set_default("s-b");
+
+        let gone = r.remove("s-b").expect("it was held");
+        assert!(Arc::ptr_eq(&gone, &b));
+        assert!(
+            b.is_closed(),
+            "a removed hub must not keep a head waiting on it"
+        );
+        assert!(matches!(b.next_batch(&head.head_id, 10), Delivery::Closed));
+        assert!(r.get("s-b").is_none() && !r.holds("s-b"));
+        assert!(r.remove("s-b").is_none(), "a second close is not an error");
+        for id in ["s-a", "s-c", "s-d"] {
+            assert_eq!(
+                r.get(id).map(|h| h.session_id()),
+                Some(id.to_string()),
+                "the index points {id} at somebody else's entry after the removal"
+            );
+            assert_eq!(r.title_of(id).as_deref(), Some(id));
+        }
+        let order: Vec<String> = r.list().into_iter().map(|b| b.session_id).collect();
+        assert_eq!(order, ["s-a", "s-c", "s-d"], "arrival order survives");
+        assert_eq!(
+            r.default_id(),
+            "s-d",
+            "the default moved to a session that exists"
+        );
+        // The run ender went with it: a stop ends nothing for a session that is gone.
+        r.close();
+        assert!(
+            !ended.load(std::sync::atomic::Ordering::SeqCst),
+            "the removed session's run ender was still called at stop"
+        );
+    }
+
+    /// **`parent_of` answers from the entry** (R68.6) — and does not need a source at all, which
+    /// is the point: the old lookup was `list()`, a read of every stored session.
+    #[test]
+    fn the_parent_is_read_from_the_entry_not_the_store() {
+        let r = reg();
+        r.create("s-root", "", SessionWiring::default()).unwrap();
+        let child = r.new_hub("s-root-sub");
+        r.adopt(child, "", SessionWiring::default(), Some("s-root".into()))
+            .unwrap();
+        assert_eq!(r.parent_of("s-root-sub").as_deref(), Some("s-root"));
+        assert_eq!(r.parent_of("s-root"), None);
+        assert!(r.holds("s-root") && !r.holds("s-nobody"));
     }
 
     #[test]

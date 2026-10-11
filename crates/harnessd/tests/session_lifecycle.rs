@@ -312,16 +312,34 @@ fn operator_rows(hub: &Hub) -> Vec<String> {
         .collect()
 }
 
-/// Threads in this process whose name starts with `prefix` — `memwatch`'s census, read the same
-/// way (`/proc/self/task/*/comm`).
+/// Threads in this process whose name starts with `prefix` — `memwatch`'s own census (the line
+/// the daemon's watchdog prints), so the test counts what an operator would read.
 fn threads_named(prefix: &str) -> usize {
-    let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
-        return 0;
-    };
-    dir.filter_map(|e| e.ok())
-        .filter_map(|e| std::fs::read_to_string(e.path().join("comm")).ok())
-        .filter(|n| n.trim_end().starts_with(prefix))
-        .count()
+    letibot_harnessd::memwatch::thread_names()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(_, n)| n)
+        .sum()
+}
+
+/// The process's resident set, in KiB — for the record the test prints, not for an assertion.
+fn rss_kib() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("VmRSS:"))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// **One test at a time in this binary**: the thread census is the PROCESS's, and a sibling test
+/// spawning children in parallel would be counted as this one's leak.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// **The worker's own loop, for one slice of time** — `Daemon::run`'s three arms that matter
@@ -341,6 +359,7 @@ fn drive_worker(
             WorkOrIdle::Idle => {
                 sessions.sweep_abandoned_calls();
                 sessions.deliver_due_nags();
+                sessions.park_idle_children();
             }
             WorkOrIdle::Closed => break,
             WorkOrIdle::Work(Work::Open(id)) => {
@@ -375,6 +394,7 @@ fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    let _one = serial();
     let dir = TempDir::new("harnessd-one-owner");
     let path = dir.path.join("sessions.db");
     let root = "s-root-one-owner";
@@ -468,4 +488,259 @@ fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
         ),
         "the child left with its hub closed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// R68.2 / R68.3 — one lifecycle, with an explicit close
+// ---------------------------------------------------------------------------
+
+/// A root session opened by the daemon's own `Sessions`, its children parking after `park`.
+struct Daemon {
+    _dir: TempDir,
+    stub: Stub,
+    parts: Parts,
+    cfg: Config,
+    registry: Arc<Registry>,
+}
+
+const ROOT: &str = "s-root-lifecycle";
+
+fn a_daemon(tag: &str, park: Option<Duration>) -> Daemon {
+    let dir = TempDir::new(tag);
+    let path = dir.path.join("sessions.db");
+    let parts = parts_for(&config(ROOT, Endpoint::new("127.0.0.1", 1), &path));
+    let answer = a_plain_answer_turn(&parts.vocab, "thinking", "done and waiting", 30);
+    let stub = Stub::answering(vec![answer]);
+    let mut cfg = config(ROOT, stub.endpoint.clone(), &path);
+    cfg.child_park_after = park;
+    let registry = Registry::new();
+    // The daemon's own store source (`cli.rs` installs the same one): it is where a parked
+    // child's row is read back from when something reopens it.
+    registry.set_source(
+        letibot_harnessd::sessions::StoreSessions::open(&cfg).expect("the store opens"),
+    );
+    registry
+        .create(ROOT, "the root", wiring(&cfg))
+        .expect("the root is created");
+    Daemon {
+        _dir: dir,
+        stub,
+        parts,
+        cfg,
+        registry,
+    }
+}
+
+fn answered(sessions: &Sessions<'_>, handle: &str) -> bool {
+    call(
+        sessions,
+        ROOT,
+        "task_result",
+        serde_json::json!({"task": handle}),
+    )
+    .outcome
+        == letibot_transcript::ToolOutcome::Ok
+}
+
+/// **Fifty subagents started and finished leave no thread and no registry entry behind** — the
+/// "done when" of R68: memwatch's thread census flat across 50 subagents.
+///
+/// R66 measured the leak on a scratch daemon: 7 → 19 threads for six finished subagents, ~12 MB
+/// each, never released — the `subagent-*` thread parked in `serve_child` until a hub close that
+/// never came, and `letibot-deadline` (R67 item 13 ended that one with its host, but the host
+/// lived as long as the parked harness did). MEASURED here with the policy off
+/// (`child_park_after = None`, the old behaviour): 50 `subagent-*` threads and 50
+/// `letibot-deadline` threads still alive, and 51 registry entries, after every child answered.
+#[test]
+fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let _one = serial();
+    let d = a_daemon("harnessd-fifty", Some(Duration::from_millis(300)));
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    drive_worker(&mut sessions, &d.registry, Duration::from_millis(50));
+    let threads_before = (threads_named("subagent"), threads_named("letibot-deadlin"));
+    let rss_before = rss_kib();
+
+    let handles: Vec<String> = (0..50)
+        .map(|n| spawn(&sessions, ROOT, &format!("task number {n}")))
+        .collect();
+    wait_until("all fifty children to answer", || {
+        handles.iter().all(|h| answered(&sessions, h))
+    });
+    let threads_peak = (threads_named("subagent"), threads_named("letibot-deadlin"));
+    let rss_peak = rss_kib();
+
+    let began = Instant::now();
+    while began.elapsed() < PATIENCE
+        && (d.registry.len() > 1
+            || threads_named("subagent") > threads_before.0
+            || threads_named("letibot-deadlin") > threads_before.1)
+    {
+        drive_worker(&mut sessions, &d.registry, Duration::from_millis(50));
+    }
+    let threads_after = (threads_named("subagent"), threads_named("letibot-deadlin"));
+    eprintln!(
+        "threads (subagent, deadline): before {threads_before:?}, all answered {threads_peak:?}, \
+         after parking {threads_after:?}; rss KiB: before {rss_before}, peak {rss_peak}, after {}; \
+         registry entries after: {}; stub turns: {}",
+        rss_kib(),
+        d.registry.len(),
+        d.stub.turns()
+    );
+    assert_eq!(
+        d.registry.len(),
+        1,
+        "a finished subagent's entry stayed in the registry: {:?}",
+        d.registry
+            .list()
+            .iter()
+            .map(|b| b.session_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        threads_after, threads_before,
+        "threads were left behind by finished subagents (peak {threads_peak:?})"
+    );
+    assert_eq!(
+        sessions.opened(),
+        1,
+        "the worker holds the root and nothing else"
+    );
+    // And each child still answers for what it did: the slot outlives the thread.
+    assert!(handles.iter().all(|h| answered(&sessions, h)));
+    d.registry.close();
+}
+
+/// **A stopped child is gone, and a wake or a message to it is answered as gone** — not
+/// `HandedOn` into a hub nobody reads.
+///
+/// Before the guard, a child that left `serve_child` on a stop kept its hub registered: the
+/// worker's `wake_route` said `ItsOwnReader`, `Sessions::wake` answered `HandedOn`, and the
+/// wake was handed to a condvar with no thread behind it (R68.2, CONFIRMED). MEASURED before:
+/// the hub stayed in the registry and the wake came back `HandedOn`.
+#[test]
+fn a_wake_or_a_message_to_a_closed_child_is_answered_gone() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let _one = serial();
+    // Parking off: this is the STOP exit, not the idle one.
+    let d = a_daemon("harnessd-gone", None);
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    drive_worker(&mut sessions, &d.registry, Duration::from_millis(50));
+    let handle = spawn(&sessions, ROOT, "answer, then wait");
+    wait_until("the child to answer", || answered(&sessions, &handle));
+    let hub = d.registry.get(&handle).expect("a parked child is live");
+    hub.submit(
+        letibot_sessionlog::hub::DAEMON_SUBMITTER,
+        "stop-it",
+        0,
+        CommandKind::Interrupt {
+            reason: "the parent is done with it".into(),
+        },
+    );
+    wait_until("the stopped child to leave the registry", || {
+        d.registry.get(&handle).is_none()
+    });
+    assert!(hub.is_closed(), "the stopped child's hub was left open");
+
+    let woke = sessions.wake(&handle);
+    assert!(
+        matches!(woke, Outcome::Ignored),
+        "a wake for a child that is gone was not answered as gone"
+    );
+    let said = call(
+        &sessions,
+        ROOT,
+        "task_message",
+        serde_json::json!({"task": handle, "text": "are you there?"}),
+    );
+    assert_ne!(
+        said.outcome,
+        letibot_transcript::ToolOutcome::Ok,
+        "a message to a stopped child was reported delivered: {}",
+        said.payload
+    );
+    assert!(
+        said.payload.contains("Nothing was sent"),
+        "the refusal says nothing was sent: {}",
+        said.payload
+    );
+    d.registry.close();
+}
+
+/// **A parked child comes back for the next message, and parks again** — the idle-child policy's
+/// other half: parking is store-only, not an end (`Config::child_park_after`).
+#[test]
+fn a_message_to_a_parked_child_reopens_it_from_the_store() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let _one = serial();
+    let d = a_daemon("harnessd-reopen", Some(Duration::from_millis(300)));
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    drive_worker(&mut sessions, &d.registry, Duration::from_millis(50));
+    let handle = spawn(&sessions, ROOT, "answer, then wait");
+    wait_until("the child to answer", || answered(&sessions, &handle));
+    wait_until("the idle child to park", || {
+        d.registry.get(&handle).is_none()
+    });
+
+    let said = call(
+        &sessions,
+        ROOT,
+        "task_message",
+        serde_json::json!({"task": handle, "text": "one more thing"}),
+    );
+    assert_eq!(
+        said.outcome,
+        letibot_transcript::ToolOutcome::Ok,
+        "a message to a parked child was refused: {}",
+        said.payload
+    );
+    assert!(said.payload.contains("reopened"), "{}", said.payload);
+    let turns_before = d.stub.turns();
+    let began = Instant::now();
+    while began.elapsed() < PATIENCE && d.stub.turns() == turns_before {
+        drive_worker(&mut sessions, &d.registry, Duration::from_millis(50));
+    }
+    assert!(
+        d.stub.turns() > turns_before,
+        "the reopened child never ran the turn the message started"
+    );
+    let reopened = d.registry.get(&handle).expect("reopened into the registry");
+    assert_eq!(
+        reopened.owner(),
+        letibot_sessionlog::hub::Owner::Worker,
+        "a reopened child is the worker's, like every resumed session"
+    );
+    assert!(
+        reopened.retained().iter().any(|e| matches!(
+            &e.event,
+            SessionEvent::TranscriptContent { item, .. }
+                if matches!(&**item, TranscriptItem::User { speaker: Speaker::Agent, parts }
+                    if parts.iter().any(|p| matches!(p, UserPart::Text { text } if text.contains("one more thing"))))
+        )),
+        "the parent's words are on the reopened child's log as an agent's"
+    );
+    // And it parks again under the worker's half of the policy.
+    let began = Instant::now();
+    while began.elapsed() < PATIENCE && d.registry.get(&handle).is_some() {
+        drive_worker(&mut sessions, &d.registry, Duration::from_millis(50));
+    }
+    assert!(
+        d.registry.get(&handle).is_none(),
+        "the reopened child never parked again"
+    );
+    assert_eq!(
+        sessions.opened(),
+        1,
+        "the worker let go of the reopened child"
+    );
+    d.registry.close();
 }

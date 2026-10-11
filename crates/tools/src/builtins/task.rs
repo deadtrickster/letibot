@@ -632,6 +632,16 @@ pub trait TaskRunner: Send + Sync {
     fn wait_for_children(&self, _timeout: std::time::Duration) -> bool {
         true
     }
+
+    /// **How many children this session started still have a thread** — the ones
+    /// [`Self::stop_all`] would stop. A session with any is not idle, whatever its own queue
+    /// says: a child it is waiting on can settle at any moment and must find its parent's
+    /// reader there. Read by the idle-child policy (`harness::serve_child`), which parks a
+    /// subagent only when nothing of its subtree is alive. A runner that starts nothing has
+    /// none.
+    fn live_children(&self) -> usize {
+        0
+    }
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.

@@ -183,6 +183,13 @@ impl Daemon {
                     if ran > 0 {
                         eprintln!("  todo check -> {ran} session(s)");
                     }
+                    // **And a reopened subagent idle past its window goes back to the store**
+                    // (R68's idle-child policy, `Config::child_park_after`). On this pass for the
+                    // sweep's reason: no round is running, so nothing it holds is mid-call.
+                    let parked = sessions.park_idle_children();
+                    if parked > 0 {
+                        eprintln!("  parked {parked} idle subagent(s) in the store");
+                    }
                     // **And the reviews this daemon's sessions host**, read from the store — the
                     // durable half of the queue's ring. It is due on its own clock rather than on
                     // this pass's, because this arm is also entered for a nag or a sweep. See

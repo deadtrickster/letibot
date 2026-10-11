@@ -260,7 +260,7 @@ fn park_a_child(
                 &hub,
                 &served_as,
                 TodoNagClock::with_window(WINDOW),
-            )
+            );
         })
         .expect("the child's serving thread starts");
     ParkedChild {

@@ -850,7 +850,42 @@ impl std::fmt::Debug for HostProcesses {
 /// enough that a runaway `yes` cannot take the box.
 pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// **How much SETTLED output one host keeps, across all its jobs** (R68.3) — 64 MiB, eight
+/// full captures.
+///
+/// `jobs` keeps every job the host ever ran (a job's row is what `job_list`, a settlement and a
+/// restart's `due_todo_rows` read), and each held its whole capture for the host's life: up to
+/// [`DEFAULT_CAPTURE_BYTES`] a job, for a session that ran fifteen thousand of them. The
+/// capture of a job that has SETTLED has done its work — its result was handed back when it
+/// ended — so past this budget the oldest settled jobs' captures are released
+/// ([`super::jobs::Capture::release`]), keeping the row and its counts. A running job's
+/// capture is never touched: it is the only copy of output nobody has read yet.
+pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
+
 impl HostProcesses {
+    /// **Hold settled output to `budget` bytes, releasing the oldest first** — see
+    /// [`SETTLED_CAPTURE_BUDGET`]. Called at each spawn, which is the only moment the set of
+    /// settled captures can have grown past a bound since the last call (a capture grows while
+    /// its job runs, and a job settles before the next one in its session starts or while it
+    /// runs beside it). Newest first, so the output a model is most likely to page through
+    /// again is the output still held.
+    fn release_settled_captures(&self, budget: usize) {
+        let jobs: Vec<Arc<Job>> = self.jobs.lock().expect("jobs").clone();
+        let mut held = 0usize;
+        for job in jobs.iter().rev() {
+            if job.state().is_running() {
+                continue;
+            }
+            let mut cap = job.capture.lock().expect("capture");
+            let here = cap.retained();
+            if held + here > budget {
+                cap.release();
+            } else {
+                held += here;
+            }
+        }
+    }
+
     /// A host with a real cgroup tree, rooted under `root` on the filesystem.
     ///
     /// Returns the probe's own error when there is no cgroup v2 to delegate,
@@ -1655,6 +1690,7 @@ impl ProcessHost for HostProcesses {
             .expect("jobs by id")
             .insert(job.id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(job);
+        self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
         Ok(id)
     }
 
@@ -2367,6 +2403,74 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
+    }
+
+    /// **Settled output is held to a budget, oldest released first, and a running job's never**
+    /// (R68.3). Before the budget a host kept every job's whole capture for its life — up to
+    /// 8 MiB a job — so a session's job table grew with every `bash` it ever ran.
+    #[test]
+    fn settled_captures_are_held_to_a_budget_and_the_oldest_go_first() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-budget-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        let spawn = |command: &str| {
+            h.spawn(&SpawnRequest {
+                command: command.into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+                memory: None,
+            })
+            .expect("a cgroup v2 tree was measured above")
+        };
+        // Three settled jobs of 1000 bytes each, and one still running.
+        let settled: Vec<JobId> = (0..3)
+            .map(|_| {
+                let id = spawn("head -c 1000 /dev/zero");
+                let _ = h.wait_job(&id, Duration::from_secs(30));
+                id
+            })
+            .collect();
+        let running = spawn("head -c 1000 /dev/zero; sleep 30");
+        let until = Instant::now() + Duration::from_secs(10);
+        while h.output(&running, 0, 4096).map(|o| o.retained).unwrap_or(0) < 1000
+            && Instant::now() < until
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        h.release_settled_captures(2500);
+        let held = |id: &JobId| h.output(id, 0, 4096).expect("the row stays").retained;
+        assert_eq!(
+            held(&settled[0]),
+            0,
+            "the oldest settled capture is released"
+        );
+        assert_eq!(held(&settled[1]), 1000);
+        assert_eq!(held(&settled[2]), 1000);
+        assert_eq!(
+            held(&running),
+            1000,
+            "a running job's output is never released"
+        );
+        let gone = h.output(&settled[0], 0, 4096).unwrap();
+        assert_eq!(
+            (gone.produced, gone.dropped),
+            (1000, 1000),
+            "a released capture still says what was written, and that it was dropped"
+        );
+        let _ = h.kill_job_as(&running, "test");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// **A name is unique within the session, and it never moves.**

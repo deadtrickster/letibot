@@ -266,8 +266,9 @@ fn throttle_events(leaf: &std::path::Path) -> Option<u64> {
 
 /// Every thread, grouped by its name with the per-instance part taken off — `letibot-job-j12`
 /// and `letibot-job-j13` are one row — because a leak of threads is a count that climbs under
-/// one name, and a list of 300 names hides it.
-fn thread_names() -> BTreeMap<String, usize> {
+/// one name, and a list of 300 names hides it. Public so a test can take the same census the
+/// watchdog prints (R68's `tests/session_lifecycle.rs`: threads flat across 50 subagents).
+pub fn thread_names() -> BTreeMap<String, usize> {
     let mut out = BTreeMap::new();
     if let Ok(dir) = std::fs::read_dir("/proc/self/task") {
         for t in dir.flatten() {

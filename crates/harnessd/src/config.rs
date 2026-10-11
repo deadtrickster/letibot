@@ -658,6 +658,28 @@ pub struct Config {
     /// a capability that exists but is hidden manufactures the workaround (see
     /// `m2_coder`'s own note on `todo`).
     pub max_subagent_depth: u32,
+    /// **How long a finished subagent with nothing left to do keeps its thread** — R68's
+    /// idle-child policy. `None` keeps it for the daemon's life, which is what every child did
+    /// before this existed.
+    ///
+    /// The choice, and why it is not *reap*: a child is a session (*"subagent is just another
+    /// agent … so mid turn, post turn whatever"*), so it must stay answerable after its task —
+    /// a head may attach and prompt it, a parent may `task_message` it an hour later. But a
+    /// parked child kept its whole `Harness` (transcript, ledger, `HostProcesses` with its job
+    /// captures, a SQLite connection) and a thread, for the daemon's life: R66 measured ~12 MB
+    /// and two threads per finished subagent, never released, across a tree that started 519.
+    ///
+    /// So a child that has been idle this long — no command, no wake, no plan-check armed, no
+    /// head attached, no job running and no child of its own alive — is **parked as store-only**:
+    /// its thread leaves, its hub is closed and removed from the registry, its harness is
+    /// dropped. Everything it was is in the store, so the next prompt REOPENS it: a head reaches
+    /// it from the picker (a resume, as for any stored session), and a parent's `task_message`
+    /// brings it back through the store before delivering (`HarnessTaskRunner::send`). A
+    /// reopened child is held by the daemon's worker and parks again under the same rule
+    /// (`Sessions::park_idle_children`). Default ten minutes: long enough that a parent's
+    /// follow-up in the same stretch of work finds the child as it left it, short enough that a
+    /// tree that churns through hundreds of children holds the few it is using.
+    pub child_park_after: Option<std::time::Duration>,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
@@ -1640,6 +1662,7 @@ impl Config {
             fabric: None,
             allow_bash: false,
             max_subagent_depth: 3,
+            child_park_after: Some(std::time::Duration::from_secs(600)),
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,

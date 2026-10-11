@@ -7245,6 +7245,30 @@ impl Harness {
         stop_children_first(Some(&self.subagents), &self.hub)
     }
 
+    /// **Why this session may NOT be parked right now, or `None` when it may** — the half of
+    /// R68's idle-child policy that is about the session's own work rather than its queue (see
+    /// `Config::child_park_after`).
+    ///
+    /// Two facts, each one a thing that would be lost or orphaned by dropping the harness: a
+    /// child of this session that still has a thread (its settlement must find this session's
+    /// reader), and a job still running in this session's process host (dropping the host ends
+    /// it). Asked of the facts' owners — the runner's slots and the process table — rather than
+    /// remembered, so a job that ended a second ago does not keep a session alive.
+    pub fn park_refusal(&self) -> Option<&'static str> {
+        if self.subagents.live_children() > 0 {
+            return Some("a subagent it started is still alive");
+        }
+        let running = self.runtime.backend.processes().is_some_and(|p| {
+            p.jobs()
+                .iter()
+                .any(|j| matches!(j.state, letibot_tools::exec::JobState::Running))
+        });
+        if running {
+            return Some("a job it started is still running");
+        }
+        None
+    }
+
     /// **Wait until every subagent in this tree has left its own thread**, up to `timeout`;
     /// `true` when they all have.
     ///
@@ -12447,6 +12471,11 @@ pub(crate) struct TaskSlot {
     /// thread leaves `run_to_completion`, and it is what makes `stop_all` skip a child that is
     /// really gone instead of submitting an interrupt nothing will read.
     exited: std::sync::atomic::AtomicBool,
+    /// **Whether the thread ended by PARKING** — R68's idle-child policy
+    /// (`Config::child_park_after`). A parked child's thread has exited like any other, and is
+    /// not gone: its whole session is in the store, so [`HarnessTaskRunner::send`] reopens it
+    /// rather than refusing a message to "a thread that has ended".
+    parked: std::sync::atomic::AtomicBool,
 }
 
 impl TaskSlot {
@@ -12463,7 +12492,17 @@ impl TaskSlot {
             killed: std::sync::atomic::AtomicBool::new(false),
             owner: owner.to_string(),
             exited: std::sync::atomic::AtomicBool::new(false),
+            parked: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The child parked as store-only. Set before [`TaskSlot::mark_exited`], on the same thread.
+    fn mark_parked(&self) {
+        self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_parked(&self) -> bool {
+        self.parked.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// **This child's thread has ended.** Read by [`HarnessTaskRunner::stop_all`], which is
@@ -12814,8 +12853,37 @@ fn stop_children_first(
 /// It ends when the hub is closed — the same liveness test `jobwatch::watch_task` uses for the
 /// thread it parks per child — and **nothing else here is on a clock**: a child asked something an
 /// hour later answers it.
-fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str) {
+fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str) -> ChildExit {
     serve_child_under(sub, hub, sub_id, crate::sessions::TodoNagClock::new())
+}
+
+/// **The one exit every subagent thread takes** (R68.2): closes the child's hub and removes the
+/// session from the registry ([`Registry::remove`]) when the thread leaves `run_to_completion`,
+/// however it leaves. A `Drop` rather than a call at each `return` because the exits are `?`s
+/// and early returns, and the defect this replaces was exactly an exit that forgot.
+struct ChildSessionGuard<'a> {
+    registry: &'a Arc<letibot_sessionlog::registry::Registry>,
+    id: &'a str,
+}
+
+impl Drop for ChildSessionGuard<'_> {
+    fn drop(&mut self) {
+        self.registry.remove(self.id);
+    }
+}
+
+/// **Why a child's serving loop ended** — the three exits of [`serve_child_under`], told apart
+/// because one of them is not an end: a PARKED child is in the store and comes back on the next
+/// prompt (`Config::child_park_after`), while a stopped or closed one is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildExit {
+    /// The hub closed: the daemon is going away, or the session was removed.
+    Closed,
+    /// A stop reached it between turns; its children were stopped first.
+    Stopped,
+    /// **Idle past the park window with nothing alive under it** — parked as store-only. See
+    /// `Config::child_park_after` for the policy and what reopens it.
+    Parked,
 }
 
 /// [`serve_child`] with the clock handed in — the tests' door, and the only difference between
@@ -12826,8 +12894,13 @@ pub fn serve_child_under(
     hub: &Hub,
     sub_id: &str,
     mut nag: crate::sessions::TodoNagClock,
-) {
+) -> ChildExit {
     use letibot_sessionlog::hub::OwnWork;
+    // **The park clock** (R68's idle-child policy, `Config::child_park_after`): restarted by
+    // every piece of work this loop takes, so it measures idleness and not age. `None` is the
+    // old loop — a child that waits for its hub to close, however long that is.
+    let park_after = sub.config().child_park_after;
+    let mut park_at = park_after.map(|d| std::time::Instant::now() + d);
     // **The board's version is how this loop sees a write that ran no turn.** A parent's
     // `todo_write target=` moves the board from the PARENT's thread and wakes this reader;
     // the version is what tells that wake apart from a settlement that found nothing
@@ -12857,9 +12930,31 @@ pub fn serve_child_under(
         &jobs,
     );
     loop {
-        let kind = match hub.take_own_work_until(nag.due_at()) {
+        let deadline = match (nag.due_at(), park_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let work = hub.take_own_work_until(deadline);
+        // **Is this the park clock's deadline, and may the child go?** Only when nothing else is
+        // due: a plan-check that is armed is work outstanding, and a child with one is not idle.
+        if matches!(work, OwnWork::TimedOut)
+            && nag.due_at().is_none_or(|d| d > std::time::Instant::now())
+            && let (Some(at), Some(window)) = (park_at, park_after)
+            && at <= std::time::Instant::now()
+        {
+            // Nothing armed, the window spent: park unless something the harness owns, or a head
+            // watching it, says the session is still in use — then look again a window later.
+            if nag.due_at().is_none() && hub.attached_heads() == 0 && sub.park_refusal().is_none() {
+                return ChildExit::Parked;
+            }
+            park_at = Some(std::time::Instant::now() + window);
+            continue;
+        }
+        // Anything else is activity, and the park clock starts over from it.
+        park_at = park_after.map(|d| std::time::Instant::now() + d);
+        let kind = match work {
             // The hub closed: the daemon is going away, or this session was reaped.
-            OwnWork::Closed => return,
+            OwnWork::Closed => return ChildExit::Closed,
             // **A wake has no command behind it and needs none**: its whole content is
             // *something this session owns has settled*, and the settlement is in this session's
             // own queue. `Harness::wake` takes it and runs the turn it makes — or finds it already
@@ -13012,7 +13107,7 @@ pub fn serve_child_under(
             // slot its parent's watcher is blocked on.
             ChildCommand::Stop => {
                 sub.stop_children();
-                return;
+                return ChildExit::Stopped;
             }
             ChildCommand::Leave(why) => {
                 eprintln!(
@@ -13703,6 +13798,40 @@ impl HarnessTaskRunner {
     ///
     /// A helper rather than a fourth copy of the lookup: `send` reads `has_exited` off it (a
     /// thread that has ended takes no wake) and `collect` reads the status.
+    /// **Bring a parked child back from the store** — `Registry::create_under` with what its
+    /// stored row says (title, wiring, parent), which rings the worker to OPEN it before any
+    /// command for it is served. The open is the worker's, as every resume's is: this thread is
+    /// the parent's and may not build a harness for another session. A second sender that raced
+    /// this one finds it already created and uses that hub.
+    fn reopen_parked(&self, handle: &str) -> Result<Arc<Hub>, String> {
+        let stored = self.registry.resumable(handle).ok_or_else(|| {
+            format!(
+                "`{handle}` was parked (idle, its session kept in the store) and the store has no \
+                 row for it now, so it cannot be reopened. Nothing was sent."
+            )
+        })?;
+        let parent = stored
+            .parent_session_id
+            .clone()
+            .or_else(|| Some(self.base.session_id.clone()));
+        match self.registry.create_under(
+            handle,
+            stored.title.clone(),
+            stored.wiring.clone(),
+            parent,
+        ) {
+            Ok(hub) => Ok(hub),
+            Err(letibot_sessionlog::registry::CreateError::Exists(_)) => {
+                self.registry.get(handle).ok_or_else(|| {
+                    format!("`{handle}` was reopened and closed again at once. Nothing was sent.")
+                })
+            }
+            Err(e) => Err(format!(
+                "`{handle}` was parked and could not be reopened: {e}. Nothing was sent."
+            )),
+        }
+    }
+
     fn slot(&self, handle: &str) -> Option<Arc<TaskSlot>> {
         self.slots
             .lock()
@@ -14232,7 +14361,41 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // parent's list of its children, which is the framing the operator struck (*"well
         // gatekeeper is not a child so we are not doing up"*): it named a peer as something this
         // session does not have, and it said *gone* about a session that is very much there.
-        let Some(hub) = self.registry.get(handle) else {
+        // **A PARKED child is brought back first** (R68's idle-child policy,
+        // `Config::child_park_after`): it went store-only because it was idle, not because it
+        // ended, so a message to it is the "next prompt" that reopens it. It comes back as a
+        // session the daemon's WORKER holds — the resume every stored session takes — and the
+        // worker's `Message` arm runs the turn that hears this.
+        //
+        // **A thread that has ended takes no wake, and a message nobody reads is the lie this
+        // door exists not to tell.** Checked before the submit, because after it the message is
+        // on a queue and "nothing was sent" would be false — and before the registry lookup,
+        // because a child whose thread ended is removed from the registry on the way out (R68.2)
+        // and "no session is live" would hide WHY. A parked child's thread has ended too, and is
+        // the one exception: it is reopened below. A hub the worker owns is a reopened child,
+        // whose old slot's thread is not its reader.
+        let live = self.registry.get(handle);
+        let own_thread = live
+            .as_ref()
+            .is_none_or(|h| h.owner() == letibot_sessionlog::hub::Owner::OwnThread);
+        if own_thread
+            && self
+                .slot(handle)
+                .is_some_and(|s| s.has_exited() && !s.is_parked())
+        {
+            return Err(format!(
+                "`{handle}`'s own thread has ended, so nothing would read a message queued for \
+                 it: a subagent between turns is reached by starting a turn for it, and this one \
+                 has no thread left to start. Nothing was sent. `task_result` reads what it \
+                 answered, and a new subagent is how to say something more."
+            ));
+        }
+        let reopened = live.is_none() && self.slot(handle).is_some_and(|s| s.is_parked());
+        let hub = match reopened {
+            true => Some(self.reopen_parked(handle)?),
+            false => live,
+        };
+        let Some(hub) = hub else {
             return Err(format!(
                 "no session `{handle}` is live in this daemon, so there is nothing to say it to: \
                  a message is delivered to a session's own queue, and a session that has closed \
@@ -14241,17 +14404,6 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                  lists the subagents this session still holds."
             ));
         };
-        // **A thread that has ended takes no wake, and a message nobody reads is the lie this
-        // door exists not to tell.** Checked before the submit, because after it the message is
-        // on a queue and "nothing was sent" would be false.
-        if self.slot(handle).is_some_and(|s| s.has_exited()) {
-            return Err(format!(
-                "`{handle}`'s own thread has ended, so nothing would read a message queued for \
-                 it: a subagent between turns is reached by starting a turn for it, and this one \
-                 has no thread left to start. Nothing was sent. `task_result` reads what it \
-                 answered, and a new subagent is how to say something more."
-            ));
-        }
         // **Which of the two deliveries this is, read before the submit.** Both are real and
         // they are told apart by the child's state at the moment the parent spoke — a running
         // turn hears it at its next round boundary, a child between turns has a turn started.
@@ -14310,6 +14462,15 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                          away: the hub is closed, so no turn will be started for it. Do not read \
                          this as a correction delivered — `task_result` reads what the child \
                          answered."
+                    ));
+                }
+                if reopened {
+                    return Ok(format!(
+                        "`{handle}` was told, as `{}`: it had been idle long enough to be parked \
+                         (its session was kept in the store and its thread released), so it has \
+                         been reopened and a turn started for the message — it hears this now, \
+                         and its answer is on its own log.",
+                        self.base.session_id
                     ));
                 }
                 if running {
@@ -14497,6 +14658,14 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// **A deadline, and it is the caller's.** Waiting is the caller's act and so is giving up:
     /// this returns `false` rather than blocking forever, so a shutdown that cannot be waited
     /// out says so instead of hanging. `true` is the honest "nothing of mine is running".
+    fn live_children(&self) -> usize {
+        stoppable_children(
+            &self.slots.lock().expect("task slots"),
+            &self.base.session_id,
+        )
+        .len()
+    }
+
     fn wait_for_children(&self, timeout: std::time::Duration) -> bool {
         let slots: Vec<Arc<TaskSlot>> = self
             .slots
@@ -15300,6 +15469,18 @@ impl HarnessTaskRunner {
                      `mint_sub_id` — rather than the reply written off."
                 ))
             })?;
+        // **From here every exit of this thread closes the session and takes it out of the
+        // registry, through this one guard** (R68.2). Before it, three exits left the hub
+        // registered with nobody reading it — a failed first turn, a VM placement returning
+        // before `serve_child`, a stop — and `wake_route` then handed wakes, messages and
+        // interrupts into a void as `HandedOn`; the fourth (a normal end) never came at all.
+        // Declared AFTER `sub`, so it drops FIRST: the hub is closed and the registry's closures
+        // into the harness (`runs`, `prompts`, `notes`) are gone before the harness itself drops,
+        // and nothing is left holding its `HostProcesses`.
+        let _session = ChildSessionGuard {
+            registry: &self.registry,
+            id: &sub_id,
+        };
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
             role: seat.as_str().to_string(),
@@ -15342,9 +15523,15 @@ impl HarnessTaskRunner {
         // [`Harness::submit_as_a_normal_session`] compacts at the wall and
         // continues on the summary, bounded; a wall it cannot dig out of still
         // comes back here as the honest failure it is.
-        let reply = sub
-            .submit_as_a_normal_session(prompt)
-            .map_err(|e| fail(e.to_string()))?;
+        let reply = match sub.submit_as_a_normal_session(prompt) {
+            Ok(reply) => reply,
+            Err(e) => {
+                // The backend is closed on this exit too — the other two close it below — so a
+                // child whose first turn failed does not leave its watchers and cgroups behind.
+                sub.close_backend();
+                return Err(fail(e.to_string()));
+            }
+        };
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
         self.tasks.record(crate::tasks::TaskEntry {
@@ -15399,10 +15586,13 @@ impl HarnessTaskRunner {
         // closes its hub, so enqueueing on the way out would hold a finished branch out of the
         // queue for the life of the daemon. The answer being given IS the finish.
         self.enqueue_finished(&sub_id);
-        serve_child(&mut sub, &sub_hub, &sub_id);
-        // The hub closed, so the daemon is going away. Released here rather than when the harness
-        // is dropped, for the reason it always was — and there is no placement sentence to add on
-        // the host, which `close_backend` says by returning `None`.
+        if serve_child(&mut sub, &sub_hub, &sub_id) == ChildExit::Parked {
+            slot.mark_parked();
+        }
+        // The hub closed (the daemon is going away), a stop arrived, or the child parked. Released
+        // here rather than when the harness is dropped, for the reason it always was — and there
+        // is no placement sentence to add on the host, which `close_backend` says by returning
+        // `None`.
         let landed = sub.close_backend();
         Ok(match landed {
             Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),

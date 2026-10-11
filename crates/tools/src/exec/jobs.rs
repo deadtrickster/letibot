@@ -494,6 +494,22 @@ impl Capture {
         self.produced
     }
 
+    /// Bytes the ring is holding right now.
+    pub fn retained(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// **Let go of every retained byte, keeping the counts** (R68.3) — what a settled job's
+    /// capture becomes when its host's budget for settled output is spent
+    /// ([`super::host::SETTLED_CAPTURE_BUDGET`]). The bytes are counted as dropped off the front,
+    /// exactly as the ring drops them, so a slice afterwards says *produced N, dropped N, holding
+    /// 0* — a window onto nothing that says so — rather than reading as a job that wrote nothing.
+    /// The memory itself is returned, not just emptied: `VecDeque::clear` keeps its allocation.
+    pub fn release(&mut self) {
+        self.dropped += self.buf.len() as u64;
+        self.buf = VecDeque::new();
+    }
+
     /// How long since the last byte, and `None` when there has never been one —
     /// which is a different fact from "a long time ago" and is reported as one.
     pub fn since_last(&self) -> Option<Duration> {

@@ -687,6 +687,13 @@ pub struct Sessions<'a> {
     nag_window: Duration,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
+    /// **When to next look for a subagent this worker holds that has been idle long enough to
+    /// park** — R68's idle-child policy (`Config::child_park_after`) for the children the daemon
+    /// holds: a child REOPENED from the store (a parent's message to a parked child, a head's
+    /// resume of one) is served here and not on a thread of its own, so its park clock is here
+    /// too. Armed at every turn's end; `None` when no child is held. See
+    /// [`Sessions::park_idle_children`].
+    park_at: Option<Instant>,
     /// **When to next read the store for the merge-queue reviews this daemon's sessions are
     /// owed.** Armed at open to *now*, so a daemon that comes up between the ask and the ring
     /// serves it on its first idle pass rather than after a window, and spent by
@@ -871,6 +878,7 @@ impl<'a> Sessions<'a> {
             nags: HashMap::new(),
             nag_window: TODO_NAG_AFTER,
             sweep_at: None,
+            park_at: None,
             // Due at once: the first idle pass looks. A daemon that started between a review's
             // ask and its wake has the row and nothing else, and this is what finds it.
             reviews_at: Some(Instant::now()),
@@ -1541,6 +1549,9 @@ impl<'a> Sessions<'a> {
                 // minute after it is reopened with work outstanding. That is the intent: it is the
                 // replacement for a model's memory that did not survive the restart either.
                 self.rearm_todo_nag(session_id);
+                if self.registry.parent_of(session_id).is_some() {
+                    self.arm_park();
+                }
                 Ok(true)
             }
             Err(e) => {
@@ -2085,6 +2096,11 @@ impl<'a> Sessions<'a> {
         // one convergence point for a prompt, a scripted submit and a monitor's wake — the same
         // reason the compaction lives here and not at three call sites.
         self.rearm_todo_nag(session_id);
+        // **And a subagent this worker holds starts its park window again** (R68's idle-child
+        // policy) — a turn is activity, whatever door it came through.
+        if self.registry.parent_of(session_id).is_some() {
+            self.arm_park();
+        }
         out
     }
 
@@ -2225,10 +2241,10 @@ impl<'a> Sessions<'a> {
     /// SESSION's — the review queue's own — and the store is the only thing they share, so the ring
     /// between them is a bell and a bell is per-daemon. See [`REVIEW_PASS_EVERY`].
     pub fn next_idle_at(&self) -> Option<Instant> {
-        match (self.next_nag_at(), self.reviews_at) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [self.next_nag_at(), self.reviews_at, self.park_at]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// **Whether the store read for owed reviews is due, spending the deadline when it is** —
@@ -2498,6 +2514,113 @@ impl<'a> Sessions<'a> {
             }
         }
         settled
+    }
+
+    /// **Close one session this worker holds: its harness, every per-session table, and its
+    /// registry entry** (R68.2, R68.3).
+    ///
+    /// Nothing closed a session before this. `open` kept every harness the daemon ever built —
+    /// transcript, ledger, `HostProcesses` and its job captures, a SQLite connection — and nine
+    /// maps beside it kept an entry each (`slots`, `seated`, `fabric_seen`, `nags`, `bangs`,
+    /// `armed`, `wall_gave_up`; the monitor-wake thread `armed` names, which now ends with the
+    /// hub). The order is the harness's own shutdown order: its children are told to stop, its
+    /// backend is closed (watchers first, then the host), the registry forgets the session and
+    /// closes its hub — which every attached head and the monitor-wake thread see — and only then
+    /// is the harness dropped.
+    ///
+    /// `false` when the worker did not hold the session; the registry entry is removed either way,
+    /// so a hub whose open failed is closed through the same door.
+    pub fn close(&mut self, session_id: &str) -> bool {
+        let held = self.open.remove(session_id);
+        if let Some(h) = &held {
+            h.stop_children();
+            h.close_backend();
+        }
+        self.slots.remove(session_id);
+        self.seated.remove(session_id);
+        self.fabric_seen.remove(session_id);
+        self.nags.remove(session_id);
+        self.bangs.remove(session_id);
+        self.armed.remove(session_id);
+        self.wall_gave_up.remove(session_id);
+        self.registry.remove(session_id);
+        held.is_some()
+    }
+
+    /// **Arm the park clock for the subagents this worker holds**, a window from now — called at
+    /// every turn's end, so the clock measures idleness. Nothing to arm when the policy is off.
+    fn arm_park(&mut self) {
+        let Some(window) = self.base.child_park_after else {
+            return;
+        };
+        let at = Instant::now() + window;
+        self.park_at = Some(self.park_at.map_or(at, |prev| prev.min(at)));
+    }
+
+    /// **Park every subagent this worker holds that has been idle for the window** — R68's
+    /// idle-child policy (`Config::child_park_after`), on the worker's side. The thread-side half
+    /// is `harness::serve_child`; this half exists because a child REOPENED from the store is
+    /// held here, and without it the reopen would be a one-way door back into the leak.
+    ///
+    /// A child is parked when the hub has been quiet for the window (its last event, so a head's
+    /// attach or a settlement counts), no head is attached, no turn is in flight, no plan-check
+    /// is armed, no `!` run is in flight, and its own work is done (`Harness::park_refusal`).
+    /// Root sessions are never parked here: they are the operator's conversations, and their
+    /// lifetime is the operator's to end. Answers how many were parked.
+    pub fn park_idle_children(&mut self) -> usize {
+        let Some(window) = self.base.child_park_after else {
+            self.park_at = None;
+            return 0;
+        };
+        let now = Instant::now();
+        if self.park_at.is_some_and(|at| at > now) {
+            return 0;
+        }
+        self.park_at = None;
+        let now_ms = letibot_sessionlog::registry::now_ms();
+        let window_ms = window.as_millis() as u64;
+        let children: Vec<String> = self
+            .open
+            .keys()
+            .filter(|id| self.registry.parent_of(id).is_some())
+            .cloned()
+            .collect();
+        let mut parked = 0;
+        let mut again: Option<Instant> = None;
+        for id in children {
+            let quiet_for = self.registry.get(&id).map(|h| {
+                let st = h.status();
+                let busy = st.heads > 0 || h.turn_in_flight();
+                (busy, now_ms.saturating_sub(st.last_ms))
+            });
+            let eligible = match quiet_for {
+                Some((false, quiet)) if quiet >= window_ms => {
+                    self.nags.get(&id).and_then(|c| c.due_at()).is_none()
+                        && !self.bang_run_in_flight(&id)
+                        && self
+                            .open
+                            .get(&id)
+                            .is_some_and(|h| h.park_refusal().is_none())
+                }
+                _ => false,
+            };
+            if eligible {
+                self.close(&id);
+                parked += 1;
+                continue;
+            }
+            // Not yet: look again when its own window would end, or a window from now when it is
+            // held by something other than time.
+            let next = match quiet_for {
+                Some((false, quiet)) if quiet < window_ms => {
+                    now + Duration::from_millis(window_ms - quiet)
+                }
+                _ => now + window,
+            };
+            again = Some(again.map_or(next, |a| a.min(next)));
+        }
+        self.park_at = again;
+        parked
     }
 
     /// Send every check whose deadline has passed, and answer how many ran.
@@ -3004,6 +3127,13 @@ impl<'a> Sessions<'a> {
         }
         h.declare_monitor_wake();
         let bell = self.registry.bell().clone();
+        // **The waiter ends with its session** (R68.3), not only with the daemon: a hub that
+        // `Sessions::close` removed is closed, and the thread sees it at its next recheck.
+        let hub = self
+            .registry
+            .get(session_id)
+            .map(|h| Arc::downgrade(&h))
+            .unwrap_or_default();
         let id = session_id.to_string();
         let spawned = std::thread::Builder::new()
             .name(format!("monitor-wake-{}", &id[..id.len().min(24)]))
@@ -3015,9 +3145,10 @@ impl<'a> Sessions<'a> {
                 // Two cursors because they answer two questions: "have I rung for
                 // this?" and "has the model seen this?"
                 let mut notified = monitors.settled_count();
-                while !bell.is_closed() {
+                let alive = || !bell.is_closed() && hub.upgrade().is_some_and(|h| !h.is_closed());
+                while alive() {
                     let fired = monitors.wait_for_any(notified, SHUTDOWN_RECHECK);
-                    if bell.is_closed() {
+                    if !alive() {
                         break;
                     }
                     if fired.is_empty() {
