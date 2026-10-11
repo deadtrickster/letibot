@@ -66,7 +66,7 @@ use crate::exec::memory::{Ask, Decision, Meminfo, MemoryAsk, MemoryGrant, Memory
 use crate::exec::predicate::{Verdict, annotation, refusal};
 use crate::exec::terminal;
 use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
-use crate::runtime::{Invocation, InvokeCtx, OperatorRun, Tool};
+use crate::runtime::{Invocation, InvokeCtx, OperatorRun, Tool, WantedNow};
 use crate::schema::{Access, ToolSchema};
 
 /// The `bash` tool. It carries the operator's memory policy (TODO.md R65) because the policy
@@ -288,6 +288,47 @@ fn slug_arg(args: &Value) -> Option<String> {
     crate::exec::job_name(raw)
 }
 
+/// **`wake: "now" | "later"`** — R79's optional argument on `bash` (background) and `task`.
+///
+/// `later`, the default, is `None`: the completion is the daemon's to deliver by its rules —
+/// at once when the plan waits on it, otherwise held and batched into the next break. `now` is
+/// the caller saying what the plan's structure does not capture: *tell me the moment it ends*.
+/// Anything else is refused by name rather than read as either, because a misspelt `now` that
+/// silently meant `later` is a result the model waits for and never gets.
+pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
+    match args.get("wake") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(w)) if w == "later" => Ok(None),
+        Some(Value::String(w)) if w == "now" => Ok(Some(WantedNow::WakeNow)),
+        Some(other) => Err(Invocation::failed(
+            format!("`wake` is `now` or `later`, not {other}"),
+            "`wake: \"now\"` delivers the completion the moment it ends, even into a running \
+             turn; `later` (the default) holds a result nothing in your plan waits on for your \
+             next break. Nothing was started.",
+        )),
+    }
+}
+
+/// **The sentence a started job or child carries about when its result arrives** (R79) — the
+/// tool result says which rule applies, so the model is never left to guess whether it will be
+/// interrupted or has to ask.
+pub(crate) fn wake_sentence(wake: Option<WantedNow>) -> &'static str {
+    match wake {
+        Some(_) => {
+            "wake: now — its result is handed to you the moment it ends, at the next round \
+             boundary of a running turn or as a turn of its own."
+        }
+        None => {
+            "wake: later (the default) — unless your plan waits on it (a todo row that `needs` \
+             it, or a `job_wait`/`task_result` on it), its result is HELD and arrives with any \
+             others in one `[meanwhile]` note at your next break: the next turn you take, or a \
+             long turn's next round once it has been held for the cap (ten minutes by \
+             default). It never starts a turn of its own. Pass `wake: \"now\"` to be told the \
+             moment it ends."
+        }
+    }
+}
+
 /// **How long a foreground run may go before the daemon says it is the wrong
 /// shape** — one minute.
 ///
@@ -382,6 +423,7 @@ impl Tool for Bash {
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
                     "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes); set it higher for a command you know takes longer. Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and wakes you when it ends — rather than behind a raised timeout_ms."},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: when its completion reaches you. `later` (the default): at once if your plan waits on it (a todo row `needs` it, or you `job_wait` it), otherwise held and handed over with other results in one note at your next break, so it does not pull you off the work you are in. `now`: the moment it ends, even mid-turn."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
                     "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."},
@@ -512,6 +554,12 @@ impl Tool for Bash {
         // from `command` anywhere: see [`slug_arg`] for the ruling and for what a blank
         // argument means.
         let slug = slug_arg(args);
+        // R79: when this job's completion reaches the model. Read before anything starts, so a
+        // value that is neither word refuses with nothing run.
+        let wake = match wake_arg(args) {
+            Ok(w) => w,
+            Err(refused) => return refused,
+        };
         let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
         if ctx.backend.stat(cwd).is_none() && cwd != "." {
             let (dir, entries) = super::nearest_listing(ctx.backend, cwd);
@@ -730,6 +778,11 @@ impl Tool for Bash {
                 ),
                 None => String::new(),
             };
+            // R79: `wake: "now"` is said to the daemon here, where the handle first exists.
+            if let Some(w) = wake {
+                ctx.want_completion(&id.0, w);
+            }
+            let wake_said = wake_sentence(wake);
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 Duration::ZERO,
@@ -743,7 +796,7 @@ impl Tool for Bash {
                      completion will reach you by itself when it ends — do not wait for \
                      it, and do not poll.** {clock}\n\n{read_it} Carry on with something \
                      else; when the job finishes you are told, unprompted, with its command, \
-                     how it ended and where its output is.",
+                     how it ended and where its output is.\n\n{wake_said}",
                     view.as_ref().map(|v| v.pid).unwrap_or(0),
                     scope.as_str(),
                     scope.reaped_when(),
@@ -830,6 +883,9 @@ impl Tool for Bash {
         // with the operator named, not a deadline kill — the command is still
         // running, and the handle is the way back.
         if let Foreground::Promoted(p) = foreground {
+            // **The call was blocked on this command**, so its result is one the model is
+            // waiting for (R79): delivered the moment it ends, never held for a break.
+            ctx.want_completion(&id.0, WantedNow::Awaited);
             // **A promotion is a backgrounding, so R41's redirect rule is this one's too.**
             // A command the OPERATOR moved to the background (Ctrl+B) has the same capture as
             // one the model asked for, and the same sentence must not tell its reader to open a
@@ -850,7 +906,8 @@ impl Tool for Bash {
                 format!(
                     "{body}\n\n[`{label}` was moved to the background — you did not ask \
                      for it]\n  command: {command}\n  owned by: {} — {}\n\nIts \
-                     completion will reach you on its own when it ends; do not wait on it.\n",
+                     completion will reach you on its own the moment it ends — this call was \
+                     waiting on it, so it is not held for a break; do not wait on it.\n",
                     p.to,
                     p.to.kind.reaped_when()
                 ),
@@ -1536,6 +1593,36 @@ mod tests {
         assert_eq!(
             deadline_for(Some(u64::MAX), false, false),
             Some(Duration::from_millis(600_000))
+        );
+    }
+
+    /// **`wake` is `now`, `later` or absent, and anything else is refused** (R79) — a misspelt
+    /// `now` that silently meant `later` would be a result the model waits for and never gets.
+    /// The result's sentence says which rule applies.
+    #[test]
+    fn wake_is_now_or_later_and_the_result_says_which() {
+        assert_eq!(wake_arg(&serde_json::json!({})).ok(), Some(None));
+        assert_eq!(
+            wake_arg(&serde_json::json!({"wake": "later"})).ok(),
+            Some(None)
+        );
+        assert_eq!(
+            wake_arg(&serde_json::json!({"wake": "now"})).ok(),
+            Some(Some(WantedNow::WakeNow))
+        );
+        for bad in [serde_json::json!("soon"), serde_json::json!(true)] {
+            assert!(
+                wake_arg(&serde_json::json!({ "wake": bad })).is_err(),
+                "{bad} was not refused"
+            );
+        }
+        assert!(wake_sentence(Some(WantedNow::WakeNow)).starts_with("wake: now"));
+        let later = wake_sentence(None);
+        assert!(
+            later.starts_with("wake: later")
+                && later.contains("HELD")
+                && later.contains("[meanwhile]"),
+            "{later}"
         );
     }
 

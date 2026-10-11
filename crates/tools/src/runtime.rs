@@ -248,6 +248,38 @@ pub type OperatorWaiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 /// same session must get different answers.
 pub type CompletionDelivered = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// **Why a call says it wants a result the moment it exists** (R79).
+///
+/// A completion nothing waits on is HELD and handed over in one batch at the next break
+/// (`crates/harnessd/src/delivery.rs`), so a model working on X is not pulled off it by the
+/// end of Y. These are the two things a call can say that the plan's own structure (a todo
+/// row's `when` or `needs`) does not already say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WantedNow {
+    /// The call is WAITING on it: a `job_wait` or `task_result` on a handle the daemon is
+    /// already delivering, or a foreground command moved to the background while its call
+    /// was blocked on it. The wait returns at once (R23), and this is what keeps that promise
+    /// at once rather than at the next break.
+    Awaited,
+    /// The work was started with `wake: "now"`.
+    WakeNow,
+}
+
+impl WantedNow {
+    /// The word the delivery record and the notices use.
+    pub fn word(self) -> &'static str {
+        match self {
+            WantedNow::Awaited => "awaited",
+            WantedNow::WakeNow => "wake_now",
+        }
+    }
+}
+
+/// **Tell the daemon a result is wanted the moment it exists** — see [`WantedNow`]. Same shape
+/// as [`CompletionDelivered`]: the daemon owns the state, so `crates/tools` hands over the fact
+/// and never learns what a watcher is.
+pub type CompletionWanted = std::sync::Arc<dyn Fn(&str, WantedNow) + Send + Sync>;
+
 /// **What the daemon is told about the OPERATOR's own run, while it runs.**
 ///
 /// The operator's `!` line is the one run with a **stdin the daemon holds** — see
@@ -399,6 +431,8 @@ pub struct InvokeCtx<'a> {
     sink: &'a mut dyn ToolEventSink,
     operator_waiting: Option<&'a OperatorWaiting>,
     completion_delivered: Option<&'a CompletionDelivered>,
+    /// See [`CompletionWanted`]. `None` in a runtime with no daemon behind it.
+    completion_wanted: Option<&'a CompletionWanted>,
     /// See [`OperatorRun`]. `None` in a runtime with no daemon behind it.
     operator_runs: Option<&'a OperatorRuns>,
     /// **Whether this call is the OPERATOR's own**, which is the one thing that
@@ -474,6 +508,15 @@ impl InvokeCtx<'_> {
     /// wrong, only slow.
     pub fn completion_delivered(&self, job: &str) -> bool {
         self.completion_delivered.map(|f| f(job)).unwrap_or(false)
+    }
+
+    /// **Say that this handle's result is wanted the moment it exists** (R79) — see
+    /// [`WantedNow`]. A no-op when nobody wired it: a runtime with no daemon has no batch to
+    /// hold anything in.
+    pub fn want_completion(&self, handle: &str, why: WantedNow) {
+        if let Some(f) = self.completion_wanted {
+            f(handle, why);
+        }
     }
 
     /// **Tell the daemon something about the operator's own run.** See [`OperatorRun`].
@@ -1713,6 +1756,8 @@ pub struct ToolRuntime {
     /// it — a harness driven directly by a test, or a backend that cannot start
     /// processes.
     pub completion_delivered: Option<CompletionDelivered>,
+    /// See [`CompletionWanted`]. `None` in a runtime with no daemon behind it.
+    pub completion_wanted: Option<CompletionWanted>,
     /// See [`OperatorRun`]. `None` in a runtime with no daemon behind it, and the
     /// operator's own run then raises no card at all — the manual way in is unaffected.
     pub operator_runs: Option<OperatorRuns>,
@@ -1731,6 +1776,7 @@ impl ToolRuntime {
             files: crate::files::FileLedger::new(),
             operator_waiting: None,
             completion_delivered: None,
+            completion_wanted: None,
             operator_runs: None,
         }
     }
@@ -1759,6 +1805,12 @@ impl ToolRuntime {
     /// hub it must not know exist.
     pub fn with_operator_runs(mut self, f: OperatorRuns) -> Self {
         self.operator_runs = Some(f);
+        self
+    }
+
+    /// **Wire where a call says it wants a result at once** (R79). See [`CompletionWanted`].
+    pub fn with_completion_wanted(mut self, f: CompletionWanted) -> Self {
+        self.completion_wanted = Some(f);
         self
     }
 
@@ -2050,6 +2102,7 @@ impl ToolRuntime {
                 sink,
                 operator_waiting: self.operator_waiting.as_ref(),
                 completion_delivered: self.completion_delivered.as_ref(),
+                completion_wanted: self.completion_wanted.as_ref(),
                 operator_runs: self.operator_runs.as_ref(),
                 // The operator's own run, and only it. `run`'s flag is the whole
                 // distinction between the two entries — see `InvokeCtx::tty`.

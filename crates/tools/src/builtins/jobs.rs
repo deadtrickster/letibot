@@ -761,10 +761,14 @@ fn wait_on_job(
     // otherwise be told *nobody is watching this* and block for the whole deadline on a job
     // whose answer was already in flight — the exact defect the paragraph below describes.
     if ctx.completion_delivered(&jid.0) {
+        // **And asking is wanting** (R79): a result nothing in the plan waits on is held for the
+        // next break, and a wait is the model saying this one is not that. So the daemon is told
+        // to hand it over the moment it ends — which is what the sentence below promises.
+        ctx.want_completion(&jid.0, crate::runtime::WantedNow::Awaited);
         return Invocation::ok(format!(
             "nothing to wait for: `{label}`'s completion reaches you on its own when it \
-             ends — the daemon is already watching it and will hand you the result \
-             unprompted, as a turn of its own. Waiting here would hold the floor for \
+             ends — the daemon is already watching it and, because you asked, will hand you \
+             the result the moment it ends, unprompted. Waiting here would hold the floor for \
              a deadline while the answer you want is already in flight.\n  command: \
              {}\n  output:  {} bytes so far — read it with `job_output` job=\"{id}\"\n\n\
              Carry on with something else. `job_kill` stops it if you do not want it.",

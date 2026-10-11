@@ -220,8 +220,15 @@ fn a_watched_subagent_is_not_waited_on() {
         let mut reg = crate::runtime::Registry::new();
         reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
         let mut rt = crate::runtime::ToolRuntime::new(reg, Box::new(backend));
+        let wanted = Arc::new(std::sync::Mutex::new(Vec::new()));
         if watched {
             rt = rt.with_completion_delivered(Arc::new(|j: &str| j == "sub-w"));
+            let w = wanted.clone();
+            rt = rt.with_completion_wanted(Arc::new(
+                move |j: &str, why: crate::runtime::WantedNow| {
+                    w.lock().unwrap().push((j.to_string(), why));
+                },
+            ));
         }
         let started = std::time::Instant::now();
         let r = rt.invoke(
@@ -234,26 +241,33 @@ fn a_watched_subagent_is_not_waited_on() {
             &mut crate::NullToolSink,
         );
         let asked = *longest_wait.lock().unwrap();
-        (r, started.elapsed(), asked)
+        let wanted = wanted.lock().unwrap().clone();
+        (r, started.elapsed(), asked, wanted)
     };
 
     // **The watched child was asked for no wait at all** — the cause, rather than
     // `elapsed() < 200ms`, which a loaded box trips with the code right (R67 item 19).
-    let (r, _, asked) = run(true, false);
+    let (r, _, asked, wanted) = run(true, false);
     assert_eq!(
         asked,
         std::time::Duration::ZERO,
         "a watched child was waited on for {asked:?}"
     );
+    // **And the wait told the daemon it wants this one now** (R79), so the answer is not held
+    // for the next break — which is what "reaches you on its own" promises a waiter.
+    assert_eq!(
+        wanted,
+        [("sub-w".to_string(), crate::runtime::WantedNow::Awaited)]
+    );
     assert!(r.payload.contains("nothing to wait for"), "{}", r.payload);
     assert!(r.payload.contains("on its own"), "{}", r.payload);
 
-    let (r, _, _) = run(true, true);
+    let (r, _, _, _) = run(true, true);
     assert!(r.payload.contains("the child's answer"), "{}", r.payload);
 
     // Unwatched: the wait it asked for, to the deadline.
     // (A LOWER bound is safe on any box: a slow machine only makes it truer.)
-    let (r, took, asked) = run(false, false);
+    let (r, took, asked, _) = run(false, false);
     assert_eq!(asked, std::time::Duration::from_millis(400));
     assert!(
         took >= std::time::Duration::from_millis(400),

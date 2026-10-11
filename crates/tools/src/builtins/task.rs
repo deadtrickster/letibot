@@ -748,7 +748,8 @@ impl Tool for TaskTool {
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
                     "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
-                    "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."}
+                    "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": "When the child's answer reaches you. `later` (the default): at once if your plan waits on it (a todo row `needs` the child, or you call `task_result` on it), otherwise held and handed over with other results in one note at your next break, so it does not pull you off the work you are in. `now`: the moment it finishes, even mid-turn."}
                 },
                 "required": ["prompt"]
             }),
@@ -789,6 +790,12 @@ impl Tool for TaskTool {
             Ok(v) => v,
             Err(refused) => return refused,
         };
+        // R79: when the child's answer reaches the model — refused by name before anything
+        // spawns, as `bash` does.
+        let wake = match super::bash::wake_arg(args) {
+            Ok(w) => w,
+            Err(refused) => return refused,
+        };
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
@@ -813,6 +820,9 @@ impl Tool for TaskTool {
             Err(e) => return Invocation::failed(e, "the subagent did not start."),
         };
         ctx.progress(&format!("subagent {handle} started"));
+        if let Some(w) = wake {
+            ctx.want_completion(&handle, w);
+        }
         // **`Backgrounded`, not `Ok`** — the same reason `bash --background`
         // gives: the outcome names a fact about the world, *this is running and
         // has not answered yet*, and an `Ok` here would be grounding for an
@@ -829,9 +839,9 @@ impl Tool for TaskTool {
             format!(
                 "started subagent `{handle}` as `{}`.\n  subtask: {}\n\nIt is working \
                  now, and this call did not wait for it — the rest of this round runs \
-                 while it does, and its answer comes back to you as a turn of its own \
+                 while it does, and its answer comes back to you on its own \
                  when it finishes. `task_result` with task=\"{handle}\" (no \
-                 `timeout_ms`) reports where it has got to.",
+                 `timeout_ms`) reports where it has got to.\n\n{}",
                 match &spec.model {
                     // **The model is named when the child was given one** — a spawn that
                     // prints only the role would leave the reader to guess which model is
@@ -840,6 +850,7 @@ impl Tool for TaskTool {
                     None => spec.role.clone(),
                 },
                 first_line(prompt),
+                super::bash::wake_sentence(wake),
             ),
         )
     }
@@ -1228,6 +1239,10 @@ impl Tool for TaskResultTool {
         // reported as such at once. Unwatched handles — another session's, a runtime with no
         // watcher — keep the blocking wait they asked for.
         let timeout = if !timeout.is_zero() && ctx.completion_delivered(handle) {
+            // **And the wait is the model saying it wants this one** (R79): the answer is
+            // delivered the moment it lands rather than held for the next break, which is the
+            // promise the sentence below makes.
+            ctx.want_completion(handle, crate::runtime::WantedNow::Awaited);
             let status = self.runner.collect(handle, std::time::Duration::ZERO);
             match &status {
                 TaskStatus::Running { note, .. } => {
@@ -1239,8 +1254,8 @@ impl Tool for TaskResultTool {
                     });
                     return Invocation::ok(format!(
                         "nothing to wait for: {}, and its answer reaches you on its own when it \
-                         finishes — the daemon is watching it and will hand you the result \
-                         unprompted, as a turn of its own. Waiting here would hold the floor \
+                         finishes — the daemon is watching it and, because you asked, hands you \
+                         the result the moment it lands, unprompted. Waiting here would hold the floor \
                          while the answer is already on its way. Carry on with something \
                          else; {next}.{}",
                         running_said(handle, &status),
