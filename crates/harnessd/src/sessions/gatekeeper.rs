@@ -510,7 +510,8 @@ pub fn waiting(store: &Store, serving: &Path) -> Vec<MergeEntry> {
 /// indexed `SELECT` and no process.
 fn mine(store: &Store, serving: &Path, entry: &MergeEntry) -> bool {
     let root = crate::mergequeue::root_session(store, &entry.session_id);
-    if store.session(&root).ok().flatten().is_some() {
+    // Existence only: the workspace lookup is the cheapest read that answers it.
+    if store.session_workspace(&root).ok().flatten().is_some() {
         return served_by(store, Some(serving), entry, serving);
     }
     served_by(store, Some(serving), entry, &repo_for(entry, serving))

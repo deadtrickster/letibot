@@ -546,11 +546,10 @@ fn run_captured_env(
 pub fn root_session(store: &Store, session: &str) -> String {
     let mut cur = session.to_string();
     for _ in 0..32 {
-        let parent = store
-            .session(&cur)
-            .ok()
-            .flatten()
-            .and_then(|s| s.parent_session_id);
+        // **The one column it needs, off the primary key.** This walk runs per merge entry
+        // on every review pass, and it used `store.session`, which listed every session's
+        // transcripts to answer for one — see `Store::session_parent`.
+        let parent = store.session_parent(&cur).ok().flatten().flatten();
         match parent {
             Some(p) if !p.is_empty() => cur = p,
             _ => break,
@@ -717,9 +716,9 @@ pub fn served_by(store: &Store, workspace: Option<&Path>, entry: &MergeEntry, re
         return true;
     };
     let root = root_session(store, &entry.session_id);
-    match store.session(&root).ok().flatten() {
-        Some(s) => {
-            let at = Path::new(&s.workspace_root);
+    match store.session_workspace(&root).ok().flatten() {
+        Some(workspace_root) => {
+            let at = Path::new(&workspace_root);
             std::fs::canonicalize(at).unwrap_or(at.to_path_buf()) == *ws
         }
         None => repo.starts_with(ws),

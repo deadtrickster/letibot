@@ -3143,6 +3143,18 @@ impl Store {
     /// time. Those are exactly the sessions somebody wants to delete, and a list that
     /// hides them is a list that cannot be acted on.
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>> {
+        self.sessions_matching("", &[])
+    }
+
+    /// **The one query behind both [`Store::list_sessions`] and [`Store::session`]**,
+    /// with an optional `WHERE` over `s` appended — so the 20-column positional reader
+    /// below exists once. Two copies of a reader that is read BY POSITION would drift the
+    /// first time somebody appended a column to one of them.
+    fn sessions_matching(
+        &self,
+        filter: &str,
+        args: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<StoredSession>> {
         // The "current transcript" subquery orders by `created_at DESC, rowid
         // DESC`, and the rowid is not decoration: a compaction fork is written in
         // the same millisecond as the transcript it forked from, and a
@@ -3154,7 +3166,7 @@ impl Store {
         // transcript's: since forks exist, a cross-transcript count double-counts
         // the history a compaction just stopped carrying, and a picker row that
         // grew because the conversation got shorter is a lie.
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
                     s.created_at,
                     (SELECT t.id FROM transcript t
@@ -3182,10 +3194,10 @@ impl Store {
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
                       ORDER BY i.seq DESC LIMIT 1),
                     s.prefix_fingerprint
-               FROM session s",
-        )?;
+               FROM session s{filter}",
+        ))?;
         let mut out: Vec<StoredSession> = stmt
-            .query_map([], |r| {
+            .query_map(args, |r| {
                 let created_ms: i64 = r.get(6)?;
                 let last: Option<i64> = r.get(9)?;
                 Ok(StoredSession {
@@ -3254,9 +3266,53 @@ impl Store {
             .filter(|t: &String| !t.is_empty()))
     }
 
-    /// One session, or `None`.
+    /// One session, or `None` — **keyed**, so it reads one session's rows and no others.
+    ///
+    /// It was `list_sessions()` and a `find`, which made every lookup of ONE session a
+    /// walk of EVERY session's transcripts: the listing computes a `MAX(created_at)` per
+    /// session over its items, and nothing indexes `created_at`, so it reads the whole
+    /// `transcript_item` table. MEASURED 2026-10-11 on the operator's 3.3 GB store: 0.54 s
+    /// per call with the file hot in the page cache — and the merge queue's review pass made
+    /// dozens of them every 30 s (see [`Store::session_parent`]), which held a daemon's only
+    /// worker at 100% of a core and left an operator's prompt queued for up to a minute with
+    /// nothing on the screen to say why.
     pub fn session(&self, id: &str) -> Result<Option<StoredSession>> {
-        Ok(self.list_sessions()?.into_iter().find(|s| s.id == id))
+        Ok(self
+            .sessions_matching(" WHERE s.id = ?1", &[&id])?
+            .into_iter()
+            .next())
+    }
+
+    /// **A session's parent, and nothing else** — `Some(None)` for a root, `None` for an
+    /// id this store does not hold.
+    ///
+    /// For the callers that walk a parent chain. They were calling [`Store::session`] at
+    /// every step, which built a whole [`StoredSession`] — the transcript joins, the last
+    /// item, the activity time — to read one column of the `session` row. This reads that
+    /// column off the primary key and nothing else.
+    pub fn session_parent(&self, id: &str) -> Result<Option<Option<String>>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT parent_session_id FROM session WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?)
+    }
+
+    /// **A session's workspace, and nothing else** — `None` for an id this store does not
+    /// hold. The same reasoning as [`Store::session_parent`], for the caller that only asks
+    /// which folder a session belongs to.
+    pub fn session_workspace(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT workspace_root FROM session WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
     }
 
     /// Name a session, or clear its name with an empty string.
@@ -4424,6 +4480,53 @@ mod tests {
              INSERT INTO schema_version (version) VALUES ({v});"
         ))
         .unwrap();
+    }
+
+    /// **The two light lookups answer from the `session` row alone**, and they keep the
+    /// three cases the merge queue's parent walk depends on apart: a child names its parent,
+    /// a root names none (`Some(None)`), and an id this store does not hold is `None`. A walk
+    /// that confused the last two would stop at a stranger's id as though it were a root.
+    #[test]
+    fn the_light_lookups_read_one_row_and_keep_root_and_unknown_apart() {
+        let s = Store::open_in_memory().unwrap();
+        let (_, _) = seeded(&s);
+        s.put_session(&SessionRecord {
+            id: "sess-child".into(),
+            title: None,
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w/child".into(),
+            owner: "deadtrickster".into(),
+            role: Some("coder".into()),
+            approvers: vec![],
+            parent_session_id: Some("sess-1".into()),
+        })
+        .unwrap();
+
+        assert_eq!(s.session_parent("sess-child").unwrap(), Some(Some("sess-1".into())));
+        assert_eq!(s.session_parent("sess-1").unwrap(), Some(None), "a root names no parent");
+        assert_eq!(s.session_parent("nobody").unwrap(), None, "an unknown id is not a root");
+
+        assert_eq!(s.session_workspace("sess-child").unwrap().as_deref(), Some("/w/child"));
+        assert_eq!(s.session_workspace("nobody").unwrap(), None);
+    }
+
+    /// **The keyed lookup is the listing's row, field for field.** `session` used to BE the
+    /// listing plus a `find`, so the two could not disagree; now they are two calls into one
+    /// query and this is what keeps them the same row.
+    #[test]
+    fn the_keyed_session_is_the_same_row_the_listing_returns() {
+        let s = Store::open_in_memory().unwrap();
+        let (_, _) = seeded(&s);
+        let keyed = s.session("sess-1").unwrap().expect("held");
+        let listed = s
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == "sess-1")
+            .expect("listed");
+        assert_eq!(keyed, listed);
+        assert!(s.session("nobody").unwrap().is_none());
     }
 
     fn seeded(s: &Store) -> (String, String) {
