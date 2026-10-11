@@ -432,10 +432,13 @@ pub fn spawn_for(
     registry: Arc<letibot_sessionlog::registry::Registry>,
 ) -> Option<JoinHandle<()>> {
     let store_path = cfg.store.clone()?;
-    let env = serve::QueueEnv::production(Arc::new(RegistryDoor {
-        registry,
-        store_path: store_path.clone(),
-    }));
+    let env = serve::QueueEnv::production(
+        Arc::new(RegistryDoor {
+            registry,
+            store_path: store_path.clone(),
+        }),
+        cfg.landing_root.clone(),
+    );
     let service = serve::QueueService::new(store_path, &cfg.workspace, env);
     match service.spawn(stop) {
         Ok(h) => {

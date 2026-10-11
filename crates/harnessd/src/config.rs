@@ -636,6 +636,12 @@ pub struct Config {
     /// enforced by the confinement module, so each of these is a decision with that
     /// consequence, printed next to the grant by `Boundary::describe`.
     pub grants_ro: Vec<std::path::PathBuf>,
+    /// **Where the merge queue's landing worktrees live** — the daemon's own
+    /// (`mergequeue::git::landing_root`, set by [`Config::for_the_daemon`]); `None` in every
+    /// fixture built with [`Config::for_this_box`], so no test reaches the box's real
+    /// `~/.local/share/letibot`. A confined session binds its repository's landing tree under
+    /// this root read-only (`harness::confined_grants`), and the queue lands under it.
+    pub landing_root: Option<std::path::PathBuf>,
     /// **Which role this session seats.** [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -1661,6 +1667,7 @@ impl Config {
             // is the test that keeps it true.
             seat: Seat::default(),
             grants_ro: Vec::new(),
+            landing_root: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
@@ -1717,6 +1724,7 @@ impl Config {
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
         cfg.allow_vm_reviewers();
+        cfg.landing_root = crate::mergequeue::git::landing_root().ok();
         cfg
     }
 

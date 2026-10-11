@@ -2,7 +2,7 @@
 //! failure, and nothing that touches the operator's checkout except the one step that has to
 //! (keeping a checkout of the target coherent after the ref moved — [`follow_checkouts`]).
 //!
-//! The landing happens in a DEDICATED worktree ([`landing_worktree`]) in letibot's own data
+//! The landing happens in a DEDICATED worktree ([`landing_worktree_in`]) in letibot's own data
 //! directory (`~/.local/share/letibot/landing/<repo>-<hash>`, never inside the repository's
 //! `.git`), and the target branch moves by a compare-and-swap on its ref
 //! ([`update_ref_cas`]). The v23 queue ran `git -C <repo> merge --ff-only` in whatever the
@@ -197,8 +197,26 @@ pub fn letibot_data_dir() -> Option<PathBuf> {
         .map(|d| d.join("letibot"))
 }
 
-/// Where every repository's landing worktree lives: `<data dir>/landing`.
+/// The environment variable that puts the landing root somewhere else — what a test that spawns
+/// a daemon sets, so no test ever writes into the box's real `~/.local/share/letibot`.
+pub const LANDING_ROOT_ENV: &str = "LETIBOT_LANDING_ROOT";
+
+/// **Where every repository's landing worktree lives**: `$LETIBOT_LANDING_ROOT`, else `<data
+/// dir>/landing`. Read once, by the daemon (`Config::for_the_daemon`); every other caller is
+/// handed the root it uses (`Config::landing_root`, `QueueEnv::landing_root`).
+///
+/// A unit test never gets the real data directory from here: under `cfg(test)` this is an `Err`
+/// unless the override is set, and [`guard_not_real`] fails a test that lands or grants under it.
 pub fn landing_root() -> Result<PathBuf, String> {
+    if let Some(p) = std::env::var_os(LANDING_ROOT_ENV).filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(p));
+    }
+    if cfg!(test) {
+        return Err(format!(
+            "a unit test has no real landing root; hand it a temporary one \
+             (Config::landing_root, QueueEnv::landing_root or ${LANDING_ROOT_ENV})"
+        ));
+    }
     letibot_data_dir()
         .map(|d| d.join("landing"))
         .ok_or_else(|| {
@@ -206,6 +224,21 @@ pub fn landing_root() -> Result<PathBuf, String> {
              nowhere outside the repository to land in"
                 .to_string()
         })
+}
+
+/// **A test must never make anything in the box's real `~/.local/share/letibot`** — under
+/// `cfg(test)`, a landing or a grant under the real data directory panics. Nothing in a build.
+pub fn guard_not_real(root: &Path) {
+    #[cfg(test)]
+    if let Some(real) = letibot_data_dir() {
+        assert!(
+            !root.starts_with(&real),
+            "a test reached the REAL letibot data directory ({}) through the landing root {}",
+            real.display(),
+            root.display()
+        );
+    }
+    let _ = root;
 }
 
 /// **The landing directory of `repo` under `root`** — `<root>/<basename>-<12 hex of sha256 of
@@ -227,16 +260,11 @@ pub fn landing_dir_in(root: &Path, repo: &Path) -> PathBuf {
     root.join(format!("{base}-{hex}"))
 }
 
-/// [`landing_dir_in`] under the daemon's own [`landing_root`].
-pub fn landing_dir(repo: &Path) -> Result<PathBuf, String> {
-    Ok(landing_dir_in(&landing_root()?, repo))
-}
-
 /// The pre-2026-10-11 place: `<git-common-dir>/letibot-landing`. Only ever read to migrate away.
 pub const OLD_LANDING_NAME: &str = "letibot-landing";
 
-/// **The queue's own worktree for landing and for gating the target** — in letibot's data
-/// directory ([`landing_dir`]), never the operator's checkout, never a branch's own tree, and
+/// **The queue's own worktree for landing and for gating the target** — under `root`
+/// ([`landing_root`] in the daemon, so letibot's data directory; [`landing_dir_in`]), never the operator's checkout, never a branch's own tree, and
 /// never inside the repository's `.git`. Created detached on first use and reused (its `target/`
 /// build cache with it), reset clean to `at` every time.
 ///
@@ -253,12 +281,8 @@ pub const OLD_LANDING_NAME: &str = "letibot-landing";
 /// I can't inspect the landing worktree, and no grant reaches it."* The tree is now somewhere a
 /// session can be granted to read (`Harness`'s confined view binds it read-only), and the
 /// ignored inputs a gate needs are carried in by `[queue] gate_carry` (`mergequeue::carry`).
-pub fn landing_worktree(repo: &Path, at: &str) -> Result<PathBuf, String> {
-    landing_worktree_in(&landing_root()?, repo, at)
-}
-
-/// [`landing_worktree`] with the landing root given — the seam the tests use.
 pub fn landing_worktree_in(root: &Path, repo: &Path, at: &str) -> Result<PathBuf, String> {
+    guard_not_real(root);
     let path = landing_dir_in(root, repo);
     let usable = path.join(".git").exists() && git(&path, &["rev-parse", "HEAD"]).is_ok();
     if !usable {

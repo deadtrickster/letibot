@@ -2647,7 +2647,7 @@ impl Harness {
             (
                 HostBackend::confined_granting(
                     &cfg.workspace,
-                    confined_grants(&cfg, crate::mergequeue::git::landing_root().ok().as_deref()),
+                    confined_grants(&cfg, cfg.landing_root.as_deref()),
                 )
                 .map_err(|e| {
                     HarnessError::Setup(format!(
@@ -17804,6 +17804,7 @@ pub fn confined_grants(
         })
         .collect();
     let landing = landing_root.and_then(|root| {
+        crate::mergequeue::git::guard_not_real(root);
         let repo = crate::mergequeue::git::repo_of_workspace(&cfg.workspace)?;
         let dir = crate::mergequeue::git::landing_dir_in(root, &repo);
         std::fs::create_dir_all(&dir).ok()?;

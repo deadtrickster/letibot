@@ -93,13 +93,19 @@ pub struct QueueEnv {
 impl QueueEnv {
     /// The daemon's own: this daemon's identity, the local gate, thirty minutes, the project's
     /// `leticode.toml`.
-    pub fn production(door: Arc<dyn QueueDoor>) -> Self {
+    pub fn production(door: Arc<dyn QueueDoor>, landing_root: Option<PathBuf>) -> Self {
         QueueEnv {
             me: super::lease::this_daemon().clone(),
             gate: Arc::new(gate::LocalGate),
             door,
             settings: Arc::new(settings::for_repository),
-            landing_root: Arc::new(|_| git::landing_root()),
+            landing_root: Arc::new(move |_| {
+                landing_root.clone().ok_or_else(|| {
+                    "this daemon has no landing root (no letibot data directory), so there is \
+                     nowhere outside the repository to land in"
+                        .to_string()
+                })
+            }),
             gate_deadline: gate::GATE_DEADLINE,
             review_deadline_ms: REVIEW_DEADLINE_MS,
             reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,

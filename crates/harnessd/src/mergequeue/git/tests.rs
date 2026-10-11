@@ -82,3 +82,27 @@ fn an_old_landing_worktree_in_git_is_migrated_away() {
     );
     assert_eq!(migrate_old_landing(&repo), None, "once");
 }
+
+/// **No test makes anything in the box's real `~/.local/share/letibot`.** A fixture's config has
+/// no landing root, a unit test cannot resolve the real one, and landing or granting under it
+/// fails the test.
+#[test]
+fn a_test_never_reaches_the_real_landing_root() {
+    assert_eq!(
+        crate::config::Config::for_this_box("/tmp").landing_root,
+        None,
+        "a fixture lands nowhere real"
+    );
+    if std::env::var_os(LANDING_ROOT_ENV).is_none() {
+        assert!(
+            landing_root().is_err(),
+            "a unit test has no real landing root"
+        );
+    }
+    let Some(real) = letibot_data_dir() else {
+        return;
+    };
+    let caught = std::panic::catch_unwind(|| guard_not_real(&real.join("landing")));
+    assert!(caught.is_err(), "the guard fails a test that reaches it");
+    guard_not_real(std::path::Path::new("/tmp/elsewhere"));
+}
