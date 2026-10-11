@@ -1025,6 +1025,9 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
             command,
             whose,
         ));
+        if let Some(m) = &c.memory {
+            s.push_str(&format!("    memory: {m}\n"));
+        }
     }
     if mine {
         s.push_str(
@@ -18088,6 +18091,7 @@ mod tests {
                 produced: 4096,
                 elapsed_ms: 4_400,
                 detail: String::new(),
+                memory: None,
             }],
             true,
         );
@@ -18128,6 +18132,7 @@ mod tests {
             produced: 1_030,
             elapsed_ms: 54_900,
             detail: String::new(),
+            memory: None,
         };
 
         let named = completion_notice(&[settled("j65", Some("release-build"))], true);
@@ -18177,6 +18182,7 @@ mod tests {
                 produced: 0,
                 elapsed_ms: 0,
                 detail: String::new(),
+                memory: None,
             }],
             true,
         );
@@ -18210,6 +18216,7 @@ mod tests {
             produced: 0,
             elapsed_ms: 0,
             detail: "two facts off a fixture".into(),
+            memory: None,
         };
         let text = subagent_notice(&[one.clone()], true);
         // The label, and it is what tells this row from a job's: one channel, two nouns.
@@ -18291,6 +18298,7 @@ mod tests {
             produced: 12,
             elapsed_ms: 900,
             detail: String::new(),
+            memory: None,
         };
         let child = |id: &str| JobCompletion {
             kind: BackgroundKind::Subagent,
@@ -18302,6 +18310,7 @@ mod tests {
             produced: 0,
             elapsed_ms: 0,
             detail: "off a fixture".into(),
+            memory: None,
         };
 
         // **Nothing settled says nothing**, which is what makes a spurious wake cost no generation.
@@ -18363,6 +18372,7 @@ mod tests {
             produced: 5,
             elapsed_ms: 25_000,
             detail: String::new(),
+            memory: None,
         };
 
         // The level it was handed up to — the ROOT — is not the session that started it.
@@ -18433,6 +18443,7 @@ mod tests {
             produced: 0,
             elapsed_ms: 0,
             detail: "the grandchild answered".into(),
+            memory: None,
         };
         let handed = completion_notices(vec![child], "s-root");
         assert_eq!(handed.len(), 1, "{handed:?}");
@@ -18489,6 +18500,8 @@ mod tests {
             ran_for: Some(std::time::Duration::from_secs(1)),
             produced: 91,
             since_last_output: None,
+            memory_cap: letibot_tools::exec::MemoryCap::NotAsked,
+            memory: None,
         };
 
         // The case that flooded the screen: finished, never backgrounded.
@@ -18574,6 +18587,8 @@ mod tests {
             ran_for: None,
             produced: 12_288,
             since_last_output: None,
+            memory_cap: letibot_tools::exec::MemoryCap::NotAsked,
+            memory: None,
         };
 
         let named = Harness::job_row(&view(Some("release-build")));
@@ -18631,6 +18646,8 @@ mod tests {
             ran_for: None,
             produced: 0,
             since_last_output: None,
+            memory_cap: letibot_tools::exec::MemoryCap::NotAsked,
+            memory: None,
         };
 
         assert_eq!(

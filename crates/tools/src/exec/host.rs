@@ -156,6 +156,10 @@ pub enum Waited {
 /// thread holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobView {
+    /// **The memory cap the job runs under** and **what the kernel counted** — live while it
+    /// runs (the peak so far), and as recorded at the settle once it has ended. TODO.md R65.
+    pub memory_cap: MemoryCap,
+    pub memory: Option<super::scope::MemoryUse>,
     pub id: JobId,
     pub command: String,
     /// **The name the caller gave this job**, or `None` when nobody said one — the
@@ -212,6 +216,25 @@ pub fn job_label(slug: Option<&str>, id: &str) -> String {
 }
 
 impl JobView {
+    /// **One clause about this job's memory**, or `None` for a job nobody capped and the kernel
+    /// counted nothing for — the clause `job_list` and a completion notice both print.
+    pub fn memory_clause(&self) -> Option<String> {
+        match (&self.memory_cap, &self.memory) {
+            (MemoryCap::Uncapped { asked, why }, _) => Some(format!(
+                "UNCAPPED ({} was asked for: {why})",
+                super::scope::human_bytes(*asked)
+            )),
+            (_, Some(u)) if u.killed_at_cap() => {
+                Some(format!("{} — KILLED at the cap", u.clause()))
+            }
+            (_, Some(u)) => Some(u.clause()),
+            (MemoryCap::Capped(b), None) => {
+                Some(format!("capped at {}", super::scope::human_bytes(*b)))
+            }
+            (MemoryCap::NotAsked, None) => None,
+        }
+    }
+
     /// **What this job is called**: `release-build · j65`, or just `j65` when nobody named
     /// it.
     ///
@@ -1056,7 +1079,12 @@ impl HostProcesses {
     fn view(job: &Job) -> JobView {
         let cap = job.capture.lock().expect("capture");
         let life = job.lifetime();
+        let memory = job
+            .memory_used()
+            .or_else(|| super::scope::memory_use_of(&life.scope));
         JobView {
+            memory_cap: job.memory_cap().clone(),
+            memory,
             id: job.id.clone(),
             command: job.command.clone(),
             slug: job.slug.clone(),

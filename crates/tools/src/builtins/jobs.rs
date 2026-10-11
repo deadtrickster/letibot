@@ -351,7 +351,7 @@ impl Tool for JobList {
         for j in &jobs {
             body.push_str(&format!(
                 "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n  pid:     {}\n  \
-                 elapsed: {}\n  output:  {} bytes{}\n",
+                 elapsed: {}\n  output:  {} bytes{}\n{}",
                 // **The name beside the id**, the same rule `/job` and the pane's entry
                 // follow ([`JobView::label`]): the listing is where a model goes to find
                 // the handle it will pass to `job_output`, and the name it stated is a
@@ -368,7 +368,10 @@ impl Tool for JobList {
                     // Work done, and when it last moved. Not "alive".
                     Some(d) => format!(", last wrote {} ago", secs(d)),
                     None => ", nothing written yet".to_string(),
-                }
+                },
+                j.memory_clause()
+                    .map(|m| format!("  memory:  {m}\n"))
+                    .unwrap_or_default()
             ));
         }
 
@@ -699,6 +702,13 @@ fn wait_on_job(
     id: &str,
     timeout: Duration,
 ) -> Invocation {
+    // What an ended job's memory did, as one more line of its result — TODO.md R65's *"every
+    // result reports its peak"*, which a wait is the result of.
+    fn memory_line(v: Option<&JobView>) -> String {
+        v.and_then(JobView::memory_clause)
+            .map(|m| format!("\n  memory:  {m}"))
+            .unwrap_or_default()
+    }
     let before = match resolve_job(host, id) {
         Ok(v) => v,
         Err(inv) => return inv,
@@ -715,10 +725,11 @@ fn wait_on_job(
     if !before.state.is_running() {
         return Invocation::ok(format!(
             "`{label}` had already {} before this wait began — {} elapsed, {} bytes of \
-             output. Nothing was waited for. Read it with `job_output`.",
+             output. Nothing was waited for. Read it with `job_output`.{}",
             before.state.word(),
             secs(before.elapsed),
-            before.produced
+            before.produced,
+            memory_line(Some(&before))
         ));
     }
 
@@ -803,11 +814,12 @@ fn wait_on_job(
     match waited {
         Waited::Happened { state, took } => Invocation::ok(format!(
             "`{label}` {} after {}.\n  command: {}\n  output:  {} bytes — read it with \
-             `job_output` job=\"{id}\"",
+             `job_output` job=\"{id}\"{}",
             state.map(|s| s.word()).unwrap_or_default(),
             secs(took),
             clip(&before.command, 160),
-            after.as_ref().map(|v| v.produced).unwrap_or(0)
+            after.as_ref().map(|v| v.produced).unwrap_or(0),
+            memory_line(after.as_ref())
         )),
         // A deadline is its own outcome and carries PROGRESS, not a liveness bit.
         // `ToolOutcome::Timeout` exists precisely so this cannot be mistaken for a
@@ -1261,6 +1273,8 @@ mod tests {
             ran_for: None,
             produced: 0,
             since_last_output: None,
+            memory_cap: crate::exec::MemoryCap::NotAsked,
+            memory: None,
         }
     }
 

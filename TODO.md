@@ -239,8 +239,11 @@ MEASURED end to end through deepseek: no `memory` → `killed at its memory cap 
 64 MiB cap`; `memory: "512M"` → ran, `peak 192 MiB of a 512 MiB cap`.
 `tools/tests/memory_cap.rs` re-runs itself in a delegated scope and asserts both.
 
-**Still open:** `job_list` and a background job's completion notice do not show cap and peak
-yet; the card above the ceiling is built and unit-tested only through the type system — not yet
+`job_list`, `job_wait` and a background job's completion notice carry a `memory:` line (cap,
+peak, KILLED at the cap) — measured: `job_list` read `memory:  peak 97 MiB of a 128 MiB cap` for a
+backgrounded 100 MB awk.
+
+**Still open:** the card above the ceiling is built and unit-tested only through the type system — not yet
 answered by a person in a head; the cross-session ledger above.
 
 ---

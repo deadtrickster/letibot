@@ -127,6 +127,10 @@ pub enum BackgroundKind {
 /// [`JobWatchers::take_mid_turn_completions`] for a child.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobCompletion {
+    /// **What the job's memory did** — [`letibot_tools::exec::JobView::memory_clause`], read
+    /// off the view at the settle with the rest of the numbers. `None` for a subagent and
+    /// for a job nobody capped.
+    pub memory: Option<String>,
     /// Which of the two this was — see [`BackgroundKind`].
     pub kind: BackgroundKind,
     /// **Which session started it** — the id of the session whose own action
@@ -864,6 +868,7 @@ fn watch_one(
                 // with no table to read. Nobody having named it is `None`, which is the
                 // honest answer and draws exactly the id the notice drew before.
                 let slug = view.as_ref().and_then(|v| v.slug.clone());
+                let memory = view.as_ref().and_then(|v| v.memory_clause());
                 hub.publish(SessionEvent::JobSettled {
                     job: job.clone(),
                     state: word.clone(),
@@ -875,6 +880,7 @@ fn watch_one(
                 // rung because a settlement lands between turns, when nothing else is
                 // asking the worker for anything.
                 queue.push(JobCompletion {
+                    memory,
                     kind: BackgroundKind::Job,
                     owner: queue.owner.clone(),
                     job: job.clone(),
@@ -1003,6 +1009,7 @@ fn settled_here(
         produced: 0,
         elapsed_ms: 0,
         detail,
+        memory: None,
     });
     settled
         .lock()
@@ -1112,6 +1119,7 @@ mod tests {
             produced: 4_096,
             elapsed_ms: 8_000,
             detail: String::new(),
+            memory: None,
         };
         rec.record(&done(BackgroundKind::Job, "j7", "exited 0"));
 
