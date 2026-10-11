@@ -216,7 +216,15 @@ pub(crate) const TAIL_BYTES: u64 = 4096;
 /// notices of one wake with a blank line (`completion_notices`), and a `[job]` group ends at its
 /// own closing paragraph — so a blank line inside a command does not split it.
 pub(crate) fn notice_groups(text: &str) -> Vec<&str> {
-    const TAGS: &[&str] = &["[job] ", "[task] ", "[todo check] ", "[monitor] "];
+    // `[meanwhile] ` is the line R79's held batch opens with; the groups under it are the
+    // ordinary `[job]` / `[task]` ones (`job_notice_meanwhile.txt`).
+    const TAGS: &[&str] = &[
+        "[job] ",
+        "[task] ",
+        "[todo check] ",
+        "[monitor] ",
+        "[meanwhile] ",
+    ];
     let mut out = Vec::new();
     let mut start = 0;
     let mut from = 0;

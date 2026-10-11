@@ -11,6 +11,9 @@ use crate::ui::transcript::job_card::{JobTail, ended_jobs, notice_jobs};
 /// `harnessd`'s `the_tuis_job_notice_fixtures_are_what_completion_notice_writes`.
 const MINE: &str = include_str!("fixtures/job_notice_mine.txt");
 const THEIRS: &str = include_str!("fixtures/job_notice_theirs.txt");
+/// R79's held batch: a `[meanwhile]` line over an ordinary `[job]` group, pinned by `harnessd`'s
+/// `the_meanwhile_notice_is_the_heads_fixture`.
+const MEANWHILE: &str = include_str!("fixtures/job_notice_meanwhile.txt");
 
 /// The operator's paste, the notice's shape with one job — a command over several lines and the
 /// memory clause, which is what used to defeat the fold and draw six raw rows.
@@ -383,4 +386,33 @@ fn only_the_harnesss_rows_are_notices() {
     let joined = a.screen(100, 30).join("\n");
     assert!(a.notice_rows.is_empty(), "{joined}");
     assert!(!joined.contains("⎿ wrote"), "{joined}");
+}
+
+/// **The held batch (R79) keeps the compact rows**: the `[meanwhile]` line folds to one line, and
+/// the jobs under it are two lines each, exactly as a wake's are.
+#[test]
+fn a_meanwhile_batch_draws_its_heading_and_two_lines_per_job() {
+    let jobs = notice_jobs(MEANWHILE).expect("the batch's jobs parse");
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs[0].1.id, "j1042");
+    let mut a = with_notice(MEANWHILE);
+    let screen = a.screen(120, 30);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, "Meanwhile: 2 results arrived while you were busy").len(),
+        1,
+        "{joined}"
+    );
+    assert_eq!(
+        rows_with(&screen, "j1042 · release-build · exited 0 2m54s").len(),
+        1,
+        "{joined}"
+    );
+    assert_eq!(
+        rows_with(&screen, "j1043 · exited 101 4.4s").len(),
+        1,
+        "{joined}"
+    );
+    assert!(!joined.contains(BOILERPLATE), "{joined}");
+    assert_eq!(a.notice_rows.len(), 5, "{:?}", a.notice_rows);
 }

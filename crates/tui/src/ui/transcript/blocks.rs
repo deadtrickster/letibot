@@ -141,6 +141,18 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
     ];
     let mut out: Vec<String> = Vec::new();
     for group in text.split("\n\n") {
+        // **R79's held batch opens with one line of its own** — `[meanwhile] N results arrived
+        // while you were busy — …` — and the groups under it are the ordinary ones. Folded to
+        // what it says before the dash; a heading that runs onto a second line is a shape this
+        // head does not know.
+        if let Some(said) = group.strip_prefix("[meanwhile] ") {
+            if said.contains('\n') {
+                return None;
+            }
+            let said = said.split(" — ").next().unwrap_or(said);
+            out.push(format!("Meanwhile: {said}"));
+            continue;
+        }
         let (head, rest) = group.split_once('\n')?;
         // **The noun a folded line names itself with, and whether its bullet is a HANDLE or the
         // line itself.** A job and a child are collected by an id — it is what `job_output` and
