@@ -216,6 +216,37 @@ fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
     assert!(b.pane_keys(b"\x1c").is_empty());
 }
 
+/// **A pane's program is never sent the operator's mouse** (R67 item 6). The head turns on SGR
+/// mouse reporting for its own clicks and wheel, and `pane_keys` forwarded the raw read
+/// verbatim, so a wheel notch over `!term bash` typed `ESC[<64;30;12M` at the prompt. The
+/// reports are stripped — SGR presses and releases, and the legacy X10 form — and the keys
+/// around them still go down byte for byte.
+#[test]
+fn the_pane_is_never_sent_the_operators_mouse() {
+    let mut a = app();
+    pane(&mut a, b"bash");
+    // A wheel notch alone sends nothing at all.
+    assert!(a.pane_keys(b"\x1b[<64;30;12M").is_empty());
+    // A drag and a release around typed keys: the keys survive, in order.
+    let mut read = b"l".to_vec();
+    read.extend_from_slice(b"\x1b[<32;4;5M\x1b[<0;4;5m");
+    read.extend_from_slice(b"s\x1b[M !!\r");
+    assert_eq!(
+        a.pane_keys(&read),
+        vec![Action::TermInput {
+            bytes: b"ls\r".to_vec()
+        }]
+    );
+    // An ordinary escape sequence is not a report and goes down as it came.
+    assert_eq!(
+        a.pane_keys(b"\x1b[A\x1b[<"),
+        vec![Action::TermInput {
+            bytes: b"\x1b[A\x1b[<".to_vec()
+        }],
+        "an arrow, and an unfinished `ESC [ <` that is not a report"
+    );
+}
+
 /// **Leaving gives the conversation back, and the ending stays as a row.**
 ///
 /// This test used to assert that the frame came back **byte for byte**, with the ending

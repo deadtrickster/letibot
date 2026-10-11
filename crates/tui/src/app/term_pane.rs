@@ -19,6 +19,55 @@ use super::*;
 /// about the stream, and `Link::tick` is where the stream is routed.
 pub const WAY_OUT: u8 = 0x1c;
 
+/// **The operator's mouse, taken out of what a pane's program is sent** (R67 item 6).
+///
+/// rano turns on button and drag tracking (`?1002`) in the SGR encoding (`?1006`) for the
+/// head's own clicks and wheel, so the operator's terminal reports every notch and drag as
+/// `ESC [ < b ; x ; y M` (or `m` on release) — and [`App::pane_keys`] forwarded the raw read
+/// verbatim. A wheel over `!term bash` typed `ESC[<64;30;12M` at the shell's prompt, a drag a
+/// stream of them. `letibot_vt::screen` already rules on this from the other side: the pane
+/// consumes and drops a program's own mouse-mode request, *"the head must not hand a program
+/// the operator's mouse"*. **So no program has mouse mode as far as the pane is concerned, and
+/// the reports are stripped rather than forwarded.**
+///
+/// Also stripped: the legacy X10 report (`ESC [ M` and three bytes), which a terminal that
+/// ignored `?1006` would send instead. Everything else passes through byte for byte. A report
+/// split across two reads is not recognised and would pass through in halves; the decoder
+/// reads the same stream and has the same boundary, and a 100 ms read splitting a 12-byte
+/// report is the rare case, named here rather than buffered for.
+pub(crate) fn without_mouse_reports(raw: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    /// The end of the report starting at `at`, if one starts there.
+    fn report_end(raw: &[u8], at: usize) -> Option<usize> {
+        let rest = raw.get(at..)?;
+        if rest.starts_with(b"\x1b[<") {
+            let body = &rest[3..];
+            let len = body
+                .iter()
+                .position(|b| !(b.is_ascii_digit() || *b == b';'))?;
+            return matches!(body[len], b'M' | b'm').then_some(at + 3 + len + 1);
+        }
+        if rest.starts_with(b"\x1b[M") && rest.len() >= 6 {
+            return Some(at + 6);
+        }
+        None
+    }
+    if !raw.windows(3).any(|w| w == b"\x1b[<" || w == b"\x1b[M") {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    let mut out = Vec::with_capacity(raw.len());
+    let mut at = 0;
+    while at < raw.len() {
+        match report_end(raw, at) {
+            Some(end) => at = end,
+            None => {
+                out.push(raw[at]);
+                at += 1;
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// **The pane: a program that owns the screen, drawn in the conversation's rectangle.**
 ///
 /// # What it is, and the two things it is not

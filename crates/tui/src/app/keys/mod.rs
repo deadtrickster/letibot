@@ -702,6 +702,9 @@ impl App {
         if p.closing || p.detached {
             return Vec::new();
         }
+        // **Never the operator's mouse** — see [`without_mouse_reports`]. `0x1c` cannot be
+        // inside a report, so stripping first moves no way-out byte.
+        let raw = &*crate::app::term_pane::without_mouse_reports(raw);
         match raw.iter().position(|b| *b == WAY_OUT) {
             Some(at) => {
                 let mut out = Vec::new();
