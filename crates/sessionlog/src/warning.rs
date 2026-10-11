@@ -177,6 +177,17 @@ pub const TABLE: &[(&str, Class)] = &[
     // job is *look at this* — the way in is `!send`. Deleting it puts the operator back in front
     // of a command that says nothing and never ends, which is the report it was written for.
     ("operator_run_unreadable", Class::Failure),
+    // **R67 item 15: the operator's own acts that failed and used to reach only stderr.** A door
+    // call that was not admitted or could not be run by the daemon; a `!` line that could not have
+    // a thread of its own and is holding the daemon's one worker while it runs. Failures by the
+    // rule at the top: each is something that did not work, and the head that asked was told
+    // nothing at all until these were published.
+    ("operator_call_failed", Class::Failure),
+    ("operator_shell_on_worker", Class::Failure),
+    // **The review queue's session did not open** — so nothing in the merge queue is reviewed by
+    // this daemon, and from a head that looks exactly like a queue with nothing to review. Said
+    // once per reason (`Sessions::ensure_gatekeeper`), on the daemon's own session.
+    ("review_queue_not_open", Class::Failure),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.
@@ -764,16 +775,23 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 93 codes, of which **9** are the reader's own input refused.
+    /// **The census, pinned.** 96 codes, of which **9** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_33_routine_9_refused_and_51_failures() {
+    fn the_table_is_33_routine_9_refused_and_54_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **93, not the 92 the last census was taken at.** One arrival, and it moves the red
+        // **96, not the 93 the last census was taken at.** Three arrivals, all in the red register
+        // and all R67 item 15's — failures that used to reach only the daemon's stderr:
+        // `operator_call_failed` (a door call not admitted, or admitted and not runnable),
+        // `operator_shell_on_worker` (a `!` run that could not have its own thread and holds the
+        // worker), and `review_queue_not_open` (the review queue's session did not open, so the
+        // merge queue is reviewed by nobody here). Each is a thing that did not work.
+        //
+        // **93, not the 92 the census before it was taken at.** One arrival, and it moves the red
         // register: `context_claim_repeated` is a model that said its context is full AGAIN in the
         // same turn after the harness told it the measured fill (R71). A Failure by the rule at
         // the top of the table: the correction did not take, and the sentence is for the operator
@@ -898,12 +916,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 93, "the table's size");
+        assert_eq!(TABLE.len(), 96, "the table's size");
         assert_eq!(count(Class::Routine), 33);
         assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
-        assert_eq!(count(Class::Failure), 51);
+        assert_eq!(count(Class::Failure), 54);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 51 of 93 and the middle is 9**, which is why the third register is a
+        // register is 54 of 96 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

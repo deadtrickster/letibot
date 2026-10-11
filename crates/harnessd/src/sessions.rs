@@ -704,6 +704,10 @@ pub struct Sessions<'a> {
     /// could not, because it also has to stand down while the forced door still
     /// has work to do. See `compact_because_refused` and `WallWhy`.
     wall_gave_up: std::collections::HashSet<String>,
+    /// **The last reason the review queue's session did not open, as said on a hub** — so
+    /// [`Sessions::ensure_gatekeeper`], which runs every review pass, says a standing failure
+    /// once and a new one again. `None` once it opens.
+    gatekeeper_said: Option<String>,
 }
 
 /// **The three facts a session the DAEMON ITSELF starts has, which the daemon's command line
@@ -866,6 +870,7 @@ impl<'a> Sessions<'a> {
             reviews_at: Some(Instant::now()),
             bangs: HashMap::new(),
             wall_gave_up: std::collections::HashSet::new(),
+            gatekeeper_said: None,
         };
         let (tool, cond) = sessions.seat_tool(&id);
         // Compose the system prompt from `prompts.toml` and the standing notes,
@@ -2282,7 +2287,43 @@ impl<'a> Sessions<'a> {
     /// The queue lives in the store and so does the board filled from it, so a daemon with no
     /// `--store` has no queue to be a session for. That is the line the reviewer door draws
     /// (`NoReviewer`), drawn here rather than opening a session that could never hold a row.
+    ///
+    /// # A failure is said on a hub, once per reason
+    ///
+    /// R67 item 15: the error went to the daemon's stderr and nowhere else, so a queue whose
+    /// reviewing session could not open looked, from every head, like a queue with nothing to
+    /// review. It is published as `review_queue_not_open` on the daemon's own session and on the
+    /// queue's session when it is registered — and only when the reason CHANGES, because this is
+    /// called every review pass and a failure that stands would otherwise be a line every pass.
     pub fn ensure_gatekeeper(&mut self) -> Result<bool, HarnessError> {
+        let out = self.open_the_gatekeeper();
+        match &out {
+            Ok(_) => self.gatekeeper_said = None,
+            Err(e) => {
+                let said = e.to_string();
+                if self.gatekeeper_said.as_deref() != Some(said.as_str()) {
+                    let detail = format!(
+                        "the review queue's session `{}` did not open, so nothing in the merge \
+                         queue is being reviewed by this daemon: {said}. It is tried again on \
+                         every review pass; this is said again only if the reason changes.",
+                        gatekeeper::SESSION
+                    );
+                    let mut ids = vec![self.base.session_id.clone()];
+                    if self.registry.get(gatekeeper::SESSION).is_some() {
+                        ids.push(gatekeeper::SESSION.to_string());
+                    }
+                    for id in ids {
+                        self.warn(&id, "review_queue_not_open", detail.clone());
+                    }
+                    self.gatekeeper_said = Some(said);
+                }
+            }
+        }
+        out
+    }
+
+    /// The body of [`Sessions::ensure_gatekeeper`], whose doc is this function's.
+    fn open_the_gatekeeper(&mut self) -> Result<bool, HarnessError> {
         if self.base.store.is_none() || self.open.contains_key(gatekeeper::SESSION) {
             return Ok(false);
         }
@@ -3055,6 +3096,52 @@ impl<'a> Sessions<'a> {
     // these are the worker's hands on the state it owns.
     // ---------------------------------------------------------------------------
 
+    /// **A failure on the session's own log** — the hub every attached head draws — for the
+    /// arms whose only other witness is the daemon's stderr.
+    ///
+    /// R67 item 15: an `Outcome::Failed` from `dispatch` reaches `on_reply`, and `on_reply` is an
+    /// `eprintln!` (`cli.rs`). So an operator's `!` line whose rows could not be recorded, a door
+    /// call that failed, a session that was not open — each was a sentence in a log nobody at the
+    /// head reads, and the head that asked saw nothing at all. The stderr line stays (the
+    /// caller's, or `on_reply`'s); this is the half that reaches the person.
+    fn warn(&self, session_id: &str, code: &str, detail: String) {
+        if let Some(hub) = self.registry.get(session_id) {
+            hub.publish(SessionEvent::Warning {
+                code: code.to_string(),
+                detail,
+                compaction: None,
+            });
+        }
+    }
+
+    /// **The operator's run could not have a thread of its own, so it runs on the worker** —
+    /// the daemon's log line, and now the session's: while it runs, every other session's work
+    /// waits behind it, which is the cost the person at the head is paying and should be told.
+    fn said_on_the_worker(&self, session_id: &str, line: &str, why: &str) {
+        eprintln!("  {session_id} · ! run on the worker instead of its own thread: {why}");
+        self.warn(
+            session_id,
+            "operator_shell_on_worker",
+            format!(
+                "`{line}` runs on the daemon's one worker instead of a thread of its own ({why}), \
+                 so every other session's work waits until it ends."
+            ),
+        );
+    }
+
+    /// **The session was not open, said where the asker reads** — the sentence `Outcome::Failed`
+    /// carries, published as `session_unavailable` (the store-family code for *this session could
+    /// not be used*) and handed back for the outcome.
+    fn not_open(&self, session_id: &str, what: &str) -> String {
+        let said = format!("session {session_id} is not open");
+        self.warn(
+            session_id,
+            "session_unavailable",
+            format!("{what} was not run: {said} in this daemon."),
+        );
+        said
+    }
+
     /// The serialization state for `session_id`'s operator runs — created with the
     /// harness (both open paths attach the same `Arc` to it), so a session this map
     /// holds always has one.
@@ -3143,16 +3230,27 @@ impl<'a> Sessions<'a> {
     fn run_operator_shell_here(&mut self, session_id: &str, line: &str, who: &str) -> Outcome {
         let ran = match self.open.get_mut(session_id) {
             Some(h) => h.run_operator_shell(line, who),
-            None => Err(format!("session {session_id} is not open")),
+            None => Err(self.not_open(session_id, &format!("`{line}`"))),
         };
         if let Err(e) = ran {
+            self.warn(
+                session_id,
+                "operator_shell_failed",
+                format!(
+                    "`{who}` ran `{line}` from their own console and it could not be recorded: \
+                     {e}. The command may have run; what is missing is the row the next turn \
+                     would have read."
+                ),
+            );
             return Outcome::Failed(e);
         }
         // **And the turn its rows are for** — the same sending half the settle arm runs,
         // because the operator asked for their command's result to reach the model.
         let out = match self.open.get_mut(session_id) {
             Some(h) => h.run_after_operator_shell(),
-            None => return Outcome::Failed(format!("session {session_id} is not open")),
+            None => {
+                return Outcome::Failed(self.not_open(session_id, "the turn after your `!` line"));
+            }
         };
         self.publish_title(session_id);
         let hub = self.registry.get(session_id);
@@ -3522,7 +3620,7 @@ impl<'a> Sessions<'a> {
                 let who = who.clone();
                 let admitted = match self.open.get_mut(session_id) {
                     Some(h) => h.admit_operator_call(&call_id, &name, &arguments, &who),
-                    None => Err(format!("session {session_id} is not open")),
+                    None => Err(self.not_open(session_id, &format!("`{name}`"))),
                 };
                 match admitted {
                     Ok(()) => {
@@ -3547,18 +3645,36 @@ impl<'a> Sessions<'a> {
                         if *execute {
                             let said = match self.open.get_mut(session_id) {
                                 Some(h) => h.run_operator_call(&call_id, &name, &arguments, &who),
-                                None => Err(format!("session {session_id} is not open")),
+                                None => Err(self.not_open(session_id, &format!("`{name}`"))),
                             };
                             if let Some(hub) = &hub {
                                 hub.take_operator_call(&call_id);
                             }
                             if let Err(e) = said {
+                                self.warn(
+                                    session_id,
+                                    "operator_call_failed",
+                                    format!(
+                                        "`{who}`'s `{name}` (call `{call_id}`) was admitted and the \
+                                         daemon could not run it: {e}"
+                                    ),
+                                );
                                 return Outcome::Failed(e);
                             }
                         }
                         Outcome::Ignored
                     }
-                    Err(e) => Outcome::Failed(e),
+                    Err(e) => {
+                        self.warn(
+                            session_id,
+                            "operator_call_failed",
+                            format!(
+                                "`{who}`'s `{name}` (call `{call_id}`) was not admitted, so \
+                                 nothing ran: {e}"
+                            ),
+                        );
+                        Outcome::Failed(e)
+                    }
                 }
             }
             // **The operator's shell line, run by this daemon and recorded as two rows**
@@ -3572,7 +3688,7 @@ impl<'a> Sessions<'a> {
             CommandKind::OperatorShell { line, who } => {
                 let (line, who) = (line.clone(), who.clone());
                 if !self.open.contains_key(session_id) {
-                    return Outcome::Failed(format!("session {session_id} is not open"));
+                    return Outcome::Failed(self.not_open(session_id, &format!("`{line}`")));
                 }
                 // **One operator run per session at a time** — `Prompts` holds ONE input
                 // handle, so a second concurrent run would steal the first's card and
@@ -3590,9 +3706,7 @@ impl<'a> Sessions<'a> {
                     // the old behaviour, with the reason on the log rather than a silent
                     // loss of the operator's line.
                     Err(why) => {
-                        eprintln!(
-                            "  {session_id} · ! run on the worker instead of its own thread: {why}"
-                        );
+                        self.said_on_the_worker(session_id, &line, &why);
                         self.run_operator_shell_here(session_id, &line, &who)
                     }
                 }
@@ -3619,21 +3733,34 @@ impl<'a> Sessions<'a> {
                         payload.clone(),
                         spill.as_ref().map(|s| (s.full_bytes, s.hash.clone())),
                     ),
-                    None => Err(format!("session {session_id} is not open")),
+                    None => Err(self.not_open(session_id, &format!("the rows of `{line}`"))),
                 };
-                if let Err(e) = settled {
-                    return Outcome::Failed(e);
-                }
-                // **The run is over, so the next queued line starts now** — not when some
-                // later command happens to come through. One per settle: the one started
-                // here settles in its own turn, and drains the next.
+                // **The run is over, whether or not its rows could be written** — so the flag
+                // comes down FIRST, before anything here can return. R67 item 11: this used to
+                // sit after an early `return Outcome::Failed` for a settle that failed, so one
+                // failed settle left the session's run in flight for ever and every later `!`
+                // line was parked behind a run that had already ended — `!` dead for the
+                // session's life, with the reason on stderr only.
                 self.clear_bang_in_flight(session_id);
+                if let Err(e) = &settled {
+                    self.warn(
+                        session_id,
+                        "operator_shell_failed",
+                        format!(
+                            "`{who}` ran `{line}` from their own console and it could not be \
+                             recorded: {e}. The command ran; what is missing is the row the next \
+                             turn would have read, so no turn was started for it. Your next `!` \
+                             line runs as usual."
+                        ),
+                    );
+                }
+                // **The next queued line starts now** — not when some later command happens to
+                // come through, and not never because this one's rows failed. One per settle:
+                // the one started here settles in its own turn, and drains the next.
                 let next = self.pop_queued_bang_line(session_id);
                 if let Some((next_line, next_who)) = next {
                     if let Err(why) = self.start_operator_run(session_id, &next_line, &next_who) {
-                        eprintln!(
-                            "  {session_id} · ! run on the worker instead of its own thread: {why}"
-                        );
+                        self.said_on_the_worker(session_id, &next_line, &why);
                         // Same fallback as the dispatch arm above, and for the same
                         // reason: a queued line is not lost because a thread could not
                         // be started. It runs here, between turns, where it would have
@@ -3644,6 +3771,9 @@ impl<'a> Sessions<'a> {
                         }
                     }
                 }
+                if let Err(e) = settled {
+                    return Outcome::Failed(e);
+                }
                 // **And the turn its rows are for** — the operator's correction, in their
                 // words: *"my commands should start a turn and should be printed to me"*.
                 // The rows above are the printing; this is the turn. `Ignored` here was
@@ -3651,7 +3781,11 @@ impl<'a> Sessions<'a> {
                 // started a turn, which is a command nobody answered.
                 let out = match self.open.get_mut(session_id) {
                     Some(h) => h.run_after_operator_shell(),
-                    None => return Outcome::Failed(format!("session {session_id} is not open")),
+                    None => {
+                        return Outcome::Failed(
+                            self.not_open(session_id, "the turn after your `!` line"),
+                        );
+                    }
                 };
                 self.publish_title(session_id);
                 // A `!` turn is a turn: it appends rows, it can reach the wall, and a
@@ -5927,5 +6061,98 @@ mod a_childs_state_is_read_from_the_right_facts {
             children.child("s-1-sub-6").is_none(),
             "a child the journal says `done` is not in the snapshot, which is how a row that              waits on it is released"
         );
+    }
+}
+
+#[cfg(test)]
+mod operator_run_failures {
+    //! **A `!` run whose rows could not be written leaves the session able to run the next one** —
+    //! R67 item 11 — and the failure reaches the session's hub rather than only the daemon's
+    //! stderr (item 15).
+    //!
+    //! The settle that fails here fails because the harness is gone from `open` between the run's
+    //! start and its result — the session closed under a run in flight, which is one of the ways
+    //! the arm's `Err` is reached and the only one a test can arrange without breaking a store.
+    //! What the test measures is the arm's bookkeeping, which is the same whatever the reason:
+    //! the run's flag, and what was said where.
+    use super::*;
+
+    #[test]
+    fn a_settle_that_fails_still_ends_the_run_and_says_so_on_the_hub() {
+        let Some(gguf) = crate::vocab_gguf() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-bang-settle-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("the temp dir");
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.vocab_gguf = Some(gguf);
+        cfg.store = Some(dir.join("sessions.db"));
+        cfg.session_id = "s-bang".into();
+        // No turn runs here — the settle fails before one could — but a test that could reach
+        // this box's model server must not be able to, so the endpoint is a port nothing serves.
+        cfg.endpoint = letibot_turn::Endpoint::new("127.0.0.1", 9);
+        let parts = Parts::load(&cfg).expect("the vocabulary loads");
+        let registry = Registry::new();
+        registry
+            .create(&cfg.session_id, "", Sessions::wiring(&cfg))
+            .expect("the session registers");
+        let mut sessions =
+            Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("it opens");
+
+        // A run in flight, as `start_operator_run` leaves it — and then the session's harness
+        // goes away before the result comes back.
+        sessions
+            .bang_state("s-bang")
+            .expect("the run state")
+            .start();
+        assert!(sessions.bang_run_in_flight("s-bang"));
+        let harness = sessions.open.remove("s-bang").expect("the harness");
+
+        let settle = QueuedCommand {
+            head_id: "test-head".into(),
+            identity: "dead".into(),
+            client_request_id: "req-1".into(),
+            at_seq: 0,
+            kind: CommandKind::OperatorShellResult {
+                line: "! ls".into(),
+                who: "dead".into(),
+                call_id: "bang-1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "a\nb\n".into(),
+                spill: None,
+            },
+        };
+        let out = sessions.dispatch("s-bang", &settle);
+        assert!(
+            matches!(out, Outcome::Failed(_)),
+            "the settle had nowhere to write"
+        );
+        assert!(
+            !sessions.bang_run_in_flight("s-bang"),
+            "**the run is over, so the flag is down** — left up, every later `!` line is parked \
+             behind a run that already ended, and `!` is dead for the session's life"
+        );
+
+        let codes: Vec<String> = registry
+            .get("s-bang")
+            .expect("the hub")
+            .retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning { code, .. } => Some(code.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            codes.iter().any(|c| c == "operator_shell_failed"),
+            "the failure is on the session's own log, not only on stderr: {codes:?}"
+        );
+        drop(harness);
+        registry.close();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
