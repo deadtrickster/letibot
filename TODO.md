@@ -1734,6 +1734,43 @@ daemon's re-arm.
 
 ---
 
+## R78 — Up no longer recalls prompt history — **OPEN, 2026-10-11, likely an R69 regression**
+
+The operator: *"also up arrow is broken - it doesnt scroll prompt history"*. R69 moved every key
+through the surface stack and per-surface binding tables the same day. The recall path is in
+`crates/tui/src/app/keys/mod.rs`: `refresh_prompt_history` before a recall (~75–79), the queued-
+prompt take-back on Up with an empty composer (~205), Up scrolling the transcript when the reader
+is parked (`!self.following()`, ~272), and the editor's own `vertical(true, …)` (~386). Find
+which arm now takes Up first in the conversation surface (likely the parked-scroll arm, or the
+`Conversation` binding table's Up) and pin it with a test: an empty composer, prompts sent
+earlier, Up → the previous prompt in the composer.
+
+---
+
+## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **OPEN, 2026-10-11**
+
+The operator: *"can job and agent results come mid turn? i think you guys are getting distracted
+when this happens"*. Read in the code:
+
+- A **child** (subagent) session gets job and child completions MID-TURN, at round boundaries:
+  `JobWatchers::take_mid_turn_completions` (`crates/harnessd/src/jobwatch.rs` ~495), drained at
+  `harness.rs` ~1269 into the turn's steering.
+- A **root** session gets each completion BETWEEN turns as a WAKE — a turn of its own
+  (`Sessions::wake` → `Harness::wake` → the `[job]` notice) — so a model that was working on X
+  ends its turn and is immediately handed "job j975 ended" as the next thing to do.
+- Monitor firings reach a running turn through steering for every session.
+
+Nothing asks whether the model is waiting on the result. **Proposal:** deliver by RELEVANCE — a
+completion the plan depends on (a todo row with `when: job`, a `needs` on that job or child, or a
+`job_wait` it is blocked in) is delivered at once as today; any other is HELD and folded into the
+next natural break as ONE compact "meanwhile:" line per batch (end of the current turn's last
+round, or the next turn the model takes anyway), and never starts a wake turn on its own.
+Batch several completions into one note. Keep the head's compact job rows (39ee4c8) unchanged.
+Measure the effect on a session like pg-noop (count wake turns caused by routine completions in
+a day, before/after).
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
