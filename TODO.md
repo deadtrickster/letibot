@@ -456,18 +456,23 @@ traced; each was re-checked where marked ✓.
 10. **A nag-started turn strands its calls.** `Sessions::deliver_due_nags` (`sessions.rs:2379`)
     runs a turn and arms neither `arm_sweep` nor `arm_wake`, after `sweep_at` was cleared
     (`:2367`) — the wake arm's bug (fixed 2026-10-10) on the third door.
+    **DONE** (branch `r67-daemon`, `e28cebc`): the nag door arms the sweep before its turn and the monitor wake after; `SWEEP_AFTER` moved beside the clock. `tests/nag_arms_the_sweep.rs`.
 11. **`!` stops working for a session after one failed settle.** `OperatorShellResult`
     (`sessions.rs ~3525`) returns `Failed` before `clear_bang_in_flight`; every later `!` line is
     queued for ever. Error to stderr only.
+    **DONE** (`e6d3377`): the flag comes down before any return; a failed settle is `operator_shell_failed` on the hub and the next queued line still starts. `sessions::operator_run_failures`.
 12. ✓ **One store error ends the merge queue thread for good.** `mergequeue.rs:4116/4121` — the
     loop must retry with backoff and say so on the hubs (R61 req. 4 makes it structural; this is
     the stop-gap that keeps today's queue alive).
+    **DONE** (`1651b85`): `run` never ends on a store error — 1s→60s backoff honouring `stop`, `merge_queue_store_error` once per reason, `merge_queue_recovered` after. `mergequeue::store_errors`.
 13. **The deadline watchdog never exits.** `tools/src/exec/host.rs:629/660` (`Deadlines::run`, an
     endless `loop` holding its own `Arc`): one `letibot-deadline` thread per `HostProcesses`
     forever — one of R66's two threads per finished subagent.
+    **DONE** (`d338e9c`): `Deadlines::close` from `HostProcesses`' `Drop`; the watchdog returns. `a_dropped_host_takes_its_deadline_thread_with_it` (a `Weak`, then the tid in `/proc/self/task`).
 14. **The idle sweep is quadratic, on the worker.** `abandoned_calls` (`harness.rs:20292`):
     `answered.iter().any` per asked call over the whole transcript; with ~15k results, ~10⁸
     compares per sweep, every 2 s after a turn. A `HashSet`, and only items since the last sweep.
+    **DONE** (`2ea0e38`): one pass into a `HashSet` of borrowed ids. **NOT DONE: "only items since the last sweep"** — a late answer is still an answer, so the whole transcript is the honest input; linear is the fix. No non-timing test fails on the quadratic version.
 15. **Failures that reach no hub** — `let _ = self.append_results(…)` in
     `Harness::sweep_abandoned_calls` (`harness.rs:5228`, the hub block at 5222 is dead);
     `JobRecorder::put_job` (`jobwatch.rs:776, 813`); `flush_todos` (`harness.rs:7044, 7056, 7704,
@@ -479,8 +484,10 @@ traced; each was re-checked where marked ✓.
     (`sessions.rs ~3460, 3497, 3538`, reaching only `on_reply` → `eprintln!` at `cli.rs:1761`); in
     `daemon.rs`, the `ensure_gatekeeper` error and the sweep and nag counts (a nag's FAILURE is
     published, by `after_turn`).
+    **DONE** (`e6d3377`, `2ea0e38`, `41f5e2d`): every site now also publishes a hub warning — `calls_abandoned`/`transcript_store` (sweep), `job_not_recorded` (recorder, via a `Weak<Hub>`), `todos_not_stored` + `todo_move_unresolved` (`flush_todos_or_say`), `merge_queue_unreadable` (`SessionSource::merge_*` now return `Result`; `Registry::merge_queue_for`), `child_door_refused` (Leave), `operator_call_failed`/`session_unavailable`/`operator_shell_on_worker`/`operator_shell_failed` (operator arms), `review_queue_not_open` (once per reason). Census 103. Sweep and nag COUNTS stay stderr-only (routine). Tests in idle_clock.rs, todos.rs, jobwatch, resume_frames, sessions.
 16. **`Catalogue::load` re-reads the 5 MiB model catalogue on every `Config::settings`** — every
     session open (found by memwatch's large-allocation log).
+    **DONE** (`660a79e`): `Catalogue::load` → `Arc<Catalogue>` through `cached_read` (path + mtime + length); snapshot parsed once. `a_file_is_parsed_once_until_it_changes`.
 
 **Tests (flaky by construction):**
 
@@ -514,6 +521,7 @@ traced; each was re-checked where marked ✓.
 
 21. **The flowy seat's slot can outlive a failed open.** `seat_tool` inserts into `slots` before
     the open can fail; `detach_seat` clears `seated` but not `slots`. Minor.
+    **DONE** (`662f7eb`): a failed open removes its `slots`/`seated` entries. `sessions::seat_slots`. The `detach_seat` half is not a defect: it empties every slot, and the entries must stay for `attach_seat` to refill.
 22. **A shared global counter makes one allocation test single-test-only.**
     `tui/tests/frame_allocations.rs:43` counts every allocation in the binary through a global
     `ALLOCS`; safe while the binary holds one test, flaky the day a second is added.
@@ -539,9 +547,11 @@ traced; each was re-checked where marked ✓.
     **DONE** (`e25a7d5`): `a_click_on_a_queue_row_selects_the_entry_drawn_there` (the hit test was already right).
 26. **The queue's log repeats `landed <same sha>` 7 and 10 times in a row** — reset rows recognised
     as already on main, logged as landings each pass. Noise that reads like work.
+    **DONE** (`1651b85`): a tip is logged as a landing once; the same tip again says *already on main, nothing new merged*. `the_same_tip_is_logged_as_a_landing_once`.
 27. **Linear lookups that grow with the daemon's age**: `Registry::get` scans every entry under
     the registry lock; `HostProcesses` finds a job by `iter()` over every job ever run
     (`host.rs:1740`).
+    **DONE** (`d338e9c`): `HostProcesses.by_id` beside `jobs`; `Registry` `Inner.index` with `push`/`entry`/`entry_mut`/`has` (nothing removes entries today; R68's remove must update it). Behaviour-neutral, so no failing-before test.
 
 **Still open?** Each item names its file and line; re-read it before starting — an item found
 already fixed goes to `TODO-settled.md` with the evidence. **Done when:** each has a test that
