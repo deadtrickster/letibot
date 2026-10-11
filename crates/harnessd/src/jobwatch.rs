@@ -307,6 +307,11 @@ struct ReadRecord {
     /// Turns this session has ENDED — counted by the harness after every turn's rounds
     /// ([`JobWatchers::turn_ended`]).
     turns_ended: u64,
+    /// **When the last of those turns ended** — the line between a result that arrived while the
+    /// model was WORKING and one that arrived while it was idle (R79, the operator 2026-10-11:
+    /// *"jobs were ran for a reason and held for a reason. once turn ends no reason to hold"*).
+    /// `None` until a turn has ended in this process.
+    ended_at: Option<SystemTime>,
     /// Handle or slug → (when it ended, `turns_ended` at the moment it was delivered).
     seen: HashMap<String, (SystemTime, u64)>,
 }
@@ -611,8 +616,32 @@ impl JobWatchers {
 
     /// **A turn of this session has ended** — counted after its rounds have run, whatever they
     /// came to, by the harness's two doors into `run_rounds`.
+    ///
+    /// **And a turn that ends with results held rings this session's own wake** (R79, the
+    /// operator 2026-10-11: *"jobs were ran for a reason and held for a reason. once turn ends no
+    /// reason to hold"*). Holding exists only so a RUNNING turn is not interrupted; once the turn is
+    /// over nothing is being interrupted, so the held batch is delivered at once as its own turn —
+    /// through the same door an immediate completion between turns takes (`Harness::wake`). The
+    /// fact guarded is *held is non-empty at the moment the turn ended*; a completion still in the
+    /// queue rang when it was queued, and the bell keeps one ring per session, so a second ring is
+    /// harmless. A set with no bell (a test's harness, no daemon) rings nothing.
     pub fn turn_ended(&self) {
-        self.read.lock().expect("read record").turns_ended += 1;
+        {
+            let mut r = self.read.lock().expect("read record");
+            r.turns_ended += 1;
+            r.ended_at = Some(SystemTime::now());
+        }
+        if self.held_count() > 0
+            && let Some(bell) = &self.bell
+        {
+            bell.ring_wake(&self.me);
+        }
+    }
+
+    /// **When this session's last turn ended**, or `None` before its first — what tells a result
+    /// that arrived while the model was working from one that arrived while it was idle.
+    pub fn last_turn_ended(&self) -> Option<SystemTime> {
+        self.read.lock().expect("read record").ended_at
     }
 
     /// **How much of an ended job's or child's grace is left, or `None` when it has none** — the

@@ -132,6 +132,9 @@ fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
     assert_eq!(w.held_count(), 2, "both are held, not dropped");
     assert!(dir.records().is_empty(), "nothing has been delivered yet");
 
+    // The long turn ends; the next turn's start (a prompt that got there before the turn-end
+    // wake) carries what was held through it.
+    w.turn_ended();
     let note = d.at_turn_start().expect("the next turn carries the batch");
     assert!(
         note.starts_with("[meanwhile] 2 results arrived while you were busy"),
@@ -163,6 +166,139 @@ fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
     assert!(
         j1["waited_ms"].as_u64().unwrap() >= 30_000,
         "the wait is measured from the arrival: {j1}"
+    );
+}
+
+/// A ROOT's watcher set rung through a real registry's bell, with its hub adopted — so a test can
+/// ask the worker's own question, *is there a wake for this session?*
+fn rung_watchers() -> (
+    Arc<Hub>,
+    Arc<JobWatchers>,
+    Arc<letibot_sessionlog::registry::Registry>,
+) {
+    let registry = letibot_sessionlog::registry::Registry::new();
+    let hub = registry.new_hub("s-r79".to_string());
+    registry
+        .adopt(
+            hub.clone(),
+            "s-r79".to_string(),
+            letibot_sessionlog::registry::SessionWiring {
+                model: "m".into(),
+                dialect: "qwen".into(),
+                endpoint: "http://127.0.0.1:1".into(),
+                workspace: "/".into(),
+            },
+            None,
+        )
+        .expect("adopted");
+    let w = JobWatchers::watching_tasks(&hub, Some(Arc::clone(registry.bell())));
+    (hub, w, registry)
+}
+
+fn woken(registry: &letibot_sessionlog::registry::Registry) -> bool {
+    matches!(
+        registry.next_work_until(Some(std::time::Instant::now())),
+        letibot_sessionlog::registry::WorkOrIdle::Work(
+            letibot_sessionlog::registry::Work::Woken(id)
+        ) if id == "s-r79"
+    )
+}
+
+/// **Mid-turn a routine result is still held; the turn's END wakes the session for it, and the
+/// wake hands it over as one batch under the turn-end heading.**
+///
+/// pg-noop, 2026-10-11: a result held while the model worked was told only when the operator next
+/// spoke, with a heading claiming the model was busy. The operator's ruling: *"jobs were ran for a
+/// reason and held for a reason. once turn ends no reason to hold"*. Holding is for a RUNNING turn
+/// only: the round boundary still holds (no interruption), `JobWatchers::turn_ended` rings the
+/// session's wake when something is held — and only then — and `between_turns` delivers it,
+/// recorded as `turn_end`.
+#[test]
+fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
+    let dir = Scratch::new("r79-turn-end");
+    let (hub, w, registry) = rung_watchers();
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let mut s = steering(&hub, d.clone());
+
+    w.turn_ended();
+    assert!(!woken(&registry), "a turn that held nothing wakes nothing");
+
+    w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
+    assert!(s.try_next().is_none(), "mid-turn it is still held");
+    assert_eq!(w.held_count(), 1);
+    assert!(!woken(&registry), "and holding it rang nothing");
+
+    w.turn_ended();
+    assert!(woken(&registry), "the turn ended with a result held");
+
+    let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
+    assert!(b.now.is_empty(), "nothing arrived while idle: {:?}", b.now);
+    let batch = b.batch.expect("the held result is delivered");
+    assert!(
+        batch.starts_with("[meanwhile] 1 result arrived while you were working")
+            && batch.contains("`j1` exited 0"),
+        "{batch}"
+    );
+    assert_eq!(w.held_count(), 0);
+    let rec = dir.records();
+    assert_eq!(rec.len(), 1, "{rec:?}");
+    assert_eq!(rec[0]["rule"], "turn_end");
+}
+
+/// **Between turns the line is the turn's end**: what arrived before it is the batch, under its
+/// heading; what arrived after it — while the session was idle — is an ordinary notice with no
+/// heading, recorded as `idle`. Several held results are ONE batch.
+///
+/// pg-noop, 2026-10-11, and the operator's ruling: *"jobs were ran for a reason and held for a
+/// reason. once turn ends no reason to hold"*.
+#[test]
+fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
+    let dir = Scratch::new("r79-idle");
+    let (_hub, w, _registry) = rung_watchers();
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+
+    w.hold(vec![
+        settled("j1", "exited 0", SystemTime::now()),
+        settled("j2", "exited 0", SystemTime::now()),
+    ]);
+    w.turn_ended();
+    std::thread::sleep(Duration::from_millis(5));
+    w.queue_for_test(settled("j3", "exited 0", SystemTime::now()));
+
+    let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
+    assert_eq!(b.now.len(), 1, "{:?}", b.now);
+    assert!(
+        b.now[0].starts_with("[job] ") && b.now[0].contains("`j3`"),
+        "{}",
+        b.now[0]
+    );
+    assert!(!b.now[0].contains("`j1`") && !b.now[0].contains("[meanwhile]"));
+    let batch = b.batch.expect("the two held");
+    assert!(
+        batch.starts_with("[meanwhile] 2 results arrived while you were working")
+            && batch.contains("`j1`")
+            && batch.contains("`j2`")
+            && !batch.contains("`j3`"),
+        "{batch}"
+    );
+    let rules: Vec<(String, String, u64)> = dir
+        .records()
+        .iter()
+        .map(|r| {
+            (
+                r["handle"].as_str().unwrap().into(),
+                r["rule"].as_str().unwrap().into(),
+                r["batch"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            ("j3".into(), "idle".into(), 1),
+            ("j1".into(), "turn_end".into(), 2),
+            ("j2".into(), "turn_end".into(), 2),
+        ]
     );
 }
 
@@ -318,24 +454,37 @@ fn the_meanwhile_notice_is_the_heads_fixture() {
             ..settled("j1043", "exited 101", SystemTime::UNIX_EPOCH)
         },
     ];
-    let text = meanwhile_notice(
-        batch,
-        "s-r79",
-        crate::delivery::Rule::Batch,
-        crate::delivery::HELD_RESULTS_CAP,
-        &[],
-    );
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../tui/src/app/tests/fixtures/job_notice_meanwhile.txt");
-    if std::env::var_os("LETIBOT_BLESS_JOB_NOTICE").is_some() {
-        std::fs::write(&path, &text).unwrap();
+    // **Both headings the head is handed**: the batch that rode a turn started for another reason,
+    // and the batch delivered the moment the turn it was held through ended (the operator,
+    // 2026-10-11: *"jobs were ran for a reason and held for a reason. once turn ends no reason to
+    // hold"*).
+    for (rule, fixture) in [
+        (crate::delivery::Rule::Batch, "job_notice_meanwhile.txt"),
+        (
+            crate::delivery::Rule::TurnEnd,
+            "job_notice_meanwhile_turn_end.txt",
+        ),
+    ] {
+        let text = meanwhile_notice(
+            batch.clone(),
+            "s-r79",
+            rule,
+            crate::delivery::HELD_RESULTS_CAP,
+            &[],
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tui/src/app/tests/fixtures")
+            .join(fixture);
+        if std::env::var_os("LETIBOT_BLESS_JOB_NOTICE").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        let pinned = std::fs::read_to_string(&path).expect("the head's fixture exists");
+        assert_eq!(
+            text, pinned,
+            "the [meanwhile] notice changed; regenerate the head's fixture {fixture} with \
+             LETIBOT_BLESS_JOB_NOTICE=1 and update the head's parser with it"
+        );
     }
-    let pinned = std::fs::read_to_string(&path).expect("the head's fixture exists");
-    assert_eq!(
-        text, pinned,
-        "the [meanwhile] notice changed; regenerate the head's fixture with \
-         LETIBOT_BLESS_JOB_NOTICE=1 and update the head's parser with it"
-    );
 }
 
 /// The pg-noop board for the grace tests: the operator's row and the model's CRITERION row, both

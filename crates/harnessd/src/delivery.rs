@@ -28,20 +28,29 @@
 //!
 //! # Where held results go
 //!
-//! Held results accumulate per session ([`JobWatchers::hold`]) and are handed over as **one**
-//! `[meanwhile]` note at the next turn boundary — folded into the next turn the model takes
-//! anyway: the operator's prompt (as a harness row just BEFORE the prompt, so the operator's
-//! words stay the last thing read), a parent's message, a plan-check nag, a continuation after
-//! the wall, or a wake that has something immediate to say. **A held result never starts a turn
-//! of its own**: `Harness::wake` with only held results answers `Ok(None)`, which is the
-//! no-turn outcome it already had for a spurious wake.
+//! **Holding exists only so a RUNNING turn is not interrupted.** The operator, 2026-10-11, after
+//! pg-noop showed a held result reaching an idle model only when they next spoke, under a heading
+//! that said *"while you were busy"*: *"jobs were ran for a reason and held for a reason. once turn
+//! ends no reason to hold"*. So:
 //!
-//! **If nothing else ever starts a turn**, the results wait. A session with an unfinished plan is
-//! nagged on its own clock and the nag carries the batch; a session with no plan and no prompt
-//! keeps them held, and a person sees them anyway — every settlement is still published to the
-//! hub as it happens (`JobSettled`, the subagent row), so the head's jobs pane is never behind.
-//! The model is the only reader that waits, and it waits only for something it did not say it
-//! was waiting for.
+//! * **mid-turn**, held results accumulate per session ([`JobWatchers::hold`]) and nothing is said
+//!   at the round boundary (the starvation cap below aside);
+//! * **when the turn ends** with anything held, the session's own wake is rung
+//!   ([`JobWatchers::turn_ended`]) and `Harness::wake` delivers the held set as **one**
+//!   `[meanwhile]` note, a turn of its own, recorded as [`Rule::TurnEnd`] — the same door an
+//!   immediate completion between turns takes;
+//! * **if another turn starts first** — the operator's prompt (commands drain before wakes), a
+//!   parent's message, a plan-check, a continuation after the wall — the batch rides that turn's
+//!   start as before ([`Rule::Batch`]; as a harness row just BEFORE the prompt, so the operator's
+//!   words stay the last thing read), and the wake that follows finds nothing;
+//! * **a result that arrives while the session is idle is not held at all**: the wake its arrival
+//!   rang delivers it at once as an ordinary completion, with no `[meanwhile]` heading, recorded
+//!   as [`Rule::Idle`].
+//!
+//! The line between the last two is one fact, *did it arrive before the session's last turn
+//! ended* ([`JobWatchers::last_turn_ended`]); see `Deliveries::between_turns`. Every settlement is
+//! still published to the hub as it happens (`JobSettled`, the subagent row), so the head's jobs
+//! pane is never behind.
 //!
 //! **Children** follow the same rules at their round boundaries and between their turns. A child
 //! that stops with results still held hands them up a level ([`JobWatchers::stop`]), where the
@@ -57,7 +66,8 @@
 //!
 //! # The record
 //!
-//! Every delivery — immediate, batched or released by the cap, and every monitor firing — is one
+//! Every delivery — immediate, batched, delivered at a turn's end, idle, or released by the cap,
+//! and every monitor firing — is one
 //! JSON line in [`LOG`] (`<workspace>/.letibot/delivery-log.jsonl`, the `notes-offers.jsonl`
 //! shape): session, handle, kind, when it arrived, when it was delivered, the rule, and how many
 //! were delivered together. Deliberately small and self-contained, so a general metrics store can
@@ -146,7 +156,7 @@ impl Why {
 pub enum Delivery {
     /// Deliver at the next round boundary, or as a turn of its own between turns.
     Immediate(Why),
-    /// Hold for the next turn boundary (or the cap).
+    /// Hold while a turn runs: delivered when it ends (or at the cap, or with the next turn start).
     Held,
 }
 
@@ -300,6 +310,14 @@ pub enum Rule {
     Batch,
     /// Held, and released mid-turn by the starvation cap.
     Starvation,
+    /// **Held while a turn ran, and delivered the moment that turn ENDED, as a turn of its own**
+    /// (the operator, 2026-10-11: *"jobs were ran for a reason and held for a reason. once turn
+    /// ends no reason to hold"*). Distinct from [`Rule::Batch`], which is the same batch riding a
+    /// turn that started for another reason before the turn-end wake was served.
+    TurnEnd,
+    /// **Arrived while the session was idle, so it was never held** — delivered at once, as an
+    /// ordinary completion with no `[meanwhile]` heading (same decision).
+    Idle,
 }
 
 impl Rule {
@@ -308,6 +326,8 @@ impl Rule {
             Rule::Immediate(why) => format!("immediate:{}", why.word()),
             Rule::Batch => "batch".into(),
             Rule::Starvation => "starvation".into(),
+            Rule::TurnEnd => "turn_end".into(),
+            Rule::Idle => "idle".into(),
         }
     }
 }
@@ -315,13 +335,27 @@ impl Rule {
 /// **The `[meanwhile]` note's first line** — what the model is told about why these results
 /// arrive together and late. The `[job]` / `[task]` groups under it are `completion_notices`'
 /// own, unchanged, so the head's compact job rows read them as they always did.
+///
+/// [`Rule::TurnEnd`] says what is true of a batch delivered the moment a turn ended: the results
+/// came in while the model was working and were held so it could finish. [`Rule::Idle`] has no
+/// heading in practice — an idle arrival is an ordinary completion — and is worded as the batch
+/// only so the function stays total.
 pub fn meanwhile_heading(n: usize, rule: Rule, cap: Duration) -> String {
     let what = if n == 1 {
         "1 result".to_string()
     } else {
         format!("{n} results")
     };
+    let (it, they) = if n == 1 {
+        ("it", "it was")
+    } else {
+        ("them", "they were")
+    };
     match rule {
+        Rule::TurnEnd => format!(
+            "[meanwhile] {what} arrived while you were working — nothing in your plan was waiting \
+             on {it}, so {they} held until your turn ended instead of interrupting you."
+        ),
         Rule::Starvation => format!(
             "[meanwhile] {what} held for over {} while this turn ran — nothing in your plan waits \
              on them; here they are so they do not wait for ever. Carry on with what you were \

@@ -1914,7 +1914,7 @@ to this design:
 - **Held results live on the session's `JobWatchers`** (`hold`/`take_held`), are re-decided at
   every boundary (`delivery::sort` — a row added or a `job_wait` since promotes a held one), and
   are handed up with the queue when a child stops.
-- **Delivered as ONE `[meanwhile]` note at the next turn the model takes anyway**: before the
+- **(Superseded by the `idle-wake` change below for the between-turns half.)** **Delivered as ONE `[meanwhile]` note at the next turn the model takes anyway**: before the
   operator's prompt (a harness row, so the operator's words stay last), with a parent's message,
   inside a plan-check nag, a continuation after the wall, or a wake that has something immediate.
   `Harness::wake` with only held results answers `Ok(None)` — **no wake turn, root or child**.
@@ -1952,6 +1952,25 @@ to this design:
   carries it before the operator's words; a `needs` completion still wakes a root and the held
   batch rides along), `bash::tests::wake_is_now_or_later_and_the_result_says_which`, and
   `a_watched_subagent_is_not_waited_on` now asserts the want.
+
+**Changed on `idle-wake` 2026-10-11 (not merged) — nothing is held once a turn ends.** pg-noop:
+*"[meanwhile] 1 result arrived while you were busy — …"* reached the model the moment the operator
+sent a prompt, long after it had gone idle, because nothing started a turn for held results between
+turns and the cap acts only inside a running turn. A 60-second "wake after quiet" was proposed and
+replaced before it landed by the operator's ruling: *"jobs were ran for a reason and held for a
+reason. once turn ends no reason to hold"*. So: holding is ONLY for a running turn (mid-turn and the
+starvation cap unchanged); a turn that ends with results held rings its own session's wake
+(`JobWatchers::turn_ended`) and `Harness::wake` delivers them as ONE `[meanwhile]` turn — heading
+*"N results arrived while you were working — nothing in your plan was waiting on them, so they
+were held until your turn ended instead of interrupting you."*, rule `turn_end`; a result that
+arrives while idle is never held — delivered at once as an ordinary `[job]`/`[task]` notice, no
+heading, rule `idle`; a prompt (commands drain before wakes) that gets there first still carries the
+batch under the old *"while you were busy"* heading (`batch`). The split is one fact: arrived before
+the session's last turn ended (`JobWatchers::last_turn_ended`, `Deliveries::between_turns`). No
+config knob. `/nag pause` does not delay either delivery (it pauses the daemon asking, not the world
+reporting). Applies to children too: a child whose turn ended with results held takes a wake turn
+for them instead of keeping them until its next turn or handing them up when parked. The head folds
+the new heading as before (fixture `job_notice_meanwhile_turn_end.txt`).
 
 **Left:**
 

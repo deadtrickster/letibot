@@ -509,6 +509,8 @@ pub fn delivered(session: &str, d: &crate::delivery::Delivered<'_>) {
     let how = match rule.split(':').next().unwrap_or("") {
         "immediate" => "immediate",
         "starvation" => "starved",
+        // Never held: it arrived while nothing was running (R79's turn-end rule).
+        "idle" => "idle",
         _ => "batched",
     };
     Event::new(kind::DELIVERY)

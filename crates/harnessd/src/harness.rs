@@ -1314,6 +1314,14 @@ pub(crate) struct Deliveries {
     me: String,
 }
 
+/// What [`Deliveries::between_turns`] hands a turn's start: the notices said now (immediates and
+/// idle arrivals, in `completion_notices`' words) and the `[meanwhile]` batch, apart so a wake can
+/// keep the batch last.
+pub(crate) struct BetweenTurns {
+    pub(crate) now: Vec<String>,
+    pub(crate) batch: Option<String>,
+}
+
 impl Deliveries {
     pub(crate) fn new(
         watch: Arc<JobWatchers>,
@@ -1390,13 +1398,68 @@ impl Deliveries {
         (!parts.is_empty()).then(|| parts.join("\n\n"))
     }
 
-    /// **A turn the model is taking anyway**: whatever is immediate, and everything held.
+    /// **A turn the model is taking anyway**: whatever is immediate, what arrived while the
+    /// session was idle, and the batch held while the last turn ran (under [`Rule::Batch`] —
+    /// it rides this turn).
+    ///
+    /// [`Rule::Batch`]: crate::delivery::Rule::Batch
     pub(crate) fn at_turn_start(&self) -> Option<String> {
-        let mut parts = self.immediates(|_| false);
-        if let Some(b) = self.batch(crate::delivery::Rule::Batch) {
-            parts.push(b);
-        }
+        let b = self.between_turns(|_| false, crate::delivery::Rule::Batch);
+        let mut parts = b.now;
+        parts.extend(b.batch);
         (!parts.is_empty()).then(|| parts.join("\n\n"))
+    }
+
+    /// **Everything owed to a session between turns** (R79, after the operator's 2026-10-11
+    /// ruling: *"jobs were ran for a reason and held for a reason. once turn ends no reason to
+    /// hold"*).
+    ///
+    /// Holding exists only so a RUNNING turn is not interrupted, so between turns nothing stays
+    /// held. What is owed splits by one fact, *did it arrive before the session's last turn
+    /// ended* ([`JobWatchers::last_turn_ended`]):
+    ///
+    /// * **arrived while the model was working** — the held batch, under one `[meanwhile]`
+    ///   heading worded for `held_rule` (`TurnEnd` from the turn-end wake, `Batch` when another
+    ///   turn's start got to it first);
+    /// * **arrived while it was idle** — never held in any sense the model should be told about:
+    ///   an ordinary completion notice, beside the immediates, recorded as [`Rule::Idle`].
+    ///
+    /// The immediates are the sort's as before, and `skip` drops what is nobody's news.
+    ///
+    /// [`Rule::Idle`]: crate::delivery::Rule::Idle
+    pub(crate) fn between_turns(
+        &self,
+        skip: impl Fn(&JobCompletion) -> bool,
+        held_rule: crate::delivery::Rule,
+    ) -> BetweenTurns {
+        let rows = self.rows();
+        let immediate = crate::delivery::sort(&self.watch, &rows, skip);
+        let held = self.watch.take_held();
+        let ended = self.watch.last_turn_ended();
+        let (busy, idle): (Vec<JobCompletion>, Vec<JobCompletion>) = held
+            .into_iter()
+            .partition(|c| ended.is_some_and(|e| c.arrived <= e));
+        let at = std::time::SystemTime::now();
+        if !immediate.is_empty() {
+            self.log.immediates(&immediate, at);
+        }
+        if !idle.is_empty() {
+            self.log.completions(&idle, crate::delivery::Rule::Idle, at);
+        }
+        let mut told: Vec<JobCompletion> = immediate.into_iter().map(|(c, _)| c).collect();
+        told.extend(idle);
+        self.watch.read_now(&told);
+        let now = if told.is_empty() {
+            Vec::new()
+        } else {
+            completion_notices(told, &self.me, &rows)
+        };
+        let batch = (!busy.is_empty()).then(|| {
+            self.log.completions(&busy, held_rule, at);
+            self.watch.read_now(&busy);
+            meanwhile_notice(busy, &self.me, held_rule, self.cap, &rows)
+        });
+        BetweenTurns { now, batch }
     }
 
     pub(crate) fn log_firings(&self, fired: &[letibot_tools::exec::monitor::Firing]) {
@@ -7668,8 +7731,8 @@ impl Harness {
     }
 
     /// `causes` in the order `wake` gathers them: queue, monitor, result, due row.
-    fn meter_wake(&mut self, causes: [usize; 4], ran: bool) {
-        let named = ["queue", "monitor", "result", "due"];
+    fn meter_wake(&mut self, causes: [usize; 5], ran: bool) {
+        let named = ["queue", "monitor", "result", "due", "held"];
         let causes: Vec<(&str, usize)> = named.into_iter().zip(causes).collect();
         crate::instruments::wake(&mut self.meter, &self.cfg.session_id, &causes, ran);
     }
@@ -8210,9 +8273,9 @@ impl Harness {
         // before it could be drained ([`JobWatchers::stop`]) — and `completion_notices`
         // is given this session's id so that it is not read as this session's own.
         //
-        // **R79: only what the work waits on is said here; the rest is HELD**, and a wake with
-        // nothing else to say runs no turn (`Ok(None)` below) — a routine completion never
-        // starts a turn of its own. See `crate::delivery`.
+        // **R79: between turns nothing is held** — a wake runs no turn (`Ok(None)` below) only
+        // when there is truly nothing to say. Holding is for a RUNNING turn; see `crate::delivery`
+        // and the operator's ruling quoted on `Deliveries::between_turns`.
         let monitor_n = notices.len() - queue_n;
         let deliveries = self.deliveries();
         // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
@@ -8223,12 +8286,23 @@ impl Harness {
         let gatekeepers = &self.gatekeepers;
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
-        notices.extend(
-            deliveries
-                .as_ref()
-                .map(|d| d.immediates(|c| gatekeepers.contains(&c.job)))
-                .unwrap_or_default(),
-        );
+        //
+        // **And nothing stays held between turns** (the operator, 2026-10-11: *"jobs were ran for
+        // a reason and held for a reason. once turn ends no reason to hold"*): a result that
+        // arrived while the session was idle is said here as an ordinary completion, and the batch
+        // held while the last turn ran is this wake's own content — the turn-end ring
+        // (`JobWatchers::turn_ended`) is what brought the worker here for it.
+        let between = deliveries.as_ref().map(|d| {
+            d.between_turns(
+                |c| gatekeepers.contains(&c.job),
+                crate::delivery::Rule::TurnEnd,
+            )
+        });
+        let mut held_batch = None;
+        if let Some(b) = between {
+            notices.extend(b.now);
+            held_batch = b.batch;
+        }
         // **And the rows whose condition just became met.** The same door, because a condition
         // firing is the same kind of fact as a job ending: nothing asked, and the model has to be
         // told. What the line carries is BOTH halves — the row's own words and what the world says
@@ -8250,14 +8324,18 @@ impl Harness {
                 lines.join("\n")
             ));
         }
-        let causes = [queue_n, monitor_n, result_n, due.len()];
+        let causes = [
+            queue_n,
+            monitor_n,
+            result_n,
+            due.len(),
+            usize::from(held_batch.is_some()),
+        ];
+        // **The held batch last**, after everything said now.
+        notices.extend(held_batch);
         self.meter_wake(causes, !notices.is_empty());
         if notices.is_empty() {
             return Ok(None);
-        }
-        // **And since a turn runs anyway, the held batch rides in with it** (R79), last.
-        if let Some(batch) = deliveries.and_then(|d| d.batch(crate::delivery::Rule::Batch)) {
-            notices.push(batch);
         }
         let text = notices.join("\n\n");
         // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the

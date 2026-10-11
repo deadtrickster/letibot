@@ -14,6 +14,9 @@ const THEIRS: &str = include_str!("fixtures/job_notice_theirs.txt");
 /// R79's held batch: a `[meanwhile]` line over an ordinary `[job]` group, pinned by `harnessd`'s
 /// `the_meanwhile_notice_is_the_heads_fixture`.
 const MEANWHILE: &str = include_str!("fixtures/job_notice_meanwhile.txt");
+/// The same batch delivered the moment the turn it was held through ended — pinned by the same
+/// `harnessd` test.
+const MEANWHILE_TURN_END: &str = include_str!("fixtures/job_notice_meanwhile_turn_end.txt");
 
 /// The operator's paste, the notice's shape with one job — a command over several lines and the
 /// memory clause, which is what used to defeat the fold and draw six raw rows.
@@ -415,6 +418,36 @@ fn a_meanwhile_batch_draws_its_heading_and_two_lines_per_job() {
     );
     assert!(!joined.contains(BOILERPLATE), "{joined}");
     assert_eq!(a.notice_rows.len(), 5, "{:?}", a.notice_rows);
+}
+
+/// **The turn-end batch folds the same way, and says what is true.** pg-noop, 2026-10-11: a batch
+/// headed *"while you were busy"* reached a model that had been idle for an hour; the operator
+/// ruled *"jobs were ran for a reason and held for a reason. once turn ends no reason to hold"*,
+/// so a held batch now comes the moment its turn ends, headed *"while you were working"*. The head
+/// recognises the heading by its tag, not its words — this pins that the new words still fold.
+#[test]
+fn a_turn_end_batch_folds_to_its_heading_and_two_lines_per_job() {
+    let jobs = notice_jobs(MEANWHILE_TURN_END).expect("the batch's jobs parse");
+    assert_eq!(jobs.len(), 2);
+    let mut a = with_notice(MEANWHILE_TURN_END);
+    let screen = a.screen(120, 30);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(
+            &screen,
+            "Meanwhile: 2 results arrived while you were working"
+        )
+        .len(),
+        1,
+        "{joined}"
+    );
+    assert!(!joined.contains("while you were busy"), "{joined}");
+    assert_eq!(
+        rows_with(&screen, "j1042 · release-build · exited 0 2m54s").len(),
+        1,
+        "{joined}"
+    );
+    assert!(!joined.contains(BOILERPLATE), "{joined}");
 }
 
 /// **The line naming the plan rows that wait on a completion is read, and drawn without its

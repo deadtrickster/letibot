@@ -228,3 +228,37 @@ fn a_monitor_firing_is_recorded_as_immediate() {
     assert_eq!(v["waited_ms"], 2_000);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **The turn-end heading says what is true, and the rules are told apart in the record.**
+///
+/// pg-noop, 2026-10-11: *"[meanwhile] 1 result arrived while you were busy"* reached a model that
+/// had been idle for an hour, the moment the operator spoke. The operator's ruling: *"jobs were
+/// ran for a reason and held for a reason. once turn ends no reason to hold"* — so a batch is
+/// delivered the moment the turn it was held through ends, and its heading says the model was
+/// WORKING and the results were held until its turn ended. The batch and starvation wording is
+/// unchanged; a result that arrives while idle has no heading at all (asserted on the session).
+#[test]
+fn the_turn_end_heading_and_the_rule_words() {
+    assert_eq!(
+        meanwhile_heading(1, Rule::TurnEnd, HELD_RESULTS_CAP),
+        "[meanwhile] 1 result arrived while you were working — nothing in your plan was waiting \
+         on it, so it was held until your turn ended instead of interrupting you."
+    );
+    assert_eq!(
+        meanwhile_heading(3, Rule::TurnEnd, HELD_RESULTS_CAP),
+        "[meanwhile] 3 results arrived while you were working — nothing in your plan was waiting \
+         on them, so they were held until your turn ended instead of interrupting you."
+    );
+    assert!(
+        meanwhile_heading(2, Rule::Batch, HELD_RESULTS_CAP)
+            .starts_with("[meanwhile] 2 results arrived while you were busy — ")
+    );
+    assert!(
+        meanwhile_heading(2, Rule::Starvation, Duration::from_secs(600))
+            .starts_with("[meanwhile] 2 results held for over 10 min while this turn ran")
+    );
+    assert_eq!(Rule::TurnEnd.word(), "turn_end");
+    assert_eq!(Rule::Idle.word(), "idle");
+    assert_eq!(Rule::Batch.word(), "batch");
+    assert_eq!(Rule::Starvation.word(), "starvation");
+}

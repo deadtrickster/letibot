@@ -32,14 +32,16 @@
 //!
 //! # What happens to results held for the model (R79) while it is paused
 //!
-//! **They stay held, and they are not stranded.** A held `[meanwhile]` batch never starts a turn of
-//! its own; it rides the next turn the model takes anyway (`crate::delivery`), and a plan-check is
-//! only ONE of those carriers. While nags are paused that carrier is gone and nothing else changes:
-//! the batch rides the operator's next prompt, a parent's message, a wake with something immediate
-//! to say, or a continuation — and the first plan-check after the pause ends, if none of those came
-//! first. Results the plan waits on (`when: job`, `needs`, a wait, `wake: now`, a failure the plan
-//! depends on) were never held to begin with, so a pause cannot delay them. Every settlement is
-//! still published to the hub as it happens, so the head's jobs pane is not behind either.
+//! **A pause does not touch them.** Results are held only while a turn RUNS — the operator,
+//! 2026-10-11: *"jobs were ran for a reason and held for a reason. once turn ends no reason to
+//! hold"* — so a held batch is delivered as a turn of its own the moment the turn it was held
+//! through ends (the turn-end wake, `JobWatchers::turn_ended`), and a result that arrives while the
+//! session is idle is delivered at once (`crate::delivery`). Neither is a plan-check, so `/nag
+//! pause` neither delays nor stops them: a pause quiets the daemon ASKING about the plan, and a
+//! finished job is the world reporting, not the daemon asking. Results the plan waits on (`when:
+//! job`, `needs`, a wait, `wake: now`, a failure the plan depends on) were never held to begin with.
+//! Every settlement is still published to the hub as it happens, so the head's jobs pane is not
+//! behind either.
 //!
 //! # What the model is told
 //!
