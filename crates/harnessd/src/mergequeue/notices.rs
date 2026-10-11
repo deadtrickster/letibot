@@ -63,7 +63,13 @@ pub fn health(h: &TargetHealth) -> String {
         h.sha.chars().take(12).collect::<String>(),
         h.repository
     );
-    let first = step_and_tail(h);
+    let mut first = step_and_tail(h);
+    // The landing tree's missing gitignored inputs, when the gate's failure named them
+    // (`carry::hint`): firecode's red was `images/` and `vendor/` absent, not the code.
+    if let Some(lacks) = super::carry::hint_in(&h.evidence) {
+        first.push_str("\n\n");
+        first.push_str(lacks);
+    }
     match h.state {
         H::Blocked if h.evidence.starts_with(GATE_SETUP_FAILED) => format!(
             "The merge queue CANNOT JUDGE {at}: {}.\n\n{first}\n\nThis is not the code being red \

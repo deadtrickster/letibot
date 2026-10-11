@@ -2,8 +2,9 @@
 //! failure, and nothing that touches the operator's checkout except the one step that has to
 //! (keeping a checkout of the target coherent after the ref moved — [`follow_checkouts`]).
 //!
-//! The landing happens in a DEDICATED worktree ([`landing_worktree`]) under the repository's own
-//! git directory, and the target branch moves by a compare-and-swap on its ref
+//! The landing happens in a DEDICATED worktree ([`landing_worktree`]) in letibot's own data
+//! directory (`~/.local/share/letibot/landing/<repo>-<hash>`, never inside the repository's
+//! `.git`), and the target branch moves by a compare-and-swap on its ref
 //! ([`update_ref_cas`]). The v23 queue ran `git -C <repo> merge --ff-only` in whatever the
 //! operator had checked out and recorded `rev-parse main` afterwards (R61 defect 7).
 
@@ -186,22 +187,89 @@ pub fn default_target(repo: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// **The queue's own worktree for landing and for gating the target** — under the repository's
-/// git directory (`<repo>/.git/letibot-landing`), never the operator's checkout and never a
-/// branch's own tree. Created detached on first use and reused (its `target/` build cache with
-/// it), reset clean to `at` every time.
+/// **The letibot data directory** — `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`,
+/// where `sessions.db` and `metrics.db` already live. `None` in a bare environment with neither.
+pub fn letibot_data_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .map(|d| d.join("letibot"))
+}
+
+/// Where every repository's landing worktree lives: `<data dir>/landing`.
+pub fn landing_root() -> Result<PathBuf, String> {
+    letibot_data_dir()
+        .map(|d| d.join("landing"))
+        .ok_or_else(|| {
+            "no letibot data directory: neither $XDG_DATA_HOME nor $HOME is set, so there is \
+             nowhere outside the repository to land in"
+                .to_string()
+        })
+}
+
+/// **The landing directory of `repo` under `root`** — `<root>/<basename>-<12 hex of sha256 of
+/// the repository's canonical path>`. The basename is for a person reading the directory; the
+/// hash keeps two repositories with one name apart. Any path in the repository (a linked
+/// worktree, a subdirectory) names the same directory, because it is computed from the main
+/// checkout [`repo_of_worktree`] finds.
+pub fn landing_dir_in(root: &Path, repo: &Path) -> PathBuf {
+    use sha2::Digest;
+    let canonical = repo_of_worktree(repo)
+        .unwrap_or_else(|| std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf()));
+    let digest = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let base = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "repo".into());
+    root.join(format!("{base}-{hex}"))
+}
+
+/// [`landing_dir_in`] under the daemon's own [`landing_root`].
+pub fn landing_dir(repo: &Path) -> Result<PathBuf, String> {
+    Ok(landing_dir_in(&landing_root()?, repo))
+}
+
+/// The pre-2026-10-11 place: `<git-common-dir>/letibot-landing`. Only ever read to migrate away.
+pub const OLD_LANDING_NAME: &str = "letibot-landing";
+
+/// **The queue's own worktree for landing and for gating the target** — in letibot's data
+/// directory ([`landing_dir`]), never the operator's checkout, never a branch's own tree, and
+/// never inside the repository's `.git`. Created detached on first use and reused (its `target/`
+/// build cache with it), reset clean to `at` every time.
+///
+/// It is still a `git worktree` of the repository, so a landing stays a compare-and-swap on
+/// `refs/heads/<target>` in the repository itself ([`update_ref_cas`]); git's own bookkeeping for
+/// it (`.git/worktrees/<name>`) is the one thing in `.git` it implies.
+///
+/// Why not `.git/letibot-landing` any more — the operator, 2026-10-11: *"the merges and branches
+/// shoudlnt land into .git. look at firecode sission - it fights exactly this"*. The firecode
+/// session's own finding: *"The queue runs the gate in a landing worktree,
+/// `.git/letibot-landing` … A git worktree doesn't carry gitignored files, so that tree has no
+/// `images/` and no `vendor/` — no guest rootfs, no kernel, no firecracker. Every check that boots
+/// a VM fails, which is precisely the failed list."* — and *"`.git` is on the never-write list —
+/// I can't inspect the landing worktree, and no grant reaches it."* The tree is now somewhere a
+/// session can be granted to read (`Harness`'s confined view binds it read-only), and the
+/// ignored inputs a gate needs are carried in by `[queue] gate_carry` (`mergequeue::carry`).
 pub fn landing_worktree(repo: &Path, at: &str) -> Result<PathBuf, String> {
-    let common = git(
-        repo,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let path = PathBuf::from(common.trim()).join("letibot-landing");
+    landing_worktree_in(&landing_root()?, repo, at)
+}
+
+/// [`landing_worktree`] with the landing root given — the seam the tests use.
+pub fn landing_worktree_in(root: &Path, repo: &Path, at: &str) -> Result<PathBuf, String> {
+    let path = landing_dir_in(root, repo);
     let usable = path.join(".git").exists() && git(&path, &["rev-parse", "HEAD"]).is_ok();
     if !usable {
+        migrate_old_landing(repo);
         let _ = git(repo, &["worktree", "prune"]);
         if path.exists() {
             let _ = std::fs::remove_dir_all(&path);
             let _ = git(repo, &["worktree", "prune"]);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         git(
             repo,
@@ -209,12 +277,47 @@ pub fn landing_worktree(repo: &Path, at: &str) -> Result<PathBuf, String> {
         )?;
     }
     // A rebase a killed gate left half-done, then the tree reset to `at`. `clean -fd` and not
-    // `-fdx`: the ignored `target/` is the gate's build cache and is worth minutes.
+    // `-fdx`: the ignored `target/` is the gate's build cache and is worth minutes (and the
+    // carried `gate_carry` paths are ignored too, so an unchanged file is not copied again).
     let _ = git(&path, &["rebase", "--abort"]);
     git(&path, &["checkout", "--detach", "--force", at])?;
     git(&path, &["reset", "--hard", at])?;
     git(&path, &["clean", "-fd"])?;
     Ok(path)
+}
+
+/// **Move an old `<git-common-dir>/letibot-landing` worktree away**, the first time the new one
+/// is made: `git worktree remove --force`, then `prune`, said in the daemon's log. Nothing else in
+/// `.git` is touched, and a remove git refuses is said and left — never `rm -rf` inside `.git`.
+/// Returns what was said, for the tests.
+pub fn migrate_old_landing(repo: &Path) -> Option<String> {
+    let common = git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let old = PathBuf::from(common.trim()).join(OLD_LANDING_NAME);
+    if !old.exists() {
+        return None;
+    }
+    let said = match git(
+        repo,
+        &["worktree", "remove", "--force", &old.to_string_lossy()],
+    ) {
+        Ok(_) => {
+            let _ = git(repo, &["worktree", "prune"]);
+            format!(
+                "removed the old landing worktree {} (landing now happens outside `.git`)",
+                old.display()
+            )
+        }
+        Err(e) => format!(
+            "the old landing worktree {} could NOT be removed, and is left as it is: {e}",
+            old.display()
+        ),
+    };
+    eprintln!("  merge queue: {said}");
+    Some(said)
 }
 
 /// **Rebase `head` onto `onto` in the landing worktree**, detached; the rebased sha, or the
@@ -360,3 +463,6 @@ pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Resul
     }
     git(repo, &["branch", "-D", branch]).map(|_| ())
 }
+
+#[cfg(test)]
+mod tests;

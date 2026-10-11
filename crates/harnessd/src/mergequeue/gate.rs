@@ -457,9 +457,10 @@ fn kill_group(pgid: i32, child: &mut std::process::Child, scope: Option<&Sibling
 fn tempfile_in(worktree: &Path) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join("letibot-gate");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    // A sequence number beside the millisecond: every landing worktree is called
+    // A sequence number beside the millisecond: every landing worktree was once called
     // `letibot-landing`, so two repositories' gates starting in one millisecond shared a log and
     // one read the other's truncation (measured in the R76 tests: a failed step with no output).
+    // The name is `<repo>-<hash>` now, and the sequence still guards one repository's two gates.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let name = format!(
         "{}-{}-{}-{}.log",

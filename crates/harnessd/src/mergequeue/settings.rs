@@ -10,11 +10,22 @@
 //! red_target = "fix"              # decision 11: when the target goes red, the reviewer of the
 //!                                 #   red tip opens a fix branch through the queue ("fix",
 //!                                 #   the default) or the operator is only told ("raise")
+//! gate_carry = ["images", "vendor"] # gitignored inputs the gate needs, COPIED from the
+//!                                 #   operator's checkout into the landing tree before every
+//!                                 #   gate run (default: none)
 //! ```
 //!
-//! Three settings, each the operator's own ruling of 2026-10-11, and each per PROJECT because
+//! The first three are the operator's own rulings of 2026-10-11, and each per PROJECT because
 //! the projects differ: pg-noop lands on `feat/memory-engine`, 91 commits ahead of its `main`,
 //! and a queue that measured its branches against `main` saw every one 56–60 commits ahead.
+//!
+//! `gate_carry` exists because the landing tree is a git worktree, and a worktree has nothing
+//! gitignored: firecode's gate booted no VM because its `images/` and `vendor/` were not there
+//! (`mergequeue::carry`). Each entry is a path relative to the repository's root and must stay
+//! inside it — absolute, `..`, `.git` and the root itself are refused by name here; a symlink
+//! out, a missing path or a TRACKED path is refused when the gate runs. Each is copied (`rsync -a
+//! --delete` when rsync is there, else a fresh recursive copy), never symlinked, so a gate cannot
+//! write into the operator's checkout.
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +60,10 @@ pub struct QueueSettings {
     pub merge_via_session: bool,
     /// Decision 11's default. `Fix` unless the project says `raise`.
     pub red_target: RedTarget,
+    /// Gitignored paths (relative to the repository's root) copied from the operator's checkout
+    /// into the landing tree before every gate run. Empty by default. Each entry has passed
+    /// [`super::carry::validate`].
+    pub gate_carry: Vec<String>,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -59,6 +74,7 @@ impl Default for QueueSettings {
             target: None,
             merge_via_session: false,
             red_target: RedTarget::Fix,
+            gate_carry: Vec::new(),
             path: None,
         }
     }
@@ -73,6 +89,8 @@ struct QueueTable {
     merge_via_session: Option<bool>,
     #[serde(default)]
     red_target: Option<String>,
+    #[serde(default)]
+    gate_carry: Vec<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -117,7 +135,13 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             ));
         }
     };
+    let mut gate_carry = Vec::new();
+    for entry in &q.gate_carry {
+        let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
+        gate_carry.push(rel.to_string_lossy().into_owned());
+    }
     Ok(QueueSettings {
+        gate_carry,
         target: q
             .target
             .map(|t| t.trim().to_string())
@@ -178,6 +202,7 @@ mod tests {
             "decision 4: raise only, unless the project opts in"
         );
         assert_eq!(s.red_target, RedTarget::Fix);
+        assert!(s.gate_carry.is_empty(), "nothing is carried unless named");
         std::fs::write(
             dir.join("leticode.toml"),
             "[queue]\ntarget_branch = \"x\"\n",
@@ -185,6 +210,29 @@ mod tests {
         .unwrap();
         let e = for_repository(&repo).unwrap_err();
         assert!(e.contains("target_branch"), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `gate_carry` is read as paths inside the repository, and an entry outside it is refused
+    /// by name — the whole `[queue]` with it, never silently dropped.
+    #[test]
+    fn gate_carry_is_paths_inside_the_repository_and_one_outside_is_refused_by_name() {
+        let (dir, repo) = file("[queue]\ngate_carry = [\"images\", \"./vendor/\"]\n");
+        let s = for_repository(&repo).unwrap();
+        assert_eq!(
+            s.gate_carry,
+            vec!["images".to_string(), "vendor".to_string()]
+        );
+        for bad in ["/etc", "../sibling", "images/../../x", ".git", ".", ""] {
+            std::fs::write(
+                dir.join("leticode.toml"),
+                format!("[queue]\ngate_carry = [\"images\", \"{bad}\"]\n"),
+            )
+            .unwrap();
+            let e = for_repository(&repo).unwrap_err();
+            assert!(e.contains(&format!("\"{bad}\"")), "{bad}: {e}");
+            assert!(e.contains("gate_carry"), "{bad}: {e}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -247,7 +247,7 @@ pane draws both queues…`. Per requirement and decision, with the test that fai
   `a_red_target_in_one_repository_does_not_stop_another`.
 - **Decisions 6, 7, 9, 12, requirement 3** (the landing): branch head must be the approved head (a
   rebase carrying the same change is not a move; anything else → `moved` and back to review);
-  rebase in a dedicated worktree under `.git/letibot-landing`; the TARGET's own `## Merge gate`
+  rebase in a dedicated worktree (then `.git/letibot-landing`; since R84 in letibot's data dir); the TARGET's own `## Merge gate`
   through `GateRunner` (R62's seam; `LocalGate` here) — 30 min, process group, killed on
   timeout/stop/lost lease, `timed_out` its own outcome; `update-ref` compare-and-swap (moved → back
   in line, rebased and gated again); the operator's checkout of the target follows by `read-tree -m
@@ -1787,6 +1787,48 @@ feat/memory-engine`, or fix `scripts/merge_gate.sh` on `main` and `/queue regate
 (`status`, `regate`, `propose_target`).
 
 ---
+
+## R84 — The landing tree lives outside `.git`, a session can read it, and a gate gets its gitignored inputs — **BUILT on `landing-out-of-git` 2026-10-11 (not merged)**
+
+The operator, 2026-10-11: *"also, the merges and branches shoudlnt land into .git. look at firecode
+sission - it fights exactly this"*. The firecode session's finding, in its own words: *"The queue runs
+the gate in a landing worktree, `.git/letibot-landing` (detached at 60bf819). A git worktree doesn't
+carry gitignored files, so that tree has no `images/` and no `vendor/` — no guest rootfs, no kernel,
+no firecracker. Every check that boots a VM fails, which is precisely the failed list."* The gate
+peaked at 1.6 GiB of 40.9 GiB because no VM booted, and `main` was declared RED for a reason that is
+not in the code. And: *"`.git` is on the never-write list — I can't inspect the landing worktree, and
+no grant reaches it. So I'll reproduce it instead: a fresh clone"*.
+
+- **Where**: `git::landing_worktree` makes it at `$XDG_DATA_HOME/letibot/landing/<repo basename>-<12
+  hex of sha256(canonical repo path)>` (`~/.local/share/letibot/landing/…`), still a `git worktree`
+  of the repository (landing is still a CAS on `refs/heads/<target>`; git's own `.git/worktrees/<name>`
+  bookkeeping is the one thing in `.git` it implies), reused with its `target/`, reset clean every time.
+  The root is `QueueEnv::landing_root` (tests: beside their temp repo).
+- **Migration**: the first time the new tree is made, an old `<git-common-dir>/letibot-landing` is
+  removed by `git worktree remove --force` + `prune` and the daemon log says so; a remove git refuses
+  is said and left. Nothing else in `.git` is touched.
+- **Read-only to the project's sessions**: `harness::confined_grants` adds the repository's landing
+  dir to a confined session's view as a `Grant::ReadOnly` beside `--grant-ro`'s (creating it empty so
+  the bind has a target).
+- **`[queue] gate_carry = ["images", "vendor"]`** (`mergequeue::carry`): paths relative to the repo
+  root, copied from the operator's checkout into the landing tree before every gate run (target health
+  and branch landing) — `rsync -a --delete` when rsync exists, else a fresh recursive copy; never a
+  symlink. Absolute, `..`, `.git` and the root are refused by name when the file is read; a symlink out
+  of the repository, a missing path or a TRACKED path when the gate runs (the row/health is blocked).
+- **The notice**: a failed gate with no `gate_carry`, whose checkout has top-level gitignored dirs the
+  landing tree lacks (`git ls-files --others --ignored --exclude-standard --directory`, less `target/`
+  and whatever the landing tree has), ends its evidence — and the `EMERGENCY —` notice — with *"The
+  landing tree has no `images/`, `vendor/` (gitignored, present in your checkout); if the gate needs
+  them, set `[queue] gate_carry` in the project's `leticode.toml`."*
+- Tests: `mergequeue::git::tests` (outside `.git` and reused; migration), `mergequeue::carry::tests`
+  (copy with both copiers, refusals, the hint and its silence), `mergequeue::settings::tests::
+  gate_carry_is_paths_inside_the_repository_and_one_outside_is_refused_by_name`, `serve::tests::
+  a_gate_that_needs_an_ignored_input_is_told_its_name_and_passes_once_it_is_carried`,
+  `harness::tests::misc::a_confined_session_reads_its_repositorys_landing_tree_and_cannot_write_it`.
+- **Left / for the operator**: firecode needs `gate_carry = ["images", "vendor"]` in its
+  `leticode.toml` (not written here). A carried tree is a full copy per repository (firecode's
+  `images/` may be GiBs on disk a second time). Old landing trees of repositories that no longer exist
+  are not swept from the data dir.
 
 ## R77 — An operator's todo lands last and the nag never names it — **BUILT on `r77-operator-todos` 2026-10-11 (not merged). What was built and what is left are at the end of this entry.**
 

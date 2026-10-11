@@ -2647,13 +2647,7 @@ impl Harness {
             (
                 HostBackend::confined_granting(
                     &cfg.workspace,
-                    cfg.grants_ro
-                        .iter()
-                        .map(|p| letibot_tools::exec::confine::Grant::ReadOnly {
-                            path: p.clone(),
-                            why: "granted on the command line with --grant-ro".into(),
-                        })
-                        .collect(),
+                    confined_grants(&cfg, crate::mergequeue::git::landing_root().ok().as_deref()),
                 )
                 .map_err(|e| {
                     HarnessError::Setup(format!(
@@ -17783,6 +17777,49 @@ pub fn scratch_dir() -> std::path::PathBuf {
             .join(format!("letibot-{}", unsafe { libc::getuid() }))
             .join(format!("scratch-{pid}")),
     }
+}
+
+/// **What a confined session's view holds beyond its project** — the operator's `--grant-ro`
+/// paths, and, added by the daemon, the merge queue's landing tree of the repository this
+/// workspace is (under `landing_root`), READ-ONLY.
+///
+/// The landing tree is where this project's gate runs. The firecode session, 2026-10-11, on the
+/// old `.git/letibot-landing`: *"`.git` is on the never-write list — I can't inspect the landing
+/// worktree, and no grant reaches it. So I'll reproduce it instead: a fresh clone"*. A model told
+/// its target is red should be able to read the tree the red was measured in; it must not be
+/// able to write there, because the next gate runs in it. The directory is created (empty) when
+/// the queue has not made it yet, so the bind has something to bind: `bwrap --ro-bind` of a
+/// missing path fails every command.
+pub fn confined_grants(
+    cfg: &Config,
+    landing_root: Option<&std::path::Path>,
+) -> Vec<letibot_tools::exec::confine::Grant> {
+    use letibot_tools::exec::confine::Grant;
+    let mut out: Vec<Grant> = cfg
+        .grants_ro
+        .iter()
+        .map(|p| Grant::ReadOnly {
+            path: p.clone(),
+            why: "granted on the command line with --grant-ro".into(),
+        })
+        .collect();
+    let landing = landing_root.and_then(|root| {
+        let repo = crate::mergequeue::git::repo_of_workspace(&cfg.workspace)?;
+        let dir = crate::mergequeue::git::landing_dir_in(root, &repo);
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    });
+    if let Some(dir) = landing
+        && !out.iter().any(|g| g.path() == dir)
+    {
+        out.push(Grant::ReadOnly {
+            path: dir,
+            why: "the merge queue's landing tree for this repository, where its gate runs: \
+                  readable so the gate's evidence can be inspected, never writable"
+                .into(),
+        });
+    }
+    out
 }
 
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {

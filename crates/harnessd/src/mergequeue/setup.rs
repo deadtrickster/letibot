@@ -177,14 +177,16 @@ mod tests {
     }
 
     /// **pg-noop's own words, 2026-10-11** — one wrapper step whose build and tests passed and
-    /// which then found no binary. FAILS before R76 item 5: the queue called it RED.
+    /// which then found no binary. FAILS before R76 item 5: the queue called it RED. (The path
+    /// it printed was the old `/r/.git/letibot-landing/…`; the landing tree has lived in
+    /// letibot's data directory since, so the fixture says where it is now.)
     #[test]
     fn a_wrapper_that_passed_its_build_and_then_found_no_binary_is_the_gates_setup() {
         let out = "merge gate: running: cargo test --release\n\
                    test result: ok. 412 passed; 0 failed\n\
                    merge gate: running: cargo build --release\n\
                    \x20   Finished `release` profile [optimized] target(s) in 0.31s\n\
-                   merge gate: FAIL: no binary at /r/.git/letibot-landing/target/release/letidb \
+                   merge gate: FAIL: no binary at /home/u/.local/share/letibot/landing/r-0123456789ab/target/release/letidb \
                    after a successful build\n";
         let said = setup_failure(&[step("scripts/merge_gate.sh", MergeGateOutcome::Failed, out)])
             .expect("the gate's setup, not the code");

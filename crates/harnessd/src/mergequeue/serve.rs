@@ -28,6 +28,7 @@ use letibot_tokencore::store::{
     ReviewRow, ReviewState, Store, StoreError, TargetHealth,
 };
 
+use super::carry;
 use super::gate::{self, GateControl, GateRunner, GateVerdict};
 use super::git;
 use super::lease::{HEARTBEAT_EVERY, LEASE_TTL_MS};
@@ -71,12 +72,17 @@ pub trait QueueDoor: Send + Sync {
 /// How a project's `[queue]` settings are read — the project's `leticode.toml` in production.
 pub type SettingsFor = Arc<dyn Fn(&Path) -> Result<QueueSettings, String> + Send + Sync>;
 
+/// Where a repository's landing worktree is made: the directory [`git::landing_worktree_in`]
+/// puts it under (letibot's data directory in production, a temporary one in the tests).
+pub type LandingRootFor = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
+
 /// **What every worker of one daemon shares.**
 pub struct QueueEnv {
     pub me: LeaseClaim,
     pub gate: Arc<dyn GateRunner>,
     pub door: Arc<dyn QueueDoor>,
     pub settings: SettingsFor,
+    pub landing_root: LandingRootFor,
     pub gate_deadline: Duration,
     pub review_deadline_ms: u64,
     pub reviewer_start_grace_ms: u64,
@@ -93,6 +99,7 @@ impl QueueEnv {
             gate: Arc::new(gate::LocalGate),
             door,
             settings: Arc::new(settings::for_repository),
+            landing_root: Arc::new(|_| git::landing_root()),
             gate_deadline: gate::GATE_DEADLINE,
             review_deadline_ms: REVIEW_DEADLINE_MS,
             reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
@@ -693,13 +700,13 @@ impl RepoQueue {
                 format!("the gate could not be read from `{target}` at {tip}: {e}"),
                 vec![],
             ),
-            Ok(Some((steps, _install))) => match git::landing_worktree(&self.repo, &tip) {
+            Ok(Some((steps, _install))) => match self.landing_at(&tip) {
                 Err(e) => (
                     HealthState::Blocked,
-                    format!("the landing worktree could not be made at {tip}: {e}"),
+                    format!("the landing worktree could not be made ready at {tip}: {e}"),
                     vec![],
                 ),
-                Ok(wt) => {
+                Ok((wt, carried)) => {
                     let alive = || self.beat().unwrap_or(true);
                     let ctl = GateControl {
                         deadline: Instant::now() + self.env.gate_deadline,
@@ -720,12 +727,15 @@ impl RepoQueue {
                         // could not judge the code — its own setup failed. The tip stays
                         // unjudged (`blocked`: nothing lands), and nobody is sent to find what
                         // in the code broke it.
-                        GateVerdict::Failed(w) => match super::setup::setup_failure(&run.steps) {
-                            Some(setup) => {
-                                (HealthState::Blocked, format!("{setup}\n\n{w}"), run.steps)
+                        GateVerdict::Failed(w) => {
+                            let w = self.with_carry_hint(w, &wt, &carried);
+                            match super::setup::setup_failure(&run.steps) {
+                                Some(setup) => {
+                                    (HealthState::Blocked, format!("{setup}\n\n{w}"), run.steps)
+                                }
+                                None => (HealthState::Red, w, run.steps),
                             }
-                            None => (HealthState::Red, w, run.steps),
-                        },
+                        }
                         GateVerdict::TimedOut(w) => (HealthState::TimedOut, w, run.steps),
                         GateVerdict::Infra(w) => (HealthState::Blocked, w, run.steps),
                         GateVerdict::Stopped(_) => {
@@ -766,6 +776,33 @@ impl RepoQueue {
             _ => {}
         }
         Ok((Some(h), true))
+    }
+
+    /// **The landing worktree at `at`, with the project's `gate_carry` copied in** — the tree and
+    /// what was carried.
+    fn landing_at(&self, at: &str) -> Result<(PathBuf, Vec<String>), String> {
+        let root = (self.env.landing_root)(&self.repo)?;
+        let wt = git::landing_worktree_in(&root, &self.repo, at)?;
+        let carried = self.gate_carry();
+        carry::carry(&self.repo, &wt, &carried)?;
+        Ok((wt, carried))
+    }
+
+    /// The project's `[queue] gate_carry`. A `[queue]` that does not parse was raised by the
+    /// pass that read it; here it is the default, nothing carried.
+    fn gate_carry(&self) -> Vec<String> {
+        (self.env.settings)(&self.repo)
+            .map(|s| s.gate_carry)
+            .unwrap_or_default()
+    }
+
+    /// A failed gate's words, with [`carry::hint`]'s sentence as their last paragraph when the
+    /// landing tree lacks ignored directories the checkout has and nothing is carried.
+    fn with_carry_hint(&self, words: String, wt: &Path, carried: &[String]) -> String {
+        match carry::hint(&self.repo, wt, carried) {
+            Some(h) => format!("{words}\n\n{h}"),
+            None => words,
+        }
     }
 
     /// **Red target: an emergency, the red tip first in review, and the operator told**
@@ -982,7 +1019,18 @@ impl RepoQueue {
             )?;
             return Ok(());
         }
-        let wt = match git::landing_worktree(&repo, &tip) {
+        let landing_root = match (self.env.landing_root)(&repo) {
+            Ok(r) => r,
+            Err(e) => {
+                self.raise(
+                    "queue_blocked",
+                    format!("`{}` cannot land: {e}", row.branch),
+                );
+                self.gating_to(row, MergeState::Blocked, Move::new(&me, e))?;
+                return Ok(());
+            }
+        };
+        let wt = match git::landing_worktree_in(&landing_root, &repo, &tip) {
             Ok(wt) => wt,
             Err(e) => {
                 self.raise(
@@ -1049,6 +1097,17 @@ impl RepoQueue {
             .set("onto_sha", tip.clone())
             .set("rebased_sha", rebased.clone()),
         )?;
+        // The gitignored inputs the project names, copied in AFTER the rebase (whose checkout
+        // would not touch them, but a fresh landing tree has none).
+        let carried = self.gate_carry();
+        if let Err(e) = carry::carry(&repo, &wt, &carried) {
+            self.raise(
+                "queue_blocked",
+                format!("`{}` was not gated: {e}", row.branch),
+            );
+            self.gating_to(row, MergeState::Blocked, Move::new(&me, e))?;
+            return Ok(());
+        }
         let alive = || self.beat().unwrap_or(true);
         let ctl = GateControl {
             deadline: Instant::now() + self.env.gate_deadline,
@@ -1079,6 +1138,7 @@ impl RepoQueue {
                 return Ok(());
             }
             GateVerdict::Failed(w) => {
+                let w = self.with_carry_hint(w, &wt, &carried);
                 self.gating_to(
                     row,
                     MergeState::Failed,

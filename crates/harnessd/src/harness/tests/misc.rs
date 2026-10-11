@@ -179,3 +179,41 @@ fn neither_stop_accuses_the_model_of_not_answering() {
     assert!(e.contains("0 of 2"), "with its denominator: {e}");
     assert!(!e.contains("without answering"), "{e}");
 }
+
+/// **The repository's landing tree is in its sessions' confined view, read-only.** The firecode
+/// session, 2026-10-11: *"`.git` is on the never-write list — I can't inspect the landing
+/// worktree, and no grant reaches it."* The daemon adds the grant itself, beside `--grant-ro`'s,
+/// for the repository the workspace is — and only that one.
+#[test]
+fn a_confined_session_reads_its_repositorys_landing_tree_and_cannot_write_it() {
+    use letibot_tools::exec::confine::Grant;
+    let dir = crate::mergequeue::serve::tests::TempDir::new("landing-grant");
+    let repo = crate::mergequeue::serve::tests::repo(&dir.0);
+    let root = dir.0.join("landing");
+    let mut cfg = Config::for_this_box(&repo);
+    cfg.grants_ro = vec![std::path::PathBuf::from("/opt/toolchain")];
+    let grants = confined_grants(&cfg, Some(&root));
+    let landing = crate::mergequeue::git::landing_dir_in(&root, &repo);
+    assert!(
+        landing.is_dir(),
+        "made, empty, so the bind has something to bind"
+    );
+    assert!(
+        matches!(&grants[0], Grant::ReadOnly { path, .. } if path == std::path::Path::new("/opt/toolchain")),
+        "the operator's own grants first: {grants:?}"
+    );
+    assert!(
+        grants
+            .iter()
+            .any(|g| matches!(g, Grant::ReadOnly { path, .. } if *path == landing)),
+        "{grants:?}"
+    );
+    assert!(
+        !grants.iter().any(|g| matches!(g, Grant::ReadWrite { .. })),
+        "never writable: {grants:?}"
+    );
+    // A workspace that is no repository gets no landing grant.
+    let plain = crate::mergequeue::serve::tests::TempDir::new("landing-grant-none");
+    let cfg = Config::for_this_box(&plain.0);
+    assert!(confined_grants(&cfg, Some(&root)).is_empty());
+}

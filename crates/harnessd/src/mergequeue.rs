@@ -13,8 +13,11 @@
 //!   by compare-and-swap (`Store::acquire_queue_lease`), one per repository (decisions 1, 2).
 //! * **[`gate`]** — the target's own `## Merge gate`, run by a [`gate::GateRunner`] (R62's seam)
 //!   with a thirty-minute deadline in a killable process group (decision 9).
-//! * **[`git`]** — the landing in a DEDICATED worktree, a compare-and-swap on the target's ref,
-//!   the push, and the fresh clone a VM reviewer is booted on.
+//! * **[`git`]** — the landing in a DEDICATED worktree (in letibot's data directory, never in
+//!   the repository's `.git`), a compare-and-swap on the target's ref, the push, and the fresh
+//!   clone a VM reviewer is booted on.
+//! * **[`carry`]** — the gitignored inputs a project's gate needs (`[queue] gate_carry`), copied
+//!   into the landing tree, and the sentence a failed gate's notice adds when they are missing.
 //! * **[`serve`]** — the queues' own threads: a supervisor per daemon and a worker per
 //!   repository whose lease it holds. The review queue's upkeep (deadlines, claims, raises), the
 //!   target's health (gated on every change, coalesced — decision 10), and the landings.
@@ -39,6 +42,7 @@ use std::thread::JoinHandle;
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{MergeRow, ReviewRow, Store, StoreError};
 
+pub mod carry;
 pub mod desk;
 pub mod gate;
 pub mod git;

@@ -151,12 +151,33 @@ pub(crate) fn me(tag: &str) -> LeaseClaim {
     }
 }
 
+/// The tests' landing root: beside the repository, inside the test's own temporary directory,
+/// so a test never writes into the box's real `~/.local/share/letibot/landing`.
+pub(crate) fn test_landing_root() -> crate::mergequeue::serve::LandingRootFor {
+    Arc::new(|repo: &Path| {
+        Ok(repo
+            .parent()
+            .map(|p| p.join("landing"))
+            .unwrap_or_else(|| repo.join("landing")))
+    })
+}
+
 pub(crate) fn env(gate: Arc<dyn GateRunner>, door: Arc<Door>, who: &str) -> Arc<QueueEnv> {
+    env_with(gate, door, who, QueueSettings::default())
+}
+
+pub(crate) fn env_with(
+    gate: Arc<dyn GateRunner>,
+    door: Arc<Door>,
+    who: &str,
+    settings: QueueSettings,
+) -> Arc<QueueEnv> {
     Arc::new(QueueEnv {
         me: me(who),
         gate,
         door,
-        settings: Arc::new(|_| Ok(QueueSettings::default())),
+        settings: Arc::new(move |_| Ok(settings.clone())),
+        landing_root: test_landing_root(),
         gate_deadline: Duration::from_secs(60),
         review_deadline_ms: REVIEW_DEADLINE_MS,
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
@@ -191,7 +212,15 @@ impl World {
     }
     /// A worker that holds the lease, as the supervisor would hand it one.
     fn worker(&self, gate: Arc<dyn GateRunner>, who: &str) -> RepoQueue {
-        let env = env(gate, self.door.clone(), who);
+        self.worker_with(gate, who, QueueSettings::default())
+    }
+    fn worker_with(
+        &self,
+        gate: Arc<dyn GateRunner>,
+        who: &str,
+        settings: QueueSettings,
+    ) -> RepoQueue {
+        let env = env_with(gate, self.door.clone(), who, settings);
         let store = self.store();
         assert!(matches!(
             store
@@ -336,6 +365,17 @@ fn an_approved_branch_lands_through_the_gate_in_the_queues_own_worktree() {
     assert!(
         !crate::mergequeue::git::checkouts_of(&w.repo, "main").is_empty(),
         "the landing never checked anything out in the operator's place"
+    );
+    // The operator, 2026-10-11: "the merges and branches shoudlnt land into .git".
+    assert!(
+        !w.repo.join(".git").join(git::OLD_LANDING_NAME).exists(),
+        "nothing landed inside .git"
+    );
+    assert!(
+        git::landing_dir_in(&w.dir.0.join("landing"), &w.repo)
+            .join("one.txt")
+            .exists(),
+        "the landing tree is the queue's own, outside .git, at the landed tip"
     );
 }
 
@@ -619,6 +659,10 @@ fn a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review() {
         !w.door.warnings("target_red").is_empty(),
         "an emergency, said on every hub"
     );
+    assert!(
+        !crate::mergequeue::notices::health(&h).contains(crate::mergequeue::carry::LANDING_LACKS),
+        "no ignored directories in this checkout: the notice says nothing about them"
+    );
     let rows = w.store().review_rows(Some(&w.key())).unwrap();
     let red = rows
         .iter()
@@ -814,6 +858,57 @@ fn a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_no
         "nothing lands on an unjudged target"
     );
     assert_eq!(w.tip(), tip);
+}
+
+/// **firecode's red, 2026-10-11** — *"A git worktree doesn't carry gitignored files, so that tree
+/// has no `images/` and no `vendor/` … Every check that boots a VM fails"*. A gate that needs a
+/// gitignored input fails in the landing tree; the red notice names what the checkout has and
+/// the landing tree lacks, and `[queue] gate_carry` brings it in so the same gate passes.
+#[test]
+fn a_gate_that_needs_an_ignored_input_is_told_its_name_and_passes_once_it_is_carried() {
+    let w = World::new("carry");
+    std::fs::write(w.repo.join(".gitignore"), "images/\n").unwrap();
+    std::fs::write(
+        w.repo.join("AGENTS.md"),
+        "# agents\n\n## Merge gate\n\n```sh\ntest -f images/rootfs.ext4\n```\n",
+    )
+    .unwrap();
+    sh(&w.repo, &["add", "-A"]);
+    sh(
+        &w.repo,
+        &["commit", "-q", "-m", "a gate that boots the image"],
+    );
+    std::fs::create_dir_all(w.repo.join("images")).unwrap();
+    std::fs::write(w.repo.join("images/rootfs.ext4"), "rootfs\n").unwrap();
+
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Red, "{h:?}");
+    let sentence = "The landing tree has no `images/` (gitignored, present in your checkout); if \
+                    the gate needs them, set `[queue] gate_carry` in the project's \
+                    `leticode.toml`.";
+    assert!(h.evidence.ends_with(sentence), "{}", h.evidence);
+    let notice = crate::mergequeue::notices::health(&h);
+    assert!(notice.starts_with("EMERGENCY"), "{notice}");
+    assert_eq!(notice.matches(sentence).count(), 1, "{notice}");
+
+    // The project names it; the next tip is gated with it carried, and passes.
+    let carrying = QueueSettings {
+        gate_carry: vec!["images".into()],
+        ..Default::default()
+    };
+    let q = w.worker_with(Arc::new(LocalGate), "a", carrying);
+    commit(&w.repo, "a.txt", "two\n", "main moves");
+    run(&q, 1);
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Green, "{h:?}");
+    let carried = git::landing_dir_in(&w.dir.0.join("landing"), &w.repo).join("images");
+    let m = std::fs::symlink_metadata(&carried).unwrap();
+    assert!(
+        m.is_dir() && !m.file_type().is_symlink(),
+        "a copy, never a link"
+    );
 }
 
 /// **An amended target supersedes the review of its old red tip** (R76 item 4). FAILS before
