@@ -41,7 +41,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R61 — Review and merge are two queues — **OPEN, designed and DECIDED by the operator 2026-10-11 (decisions below the review); ready to build**
+## R61 — Review and merge are two queues — **BUILT on `r61-queues` 2026-10-11 (not merged); what is left and what the operator should confirm are at the end of this entry**
 
 The operator: *"review is review and merge is merge. separate steps. separate queues."* and
 *"model reviews stay, yes"*. Today they are one: a `merge_queue` row sits in `waiting` until the
@@ -217,6 +217,90 @@ each state cannot be reconstructed):
 
 **Operational, now, before any of this:** stop the daemons on old builds. The 10-07 and 10-09
 builds serve the shared table with no claim and no workspace filter.
+
+### What landed on `r61-queues` (2026-10-11)
+
+Two commits: `queues: review and merge are two queues…` (store, wire, daemon) and `tui: the queue
+pane draws both queues…`. Per requirement and decision, with the test that fails on v23:
+
+- **Store, schema 24** (`tokencore/src/store/queues.rs`): `review_queue` and a new `merge_queue`
+  with a `repository` column; every move is `UPDATE … WHERE id AND state [AND owner]` and appends
+  to `queue_transition` (from, to, at, by, why — append-only by trigger); `queue_lease` claimed by
+  compare-and-swap in an immediate transaction that re-reads `schema_version` (a build that does not
+  match takes nothing, and its next heartbeat fails); `target_health`; the accept verdict and the
+  merge row are one transaction carrying `approved_sha`. Tests: `store::queues::tests` (refused
+  stale moves + history, lease takeover only after expiry, wrong schema, recovery scoped to one
+  repository and to other owners, the v23 migration).
+- **Decision 13, the migration**: `merge_queue`/`merge_review` RENAMED to `*_v23`, every row kept;
+  waiting/taken/stale rows carried forward as reviews (`a-pass-reads-one-row`,
+  `group-the-queue-messages`), the waiting row whose review said reject (`queue-spin`) not carried;
+  landed/failed/conflict/vetoed archived only (the 10 failed: verified to hold no missing work).
+  Carried rows get their repository/target/head from the daemon that serves their worktree
+  (`QueueService::resolve_carried`); a branch already on the target is withdrawn on its first pass.
+  The new `merge_queue` shares no column list with the old, so an old daemon already running fails
+  its own reads and writes of it.
+- **Decisions 1, 2** (`harnessd/src/mergequeue/serve.rs`): a supervisor thread per daemon claims the
+  lease of each repository it serves (its workspace, under it, or holding it) and runs one worker
+  per lease held — never on a session's worker; heartbeat every 5 s, 90 s lifetime, released on
+  stop; store errors retried with backoff. Tests: `serve::tests::the_service_serves_the_queues_and_stops`,
+  `a_new_lease_holder_recovers_what_the_old_one_held_and_the_old_one_stops`,
+  `a_red_target_in_one_repository_does_not_stop_another`.
+- **Decisions 6, 7, 9, 12, requirement 3** (the landing): branch head must be the approved head (a
+  rebase carrying the same change is not a move; anything else → `moved` and back to review);
+  rebase in a dedicated worktree under `.git/letibot-landing`; the TARGET's own `## Merge gate`
+  through `GateRunner` (R62's seam; `LocalGate` here) — 30 min, process group, killed on
+  timeout/stop/lost lease, `timed_out` its own outcome; `update-ref` compare-and-swap (moved → back
+  in line, rebased and gated again); the operator's checkout of the target follows by `read-tree -m
+  -u` or the landing is undone and raised; push, then the `install-gate-build` steps only after a
+  push succeeded; per-project target from `[queue] target`. Tests: `an_approved_branch_lands_…`,
+  `a_target_that_moves_during_the_gate_…`, `a_branch_that_moves_after_approval_…`,
+  `a_gate_past_its_deadline_is_killed_…`, `a_stopping_daemon_kills_the_gate_…`,
+  `the_landing_pushes_then_installs_…`.
+- **Decisions 3, 4, 5, 6, requirement 4** (the review queue): the queue thread claims (red tip first,
+  two at a time, a deadline of one hour); reviewers are `task` children of the review queue's
+  session started ONLY for rows this daemon claimed, shown `base...<head>` and approved at that head;
+  VM placement boots on a fresh clone of the branch, else host in the read-only seat; a reviewer that
+  cannot start, never starts (5 min), or spends three attempts is `blocked` and RAISED
+  (`queue_blocked`); `[queue] merge_via_session = true` hands a blocked review to the project's main
+  session once (default: raise only); a refused branch that moves goes back to review; `/queue
+  approve` is the operator's approval over the reviewer at the head now, still gated. Tests:
+  `serve::tests::a_reviewer_past_its_deadline_…`, `a_review_nobody_starts_…`,
+  `a_rejected_branch_that_moves_…`, `sessions::review_pass` (spawn, other daemon's rows left alone,
+  bound approval, prose and vanished children counted), `session_channel` (refusal delivery).
+- **Decisions 10, 11, item 4 relaxed**: the target's tip gated on every change (coalesced); red →
+  `target_red` emergency, a `kind = target` review first in line, other reviews and enqueue go on,
+  the merge queue lands only a branch marked `fixes`; the red tip's reviewer `reject` opens a fix
+  branch via `task_start` (policy `[queue] red_target = "fix"`, default) or only tells the operator
+  (`"raise"`). Test: `a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review` — R61's
+  done-when (reviewed, merged, then main red: rows in both queues; landing stops; enqueue and review
+  go on).
+- **Pane** (protocol 43): one snapshot of both queues, leases with heartbeat age (STALE past 90 s),
+  targets' health (red first, at emergency severity), time in state, owner, the selected row's last
+  moves, Enter for the whole row and every move; an unreadable store is said. Tests:
+  `tui app::tests::queue`.
+
+### Left, and what the operator should confirm
+
+- **Confirm**: `/queue clean` and `/queue rm` now WITHDRAW (a terminal state, history kept) rather
+  than delete — the earlier ruling was *"/queue clean deletes"*; R61's history argues for keeping.
+- **Confirm**: `red_target` defaults to `fix` (decision 11 names the fix branch as the way, and says
+  the default is configurable without saying which).
+- **Confirm**: a landed branch is deleted with `git branch -D` (the queue rebases in its own
+  worktree, so `-d` refuses), only when its head is still the one landed and its worktree is clean.
+- **Not exercised on the live store**: the v24 migration of the operator's 22 rows runs on the first
+  open by this build. Try it on a copy of `sessions.db` first. Stop the old-build daemons anyway.
+- **One review session per box remains** (`s-gatekeeper`): two daemons each open it; reviewer
+  spawns are now scoped by the lease owner, but the session's single owner is R68's.
+- **Every daemon gates its repositories' target tips at start** (decision 10): a ~7 min gate of
+  `main` when a daemon starts with nothing queued. A timed-out or blocked target holds landings
+  until the tip changes or a daemon restarts — there is no `/queue regate` verb yet.
+- **The `GateRunner` on the fleet is R62.** The old `letibot_tools::gatekeeper::Reviewer` trait and
+  `wake` are now unused by the daemon; removing them is a tools-crate cleanup.
+- **The pane's per-row history** is the snapshot's last 60 moves; an older row's full history is in
+  the store (`queue_transition`) but not on the wire.
+- **The perf done-when** (*a review pass with N entries costs no `Store::session` scan*) holds by
+  construction — the passes read `review_queue`, `merge_queue` and `queue_lease` only — and was not
+  measured with `perf`.
 
 ---
 

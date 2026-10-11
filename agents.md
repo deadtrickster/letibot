@@ -68,8 +68,12 @@ wrappers' source of truth), `tests/fidelity`, `scratch/` (untracked; see gotchas
 
 ## Merge gate
 
-The merge queue runs these in a branch's worktree, after rebasing it onto `main` and before
-landing it; the first that fails parks the branch. Read from `main`'s copy of this file, so a
+The merge queue runs these in its own landing worktree (`.git/letibot-landing`), after rebasing
+an approved branch onto the target's tip and before moving the target; the first that fails parks
+the branch, and a step still running after thirty minutes is killed with its process group and
+the row is `timed_out` (R61). A step naming `install-gate-build` is not run with the gate: it runs
+only after the landing was PUSHED (R61 decision 7), so nothing is installed that is not on the
+remote. The same steps (without the install) gate the target's own tip whenever it changes. Read from `main`'s copy of this file, so a
 branch cannot change its own gate. The first four are what `.github/workflows/ci.yml` runs — a
 queue that lands on a weaker standard than CI lands branches CI would refuse, and the ONE
 difference is the `LETIBOT_REQUIRE_APPARATUS=1` prefix on the test step, which makes a skip a
