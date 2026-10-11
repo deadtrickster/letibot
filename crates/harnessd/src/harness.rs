@@ -5835,13 +5835,6 @@ impl Harness {
         self.submit_items(items)
     }
 
-    /// This session's watcher set, for a test that stands in for a watcher thread (R79). `None`
-    /// when the session has none.
-    #[doc(hidden)]
-    pub fn job_watchers(&self) -> Option<&Arc<JobWatchers>> {
-        self.job_watch.as_ref()
-    }
-
     /// **R79's delivery for this session** — see [`Deliveries`]. `None` for a session with no
     /// watcher set, which has nothing to deliver.
     pub(crate) fn deliveries(&self) -> Option<Deliveries> {
