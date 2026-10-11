@@ -7548,6 +7548,54 @@ impl Harness {
         })
     }
 
+    /// **The repository this session's queue verbs are about, and its target** — the one its
+    /// workspace means (`mergequeue::repo_of_workspace`), keyed the way the queues key it, unless
+    /// `named` is a path; and `[queue] target` (else `main`/`master`) when no target is named.
+    pub fn queue_repository(
+        &self,
+        named: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<(String, String), String> {
+        let repo = match named {
+            Some(p) => crate::mergequeue::git::repo_of_worktree(std::path::Path::new(p))
+                .ok_or_else(|| format!("{p} is not a git repository"))?,
+            None => crate::mergequeue::repo_of_workspace(&self.cfg.workspace)
+                .and_then(|r| crate::mergequeue::repo_of_worktree(&r))
+                .ok_or_else(|| {
+                    format!(
+                        "this session's workspace {} names no one git repository; name it: \
+                         `/queue regate /path/to/repo [TARGET]`",
+                        self.cfg.workspace.display()
+                    )
+                })?,
+        };
+        let target = match target {
+            Some(t) => t.to_string(),
+            None => {
+                let settings =
+                    crate::mergequeue::settings::for_repository(&repo).unwrap_or_default();
+                crate::mergequeue::settings::target_for(&repo, &settings).ok_or_else(|| {
+                    format!("{} has no target branch to gate; name one", repo.display())
+                })?
+            }
+        };
+        Ok((repo.display().to_string(), target))
+    }
+
+    /// `/queue regate [/REPO] [TARGET]` and the `queue` tool's `regate` — the target's tip gated
+    /// again even when it was already judged (R76 item 3). `who` goes on the move.
+    pub fn regate_target(
+        &self,
+        repository: Option<&str>,
+        target: Option<&str>,
+        who: &str,
+    ) -> Result<String, String> {
+        let (repo, target) = self.queue_repository(repository, target)?;
+        self.queue_verb("re-gate anything in", |s, ev| {
+            crate::mergequeue::verbs::regate(s, &repo, &target, who, ev)
+        })
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///

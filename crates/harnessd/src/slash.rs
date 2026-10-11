@@ -176,6 +176,14 @@ pub enum QueueVerb {
     /// **Delete entries from the queue** — the whole queue, or the one entry named. The branch and
     /// its worktree stay; the row and its verdict go.
     Clean { entry: Option<String> },
+    /// **Gate the target's tip again, even when it was already judged** (R76 item 3). `target`
+    /// is the project's `[queue] target` when none is named; `repository` is the session's own
+    /// unless the line names one by its path (`/queue regate /path/to/repo [TARGET]`), because the
+    /// red target the operator is looking at is often another project's.
+    Regate {
+        repository: Option<String>,
+        target: Option<String>,
+    },
 }
 
 /// What the operator is saying about a decision the gate already made.
@@ -390,18 +398,33 @@ impl Slash {
                 Some("clean") => Slash::Queue(QueueVerb::Clean {
                     entry: words.get(2).map(|id| (*id).to_string()),
                 }),
+                // **A path first is the repository** — a branch name never starts with `/`.
+                Some("regate") => match (words.get(2).copied(), words.get(3).copied()) {
+                    (Some(repo), target) if repo.starts_with('/') => {
+                        Slash::Queue(QueueVerb::Regate {
+                            repository: Some(repo.to_string()),
+                            target: target.map(str::to_string),
+                        })
+                    }
+                    (target, _) => Slash::Queue(QueueVerb::Regate {
+                        repository: None,
+                        target: target.map(str::to_string),
+                    }),
+                },
                 Some(other) => Slash::Help(format!(
                     "/queue {other}: the sub-verbs are `approve ENTRY-ID`, `veto ENTRY-ID [in your \
-                     words]`, `rm ENTRY-ID`, `restart ENTRY-ID`, `reset [ENTRY-ID]` and `clean \
-                     [ENTRY-ID]`. A bare `/queue` opens the merge-queue pane."
+                     words]`, `rm ENTRY-ID`, `restart ENTRY-ID`, `reset [ENTRY-ID]`, `clean \
+                     [ENTRY-ID]` and `regate [/REPO] [TARGET]`. A bare `/queue` opens the \
+                     merge-queue pane."
                 )),
                 None => Slash::Help(
                     "/queue opens the merge-queue pane; `/queue approve ENTRY-ID` lets an entry \
                      through, `/queue veto ENTRY-ID [why]` sends it back to the child that did the \
                      work, `/queue rm ENTRY-ID` drops it, `/queue restart ENTRY-ID` asks the \
                      gatekeeper again about a parked entry, `/queue reset [ENTRY-ID]` re-asks the \
-                     reviews of every parked entry (or of one), and `/queue clean [ENTRY-ID]` \
-                     deletes rows from the queue (or one)"
+                     reviews of every parked entry (or of one), `/queue clean [ENTRY-ID]` \
+                     deletes rows from the queue (or one), and `/queue regate [/REPO] [TARGET]` \
+                     gates the target's tip again even when it was already judged"
                         .into(),
                 ),
             },
@@ -1565,6 +1588,29 @@ mod the_verb_table_is_the_parser {
             Slash::parse("queue clean s-1-sub-2"),
             Slash::Queue(QueueVerb::Clean {
                 entry: Some("s-1-sub-2".into())
+            })
+        );
+        // **`regate` (R76 item 3)**: nothing is the project's target in the session's repository;
+        // a word is a target; a path first is another repository.
+        assert_eq!(
+            Slash::parse("queue regate"),
+            Slash::Queue(QueueVerb::Regate {
+                repository: None,
+                target: None
+            })
+        );
+        assert_eq!(
+            Slash::parse("queue regate feat/memory-engine"),
+            Slash::Queue(QueueVerb::Regate {
+                repository: None,
+                target: Some("feat/memory-engine".into())
+            })
+        );
+        assert_eq!(
+            Slash::parse("queue regate /home/x/pg-noop main"),
+            Slash::Queue(QueueVerb::Regate {
+                repository: Some("/home/x/pg-noop".into()),
+                target: Some("main".into())
             })
         );
         // **A sub-verb with no id is refused with the grammar**, and so is one that is not a

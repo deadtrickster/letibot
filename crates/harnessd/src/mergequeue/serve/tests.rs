@@ -894,6 +894,74 @@ fn an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_
     );
 }
 
+/// **A judged tip is gated again on request, and by a daemon taking the queue** (R76 item 3, R74
+/// #4). The red here is not in the code — the gate reads a file outside the repository (the
+/// machine) — so the tip never changes. FAILS before R76: no verb existed, and a new lease holder
+/// left a tip judged red alone, so the target stayed red with nothing left to change.
+#[test]
+fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
+    let w = World::new("regate");
+    let flag = w.dir.0.join("the-machine-is-sick");
+    std::fs::write(&flag, "x").unwrap();
+    std::fs::write(
+        w.repo.join("AGENTS.md"),
+        format!(
+            "# agents\n\n## Merge gate\n\n```sh\ntest ! -f {}\n```\n",
+            flag.display()
+        ),
+    )
+    .unwrap();
+    sh(&w.repo, &["add", "-A"]);
+    sh(
+        &w.repo,
+        &["commit", "-q", "-m", "a gate that reads the machine"],
+    );
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let health = || w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(health().state, HealthState::Red);
+    std::fs::remove_file(&flag).unwrap();
+    run(&q, 2);
+    assert_eq!(health().state, HealthState::Red, "the tip did not change");
+
+    // `/queue regate` (and the tool's verb): gated again at the same tip.
+    let said =
+        crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+            .unwrap();
+    assert!(said.contains("gated again"), "{said}");
+    run(&q, 1);
+    assert_eq!(health().state, HealthState::Green);
+    assert!(
+        w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .filter(|r| r.kind == ReviewKind::Target)
+            .all(|r| r.state == ReviewState::Withdrawn),
+        "green again: the red tip's review is withdrawn"
+    );
+
+    // A daemon taking the queue re-gates a tip judged red (here: sick again), and leaves green.
+    std::fs::write(&flag, "x").unwrap();
+    assert!(
+        crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/b")
+            .unwrap()
+            .is_empty(),
+        "a green tip is not in doubt"
+    );
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    run(&q, 1);
+    assert_eq!(health().state, HealthState::Red);
+    std::fs::remove_file(&flag).unwrap();
+    assert_eq!(
+        crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/b").unwrap(),
+        vec!["main".to_string()]
+    );
+    run(&q, 1);
+    assert_eq!(health().state, HealthState::Green);
+}
+
 // ===== The review queue's upkeep =====
 
 /// **A reviewer has a deadline; attempts are counted; the third is a raise, not a fourth**

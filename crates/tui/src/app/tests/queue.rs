@@ -284,6 +284,13 @@ fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would(
             line: "queue restart m-two".into()
         })
     );
+    // **`g` re-gates the row's TARGET** (R76 item 3), named with its repository.
+    assert_eq!(
+        a.key(Key::Char('g')),
+        Some(Action::Slash {
+            line: "queue regate /home/dead/Projects/letibot/letibot main".into()
+        })
+    );
     // A typed word is the composer's.
     a.set_composer("p");
     assert_eq!(a.key(Key::Char('d')), None);

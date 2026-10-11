@@ -1,4 +1,4 @@
-//! **The operator's verbs on the two queues** — `/queue approve|restart|veto|rm|reset|clean`.
+//! **The operator's verbs on the two queues** — `/queue approve|restart|veto|rm|reset|clean|regate`.
 //!
 //! Every verb is a conditional move on the row's CURRENT state (read, then moved only if still
 //! there), recorded in the history under the operator's session. Two rulings shape them:
@@ -15,7 +15,8 @@ use std::path::Path;
 
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{
-    Approval, MergeRow, MergeState, Move, ReviewKind, ReviewRow, ReviewState, Store,
+    Approval, HealthState, MergeRow, MergeState, Move, ReviewKind, ReviewRow, ReviewState, Store,
+    TargetHealth,
 };
 
 use super::gate::now_ms;
@@ -440,4 +441,108 @@ pub fn clean(
     Ok(format!(
         "{n} parked row(s) withdrawn — kept in the history, gone from the queues"
     ))
+}
+
+/// **Gate the target's tip again, even when that tip was already judged** (R76 item 3, R74 #4).
+///
+/// Before this a target was gated only when its tip CHANGED: a red that was the machine's, a
+/// timed-out gate, a gate whose setup was fixed outside the target (a corpus installed, a `.letibot`
+/// path made) held every landing until somebody committed to the target. The verb writes the
+/// health back to `gating` at the tip as it is NOW; the repository's queue worker sees `gating`
+/// and runs the gate on its next pass — the same door the red tip's reviewer uses when it finds
+/// the code sound. `who` is recorded on the move.
+pub fn regate(
+    store: &Store,
+    repository: &str,
+    target: &str,
+    who: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let repo = Path::new(repository);
+    let tip = git::branch_head(repo, target).ok_or_else(|| {
+        format!("`{target}` does not exist in {repository}, so there is no tip to gate")
+    })?;
+    let before = store
+        .target_health(repository, target)
+        .map_err(|e| e.to_string())?;
+    let was = match &before {
+        Some(h) if h.sha == tip => format!("it was `{}` at this tip", h.state.as_str()),
+        Some(h) => format!(
+            "it was `{}` at {}, and the tip is {tip} now",
+            h.state.as_str(),
+            h.sha
+        ),
+        None => "it was never gated".to_string(),
+    };
+    let why = format!("re-gate asked by {who}: {was}");
+    store
+        .set_target_health(
+            &TargetHealth {
+                repository: repository.to_string(),
+                target: target.to_string(),
+                sha: tip.clone(),
+                state: HealthState::Gating,
+                checked_ms: now_ms(),
+                evidence: why.clone(),
+                gate_steps: vec![],
+            },
+            who,
+        )
+        .map_err(|e| e.to_string())?;
+    announce(events, "target", target, "gating", &why);
+    // **Who will run it** — a re-gate nobody serves is a row that says `gating` for ever.
+    let leases = store.queue_leases().map_err(|e| e.to_string())?;
+    let served = leases.iter().any(|l| {
+        l.repository == repository
+            && now_ms().saturating_sub(l.heartbeat_ms) < super::lease::LEASE_TTL_MS
+    });
+    Ok(if served {
+        format!(
+            "`{target}` at {tip} is gated again ({was}); the queue's worker for {repository} runs \
+             it on its next pass, and the pane shows the verdict"
+        )
+    } else {
+        format!(
+            "`{target}` at {tip} is marked for a gate ({was}) — but NO daemon holds the queue \
+             lease of {repository} now, so nothing runs it until one that serves it starts"
+        )
+    })
+}
+
+/// **What a daemon re-gates when it takes a repository's lease** (R76 item 3) — every target
+/// whose last verdict was `red`, `blocked` or `timed_out`. A restart was the one way out of a
+/// timed-out or blocked target before `/queue regate`, and it did not even do that: the health
+/// row said the tip was judged, so the new daemon left it alone. A green tip is not gated again
+/// (nothing about it is in doubt), and a `gating` one is already going to be.
+pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for h in store.target_healths().map_err(|e| e.to_string())? {
+        if h.repository != repository
+            || !matches!(
+                h.state,
+                HealthState::Red | HealthState::Blocked | HealthState::TimedOut
+            )
+        {
+            continue;
+        }
+        let why = format!(
+            "re-gated as this daemon took the queue: the last verdict was `{}` at {}",
+            h.state.as_str(),
+            h.sha
+        );
+        store
+            .set_target_health(
+                &TargetHealth {
+                    state: HealthState::Gating,
+                    checked_ms: now_ms(),
+                    evidence: why,
+                    gate_steps: vec![],
+                    ..h.clone()
+                },
+                who,
+            )
+            .map_err(|e| e.to_string())?;
+        out.push(h.target);
+    }
+    Ok(out)
 }

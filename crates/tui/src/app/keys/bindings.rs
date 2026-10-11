@@ -210,6 +210,12 @@ const QUEUE: &[Binding] = &[
         Act::Verb(Verb::Restart),
         Text("restart"),
     ),
+    b(
+        &[On::Char('g')],
+        Empty,
+        Act::Verb(Verb::Regate),
+        Text("re-gates the row's target"),
+    ),
     PAGE,
     WHEEL,
 ];

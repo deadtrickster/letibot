@@ -440,7 +440,23 @@ impl App {
             self.redraw = true;
             return ControlFlow::Break(None);
         }
-        let line = format!("queue {} {}", verb.word(), self.queue_row_id(row));
+        // **`regate` is about the row's TARGET** (R76 item 3), named with its repository so the
+        // re-gate reaches the project the row is in and not the session's own.
+        let line = if verb == Verb::Regate {
+            let (repo, target) = match row {
+                QRow::Review(i) => (
+                    self.queues.reviews[i].repository.clone(),
+                    self.queues.reviews[i].target.clone(),
+                ),
+                QRow::Merge(i) => (
+                    self.queues.merges[i].repository.clone(),
+                    self.queues.merges[i].target.clone(),
+                ),
+            };
+            format!("queue regate {repo} {target}").trim().to_string()
+        } else {
+            format!("queue {} {}", verb.word(), self.queue_row_id(row))
+        };
         ControlFlow::Break(Some(Action::Slash { line }))
     }
 

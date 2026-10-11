@@ -689,6 +689,9 @@ pub(crate) enum Verb {
     Veto,
     Restart,
     Rm,
+    /// **The row's TARGET gated again** (R76 item 3) — `/queue regate /REPO TARGET`, about the
+    /// target the row lands on rather than the row itself.
+    Regate,
 }
 
 impl Verb {
@@ -698,6 +701,7 @@ impl Verb {
             Verb::Veto => 'v',
             Verb::Restart => 'r',
             Verb::Rm => 'd',
+            Verb::Regate => 'g',
         }
     }
 
@@ -707,6 +711,7 @@ impl Verb {
             Verb::Veto => "veto",
             Verb::Restart => "restart",
             Verb::Rm => "rm",
+            Verb::Regate => "regate",
         }
     }
 
@@ -718,6 +723,7 @@ impl Verb {
             Verb::Veto => "rejected in your words, sent back to the child",
             Verb::Restart => "back in line: reviewed, or gated, again",
             Verb::Rm => "withdrawn — the branch and its worktree stay, the history keeps the row",
+            Verb::Regate => "the target's tip gated again, even if it was judged",
         }
     }
 }
@@ -747,6 +753,7 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
             r.state.as_str(),
             "waiting" | "reviewing" | "blocked" | "rejected" | "cannot_decide"
         ),
+        (Verb::Regate, _) => true,
         (Verb::Veto | Verb::Rm, Selected::Merge(m)) => matches!(
             m.state.as_str(),
             "queued" | "blocked" | "failed" | "timed_out" | "conflict"

@@ -1022,6 +1022,11 @@ impl<'a> Sessions<'a> {
                     // `Option` travels as it was parsed rather than being refused here.
                     QueueVerb::Reset { entry } => h.reset_reviews(entry.as_deref()),
                     QueueVerb::Clean { entry } => h.clean_entries(entry.as_deref()),
+                    QueueVerb::Regate { repository, target } => h.regate_target(
+                        repository.as_deref(),
+                        target.as_deref(),
+                        &format!("operator:{session_id}"),
+                    ),
                 };
                 match said {
                     Ok(line) => SlashReply {

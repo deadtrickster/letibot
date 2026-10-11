@@ -1255,6 +1255,15 @@ impl QueueService {
                 LeaseOutcome::Held { previous } => {
                     let recovered =
                         store.recover_queue(&key, &self.env.me.owner, gate::now_ms())?;
+                    // **R76 item 3**: a tip whose last verdict was red, blocked or timed out is
+                    // gated again by the daemon that takes the queue — a restart is a re-gate.
+                    match super::verbs::regate_at_start(store, &key, &self.env.me.owner) {
+                        Ok(t) if !t.is_empty() => {
+                            eprintln!("  merge queue: {key}: re-gating {}", t.join(", "))
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("  merge queue: {key}: no re-gate at start: {e}"),
+                    }
                     eprintln!(
                         "  merge queue: serving {key}{}{}",
                         previous
