@@ -62,6 +62,15 @@ Until the backend below existed, `where: firecode` was refused by name and the
 subagent was **not** run on the host in its place — running here and calling
 it a VM is the boundary claim this design exists not to make.
 
+### Holding a placed child to a check
+
+`task` / `task_start` take `verify` with `where: firecode`: a shell command firecode runs in the
+child's project after the child has finished and before its VM stops (`firecode up --verify`). Its
+recorded exit status - not anything the child says - is put in the parent's answer beside the
+delivered path, as `ACCEPTANCE CHECK PASSED`, `FAILED` or `GAVE NO VERDICT`. Refused without
+`where: firecode`, where nothing would run it. Setup and day-to-day use on a Mac:
+[firecode-on-macos.md](firecode-on-macos.md).
+
 ## 3. The firecode backend — what firecode actually offers
 
 Measured on lab2x1, 2026-09-14, against `~/Projects/firecode` (commit
@@ -72,7 +81,7 @@ Measured on lab2x1, 2026-09-14, against `~/Projects/firecode` (commit
 | `firecode up --project P` | boots and waits: **12.4 s**. The guest gets a **copy** of `P` mounted at the same path (`firecode-src`); the host tree is untouched |
 | `firecode in --project P [--cwd D] 'cmd'` | **0.55 s** per command over vsock; one argument is a shell command (`bash -lc`), several are quoted words; the command's **exit status propagates** (3 → 3, missing command → 127); **stdout and stderr arrive merged**, through the terminal filter (text only) |
 | `firecode cp host vm:/path`, `cp vm:/path host` | both ways, tar over vsock; extraction uses Python's `data` filter |
-| `firecode down --project P` | returns in 0.07 s; the VM's copy of the project lands in a **sibling** `P-<stamp>` a few seconds later; `runs/<run>/` holds `console.log`, `result`, `project`, `cgroup`, `vsock` |
+| `firecode down --project P` | waits for the copy-out and prints `work delivered: <path>` (a **sibling** `P-<stamp>`); `runs/<run>/copy_out` records it as `pending`, then `done <path>`, `none` or `failed …`. With a gate (`up --verify CMD`) it first runs `CMD` in the project and prints the verdict, also kept as `runs/<run>/verify-status`. `runs/<run>/` holds `console.log`, `result`, `project`, `cgroup`, `vsock` |
 | a `--cwd` the host made after boot | does not exist in the guest: no shared filesystem, the copy is as of boot |
 | `firecode info --json` | the run id, VM ip, socket |
 
