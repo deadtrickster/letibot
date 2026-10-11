@@ -111,6 +111,15 @@ impl App {
             Key::CtrlE => Key::End,
             k => k,
         };
+        // **alt-g / alt-b, settled once, here** — the `ctrl-e` shape: a mark when nothing owns
+        // the keys (alt-b also needs an empty composer), word-left / nothing otherwise.
+        let k = match k {
+            Key::AltB if !self.feedback_key_free(true) => Key::WordLeft,
+            Key::AltG if !self.feedback_key_free(false) => return None,
+            Key::AltG => return self.feedback_key(true),
+            Key::AltB => return self.feedback_key(false),
+            k => k,
+        };
         // **A wheel notch goes to the surface under the pointer** — see [`App::wheel_at`]. One
         // that nothing on the frame claims, or that arrives while a card owning every key is up,
         // goes on below as a notch with no position, which is what the wheel always was.
@@ -1071,6 +1080,11 @@ pub enum Key {
     Enter,
     /// Alt+Enter: a newline that does not submit.
     SoftEnter,
+    /// **alt-g: mark the current turn good** (TODO R81, `app/feedback.rs`).
+    AltG,
+    /// **alt-b: mark the current turn bad** — on an empty composer; readline's word-left
+    /// everywhere else, which is what alt-b always was (`app/feedback.rs`).
+    AltB,
     Backspace,
     Delete,
     Left,
@@ -1240,6 +1254,8 @@ impl Key {
             | Key::CtrlN
             | Key::CtrlBracket
             | Key::CtrlCaret
+            | Key::AltG
+            | Key::AltB
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

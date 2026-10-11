@@ -1391,6 +1391,7 @@ mod composer;
 mod decisions;
 mod detected;
 mod editor;
+mod feedback;
 mod hits;
 mod jobcard;
 mod jobs;

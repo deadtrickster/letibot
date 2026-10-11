@@ -458,6 +458,10 @@ impl App {
         //
         // Rendered from this head, at this head's size, escape codes intact — the
         // whole point is what is actually painted, not a description of it.
+        // **An operator's mark** (TODO R81) — `app/feedback.rs`.
+        if let Some(a) = self.feedback_command(cmd) {
+            return a;
+        }
         if let Some(rest) = verb_arg(cmd, "cells") {
             let message = rest.trim().to_string();
             let (w, h) = (self.term_cols, self.screen_rows);
@@ -1286,6 +1290,10 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "throw this head's state away and take a fresh snapshot",
     ),
     ("cells", "MESSAGE — send it with a copy of this screen"),
+    (
+        "fb",
+        "NOTE — mark this moment (fb+ good, fb- bad; #words are tags; alt-g / alt-b without typing)",
+    ),
     ("compact", "summarise this session and fork it"),
     (
         "reseat",

@@ -804,6 +804,15 @@ impl Link {
                     Action::Slash { line } => {
                         self.client.slash(app.seq, &line)?;
                     }
+                    Action::Feedback {
+                        at_ms,
+                        polarity,
+                        note,
+                        item_id,
+                    } => {
+                        self.client
+                            .feedback(at_ms, &polarity, &note, item_id.as_deref())?;
+                    }
                     // **The operator's own call through the door** (R34, R31).
                     //
                     // One frame, not two: `execute: true` means the daemon runs it and

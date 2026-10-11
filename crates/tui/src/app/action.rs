@@ -146,6 +146,14 @@ pub enum Action {
     Slash {
         line: String,
     },
+    /// **An operator's mark** — `/fb`, `/fb+`, `/fb-`, alt-g / alt-b (TODO R81). Its own frame,
+    /// `ClientFrame::Feedback`; `at_ms` is this head's clock at the press.
+    Feedback {
+        at_ms: u64,
+        polarity: String,
+        note: String,
+        item_id: Option<String>,
+    },
     /// **The operator's own tool call through the door** — R24 part two, R31, R34.
     ///
     /// `name` is the TOOL's spelling (`web_search`), never the typed verb; the hyphen is a

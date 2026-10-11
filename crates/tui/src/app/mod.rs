@@ -1346,6 +1346,9 @@ pub struct App {
     /// rewritten; and both happen here, because a snapshot replaces the transcript whole
     /// and an elision changes a row's height. See [`App::hold`].
     pub(crate) anchor: Option<Held>,
+    /// The last alt-g / alt-b and when — a second press within five seconds opens the note
+    /// (`app/feedback.rs`, TODO R81).
+    pub(crate) fb_last: Option<(bool, u64)>,
     /// **Where the reader was when a snapshot replaced the rows under them** — the two
     /// things that can still be asked of a transcript that has not arrived yet, taken at
     /// the moment the old one went.
@@ -1722,6 +1725,7 @@ impl App {
             daemon_pid: None,
             unconfirmed: Vec::new(),
             anchor: None,
+            fb_last: None,
             carry: None,
             wheel_run: 0,
             wheel_last_ms: 0,
@@ -1923,6 +1927,7 @@ mod composer;
 pub(crate) mod diff_popup;
 mod editor;
 mod events;
+mod feedback;
 mod hits;
 mod keys;
 mod notes;

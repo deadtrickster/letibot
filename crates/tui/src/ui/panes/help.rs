@@ -49,6 +49,11 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks",
         ),
         (
+            "alt-g alt-b",
+            "mark this turn good or bad (alt-b only on an empty prompt — word-left otherwise); \
+             twice opens the note; /fb+ /fb- NOTE #tags; scrolled back, the row in view",
+        ),
+        (
             "ctrl-z",
             "undo — a word at a time, and a kill is always its own step",
         ),

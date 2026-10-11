@@ -50,8 +50,11 @@ fn key(k: KeyEvent) -> Option<Key> {
     Some(match k.code {
         KeyCode::Char(c) if m.is_empty() => Key::Char(c),
         KeyCode::Char(c) if m == Mods::CTRL => return ctrl(c),
-        // Alt arrives as an ESC before the key; only these three mean anything.
-        KeyCode::Char('b') if m == Mods::ALT => Key::WordLeft,
+        // Alt arrives as an ESC before the key; only these four mean anything. alt-b is a MARK on
+        // an empty composer and word-left otherwise — settled in `App::key`, which can see the
+        // composer (`app/feedback.rs`); alt-g is the other mark (TODO R81).
+        KeyCode::Char('b') if m == Mods::ALT => Key::AltB,
+        KeyCode::Char('g') if m == Mods::ALT => Key::AltG,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.
@@ -367,7 +370,7 @@ mod tests {
             (b"\x1b[6~", Key::PageDown),
             (b"\x1b[1;5D", Key::WordLeft),
             (b"\x1b\r", Key::SoftEnter),
-            (b"\x1bb", Key::WordLeft),
+            (b"\x1bb", Key::AltB),
             (b"\x01", Key::Home),
             (b"\x09", Key::Tab),
             // Its own key now: end-of-line in the composer, the editor on an empty prompt. The
@@ -489,7 +492,7 @@ mod tests {
         assert_eq!(one(b"\x1b[27u"), vec![Key::Esc]);
         assert_eq!(one(b"\x1b[99;5u"), vec![Key::CtrlC]);
         assert_eq!(one(b"\x1b[118;5u"), vec![Key::CtrlV]);
-        assert_eq!(one(b"\x1b[98;3u"), vec![Key::WordLeft]);
+        assert_eq!(one(b"\x1b[98;3u"), vec![Key::AltB]);
         assert_eq!(one(b"\x1b[127;3u"), vec![Key::KillWordBack]);
         assert_eq!(one(b"\x1b[122;6u"), vec![Key::Undo]);
         assert_eq!(one(b"\x1b[9;2u"), vec![Key::Tab]);
