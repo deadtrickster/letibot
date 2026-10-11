@@ -595,7 +595,16 @@ impl RepoQueue {
                             ),
                             run.steps,
                         ),
-                        GateVerdict::Failed(w) => (HealthState::Red, w, run.steps),
+                        // **R76 item 5**: a gate that failed AFTER its build and tests passed
+                        // could not judge the code — its own setup failed. The tip stays
+                        // unjudged (`blocked`: nothing lands), and nobody is sent to find what
+                        // in the code broke it.
+                        GateVerdict::Failed(w) => match super::setup::setup_failure(&run.steps) {
+                            Some(setup) => {
+                                (HealthState::Blocked, format!("{setup}\n\n{w}"), run.steps)
+                            }
+                            None => (HealthState::Red, w, run.steps),
+                        },
                         GateVerdict::TimedOut(w) => (HealthState::TimedOut, w, run.steps),
                         GateVerdict::Infra(w) => (HealthState::Blocked, w, run.steps),
                         GateVerdict::Stopped(_) => {
@@ -616,6 +625,23 @@ impl RepoQueue {
         match state {
             HealthState::Red => self.target_went_red(&h)?,
             HealthState::Green => self.target_is_green(&h)?,
+            HealthState::Blocked if h.evidence.starts_with(super::setup::GATE_SETUP_FAILED) => {
+                // High, not emergency: the code was never judged red. Nothing lands until the
+                // gate can judge it, which is said in the same breath.
+                self.raise(
+                    "gate_setup_failed",
+                    format!(
+                        "`{}` at {} in {} is UNJUDGED, not red: {} Nothing lands on it until its \
+                         gate can judge it — fix the gate (or the project's `[queue] target`), then \
+                         `/queue regate {}`.",
+                        h.target,
+                        h.sha,
+                        self.key,
+                        h.evidence.lines().next().unwrap_or_default(),
+                        h.target
+                    ),
+                );
+            }
             _ => {}
         }
         Ok((Some(h), true))
@@ -914,6 +940,23 @@ impl RepoQueue {
         };
         match run.verdict {
             GateVerdict::Passed => {}
+            GateVerdict::Failed(w) if super::setup::setup_failure(&run.steps).is_some() => {
+                // The branch was never judged: its gate's own setup failed after the build and
+                // the tests passed (R76 item 5). Parked as `blocked` — `/queue restart` once the
+                // gate is fixed — never `failed`, which says the branch is bad.
+                let setup = super::setup::setup_failure(&run.steps).unwrap_or_default();
+                self.raise(
+                    "queue_blocked",
+                    format!("`{}` was not judged: {setup}", row.branch),
+                );
+                self.gating_to(
+                    row,
+                    MergeState::Blocked,
+                    Move::new(&me, format!("{setup}\n\n{w}"))
+                        .set("gate_steps_json", rows_json(&run.steps)),
+                )?;
+                return Ok(());
+            }
             GateVerdict::Failed(w) => {
                 self.gating_to(
                     row,

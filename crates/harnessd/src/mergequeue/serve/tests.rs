@@ -750,6 +750,67 @@ fn a_red_target_in_one_repository_does_not_stop_another() {
     );
 }
 
+// ===== R76: a gate that cannot judge, a rewritten target, a re-gate =====
+
+/// **A gate whose build and tests passed and which then found no binary is UNJUDGED, not red**
+/// (R76 item 5, pg-noop's `main` of 2026-10-11). FAILS before R76: the health was `red`, a
+/// `red-main-…` review asked a reviewer what in the code broke it, and `target_red` went out at
+/// emergency severity. After: `blocked` with the setup named first, no review of the code, a
+/// `gate_setup_failed` raise — and still nothing lands.
+#[test]
+fn a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_nothing() {
+    let w = World::new("setup");
+    std::fs::write(
+        w.repo.join("gate.sh"),
+        "echo 'test result: ok. 3 passed; 0 failed'\necho '    Finished `release` profile'\n\
+         echo \"merge gate: FAIL: no binary at $PWD/target/release/letidb after a successful build\" >&2\n\
+         exit 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        w.repo.join("AGENTS.md"),
+        "# agents\n\n## Merge gate\n\n```sh\nsh gate.sh\n```\n",
+    )
+    .unwrap();
+    sh(&w.repo, &["add", "-A"]);
+    sh(
+        &w.repo,
+        &["commit", "-q", "-m", "a gate that names the wrong binary"],
+    );
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Blocked, "{h:?}");
+    assert!(
+        h.evidence
+            .starts_with(crate::mergequeue::setup::GATE_SETUP_FAILED),
+        "{}",
+        h.evidence
+    );
+    assert!(h.evidence.contains("no binary at"), "{}", h.evidence);
+    assert!(w.door.warnings("target_red").is_empty(), "not an emergency");
+    assert_eq!(w.door.warnings("gate_setup_failed").len(), 1);
+    assert!(
+        w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .all(|r| r.kind != ReviewKind::Target),
+        "no reviewer is sent to find what in the code broke it"
+    );
+    let m = w.accept("one", "test/a");
+    let tip = w.tip();
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Queued,
+        "nothing lands on an unjudged target"
+    );
+    assert_eq!(w.tip(), tip);
+}
+
 // ===== The review queue's upkeep =====
 
 /// **A reviewer has a deadline; attempts are counted; the third is a raise, not a fourth**

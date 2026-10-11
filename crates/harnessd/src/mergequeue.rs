@@ -21,6 +21,8 @@
 //! * **[`review`]** — the reviewers, which run on the review queue's SESSION as `task` children,
 //!   their verdicts bound to the head they judged (decision 6), and the enqueue.
 //! * **[`verbs`]** — the operator's `/queue` verbs, approve-over among them (decision 5).
+//! * **[`setup`]** — a gate that could not judge (its own setup failed after the build and the
+//!   tests passed) told apart from a target that is red (R76 item 5).
 //!
 //! The store's half — the tables, the conditional moves, the history, the lease rows, the
 //! target's health and the v24 migration — is `letibot_tokencore::store::queues`.
@@ -39,6 +41,7 @@ pub mod lease;
 pub mod review;
 pub mod serve;
 pub mod settings;
+pub mod setup;
 pub mod verbs;
 
 pub use git::{repo_of_workspace, repo_of_worktree, repo_root};
