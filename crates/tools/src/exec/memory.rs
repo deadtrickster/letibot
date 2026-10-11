@@ -102,13 +102,17 @@ impl fmt::Display for Amount {
     }
 }
 
-/// **The operator's two numbers**, from `providers.toml`'s `[memory]` section.
+/// **The operator's two numbers**, from `providers.toml`'s `[memory]` section — and, over it,
+/// the session's project's `leticode.toml` (TODO.md R76 item 7).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MemoryPolicy {
     /// What a call that names no amount runs under. 64 MiB out of the box.
     pub default: Amount,
     /// The most a call may ask for without the operator. Half of what is free out of the box.
     pub ceiling: Amount,
+    /// **Which file set [`MemoryPolicy::default`]**, so the description can say where the
+    /// number in force came from and a model killed at it is pointed at the line to change.
+    pub default_from: PolicySource,
 }
 
 impl Default for MemoryPolicy {
@@ -116,8 +120,89 @@ impl Default for MemoryPolicy {
         MemoryPolicy {
             default: Amount::Bytes(64 << 20),
             ceiling: Amount::Fraction(0.5),
+            default_from: PolicySource::BuiltIn,
         }
     }
+}
+
+/// **Where a `[memory]` number came from** — the four levels, lowest first. The project's
+/// `leticode.toml` beats the user's, which beats the box-wide `providers.toml`, which beats
+/// the built-in; the same precedence every other `leticode.toml` key has.
+///
+/// It exists because of the operator's *"when ran via tools cargo on that project dies with
+/// 64mb cap"*: a Rust project needs gigabytes for a build, the box-wide default is right for
+/// everything else, and the place to say *this project builds* is the project's own file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PolicySource {
+    #[default]
+    BuiltIn,
+    /// `~/.config/letibot/providers.toml`, `[memory]`.
+    Box,
+    /// `~/.config/letibot/leticode.toml`, `[memory]`.
+    User,
+    /// The nearest `leticode.toml` at or above the session's workspace, `[memory]`.
+    Project,
+}
+
+impl PolicySource {
+    /// The level as the description and the kill note name it.
+    pub fn describe(self) -> &'static str {
+        match self {
+            PolicySource::BuiltIn => "the built-in default",
+            PolicySource::Box => "`[memory] default` in the box-wide providers.toml",
+            PolicySource::User => "`[memory] default` in your ~/.config/letibot/leticode.toml",
+            PolicySource::Project => "`[memory] default` in this project's leticode.toml",
+        }
+    }
+}
+
+/// **The least a killed call is told to ask for next time** — 2 GiB.
+const ASK_FLOOR: u64 = 2 << 30;
+/// **How many times the cap it died at.** A call killed at its cap says one thing about what
+/// it needs — MORE than the cap — and nothing about how much more. A cap is a limit and not a
+/// reservation, so a generous ask costs nothing until it is used, while a timid one costs
+/// another killed build; so the suggestion is a big step (64 MiB → 2 GiB, 2 GiB → 32 GiB)
+/// rather than a doubling that would take five kills to reach a `cargo test`.
+const ASK_STEP: u64 = 16;
+
+/// An amount as a model writes it back in `memory`: `2G` for whole GiB, else `M`.
+pub fn ask_text(bytes: u64) -> String {
+    const G: u64 = 1 << 30;
+    const M: u64 = 1 << 20;
+    if bytes >= G && bytes.is_multiple_of(G) {
+        format!("{}G", bytes / G)
+    } else {
+        format!("{}M", bytes.div_ceil(M))
+    }
+}
+
+/// **What a call killed at `cap` should ask for next time**, from the cap it died at and the
+/// most it may take without the operator — said in the result, so the model's next call
+/// is sized by a number and not by a guess (TODO.md R76 item 7).
+///
+/// `peaked at its 64 MiB cap — ask for memory: "2G" next time, or set `[memory] default` in
+/// this project's leticode.toml so every call in it starts there`. When the step would pass
+/// the ceiling, the ceiling is what is offered, and the sentence says what lies beyond it.
+pub fn ask_after_kill(policy: &MemoryPolicy, cap: u64, mem: Option<&Meminfo>) -> String {
+    use super::scope::human_bytes;
+    const G: u64 = 1 << 30;
+    let step = cap.saturating_mul(ASK_STEP).max(ASK_FLOOR).div_ceil(G) * G;
+    let ceiling = mem.map(|m| policy.ceiling.resolve(m.available));
+    let ask = match ceiling {
+        Some(c) if step > c && c > cap => format!(
+            "ask for memory: \"{}\" (the most granted without asking; more is put to the \
+             operator)",
+            ask_text(c)
+        ),
+        _ => format!("ask for memory: \"{}\"", ask_text(step)),
+    };
+    format!(
+        "peaked at its {} cap — {ask} next time, or set `[memory] default` in this project's \
+         leticode.toml so every call in it starts there (the default in force is {}, from {})",
+        human_bytes(cap),
+        policy.default,
+        policy.default_from.describe()
+    )
 }
 
 /// The box's memory, from `/proc/meminfo`, in bytes.
@@ -331,6 +416,29 @@ mod tests {
         assert_eq!(m.total, 194_000_000 * 1024);
         assert_eq!(m.available, 135_000_000 * 1024);
         assert_eq!(m.swap_free, 228 * 1024);
+    }
+
+    /// **The note a killed call carries names an ask big enough to matter** — the operator's
+    /// cargo killed at 64 MiB is told `2G`, not `128M` — and the ceiling, when the step would
+    /// pass it.
+    #[test]
+    fn a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives() {
+        let p = MemoryPolicy::default();
+        let note = ask_after_kill(&p, 64 << 20, Some(&mem(100)));
+        assert!(note.contains("peaked at its 64 MiB cap"), "{note}");
+        assert!(note.contains("memory: \"2G\""), "{note}");
+        assert!(note.contains("this project's leticode.toml"), "{note}");
+        assert!(note.contains("64 MiB, from the built-in default"), "{note}");
+        // 2 GiB killed → 32 GiB, granted at once on a box with 100 GiB free.
+        assert!(ask_after_kill(&p, 2 * GIB, Some(&mem(100))).contains("\"32G\""));
+        // On a box with 20 GiB free the ceiling is 10 GiB, and that is what is offered.
+        let tight = ask_after_kill(&p, 2 * GIB, Some(&mem(20)));
+        assert!(
+            tight.contains("\"10G\"") && tight.contains("operator"),
+            "{tight}"
+        );
+        assert_eq!(ask_text(512 << 20), "512M");
+        assert_eq!(ask_text(3 * GIB), "3G");
     }
 
     #[test]

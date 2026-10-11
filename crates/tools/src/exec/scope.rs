@@ -698,6 +698,118 @@ pub fn delegate_memory() -> &'static Result<PathBuf, String> {
     })
 }
 
+/// **A cgroup of its own for work the daemon runs for ITSELF** — a merge gate's step (TODO.md
+/// R76 item 6) — opened in the delegated scope beside [`DAEMON_LEAF`] and the tool trees,
+/// never inside the daemon's leaf.
+///
+/// The gate used to start each step with a plain `sh` in a new process group and no cgroup
+/// join, so a gate's `cargo test --release` inherited the daemon's leaf — its 16 GiB
+/// `memory.high` (R66) — and a heavy gate throttled every session the daemon served. A
+/// sibling is the placement the tool trees already have: the scope's `subtree_control`
+/// carries `memory` ([`delegate_memory`] enabled it), this directory holds no child, so it
+/// may hold the step's processes and carry its own `memory.max`.
+///
+/// Processes join it with [`join_script`] (write `$$`, THEN `exec`), so nothing the step forks
+/// is ever outside it; the kill is `cgroup.kill`, which reaches a grandchild that left the
+/// process group; and [`SiblingScope::memory_use`] is the step's own `memory.peak` and
+/// `oom_kill`. Dropping it kills what is left and removes the directory.
+#[derive(Debug)]
+pub struct SiblingScope {
+    path: PathBuf,
+}
+
+impl SiblingScope {
+    /// Open `<delegated scope>/<prefix>.<pid>.<n>` and cap it at `cap` bytes, swap
+    /// forbidden (`None` sets no `memory.max`: the scope and its peak, uncapped). `Err` names
+    /// why there is no such scope — a daemon not started in a delegated scope of its own is
+    /// the usual one, and the caller then says *uncapped*.
+    pub fn open(prefix: &str, cap: Option<u64>) -> Result<SiblingScope, String> {
+        let base = delegate_memory().as_ref().map_err(Clone::clone)?;
+        Self::open_under(base, prefix, cap)
+    }
+
+    /// [`SiblingScope::open`] under a chosen delegated base.
+    pub fn open_under(base: &Path, prefix: &str, cap: Option<u64>) -> Result<SiblingScope, String> {
+        let path = base.join(format!(
+            "{}.{}.{}",
+            sanitise(prefix),
+            std::process::id(),
+            TREE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("making the cgroup `{}` failed: {e}", path.display()))?;
+        let scope = SiblingScope { path };
+        if let Some(bytes) = cap {
+            let write = |file: &str, value: String| {
+                std::fs::write(scope.path.join(file), value).map_err(|e| {
+                    format!("writing `{}` failed: {e}", scope.path.join(file).display())
+                })
+            };
+            write("memory.max", bytes.to_string())?;
+            if scope.path.join("memory.swap.max").exists() {
+                write("memory.swap.max", "0".into())?;
+            }
+        }
+        Ok(scope)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// `cgroup.procs`, for [`join_script`]'s `$1`.
+    pub fn procs_path(&self) -> PathBuf {
+        self.path.join("cgroup.procs")
+    }
+
+    /// The live pids in it.
+    pub fn members(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        members_at(&self.path, &mut out);
+        out
+    }
+
+    /// `cgroup.kill` — every process in it, whatever group or session it put itself in.
+    pub fn kill(&self) -> Result<(), String> {
+        kill_tree(&self.path)
+            .map_err(|e| format!("`cgroup.kill` in `{}`: {e}", self.path.display()))
+    }
+
+    /// What its memory did, read from the kernel — before [`SiblingScope::close`], which
+    /// removes the files.
+    pub fn memory_use(&self) -> Option<MemoryUse> {
+        memory_use_at(&self.path)
+    }
+
+    /// **Kill what is left, wait for the kernel to say empty, remove the directory**, and say
+    /// how many processes were still in it — a step whose `sh` exited while a background
+    /// child lived on. Absence is read from `cgroup.events`, after the kill, not assumed.
+    pub fn close(self) -> usize {
+        self.reap()
+    }
+
+    fn reap(&self) -> usize {
+        let left = self.members().len();
+        if left > 0 {
+            let _ = kill_tree(&self.path);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while populated_at(&self.path) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir(&self.path);
+        left
+    }
+}
+
+impl Drop for SiblingScope {
+    fn drop(&mut self) {
+        if self.path.exists() {
+            self.reap();
+        }
+    }
+}
+
 /// **What a scope's memory did**, asked of the scope's directory with no tree instance —
 /// the job's waiter thread holds the job and not the tree. `None` on a tree with no memory
 /// controller (macOS's process groups, an uncapped cgroup tree has the files and answers).

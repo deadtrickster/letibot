@@ -1568,11 +1568,48 @@ left a red-main review `red-main-ec3cb01e8a6f` pointing at a commit that no long
    session it serves. Run gate steps in a scope of their own in the tool tree (a sibling of the
    daemon), with a gate-sized cap from config (`[memory] gate`), and say the gate's peak in its
    row.
+   **BUILT on `r76-gate-memory` (not merged).** Each step joins a cgroup of its own,
+   `<delegated scope>/gate.<pid>.<n>` beside `daemon/` and the tool trees
+   (`exec::SiblingScope`), with `join_script`'s join-before-exec, so nothing it forks is outside
+   it. Cap: `providers.toml` `[memory] gate` — a size, a fraction of `MemAvailable` when the gate
+   starts, or `uncapped` (scope and peak, no `memory.max`); a malformed value refuses the start by
+   name. **Default `0.5`**: the operator's own unaskable line (R65's ceiling), since a gate is the
+   operator's run, and the other half stays for the daemon and the sessions; a fraction because
+   the fleet's boxes differ tenfold. Kill on deadline/stop/lost lease is `killpg` AND
+   `cgroup.kill`; a process the step leaves running is killed with its cgroup at the step's end
+   and the row says so. Every row's output ends `[gate memory: peak X of a Y cap]`; a step the
+   kernel killed at the cap is row `killed`, evidence `[gate memory: KILLED at the gate's cap —
+   …; This is [memory] gate in providers.toml, not the code]`, and the verdict is `Infra`
+   (target `blocked`, branch not `failed`) naming the cap, the peak and the key. No delegated tree
+   (old-style start) → the step runs as before and the row says `uncapped — …` and why.
+   MEASURED (`harnessd/tests/gate_memory.rs`, re-run in a `systemd-run --user --scope -p
+   Delegate=yes`): a 200 MB awk under a 64 MiB gate cap is killed alone, row `killed` with its
+   peak, the next step `not_run`, the test process alive; under 2 GiB it passes with `peak 957
+   MiB of a 2 GiB cap` and the daemon leaf's `memory.peak` stays under 150 MiB; no `gate.*`
+   cgroup is left. **Still open:** the cap is box-wide (no per-project `[memory] gate`); the
+   `queue_blocked` raise for an `Infra` verdict still reads *"could not run:"* before the
+   cap sentence (serve.rs, the parallel branch's file). (gawk's 200 MB `sprintf` peaks near
+   1 GiB on lab2x1, so `tools/tests/memory_cap.rs`'s 512 MiB half may be tighter than it reads.)
 7. **The 64 MiB default kills cargo through the tools** (the operator: *"when ran via tools cargo on
    that project dies with 64mb cap"*). The cap is doing its job, but the model learns only after
    the kill. Options: a per-project `[memory] default` (leticode.toml) so a Rust project starts at
    a few GiB; a hint in the bash description for build tools; or a learned per-command default
    from the peaks the results already report (R65 item 5).
+   **BUILT on `r76-gate-memory` (not merged): the first two.** `[memory] default` (and
+   `ceiling`) in a `leticode.toml` — the project's, found by walking up from the SESSION's
+   workspace (resolved per session in `harness.rs`, so a resumed session in another project gets
+   its own), over the user's `~/.config/letibot/leticode.toml`, over the box-wide
+   `providers.toml`, over the built-in 64 MiB (unchanged). A file may NARROW the ceiling and may
+   not raise it, and its default may not pass the ceiling in force — the file is one a session
+   with `write` can edit, and the ceiling is where the operator is asked; a dropped key is said on
+   stderr. Unknown keys / bad amounts refuse the file by name. The `bash` description now ends
+   *"A call that names no `memory` runs under 4 GiB (`[memory] default` in this project's
+   leticode.toml)"* plus a line naming build tools, and the `memory` argument says the same. A
+   call killed at its cap now says what to ask for: *"it peaked at its 64 MiB cap — ask for
+   memory: "2G" next time, or set `[memory] default` in this project's leticode.toml …"* — 16×
+   the cap, at least 2 GiB, offered as the ceiling with a word about the operator when it would
+   pass it. `--no-project-config` skips the project level. **Still open:** the learned
+   per-command default; the startup banner does not yet name a project's memory default.
 
 **Done when:** a red target puts one message in the project session's conversation with the
 failing step; that session can re-gate, withdraw a stale review and read the evidence through a

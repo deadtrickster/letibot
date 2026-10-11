@@ -9,6 +9,17 @@
 //! group — `SIGTERM`, then `SIGKILL` — when the deadline passes, when the daemon stops, or when
 //! the heartbeat says the lease is gone.
 //!
+//! **Each step runs in a cgroup of its own** (R76 item 6), a sibling of the daemon's leaf in the
+//! delegated scope ([`letibot_tools::exec::SiblingScope`]), under `[memory] gate` from
+//! `providers.toml` — half of what is free when the gate starts unless it says otherwise. Before
+//! this, the step's `sh` inherited the daemon's own leaf and its 16 GiB `memory.high` (R66), so a
+//! heavy `cargo test --release` throttled every session the daemon served. The step joins its
+//! cgroup before `exec` (`join_script`), the kill reaches it through `cgroup.kill` as well as the
+//! process group, and the row's evidence ends with the step's peak — and, when the kernel killed
+//! it at the cap, says that, so a gate that ran out of ITS memory reads as the gate's limit and
+//! not as red code. A daemon with no delegated scope (an old-style start) runs the step as
+//! before and the evidence says *uncapped*.
+//!
 //! **The runner is an interface** ([`GateRunner`]) with one implementation here
 //! ([`LocalGate`]). R62 runs the gate on the fleet (lubuntu1/2 over `ssh -i`); that is a second
 //! implementation of the same trait, and nothing else in the queue has to change for it.
@@ -19,6 +30,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use letibot_tokencore::store::{MergeGateOutcome, MergeGateStep};
+use letibot_tools::exec::memory::{Amount, Ask, Meminfo};
+use letibot_tools::exec::{MemoryUse, SiblingScope, join_script};
 
 use super::git;
 
@@ -37,6 +50,94 @@ pub const EVIDENCE_BYTES: usize = 4_096;
 /// gate in `AGENTS.md` lists `sh scripts/install-gate-build.sh` as its last step; a landing that
 /// installed before it pushed installed code that was not on the target when the push failed.
 pub const INSTALL_MARK: &str = "install-gate-build";
+
+/// **A gate step's memory cap when `[memory] gate` says nothing: half of what is free when the
+/// gate starts.** The same line a model's call may take without asking the operator (R65's
+/// `ceiling`), because a gate is the operator's own run and is owed the operator's line — and
+/// the other half is what stays for the daemon and the sessions it serves, which is the whole
+/// point of giving the gate a cgroup of its own. A fraction rather than a size because the
+/// fleet's boxes differ by an order of magnitude (lab2x1's 185 GB, a laptop's 16): a fixed
+/// 16 GiB would starve a release build on one and leave the other with nothing.
+pub const GATE_MEMORY_DEFAULT: Amount = Amount::Fraction(0.5);
+
+static GATE_MEMORY: std::sync::OnceLock<Ask> = std::sync::OnceLock::new();
+
+/// **`[memory] gate`, set once at daemon start** (`cli.rs`). Process-wide rather than a field
+/// of [`LocalGate`] because it is a property of the box, read once, like `memory.high`.
+pub fn set_gate_memory(ask: Ask) {
+    let _ = GATE_MEMORY.set(ask);
+}
+
+/// The gate's cap as configured: [`set_gate_memory`]'s, else [`GATE_MEMORY_DEFAULT`].
+pub fn gate_memory() -> Ask {
+    GATE_MEMORY.get().copied().unwrap_or(Ask::Default)
+}
+
+/// **Where a run's steps go, decided once per run**: a cgroup of their own (with the cap, or
+/// `None` for `uncapped`), or the daemon's own cgroup as before R76 and why.
+#[derive(Debug, Clone, PartialEq)]
+enum Placement {
+    Scoped(Option<u64>),
+    Unscoped(String),
+}
+
+fn placement(ask: Ask) -> Placement {
+    if let Err(why) = letibot_tools::exec::delegate_memory() {
+        return Placement::Unscoped(why.clone());
+    }
+    let amount = match ask {
+        Ask::Uncapped => return Placement::Scoped(None),
+        Ask::Default => GATE_MEMORY_DEFAULT,
+        Ask::Amount(a) => a,
+    };
+    match (amount, Meminfo::read()) {
+        (Amount::Bytes(b), _) => Placement::Scoped(Some(b)),
+        (a, Some(m)) => Placement::Scoped(Some(a.resolve(m.available))),
+        (_, None) => Placement::Unscoped(
+            "`/proc/meminfo` could not be read, so a fraction of what is free means nothing".into(),
+        ),
+    }
+}
+
+/// **What a step's memory did**, for its row.
+#[derive(Debug, Clone, PartialEq)]
+enum StepMemory {
+    /// Its own cgroup's counters.
+    Used(MemoryUse),
+    /// It ran in the daemon's cgroup, and why.
+    Uncapped(String),
+    /// It never started, or the counters could not be read.
+    Unknown,
+}
+
+impl StepMemory {
+    fn killed_at_cap(&self) -> bool {
+        matches!(self, StepMemory::Used(u) if u.cap.is_some() && u.killed_at_cap())
+    }
+
+    /// The line the row's evidence ends with.
+    fn evidence(&self, leftover: usize) -> Option<String> {
+        let mut line = match self {
+            StepMemory::Used(u) if self.killed_at_cap() => format!(
+                "[gate memory: KILLED at the gate's cap — {}; the kernel killed {} process(es) \
+                 inside it. This is `[memory] gate` in providers.toml, not the code]",
+                u.clause(),
+                u.oom_kills
+            ),
+            StepMemory::Used(u) => format!("[gate memory: {}]", u.clause()),
+            StepMemory::Uncapped(why) => {
+                format!("[gate memory: uncapped — the step ran in the daemon's own cgroup: {why}]")
+            }
+            StepMemory::Unknown => return None,
+        };
+        if leftover > 0 {
+            line.push_str(&format!(
+                "\n[{leftover} process(es) the step left running were killed with its cgroup]"
+            ));
+        }
+        Some(line)
+    }
+}
 
 /// **What the gate came to** — four outcomes and not one, because *the branch is bad*, *nobody
 /// could tell in time*, *the daemon stopped* and *the gate could not run* send a person to four
@@ -88,63 +189,105 @@ pub struct LocalGate;
 
 impl GateRunner for LocalGate {
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
-        let target = gate_target_dir(worktree);
-        let mut rows: Vec<MergeGateStep> = Vec::with_capacity(steps.len());
-        for (i, step) in steps.iter().enumerate() {
-            let started = now_ms();
-            let outcome = run_step(worktree, step, &target, ctl);
-            let elapsed = now_ms().saturating_sub(started);
-            let (word, output, verdict) = match outcome {
-                StepEnd::Ok(out) => (MergeGateOutcome::Passed, out, None),
-                StepEnd::Red(out) => (
+        run_with_memory(worktree, steps, ctl, gate_memory())
+    }
+}
+
+/// **[`LocalGate`]'s run, under a memory cap named by the caller** — `[memory] gate` in the
+/// daemon, a small one in the test that proves a step is killed at it alone.
+pub fn run_with_memory(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+) -> GateRun {
+    let target = gate_target_dir(worktree);
+    let place = placement(memory);
+    let mut rows: Vec<MergeGateStep> = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let started = now_ms();
+        let (outcome, mem, leftover) = run_step(worktree, step, &target, ctl, &place);
+        let elapsed = now_ms().saturating_sub(started);
+        let evidence = mem.evidence(leftover);
+        let with_memory = |out: String| match &evidence {
+            Some(line) if out.is_empty() => line.clone(),
+            Some(line) => format!("{out}\n{line}"),
+            None => out,
+        };
+        // **Killed at the gate's cap is the gate's limit, not red code.** The step judged
+        // nothing about the branch: it ran out of the memory the gate gives it. So the row
+        // says `killed` and the verdict is the gate's own (`Infra` — the target blocked,
+        // the branch not failed), naming the cap, the peak, and the line that raises it.
+        let at_cap = mem.killed_at_cap();
+        let (word, output, verdict) = match outcome {
+            StepEnd::Red(out) if at_cap => {
+                let clause = match &mem {
+                    StepMemory::Used(u) => u.clause(),
+                    _ => String::new(),
+                };
+                (
+                    MergeGateOutcome::Killed,
+                    with_memory(out),
+                    Some(GateVerdict::Infra(format!(
+                        "`{step}` was KILLED at the gate's memory cap ({clause}) — it ran out \
+                             of the memory the gate gives a step, which says nothing about the \
+                             code. Raise `[memory] gate` in providers.toml (a size, or a \
+                             fraction of what is free) and gate it again"
+                    ))),
+                )
+            }
+            StepEnd::Ok(out) => (MergeGateOutcome::Passed, with_memory(out), None),
+            StepEnd::Red(out) => {
+                let out = with_memory(out);
+                (
                     MergeGateOutcome::Failed,
                     out.clone(),
                     Some(GateVerdict::Failed(format!("`{step}` failed:\n{out}"))),
-                ),
-                StepEnd::Deadline(out) => (
-                    MergeGateOutcome::TimedOut,
-                    out,
-                    Some(GateVerdict::TimedOut(format!(
-                        "`{step}` was still running at the gate's deadline and was killed with \
-                         its whole process group"
-                    ))),
-                ),
-                StepEnd::Stopped(out, why) => (
-                    MergeGateOutcome::Killed,
-                    out,
-                    Some(GateVerdict::Stopped(format!("`{step}` was killed: {why}"))),
-                ),
-                StepEnd::Infra(why) => (
-                    MergeGateOutcome::NotRun,
-                    why.clone(),
-                    Some(GateVerdict::Infra(format!("`{step}` could not run: {why}"))),
-                ),
-            };
-            rows.push(MergeGateStep {
-                command: step.clone(),
-                outcome: word,
-                output,
-                started_ms: started,
-                elapsed_ms: elapsed,
-            });
-            if let Some(v) = verdict {
-                rows.extend(steps[i + 1..].iter().map(|s| MergeGateStep {
-                    command: s.clone(),
-                    outcome: MergeGateOutcome::NotRun,
-                    output: String::new(),
-                    started_ms: 0,
-                    elapsed_ms: 0,
-                }));
-                return GateRun {
-                    steps: rows,
-                    verdict: v,
-                };
+                )
             }
+            StepEnd::Deadline(out) => (
+                MergeGateOutcome::TimedOut,
+                with_memory(out),
+                Some(GateVerdict::TimedOut(format!(
+                    "`{step}` was still running at the gate's deadline and was killed with \
+                         its whole process group"
+                ))),
+            ),
+            StepEnd::Stopped(out, why) => (
+                MergeGateOutcome::Killed,
+                with_memory(out),
+                Some(GateVerdict::Stopped(format!("`{step}` was killed: {why}"))),
+            ),
+            StepEnd::Infra(why) => (
+                MergeGateOutcome::NotRun,
+                why.clone(),
+                Some(GateVerdict::Infra(format!("`{step}` could not run: {why}"))),
+            ),
+        };
+        rows.push(MergeGateStep {
+            command: step.clone(),
+            outcome: word,
+            output,
+            started_ms: started,
+            elapsed_ms: elapsed,
+        });
+        if let Some(v) = verdict {
+            rows.extend(steps[i + 1..].iter().map(|s| MergeGateStep {
+                command: s.clone(),
+                outcome: MergeGateOutcome::NotRun,
+                output: String::new(),
+                started_ms: 0,
+                elapsed_ms: 0,
+            }));
+            return GateRun {
+                steps: rows,
+                verdict: v,
+            };
         }
-        GateRun {
-            steps: rows,
-            verdict: GateVerdict::Passed,
-        }
+    }
+    GateRun {
+        steps: rows,
+        verdict: GateVerdict::Passed,
     }
 }
 
@@ -156,22 +299,58 @@ enum StepEnd {
     Infra(String),
 }
 
-fn run_step(worktree: &Path, step: &str, target: &Path, ctl: &GateControl) -> StepEnd {
+/// One step: its end, what its memory did, and how many processes it left behind in its
+/// cgroup (killed with it).
+fn run_step(
+    worktree: &Path,
+    step: &str,
+    target: &Path,
+    ctl: &GateControl,
+    place: &Placement,
+) -> (StepEnd, StepMemory, usize) {
     use std::os::unix::process::CommandExt;
     let log = match tempfile_in(worktree) {
         Ok(l) => l,
-        Err(e) => return StepEnd::Infra(e),
+        Err(e) => return (StepEnd::Infra(e), StepMemory::Unknown, 0),
     };
     let (out, err) = match (
         std::fs::File::create(&log),
         std::fs::OpenOptions::new().append(true).open(&log),
     ) {
         (Ok(o), Ok(e)) => (o, e),
-        (Err(e), _) | (_, Err(e)) => return StepEnd::Infra(format!("{}: {e}", log.display())),
+        (Err(e), _) | (_, Err(e)) => {
+            return (
+                StepEnd::Infra(format!("{}: {e}", log.display())),
+                StepMemory::Unknown,
+                0,
+            );
+        }
     };
-    let child = Command::new("sh")
-        .arg("-c")
-        .arg(step)
+    // **The step's own cgroup**, or the daemon's as before and why. A scope that cannot be
+    // made is not a reason to refuse the gate — the gate ran uncapped for its whole life
+    // before R76 — so it runs as before and the row says so.
+    let (scope, unscoped) = match place {
+        Placement::Scoped(cap) => match SiblingScope::open("gate", *cap) {
+            Ok(s) => (Some(s), None),
+            Err(why) => (None, Some(why)),
+        },
+        Placement::Unscoped(why) => (None, Some(why.clone())),
+    };
+    // The host-owned evidence that the join happened (`join_script`'s `$2`): a file the step's
+    // own output cannot write.
+    let joined = log.with_extension("joined");
+    let mut cmd = Command::new("sh");
+    match &scope {
+        Some(s) => cmd
+            .arg("-c")
+            .arg(join_script())
+            .arg("letibot-gate")
+            .arg(s.procs_path())
+            .arg(&joined)
+            .args(["sh", "-c", step]),
+        None => cmd.arg("-c").arg(step),
+    };
+    let child = cmd
         .current_dir(worktree)
         .env(GATE_TARGET_DIR, target)
         .stdin(Stdio::null())
@@ -183,16 +362,26 @@ fn run_step(worktree: &Path, step: &str, target: &Path, ctl: &GateControl) -> St
         Ok(c) => c,
         Err(e) => {
             let _ = std::fs::remove_file(&log);
-            return StepEnd::Infra(format!("sh -c {step:?}: {e}"));
+            return (
+                StepEnd::Infra(format!("sh -c {step:?}: {e}")),
+                StepMemory::Unknown,
+                0,
+            );
         }
     };
     let pgid = child.id() as i32;
+    let kill = |child: &mut std::process::Child| kill_group(pgid, child, scope.as_ref());
     let mut last_beat = Instant::now();
     let end = loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let text = read_tail(&log);
-                break if status.success() {
+                break if scope.is_some() && !joined.exists() {
+                    // The wrapper could not put itself in the cgroup, so the step never ran.
+                    StepEnd::Infra(format!(
+                        "`{step}` could not join its gate cgroup and was NOT run:\n{text}"
+                    ))
+                } else if status.success() {
                     StepEnd::Ok(text)
                 } else {
                     StepEnd::Red(text)
@@ -200,22 +389,22 @@ fn run_step(worktree: &Path, step: &str, target: &Path, ctl: &GateControl) -> St
             }
             Ok(None) => {}
             Err(e) => {
-                kill_group(pgid, &mut child);
+                kill(&mut child);
                 break StepEnd::Infra(format!("waiting on `{step}`: {e}"));
             }
         }
         if Instant::now() >= ctl.deadline {
-            kill_group(pgid, &mut child);
+            kill(&mut child);
             break StepEnd::Deadline(read_tail(&log));
         }
         if ctl.stop.load(Ordering::Relaxed) {
-            kill_group(pgid, &mut child);
+            kill(&mut child);
             break StepEnd::Stopped(read_tail(&log), "the daemon is stopping".into());
         }
         if last_beat.elapsed() >= Duration::from_secs(5) {
             last_beat = Instant::now();
             if !(ctl.alive)() {
-                kill_group(pgid, &mut child);
+                kill(&mut child);
                 break StepEnd::Stopped(
                     read_tail(&log),
                     "this daemon lost the repository's lease, so it may not land".into(),
@@ -225,11 +414,24 @@ fn run_step(worktree: &Path, step: &str, target: &Path, ctl: &GateControl) -> St
         std::thread::sleep(Duration::from_millis(100));
     };
     let _ = std::fs::remove_file(&log);
-    end
+    let _ = std::fs::remove_file(&joined);
+    // Read BEFORE the close, which removes the files the kernel counts in.
+    let (memory, leftover) = match scope {
+        Some(s) => (
+            s.memory_use()
+                .map(StepMemory::Used)
+                .unwrap_or(StepMemory::Unknown),
+            s.close(),
+        ),
+        None => (StepMemory::Uncapped(unscoped.unwrap_or_default()), 0),
+    };
+    (end, memory, leftover)
 }
 
-/// `SIGTERM` to the whole group, five seconds, then `SIGKILL`, and the child reaped.
-fn kill_group(pgid: i32, child: &mut std::process::Child) {
+/// `SIGTERM` to the whole group, five seconds, then `SIGKILL` — and `cgroup.kill` on the step's
+/// own cgroup when it has one, which reaches a grandchild that left the group (`setsid`, a
+/// daemonising test server) — and the child reaped.
+fn kill_group(pgid: i32, child: &mut std::process::Child, scope: Option<&SiblingScope>) {
     // SAFETY: `killpg` with a pid this process spawned into its own group; a group that is
     // already gone answers ESRCH, which is the outcome wanted.
     unsafe {
@@ -245,6 +447,9 @@ fn kill_group(pgid: i32, child: &mut std::process::Child) {
     // SAFETY: as above. Sent even when the leader exited: a grandchild may still hold the group.
     unsafe {
         libc::killpg(pgid, libc::SIGKILL);
+    }
+    if let Some(s) = scope {
+        let _ = s.kill();
     }
     let _ = child.wait();
 }
@@ -357,5 +562,65 @@ impl GateRunner for GreenGate {
     }
     fn name(&self) -> String {
         "green (test)".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Every step's row ends with what its memory did** (R76 item 6). A test binary is not
+    /// started in a delegated scope of its own, so this one takes the old-style path: the step
+    /// runs as before, and the row says *uncapped* and why rather than saying nothing. (Run
+    /// inside such a scope, it is the step's own peak and cap — `tests/gate_memory.rs`
+    /// measures that half.)
+    #[test]
+    fn a_steps_row_says_what_its_memory_did_and_uncapped_when_there_is_no_tree() {
+        let wt = std::env::temp_dir().join(format!("letibot-gate-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let stop = AtomicBool::new(false);
+        let alive = || true;
+        let ctl = GateControl {
+            deadline: Instant::now() + Duration::from_secs(60),
+            stop: &stop,
+            alive: &alive,
+        };
+        let run = run_with_memory(&wt, &["echo hi".to_string()], &ctl, Ask::Default);
+        assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+        let out = &run.steps[0].output;
+        assert!(
+            out.starts_with("hi\n"),
+            "the step's own output first: {out}"
+        );
+        match letibot_tools::exec::delegate_memory() {
+            Err(why) => assert!(
+                out.contains("[gate memory: uncapped — the step ran in the daemon's own cgroup")
+                    && out.contains(why.as_str()),
+                "{out}"
+            ),
+            Ok(_) => assert!(out.contains("[gate memory: peak"), "{out}"),
+        }
+        let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    /// A step killed at the cap names the cap, the peak and the line that raises it; one that
+    /// left a process running says it was killed with the cgroup.
+    #[test]
+    fn the_evidence_line_tells_a_kill_at_the_cap_from_a_peak() {
+        let used = |oom_kills| {
+            StepMemory::Used(MemoryUse {
+                cap: Some(64 << 20),
+                peak: 64 << 20,
+                oom_kills,
+            })
+        };
+        let killed = used(1).evidence(0).unwrap();
+        assert!(killed.contains("KILLED at the gate's cap — peak 64 MiB of a 64 MiB cap"));
+        assert!(killed.contains("[memory] gate"));
+        assert!(used(1).killed_at_cap());
+        let fine = used(0).evidence(2).unwrap();
+        assert!(fine.starts_with("[gate memory: peak 64 MiB of a 64 MiB cap]"));
+        assert!(fine.contains("2 process(es) the step left running"));
+        assert_eq!(StepMemory::Unknown.evidence(0), None);
     }
 }

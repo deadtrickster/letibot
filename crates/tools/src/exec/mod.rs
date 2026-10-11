@@ -116,7 +116,8 @@ pub use pty::Pty;
 pub use scope::ProcessGroups;
 pub use scope::{
     Cgroup2, DAEMON_LEAF, HOST_KILL, MemoryUse, Migration, NoScopes, Reaped, Reaping, ScopeId,
-    ScopeKind, ScopeTree, delegate_memory, host_tree, human_bytes, live_members, memory_use_of,
+    ScopeKind, ScopeTree, SiblingScope, delegate_memory, host_tree, human_bytes, join_script,
+    live_members, memory_use_of,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};

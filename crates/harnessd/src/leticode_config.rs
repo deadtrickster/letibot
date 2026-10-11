@@ -500,6 +500,136 @@ pub struct LeticodeConfig {
     /// file yields. Carried on the value rather than passed alongside it so the
     /// disclosure cannot be handed a config and the wrong level for it.
     pub level: Level,
+    /// **The `[memory]` table** — a tool call's default cap and ceiling for sessions in this
+    /// project (TODO.md R76 item 7), over the box-wide `providers.toml` numbers. See
+    /// [`memory_policy`].
+    pub memory: MemoryKeys,
+}
+
+/// **`[memory]` in a `leticode.toml`** — the two numbers `providers.toml` sets box-wide, set
+/// for one project (or, in the user file, for every project of this user).
+///
+/// ```toml
+/// [memory]
+/// default = "4G"     # what a `bash` call that names no `memory` runs under
+/// ceiling = "0.6"    # the most a call may take without asking the operator
+/// ```
+///
+/// The operator, about a Rust project: *"when ran via tools cargo on that project dies with
+/// 64mb cap"*. The box-wide 64 MiB is right for `ls` and `grep` everywhere; a project that
+/// builds says so in its own file, and nothing else on the box moves. `None` is the level
+/// below. The values are `exec::memory::Amount`s — a size or a fraction of what is free — and
+/// a value that is not one refuses the file by name, like every other key here.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MemoryKeys {
+    pub default: Option<letibot_tools::exec::memory::Amount>,
+    pub ceiling: Option<letibot_tools::exec::memory::Amount>,
+}
+
+/// The `[memory]` table as the file wrote it; unknown keys refused by name.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryTable {
+    #[serde(default)]
+    default: Option<String>,
+    #[serde(default)]
+    ceiling: Option<String>,
+}
+
+fn memory_keys(value: &toml::Value) -> Result<MemoryKeys, String> {
+    use letibot_tools::exec::memory::Amount;
+    let t: MemoryTable = value.clone().try_into().map_err(|e| {
+        format!("[memory]: {e} — the keys are `default` and `ceiling` (the box-wide `daemon_high` and `gate` live in providers.toml)")
+    })?;
+    let amount = |key: &str, v: Option<String>| {
+        v.map(|v| Amount::parse(&v).map_err(|e| format!("[memory] {key}: {e}")))
+            .transpose()
+    };
+    Ok(MemoryKeys {
+        default: amount("default", t.default)?,
+        ceiling: amount("ceiling", t.ceiling)?,
+    })
+}
+
+/// **The memory policy a session's `bash` runs under** — the box-wide one (`providers.toml`,
+/// already in `cfg.memory`), then the user's `leticode.toml`, then the nearest project
+/// `leticode.toml` at or above the session's workspace (TODO.md R76 item 7).
+///
+/// Asked per SESSION and not once per daemon, because a resumed session's workspace is its
+/// own (`harness.rs` resolves it from the store) and the project is the one its tools work
+/// in. `read_project` is `false` under `--no-project-config`. A project file that does not
+/// parse leaves the levels below in force and says so on stderr, the way the model keys do.
+///
+/// **A file may narrow the ceiling and may not raise it**, and its `default` may not pass the
+/// ceiling in force. The ceiling is the line above which the OPERATOR is asked, and a
+/// `leticode.toml` sits in the repository, where any session seated with `write` can edit it —
+/// *models are configuration; permissions are not*. So a raise is not applied, and the stderr
+/// line says which key was dropped and why. The comparison is against `MemAvailable` when the
+/// session opens, because a fraction and a size are only comparable on a given box.
+pub fn memory_policy(
+    box_wide: letibot_tools::exec::memory::MemoryPolicy,
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+) -> letibot_tools::exec::memory::MemoryPolicy {
+    let free = letibot_tools::exec::memory::Meminfo::read().map(|m| m.available);
+    memory_policy_at(box_wide, user, workspace, read_project, free)
+}
+
+/// [`memory_policy`] with what is free given, so the narrowing rule is tested as a rule.
+pub fn memory_policy_at(
+    box_wide: letibot_tools::exec::memory::MemoryPolicy,
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+    free: Option<u64>,
+) -> letibot_tools::exec::memory::MemoryPolicy {
+    use letibot_tools::exec::memory::PolicySource;
+    let mut p = box_wide;
+    let mut apply = |keys: &MemoryKeys, from: PolicySource, file: &Path| {
+        // No `/proc/meminfo`: nothing to compare against, and no controller to cap with.
+        let at = |a: letibot_tools::exec::memory::Amount| free.map(|f| a.resolve(f));
+        if let Some(c) = keys.ceiling {
+            match (at(c), at(p.ceiling)) {
+                (Some(new), Some(old)) if new > old => eprintln!(
+                    "  {}: [memory] ceiling = {c} would RAISE the ceiling above {} — a file may \
+                     narrow it and not raise it, so {} stands",
+                    file.display(),
+                    p.ceiling,
+                    p.ceiling
+                ),
+                _ => p.ceiling = c,
+            }
+        }
+        if let Some(d) = keys.default {
+            match (at(d), at(p.ceiling)) {
+                (Some(new), Some(top)) if new > top => eprintln!(
+                    "  {}: [memory] default = {d} is above the ceiling in force ({}) — a \
+                     default past it would grant without asking what the operator is asked \
+                     for, so {} stands",
+                    file.display(),
+                    p.ceiling,
+                    p.default
+                ),
+                _ => {
+                    p.default = d;
+                    p.default_from = from;
+                }
+            }
+        }
+    };
+    if let Some(path) = &user.path {
+        apply(&user.memory, PolicySource::User, path);
+    }
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => apply(&project.memory, PolicySource::Project, &path),
+            Err(why) => eprintln!(
+                "  leticode.toml: {why} — this session's memory default is the level below"
+            ),
+        }
+    }
+    p
 }
 
 impl LeticodeConfig {
@@ -585,6 +715,10 @@ impl LeticodeConfig {
             roles,
             path: Some(path.to_path_buf()),
             level,
+            memory: match &file.memory {
+                Some(v) => memory_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => MemoryKeys::default(),
+            },
         };
 
         // **One seat, two answers.** The guard and the adjudicator are the one
@@ -698,6 +832,10 @@ impl LeticodeConfig {
                 other.level
             } else {
                 self.level
+            },
+            memory: MemoryKeys {
+                default: other.memory.default.or(self.memory.default),
+                ceiling: other.memory.ceiling.or(self.memory.ceiling),
             },
         }
     }
@@ -858,6 +996,10 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     queue: Option<toml::Value>,
+    /// **The `[memory]` table** — see [`MemoryKeys`]. A cap is not a capability: it narrows
+    /// what a call may hold, and the ceiling above which the operator is asked still holds.
+    #[serde(default)]
+    memory: Option<toml::Value>,
 }
 
 /// A model name that is blank is no model at all: an empty string would
@@ -1543,5 +1685,87 @@ mod tests {
         let path = write_file(&dir, "judge_model = \"glm-5.3-flash\"\n");
         let cfg = LeticodeConfig::load(&path).expect("one word is enough");
         assert_eq!(cfg.judge_model.as_deref(), Some("glm-5.3-flash"));
+    }
+
+    /// **The project's `[memory] default` beats the box-wide one for a session in it** (R76
+    /// item 7) — the operator's cargo, killed at the box's 64 MiB, gets the project's 4 GiB —
+    /// and the policy names the project file as the source, which is what the `bash`
+    /// description then says. A session elsewhere keeps the box's number.
+    #[test]
+    fn a_projects_memory_default_overrides_the_box_wide_one_and_says_so() {
+        use letibot_tools::exec::memory::{Amount, MemoryPolicy, PolicySource};
+        const GIB: u64 = 1 << 30;
+        let dir = project_dir("memory-default");
+        write_file(&dir, "[memory]\ndefault = \"4G\"\n");
+        let sub = dir.join("crates/x");
+        std::fs::create_dir_all(&sub).unwrap();
+        let box_wide = MemoryPolicy {
+            default: Amount::Bytes(64 << 20),
+            default_from: PolicySource::Box,
+            ..MemoryPolicy::default()
+        };
+        let none = LeticodeConfig::default();
+        let p = memory_policy_at(box_wide, &none, &sub, true, Some(100 * GIB));
+        assert_eq!(p.default, Amount::Bytes(4 * GIB));
+        assert_eq!(p.default_from, PolicySource::Project);
+        assert_eq!(p.ceiling, Amount::Fraction(0.5), "the ceiling was not set");
+        // `--no-project-config`, and a workspace with no file: the box's number, named so.
+        let off = memory_policy_at(box_wide, &none, &sub, false, Some(100 * GIB));
+        assert_eq!(off, box_wide);
+        // And the user level sits between the two: the project still wins.
+        let user = LeticodeConfig {
+            memory: MemoryKeys {
+                default: Some(Amount::Bytes(GIB)),
+                ceiling: None,
+            },
+            path: Some(PathBuf::from("/h/.config/letibot/leticode.toml")),
+            level: Level::User,
+            ..Default::default()
+        };
+        let u = memory_policy_at(box_wide, &user, &sub, false, Some(100 * GIB));
+        assert_eq!(
+            (u.default, u.default_from),
+            (Amount::Bytes(GIB), PolicySource::User)
+        );
+        let both = memory_policy_at(box_wide, &user, &sub, true, Some(100 * GIB));
+        assert_eq!(both.default_from, PolicySource::Project);
+    }
+
+    /// **A file may narrow the ceiling and may not raise it**, and its default may not pass
+    /// it: the ceiling is where the operator is asked, and the file is one a session can write.
+    #[test]
+    fn a_project_file_may_narrow_the_memory_ceiling_and_not_raise_it() {
+        use letibot_tools::exec::memory::{Amount, MemoryPolicy};
+        const GIB: u64 = 1 << 30;
+        let none = LeticodeConfig::default();
+        let dir = project_dir("memory-raise");
+        write_file(&dir, "[memory]\nceiling = \"90%\"\ndefault = \"80G\"\n");
+        let p = memory_policy_at(MemoryPolicy::default(), &none, &dir, true, Some(100 * GIB));
+        assert_eq!(
+            p,
+            MemoryPolicy::default(),
+            "neither the raise nor the default past it"
+        );
+        let dir = project_dir("memory-narrow");
+        write_file(&dir, "[memory]\nceiling = \"8G\"\ndefault = \"2G\"\n");
+        let p = memory_policy_at(MemoryPolicy::default(), &none, &dir, true, Some(100 * GIB));
+        assert_eq!(p.ceiling, Amount::Bytes(8 * GIB));
+        assert_eq!(p.default, Amount::Bytes(2 * GIB));
+    }
+
+    /// A `[memory]` key this build does not know, or a value that is not an amount, refuses
+    /// the file by name — the loud failure every other key here gets.
+    #[test]
+    fn a_bad_memory_table_is_refused_by_name() {
+        let dir = project_dir("memory-bad");
+        let path = write_file(&dir, "[memory]\ndefualt = \"4G\"\n");
+        let err = LeticodeConfig::load(&path).unwrap_err();
+        assert!(err.contains("defualt") && err.contains("[memory]"), "{err}");
+        let path = write_file(&dir, "[memory]\ndefault = \"lots\"\n");
+        let err = LeticodeConfig::load(&path).unwrap_err();
+        assert!(
+            err.contains("[memory] default") && err.contains("lots"),
+            "{err}"
+        );
     }
 }

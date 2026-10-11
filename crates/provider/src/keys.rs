@@ -111,6 +111,10 @@ pub struct MemorySection {
     pub ceiling: Option<String>,
     /// `memory.high` for the daemon's own process — a size, a fraction of the box, or `max`.
     pub daemon_high: Option<String>,
+    /// The cap each merge-gate step runs under, in a cgroup of its own beside the daemon's
+    /// (TODO.md R76 item 6) — a size, a fraction of what is free when the gate starts, or
+    /// `uncapped`.
+    pub gate: Option<String>,
 }
 
 /// Read `[memory]`. Missing file, missing section, unparseable file: all the built-in policy.
@@ -126,6 +130,7 @@ pub fn memory(file: Option<&Path>) -> MemorySection {
         default: sec.get("default").cloned(),
         ceiling: sec.get("ceiling").cloned(),
         daemon_high: sec.get("daemon_high").cloned(),
+        gate: sec.get("gate").cloned(),
     }
 }
 

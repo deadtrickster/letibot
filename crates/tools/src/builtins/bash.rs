@@ -110,11 +110,27 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 fn memory_arg(p: &MemoryPolicy) -> String {
     format!(
         "The memory cap for this command: a size (`512M`, `4G`) or a fraction of what is free \
-         when it starts (`0.25`, `25%`). Omitted, the command runs under {}. Up to {} is \
-         granted at once; more than that — or `uncapped` — is put to the operator as a \
+         when it starts (`0.25`, `25%`). Omitted, the command runs under {} — {}. Up to {} \
+         is granted at once; more than that — or `uncapped` — is put to the operator as a \
          question first, and the command does not start unless they agree. Every result \
          reports the command's peak, so you can size the next ask from the last one.",
-        p.default, p.ceiling
+        p.default,
+        p.default_from.describe(),
+        p.ceiling
+    )
+}
+
+/// **The sentence the description ends with: the default in force and who set it** (TODO.md
+/// R76 item 7). A build tool is the call the default is most often wrong for — the
+/// operator's cargo died at 64 MiB — so it is named, with the line that changes it.
+fn default_sentence(p: &MemoryPolicy) -> String {
+    format!(
+        " **A call that names no `memory` runs under {}** ({}). Compilers, linkers and test \
+         runners (`cargo`, `rustc`, `go build`, `npm`) usually need gigabytes: ask for it in \
+         `memory`, or the project can raise its own default with `[memory] default` in its \
+         leticode.toml.",
+        p.default,
+        p.default_from.describe()
     )
 }
 
@@ -356,7 +372,9 @@ impl Tool for Bash {
              a command that ate the box would be killed by the kernel's out-of-memory \
              killer along with whatever else it picked — the session, its daemon and \
              the operator's terminal window have all gone that way. Set `memory` when \
-             the command needs more than the default, and no more than it needs.",
+             the command needs more than the default, and no more than it needs."
+                .to_string()
+                + &default_sentence(&self.memory),
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -967,9 +985,16 @@ impl Tool for Bash {
                     format!(
                         "{body}\n\n[the kernel killed `{label}` when it reached its memory cap \
                          — {}]\n  command: {command}\n\nIt did not crash on its own; it ran out \
-                         of the memory this call was given. Call `bash` again with a larger \
-                         `memory` if the work really needs it, or make the work smaller.",
-                        u.clause()
+                         of the memory this call was given: it {}. Or make the work smaller.",
+                        u.clause(),
+                        match u.cap {
+                            Some(cap) => crate::exec::memory::ask_after_kill(
+                                &self.memory,
+                                cap,
+                                Meminfo::read().as_ref()
+                            ),
+                            None => "ran uncapped, so the kill was not a cap's".into(),
+                        }
                     ),
                 )
             }
@@ -1560,6 +1585,42 @@ mod tests {
         assert_eq!(slow_foreground(Duration::from_secs(600), true), None);
         // And the contrast: a model's run of the same age owes it.
         assert!(slow_foreground(Duration::from_secs(600), false).is_some());
+    }
+
+    /// **The description states the default in force and which file set it** (R76 item 7) —
+    /// the project's `leticode.toml` when it spoke, the built-in otherwise.
+    #[test]
+    fn the_description_names_the_default_in_force_and_where_it_came_from() {
+        use crate::exec::memory::{Amount, PolicySource};
+        let built_in = Bash::default().schema();
+        assert!(
+            built_in
+                .description
+                .contains("runs under 64 MiB** (the built-in default)"),
+            "{}",
+            built_in.description
+        );
+        let project = Bash::with_memory(MemoryPolicy {
+            default: Amount::Bytes(4 << 30),
+            default_from: PolicySource::Project,
+            ..MemoryPolicy::default()
+        })
+        .schema();
+        assert!(
+            project.description.contains(
+                "runs under 4 GiB** (`[memory] default` in this project's leticode.toml)"
+            ),
+            "{}",
+            project.description
+        );
+        let arg = project.parameters["properties"]["memory"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            arg.contains("runs under 4 GiB — `[memory] default` in this project's leticode.toml"),
+            "{arg}"
+        );
     }
 
     #[test]

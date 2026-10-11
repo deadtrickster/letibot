@@ -482,6 +482,11 @@ pub struct Config {
     /// named only the merged value could not say which of the two files set a
     /// key. This one is for the screen; the session reads the merge.
     pub leticode_user: crate::leticode_config::LeticodeConfig,
+    /// **Whether a session reads its project's `leticode.toml`** — `false` under
+    /// `--no-project-config`. Carried because one key is read per SESSION rather than once
+    /// at start: `[memory]`, whose project is the session's own workspace
+    /// ([`crate::leticode_config::memory_policy`], TODO.md R76 item 7).
+    pub read_project_config: bool,
     /// **Where the model that answers came from.** The level, the file when a
     /// file is where it came from, and any fault found while working it out —
     /// because *"why is my session on deepseek"* was a whole evening, and an
@@ -1626,6 +1631,7 @@ impl Config {
             // And no user file either, until `run` reads the fixed path beside
             // `providers.toml`. Same byte-identical case at the other level.
             leticode_user: crate::leticode_config::LeticodeConfig::default(),
+            read_project_config: true,
             // Nothing has spoken for the model yet. `Builtin` is the honest
             // starting value and the honest final one for a daemon launched with
             // no flag and no file: the model is the one this daemon was started

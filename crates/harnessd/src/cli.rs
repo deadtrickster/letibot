@@ -455,10 +455,21 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         };
         if let Some(a) = parse("default", &m.default)? {
             cfg.memory.default = a;
+            cfg.memory.default_from = letibot_tools::exec::memory::PolicySource::Box;
         }
         if let Some(a) = parse("ceiling", &m.ceiling)? {
             cfg.memory.ceiling = a;
         }
+        // **The merge gate's own cap** (R76 item 6): every gate step runs in a cgroup of its
+        // own beside the daemon's leaf, under this — half of what is free when the gate starts
+        // unless `gate` says otherwise (`uncapped` keeps the scope and the peak, with no cap).
+        let gate = letibot_tools::exec::memory::Ask::parse(m.gate.as_deref()).map_err(|e| {
+            format!(
+                "[memory] gate in {}: {e}",
+                letibot_provider::keys::config_file().display()
+            )
+        })?;
+        crate::mergequeue::gate::set_gate_memory(gate);
         // **The daemon's own throttle** (R66): `memory.high` on its leaf, so a daemon that grows
         // without bound is slowed by the kernel instead of taking the box — 16 GiB unless
         // `daemon_high` says otherwise (`max` turns it off). Only in a delegated scope; anywhere
@@ -1132,6 +1143,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // is what makes the project level win. The command line is checked rather than
     // re-applied: a model the operator's own `--provider` named must not be overridden
     // by one a file set.
+    cfg.read_project_config = !no_project_config;
     let project_level = if no_project_config {
         eprintln!(
             "  leticode.toml: --no-project-config, so the project file is not read \

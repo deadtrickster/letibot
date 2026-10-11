@@ -1075,7 +1075,9 @@ pub enum MergeGateOutcome {
     /// group (R61 decision 9: thirty minutes, then `timed out` — an outcome of its own).
     TimedOut,
     /// **It was killed before it finished** because the daemon was stopping or lost the
-    /// repository's lease. It judged nothing.
+    /// repository's lease — or because the kernel killed it at the gate's own memory cap
+    /// (`[memory] gate`, R76 item 6; its `output` ends saying so, with the peak). It judged
+    /// nothing.
     Killed,
 }
 
