@@ -3292,75 +3292,94 @@ impl<'a> Sessions<'a> {
             // [`Sessions::compact`], as a prompt runs through
             // [`Sessions::submit`] — which also opens its harness, so nothing here
             // holds one.
-            CommandKind::Compact => match self.compact(session_id) {
-                Ok(r) => {
-                    // **A compaction that re-seated says so.** It forks onto the
-                    // prompt this daemon seats now, so a conversation older than a
-                    // tool picks that tool up by compacting — and a capability
-                    // that appears silently is one nobody uses.
-                    if let Some(hub) = &hub
-                        && !(r.gained.is_empty() && r.lost.is_empty())
-                    {
-                        let mut said =
-                            "this compaction also re-seated: the new prompt announces the \
+            CommandKind::Compact => {
+                // **Measured before and after, as the automatic door is** (R72 follow-up,
+                // defect B). This arm read the session's pair AFTER the fork and converted
+                // both sides through it — the history's ratio, unrolled since the last
+                // round, applied to the base too — and named no unit, so a manual `/compact`
+                // on a scratch deepseek session told the head *"compacted: 20999 → 20755
+                // tokens"* while the automatic one, one door over, said the same fact in
+                // deepseek tokens with each side converted through its own pair. Now the
+                // count it compacted FROM is rolled before the fork, the base's after it
+                // (`Scales`), and the closing line is `compacted_line`, the automatic one's.
+                let before = self.harness(session_id).ok().map(|h| {
+                    let now = h.measure_resident();
+                    let c = h.config();
+                    (now.tokens, c.ledger_scale, h.token_unit(), c.shown_wall())
+                });
+                match self.compact(session_id) {
+                    Ok(r) => {
+                        // **A compaction that re-seated says so.** It forks onto the
+                        // prompt this daemon seats now, so a conversation older than a
+                        // tool picks that tool up by compacting — and a capability
+                        // that appears silently is one nobody uses.
+                        if let Some(hub) = &hub
+                            && !(r.gained.is_empty() && r.lost.is_empty())
+                        {
+                            let mut said =
+                                "this compaction also re-seated: the new prompt announces the \
                              tools this daemon seats now"
-                                .to_string();
-                        if !r.gained.is_empty() {
-                            said.push_str(&format!(
-                                ". The model can now call: {}",
-                                r.gained.join(", ")
-                            ));
-                        }
-                        if !r.lost.is_empty() {
-                            said.push_str(&format!(". It has lost: {}", r.lost.join(", ")));
-                        }
-                        said.push_str(
-                            ". `/reseat` would have cost a second summary turn and a second \
+                                    .to_string();
+                            if !r.gained.is_empty() {
+                                said.push_str(&format!(
+                                    ". The model can now call: {}",
+                                    r.gained.join(", ")
+                                ));
+                            }
+                            if !r.lost.is_empty() {
+                                said.push_str(&format!(". It has lost: {}", r.lost.join(", ")));
+                            }
+                            said.push_str(
+                                ". `/reseat` would have cost a second summary turn and a second \
                              cold prefill; this one is already paid for.",
-                        );
-                        hub.publish(SessionEvent::Warning {
-                            code: "reseated".into(),
-                            detail: said,
+                            );
+                            hub.publish(SessionEvent::Warning {
+                                code: "reseated".into(),
+                                detail: said,
 
-                            compaction: None,
+                                compaction: None,
+                            });
+                        }
+                        let base = self.open.get_mut(session_id).map(|h| {
+                            (
+                                h.measure_resident(),
+                                h.config().ledger_scale,
+                                h.is_metered(),
+                            )
                         });
+                        let (resident, scale, unit, (window, headroom)) =
+                            before.unwrap_or((0, None, "tokens".into(), (0, 0)));
+                        let said = match &base {
+                            Some((b, _, metered)) => {
+                                crate::harness::compacted_line(resident, *b, &unit, *metered)
+                            }
+                            None => format!("compacted: {resident} {unit} resident before."),
+                        };
+                        eprintln!("  {session_id}: {said}");
+                        if let Some(hub) = &hub {
+                            let scales = Scales {
+                                before: scale,
+                                after: base.as_ref().and_then(|b| b.1).or(scale),
+                                unit: Some(unit),
+                            };
+                            hub.publish(SessionEvent::Warning {
+                                code: "compacted".into(),
+                                detail: compaction_said(&r, scales.clone()),
+                                compaction: Some(Box::new(compaction_wire(
+                                    &r,
+                                    "compacted",
+                                    scales,
+                                    resident,
+                                    window,
+                                    headroom,
+                                ))),
+                            });
+                        }
+                        Outcome::Compacted(Box::new(r))
                     }
-                    if let Some(hub) = &hub {
-                        let scale = self
-                            .harness_of(session_id)
-                            .and_then(|h| h.config().ledger_scale);
-                        // The same three numbers the sentence was built from, read off
-                        // the harness rather than recomputed: a report that judged the
-                        // window differently from the decision would be two answers to
-                        // one question.
-                        let (resident, window, headroom) = self
-                            .harness_of(session_id)
-                            .map(|h| {
-                                let c = h.config();
-                                (
-                                    c.shown_tokens(h.ledger_len() as u64),
-                                    c.shown_tokens(c.planning_window().unwrap_or(0)),
-                                    c.shown_tokens(c.headroom()),
-                                )
-                            })
-                            .unwrap_or((0, 0, 0));
-                        hub.publish(SessionEvent::Warning {
-                            code: "compacted".into(),
-                            detail: compaction_said(&r, scale),
-                            compaction: Some(Box::new(compaction_wire(
-                                &r,
-                                "compacted",
-                                scale,
-                                resident,
-                                window,
-                                headroom,
-                            ))),
-                        });
-                    }
-                    Outcome::Compacted(Box::new(r))
+                    Err(e) => Outcome::Failed(e.to_string()),
                 }
-                Err(e) => Outcome::Failed(e.to_string()),
-            },
+            }
             // A re-seat is a compaction that lands on a different prompt, so it
             // runs through the same door and reports through the same one. What it
             // adds is the sentence naming which tools the model can call now that
@@ -4336,6 +4355,31 @@ impl From<Option<(u64, u64)>> for Scales {
             after: scale,
             unit: None,
         }
+    }
+}
+
+/// **How the summary turn was paid for, said only with what was measured** (R72
+/// follow-up, defect B).
+///
+/// `reusable` is the floor the prefix invariant proved the server could reuse, and it is
+/// ZERO whenever the invariant was not checked — a metered provider (it is sent messages,
+/// not token arrays, so `prefix::check` skips) or the first turn on a transcript. The log
+/// line printed the two side by side regardless: MEASURED on a scratch deepseek session,
+/// *"summary turn reused 19584 of 0 carryable tokens"* — DeepSeek's own cache count over a
+/// bound nobody computed, which reads as a numerator larger than its denominator. With
+/// no bound, the cache count is said as the server's own figure and the missing bound as
+/// missing.
+pub(crate) fn summary_turn_reuse(o: &letibot_turn::CompactionOutcome) -> String {
+    match (o.cached_tokens, o.reusable) {
+        (cached, reusable) if reusable > 0 => {
+            format!("summary turn reused {cached} of {reusable} carryable tokens")
+        }
+        (0, _) => "summary turn reused nothing the server reported".into(),
+        (cached, _) => format!(
+            "summary turn: the server reported {cached} tokens from its cache; the prefix \
+             invariant was not checked on this turn, so there is no carryable bound to set \
+             it against"
+        ),
     }
 }
 
@@ -5550,6 +5594,35 @@ mod the_wire_report {
     use super::*;
     use crate::harness::{CompactReport, ForkReport};
     use letibot_sessionlog::event::CompactionTurn;
+
+    /// R72 follow-up, defect B: *"summary turn reused 19584 of 0 carryable tokens"* —
+    /// DeepSeek's own cache count over a bound the prefix check never computed.
+    #[test]
+    fn the_summary_turns_reuse_is_said_only_against_a_bound_that_was_measured() {
+        let o = |cached_tokens, reusable| letibot_turn::CompactionOutcome {
+            turn_id: "t".into(),
+            summary: "s".into(),
+            tool_calls: 0,
+            truncated: false,
+            cached_tokens,
+            reusable,
+            generated_tokens: 0,
+        };
+        let metered = summary_turn_reuse(&o(19_584, 0));
+        assert!(!metered.contains("of 0"), "{metered}");
+        assert!(
+            metered.contains("19584 tokens from its cache") && metered.contains("no carryable"),
+            "{metered}"
+        );
+        assert_eq!(
+            summary_turn_reuse(&o(20_000, 20_480)),
+            "summary turn reused 20000 of 20480 carryable tokens"
+        );
+        assert_eq!(
+            summary_turn_reuse(&o(0, 0)),
+            "summary turn reused nothing the server reported"
+        );
+    }
 
     /// **Zero has three causes, and the sentence says which** — R41's shape one document
     /// over, and the operator's own ask after an automatic compaction of leticl's wrote no

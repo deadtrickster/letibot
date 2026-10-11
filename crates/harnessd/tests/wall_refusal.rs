@@ -770,3 +770,148 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
         "the wake's turn ran on the compaction's base"
     );
 }
+
+/// **A first round already past the window is stopped BEFORE it is sent** (R72
+/// follow-up, defect D).
+///
+/// The doors before a turn judge the conversation before the prompt is appended,
+/// with a sixteenth of the window in reserve for it; the round loop judged only
+/// BETWEEN rounds (`round > 0`). So a prompt bigger than the reserve went out over
+/// the window and came back as the provider's refusal — the wall reached by a
+/// request the daemon's own count already said would not fit. Here the prompt alone
+/// is ~40k tokens against a 32768-token window: the turn must stop at round 0 with
+/// the wall, and the canned server's one spare answer must not be what comes back.
+#[test]
+fn a_first_round_already_past_the_window_is_not_sent() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-round-zero-wall");
+    let path = dir.path().join("sessions.db");
+    let session_id = "round-zero-wall-test";
+    let mut cfg = config(&path, session_id);
+    cfg.context_window = Some(32768);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    // An undersupplied server is a socket error, which would fail the turn for the
+    // wrong reason; one answer is there so that sending is visibly a different outcome.
+    let serv = canned::Canned::serve_replies(
+        vec![Reply::Frames(a_plain_answer_turn(
+            vocab, "thinking", "answered", 40_000,
+        ))],
+        1,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+    let hub = Hub::new(session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
+
+    let paste = "the quick brown fox jumps over the lazy dog. ".repeat(4_000);
+    match h.submit(&paste) {
+        Err(e @ HarnessError::ContextWall { rounds: 0, .. }) => {
+            let said = e.to_string();
+            assert!(
+                said.contains("of 32768 tokens resident"),
+                "the window as given, with its unit: {said}"
+            );
+        }
+        Err(e) => panic!("the wall at round 0 was expected, got: {e}"),
+        Ok(r) => panic!(
+            "a prompt past the window was SENT and answered ({:?}); it must stop first",
+            r.text
+        ),
+    }
+}
+
+/// **A manual `/compact` reports the count it compacted FROM, as the automatic one
+/// does** (R72 follow-up, defect B).
+///
+/// The `Compact` arm of `Sessions::dispatch` read the session's numbers AFTER the
+/// fork: the report's `resident` — documented as *"the number that was compared
+/// against `window`"* — was the new base's size, and both sides of the sentence went
+/// through one stale pair with no unit. MEASURED on a scratch deepseek session: the
+/// head said *"compacted: 20999 → 20755 tokens"*. Now the count is rolled before the
+/// fork, so `resident` is the conversation the operator compacted; the window and its
+/// reserve are the window as given.
+#[test]
+fn a_manual_compact_reports_the_count_it_compacted_from() {
+    use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-manual-compact");
+    let path = dir.path().join("sessions.db");
+    let session_id = "manual-compact-test";
+    let mut cfg = config(&path, session_id);
+    cfg.context_window = Some(32768);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    let answer = a_plain_answer_turn(vocab, "thinking", "the long answer, said once", 30);
+    let summary = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked one question and it was answered",
+        30,
+    );
+    let spare = a_plain_answer_turn(vocab, "summarising", "spare", 30);
+    let serv = canned::Canned::serve_replies(
+        vec![
+            Reply::Frames(answer),
+            Reply::Frames(summary),
+            Reply::Frames(spare),
+        ],
+        3,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+    let registry = Registry::new();
+    registry
+        .create(session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let hub = registry.get(session_id).expect("the hub is the registry's");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+    let words = "a question with some length to it, so the fork is smaller. ".repeat(200);
+    sessions
+        .submit(session_id, &words)
+        .expect("the prompt turn is answered");
+
+    let cmd = QueuedCommand {
+        head_id: "test-head".into(),
+        identity: "dead".into(),
+        client_request_id: "req-compact".into(),
+        at_seq: 0,
+        kind: CommandKind::Compact,
+    };
+    let _ = sessions.dispatch(session_id, &cmd);
+
+    let report = hub
+        .retained()
+        .iter()
+        .find_map(|e| match &e.event {
+            SessionEvent::Warning {
+                code, compaction, ..
+            } if code == "compacted" => compaction.clone(),
+            _ => None,
+        })
+        .expect("a manual compaction publishes its report");
+    assert!(
+        report.tokens_after < report.tokens_before,
+        "the fixture compacts something: {} → {}",
+        report.tokens_before,
+        report.tokens_after
+    );
+    // `tokens_before` is the fork's `was_tokens`, which also holds the summary turn
+    // itself (its instruction and its reply are appended before the fork) — so the
+    // count the operator compacted from is at most that, and well above the base.
+    assert!(
+        report.resident > report.tokens_after && report.resident <= report.tokens_before,
+        "`resident` is the count compacted FROM ({} → {}), not the new base's: {}",
+        report.tokens_before,
+        report.tokens_after,
+        report.resident
+    );
+    assert_eq!(
+        (report.window, report.headroom),
+        (32768, 2048),
+        "the window as given"
+    );
+}

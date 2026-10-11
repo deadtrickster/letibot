@@ -1023,6 +1023,52 @@ fires at the window's real edge, not 27% before it.
    appended since. They are now one quantity and the line says how they relate, but they are
    not the same digits between rounds — by design, since the appended rows will be sent.
 
+**Follow-up (`r72-units-followup`, 2026-10-11) — what a live tmux check on a scratch deepseek
+session (window 40,000) still found mixing units, and what changed:**
+
+- **A. The wall's turn failure** (`HarnessError::ContextWall`'s Display, which the head draws
+  as `── FAILED — …`) carried the LEDGER pair with no unit: *"56466 of 41843 tokens resident"*
+  beside a log line saying *"53978 of 40000 deepseek tokens (56466 of 41843 ledger tokens)"*.
+  The variant now carries the provider count, the window as given and the unit, with the
+  ledger pair in parentheses only where it differs. Both constructors (mid-turn wall, provider
+  length refusal) pass the numbers their own log lines print. Test:
+  `the_wall_failure_says_the_providers_count_and_names_its_unit`.
+- **B. Manual `/compact`.** The `Compact` arm of `Sessions::dispatch` read the session's pair
+  AFTER the fork and converted both sides through it with no unit (*"compacted: 20999 → 20755
+  tokens"*), and the report's `resident` was the new base's size. It now rolls the count before
+  the fork and the base's after it (`Scales`, as the automatic door does), prints
+  `compacted_line` to the log, and the wire's `resident`/`window`/`headroom` are the
+  automatic door's. *"summary turn reused 19584 of 0 carryable tokens"*: `reusable` is the floor
+  the prefix invariant proved, and it is 0 whenever the check did not run — always on a metered
+  provider (no token arrays, `prefix::check` skips), and on a transcript's first turn. The
+  19,584 was DeepSeek's own cache count. `summary_turn_reuse` says the bound only when one was
+  measured; the log's `base A -> B` now names `ledger tokens`. Tests:
+  `a_manual_compact_reports_the_count_it_compacted_from` (`tests/wall_refusal.rs`),
+  `the_summary_turns_reuse_is_said_only_against_a_bound_that_was_measured`.
+- **C. The startup banner.** `compacts automatically with 2905 left` was `Config::headroom()`
+  — the planning window's, in ledger tokens (2500 × 21212/18246) — beside a 40,000 provider
+  window; now `shown_wall()`'s reserve. `RESUMED … 21212 tokens` is now the count through the
+  session's pair with its unit, the ledger's figure in parentheses (`resumed_line`). Test:
+  `the_banner_prints_counts_in_the_windows_units`.
+- **D. The wall between rounds.** Read, not assumed: the check before round N≥1 already counts
+  the tool results the round before appended (`roll_resident` adds every sent row after the
+  anchor), so the measured `46413 of 40000` was the check STOPPING a request that was over the
+  window — the overshoot is in the ledger, never on the wire. The hole was **round 0**, which
+  was not checked at all: the doors before a turn judge the history BEFORE the prompt is
+  appended, with w/16 in reserve, so a prompt larger than that went out over the window and
+  came back as the provider's refusal. Round 0 now stops when what it would send is past the
+  window itself (not inside the reserve — that is the doors' question), and only where the
+  stable prefix leaves room for a compaction to help (`wall_stops_round`). Tests:
+  `a_first_round_already_past_the_window_is_not_sent` (`tests/wall_refusal.rs`),
+  `round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve`.
+- Each test above was run against the old logic (the old wording, the old read-after numbers,
+  `c.headroom()`, no round-0 check) and failed.
+
+**Still open after the follow-up:** a single tool result larger than the whole window is
+still appended whole (the next round stops before sending it, and compaction has to fold a
+history already past the window); capping a tool result against the room left is the larger
+design, not done here. No live re-run of the tmux check was done on this branch.
+
 ---
 
 ## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **daemon half LANDED on `r72-wall-units` (2026-10-11); leticl's half OPEN**

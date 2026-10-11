@@ -304,10 +304,20 @@ pub enum HarnessError {
     /// The turn stopped because the next round would not fit in the context
     /// window. **Not a failure of the work**: everything already produced is
     /// committed, and `Sessions` compacts before the next turn.
+    ///
+    /// **`resident` and `window` are in `unit`** — the provider's count on a metered
+    /// session, the window as it was given (R72). They used to be the LEDGER's pair, and
+    /// the head drew them with no unit: *"stopped after 1 round(s) at the context wall:
+    /// 56466 of 41843 tokens resident"* for a 40,000-token deepseek window, while the
+    /// daemon's log line for the same wall said *"53978 of 40000 deepseek tokens (56466 of
+    /// 41843 ledger tokens)"*. `ledger` keeps the box's own pair for the parenthesis, and
+    /// is not printed where it is the same two numbers (a local session).
     ContextWall {
         rounds: usize,
         resident: u64,
         window: u64,
+        unit: String,
+        ledger: (u64, u64),
     },
     /// **The progress check fired.** `stall_rounds` consecutive rounds produced
     /// nothing this turn had not already seen.
@@ -336,17 +346,24 @@ impl std::fmt::Display for HarnessError {
                 rounds,
                 resident,
                 window,
+                unit,
+                ledger,
             } => write!(
                 f,
                 "stopped after {rounds} round(s) at the context wall: {resident} of \
-                 {window} tokens resident and the next round would not fit. Everything \
+                 {window} {unit} resident{} and the next round would not fit. Everything \
                  this turn produced is committed. A compaction was ATTEMPTED — whether \
                  it succeeded is its own line above, because a summary turn can refuse \
                  (it may not call tools) and saying it worked when it did not is the \
                  failure this whole check exists to avoid. If it compacted, the turn \
                  continues on the summary by itself, a bounded number of times; if the \
                  wall comes back after those, the task does not fit the window and \
-                 `/compact` or a fresh session is the way past it."
+                 `/compact` or a fresh session is the way past it.",
+                if *ledger == (*resident, *window) {
+                    String::new()
+                } else {
+                    format!(" ({} of {} ledger tokens)", ledger.0, ledger.1)
+                }
             ),
             HarnessError::LoopBound { rounds } => write!(
                 f,
@@ -9907,14 +9924,25 @@ impl Harness {
             // **Measured before it is judged (R72)**: the tool results of the round just
             // ended are in the ledger and not in the last round's count, and the roll adds
             // them as sent rather than through a ratio they have nothing to do with.
-            let now = (round > 0 && !self.compacting).then(|| self.measure_resident());
-            if round > 0
-                && !self.compacting
+            //
+            // **And round 0 is checked too, against the window itself** (R72 follow-up).
+            // The doors before a turn (`Sessions::run_prompt`, the nag, the wake) judge the
+            // conversation BEFORE the prompt is appended, with a reserve of a sixteenth of
+            // the window for it — so a prompt bigger than that reserve (a paste, a long
+            // message from a session) went out over the window and came back as the
+            // provider's refusal, the wall reached by a wasted request. Round 0 stops only
+            // when what it is about to send is already PAST the window, not inside the
+            // reserve: the reserve is the doors' question, and asking it again here would
+            // stop every turn the doors had just let through near the edge. Between rounds
+            // it is the reserve, as before — the next round's reply has to fit too.
+            let now = (!self.compacting).then(|| self.measure_resident());
+            if !self.compacting
                 && let Some(window) = self.cfg.planning_window()
                 && self.cfg.auto_compact
             {
                 let resident = self.session.ledger.len() as u64;
-                if resident + self.cfg.headroom() >= window {
+                let prefix = u64::from(self.session.ledger.prefix_len());
+                if wall_stops_round(round, resident, prefix, self.cfg.headroom(), window) {
                     // In the units the operator's header shows, and the count the
                     // decision was made on; see `Harness::measure_resident`. The
                     // ledger's own figures are named once at the end rather than per
@@ -9977,8 +10005,10 @@ impl Harness {
                     );
                     return Err(HarnessError::ContextWall {
                         rounds: round,
-                        resident,
-                        window,
+                        resident: r,
+                        window: w,
+                        unit,
+                        ledger: (resident, window),
                     });
                 }
             }
@@ -10352,8 +10382,10 @@ impl Harness {
                         );
                         return Err(HarnessError::ContextWall {
                             rounds: round,
-                            resident,
-                            window,
+                            resident: r,
+                            window: w,
+                            unit,
+                            ledger: (resident, window),
                         });
                     }
                     return Err(f.into());
@@ -11720,6 +11752,28 @@ fn recovered_scale(
         return None;
     }
     Some((stored_ledger, provider_tokens))
+}
+
+/// **Whether the round about to be sent stops at the wall** — `resident` is the ledger
+/// count of the prompt it would send (the tool results of the round before already in
+/// it), `window` the planning window in the same units.
+///
+/// Round 0 stops only past the window itself; every later round stops inside the
+/// reserve. See the call in `run_rounds` for why the two differ.
+///
+/// **And round 0 stops only where a compaction could make room** — where the stable
+/// prefix (`prefix`, the system prompt and the tool schemas, which no compaction
+/// rewrites) leaves the reserve free. A prompt whose message zero alone is past the
+/// window is a session no summary can rescue: the compaction door already refuses it
+/// in its own words (*"this session's PROMPT is N token(s) of a W token window"*), and
+/// stopping the round as well would only trade the server's verdict for a compaction
+/// that is known to fail. The between-rounds check is unchanged.
+fn wall_stops_round(round: usize, resident: u64, prefix: u64, headroom: u64, window: u64) -> bool {
+    if round == 0 {
+        resident > window && prefix + headroom < window
+    } else {
+        resident + headroom >= window
+    }
 }
 
 /// **The closing line of an automatic compaction**, in one unit, said once: *"compacted:
@@ -18069,6 +18123,59 @@ mod tests {
             super::compacted_line(240_000, base, "tokens", false),
             "compacted: 240000 → 75408 tokens resident."
         );
+    }
+
+    /// **The wall's turn failure is the provider's count with its unit** (R72 follow-up,
+    /// defect A). MEASURED on a scratch deepseek session at a 40,000-token window: the
+    /// head drew *"── FAILED — stopped after 1 round(s) at the context wall: 56466 of
+    /// 41843 tokens resident"* while the log for the same wall said *"53978 of 40000
+    /// deepseek tokens (56466 of 41843 ledger tokens)"* — the ledger's pair, no unit,
+    /// and a window nobody configured.
+    #[test]
+    fn the_wall_failure_says_the_providers_count_and_names_its_unit() {
+        let said = super::HarnessError::ContextWall {
+            rounds: 1,
+            resident: 53_978,
+            window: 40_000,
+            unit: "deepseek tokens".into(),
+            ledger: (56_466, 41_843),
+        }
+        .to_string();
+        assert!(
+            said.starts_with(
+                "stopped after 1 round(s) at the context wall: 53978 of 40000 deepseek \
+                 tokens resident (56466 of 41843 ledger tokens) and the next round"
+            ),
+            "{said}"
+        );
+        // A local session: the ledger IS the count, so it is said once.
+        let local = super::HarnessError::ContextWall {
+            rounds: 2,
+            resident: 31_000,
+            window: 32_768,
+            unit: "tokens".into(),
+            ledger: (31_000, 32_768),
+        }
+        .to_string();
+        assert!(
+            local.starts_with(
+                "stopped after 2 round(s) at the context wall: 31000 of 32768 tokens \
+                 resident and the next round"
+            ),
+            "{local}"
+        );
+    }
+
+    /// Round 0 stops only past the window; later rounds inside the reserve (defect D).
+    #[test]
+    fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
+        assert!(!super::wall_stops_round(0, 39_000, 5_000, 2_500, 40_000));
+        assert!(super::wall_stops_round(0, 40_001, 5_000, 2_500, 40_000));
+        assert!(super::wall_stops_round(1, 37_500, 5_000, 2_500, 40_000));
+        assert!(!super::wall_stops_round(1, 37_499, 5_000, 2_500, 40_000));
+        // Message zero alone past the window: nothing a compaction can fix, so round 0
+        // is left to the server rather than stopped into a compaction known to fail.
+        assert!(!super::wall_stops_round(0, 5_600, 5_443, 128, 512));
     }
 
     /// **Infinity is `0`, and it is one line, so it gets one test.**

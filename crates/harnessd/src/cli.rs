@@ -1595,21 +1595,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // coming, and one that will NOT is worth knowing before it dies at 500.
         let c = sessions.harness_of(&session_id).map(|h| h.config().clone());
         if let Some(c) = c {
-            match (c.context_window, c.auto_compact) {
-                (Some(w), true) => eprintln!(
-                    "  context  {w} tokens; compacts automatically with {} left, as one \
-                     more message so the prefix stays cached",
-                    c.headroom()
-                ),
-                (Some(w), false) => eprintln!(
-                    "  context  {w} tokens; --no-auto-compact, so `/compact` is the only \
-                     way and the wall is a 500"
-                ),
-                (None, _) => eprintln!(
-                    "  context  UNKNOWN (the endpoint did not say and --context-window was \
-                     not given), so nothing compacts on its own and the wall is a 500"
-                ),
-            }
+            eprintln!("{}", context_line(&c));
         }
     }
     eprintln!("  sessions 1 open — a head can list them, switch, and make more");
@@ -1640,13 +1626,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // count and the chain head are the evidence.
     match sessions.resume_report(&session_id) {
         Some(r) => {
-            eprintln!(
-                "  RESUMED  {} — {} row(s), {} tokens, head {}",
-                r.transcript_id,
-                r.rows,
-                r.tokens,
-                &r.head[..16.min(r.head.len())]
-            );
+            let counted = sessions
+                .harness_of(&session_id)
+                .map(|h| (h.config().shown_tokens(r.tokens as u64), h.token_unit()));
+            eprintln!("{}", resumed_line(&r, counted));
             for note in &r.notes {
                 for line in wrap(note, term_cols().clamp(48, 100).saturating_sub(11)) {
                     eprintln!("           {line}");
@@ -1788,15 +1771,16 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "  {session} · {} -> {} round(s), {} tool call(s)",
             cmd.identity, r.rounds, r.tool_calls
         ),
+        // The base is the LEDGER's pair (the fork's own measurement), and says so: the
+        // count in the provider's units is the `compacted:` line the session printed just
+        // above this one (R72 follow-up).
         Outcome::Compacted(r) => eprintln!(
-            "  {session} · {} -> compacted, base {} -> {} tokens (transcript {}); \
-             summary turn reused {} of {} carryable tokens",
+            "  {session} · {} -> compacted, base {} -> {} ledger tokens (transcript {}); {}",
             cmd.identity,
             r.fork.was_tokens,
             r.fork.base_tokens,
             r.fork.transcript_id,
-            r.summary_turn.cached_tokens,
-            r.summary_turn.reusable
+            crate::sessions::summary_turn_reuse(&r.summary_turn)
         ),
         Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
         Outcome::Ignored => {}
@@ -2472,6 +2456,54 @@ fn banner(ds: &[Disclosure], cols: usize) -> Vec<String> {
     out
 }
 
+/// **The banner's `context` line** — the window as given and, beside it, the reserve in
+/// the SAME units.
+///
+/// The reserve was `Config::headroom()`, which is the PLANNING window's: in ledger
+/// tokens, scaled by the session's ledger/provider pair. After a restart on a scratch
+/// deepseek session (window 40000, pair 21212/18246) the line read *"compacts
+/// automatically with 2905 left"* — 2500 × 21212/18246 — beside a window whose reserve
+/// is 2500. R72 follow-up, defect C: every count printed beside the window is in the
+/// window's units, which is `Config::shown_wall`.
+fn context_line(c: &crate::config::Config) -> String {
+    match (c.context_window, c.auto_compact) {
+        (Some(w), true) => format!(
+            "  context  {w} tokens; compacts automatically with {} left, as one more \
+             message so the prefix stays cached",
+            c.shown_wall().1
+        ),
+        (Some(w), false) => format!(
+            "  context  {w} tokens; --no-auto-compact, so `/compact` is the only way and \
+             the wall is a 500"
+        ),
+        (None, _) => "  context  UNKNOWN (the endpoint did not say and --context-window was \
+                      not given), so nothing compacts on its own and the wall is a 500"
+            .into(),
+    }
+}
+
+/// **The banner's `RESUMED` line**, its count in the unit the wall is judged in (R72
+/// follow-up, defect C). It printed the rebuilt LEDGER's length with no unit — *"21212
+/// tokens"* on a deepseek session the provider counted at ~18.2k — a third number for the
+/// one conversation beside the head's and the wall's. `counted` is that ledger length
+/// through the session's pair (`Config::shown_tokens`, which `Harness::open` brings up to
+/// date with `measure_resident`) and `Harness::token_unit`; the ledger's own figure is
+/// kept in parentheses where it differs, because the store's rows are in it.
+fn resumed_line(r: &crate::harness::ResumeReport, counted: Option<(u64, String)>) -> String {
+    let ledger = r.tokens as u64;
+    let tokens = match counted {
+        Some((n, unit)) if n != ledger => format!("{n} {unit} ({ledger} ledger tokens)"),
+        Some((n, unit)) => format!("{n} {unit}"),
+        None => format!("{ledger} ledger tokens"),
+    };
+    format!(
+        "  RESUMED  {} — {} row(s), {tokens}, head {}",
+        r.transcript_id,
+        r.rows,
+        &r.head[..16.min(r.head.len())]
+    )
+}
+
 /// Word wrap. Twelve lines rather than a dependency, for one banner.
 fn wrap(s: &str, width: usize) -> Vec<String> {
     let width = width.max(24);
@@ -2506,6 +2538,40 @@ fn term_cols() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R72 follow-up, defect C: after a restart the banner printed the reserve in the
+    /// planning window's ledger units (2905) beside a 40000 provider window whose
+    /// reserve is 2500, and the RESUMED count as the ledger's length with no unit.
+    #[test]
+    fn the_banner_prints_counts_in_the_windows_units() {
+        let mut c = crate::config::Config::for_this_box("/tmp");
+        c.context_window = Some(40_000);
+        c.auto_compact = true;
+        c.ledger_scale = Some((21_212, 18_246));
+        let line = context_line(&c);
+        assert!(
+            line.contains("40000 tokens; compacts automatically with 2500 left"),
+            "{line}"
+        );
+
+        let r = crate::harness::ResumeReport {
+            transcript_id: "s-1#t3".into(),
+            rows: 12,
+            tokens: 21_212,
+            head: "0123456789abcdef0123".into(),
+            workspace: "/tmp".into(),
+            notes: Vec::new(),
+        };
+        assert_eq!(
+            resumed_line(&r, Some((18_246, "deepseek tokens".into()))),
+            "  RESUMED  s-1#t3 — 12 row(s), 18246 deepseek tokens (21212 ledger tokens), \
+             head 0123456789abcdef"
+        );
+        assert_eq!(
+            resumed_line(&r, Some((21_212, "tokens".into()))),
+            "  RESUMED  s-1#t3 — 12 row(s), 21212 tokens, head 0123456789abcdef"
+        );
+    }
     use letibot_tokencore::store::{SessionRecord, Store};
 
     fn store_with(workspaces: &[(&str, &str)]) -> (Store, TempDir) {
