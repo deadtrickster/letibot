@@ -15064,6 +15064,10 @@ impl HarnessTaskRunner {
         // Built, not registered: nothing can switch into it, and the worker is not
         // told to open it, until `open_with_registry` below has succeeded.
         let sub_hub = self.registry.new_hub(sub_id.clone());
+        // **This thread is the session's one reader** (R68.1) — marked before the hub can be
+        // adopted, so there is no instant in which the daemon's worker can see the child and take
+        // a command off its queue. See `letibot_sessionlog::hub::Owner`.
+        sub_hub.owned_by_its_own_thread();
 
         let point = self.point();
         let mut sub_cfg = Config {

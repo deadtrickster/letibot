@@ -576,9 +576,41 @@ pub enum OwnWork {
     TimedOut,
 }
 
+/// **Who runs this session's turns — the one reader its command queue has** (R68.1).
+///
+/// A session has exactly one owner, and before this the hub did not know which. Two readers
+/// took from one queue: the thread that runs a subagent (`Hub::take_own_work_until`, from
+/// `harness::serve_child`) and the daemon's worker (`Hub::try_command`, through
+/// `Registry::next_work_until`), and the worker popped ANYTHING. `Interrupt` and `Message` were
+/// handed back to the child's thread when the worker won them; `Prompt` was not — so a head
+/// prompting the subagent it was attached to could make the worker build a SECOND `Harness` for
+/// a live child: two writers on one transcript, the child's `watch_runs`, `set_prompt` and
+/// `notes` replaced under it, a second deadline thread. CONFIRMED by the 2026-10-11 review
+/// (`TODO.md` section 4, *the daemon*, finding 1).
+///
+/// So the owner is a fact of the hub and the doors read it, rather than each arm remembering
+/// to give a command back: [`Hub::try_command`] (the worker's pop) answers `None` for a hub it
+/// does not own, and `Sessions::harness_as` refuses to build a harness for a session that is
+/// live under another owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Owner {
+    /// **The daemon's worker** — every session a head created or resumed, and the default for
+    /// every hub, which is what every hub was before this tag existed.
+    #[default]
+    Worker,
+    /// **A thread of its own** — a subagent, whose harness lives on the thread its parent
+    /// spawned it on and borrows `Parts` built there. Set by that thread
+    /// ([`Hub::owned_by_its_own_thread`]) before the hub is adopted into a registry, so there
+    /// is no instant in which the worker can see the session and think it is its own.
+    OwnThread,
+}
+
 /// One session's log, view, heads and command queue.
 pub struct Hub {
     inner: Mutex<Inner>,
+    /// Who drains [`Inner::commands`]. See [`Owner`]. Outside the lock because it is written
+    /// once, before the hub is reachable, and read on every pop.
+    owner: std::sync::atomic::AtomicU8,
     /// One condition for everything. A publish wakes every waiting head and the
     /// command worker; each re-checks its own predicate. Simpler than a condvar per
     /// head, and the wake storm is bounded by the head count, which is small by
@@ -620,8 +652,23 @@ impl Hub {
                 next_screen: 0,
             }),
             cv: Condvar::new(),
+            owner: std::sync::atomic::AtomicU8::new(0),
             promote: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// **Mark this session as served by the thread that is opening it, not by the worker.** See
+    /// [`Owner`]. Called by a subagent's runner on its own thread before the hub is adopted.
+    pub fn owned_by_its_own_thread(&self) {
+        self.owner.store(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Who runs this session's turns. See [`Owner`].
+    pub fn owner(&self) -> Owner {
+        match self.owner.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => Owner::Worker,
+            _ => Owner::OwnThread,
+        }
     }
 
     /// A head asked to move the running command to the background. Record who, so
@@ -1769,8 +1816,17 @@ impl Hub {
         true
     }
 
-    /// Non-blocking form, for a worker that also has other things to do.
+    /// **The worker's pop** — non-blocking, for a worker that also has other things to do.
+    ///
+    /// `None` for a hub the worker does not own ([`Owner::OwnThread`]), whatever is queued: the
+    /// command is the session's own thread's, which [`Hub::submit`] already woke (it notifies
+    /// this hub's condvar as well as ringing the bell), and a worker that took it would be the
+    /// second writer [`Owner`] exists to make unspellable. The bell's ring for it is then a
+    /// ring with nothing behind it, which `Registry::next_work_until` already skips.
     pub fn try_command(&self) -> Option<QueuedCommand> {
+        if self.owner() != Owner::Worker {
+            return None;
+        }
         self.lock().commands.pop_front()
     }
 

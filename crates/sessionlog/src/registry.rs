@@ -1773,6 +1773,47 @@ mod tests {
         );
     }
 
+    /// **A session served by its own thread is never served by the worker** (R68.1).
+    ///
+    /// The defect this pins: a head prompting the subagent it is attached to rang the bell, and
+    /// the worker's `try_command` popped the prompt off the child's queue — then built a second
+    /// `Harness` for a session whose own thread was holding one. With the owner on the hub, the
+    /// worker's pop answers `None` and the ring is skipped like any ring with nothing behind it,
+    /// while the child's own reader still finds the command.
+    #[test]
+    fn the_worker_never_takes_a_command_off_a_hub_owned_by_its_own_thread() {
+        let r = reg();
+        let hub = r.new_hub("s-parent-sub-1");
+        hub.owned_by_its_own_thread();
+        r.adopt(
+            hub.clone(),
+            "a child",
+            SessionWiring::default(),
+            Some("s-parent".into()),
+        )
+        .unwrap();
+        let h = hub.attach("tui", "dead", Caps::default(), 0);
+        hub.submit(
+            &h.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "what did you find?".into(),
+            },
+        );
+        let soon = Instant::now() + std::time::Duration::from_millis(50);
+        assert!(
+            matches!(r.next_work_until(Some(soon)), WorkOrIdle::Idle),
+            "the worker took a prompt off a subagent's queue — the second writer"
+        );
+        match hub.take_own_work_until(Some(Instant::now())) {
+            crate::hub::OwnWork::Command(c) => {
+                assert!(matches!(c.kind, CommandKind::Prompt { .. }))
+            }
+            other => panic!("the child's own reader must still find its prompt: {other:?}"),
+        }
+    }
+
     #[test]
     fn two_sessions_do_not_share_a_log_a_view_or_a_queue() {
         // The property that makes the ledger and the memfd region safe one layer

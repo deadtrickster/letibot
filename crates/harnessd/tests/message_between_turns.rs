@@ -1120,6 +1120,8 @@ fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
 
     let child = "s-child-not-held-by-the-daemon";
     let child_hub = registry.new_hub(child);
+    // What `run_to_completion` does before it adopts: the child's own thread is its reader.
+    child_hub.owned_by_its_own_thread();
     registry
         .adopt(
             child_hub.clone(),
@@ -1143,18 +1145,28 @@ fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
         matches!(frame, letibot_sessionlog::ServerFrame::Accepted { .. }),
         "the message was not accepted: {frame:?}"
     );
-    let cmd: QueuedCommand = child_hub
-        .try_command()
-        .expect("the worker takes the command off the child's queue");
+    // **The worker cannot win it any more** (R68.1): the hub knows its owner, and the
+    // worker's pop answers `None` for a hub it does not own. The arm below is the second line —
+    // a command that reached the worker some other way is still handed back — so it is driven
+    // with the command the child's own reader takes.
+    assert!(
+        child_hub.try_command().is_none(),
+        "the worker's pop took a command off a subagent's queue"
+    );
+    let cmd: QueuedCommand = match child_hub.take_own_work_until(Some(Instant::now())) {
+        letibot_sessionlog::hub::OwnWork::Command(c) => c,
+        other => panic!("the message is on the child's own queue: {other:?}"),
+    };
 
     let outcome = sessions.dispatch(child, &cmd);
     assert!(
         matches!(outcome, Outcome::HandedOn),
         "the worker ran the message itself instead of handing it to the child's own reader"
     );
-    let back = child_hub
-        .try_command()
-        .expect("the message is back in front of the reader that can run it");
+    let back = match child_hub.take_own_work_until(Some(Instant::now())) {
+        letibot_sessionlog::hub::OwnWork::Command(c) => c,
+        other => panic!("the message is back in front of the reader that can run it: {other:?}"),
+    };
     assert!(
         matches!(back.kind, CommandKind::Message { .. }),
         "and it is the message that went back, not something else: {back:?}"

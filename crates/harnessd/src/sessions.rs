@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
+use letibot_sessionlog::hub::{CommandKind, Owner, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
 use letibot_sessionlog::{SessionEvent, hub::Hub};
 use letibot_tokencore::store::{Store, TodoItem};
@@ -763,11 +763,13 @@ fn is_root(registry: &Registry, session_id: &str) -> bool {
 ///
 /// * **`Drive`** — the daemon holds this session's harness (`Sessions::open`), so the worker runs
 ///   the turn: `Harness::wake` for a root, and for every session the daemon opened.
-/// * **`ItsOwnReader`** — the session is live in the registry and the daemon does not hold it:
+/// * **`ItsOwnReader`** — the session is live in the registry, owned by its own thread
+///   ([`Owner::OwnThread`]) and so not held by the daemon:
 ///   a subagent, whose harness lives on the thread its parent spawned it on. The daemon hands the
 ///   wake to that thread (`Hub::wake_its_own_reader`), which is what makes a ring naming a child
 ///   a promise rather than the `Ignored` R58 measured.
-/// * **`Gone`** — no hub at all. Nothing to hand anything to, and nothing lost: a session that
+/// * **`Gone`** — no hub at all, or a hub the worker owns and does not hold (an open that
+///   failed). Nothing to hand anything to, and nothing lost: a session that
 ///   closed handed its undrained settlements up a level first (`jobwatch::JobWatchers::stop`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WakeRoute {
@@ -776,11 +778,15 @@ enum WakeRoute {
     Gone,
 }
 
-fn wake_route(held_by_the_daemon: bool, live_in_the_registry: bool) -> WakeRoute {
-    match (held_by_the_daemon, live_in_the_registry) {
+fn wake_route(held_by_the_daemon: bool, live_owner: Option<Owner>) -> WakeRoute {
+    match (held_by_the_daemon, live_owner) {
         (true, _) => WakeRoute::Drive,
-        (false, true) => WakeRoute::ItsOwnReader,
-        (false, false) => WakeRoute::Gone,
+        (false, Some(Owner::OwnThread)) => WakeRoute::ItsOwnReader,
+        // **A hub the WORKER owns and does not hold is not somebody else's reader** (R68.2, .9):
+        // it is a session whose open failed (or has not run), and handing a wake to its own
+        // condvar was handing it into a void — nothing waits there — while the outcome said
+        // `HandedOn`. It is gone as far as a wake is concerned; a prompt reopens it lazily.
+        (false, Some(Owner::Worker)) | (false, None) => WakeRoute::Gone,
     }
 }
 
@@ -1603,6 +1609,19 @@ impl<'a> Sessions<'a> {
             let hub = self.registry.get(session_id).ok_or_else(|| {
                 HarnessError::Setup(format!("no session {session_id} in this daemon"))
             })?;
+            // **A session live under another owner is not the worker's to open** (R68.1). A
+            // subagent's harness lives on the thread its parent spawned it on; a second one built
+            // here would be a second writer on its transcript and would replace its `watch_runs`,
+            // `set_prompt` and `notes` under it. The hub's pop already refuses the worker
+            // (`Hub::try_command`); this is the same fact at the door every worker path opens
+            // through, so a scripted `submit` or a future arm cannot spell the old defect either.
+            if hub.owner() == Owner::OwnThread {
+                return Err(HarnessError::Setup(format!(
+                    "session {session_id} is a subagent served by its own thread, so the \
+                     daemon's worker will not open a second harness on it; prompt it from a head \
+                     attached to it, or message it with `task_message`"
+                )));
+            }
             // The session's own tree, when the registry has one — a head that made
             // this session named the directory it was standing in, and a resumed one
             // carries the root from the store. `self.base.workspace` is the daemon's
@@ -3066,7 +3085,10 @@ impl<'a> Sessions<'a> {
         // **The decision is `wake_route`'s, so it can be asserted without a daemon.** The two
         // facts it reads are asked of the layers that own them: `open` is this struct's, the
         // registry is the daemon's.
-        match wake_route(self.open.contains_key(session_id), hub.is_some()) {
+        match wake_route(
+            self.open.contains_key(session_id),
+            hub.as_ref().map(|h| h.owner()),
+        ) {
             WakeRoute::Drive => {}
             WakeRoute::ItsOwnReader => {
                 let handed = hub.map(|h| h.wake_its_own_reader()).unwrap_or(false);
@@ -3506,8 +3528,8 @@ impl<'a> Sessions<'a> {
                 // opening the session lazily: an interrupt has nothing to act on unless the turn
                 // already running is reached, and the daemon cannot reach one it does not hold.
                 // So it is put back for that thread, which is the same door a relayed wake takes.
-                if !self.open.contains_key(session_id)
-                    && let Some(hub) = &hub
+                if let Some(hub) = &hub
+                    && hub.owner() == Owner::OwnThread
                     && hub.give_back_to_its_own_reader(cmd.clone())
                 {
                     return Outcome::HandedOn;
@@ -3878,8 +3900,8 @@ impl<'a> Sessions<'a> {
             // (*"that session is gone, so nothing will deliver it"*) and was dropped — in exactly
             // the case the design needs, a session sending another session something.
             CommandKind::Message { from, text } => {
-                if !self.open.contains_key(session_id)
-                    && let Some(hub) = &hub
+                if let Some(hub) = &hub
+                    && hub.owner() == Owner::OwnThread
                     && hub.give_back_to_its_own_reader(cmd.clone())
                 {
                     return Outcome::HandedOn;
@@ -3892,6 +3914,26 @@ impl<'a> Sessions<'a> {
                 // RUNNING never reaches this arm: its own steering poll takes the message at the
                 // next round boundary (`HubSteering`'s `Message` arm), so there is one writer and
                 // one text on both doors.
+                //
+                // **And a session the worker OWNS but has not opened is opened for it** (R68.9) —
+                // the lazy open a prompt already gets. A hub whose `Work::Open` failed has no
+                // other reader, so the message is the worker's to deliver or to refuse by name:
+                // the open is retried here, and if it fails again the sentence below is true.
+                if !self.open.contains_key(session_id)
+                    && hub
+                        .as_ref()
+                        .is_some_and(|h| h.owner() == Owner::Worker && !h.is_closed())
+                    && let Err(e) = self.harness(session_id)
+                {
+                    self.warn(
+                        session_id,
+                        "session_unavailable",
+                        format!(
+                            "a message from `{from}` arrived and this session could not be \
+                             opened to hear it: {e}"
+                        ),
+                    );
+                }
                 if self.open.contains_key(session_id) {
                     return match self.run_a_message_from_a_session(session_id, from, text) {
                         Ok(reply) => Outcome::Replied(Box::new(reply)),
@@ -5520,23 +5562,34 @@ mod the_wake_route {
     //! short: a ring naming a session the daemon does not hold was DISCARDED (R58), which is what
     //! made depth 2 a hole — a grandchild's settlement reached the bell and stopped there.
     use super::{WakeRoute, wake_route};
+    use letibot_sessionlog::hub::Owner;
 
     /// The daemon's own session: the worker runs the turn, as it always did.
     #[test]
     fn a_session_the_daemon_holds_is_driven() {
-        assert_eq!(wake_route(true, true), WakeRoute::Drive);
+        assert_eq!(wake_route(true, Some(Owner::Worker)), WakeRoute::Drive);
         // And `open` is the fact that decides it — a session in `open` whose hub has gone is
         // still the daemon's to run, and the harness inside is what runs it.
-        assert_eq!(wake_route(true, false), WakeRoute::Drive);
+        assert_eq!(wake_route(true, None), WakeRoute::Drive);
     }
 
-    /// **A live session the daemon does not hold is handed to the thread that does.** This is
-    /// the arm that was missing, and it is a subagent: its harness lives on the thread its
-    /// parent spawned it on, so the wake goes to that thread's own condvar rather than being
-    /// dropped.
+    /// **A live session served by its own thread is handed to that thread.** This is the arm
+    /// R58 added, and it is a subagent: its harness lives on the thread its parent spawned it
+    /// on, so the wake goes to that thread's own condvar rather than being dropped.
     #[test]
-    fn a_session_the_daemon_does_not_hold_goes_to_its_own_reader() {
-        assert_eq!(wake_route(false, true), WakeRoute::ItsOwnReader);
+    fn a_session_owned_by_its_own_thread_goes_to_its_own_reader() {
+        assert_eq!(
+            wake_route(false, Some(Owner::OwnThread)),
+            WakeRoute::ItsOwnReader
+        );
+    }
+
+    /// **A session the worker owns and does not hold has no other reader** (R68.2, R68.9) — its
+    /// open failed. Before the owner tag this was routed `ItsOwnReader` and reported `HandedOn`,
+    /// a wake handed to a condvar nobody waits on.
+    #[test]
+    fn a_worker_session_that_did_not_open_is_not_handed_into_a_void() {
+        assert_eq!(wake_route(false, Some(Owner::Worker)), WakeRoute::Gone);
     }
 
     /// A session with no hub at all has nobody to hand anything to — and that is not a loss:
@@ -5545,7 +5598,7 @@ mod the_wake_route {
     /// one holding the notice.
     #[test]
     fn a_session_that_is_gone_is_nothing() {
-        assert_eq!(wake_route(false, false), WakeRoute::Gone);
+        assert_eq!(wake_route(false, None), WakeRoute::Gone);
     }
 }
 
