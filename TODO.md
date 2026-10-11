@@ -1982,6 +1982,62 @@ Tests:
 Left: what actually signalled cargo at 00:51:10 is unknown (see above). The next occurrence
 will carry the signal on its row.
 
+---
+
+## R88 — A worktree child finishes with its work outside its branch — **BUILT on `child-commits-before-done` 2026-10-12 (not merged)**
+
+The report, pg-noop's model, 2026-10-12 ~01:20, relayed by the operator: *"So the child's death
+cost the work nothing except its own account of it — and that is only true because the worktree
+was checked before I spawned a replacement. Seven times tonight a child has ended with its work
+outside its branch, and each time the recovery was the same two commands; the pattern is now so
+routine that it belongs in the brief rather than in the salvage."*
+
+A `task_start` child works in `<workspace>/.claude/worktrees/agent-<slug>` on `agent/<slug>`, and
+the branch is what the merge queue lands. A child that ends (or dies) with changes uncommitted or
+untracked hands its parent a branch that does not hold the work, and the parent finds out only by
+looking.
+
+### Built
+
+1. **The brief.** `letibot_tools::builtins::task::worktree_brief` is appended to the task of every
+   child with a fresh worktree (`run_to_completion`; the main-tree exception and a plain `task`
+   get nothing): *"[the deliverable] You work in the worktree `<path>` on branch `<branch>`, and
+   the branch is the deliverable: commit your work to it as you go and before you finish. A
+   finished child's worktree is clean (`git status --porcelain` prints nothing), and your final
+   answer names the commit(s)."* The reviewer's copy of the brief (`PlacedChild`) is the caller's
+   prompt, unchanged.
+2. **The check at the end of a turn.** `harness::deliverable::EndOfWork`, in the round loop beside
+   the intent nudge and the context-claim check: when a round makes no tool call and the session
+   has a deliverable (`Harness::set_deliverable`, set by the spawn), `git status --porcelain` is
+   read in the worktree; dirty → one notice in the harness's voice naming what is uncommitted
+   (eight entries, then a count) and the turn continues. One per turn, as `nudges_left`.
+3. **The completion.** `AnswerOnce` carries the deliverable, so every settlement of a worktree
+   child — its answer, every `fail`, a `job_kill` (the kill rule is applied first, now
+   `TaskSlot::as_settled`, so the line survives the replacement), and the guard's own "ended
+   without saying" — has at its top, when the tree is still dirty: `the worktree <path> has
+   uncommitted changes: <files> — the branch <b> does not contain them. To salvage: `git -C <path>
+   add -A -- . ':!.cargo/config.toml'` then `git -C <path> commit -m "salvage: uncommitted work of
+   <b>"`.`
+4. Tests: `harness/deliverable.rs` (temp git repos: clean → no nudge; dirty → one nudge, commit,
+   clean; still dirty → the line, and the two printed commands run and leave the branch holding the
+   work; every ending through `AnswerOnce`; no worktree → untouched; an unreadable tree is not
+   called dirty) and `task/tests.rs` (the brief).
+
+### Found while building it — OPEN
+
+* **The build-cache pointer is not excluded.** `start_worktree` writes `.cargo/config.toml` into
+  every worktree and appends it to `$(git rev-parse --git-dir)/info/exclude`, which inside a
+  worktree is `.git/worktrees/<name>/info/exclude` — a file git does not read (MEASURED, git 2.53:
+  `?? .cargo/` in a fresh worktree with the line present). Every `task_start` worktree is therefore
+  dirty from birth, and a child that runs `git add -A` commits the pointer into its branch. The
+  check above excludes it by pathspec; the runner's exclude should be fixed at its source (the
+  common dir's `info/exclude` hides it in every worktree and the main tree too, so it wants a
+  decision, or `extensions.worktreeConfig` + a per-worktree `core.excludesFile`).
+* **Not exercised end to end with a model.** No test drives a child's turn through a stub server
+  that edits a file; the loop's arm is three lines over `EndOfWork`, which is tested.
+* **A restored child** (`wt-subrestart`, reopening subagents after a daemon restart) has to call
+  `Harness::set_deliverable` with its placement, or its later turns are not checked.
+
 ## R84 — The landing tree lives outside `.git`, a session can read it, and a gate gets its gitignored inputs — **MERGED on main 2026-10-12 (4ac0f18, d27ed56); the placement rule after it is PARKED, see R84a**
 
 The operator, 2026-10-11: *"also, the merges and branches shoudlnt land into .git. look at firecode

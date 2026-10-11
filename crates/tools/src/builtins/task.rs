@@ -351,6 +351,25 @@ pub fn worktree_branch(slug: &str) -> String {
     format!("agent/{slug}")
 }
 
+/// **The rule a worktree child is given with its task**: the branch is the deliverable, so the
+/// work goes onto it, and a finished child's tree is clean.
+///
+/// Appended to the brief of every `task_start` child that has a fresh worktree (the main-tree
+/// exception has no branch of its own to deliver). Asked for by the report of 2026-10-12, from
+/// pg-noop's model: *"Seven times tonight a child has ended with its work outside its branch,
+/// and each time the recovery was the same two commands; the pattern is now so routine that it
+/// belongs in the brief rather than in the salvage."* The daemon checks the same fact when the
+/// child's turn ends (`harnessd`'s `harness::deliverable`), so this sentence is the rule and the
+/// check is its enforcement — neither stands in for the other.
+pub fn worktree_brief(path: &str, branch: &str) -> String {
+    format!(
+        "[the deliverable] You work in the worktree `{path}` on branch `{branch}`, and the \
+         branch is the deliverable: commit your work to it as you go and before you finish. \
+         A finished child's worktree is clean (`git status --porcelain` prints nothing), and \
+         your final answer names the commit(s)."
+    )
+}
+
 /// Where a spawned subagent has got to.
 ///
 /// **The reading is the child's PRESENT, and the variant is its turn's record** — two facts, and

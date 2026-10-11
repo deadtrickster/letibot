@@ -1723,6 +1723,12 @@ struct OwnServer {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness {
     cfg: Config,
+    /// **The worktree and branch this session's work must end up on**, when it is a
+    /// `task_start` child with a fresh worktree; `None` for every other session. Read as a turn
+    /// is about to end ([`deliverable::EndOfWork`]): a dirty tree is told once, in the harness's
+    /// voice, and the turn goes on. Set by the spawn (`run_to_completion`), not by `open`,
+    /// because the placement is the runner's fact and the config does not carry it.
+    deliverable: Option<deliverable::Deliverable>,
     /// **When the prompt this turn is serving arrived, carried across its rounds.**
     ///
     /// The operator, watching the composer: *"it should be still responding even while you do
@@ -4604,6 +4610,7 @@ impl Harness {
             wiring: parts.wiring.clone(),
         };
         let mut h = Harness {
+            deliverable: None,
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
             session_registry: session_registry.clone(),
@@ -10402,6 +10409,12 @@ impl Harness {
         Ok(())
     }
 
+    /// **Name the worktree and branch this session's work must end up on** — a `task_start`
+    /// child's, set by its spawn. `None` clears it. See [`deliverable`].
+    pub fn set_deliverable(&mut self, d: Option<deliverable::Deliverable>) {
+        self.deliverable = d;
+    }
+
     /// What a resume rebuilt, or `None` for a session opened fresh.
     pub fn resumed(&self) -> Option<&ResumeReport> {
         self.resumed.as_ref()
@@ -10437,6 +10450,12 @@ impl Harness {
         // is a legitimate answer to the check — `docs/closed-loop.md`'s tolerance
         // band, set at its narrowest until somebody measures a better one.
         let mut nudges_left = 1usize;
+        // **And a worktree child that is about to finish with its work outside its branch** —
+        // `deliverable::EndOfWork`, the same budget of one: told what is uncommitted, once, and
+        // then its answer stands (the parent's completion carries the line if it is still dirty).
+        // The report: *"Seven times tonight a child has ended with its work outside its branch,
+        // and each time the recovery was the same two commands."*
+        let mut end_of_work = deliverable::EndOfWork::new();
         // **And a model that stops because "my context is full" when it is not** — R71,
         // `crate::context_claim`. The same budget as the nudge above, and for the same
         // reason: one line telling the model its measured fill, then — if it says it again
@@ -11150,6 +11169,21 @@ impl Harness {
                     // reply the operator is waiting on. The loop continues, which is
                     // the half of T21.3 that makes it a correction rather than a
                     // report.
+                    self.append_notice(&steer)?;
+                    continue;
+                }
+                // **The branch is the deliverable.** After the intent check, so a turn that
+                // promised work and did not start it hears about the promise first; the dirty
+                // tree is still there to be told about on the round that answers it. Through
+                // `append_notice` for the same reason as the nudge above: the turn is over, and
+                // the loop continuing is what makes it a correction rather than a report.
+                // **Not on a round that was cut short**: an interrupt (a `job_kill`, the
+                // operator's stop) is the turn being ENDED, and a nudge that continued it would
+                // be the harness overruling the stop. That child's line goes to its parent in
+                // the completion instead (`AnswerOnce`).
+                if !ok.truncated
+                    && let Some(steer) = end_of_work.at_turn_end(self.deliverable.as_ref())
+                {
                     self.append_notice(&steer)?;
                     continue;
                 }
@@ -14193,10 +14227,24 @@ impl TaskSlot {
     }
 
     fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
-        // **`Done` under a kill is not an answer.** See the field: the text is what the
-        // child had written when it was stopped, and reporting it as the child's word is
-        // the same defect as reporting a truncated summary as whole.
-        let status = match status {
+        let status = self.as_settled(status);
+        *self.state.lock().expect("task slot") = status;
+        self.settled.notify_all();
+    }
+
+    /// **What a settlement becomes on this slot** — the kill rule, on its own so
+    /// [`AnswerOnce::say`] can apply it BEFORE it adds the dirty-worktree line: a killed
+    /// child's `Done` is replaced wholesale, and a line added to the answer first would be
+    /// replaced with it.
+    ///
+    /// **`Done` under a kill is not an answer.** See the field: the text is what the
+    /// child had written when it was stopped, and reporting it as the child's word is
+    /// the same defect as reporting a truncated summary as whole.
+    fn as_settled(
+        &self,
+        status: letibot_tools::builtins::task::TaskStatus,
+    ) -> letibot_tools::builtins::task::TaskStatus {
+        match status {
             letibot_tools::builtins::task::TaskStatus::Done { .. }
                 if self.killed.load(std::sync::atomic::Ordering::SeqCst) =>
             {
@@ -14205,9 +14253,7 @@ impl TaskSlot {
                 }
             }
             other => other,
-        };
-        *self.state.lock().expect("task slot") = status;
-        self.settled.notify_all();
+        }
     }
 }
 
@@ -14235,6 +14281,12 @@ fn finish_child_thread(slot: &TaskSlot, ran: Result<String, String>) {
 struct AnswerOnce<'a> {
     slot: &'a TaskSlot,
     said: std::cell::Cell<bool>,
+    /// **The worktree whose branch is this child's deliverable**, when it has one — read at the
+    /// moment of settlement so that EVERY ending the parent is handed (an answer, a failure, a
+    /// kill, a turn that ended with nothing to say) carries the dirty-tree line at its top. See
+    /// [`deliverable`]: *"Seven times tonight a child has ended with its work outside its
+    /// branch"*, and the parent found out each time by looking.
+    deliverable: Option<deliverable::Deliverable>,
 }
 
 impl<'a> AnswerOnce<'a> {
@@ -14242,7 +14294,14 @@ impl<'a> AnswerOnce<'a> {
         AnswerOnce {
             slot,
             said: std::cell::Cell::new(false),
+            deliverable: None,
         }
+    }
+
+    /// The same guard for a child whose branch is its deliverable.
+    fn with_deliverable(mut self, d: Option<deliverable::Deliverable>) -> Self {
+        self.deliverable = d;
+        self
     }
 
     /// **The first answer is the answer.** A later one is another path out of the same call, not
@@ -14251,19 +14310,43 @@ impl<'a> AnswerOnce<'a> {
         if self.said.replace(true) {
             return;
         }
-        self.slot.settle(status);
+        self.slot.settle(self.with_the_line(status));
+    }
+
+    /// The settlement as the parent will read it: the kill rule first, then — for a worktree
+    /// child whose tree is dirty — the line naming what its branch does not hold.
+    fn with_the_line(
+        &self,
+        status: letibot_tools::builtins::task::TaskStatus,
+    ) -> letibot_tools::builtins::task::TaskStatus {
+        use letibot_tools::builtins::task::TaskStatus;
+        let d = self.deliverable.as_ref();
+        if d.is_none() {
+            return status;
+        }
+        match self.slot.as_settled(status) {
+            TaskStatus::Done { answer, child } => TaskStatus::Done {
+                answer: deliverable::with_the_line(d, &answer),
+                child,
+            },
+            TaskStatus::Failed { why } => TaskStatus::Failed {
+                why: deliverable::with_the_line(d, &why),
+            },
+            other => other,
+        }
     }
 }
 
 impl Drop for AnswerOnce<'_> {
     fn drop(&mut self) {
         if !self.said.get() {
-            self.slot
-                .settle(letibot_tools::builtins::task::TaskStatus::Failed {
+            self.slot.settle(
+                self.with_the_line(letibot_tools::builtins::task::TaskStatus::Failed {
                     why: "this subagent's turn ended without saying how it went — the record is \
                           short of an answer, not in possession of one"
                         .into(),
-                });
+                }),
+            );
         }
     }
 }
@@ -16936,7 +17019,15 @@ impl HarnessTaskRunner {
         // **Every early return from here on records the failure rather than leaving a
         // "running" row forever** — and it settles the child's slot as it does, because this
         // function no longer returns to a caller that settles for it (see [`AnswerOnce`]).
-        let answer = AnswerOnce::new(slot);
+        // **A worktree child's every ending carries what its branch does not hold** — the answer
+        // and every `fail` below alike, because a child that dies is the case the report was
+        // about: *"the child's death cost the work nothing except its own account of it — and
+        // that is only true because the worktree was checked"*. See [`deliverable`].
+        let the_deliverable = spec
+            .worktree
+            .as_ref()
+            .and_then(deliverable::Deliverable::of);
+        let answer = AnswerOnce::new(slot).with_deliverable(the_deliverable.clone());
         let fail = |why: String| {
             answer.say(letibot_tools::builtins::task::TaskStatus::Failed { why: why.clone() });
             self.tasks.record(crate::tasks::TaskEntry {
@@ -17276,9 +17367,20 @@ impl HarnessTaskRunner {
         // owner** (R68.4) — the same owner every later turn of this thread uses, so its title,
         // its monitors and its sweep are the child's from the first turn on.
         let mut turns = ChildTurns::new(&sub, &sub_id, crate::sessions::TodoNagClock::new());
+        // **The branch is the deliverable, said in the brief and checked as each turn ends.** The
+        // rule rides the child's task (see `worktree_brief`), and the same fact is read when the
+        // turn is about to end (`Harness::set_deliverable`): one nudge if the tree is dirty.
+        sub.set_deliverable(the_deliverable.clone());
+        let brief = match &the_deliverable {
+            Some(d) => format!(
+                "{prompt}\n\n{}",
+                letibot_tools::builtins::task::worktree_brief(&d.path, &d.branch)
+            ),
+            None => prompt.to_string(),
+        };
         let first =
             crate::turn_tail::run_turn(&mut sub, &mut turns, crate::turn_tail::Door::Prompt, |h| {
-                h.submit(prompt).map(Some)
+                h.submit(&brief).map(Some)
             })
             .expect("a prompt always runs a turn");
         let reply = match first {
@@ -18451,6 +18553,10 @@ mod subagent_model_tests {
 // it closes and what it still cannot reach.
 mod clear;
 pub use clear::{ClearReport, clear_reply};
+
+// **The branch is the deliverable** — the brief's rule checked when a worktree child's turn ends,
+// and the line its parent reads when it ends dirty anyway. See the module's header.
+pub mod deliverable;
 
 #[cfg(test)]
 mod queue_e2e;

@@ -898,6 +898,22 @@ fn the_worktree_path_and_branch_are_pure() {
     assert_eq!(worktree_branch("task-start"), "agent/task-start");
 }
 
+/// **The brief names the tree, the branch, and the rule** — the report of 2026-10-12: *"the
+/// pattern is now so routine that it belongs in the brief rather than in the salvage."*
+#[test]
+fn the_worktree_brief_says_the_branch_is_the_deliverable() {
+    let b = worktree_brief("/repo/.claude/worktrees/agent-x", "agent/x");
+    assert!(b.contains("`/repo/.claude/worktrees/agent-x`"), "{b}");
+    assert!(b.contains("`agent/x`"), "{b}");
+    assert!(b.contains("the branch is the deliverable"), "{b}");
+    assert!(
+        b.contains("commit your work to it as you go and before you finish"),
+        "{b}"
+    );
+    assert!(b.contains("`git status --porcelain` prints nothing"), "{b}");
+    assert!(b.contains("names the commit(s)"), "{b}");
+}
+
 /// **A `task_start` whose path already exists is refused by name, and nothing is
 /// spawned.**
 ///
