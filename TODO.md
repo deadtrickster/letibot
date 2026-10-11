@@ -1979,6 +1979,33 @@ Tests: `crates/harnessd/tests/clear_context.rs` — todos (both authors), a back
 3. leticl has no `cleared` row code yet (its `+compaction-row-codes+`), and the head does not fold the `cleared` note the way `COMPACTION_ROWS` folds `reseated`.
 4. Not live-tested on a metered provider: the first round after a clear should replace the unmeasured anchor with the provider's count, as it does after a compaction.
 
+## R82 — A row that is only waiting on a job is nagged every window, and nothing lets the model say so — **BUILT on `todo-wait-on` 2026-10-11 (not merged)**
+
+The operator: *"poor pg-noop gets hammered by this 'session · Todo CRITERION, NOT A TASK …' it
+usually replies blabla job is running, waiting. the todo was created before conditioned todo. lets
+give it a door to mark existing todos as dependent on an agent or a job"*. A `needs` job edge already
+silenced the check, but only on a row the model restated, never on the operator's, and nothing told
+the model it existed.
+
+**Landed on the branch:**
+
+1. `todo_write`'s `wait_on` — `{"wait_on": [{"content": "<row, quoted>", "job": "j123"}]}` (handle
+   or name), `"child": "<session id>"` in place of `job`, or `"detach": true`. Reaches the model's
+   rows AND the operator's; writes a `TodoNeed::Job`/`Child` onto `needs` and never touches words or
+   status; detach takes off job/child edges and leaves row edges. The job must be this session's and
+   running (`jobs::resolve_job_in`), the child this session's (`ChildTodos::own_child`); otherwise
+   refused by name. A call of its own. Board door: `TodoBoard::set_waits`.
+2. The plan-check's advice line offers it, with a real handle, when the named row is the model's or
+   the operator's and this session has a running job or live subagent (`RunningJobs` now carries
+   all of the session's running jobs and its own subagents — `Harness::running_jobs`). Same line,
+   so the head's notice fold is unchanged.
+3. R79 reads `needs`; an attached wait IS a `needs` entry, so a completion it waits on is the plan's.
+
+**Left:** restating one of the model's own rows in `todos` without the wait takes it off (the
+upsert's contract — the reply says so). The parent's and queue's halves cannot take a wait.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the

@@ -7309,6 +7309,27 @@ impl Harness {
                 }
             }
         }
+        // **And what this session COULD wait on, for the check's offer of `wait_on`** — every job
+        // its own process table says is running, and every child it spawned that the journal says
+        // is still going. Adding a running job that no row names changes no row's reading (a row's
+        // edge asks about its own handle), and the live table is the first look `job_fate` takes,
+        // so the two cannot disagree about a job that runs. The children are this session's alone —
+        // `child_sessions` is the daemon's whole journal — because an offer to wait on somebody
+        // else's child is an offer `wait_on` would refuse.
+        if let Some(host) = self.runtime.backend.processes() {
+            for view in host.jobs() {
+                if view.state.is_running() {
+                    jobs = jobs.running(view.id.0);
+                }
+            }
+        }
+        for entry in self.tasks.snapshot() {
+            if entry.parent == self.cfg.session_id
+                && matches!(entry.state.as_str(), "opening" | "running")
+            {
+                jobs = jobs.subagent(entry.name);
+            }
+        }
         jobs
     }
 

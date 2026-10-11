@@ -150,11 +150,17 @@ fn pick_job(jobs: &[JobView], asked: &str) -> Picked {
 /// the row beside the id precisely so that it can be used. The match is exact and never fuzzy —
 /// a near miss is guessed at only in the refusal, where guessing costs nothing.
 fn resolve_job(host: &dyn ProcessHost, asked: &str) -> Result<JobView, Invocation> {
-    let jobs = host.jobs();
-    match pick_job(&jobs, asked) {
+    resolve_job_in(&host.jobs(), asked)
+}
+
+/// [`resolve_job`] over a table already in hand — the one rule, for a caller that is not a job
+/// tool: `todo_write`'s `wait_on` names a job the same way `job_output` does, and a second
+/// spelling of *which job did the caller mean* would be the one that disagreed.
+pub(crate) fn resolve_job_in(jobs: &[JobView], asked: &str) -> Result<JobView, Invocation> {
+    match pick_job(jobs, asked) {
         Picked::One(i) => Ok(jobs[i].clone()),
-        Picked::Unknown => Err(unknown_job(&jobs, asked)),
-        Picked::Ambiguous(ids) => Err(ambiguous_job(&jobs, asked, &ids)),
+        Picked::Unknown => Err(unknown_job(jobs, asked)),
+        Picked::Ambiguous(ids) => Err(ambiguous_job(jobs, asked, &ids)),
     }
 }
 

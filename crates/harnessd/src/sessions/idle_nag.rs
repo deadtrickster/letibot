@@ -942,3 +942,44 @@ fn an_operator_add_is_a_new_open_row_on_their_half_and_nothing_else() {
         "only the operator's half"
     );
 }
+
+/// **The pg-noop case: an operator's `in_progress` CRITERION, marked waiting on the gate job with
+/// `wait_on` — silent while it runs, asked about again when it ends.**
+///
+/// The operator: *"poor pg-noop gets hammered by this … it usually replies blabla job is running,
+/// waiting … lets give it a door to mark existing todos as dependent on an agent or a job"*. The
+/// door is the board's (`TodoBoard::set_waits`); this is the arming decision reading what it
+/// wrote, with no code that knows where the edge came from.
+#[test]
+fn a_wait_attached_to_an_operators_row_keeps_the_check_silent_until_the_job_ends() {
+    use letibot_tools::builtins::todo::{TodoBoard, Wait};
+    let criterion = "CRITERION, NOT A TASK — open until the gate is green";
+    let board = TodoBoard::new(vec![row(criterion, TodoStatus::InProgress)]);
+    let running = RunningJobs::none().running("j123");
+    assert!(
+        nag_should_arm(&board.snapshot(), None, &no_children(), &running),
+        "before the wait the row is nagged while the job runs — the defect"
+    );
+    board
+        .set_waits(&[(
+            criterion.to_string(),
+            Wait::On(letibot_tokencore::store::TodoNeed::Job {
+                handle: "j123".into(),
+            }),
+        )])
+        .expect("the operator's row takes a wait");
+    let plan = board.snapshot();
+    assert_eq!(
+        plan[0].status,
+        TodoStatus::InProgress,
+        "their status is untouched"
+    );
+    assert!(
+        !nag_should_arm(&plan, None, &no_children(), &running),
+        "and while the job runs the check arms nothing"
+    );
+    assert!(
+        nag_should_arm(&plan, None, &no_children(), &no_jobs()),
+        "and once it has ended the row is asked about again"
+    );
+}

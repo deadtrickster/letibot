@@ -144,6 +144,16 @@ impl super::ChildTodos for FakeChildren {
         self.board.upsert_parent(rows, &by)?;
         Ok(self.board.snapshot())
     }
+
+    /// One child of this session, `s-1-sub-2`, and nothing else — the parentage the real
+    /// resolver checks, reduced to the one answer each test needs.
+    fn own_child(&self, asked: &str) -> Result<String, String> {
+        if asked == "s-1-sub-2" {
+            Ok(asked.to_string())
+        } else {
+            Err(format!("`{asked}` is not one of this session's children"))
+        }
+    }
 }
 
 fn children_runtime(board: Arc<TodoBoard>) -> (ToolRuntime, Arc<TodoBoard>, Arc<FakeChildren>) {
@@ -170,3 +180,4 @@ mod children;
 mod nag;
 mod needs;
 mod quotes;
+mod wait_on;

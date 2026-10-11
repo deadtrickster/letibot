@@ -886,14 +886,28 @@ fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
         needs("deploy", TodoStatus::Pending, &["run the tests"]),
     ];
     let busy = RunningJobs::none().running("j2070").running("j2081");
+    // **The one thing a running job DOES add is the offer of `wait_on`** — a sentence appended to
+    // the advice, naming a handle this session holds — and it is taken off before comparing: the
+    // claim here is about the PLAN's reading, which the offer leaves alone.
+    let plan_of = |msg: Option<String>| {
+        msg.map(|m| match m.split_once(" If this row is only waiting") {
+            Some((before, after)) => {
+                let (_, rest) = after
+                    .split_once("until it ends.")
+                    .expect("the offer ends its sentence");
+                format!("{before}{rest}")
+            }
+            None => m,
+        })
+    };
     assert_eq!(
         nag_for(&flat),
-        nag_with(&flat, &ChildSessions::none(), &busy),
+        plan_of(nag_with(&flat, &ChildSessions::none(), &busy)),
         "no needs at all"
     );
     assert_eq!(
         nag_for(&edged),
-        nag_with(&edged, &ChildSessions::none(), &busy),
+        plan_of(nag_with(&edged, &ChildSessions::none(), &busy)),
         "row edges"
     );
 

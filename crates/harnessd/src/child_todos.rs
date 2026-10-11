@@ -282,6 +282,21 @@ impl ChildTodos for ParentTodos {
         }
         Ok(board.snapshot())
     }
+
+    /// **`wait_on`'s `child`: the caller's own child, or a refusal naming what it is instead** —
+    /// [`ParentTodos::resolve`] and the parentage predicate `upsert_child` keeps, and nothing
+    /// more: a wait reaches no board but the caller's own, so there is nothing to flush.
+    fn own_child(&self, asked: &str) -> Result<String, String> {
+        let brief = self.resolve(asked)?;
+        if brief.parent_session_id.as_deref() != Some(self.caller.as_str()) {
+            return Err(format!(
+                "`{}` is not one of this session's children, so nothing here would end the wait. {}",
+                brief.session_id,
+                self.held()
+            ));
+        }
+        Ok(brief.session_id)
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +402,24 @@ mod tests {
             why.contains("no session this daemon holds is `s-nope`"),
             "{why}"
         );
+    }
+
+    /// **`wait_on`'s child is the same predicate**: the caller's own child resolves to its full
+    /// id (the short form too), and a sibling's child is refused by name — a wait on a session
+    /// that is not this one's is a wait nothing here ends.
+    #[test]
+    fn a_wait_names_only_a_child_of_the_caller() {
+        let (_registry, _boards, resolver) = family();
+        assert_eq!(resolver.own_child("s-child-aaaa").unwrap(), "s-child-aaaa");
+        assert_eq!(resolver.own_child("…ild-bbbb").unwrap(), "s-child-bbbb");
+        let why = resolver
+            .own_child("s-other-child")
+            .expect_err("a sibling's child");
+        assert!(
+            why.contains("`s-other-child` is not one of this session's children"),
+            "{why}"
+        );
+        assert!(resolver.own_child("s-nope").is_err());
     }
 
     /// **The author is the CALLER's, stamped daemon-side** — `Parent <full session id>`, the

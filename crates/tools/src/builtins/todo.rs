@@ -281,6 +281,147 @@ impl TodoBoard {
         Ok(changed)
     }
 
+    /// **Attach a wait to a row already on the board, or take its waits off — the model's own rows
+    /// AND the operator's, in ONE all-or-nothing call** (`todo_write`'s `wait_on`).
+    ///
+    /// The operator, on the session it was asked for: *"poor pg-noop gets hammered by this
+    /// 'session · Todo CRITERION, NOT A TASK …' it usually replies blabla job is running,
+    /// waiting. the todo was created before conditioned todo. lets give it a door to mark existing
+    /// todos as dependent on an agent or a job"*. A row that waits on a job could already SAY so —
+    /// `needs` on a `todos` entry — but only when the model wrote the row and only by restating it,
+    /// and nothing reached a row the OPERATOR wrote: the one the check names first (R77), and the
+    /// one the model can only answer with *"the job is running"*, every window.
+    ///
+    /// **A wait is an EDGE and nothing else.** It goes on [`TodoItem::needs`] exactly as a
+    /// `{"kind": "job"}` need written by `todos` does, so everything that reads a plan's edges —
+    /// the check's narrowing (`waits_on_a_running_job`), the blocked line, and R79's delivery
+    /// decision, which asks whether the plan waits on a settling job — sees it with no code that
+    /// knows where it came from. **The row's words and its status are not touched**: on the
+    /// operator's row that is the whole of why this is allowed at all — it says *not now*, never
+    /// *not this* — and taking the wait off (`Wait::Detach`) leaves the row exactly as it was
+    /// before the wait went on.
+    ///
+    /// **Detach takes off the CHILD and JOB edges and leaves the ROW edges.** A row edge is the
+    /// plan's order, written by whoever wrote the plan; a job or a child is the *not now* this door
+    /// adds, and that is all it takes back.
+    ///
+    /// **The words are the key, across the two halves this door reaches.** A quote is resolved in
+    /// the model's half and the operator's together, and must fit exactly one row of the two: a
+    /// quote that fits none is refused with the rows that ARE there, and one that fits a row of
+    /// each is refused naming both — the house rule ([`resolve`]) one step wider. A parent's row and
+    /// the queue's are not reachable: their author rewrites their edges on its next write
+    /// ([`TodoBoard::upsert_parent`], [`TodoBoard::set_queue`]), so a wait put there would vanish
+    /// under the model — and the refusal says so by name rather than writing a silence that does
+    /// not last.
+    ///
+    /// **The handle is the CALLER's to have checked.** A need is only as good as the thing that
+    /// answers it, and whether a job or a child is this session's is not on a board — the tool
+    /// resolves it before it gets here (`TodoWriteTool::wait_on`).
+    ///
+    /// Returns how many rows on each half actually CHANGED — `(mine, theirs)` — and bumps the
+    /// version only when that is not zero, the rule every writer here keeps.
+    pub fn set_waits(&self, plan: &[(String, Wait)]) -> Result<(usize, usize), String> {
+        let mut model = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        let mut operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
+        // Resolve every quote BEFORE any row moves — see `set_states_on_both_halves` on ALL OR
+        // NOTHING.
+        let mut resolved: Vec<(bool, usize, &Wait)> = Vec::with_capacity(plan.len());
+        for (asked, wait) in plan {
+            let want = asked.trim();
+            let hits = |half: &[TodoItem]| -> Vec<usize> {
+                half.iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.content.trim() == want)
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            let (mine, theirs) = (hits(&model), hits(&operator));
+            match (mine.as_slice(), theirs.as_slice()) {
+                ([one], []) => resolved.push((true, *one, wait)),
+                ([], [one]) => resolved.push((false, *one, wait)),
+                ([], []) => {
+                    // **Say WHY a row that is on the board is not reachable**, when it is: a
+                    // parent's or the queue's row is there, and *no such row* about it would send
+                    // the model hunting for words it already quoted right.
+                    let elsewhere = |half: &Mutex<Vec<TodoItem>>| {
+                        half.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .iter()
+                            .any(|t| t.content.trim() == want)
+                    };
+                    if elsewhere(&self.parent) {
+                        return Err(format!(
+                            "`{want}` is a row your PARENT wrote, and its edges are the parent's:                              it restates them on its next write, so a wait put on it here would                              vanish under you. Say in your reply what it is waiting on."
+                        ));
+                    }
+                    if elsewhere(&self.queue) {
+                        return Err(format!(
+                            "`{want}` is the merge queue's row, written from the store on every                              pass — nothing on this board can make it wait."
+                        ));
+                    }
+                    let have: Vec<String> = model
+                        .iter()
+                        .chain(operator.iter())
+                        .map(|t| format!("`{}`", t.content.trim()))
+                        .collect();
+                    return Err(if have.is_empty() {
+                        format!(
+                            "no row says `{want}` — the board has no rows of yours or the operator's at all."
+                        )
+                    } else {
+                        format!(
+                            "no row of yours or the operator's says `{want}`. The rows are: {}",
+                            have.join(", ")
+                        )
+                    });
+                }
+                _ => {
+                    return Err(format!(
+                        "`{want}` is {} rows — {} of yours and {} of the operator's — so which one                          waits is not something this can know. Quote the one you mean exactly.",
+                        mine.len() + theirs.len(),
+                        mine.len(),
+                        theirs.len()
+                    ));
+                }
+            }
+        }
+        let (mut mine_moved, mut theirs_moved) = (0usize, 0usize);
+        for (is_mine, at, wait) in resolved {
+            let row = if is_mine {
+                &mut model[at]
+            } else {
+                &mut operator[at]
+            };
+            let changed = match wait {
+                Wait::On(need) => {
+                    if row.needs.contains(need) {
+                        false
+                    } else {
+                        row.needs.push(need.clone());
+                        true
+                    }
+                }
+                Wait::Detach => {
+                    let before = row.needs.len();
+                    row.needs
+                        .retain(|n| !matches!(n, TodoNeed::Job { .. } | TodoNeed::Child { .. }));
+                    row.needs.len() != before
+                }
+            };
+            if changed {
+                if is_mine {
+                    mine_moved += 1;
+                } else {
+                    theirs_moved += 1;
+                }
+            }
+        }
+        if mine_moved + theirs_moved > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok((mine_moved, theirs_moved))
+    }
+
     /// The operator's half alone, for a caller that needs to tell the two apart.
     pub fn operator_snapshot(&self) -> Vec<TodoItem> {
         self.operator
@@ -576,6 +717,16 @@ impl TodoBoard {
     }
 }
 
+/// **One `wait_on` entry, as the board applies it** — see [`TodoBoard::set_waits`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wait {
+    /// Wait on this — a [`TodoNeed::Job`] or a [`TodoNeed::Child`], already resolved to the full
+    /// handle by the caller. Attaching one the row already has is not a change.
+    On(TodoNeed),
+    /// Take the row's job and child waits off, and leave its row edges where they are.
+    Detach,
+}
+
 /// **One quote, resolved against one half of the board — and the house rule for a name.**
 ///
 /// `whose` is the phrase a refusal speaks with: `"your own"` or `"the operator's"`. Both readings
@@ -846,9 +997,17 @@ impl ChildSessions {
 /// has gone quiet; a job needs no steering — its settlement is already on its way to the model
 /// (`jobwatch` submits it as a turn of its own), so all the check has to know is whether the row's
 /// blocker is still there.
+///
+/// **And it carries this session's own live SUBAGENTS too, for one reader** — the check's offer of
+/// `wait_on` ([`unfinished_plan_for`]), which has to know whether there is anything this session
+/// could say a row waits on. A child's liveness for the EDGE is [`ChildSessions`]' and is not read
+/// from here; this set is only *what could be waited on*, scoped to the session asking, which the
+/// daemon-wide [`ChildSessions`] is not. One value rather than a sixth argument, because every
+/// caller of the check already builds this one per ask (`Harness::running_jobs`).
 #[derive(Debug, Clone, Default)]
 pub struct RunningJobs {
     live: BTreeSet<String>,
+    subagents: BTreeSet<String>,
 }
 
 impl RunningJobs {
@@ -870,6 +1029,30 @@ impl RunningJobs {
     /// narrowing both take.
     pub fn is_running(&self, handle: &str) -> bool {
         self.live.contains(handle)
+    }
+
+    /// **A subagent THIS session spawned that is still running**, by its full session id — what
+    /// `wait_on` could name as a `child`. See the type's doc for why it is here.
+    pub fn subagent(mut self, id: impl Into<String>) -> Self {
+        self.subagents.insert(id.into());
+        self
+    }
+
+    /// **Something this session could say a row waits on, if there is anything** — the field
+    /// `wait_on` takes it under (`job` or `child`) and its handle; a job before a subagent, and the
+    /// first of each in handle order, so the check's sentence is the same sentence for the same
+    /// facts.
+    pub fn something_to_wait_on(&self) -> Option<(&'static str, &str)> {
+        self.live
+            .iter()
+            .next()
+            .map(|h| ("job", h.as_str()))
+            .or_else(|| {
+                self.subagents
+                    .iter()
+                    .next()
+                    .map(|id| ("child", id.as_str()))
+            })
     }
 }
 
@@ -1196,6 +1379,27 @@ pub fn unfinished_plan_for(
              are stopping here deliberately, say why in your reply."
         }
     };
+    // **AND THE DOOR FOR A ROW THAT IS ONLY WAITING, when there is something it could wait on.**
+    // The operator, on pg-noop: *"poor pg-noop gets hammered by this … it usually replies blabla
+    // job is running, waiting"* — a row that is a CRITERION, open until a gate a job is running
+    // goes green, named every window and answered every window with the same sentence. The answer
+    // that ends that is `wait_on`, and the model will not reach for a door nobody named, so the
+    // check names it — with a real handle, the first one this session holds, so it can be sent as
+    // it stands. Only while there IS a job running or a subagent alive (otherwise there is nothing
+    // to wait on and the sentence would be noise), and only for the two authors `wait_on` reaches.
+    //
+    // **On the advice's own LINE, appended, and not a line of its own**: the head's notice fold
+    // (`tui`'s `folded_notice`) folds a `[todo check]` group only when every line after the
+    // bullet is the advice it recognises, so a new line here would unfold every check that
+    // carries it.
+    let offer = match (&next.by, jobs.something_to_wait_on()) {
+        (TodoBy::Model | TodoBy::Operator, Some((kind, handle))) => format!(
+            " If this row is only waiting on a running job or subagent, attach the wait instead of \
+             answering — `todo_write` {{\"wait_on\": [{{\"content\": \"<the text above>\", \
+             \"{kind}\": \"{handle}\"}}]}} — and this check stays quiet until it ends."
+        ),
+        _ => String::new(),
+    };
     // **AND WHAT CANNOT START IS SAID, not merely skipped.** A blocked row is invisible to the ask
     // — that is the whole point — so the model would otherwise learn nothing about the rows it
     // cannot be asked for, and a plan whose edges have gone stale would look like a shorter plan.
@@ -1218,7 +1422,7 @@ pub fn unfinished_plan_for(
     };
     Some((
         format!(
-            "{head}:\n  - {}{state}\n{advice}{waiting}",
+            "{head}:\n  - {}{state}\n{advice}{offer}{waiting}",
             next.content.trim(),
         ),
         next.content.clone(),
@@ -1755,6 +1959,21 @@ pub trait ChildTodos: Send + Sync {
         target: &str,
         rows: &[(String, TodoStatus, Vec<TodoNeed>)],
     ) -> Result<Vec<TodoItem>, String>;
+
+    /// **Whether `asked` names a child of the CALLER, and its full session id if so** — what
+    /// `wait_on`'s `child` resolves through, because a wait on a session that is not this one's
+    /// child is a wait nothing here will ever end. The same parentage the `target` door checks, and
+    /// the same accepted spellings (the full id, or the short `…tail` form). `Err` is the refusal,
+    /// written to be shown to the model as it stands.
+    ///
+    /// Defaulted to a refusal, so a resolver that does not know its children says so by name rather
+    /// than waving a guess through.
+    fn own_child(&self, asked: &str) -> Result<String, String> {
+        Err(format!(
+            "`{asked}` cannot be checked against this session's children — this runtime does not \
+             know them"
+        ))
+    }
 }
 
 /// The write tool. Holds the board; the harness holds the same `Arc`.
@@ -1850,7 +2069,17 @@ impl Tool for TodoWriteTool {
                — and the row is asked about once it is over. Use it for work that has to land \
                first: a row that pushes a branch waits on the job that tests it. This is an EDGE \
                and not a clock: a row that FIRES when a job ends is the operator's `when`, which \
-               is not yours to write.",
+               is not yours to write.\n\n`wait_on` marks a row ALREADY on the board — yours OR \
+               the operator's — as waiting on a running job or a subagent, without restating it: \
+               {\"wait_on\": [{\"content\": \"<the row, quoted exactly>\", \"job\": \"j123\"}]} \
+               (the handle or the name `job_list` prints), or \"child\": \"<the session id `task` \
+               handed back>\" in place of `job`. Use it when the check names a row you can only \
+               answer with *the job is still running*: while that job or subagent runs the check \
+               is SILENT about the row, and once it ends the row is asked about again. It changes \
+               no row's words or status — on the operator's row it only says *not now*. \
+               {\"content\": \"…\", \"detach\": true} takes the row's job and subagent waits \
+               off again. The job must be one of this session's and still running, the child one \
+               you spawned; anything else is refused by name. `wait_on` goes in a call of its own.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1945,6 +2174,27 @@ impl Tool for TodoWriteTool {
                             "required": ["content", "status"]
                         }
                     },
+                    "wait_on": {
+                        "type": "array",
+                        "description": "Rows ALREADY on the board — yours or the operator's, \
+                                        quoted exactly — that wait on a running job or a \
+                                        subagent you spawned. The check is silent about such a \
+                                        row until the job or subagent ends. Each entry has \
+                                        `content` and exactly one of `job` (a handle or name \
+                                        `job_list` prints), `child` (a session id `task` handed \
+                                        back) or `detach: true` (take its waits off). Words and \
+                                        status are never changed. A call of its own.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "job": {"type": "string"},
+                                "child": {"type": "string"},
+                                "detach": {"type": "boolean"}
+                            },
+                            "required": ["content"]
+                        }
+                    },
                     "target": {
                         "type": "string",
                         "description": "Write onto a CHILD session's board instead of \
@@ -1966,22 +2216,44 @@ impl Tool for TodoWriteTool {
         )
     }
 
-    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
         // **AN UNKNOWN TOP-LEVEL FIELD IS REFUSED BY NAME** — the same rule an entry's unknown
         // field keeps below, one level up. This call has three fields a model confuses (`todos`,
         // `update`, `operator`) and a fourth (`target`) that aims at another session's board, and a
         // field that is silently ignored is exactly how a wrong write becomes a quiet one.
         if let Some(obj) = args.as_object() {
             for key in obj.keys() {
-                if !matches!(key.as_str(), "todos" | "update" | "operator" | "target") {
+                if !matches!(
+                    key.as_str(),
+                    "todos" | "update" | "operator" | "target" | "wait_on"
+                ) {
                     return Invocation::failed(
                         format!("`{key}` is not an argument of `todo_write`"),
                         "**nothing was written.** The arguments are `todos` (the whole list), \
                          `update` (one of YOUR rows, quoted), `operator` (one of the OPERATOR's \
-                         rows, quoted) and `target` (a child's board).",
+                         rows, quoted), `target` (a child's board) and `wait_on` (a row, \
+                         quoted, that waits on a job or a subagent).",
                     );
                 }
             }
+        }
+        // **`wait_on` is a call of its own.** It attaches an edge to a row ALREADY on the board, so
+        // a `todos` beside it could add or restate that very row in the same breath — and which of
+        // the two edges then stands would be an accident of the order below. One call, one act.
+        if let Some(waits) = args.get("wait_on") {
+            for field in ["todos", "update", "operator", "target"] {
+                if args.get(field).is_some() {
+                    return Invocation::failed(
+                        format!("`wait_on` and `{field}` do not mix"),
+                        format!(
+                            "**nothing was written.** `wait_on` marks rows ALREADY on the board \
+                             as waiting; send `{field}` in a call of its own, before or after."
+                        ),
+                    );
+                }
+            }
+            let jobs = ctx.backend.processes().map(|host| host.jobs());
+            return self.wait_on(waits, jobs.as_deref());
         }
         // **A MISSING `todos` IS NOT A MISSING ARGUMENT ANY MORE.** `update` and `operator` name a
         // row on their own, which is the whole point of `update`; what is refused is a call that
@@ -2179,6 +2451,166 @@ impl Tool for TodoWriteTool {
                     .join(", ")
             ));
         }
+        Invocation::ok(out)
+    }
+}
+
+impl TodoWriteTool {
+    /// **`wait_on`: mark rows already on the board as waiting on a job or a subagent, or take that
+    /// off** — the tool's half of [`TodoBoard::set_waits`], which says what a wait is and why it may
+    /// reach the operator's rows.
+    ///
+    /// **The handle is checked HERE, against what this session actually has**, and that is the
+    /// difference from a `needs` entry in `todos`, which [`parse_need`] deliberately does not check:
+    /// a wait the check stays quiet about is a wait that had better END, and a handle this session
+    /// does not hold is one nothing will ever end — worse, `RunningJobs` reads an unknown handle
+    /// as a job that ENDED, so the row would not even be quiet. So a job must be one this session's
+    /// process table holds and still RUNNING (by its handle or the name it was started under, the
+    /// one rule `job_output` keeps — [`crate::builtins::jobs::resolve_job_in`]), and a child must be
+    /// one THIS session spawned ([`ChildTodos::own_child`]); anything else is refused by name and
+    /// nothing is written.
+    ///
+    /// `jobs` is the session's job table, or `None` when this backend has no process host. A
+    /// parameter rather than a read, so the rule is assertable over a table without a cgroup tree.
+    fn wait_on(&self, v: &Value, jobs: Option<&[crate::exec::JobView]>) -> Invocation {
+        let refused = |what: String, why: String| {
+            Invocation::failed(what, format!("**nothing was written.** {why}"))
+        };
+        let shape = || {
+            "`wait_on` is a list of {\"content\": \"<the row, quoted exactly>\", \"job\": \"<a \
+             handle or name `job_list` prints>\"}, or \"child\": \"<a session id `task` handed \
+             back>\" in place of `job`, or \"detach\": true to take the row's waits off."
+                .to_string()
+        };
+        let Some(list) = v.as_array() else {
+            return refused("`wait_on` needs to be a list".into(), shape());
+        };
+        if list.is_empty() {
+            return refused("`wait_on` is empty".into(), shape());
+        }
+        let mut plan: Vec<(String, Wait)> = Vec::with_capacity(list.len());
+        for (i, entry) in list.iter().enumerate() {
+            let n = i + 1;
+            let Some(obj) = entry.as_object() else {
+                return refused(format!("wait_on entry {n} is not an object"), shape());
+            };
+            for key in obj.keys() {
+                if !matches!(key.as_str(), "content" | "job" | "child" | "detach") {
+                    return refused(
+                        format!("wait_on entry {n} has an unknown field `{key}`"),
+                        shape(),
+                    );
+                }
+            }
+            let Some(content) = obj.get("content").and_then(|c| c.as_str()) else {
+                return refused(format!("wait_on entry {n} has no `content`"), shape());
+            };
+            let said: Vec<&str> = ["job", "child", "detach"]
+                .into_iter()
+                .filter(|k| obj.contains_key(*k))
+                .collect();
+            let [which] = said.as_slice() else {
+                return refused(
+                    format!(
+                        "wait_on entry {n} names {} of `job`, `child` and `detach`",
+                        said.len()
+                    ),
+                    "each entry says exactly ONE thing about its row: the job it waits on, the \
+                     child it waits on, or `\"detach\": true`. Send two entries for two waits."
+                        .into(),
+                );
+            };
+            let wait = match *which {
+                "detach" => {
+                    if obj.get("detach") != Some(&Value::Bool(true)) {
+                        return refused(
+                            format!("wait_on entry {n} has a `detach` that is not `true`"),
+                            shape(),
+                        );
+                    }
+                    Wait::Detach
+                }
+                "job" => {
+                    let Some(asked) = obj.get("job").and_then(|j| j.as_str()) else {
+                        return refused(
+                            format!("wait_on entry {n}'s `job` is not a string"),
+                            shape(),
+                        );
+                    };
+                    let Some(table) = jobs else {
+                        return refused(
+                            format!("`{asked}` cannot be waited on: this session runs no jobs"),
+                            "this backend has no process host, so there is no job here that could \
+                             end."
+                                .into(),
+                        );
+                    };
+                    let job = match crate::builtins::jobs::resolve_job_in(table, asked) {
+                        Ok(job) => job,
+                        Err(inv) => return inv,
+                    };
+                    if !job.state.is_running() {
+                        return refused(
+                            format!(
+                                "`{asked}` has already ended ({}) — there is nothing to wait for",
+                                job.state.word()
+                            ),
+                            format!(
+                                "read what it said with `job_output {}` and act on the row now.",
+                                job.id.0
+                            ),
+                        );
+                    }
+                    // **The full handle goes on the row**, whatever the call spelled: it is what
+                    // `job_fate` and `RunningJobs` are asked about, and a name is the agent's word
+                    // for a job while it is in the table — not a key that survives a restart.
+                    Wait::On(TodoNeed::Job { handle: job.id.0 })
+                }
+                _ => {
+                    let Some(asked) = obj.get("child").and_then(|c| c.as_str()) else {
+                        return refused(
+                            format!("wait_on entry {n}'s `child` is not a string"),
+                            shape(),
+                        );
+                    };
+                    let Some(children) = &self.children else {
+                        return refused(
+                            format!("`{asked}` cannot be waited on: this session has no children"),
+                            "this runtime seats `todo_write` without a child resolver, so no \
+                             session here was spawned by this one."
+                                .into(),
+                        );
+                    };
+                    match children.own_child(asked) {
+                        Ok(id) => Wait::On(TodoNeed::Child { id }),
+                        Err(why) => {
+                            return refused(
+                                format!("`{asked}` cannot be waited on: {why}"),
+                                shape(),
+                            );
+                        }
+                    }
+                }
+            };
+            plan.push((content.to_string(), wait));
+        }
+        let (mine, theirs) = match self.board.set_waits(&plan) {
+            Ok(counts) => counts,
+            Err(why) => {
+                return refused(
+                    format!("nothing was marked: {why}"),
+                    "quote a row's `content` exactly as the list shows it.".into(),
+                );
+            }
+        };
+        let mut out = render(&self.board.snapshot());
+        out.push_str(&format!(
+            "\nwaits changed on {mine} of your rows and {theirs} of the operator's (the rest \
+             already said that). A row waiting on a running job or a subagent is not asked about \
+             until it ends; then it is asked about again. Its words and status are unchanged. \
+             Restating one of YOUR rows in `todos` restates its `needs` too, so a `todos` entry \
+             without the wait takes it off.\n"
+        ));
         Invocation::ok(out)
     }
 }
