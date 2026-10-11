@@ -1363,7 +1363,12 @@ impl TurnEngine {
             max_output_tokens,
         };
         let mut urgent: Option<String> = None;
+        // The first-token clock (TODO R81): the first delta of any kind, against the turn's start.
+        let mut first_byte_ms: Option<u64> = None;
         let mut on_delta = |d: &Delta| -> StreamFlow {
+            if first_byte_ms.is_none() {
+                first_byte_ms = Some(started.elapsed().as_millis() as u64);
+            }
             match d {
                 Delta::Text(t) => sink.emit(TurnEvent::Delta {
                     turn_id: turn_id.clone(),
@@ -1495,7 +1500,7 @@ impl TurnEngine {
             },
         );
         if !verdict.may_record_as_success() {
-            let metrics = self.messages_metrics(
+            let mut metrics = self.messages_metrics(
                 &turn_id,
                 &model,
                 session,
@@ -1504,6 +1509,7 @@ impl TurnEngine {
                 finish_reason,
                 backend,
             );
+            metrics.first_byte_ms = first_byte_ms;
             sink.emit(TurnEvent::TurnFinished {
                 turn_id: turn_id.clone(),
                 finish_reason,
@@ -1583,7 +1589,7 @@ impl TurnEngine {
             return Err(e.into());
         }
 
-        let metrics = self.messages_metrics(
+        let mut metrics = self.messages_metrics(
             &turn_id,
             &model,
             session,
@@ -1592,6 +1598,7 @@ impl TurnEngine {
             finish_reason,
             backend,
         );
+        metrics.first_byte_ms = first_byte_ms;
         sink.emit(TurnEvent::TurnFinished {
             turn_id: turn_id.clone(),
             finish_reason,
@@ -1681,6 +1688,7 @@ impl TurnEngine {
             },
             cost,
             wall_ms,
+            first_byte_ms: None,
         }
     }
 
@@ -1706,6 +1714,9 @@ impl TurnEngine {
             }
             None => CompletionRequest::new(prompt, self.sampling.clone()),
         };
+        // The first-token clock (TODO R81): from the request, so a queue at the server is in it.
+        let posted = Instant::now();
+        let mut first_byte_ms: Option<u64> = None;
         let body = http::post_json(&self.endpoint, "/completion", &request.to_json())?;
 
         let mut acc = IdAccumulator::new();
@@ -1813,6 +1824,9 @@ impl TurnEngine {
                 _ => "",
             };
             let mut halt = false;
+            if first_byte_ms.is_none() && !fresh.is_empty() {
+                first_byte_ms = Some(posted.elapsed().as_millis() as u64);
+            }
 
             for id in fresh {
                 let role = self.control.role_of(id);
@@ -1909,7 +1923,8 @@ impl TurnEngine {
             None => return Err(TurnFailure::Stream(StreamError::NoFinalChunk)),
         };
 
-        let outcome = acc.finish(final_chunk, abort)?;
+        let mut outcome = acc.finish(final_chunk, abort)?;
+        outcome.first_byte_ms = first_byte_ms;
         Ok((outcome, trip))
     }
 
@@ -1952,6 +1967,7 @@ impl TurnEngine {
             prefix_check,
             cost: cost_from(self.caps.meter, t, prompt_tokens, wall_ms),
             wall_ms,
+            first_byte_ms: outcome.first_byte_ms,
         }
     }
 }
@@ -2060,6 +2076,7 @@ mod tests {
             prefix_check: PrefixCheck::FirstTurn,
             cost: cost_from(letibot_backend::Meter::WallClock, &Default::default(), 1, 0),
             wall_ms: 0,
+            first_byte_ms: None,
         };
         let _ = TurnOk::new(
             "t".into(),

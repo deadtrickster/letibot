@@ -92,6 +92,11 @@ pub struct TurnMetrics {
 
     pub cost: TurnCost,
     pub wall_ms: u64,
+    /// **Time to the first generated token**, ms from the request — `docs/metrics.md` §4 #2a,
+    /// measured nowhere before (TODO R81). Local: from the `/completion` post to the first frame
+    /// that carried an id. Cloud: from the request to the first delta. `None` when nothing was
+    /// generated, which is not the same as instant.
+    pub first_byte_ms: Option<u64>,
 }
 
 impl TurnMetrics {
@@ -252,6 +257,7 @@ mod tests {
             prefix_check: PrefixCheck::FirstTurn,
             cost: cost_from(Meter::WallClock, &Timings::default(), prompt, 150),
             wall_ms: 150,
+            first_byte_ms: None,
         }
     }
 

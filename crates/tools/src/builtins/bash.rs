@@ -1069,6 +1069,10 @@ impl Tool for Bash {
             ),
         };
 
+        // The numbers behind the clause, for the tool call's metrics row (TODO R81).
+        if let Some(u) = job.as_deref().and_then(|j| j.memory_used()) {
+            crate::exec::scope::note_memory(u);
+        }
         if !ctx.tty
             && let Some(note) = job.as_deref().and_then(|j| memory_note(j, &self.memory))
         {

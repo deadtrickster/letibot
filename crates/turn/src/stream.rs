@@ -300,6 +300,9 @@ pub struct StreamOutcome {
     pub last_progress: Option<PromptProgress>,
     /// Set when the accumulator, not the server, ended the turn.
     pub aborted: Option<AbortCause>,
+    /// Ms from the request to the first frame that carried an id — set by the engine, which
+    /// holds the clock (TODO R81).
+    pub first_byte_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +457,7 @@ impl IdAccumulator {
             final_chunk,
             last_progress: self.last_progress,
             aborted,
+            first_byte_ms: None,
         })
     }
 }

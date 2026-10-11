@@ -411,6 +411,25 @@ pub struct MemoryUse {
     pub oom_kills: u64,
 }
 
+thread_local! {
+    /// The last foreground command's memory on THIS thread — see [`note_memory`].
+    static LAST: std::cell::Cell<Option<MemoryUse>> = const { std::cell::Cell::new(None) };
+}
+
+/// **A command's memory, left for whoever ran the tool call on this thread to read** — the
+/// metrics row's peak and cap (TODO R81, `docs/metrics.md` §4 #3). A side channel rather than a
+/// field on `ToolResult`, which has a hundred and eighty constructors and no other use for it:
+/// `bash` runs its foreground wait on the thread that invoked it, so the invoker takes this the
+/// moment the call returns ([`take_memory`]) and nothing else can be holding it.
+pub fn note_memory(u: MemoryUse) {
+    LAST.with(|c| c.set(Some(u)));
+}
+
+/// What [`note_memory`] left on this thread, once.
+pub fn take_memory() -> Option<MemoryUse> {
+    LAST.with(|c| c.take())
+}
+
 impl MemoryUse {
     /// Whether the cap is what ended the command.
     pub fn killed_at_cap(&self) -> bool {
