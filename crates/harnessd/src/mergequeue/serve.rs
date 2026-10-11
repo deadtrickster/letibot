@@ -249,6 +249,21 @@ impl RepoQueue {
         let now = gate::now_ms();
         let me = self.me().to_string();
         let mut moved = false;
+        // **A rewritten target supersedes the reviews of its old tips** (R76 item 4) — before
+        // anything else reads them, so a stale one is neither claimed nor raised again.
+        for r in self.store.review_rows(Some(&self.key))? {
+            if r.kind == ReviewKind::Target
+                && matches!(
+                    r.state,
+                    ReviewState::Waiting
+                        | ReviewState::Reviewing
+                        | ReviewState::Blocked
+                        | ReviewState::CannotDecide
+                )
+            {
+                moved |= self.supersede_if_rewritten(&r)?;
+            }
+        }
         let rows = self.store.review_rows(Some(&self.key))?;
         let target_default = settings::target_for(&self.repo, settings);
 
@@ -468,6 +483,46 @@ impl RepoQueue {
             );
         }
         Ok(false)
+    }
+
+    /// **The review of a red tip the target no longer holds** (R76 item 4). An amend, a
+    /// force-push or a reset leaves the target's tip NOT a descendant of the head the review was
+    /// opened on — or the head is gone altogether (pg-noop, 2026-10-11: `red-main-ec3cb01e8a6f`
+    /// sat `blocked` on *"fatal: unable to read tree"* after `main` was amended from `ec3cb01` to
+    /// `62b0296`). Such a review judges a history nobody has; it is withdrawn, saying so, and the
+    /// new tip is gated by the health pass like any change of the target. A tip that merely moved
+    /// FORWARD keeps its review: the red may still be in it.
+    fn supersede_if_rewritten(&self, r: &ReviewRow) -> Result<bool, StoreError> {
+        if r.target.is_empty() || r.head_sha.is_empty() {
+            return Ok(false);
+        }
+        let Some(tip) = git::branch_head(&self.repo, &r.target) else {
+            return Ok(false);
+        };
+        if tip == r.head_sha {
+            return Ok(false);
+        }
+        let exists = git::rev_parse(&self.repo, &r.head_sha).is_some();
+        if exists && git::is_ancestor(&self.repo, &r.head_sha, &tip).unwrap_or(true) {
+            return Ok(false);
+        }
+        let me = self.me().to_string();
+        let why = format!(
+            "superseded: the target was rewritten from {} to {tip}{} — `{}` no longer holds the \
+             tip this review was opened on, so it judges nothing; the new tip is gated instead",
+            r.head_sha,
+            if exists {
+                ""
+            } else {
+                " (that commit no longer exists)"
+            },
+            r.target
+        );
+        let mut mv = Move::new(&me, why).set("owner", "").clear("deadline_ms");
+        if r.state == ReviewState::Reviewing {
+            mv = mv.owned_by(r.owner.clone());
+        }
+        self.review_to(r, ReviewState::Withdrawn, mv)
     }
 
     /// **Raise a review that cannot run** (decision 4) — `blocked`, at high severity.

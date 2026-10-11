@@ -811,6 +811,89 @@ fn a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_no
     assert_eq!(w.tip(), tip);
 }
 
+/// **An amended target supersedes the review of its old red tip** (R76 item 4). FAILS before
+/// R76: the review of the amended-away tip stayed open — and, once its commit was gone, `blocked`
+/// on *"fatal: unable to read tree"* (pg-noop's `red-main-ec3cb01e8a6f`). After: withdrawn as
+/// `superseded: the target was rewritten from X to Y`, and the new tip is gated.
+#[test]
+fn an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_one() {
+    let w = World::new("amend");
+    let red = commit(&w.repo, "broken", "x\n", "a commit that breaks the gate");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let rows = w.store().review_rows(Some(&w.key())).unwrap();
+    let old = rows
+        .iter()
+        .find(|r| r.kind == ReviewKind::Target)
+        .expect("the red tip is reviewed")
+        .clone();
+    assert_eq!(old.head_sha, red);
+    // A review of a commit that no longer exists at all, blocked the way pg-noop's was.
+    w.store()
+        .enqueue_review(
+            &NewReview {
+                id: "red-main-gone".into(),
+                repository: w.key(),
+                target: "main".into(),
+                kind: ReviewKind::Target,
+                session_id: String::new(),
+                branch: "main".into(),
+                worktree: None,
+                base_sha: String::new(),
+                head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                brief: "red".into(),
+                priority: MergePriority::Urgent,
+                fixes: None,
+                evidence: "red".into(),
+            },
+            "test",
+            gate::now_ms(),
+        )
+        .unwrap();
+    assert!(
+        w.store()
+            .move_review(
+                "red-main-gone",
+                ReviewState::Waiting,
+                ReviewState::Blocked,
+                &Move::new("test", "git checkout …: fatal: unable to read tree"),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+    // The amend: same tree, new commit — the old tip is no longer `main`'s history.
+    sh(
+        &w.repo,
+        &["commit", "-q", "--amend", "-m", "the same break, amended"],
+    );
+    let amended = w.tip();
+    assert_ne!(amended, red);
+    run(&q, 1);
+    let s = w.store();
+    let was = s.review_row(&old.id).unwrap().unwrap();
+    assert_eq!(was.state, ReviewState::Withdrawn, "{was:?}");
+    let moves = s.transitions("review", &old.id).unwrap();
+    let why = &moves.last().unwrap().why;
+    assert!(
+        why.starts_with(&format!(
+            "superseded: the target was rewritten from {red} to {amended}"
+        )),
+        "{why}"
+    );
+    let gone = s.review_row("red-main-gone").unwrap().unwrap();
+    assert_eq!(gone.state, ReviewState::Withdrawn, "{gone:?}");
+    let h = s.target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.sha, amended, "the new tip was gated");
+    assert_eq!(h.state, HealthState::Red);
+    assert!(
+        s.review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .any(|r| r.kind == ReviewKind::Target && r.head_sha == amended && r.state.is_open()),
+        "the new red tip is the one under review"
+    );
+}
+
 // ===== The review queue's upkeep =====
 
 /// **A reviewer has a deadline; attempts are counted; the third is a raise, not a fourth**
