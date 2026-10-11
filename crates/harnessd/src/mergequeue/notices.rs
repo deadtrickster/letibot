@@ -71,6 +71,19 @@ pub fn health(h: &TargetHealth) -> String {
         first.push_str(lacks);
     }
     match h.state {
+        H::Blocked if h.evidence.starts_with(super::gate::GATE_KILLED) => format!(
+            "The merge queue CANNOT JUDGE {at}: {}.\n\n{first}\n\nThis is not the code being red \
+             — the gate's step was killed before it judged anything — but nothing lands on `{}` \
+             until it is gated again. If it was the memory cap, that is the operator's \
+             `[memory] gate` in providers.toml; once there is room, gate the tip again. \
+             {TOOL_WAYS}",
+            h.evidence
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('.'),
+            h.target,
+        ),
         H::Blocked if h.evidence.starts_with(GATE_SETUP_FAILED) => format!(
             "The merge queue CANNOT JUDGE {at}: {}.\n\n{first}\n\nThis is not the code being red \
              — the gate never got to judge it — but nothing lands on `{}` until it does. Fix the \

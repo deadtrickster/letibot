@@ -60,6 +60,28 @@ pub const INSTALL_MARK: &str = "install-gate-build";
 /// 16 GiB would starve a release build on one and leave the other with nothing.
 pub const GATE_MEMORY_DEFAULT: Amount = Amount::Fraction(0.5);
 
+/// **The clause a target's evidence (or a branch's row) leads with when its gate's step was
+/// killed before it judged the code** — at the gate's memory cap, or by a signal from outside.
+/// Read like [`super::setup::GATE_SETUP_FAILED`]: the tip is UNJUDGED, not red.
+pub const GATE_KILLED: &str = "the gate's step was killed before it could judge the code";
+
+/// **What a step killed at the gate's cap is said to be** — the cap, the peak, how it was known,
+/// and the line that raises it.
+pub(crate) fn killed_at_cap_words(step: &str, clause: &str, how: &str, leftover: usize) -> String {
+    let left = if leftover > 0 {
+        format!(" {leftover} process(es) were still running in it when it ended.")
+    } else {
+        String::new()
+    };
+    format!(
+        "{GATE_KILLED}: `{step}` was KILLED at the gate's memory cap ({clause}) — {how}.{left} It \
+         ran out of the memory the gate gives a step, which says nothing about the code: the tip \
+         is UNJUDGED, not red. The cap is `[memory] gate` in providers.toml (unset, it is half of \
+         what is free when the gate starts); raise it — a size such as `gate = \"40G\"`, or a \
+         larger fraction of what is free — and gate it again"
+    )
+}
+
 static GATE_MEMORY: std::sync::OnceLock<Ask> = std::sync::OnceLock::new();
 
 /// **`[memory] gate`, set once at daemon start** (`cli.rs`). Process-wide rather than a field
@@ -110,13 +132,121 @@ enum StepMemory {
     Unknown,
 }
 
+/// **How close to its cap a step's peak has to be for a red step that showed no failing code to
+/// be read as killed at the cap** — 95%.
+///
+/// The kernel's own `oom_kill` count is the proof, and it is read first. This is the second
+/// reading, for the death the counter does not see: letibot's own `main` at 79c32c1, 2026-10-12,
+/// went RED with `peak 24.1 GiB of a 24.9 GiB cap` (96.8%), 128 processes still running in the
+/// step's cgroup, its output ending in compile warnings — no test result, no `error:` — and an
+/// `oom_kill` of 0. A cargo that died with its rustc's still compiling was not judging the code,
+/// and a step whose peak sat within 5% of its cap was out of the memory the gate gives it.
+pub const NEAR_CAP_PERCENT: u64 = 95;
+
+/// **How the step's leader ended** — its own exit code, or the signal that ended it. Kept on the
+/// row because a cargo killed by `SIGKILL` says nothing on its way out, and a red step whose exit
+/// is not recorded cannot be told from a red step that judged the code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepExit {
+    Code(i32),
+    Signal(i32),
+}
+
+impl StepExit {
+    fn of(status: std::process::ExitStatus) -> StepExit {
+        use std::os::unix::process::ExitStatusExt;
+        match (status.code(), status.signal()) {
+            (Some(c), _) => StepExit::Code(c),
+            (None, Some(s)) => StepExit::Signal(s),
+            (None, None) => StepExit::Code(-1),
+        }
+    }
+
+    fn clause(&self) -> String {
+        match self {
+            StepExit::Code(c) => format!("exit code {c}"),
+            StepExit::Signal(s) => format!("killed by signal {s}{}", signal_name(*s)),
+        }
+    }
+}
+
+fn signal_name(s: i32) -> &'static str {
+    match s {
+        libc::SIGKILL => " (SIGKILL)",
+        libc::SIGTERM => " (SIGTERM)",
+        libc::SIGINT => " (SIGINT)",
+        libc::SIGSEGV => " (SIGSEGV)",
+        libc::SIGABRT => " (SIGABRT)",
+        libc::SIGBUS => " (SIGBUS)",
+        _ => "",
+    }
+}
+
+/// **Why a step that did not pass did not pass** — the classifier between *the code is red* and
+/// *the gate could not judge it*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedCause {
+    /// The step judged the code and it failed.
+    Code,
+    /// The step ran out of the gate's memory: the kernel killed in it at the cap, or it died
+    /// within [`NEAR_CAP_PERCENT`] of the cap without the code ever failing. The words say which.
+    KilledAtCap(String),
+    /// The step's leader was killed by a signal from outside the gate, far from its cap, before
+    /// any code failed.
+    KilledBySignal(i32),
+}
+
+/// Output that shows a kill rather than a verdict: cargo's own sentence for a child (a rustc, a
+/// test binary) that a signal ended.
+fn shows_a_kill(out: &str) -> bool {
+    out.contains("(signal: 9, SIGKILL") || out.contains("(signal: 15, SIGTERM")
+}
+
+/// **Read a red step** ([`RedCause`]). Pure, so the measured case is a unit test: `exit` is how
+/// the leader ended, `memory` what its cgroup's counters said, `out` the end of its output.
+fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
+    let code_failed = super::setup::shows_code_failing(out) && !shows_a_kill(out);
+    match memory {
+        StepMemory::Used(u) if u.cap.is_some() && u.killed_at_cap() => {
+            return RedCause::KilledAtCap(format!(
+                "the kernel killed {} process(es) inside it at the cap",
+                u.oom_kills
+            ));
+        }
+        StepMemory::Used(u) if !code_failed && u.near_cap() => {
+            return RedCause::KilledAtCap(format!(
+                "it died with its peak within {}% of the cap ({}) and no failing code in its                  output — the kernel counted no OOM kill in its cgroup, so what ended it is the                  memory it was out of, not a verdict",
+                100 - NEAR_CAP_PERCENT,
+                exit.clause()
+            ));
+        }
+        _ => {}
+    }
+    match exit {
+        StepExit::Signal(s) if !code_failed => RedCause::KilledBySignal(s),
+        _ => RedCause::Code,
+    }
+}
+
+trait NearCap {
+    fn near_cap(&self) -> bool;
+}
+
+impl NearCap for MemoryUse {
+    fn near_cap(&self) -> bool {
+        self.cap.is_some_and(|cap| {
+            cap > 0 && self.peak.saturating_mul(100) >= cap.saturating_mul(NEAR_CAP_PERCENT)
+        })
+    }
+}
+
 impl StepMemory {
     fn killed_at_cap(&self) -> bool {
         matches!(self, StepMemory::Used(u) if u.cap.is_some() && u.killed_at_cap())
     }
 
     /// The line the row's evidence ends with.
-    fn evidence(&self, leftover: usize) -> Option<String> {
+    fn evidence(&self, leftover: usize, exit: Option<StepExit>) -> Option<String> {
         let mut line = match self {
             StepMemory::Used(u) if self.killed_at_cap() => format!(
                 "[gate memory: KILLED at the gate's cap — {}; the kernel killed {} process(es) \
@@ -128,8 +258,14 @@ impl StepMemory {
             StepMemory::Uncapped(why) => {
                 format!("[gate memory: uncapped — the step ran in the daemon's own cgroup: {why}]")
             }
-            StepMemory::Unknown => return None,
+            StepMemory::Unknown => match exit {
+                Some(e) => return Some(format!("[step: {}]", e.clause())),
+                None => return None,
+            },
         };
+        if let Some(e) = exit {
+            line.push_str(&format!("\n[step: {}]", e.clause()));
+        }
         if leftover > 0 {
             line.push_str(&format!(
                 "\n[{leftover} process(es) the step left running were killed with its cgroup]"
@@ -208,43 +344,58 @@ pub fn run_with_memory(
         let started = now_ms();
         let (outcome, mem, leftover) = run_step(worktree, step, &target, ctl, &place);
         let elapsed = now_ms().saturating_sub(started);
-        let evidence = mem.evidence(leftover);
+        let exit = match &outcome {
+            StepEnd::Red(_, e) => Some(*e),
+            _ => None,
+        };
+        let evidence = mem.evidence(leftover, exit);
         let with_memory = |out: String| match &evidence {
             Some(line) if out.is_empty() => line.clone(),
             Some(line) => format!("{out}\n{line}"),
             None => out,
         };
-        // **Killed at the gate's cap is the gate's limit, not red code.** The step judged
-        // nothing about the branch: it ran out of the memory the gate gives it. So the row
-        // says `killed` and the verdict is the gate's own (`Infra` — the target blocked,
-        // the branch not failed), naming the cap, the peak, and the line that raises it.
-        let at_cap = mem.killed_at_cap();
         let (word, output, verdict) = match outcome {
-            StepEnd::Red(out) if at_cap => {
+            StepEnd::Red(out, exit) => {
+                // **A step that did not pass is read once more before it is called red.**
+                // Killed at the gate's cap — or near it with no failing code — is the gate's
+                // limit, and killed by a signal before any code failed is somebody else's hand:
+                // neither judged the branch. So the row says `killed` and the verdict is the
+                // gate's own (`Infra`: the target UNJUDGED and blocked, the branch not failed),
+                // naming the cap, the peak, and the line that raises it.
+                let cause = red_cause(&out, exit, &mem);
                 let clause = match &mem {
                     StepMemory::Used(u) => u.clause(),
-                    _ => String::new(),
+                    StepMemory::Uncapped(_) => "uncapped".to_string(),
+                    StepMemory::Unknown => "its memory could not be read".to_string(),
                 };
-                (
-                    MergeGateOutcome::Killed,
-                    with_memory(out),
-                    Some(GateVerdict::Infra(format!(
-                        "`{step}` was KILLED at the gate's memory cap ({clause}) — it ran out \
-                             of the memory the gate gives a step, which says nothing about the \
-                             code. Raise `[memory] gate` in providers.toml (a size, or a \
-                             fraction of what is free) and gate it again"
-                    ))),
-                )
+                let output = with_memory(out);
+                match cause {
+                    RedCause::Code => (
+                        MergeGateOutcome::Failed,
+                        output.clone(),
+                        Some(GateVerdict::Failed(format!("`{step}` failed:\n{output}"))),
+                    ),
+                    RedCause::KilledAtCap(how) => (
+                        MergeGateOutcome::Killed,
+                        output,
+                        Some(GateVerdict::Infra(killed_at_cap_words(
+                            step, &clause, &how, leftover,
+                        ))),
+                    ),
+                    RedCause::KilledBySignal(sig) => (
+                        MergeGateOutcome::Killed,
+                        output,
+                        Some(GateVerdict::Infra(format!(
+                            "{GATE_KILLED}: `{step}` was {} before any code failed ({clause}; \
+                             no OOM kill in its cgroup, so not by the gate's cap). It judged \
+                             nothing about the code — the tip is UNJUDGED, not red. Gate it \
+                             again once whatever killed it is gone",
+                            StepExit::Signal(sig).clause()
+                        ))),
+                    ),
+                }
             }
             StepEnd::Ok(out) => (MergeGateOutcome::Passed, with_memory(out), None),
-            StepEnd::Red(out) => {
-                let out = with_memory(out);
-                (
-                    MergeGateOutcome::Failed,
-                    out.clone(),
-                    Some(GateVerdict::Failed(format!("`{step}` failed:\n{out}"))),
-                )
-            }
             StepEnd::Deadline(out) => (
                 MergeGateOutcome::TimedOut,
                 with_memory(out),
@@ -293,7 +444,7 @@ pub fn run_with_memory(
 
 enum StepEnd {
     Ok(String),
-    Red(String),
+    Red(String, StepExit),
     Deadline(String),
     Stopped(String, String),
     Infra(String),
@@ -384,7 +535,7 @@ fn run_step(
                 } else if status.success() {
                     StepEnd::Ok(text)
                 } else {
-                    StepEnd::Red(text)
+                    StepEnd::Red(text, StepExit::of(status))
                 };
             }
             Ok(None) => {}
@@ -620,13 +771,166 @@ mod tests {
                 oom_kills,
             })
         };
-        let killed = used(1).evidence(0).unwrap();
+        let killed = used(1).evidence(0, None).unwrap();
         assert!(killed.contains("KILLED at the gate's cap — peak 64 MiB of a 64 MiB cap"));
         assert!(killed.contains("[memory] gate"));
         assert!(used(1).killed_at_cap());
-        let fine = used(0).evidence(2).unwrap();
+        let fine = used(0).evidence(2, None).unwrap();
         assert!(fine.starts_with("[gate memory: peak 64 MiB of a 64 MiB cap]"));
         assert!(fine.contains("2 process(es) the step left running"));
-        assert_eq!(StepMemory::Unknown.evidence(0), None);
+        assert_eq!(StepMemory::Unknown.evidence(0, None), None);
+    }
+
+    /// The measured case: letibot's `main` at 79c32c1, 2026-10-12, on lab2x1.
+    const GIB: u64 = 1 << 30;
+    fn measured(oom_kills: u64) -> StepMemory {
+        StepMemory::Used(MemoryUse {
+            cap: Some((24.9 * GIB as f64) as u64),
+            peak: (24.1 * GIB as f64) as u64,
+            oom_kills,
+        })
+    }
+    /// The end of that step's output: compile warnings, no test result, no `error:`.
+    const ENDED_IN_WARNINGS: &str = "warning: function `answer_frames` is never used\n\
+        warning: `letibot-tui` (lib test) generated 17 warnings (4 duplicates)\n";
+
+    /// **A cargo that died at 96.8% of its cap with its compiles still running is the gate's
+    /// limit, not red code** — whether its leader ended by `SIGKILL` or by a code, and although
+    /// the kernel counted no OOM kill.
+    #[test]
+    fn the_measured_death_near_the_cap_is_killed_at_the_cap_not_red() {
+        for exit in [StepExit::Signal(libc::SIGKILL), StepExit::Code(101)] {
+            let cause = red_cause(ENDED_IN_WARNINGS, exit, &measured(0));
+            let RedCause::KilledAtCap(how) = &cause else {
+                panic!("{exit:?}: {cause:?}");
+            };
+            assert!(
+                how.contains("within 5% of the cap") && how.contains("no OOM kill"),
+                "{how}"
+            );
+        }
+        let words = killed_at_cap_words(
+            "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture",
+            &match measured(0) {
+                StepMemory::Used(u) => u.clause(),
+                _ => unreachable!(),
+            },
+            "it died near the cap",
+            128,
+        );
+        assert!(words.starts_with(GATE_KILLED), "{words}");
+        assert!(
+            words.contains("KILLED at the gate's memory cap (peak 24.1 GiB of a 24.9 GiB cap)")
+                && words.contains("128 process(es) were still running")
+                && words.contains("UNJUDGED, not red")
+                && words.contains("`[memory] gate` in providers.toml"),
+            "{words}"
+        );
+        let line = measured(0)
+            .evidence(128, Some(StepExit::Signal(libc::SIGKILL)))
+            .unwrap();
+        assert_eq!(
+            line,
+            "[gate memory: peak 24.1 GiB of a 24.9 GiB cap]\n[step: killed by signal 9 \
+             (SIGKILL)]\n[128 process(es) the step left running were killed with its cgroup]"
+        );
+    }
+
+    /// The kernel's own count is the proof, and outranks the output: a rustc it killed makes
+    /// cargo print `could not compile`, which is not the code failing.
+    #[test]
+    fn an_oom_kill_counted_in_the_cgroup_is_killed_at_the_cap_whatever_the_output_says() {
+        let out = "error: could not compile `letibot-tui` (lib test)\n\nCaused by:\n  process \
+                   didn't exit successfully: `rustc …` (signal: 9, SIGKILL: kill)\n";
+        assert!(matches!(
+            red_cause(out, StepExit::Code(101), &measured(3)),
+            RedCause::KilledAtCap(how) if how.contains("killed 3 process(es)")
+        ));
+        // Near the cap with no count, the same output is a kill, not a verdict.
+        assert!(matches!(
+            red_cause(out, StepExit::Code(101), &measured(0)),
+            RedCause::KilledAtCap(_)
+        ));
+    }
+
+    /// **Code that failed is red, near the cap or not**; a death far from the cap with no
+    /// failing code is red only when the leader answered with a code — a signal is somebody
+    /// else's hand, and judged nothing.
+    #[test]
+    fn failing_code_is_red_and_a_signal_far_from_the_cap_is_unjudged() {
+        let failed = "test result: FAILED. 1 passed; 1 failed\nerror: 1 target failed\n";
+        assert_eq!(
+            red_cause(failed, StepExit::Code(101), &measured(0)),
+            RedCause::Code
+        );
+        let far = StepMemory::Used(MemoryUse {
+            cap: Some(24 * GIB),
+            peak: 6 * GIB,
+            oom_kills: 0,
+        });
+        assert_eq!(
+            red_cause("merge gate: FAIL\n", StepExit::Code(1), &far),
+            RedCause::Code
+        );
+        assert_eq!(
+            red_cause(ENDED_IN_WARNINGS, StepExit::Signal(libc::SIGKILL), &far),
+            RedCause::KilledBySignal(libc::SIGKILL)
+        );
+        assert_eq!(
+            red_cause(failed, StepExit::Signal(libc::SIGTERM), &far),
+            RedCause::Code,
+            "a failure it printed before the signal is still a failure"
+        );
+        // Uncapped (no delegated scope): only the signal can tell.
+        let uncapped = StepMemory::Uncapped("old-style start".into());
+        assert_eq!(
+            red_cause(ENDED_IN_WARNINGS, StepExit::Code(101), &uncapped),
+            RedCause::Code
+        );
+        assert_eq!(
+            red_cause(ENDED_IN_WARNINGS, StepExit::Signal(9), &uncapped),
+            RedCause::KilledBySignal(9)
+        );
+    }
+
+    /// **End to end on a real step**: a leader killed by `SIGKILL` before it printed a failure is
+    /// `killed`, the verdict is the gate's own (`Infra`, unjudged), and the row records the
+    /// signal — the fact the 79c32c1 row did not keep.
+    #[test]
+    fn a_step_killed_by_a_signal_is_unjudged_and_its_row_says_the_signal() {
+        let wt = std::env::temp_dir().join(format!("letibot-gate-sig-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let stop = AtomicBool::new(false);
+        let alive = || true;
+        let ctl = GateControl {
+            deadline: Instant::now() + Duration::from_secs(60),
+            stop: &stop,
+            alive: &alive,
+        };
+        let steps = vec![
+            "echo compiling; kill -9 $$".to_string(),
+            "echo next".to_string(),
+        ];
+        let run = run_with_memory(&wt, &steps, &ctl, Ask::Uncapped);
+        let GateVerdict::Infra(why) = &run.verdict else {
+            panic!("{run:#?}");
+        };
+        assert!(why.starts_with(GATE_KILLED), "{why}");
+        assert_eq!(run.steps[0].outcome, MergeGateOutcome::Killed, "{run:#?}");
+        assert!(
+            run.steps[0]
+                .output
+                .contains("[step: killed by signal 9 (SIGKILL)]"),
+            "{}",
+            run.steps[0].output
+        );
+        assert_eq!(run.steps[1].outcome, MergeGateOutcome::NotRun);
+        // And a step that fails by its own code is still red.
+        let run = run_with_memory(&wt, &["echo nope; exit 3".to_string()], &ctl, Ask::Uncapped);
+        assert!(
+            matches!(&run.verdict, GateVerdict::Failed(w) if w.contains("[step: exit code 3]")),
+            "{run:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&wt);
     }
 }

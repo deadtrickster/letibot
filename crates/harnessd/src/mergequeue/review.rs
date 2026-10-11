@@ -53,6 +53,9 @@ pub struct Pool<'a> {
     pub me: &'a str,
     pub placement: ReviewerPlacement,
     pub events: &'a dyn Fn(SessionEvent),
+    /// **A repository's alert**, published only where that repository's sessions are
+    /// ([`super::publish_for_repository`] in the daemon) — never on every hub.
+    pub warn: &'a dyn Fn(&str, SessionEvent),
     /// Send a refusal's complaints to a session (`TaskRunner::send`).
     pub deliver: &'a dyn Fn(&str, &str) -> Result<String, String>,
     pub settings: &'a dyn Fn(&Path) -> Result<QueueSettings, String>,
@@ -77,13 +80,16 @@ impl Pool<'_> {
         });
     }
 
-    fn raise(&self, code: &str, detail: String) {
+    fn raise(&self, repository: &str, code: &str, detail: String) {
         eprintln!("  review queue: {code}: {detail}");
-        (self.events)(SessionEvent::Warning {
-            code: code.into(),
-            detail,
-            compaction: None,
-        });
+        (self.warn)(
+            repository,
+            SessionEvent::Warning {
+                code: code.into(),
+                detail,
+                compaction: None,
+            },
+        );
     }
 
     fn mv(&self, r: &ReviewRow, to: ReviewState, mv: Move) -> Result<bool, StoreError> {
@@ -118,7 +124,11 @@ impl Pool<'_> {
             let said = self.blocked_sentence(r, attempts, &why);
             let ok = self.mv(r, ReviewState::Blocked, base.set("failure", said.clone()))?;
             if ok {
-                self.raise("queue_blocked", notices::blocked_after(r, &said));
+                self.raise(
+                    &r.repository,
+                    "queue_blocked",
+                    notices::blocked_after(r, &said),
+                );
             }
             Ok(ok)
         } else {
@@ -192,12 +202,14 @@ impl Pool<'_> {
         }
         if nth == 1 {
             self.raise(
+                &r.repository,
                 "queue_waiting_for_vm",
                 notices::waiting_for_vm(r, &cap.busy_line()),
             );
         }
         if long {
             self.raise(
+                &r.repository,
                 "queue_vm_slots_exhausted",
                 notices::vm_slots_exhausted(
                     r,
@@ -258,7 +270,11 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                         .set("failure", why.clone())
                         .set("attempts", r.attempts + 1),
                 )? {
-                    p.raise("queue_blocked", notices::reviewer_could_not_start(r, &why));
+                    p.raise(
+                        &r.repository,
+                        "queue_blocked",
+                        notices::reviewer_could_not_start(r, &why),
+                    );
                 }
                 out.moved = true;
             }
@@ -454,6 +470,7 @@ fn verdict(
                 judged("needs_human", why.clone()),
             )? {
                 p.raise(
+                    &r.repository,
                     "queue_needs_human",
                     undecided_sentence(p, r, &by, &said.reasons),
                 );
@@ -525,6 +542,7 @@ fn open_fix_branch(
         .unwrap_or(RedTarget::Fix);
     if policy == RedTarget::Raise {
         p.raise(
+            &r.repository,
             "target_red",
             format!(
                 "EMERGENCY: {why}. This project's policy is `red_target = \"raise\"`: no fix branch \
@@ -562,6 +580,7 @@ fn open_fix_branch(
                 .set("fixes", h.handle.clone());
             p.mv(&ReviewRow { state: ReviewState::Rejected, ..r.clone() }, ReviewState::Rejected, mv)?;
             p.raise(
+            &r.repository,
                 "target_red",
                 format!(
                     "EMERGENCY: {why}. A fix branch `{}` was opened by {} and goes through the \
@@ -571,6 +590,7 @@ fn open_fix_branch(
             );
         }
         Err(e) => p.raise(
+            &r.repository,
             "target_red",
             format!("EMERGENCY: {why}. A fix branch could NOT be opened: {e}. A person has to fix `{}`.", r.target),
         ),
@@ -599,6 +619,7 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
         }
     }
     p.raise(
+        &r.repository,
         "refusal_undelivered",
         notices::refusal_undelivered(r, &missed.join("; ")),
     );

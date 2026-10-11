@@ -107,10 +107,21 @@ pub(crate) struct Door {
     pub(crate) rung: Mutex<usize>,
     pub(crate) projects: Mutex<Vec<String>>,
     pub(crate) repositories: Mutex<Vec<String>>,
+    /// `(repository, code)` of every warning published for one repository only.
+    pub(crate) scoped: Mutex<Vec<(String, String)>>,
 }
 
 impl QueueDoor for Door {
     fn announce(&self, event: SessionEvent) {
+        self.events.lock().unwrap().push(event);
+    }
+    fn announce_to(&self, repository: &str, event: SessionEvent) {
+        if let SessionEvent::Warning { code, .. } = &event {
+            self.scoped
+                .lock()
+                .unwrap()
+                .push((repository.to_string(), code.clone()));
+        }
         self.events.lock().unwrap().push(event);
     }
     fn ring_reviewers(&self) {
@@ -1290,7 +1301,7 @@ fn the_retry_wait_doubles_and_is_capped() {
 
 // ===== The supervisor =====
 
-/// **The service, as a daemon runs it**: it finds the repository under its workspace, claims the
+/// **The service, as a daemon runs it**: it finds the repository its workspace is in, claims the
 /// lease, serves both queues on its own threads, resolves a row carried over from v23, and on
 /// stop joins its workers and releases the lease (the v23 thread was detached and never joined).
 #[test]
@@ -1324,9 +1335,12 @@ fn the_service_serves_the_queues_and_stops() {
     let door = w.door.clone();
     let e = env(Arc::new(GreenGate), door.clone(), "svc");
     let me = e.me.owner.clone();
+    // A daemon seated IN the repository: the session daemon of it. (Seated at `w.dir`, which
+    // merely contains the repository and its worktrees, it serves nothing —
+    // `a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red`.)
     let service = QueueService {
         store_path: w.db.clone(),
-        workspace: w.dir.0.clone(),
+        workspace: w.repo.clone(),
         env: e,
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -1357,4 +1371,215 @@ fn the_service_serves_the_queues_and_stops() {
         "the lease is released on stop"
     );
     let _ = head;
+}
+
+// ===== Who serves a repository, and who hears its alerts (2026-10-12) =====
+
+/// **A gate whose step is killed at the gate's cap** — the words the local gate says, with the
+/// numbers measured on letibot's `main` at 79c32c1.
+struct KilledAtCapGate;
+
+impl GateRunner for KilledAtCapGate {
+    fn run(&self, _wt: &Path, steps: &[String], _ctl: &GateControl) -> GateRun {
+        GateRun {
+            steps: steps
+                .iter()
+                .map(|s| letibot_tokencore::store::MergeGateStep {
+                    command: s.clone(),
+                    outcome: letibot_tokencore::store::MergeGateOutcome::Killed,
+                    output:
+                        "warning: `letibot-tui` (lib test) generated 17 warnings\n[gate memory: \
+                             peak 24.1 GiB of a 24.9 GiB cap]"
+                            .into(),
+                    started_ms: gate::now_ms(),
+                    elapsed_ms: 74_332,
+                })
+                .collect(),
+            verdict: GateVerdict::Infra(gate::killed_at_cap_words(
+                &steps[0],
+                "peak 24.1 GiB of a 24.9 GiB cap",
+                "it died with its peak within 5% of the cap",
+                128,
+            )),
+        }
+    }
+}
+
+/// **A target whose gate was killed at its memory cap is UNJUDGED, not red** — `blocked`, nothing
+/// lands, no red-tip review, no `target_red`; the project is rung with *cannot judge* and the hubs
+/// are told `gate_killed`, naming the cap, the peak and `[memory] gate`.
+#[test]
+fn a_target_whose_gate_was_killed_at_its_cap_is_unjudged_not_red() {
+    let w = World::new("killedcap");
+    let q = w.worker(Arc::new(KilledAtCapGate), "a");
+    run(&q, 2);
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Blocked, "{h:?}");
+    assert!(h.evidence.starts_with(gate::GATE_KILLED), "{}", h.evidence);
+    assert!(crate::mergequeue::setup::unjudged(&h.evidence));
+    assert!(emergency_health(&h), "the project hears it");
+    assert!(w.door.warnings("target_red").is_empty(), "never RED");
+    let said = w.door.warnings("gate_killed");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("UNJUDGED, not red")
+            && said[0].contains("peak 24.1 GiB of a 24.9 GiB cap")
+            && said[0].contains("[memory] gate"),
+        "{}",
+        said[0]
+    );
+    assert!(
+        w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .all(|r| r.kind != ReviewKind::Target),
+        "no reviewer is sent to find what in the code broke it"
+    );
+    let notice = crate::mergequeue::notices::health(&h);
+    assert!(
+        notice.starts_with("The merge queue CANNOT JUDGE"),
+        "{notice}"
+    );
+    assert_eq!(*w.door.repositories.lock().unwrap(), vec![w.key()]);
+}
+
+/// **A daemon seated ABOVE a repository is none of its session daemons** — the operator's
+/// `/home/dead` daemon took letibot's lease, gated its `main`, and showed `‼ main RED` to a
+/// session about the box's RSS. Seated in the directory that holds the repository, its worktree
+/// and another checkout, it takes no lease and says nothing; the row waits. A daemon seated in
+/// the repository — or in one of its worktrees — is one of them, and takes it.
+#[test]
+fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
+    let w = World::new("ancestor");
+    commit(&w.repo, "broken", "x\n", "red");
+    let (wt, base, head) = branch(&w.repo, "anc", "anc.txt");
+    w.enqueue("anc", &wt, &base, &head);
+    let other = w.dir.0.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    sh(&other, &["init", "-q", "-b", "main"]);
+    let home = w.dir.0.clone();
+
+    assert_eq!(crate::mergequeue::repository_of_workspace(&home), None);
+    assert!(!crate::mergequeue::serves(&home, &w.repo));
+    assert!(crate::mergequeue::serves(&w.repo, &w.repo));
+    assert!(
+        crate::mergequeue::serves(&wt, &w.repo),
+        "a worktree is its repository's"
+    );
+    assert!(!crate::mergequeue::serves(&other, &w.repo));
+
+    let serve_for = |workspace: PathBuf, who: &str, until: &dyn Fn(&Store) -> bool| {
+        let e = env(Arc::new(LocalGate), w.door.clone(), who);
+        let service = QueueService {
+            store_path: w.db.clone(),
+            workspace,
+            env: e,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let h = std::thread::spawn({
+            let stop = stop.clone();
+            move || service.run(&stop)
+        });
+        let s = w.store();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !until(&s) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        h.join().unwrap();
+    };
+
+    // The ancestor: three supervisor passes' worth of time, and nothing.
+    let started = std::time::Instant::now();
+    serve_for(home, "home", &|_| {
+        started.elapsed() > Duration::from_millis(4500)
+    });
+    assert!(
+        w.store().queue_leases().unwrap().is_empty(),
+        "no lease taken"
+    );
+    assert!(
+        w.store().target_health(&w.key(), "main").unwrap().is_none(),
+        "nothing gated"
+    );
+    assert!(
+        w.door.events.lock().unwrap().is_empty(),
+        "nothing said on its hubs"
+    );
+    assert_eq!(
+        w.store().review_row("anc").unwrap().unwrap().state,
+        ReviewState::Waiting,
+        "the row waits for a daemon seated in its repository"
+    );
+
+    // The repository's own daemon: the lease, the gate, and the red said for THIS repository.
+    serve_for(w.repo.clone(), "repo", &|s| {
+        s.target_health(&w.key(), "main")
+            .ok()
+            .flatten()
+            .is_some_and(|h| h.state == HealthState::Red)
+    });
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Red, "{h:?}");
+    let scoped = w.door.scoped.lock().unwrap().clone();
+    assert!(
+        scoped.contains(&(w.key(), "target_red".to_string())),
+        "the red is published for the repository, not on every hub: {scoped:?}"
+    );
+}
+
+/// **The hubs a repository's alert reaches**: the sessions whose workspace is that repository
+/// or one of its worktrees, and the review queue's board — not a session seated above it.
+#[test]
+fn a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_session() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring};
+    let w = World::new("hubs");
+    let (wt, _, _) = branch(&w.repo, "h", "h.txt");
+    let s = w.store();
+    let seat = |id: &str, ws: &Path| {
+        s.put_session(&letibot_tokencore::store::SessionRecord {
+            id: id.into(),
+            title: None,
+            model_id: String::new(),
+            dialect_sha: String::new(),
+            workspace_root: ws.display().to_string(),
+            owner: String::new(),
+            approvers: Vec::new(),
+            role: None,
+            parent_session_id: None,
+        })
+        .unwrap();
+    };
+    seat("s-home", &w.dir.0);
+    seat("s-repo", &w.repo);
+    seat("s-wt", &wt);
+    let reg = Registry::new();
+    let board = crate::sessions::gatekeeper::SESSION;
+    let hubs: Vec<_> = ["s-home", "s-repo", "s-wt", board]
+        .iter()
+        .map(|id| reg.create(*id, *id, SessionWiring::default()).unwrap())
+        .collect();
+    let reached = crate::mergequeue::publish_for_repository(
+        &reg,
+        Some(&w.db),
+        &w.key(),
+        SessionEvent::Warning {
+            code: "target_red".into(),
+            detail: "EMERGENCY".into(),
+            compaction: None,
+        },
+    );
+    assert_eq!(reached, 3);
+    let heard = |i: usize| {
+        hubs[i]
+            .retained()
+            .iter()
+            .any(|e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "target_red"))
+    };
+    assert!(
+        !heard(0),
+        "the home session hears nothing of letibot's main"
+    );
+    assert!(heard(1) && heard(2) && heard(3));
 }

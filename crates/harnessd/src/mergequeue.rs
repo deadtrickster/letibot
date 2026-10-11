@@ -352,6 +352,10 @@ impl serve::QueueDoor for RegistryDoor {
         self.registry.broadcast(event);
     }
 
+    fn announce_to(&self, repository: &str, event: SessionEvent) {
+        publish_for_repository(&self.registry, Some(&self.store_path), repository, event);
+    }
+
     fn ring_reviewers(&self) {
         let host = crate::sessions::gatekeeper::SESSION;
         if !self.registry.bell().is_closed() && self.registry.get(host).is_some() {
@@ -420,9 +424,8 @@ impl RegistryDoor {
                     .session_workspace(id)
                     .ok()
                     .flatten()
-                    .and_then(|w| repo_of_workspace(Path::new(&w)))
-                    .and_then(|r| repo_of_worktree(&r))
-                    .is_some_and(|r| r.display().to_string() == repository)
+                    .and_then(|w| repository_of_workspace(Path::new(&w)))
+                    .is_some_and(|r| r == repository)
             })
             .collect()
     }
@@ -446,8 +449,14 @@ pub fn spawn_for(
     match service.spawn(stop) {
         Ok(h) => {
             eprintln!(
-                "  queues: serving the repositories under {} whose lease this daemon can take",
-                cfg.workspace.display()
+                "  queues: serving {} when this daemon can take its lease",
+                repository_of_workspace(&cfg.workspace)
+                    .map(|r| format!("the repository {r}"))
+                    .unwrap_or_else(|| format!(
+                        "nothing — {} is a session of no repository (it may contain some; their \
+                         queues are served by daemons seated in them)",
+                        cfg.workspace.display()
+                    ))
             );
             Some(h)
         }
@@ -458,8 +467,62 @@ pub fn spawn_for(
     }
 }
 
-/// Whether `path` is inside `workspace` or holds it — a repository this daemon may serve.
+/// **The repository a workspace is a session OF** — the queues' key (the canonical main
+/// checkout) of the repository [`repo_of_workspace`] reads the workspace as: the checkout it is
+/// in (a worktree counts as its repository), a same-named child (`~/Projects/letibot` means
+/// `~/Projects/letibot/letibot`), or its only repository child. `None` for a directory that merely
+/// CONTAINS repositories — the operator's home, with five checkouts under it, is a session of none
+/// of them.
+pub fn repository_of_workspace(workspace: &Path) -> Option<String> {
+    repo_of_workspace(workspace).and_then(|r| git::repository_key(&r))
+}
+
+/// **Whether a daemon seated at `workspace` is one of `repo`'s session daemons** — its workspace
+/// is that repository (or under it, or one of its worktrees). An ancestor directory that merely
+/// contains the repository is NOT: on 2026-10-12 a daemon seated at `/home/dead` took letibot's
+/// lease, gated its `main`, and showed `‼ main RED` to a session about the box's RSS, because
+/// the old rule was *the repository is under the workspace, or holds it*.
 pub fn serves(workspace: &Path, repo: &Path) -> bool {
-    let ws = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
-    repo.starts_with(&ws) || ws.starts_with(repo)
+    let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    repository_of_workspace(workspace).is_some_and(|mine| Path::new(&mine) == key)
+}
+
+/// **The hubs a repository's queue alert goes to** — the sessions this registry holds whose
+/// workspace is a session of `repository` ([`repository_of_workspace`]), and the review queue's
+/// own session, whose board IS the queue. Never every hub: a red `main` is news to the project's
+/// sessions and the queue's board, and noise everywhere else.
+pub fn hubs_of_repository(
+    registry: &letibot_sessionlog::registry::Registry,
+    store: Option<&Store>,
+    repository: &str,
+) -> Vec<String> {
+    registry
+        .held_ids()
+        .into_iter()
+        .filter(|id| {
+            id == crate::sessions::gatekeeper::SESSION
+                || store
+                    .and_then(|s| s.session_workspace(id).ok().flatten())
+                    .and_then(|w| repository_of_workspace(Path::new(&w)))
+                    .is_some_and(|r| r == repository)
+        })
+        .collect()
+}
+
+/// Publish `event` on [`hubs_of_repository`]'s hubs only. Answers how many it reached.
+pub fn publish_for_repository(
+    registry: &letibot_sessionlog::registry::Registry,
+    store_path: Option<&Path>,
+    repository: &str,
+    event: SessionEvent,
+) -> usize {
+    let store = store_path.and_then(|p| Store::open(p).ok());
+    let mut reached = 0;
+    for id in hubs_of_repository(registry, store.as_ref(), repository) {
+        if let Some(hub) = registry.get(&id) {
+            hub.publish(event.clone());
+            reached += 1;
+        }
+    }
+    reached
 }

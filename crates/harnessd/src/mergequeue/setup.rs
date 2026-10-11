@@ -28,6 +28,14 @@ use letibot_tokencore::store::{MergeGateOutcome, MergeGateStep};
 /// row by the project's session notice and by `/queue regate`'s answer.
 pub const GATE_SETUP_FAILED: &str = "the gate's own setup failed";
 
+/// **Whether a target's evidence says its tip was never judged** — the gate's own setup failed
+/// ([`GATE_SETUP_FAILED`]), or its step was killed before it judged the code
+/// ([`super::gate::GATE_KILLED`]: at the gate's memory cap, or by a signal). Either way the tip
+/// is `blocked`, nothing lands on it, and the project hears *cannot judge*, never *red*.
+pub fn unjudged(evidence: &str) -> bool {
+    evidence.starts_with(GATE_SETUP_FAILED) || evidence.starts_with(super::gate::GATE_KILLED)
+}
+
 /// How many of the failing output's last lines are searched for the words that name a missing
 /// thing — the end is where a script says why it stopped.
 const LAST_LINES: usize = 3;
@@ -63,7 +71,7 @@ fn shows_a_pass(out: &str) -> bool {
 }
 
 /// Output that shows the CODE failing — a compile error, a failed test, a panic, a format diff.
-fn shows_code_failing(out: &str) -> bool {
+pub(crate) fn shows_code_failing(out: &str) -> bool {
     out.lines().any(|l| {
         let t = l.trim_start();
         t.starts_with("error[")

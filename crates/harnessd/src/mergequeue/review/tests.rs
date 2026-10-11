@@ -239,6 +239,7 @@ fn judge(
         me: ME,
         placement: ReviewerPlacement::Host,
         events: &events,
+        warn: &|_: &str, e| events(e),
         deliver,
         settings: &settings,
         clones: std::env::temp_dir(),

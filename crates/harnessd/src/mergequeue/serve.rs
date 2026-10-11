@@ -54,6 +54,13 @@ pub const MAX_REVIEWING: usize = 2;
 pub trait QueueDoor: Send + Sync {
     /// Publish on every session's log.
     fn announce(&self, event: SessionEvent);
+    /// **Publish one repository's alert** — only on the hubs of that repository's sessions (and
+    /// the review queue's board), never on every hub: a daemon's other sessions are about other
+    /// things (`‼ main RED` reached a session about the box's RSS, 2026-10-12).
+    fn announce_to(&self, repository: &str, event: SessionEvent) {
+        let _ = repository;
+        self.announce(event);
+    }
     /// Wake the review queue's session: a claimed review is waiting for its reviewer.
     fn ring_reviewers(&self);
     /// Wake the project session that `session_id` belongs to (its root). What it is told is read
@@ -167,15 +174,18 @@ impl RepoQueue {
         });
     }
 
-    /// **A raise** — said on every hub, under a code a head can style: `queue_blocked` (high) and
-    /// `target_red` (emergency).
+    /// **A raise** — said on the hubs of THIS repository's sessions (and the queue's board), under
+    /// a code a head can style: `queue_blocked` (high) and `target_red` (emergency).
     fn raise(&self, code: &str, detail: String) {
         eprintln!("  merge queue: {code}: {detail}");
-        self.env.door.announce(SessionEvent::Warning {
-            code: code.into(),
-            detail,
-            compaction: None,
-        });
+        self.env.door.announce_to(
+            &self.key,
+            SessionEvent::Warning {
+                code: code.into(),
+                detail,
+                compaction: None,
+            },
+        );
     }
 
     fn review_to(&self, r: &ReviewRow, to: ReviewState, mv: Move) -> Result<bool, StoreError> {
@@ -771,6 +781,23 @@ impl RepoQueue {
                     ),
                 );
             }
+            HealthState::Blocked if h.evidence.starts_with(gate::GATE_KILLED) => {
+                // High, not emergency, for the same reason: the step was killed before it
+                // judged the code — at the gate's memory cap, or by a signal — and the words
+                // say which and how to give it room.
+                self.raise(
+                    "gate_killed",
+                    format!(
+                        "`{}` at {} in {} is UNJUDGED, not red: {} Nothing lands on it until its \
+                         gate can judge it — then `/queue regate {}`.",
+                        h.target,
+                        h.sha,
+                        self.key,
+                        h.evidence.lines().next().unwrap_or_default(),
+                        h.target
+                    ),
+                );
+            }
             _ => {}
         }
         Ok((Some(h), true))
@@ -1301,7 +1328,7 @@ impl RepoQueue {
 pub fn emergency_health(h: &TargetHealth) -> bool {
     match h.state {
         HealthState::Red | HealthState::TimedOut => true,
-        HealthState::Blocked => h.evidence.starts_with(super::setup::GATE_SETUP_FAILED),
+        HealthState::Blocked => super::setup::unjudged(&h.evidence),
         _ => false,
     }
 }
@@ -1326,10 +1353,11 @@ impl QueueService {
         }
     }
 
-    /// **Whether this daemon is one of `repo`'s session daemons** — the repository is its
-    /// workspace, under it, or holds it.
+    /// **Whether this daemon is one of `repo`'s session daemons** — its workspace is a session of
+    /// that repository ([`super::serves`]): the checkout, under it, or one of its worktrees. A
+    /// workspace that merely contains the repository (`/home/dead`) is not.
     pub fn serves(&self, repo: &Path) -> bool {
-        repo.starts_with(&self.workspace) || self.workspace.starts_with(repo)
+        super::serves(&self.workspace, repo)
     }
 
     pub fn spawn(self, stop: Arc<AtomicBool>) -> std::io::Result<JoinHandle<()>> {
@@ -1459,33 +1487,16 @@ impl QueueService {
         Ok(())
     }
 
-    /// The repositories with open rows this daemon serves, and its own.
-    fn repositories(&self, store: &Store) -> Result<Vec<PathBuf>, StoreError> {
-        let mut keys: Vec<String> = store
-            .review_rows(None)?
-            .into_iter()
-            .filter(|r| r.state.is_open())
-            .map(|r| r.repository)
-            .chain(
-                store
-                    .merge_rows(None)?
-                    .into_iter()
-                    .filter(|m| m.state.is_open())
-                    .map(|m| m.repository),
-            )
-            .filter(|k| !k.is_empty())
-            .collect();
-        if let Some(own) =
-            git::repo_of_workspace(&self.workspace).and_then(|r| git::repository_key(&r))
-        {
-            keys.push(own);
-        }
-        keys.sort();
-        keys.dedup();
-        Ok(keys
-            .into_iter()
+    /// **The one repository this daemon serves** — the one its workspace is a session of, when it
+    /// is one. A repository with open rows and no session daemon of its own is NOT taken by a
+    /// daemon that happens to sit above it: its queue waits, rows and all, for a daemon seated in
+    /// it, and the first one that starts there takes the lease and re-gates what was judged
+    /// (`regate_at_start`).
+    fn repositories(&self, _store: &Store) -> Result<Vec<PathBuf>, StoreError> {
+        Ok(super::repository_of_workspace(&self.workspace)
             .map(PathBuf::from)
-            .filter(|p| self.serves(p) && p.exists())
+            .filter(|p| p.exists())
+            .into_iter()
             .collect())
     }
 

@@ -1835,6 +1835,102 @@ feat/memory-engine`, or fix `scripts/merge_gate.sh` on `main` and `/queue regate
 
 ---
 
+## R87 — A gate killed by its memory cap read as RED code, and the alert reached a session that has nothing to do with letibot — **BUILT on `gate-cap-and-alert-scope` 2026-10-12 (not merged)**
+
+The operator, 2026-10-12 ~01:00: *"just got ‼ main RED at 79c32c1d … on a simple /home/dead
+session where i discuss my rss usage"*. The full line was `‼ main RED at 79c32c1d · letibot ·
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture failed · click
+for details`. `main` at 79c32c1 is green when it is run normally.
+
+**Who served it.** Not the old `/home/dead` daemon (pid 2047956): that one sits in a konsole
+tab's cgroup, so its gate would have said *uncapped*. The red came from pid 4165606, started
+00:49:25 by the launcher in `letibot-harnessd-7a22aa3b1a21-4164662.scope`, `--workspace
+/home/dead`. Its log says `queues: serving the repositories under /home/dead whose lease this
+daemon can take`, then `merge queue: serving /home/dead/Projects/letibot/letibot`. The gate's
+test step started 00:49:56, ran 74 s and was recorded red at 00:51:10.
+
+**Defect 1: the step died without a verdict and the classifier called it red.** The row's
+output ends in compile warnings (`letibot-tui (lib test) generated 17 warnings`), with no test
+result and no `error:`. It has `[gate memory: peak 24.1 GiB of a 24.9 GiB cap]` and
+`[128 process(es) the step left running were killed with its cgroup]`. So cargo's leader ended
+while its compiles were still running, and it said nothing. The memory reading was correct: the
+step's own leaf cgroup, `memory.events` (hierarchical, no `memory_localevents` mount option),
+read before `cgroup.kill`. The kernel did not kill anything at the cap:
+- there is no `oom-kill` in `journalctl -k` for any `gate.*` cgroup of that daemon;
+- the daemon scope's hierarchical `memory.events` reads `max 0 oom 0 oom_kill 0` (memcg events
+  propagate to ancestors, so they would show a child's hit);
+- `pids.events` reads `max 0`;
+- systemd-oomd and earlyoom are inactive.
+The box itself was tight. `MemTotal` is 185.8 GiB. At 00:50 the operator's own session measured
+1.8 GiB free, 44 GiB available, swap 100% full, and 94 GiB `Shmem`, mostly tmpfs: `/tmp` held
+75 G, including `/tmp/claude-1000` at 42 G. What signalled cargo is not recorded anywhere, because
+the gate never kept the step's exit status. That is the defect. A step that died at 96.8% of its
+cap, with 128 compiles still running and no failing code in its output, was classified
+`StepEnd::Red` → `GateVerdict::Failed` → `HealthState::Red` → `target_red`. `killed_at_cap()`
+looked only at `oom_kill`.
+
+Fix (`crates/harnessd/src/mergequeue/gate.rs`):
+- A red step is now read by `red_cause(out, exit, memory)` before it is called red:
+  - `oom_kill > 0` → killed at the cap, as before;
+  - peak ≥ `NEAR_CAP_PERCENT` (95%) of the cap with no failing code in the output (cargo's
+    `(signal: 9, SIGKILL` is a kill, not a failure) → killed at the cap;
+  - the leader ended by a signal with no failing code → killed from outside;
+  - anything else → red.
+- Both kills are `GateVerdict::Infra`, with words that lead with `GATE_KILLED` and name the
+  cap, the peak, the processes left, and `[memory] gate` in providers.toml. The target's health
+  is `blocked` (UNJUDGED): nothing lands, no red-tip review is opened, `gate_killed` is raised
+  (not `target_red`), and the project is rung with *CANNOT JUDGE*, the same as
+  `GATE_SETUP_FAILED` (`setup::unjudged`).
+- Every red row now ends with `[step: exit code N]` or `[step: killed by signal 9 (SIGKILL)]`,
+  so the next one says what the 79c32c1 row could not.
+
+**Defect 2: a daemon seated above the repository served its queue and broadcast its alert.**
+`QueueService::serves` was `repo.starts_with(workspace) || workspace.starts_with(repo)`.
+`/home/dead/Projects/letibot/letibot` is under `/home/dead`, so the `/home/dead` daemon took
+the lease whenever letibot had open rows. `RepoQueue::raise` then went to
+`QueueDoor::announce`, which is `Registry::broadcast` to every hub, including the RSS session.
+(The model-side notice was already scoped by the session's repository. The head-side warning
+was not.)
+
+Fix:
+- A daemon serves exactly the repository its workspace is a session of
+  (`mergequeue::repository_of_workspace`): the checkout, under it, a worktree of it, or the
+  same-named / only repository child, which is `repo_of_workspace`'s existing reading. A
+  directory that merely contains repositories (`/home/dead` holds five) serves none.
+- Queue raises (from `RepoQueue` and from the review pool) go through `announce_to(repository)`
+  / `publish_for_repository`. They reach only the hubs of sessions whose workspace is that
+  repository or its worktrees, plus the review queue's board (`s-gatekeeper`).
+- `QueueMoved` events are still broadcast. They are board refreshes, not alerts.
+
+**What serves letibot's queue after this.** Only a daemon whose `--workspace` is
+`~/Projects/letibot`, `~/Projects/letibot/letibot`, or a worktree of it. On 2026-10-12 none of
+the twelve running daemons is. Until one starts, letibot's queue (and every other repository with
+no session daemon of its own) waits, rows intact. The first daemon seated there takes the lease
+and re-gates the judged tip (`regate_at_start`). That is the design the log line already stated:
+*"the next one that wakes there reads it"*.
+
+**The default cap: recommendation, not changed.** "Half of what is free when the gate starts"
+was 24.9 GiB here (49.8 GiB available). The gate's own build peaks at about 24 GiB, so the
+default sat right at the build's need. It moves with whatever tmpfs and other sessions hold at
+that moment: 94 GiB of Shmem on this box. Recommended: set `[memory] gate = "40G"` in lab2x1's
+providers.toml. A fraction of *available* cannot promise a build its working set on a box whose
+free memory swings by tens of GiB. The default could become *the larger of half of what is
+free and the last green run's peak + 25%*. That needs the operator's decision.
+
+Tests:
+- `gate.rs`: `the_measured_death_near_the_cap_is_killed_at_the_cap_not_red`,
+  `an_oom_kill_counted_in_the_cgroup_is_killed_at_the_cap_whatever_the_output_says`,
+  `failing_code_is_red_and_a_signal_far_from_the_cap_is_unjudged`,
+  `a_step_killed_by_a_signal_is_unjudged_and_its_row_says_the_signal`.
+- `tools/exec/scope.rs`: `memory_events_are_read_for_oom_kill_alone`.
+- `serve/tests.rs`: `a_target_whose_gate_was_killed_at_its_cap_is_unjudged_not_red`,
+  `a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red`,
+  `a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_session`.
+- `the_service_serves_the_queues_and_stops` now seats its daemon in the repository.
+
+Left: what actually signalled cargo at 00:51:10 is unknown (see above). The next occurrence
+will carry the signal on its row.
+
 ## R84 — The landing tree lives outside `.git`, a session can read it, and a gate gets its gitignored inputs — **MERGED on main 2026-10-12 (4ac0f18, d27ed56); the placement rule after it is PARKED, see R84a**
 
 The operator, 2026-10-11: *"also, the merges and branches shoudlnt land into .git. look at firecode

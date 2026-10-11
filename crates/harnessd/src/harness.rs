@@ -8170,8 +8170,19 @@ impl Harness {
             host: &host,
             me: &me,
             placement,
-            events: &move |e| {
-                registry.broadcast(e);
+            events: &{
+                let registry = registry.clone();
+                move |e| {
+                    registry.broadcast(e);
+                }
+            },
+            warn: &|repository: &str, e| {
+                crate::mergequeue::publish_for_repository(
+                    &registry,
+                    self.cfg.store.as_deref(),
+                    repository,
+                    e,
+                );
             },
             deliver: &deliver,
             settings: &crate::mergequeue::settings::for_repository,

@@ -1672,6 +1672,49 @@ pub const EXIT_NOT_SCOPED: i32 = 125;
 mod tests {
     use super::*;
 
+    /// **`memory.events` as the kernel writes it, read for `oom_kill` and nothing else** — not
+    /// `oom_group_kill`, not `oom` (the cap was reached; the kernel may still have reclaimed),
+    /// and `memory.max`'s `max` is an uncapped scope. The numbers are letibot's `main` at
+    /// 79c32c1 (2026-10-12): `peak 24.1 GiB of a 24.9 GiB cap` and no kill counted.
+    #[test]
+    fn memory_events_are_read_for_oom_kill_alone() {
+        let dir = std::env::temp_dir().join(format!("letibot-memevents-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap: u64 = 26_735_965_388;
+        let peak: u64 = 25_877_001_011;
+        std::fs::write(dir.join("memory.max"), format!("{cap}\n")).unwrap();
+        std::fs::write(dir.join("memory.peak"), format!("{peak}\n")).unwrap();
+        let events = |oom: u64, group: u64, kill: u64| {
+            format!(
+                "low 0\nhigh 0\nmax 12\noom {oom}\noom_kill {kill}\noom_group_kill {group}\n\
+                 sock_throttled 0\n"
+            )
+        };
+        std::fs::write(dir.join("memory.events"), events(2, 5, 0)).unwrap();
+        let u = memory_use_at(&dir).unwrap();
+        assert_eq!(
+            u,
+            MemoryUse {
+                cap: Some(cap),
+                peak,
+                oom_kills: 0
+            }
+        );
+        assert!(
+            !u.killed_at_cap(),
+            "`oom` and `oom_group_kill` are not `oom_kill`"
+        );
+        assert_eq!(u.clause(), "peak 24.1 GiB of a 24.9 GiB cap");
+        std::fs::write(dir.join("memory.events"), events(1, 0, 3)).unwrap();
+        assert_eq!(memory_use_at(&dir).unwrap().oom_kills, 3);
+        // No events file (a tree without the controller's counters): no kill, not no reading.
+        std::fs::remove_file(dir.join("memory.events")).unwrap();
+        assert_eq!(memory_use_at(&dir).unwrap().oom_kills, 0);
+        std::fs::write(dir.join("memory.max"), "max\n").unwrap();
+        assert_eq!(memory_use_at(&dir).unwrap().cap, None, "`max` is uncapped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **The script and the marker are one string** — R21's sibling.
     ///
     /// The classification of a launcher failure rests on the sentence the wrapper writes,

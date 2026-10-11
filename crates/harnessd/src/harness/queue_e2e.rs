@@ -844,6 +844,7 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         me: "e2e",
         placement: crate::sessions::gatekeeper::ReviewerPlacement::Host,
         events: &events,
+        warn: &|_: &str, e| events(e),
         deliver: &deliver,
         settings: &settings,
         clones: std::env::temp_dir(),
@@ -974,6 +975,20 @@ fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
     let repo = std::fs::canonicalize(&root).unwrap();
     let handle = "s-parent-sub-1";
     let s = fx.store();
+    // The project session is seated in the repository: a queue's raise reaches only the hubs of
+    // that repository's sessions (and the queue's board), never every hub of the daemon.
+    s.put_session(&letibot_tokencore::store::SessionRecord {
+        id: "s-parent".into(),
+        title: None,
+        model_id: String::new(),
+        dialect_sha: String::new(),
+        workspace_root: repo.display().to_string(),
+        owner: String::new(),
+        approvers: Vec::new(),
+        role: None,
+        parent_session_id: None,
+    })
+    .expect("the project session's row");
     a_childs_review(
         &s,
         handle,
