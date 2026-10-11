@@ -158,6 +158,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // deleting it loses only the number they were owed. It is the count of context they
     // just chose to buy, said while they can still act on it — the opposite of a fault.
     ("operator_call_ran", Class::Routine),
+    // **The operator's mark was taken** (TODO R81, `/fb`, alt-g / alt-b) — the confirmation
+    // both heads draw. Routine: it answers what the operator just did, and it worked.
+    ("feedback", Class::Routine),
     // The operator's own `!` line ran, and the note says what it put in the conversation.
     // Routine for the door's own reason: the size disclosure is the feature working, not
     // a defect — the command's own failure, if it had one, is on the `ToolResult` row it
@@ -846,15 +849,18 @@ mod the_register_census {
         "todo_move_unresolved",
     ];
 
-    /// **The census, pinned.** 114 codes, of which **11** are the reader's own input refused.
+    /// **The census, pinned.** 115 codes, of which **11** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_39_routine_11_refused_and_64_failures() {
+    fn the_table_is_40_routine_11_refused_and_64_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **115, not 114.** One arrival, Routine: `feedback`, the confirmation of an operator's
+        // mark (TODO R81) — the answer to what they just did, and it worked.
+        //
         // **112, not 111.** One arrival, Routine: `cleared`, the boundary row `/clear` leaves
         // where the old conversation ended (`harness/clear.rs`) — a fork that landed, in
         // `reseated`'s register.
@@ -1011,8 +1017,9 @@ mod the_register_census {
         //     (Routine) — see their rows.
         //   · **114, not 112**: `nags_paused` and `nags_resumed` (Routine) — the operator's
         //     `/nag pause` and its end; see their rows for why the loud half is not the register.
-        assert_eq!(TABLE.len(), 114, "the table's size");
-        assert_eq!(count(Class::Routine), 39);
+        //   · **115, not 114**: `feedback` (Routine) — an operator's mark taken (TODO R81).
+        assert_eq!(TABLE.len(), 115, "the table's size");
+        assert_eq!(count(Class::Routine), 40);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 64);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

@@ -311,6 +311,7 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
         identity: "dead".into(),
         client_request_id: "req-1".into(),
         at_seq: 0,
+        enqueued_ms: 0,
         kind: CommandKind::SetOperatorTodos {
             items: vec![TodoEntry {
                 content: "add the migration notes".into(),
@@ -362,6 +363,7 @@ fn a_row_the_operator_adds_arms_the_check_sooner_than_the_idle_window() {
         identity: "dead".into(),
         client_request_id: "req-1".into(),
         at_seq: 0,
+        enqueued_ms: 0,
         kind: CommandKind::SetOperatorTodos {
             items: vec![TodoEntry {
                 content: content.into(),

@@ -879,6 +879,7 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
         identity: "dead".into(),
         client_request_id: "req-compact".into(),
         at_seq: 0,
+        enqueued_ms: 0,
         kind: CommandKind::Compact,
     };
     let _ = sessions.dispatch(session_id, &cmd);

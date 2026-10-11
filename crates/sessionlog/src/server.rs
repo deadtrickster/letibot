@@ -1707,6 +1707,24 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **An operator's mark** (TODO R81): answered HERE, on this thread, and never queued —
+            // the worker may be pinned, and a mark that waits lands on the wrong turn.
+            Ok(ClientFrame::Feedback {
+                at_ms,
+                polarity,
+                note,
+                item_id,
+            }) => {
+                crate::metrics_tap::mark(
+                    &seat.hub,
+                    &kind,
+                    &identity,
+                    at_ms,
+                    &polarity,
+                    &note,
+                    item_id.as_deref(),
+                );
+            }
             Ok(ClientFrame::Answer {
                 client_request_id,
                 req_id,

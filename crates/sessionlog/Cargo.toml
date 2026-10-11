@@ -9,6 +9,10 @@ build = "build.rs"
 
 [dependencies]
 letibot-transcript.workspace = true
+# The metrics event and its never-blocking channel (TODO R81) — without the `store` feature, so
+# the head that depends on this crate links no SQLite. The hub tap and the feedback frame emit
+# through it; the daemon installs the writer.
+letibot-metrics.workspace = true
 serde.workspace = true
 # preserve_order so a tool call's argument JSON survives a round trip through a
 # frame with its key order intact. The same reason dialect-glm needs it: those
@@ -42,6 +46,8 @@ name = "live_e2e"
 required-features = ["local"]
 
 [dev-dependencies]
+# The writer, for the test that sends a mark and reads it back out of a temp metrics.db.
+letibot-metrics = { workspace = true, features = ["store"] }
 letibot-sessionlog = { path = ".", default-features = false, features = ["turn", "tools"] }
 letibot-tools = { workspace = true, features = ["testing"] }
 letibot-turn = { workspace = true, features = ["glm"] }

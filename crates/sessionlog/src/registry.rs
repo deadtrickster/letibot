@@ -997,6 +997,8 @@ impl Inner {
 
     /// The one way into `entries`, so the index cannot drift from it.
     fn push(&mut self, id: String, entry: Entry) {
+        // The writer fills a row's tree root from this (TODO R81): one message per session.
+        letibot_metrics::session_parent(&id, entry.parent_session_id.as_deref());
         self.index.insert(id.clone(), self.entries.len());
         self.entries.push((id, entry));
     }

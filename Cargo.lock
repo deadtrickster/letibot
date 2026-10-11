@@ -719,6 +719,7 @@ dependencies = [
  "letibot-backend",
  "letibot-dialect",
  "letibot-llama",
+ "letibot-metrics",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",

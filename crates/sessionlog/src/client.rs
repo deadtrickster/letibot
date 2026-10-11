@@ -396,6 +396,24 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **An operator's mark** (`PROTOCOL_VERSION` 45): `polarity` is `good`, `bad` or `note`;
+    /// `at_ms` the press time on this head's clock; `item_id` a row read back, or `None` for now.
+    pub fn feedback(
+        &mut self,
+        at_ms: u64,
+        polarity: &str,
+        note: &str,
+        item_id: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::Feedback {
+            at_ms,
+            polarity: polarity.to_string(),
+            note: note.to_string(),
+            item_id: item_id.map(str::to_string),
+        })?;
+        Ok(())
+    }
+
     /// **Ask for the bytes that justified one decision** — R11's locator, leticl's ask.
     ///
     /// A locator and not a payload: the head names one decision and one half of its exchange

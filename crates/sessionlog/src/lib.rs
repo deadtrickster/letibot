@@ -49,6 +49,7 @@ pub mod cursor;
 pub mod event;
 pub mod hub;
 pub mod log;
+pub mod metrics_tap;
 pub mod protocol;
 pub mod question;
 pub mod registry;

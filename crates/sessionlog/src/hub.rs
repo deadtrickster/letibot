@@ -116,6 +116,10 @@ pub struct QueuedCommand {
     pub client_request_id: String,
     /// The log's head seq when the command was accepted.
     pub at_seq: u64,
+    /// **When the command was accepted**, wall-clock ms — so the worker can say how long it
+    /// sat in the queue (`worker.cmd`, `docs/metrics.md` §4 #6). The c12d044 stall, 29–89 s
+    /// behind a store read, was found with `perf` because this field did not exist.
+    pub enqueued_ms: u64,
     pub kind: CommandKind,
 }
 
@@ -520,6 +524,9 @@ struct Inner {
     /// itself. First answer wins; later ones find nothing and are dropped.
     screens: HashMap<String, std::sync::mpsc::SyncSender<(usize, usize, Vec<String>)>>,
     next_screen: u64,
+    /// **The metrics tap** (TODO R81): the session's "now" for a mark, and the rows the hub
+    /// already carries. See [`crate::metrics_tap`].
+    tap: crate::metrics_tap::Tap,
 }
 
 /// What a session looks like from outside it: enough for a picker, and cheap
@@ -650,6 +657,7 @@ impl Hub {
                 next_secret: 0,
                 screens: HashMap::new(),
                 next_screen: 0,
+                tap: Default::default(),
             }),
             cv: Condvar::new(),
             owner: std::sync::atomic::AtomicU8::new(0),
@@ -859,6 +867,20 @@ impl Hub {
 
     pub fn head_seq(&self) -> u64 {
         self.lock().log.head_seq()
+    }
+
+    /// **Where an operator's mark lands** — the turn running (or the last one), its round and
+    /// what it is doing; or, for a row they were reading back, the turn and round that row was
+    /// written in (`None` for the second half when the row is older than the tap remembers).
+    /// Under the hub's own lock and nothing else: this is read on the connection thread, never
+    /// through the worker (`docs/metrics.md` §2.5).
+    pub fn metrics_now(
+        &self,
+        item_id: Option<&str>,
+    ) -> (crate::metrics_tap::Now, Option<(String, u32)>) {
+        let g = self.lock();
+        let row = item_id.and_then(|i| g.tap.item(i));
+        (g.tap.now(), row)
     }
 
     pub fn dropped(&self) -> u64 {
@@ -1526,6 +1548,7 @@ impl Hub {
                     identity: identity.clone(),
                     client_request_id: client_request_id.clone(),
                     at_seq: actual,
+                    enqueued_ms: crate::event::now_ms(),
                     kind,
                 });
             }
@@ -1611,6 +1634,7 @@ impl Hub {
                 identity: identity.into(),
                 client_request_id: client_request_id.into(),
                 at_seq,
+                enqueued_ms: crate::event::now_ms(),
                 kind,
             });
             self.cv.notify_all();
@@ -2088,6 +2112,7 @@ impl Hub {
 impl Inner {
     /// Append, fold into the view, and push to every head. The whole of fan-out.
     fn append_and_fan(&mut self, event: SessionEvent) -> Envelope {
+        self.tap.observe(self.log.session_id(), &event);
         let env = self.log.append(event);
         self.view.apply(&env);
         for h in &mut self.heads {
@@ -2205,6 +2230,7 @@ mod tests {
             identity: DAEMON_SUBMITTER.to_string(),
             client_request_id: "job_kill-1".into(),
             at_seq: hub.head_seq(),
+            enqueued_ms: 0,
             kind: CommandKind::Interrupt {
                 reason: "job_kill".into(),
             },
@@ -2228,6 +2254,7 @@ mod tests {
             identity: "s-parent".into(),
             client_request_id: "task_message-1".into(),
             at_seq: hub.head_seq(),
+            enqueued_ms: 0,
             kind: CommandKind::Message {
                 from: "s-parent".into(),
                 text: "stop and report what you have".into(),
@@ -2250,6 +2277,7 @@ mod tests {
             identity: "dead@lab2x1".into(),
             client_request_id: "c1".into(),
             at_seq: hub.head_seq(),
+            enqueued_ms: 0,
             kind: CommandKind::Prompt {
                 text: "hello".into(),
             },

@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, params};
+pub use rusqlite::{self, Connection};
+use rusqlite::params;
 
 use crate::{CHANNEL, Emitter, Event, Msg, kind, now_ms};
 

@@ -677,7 +677,18 @@ use crate::view::Snapshot;
 /// the number moves. The **layout** question the item also named — two panes on one screen — is
 /// answered by not asking it: a head draws one pane at a time and `!term N` changes which, the
 /// way a terminal multiplexer's windows do.
-pub const PROTOCOL_VERSION: u32 = 44;
+///
+/// # 45: an operator's mark (TODO R81)
+///
+/// [`ClientFrame::Feedback`] — *good*, *bad* or a note, with `#tags`, on the turn running now or
+/// on a row the operator was reading back, stamped with the HEAD's clock at the key press. Its
+/// own frame by the operator's decision (2026-10-11, decision 3), and not a `Slash`: a slash is
+/// dispatched on the worker, and the worker can be pinned for tens of seconds (c12d044) — a mark
+/// that waits behind a review pass lands on the wrong turn. This one is answered on the
+/// connection thread, straight into the metrics channel. A version-44 daemon would fail to parse
+/// it — the version-4 argument — so the number moves. The confirmation is a routine `Warning
+/// {code: "feedback"}`, which every head already draws.
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1657,6 +1668,21 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
         line: String,
+    },
+    /// **An operator's mark** (TODO R81, `docs/metrics.md` §2.5): `/fb`, `/fb+`, `/fb-`, alt-g /
+    /// alt-b. Answered on the connection thread and never queued — see [`PROTOCOL_VERSION`]'s 45
+    /// section. Added at `PROTOCOL_VERSION` 45.
+    Feedback {
+        /// **The head's clock at the key press**, ms — not the daemon's receipt time.
+        at_ms: u64,
+        /// `good`, `bad` or `note`.
+        polarity: String,
+        /// The operator's own words, `#tags` inside. Empty for a bare key.
+        #[serde(default)]
+        note: String,
+        /// The row the operator was reading back, when they were; `None` is "now".
+        #[serde(default)]
+        item_id: Option<String>,
     },
     /// **`sudo` wants a password.** Sent by `letibot-askpass`, the helper the
     /// session's shell runs as `SUDO_ASKPASS`, attached as a head of kind
@@ -2772,6 +2798,7 @@ mod tests {
                 | ClientFrame::Attach { .. }
                 | ClientFrame::CompactSession { .. }
                 | ClientFrame::Detach { .. }
+                | ClientFrame::Feedback { .. }
                 | ClientFrame::FetchDiagnostic { .. }
                 | ClientFrame::FetchRow { .. }
                 | ClientFrame::Interrupt { .. }
@@ -2889,8 +2916,10 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 44,
-            "the match above was last reconciled with the frame list at 44 — several panes per \
+            PROTOCOL_VERSION, 45,
+            "the match above was last reconciled with the frame list at 45 — `ClientFrame::Feedback`, \
+             an operator's mark answered on the connection thread (a version-44 daemon cannot parse \
+             it). 44 was several panes per \
              session (R60 item 2): `TermInput`, `TermResize`, `TermClose`, `TermOutput` and \
              `TermEnded` carry the pane's number, `TermAttached` also answers an open, and \
              `TermStatus` lists every live pane (a version-43 head would fail to decode the first \

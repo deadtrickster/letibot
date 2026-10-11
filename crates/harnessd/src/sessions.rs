@@ -5169,6 +5169,7 @@ mod operator_run_failures {
             identity: "dead".into(),
             client_request_id: "req-1".into(),
             at_seq: 0,
+            enqueued_ms: 0,
             kind: CommandKind::OperatorShellResult {
                 line: "! ls".into(),
                 who: "dead".into(),
