@@ -195,6 +195,17 @@ pub const EXEMPLARS: &[&str] = &[
     "I can't finish it in what is left of this session's context.",
     "I have very little context left, so I am naming it rather than starting it.",
     "I'm at the end of what I can hold in context, so here is the state.",
+    // **The capacity claim used to justify HANDING WORK OFF**, not only stopping — added
+    // 2026-10-11 after pg-noop said *"That last piece is mechanical but it is eight sites across
+    // two files, and my context cannot carry it safely — a half-applied refactor is worse than
+    // none, … Dispatching it"* and scored under the floor: none of the stop family's words
+    // (full, spent, wall, out) are in it. The operator: *"look what we need to catch wrt
+    // context"*.
+    "My context cannot carry it safely, so I am dispatching it to a subagent.",
+    "This is more than my context can hold, so I'll hand it to a child.",
+    "My context won't survive this change, so I'm delegating it.",
+    "I can't keep all of this in my context, so a subagent will do it.",
+    "It is too big for my context, so I'm dispatching it with the sites named.",
 ];
 
 /// **The background** — in the corpus for its document frequencies, never matched
@@ -635,6 +646,17 @@ mod tests {
     /// The first-person words the shared tokeniser drops are one term here, and
     /// `let me` is not one of them.
     #[test]
+    /// **The live miss of 2026-10-11** — a capacity claim used to justify delegating, which the
+    /// stop family did not reach. It must score over the floor now.
+    #[test]
+    fn a_context_that_cannot_carry_the_work_is_a_claim() {
+        let said = "That last piece is mechanical but it is eight sites across two files, and my \
+                    context cannot carry it safely — a half-applied refactor is worse than none, \
+                    and I have already broken this build twice tonight.";
+        let best = score(said);
+        assert!(best >= FLOOR, "scored {best:.3}, under the floor {FLOOR}");
+    }
+
     fn first_person_is_a_term_and_let_me_is_not_first_person() {
         assert_eq!(
             words("I'm at the end of my context; let me stop"),
