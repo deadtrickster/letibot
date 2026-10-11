@@ -1,4 +1,4 @@
-//! **ONE similarity score, with three uses** — lexical, local, deterministic.
+//! **ONE similarity score, with four uses** — lexical, local, deterministic.
 //!
 //! The operator's framing, across the night: *"since we ride similarity score -
 //! worth having it as a gate for new notes"*, *"add this new-note similarity
@@ -14,7 +14,11 @@
 //!    being edited excluded from its own corpus. Same score, two triggers;
 //! 3. **the read hint's score** — [`Corpus::best`], over the person's prompt and
 //!    the turn's tool results (`letibot_harnessd::notes_offer`), whose floor is
-//!    tuned from the take-up log rather than from taste.
+//!    tuned from the take-up log rather than from taste;
+//! 4. **the context-claim check** — [`Corpus::of_texts`] over a corpus of excuse
+//!    sentences (*"my context is at the wall, so I'll stop here"*), asked of each
+//!    sentence a model ends a turn with (`letibot_harnessd::context_claim`). Not
+//!    notes, so not [`index_text`]: a sentence has no title, abstract or headings.
 //!
 //! # What is compared: a note's index fields, and the subject, and nothing else
 //!
@@ -107,11 +111,18 @@
 //!   verbatim under a new name is 0.957. 0.30 sits in the gap, and it errs toward
 //!   refusing: a refusal names the note that was too close and costs one round,
 //!   while a corpus of near-duplicates costs every reader of the index.
-//! * **The hint** (`letibot_harnessd::notes_offer::OFFER_FLOOR`, 0.14): across ten
-//!   prompts drawn from work that has nothing to do with this corpus the best
-//!   score any note reached was **0.133**, and across four prompts that are
-//!   squarely about a note the scores were 0.181, 0.126, 0.419 and 0.366. 0.14 is
-//!   above every negative measured and below three of the four positives.
+//! * **The hint** (`letibot_harnessd::notes_offer::OFFER_FLOOR`, **0.18** — it
+//!   started at 0.14 on the numbers below and was moved on the take-up log, see
+//!   that constant's own doc): across ten prompts drawn from work that has nothing
+//!   to do with this corpus the best score any note reached was **0.133**, and
+//!   across four prompts that are squarely about a note the scores were 0.181,
+//!   0.126, 0.419 and 0.366. 0.14 was above every negative measured and below
+//!   three of the four positives; the live log then showed no offer below 0.183
+//!   was ever taken, which is what moved it.
+//! * **The context-claim check** (`letibot_harnessd::context_claim::FLOOR`): the
+//!   same score over a corpus that is not notes at all — sentences in which a model
+//!   says its own context is full — and its floor, measured against this box's
+//!   session store, is written in that module's doc.
 //!
 //! **And the gap is the finding, not a footnote.** The fourth positive (0.126, a
 //! paraphrase of the review-queue note) is *below* the worst negative (0.133, a
@@ -226,12 +237,28 @@ pub struct Corpus {
 impl Corpus {
     /// Build from `(path, text)` pairs, in whatever order they arrive.
     pub fn new(files: &[(PathBuf, String)]) -> Corpus {
+        let indexed: Vec<(PathBuf, String)> = files
+            .iter()
+            .map(|(path, text)| (path.clone(), index_text(path, text)))
+            .collect();
+        Corpus::of_texts(&indexed)
+    }
+
+    /// **Build from texts that are scored whole** — the same arithmetic as
+    /// [`Corpus::new`], without [`index_text`] in front of it.
+    ///
+    /// A note is scored on its title, abstract and headings because that is what a
+    /// reader is shown; a corpus that is not notes has none of the three, and running
+    /// a sentence through `index_text` would score it on its first sentence plus its
+    /// "title" — whatever the label happened to be called. The label is still a path,
+    /// so [`Corpus::best`] and [`Corpus::nearest`] can say which document matched.
+    pub fn of_texts(files: &[(PathBuf, String)]) -> Corpus {
         let n = files.len().max(1) as f64;
         let mut counts: Vec<(PathBuf, BTreeMap<String, f64>)> = Vec::with_capacity(files.len());
         let mut df: BTreeMap<String, f64> = BTreeMap::new();
         for (path, text) in files {
             let mut tf: BTreeMap<String, f64> = BTreeMap::new();
-            for term in terms(&index_text(path, text)) {
+            for term in terms(text) {
                 *tf.entry(term).or_insert(0.0) += 1.0;
             }
             for term in tf.keys() {
