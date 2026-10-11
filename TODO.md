@@ -1781,7 +1781,7 @@ earlier, Up → the previous prompt in the composer.
 
 ---
 
-## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **OPEN, 2026-10-11**
+## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **OPEN, 2026-10-11 — design decided, building**
 
 The operator: *"can job and agent results come mid turn? i think you guys are getting distracted
 when this happens"*. Read in the code:
@@ -1802,6 +1802,26 @@ round, or the next turn the model takes anyway), and never starts a wake turn on
 Batch several completions into one note. Keep the head's compact job rows (39ee4c8) unchanged.
 Measure the effect on a session like pg-noop (count wake turns caused by routine completions in
 a day, before/after).
+
+**The operator's decision, 2026-10-11** — they proposed *"nothing should come mid turn, lets try
+to queue it and then send as a batch"*, heard why an absolute rule breaks (turns here run for
+hours; a subagent's task is often one turn; a broken dependency should stop the work; monitors
+exist to react; the operator's own messages must stay immediate), and agreed (*"yeah lets do it"*)
+to this design:
+
+1. **Queue and batch by default.** A routine job/subagent completion is HELD and delivered as ONE
+   compact "meanwhile:" note at the next turn boundary — which also replaces a root session's
+   one-wake-turn-per-completion.
+2. **Immediate only for:** the operator's own messages (unchanged, they steer); a result the plan
+   depends on — a todo row with `when: job`, a `needs` on that job or child, a `job_wait` / `task`
+   collect in progress; the FAILURE of something the plan depends on; monitor firings; emergencies
+   (R76's red target).
+3. **Starvation cap:** a turn running longer than N minutes (10, named, configurable) with results
+   held gets the batch at its next round boundary anyway, as one note.
+4. **Optional** `wake: "now" | "later"` on `bash(background)` and `task`, default `later`, for what
+   the plan's structure does not capture; the tool result says which applies.
+5. **Measured** (see the metrics item): every delivery recorded with when it arrived, when it was
+   delivered, by which rule, and what the model did next.
 
 ---
 
