@@ -28,35 +28,54 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
     row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
-/// **A session row that opens with an emergency line**, drawn as [`session_block`] draws one —
-/// the label, the faint text, the clock — with the alarm's head (`‼ main RED at 60bf819c`) in the
-/// failure register, the queue pane's `‼ EMERGENCY`. The lines are the caller's, already cut to
-/// [`session_text_cols`]; see `red_card`.
-pub(crate) fn session_alarm_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
-    use crate::ui::transcript::red_card::ALARM;
+/// **A session row that opens with a card's line**, drawn as [`session_block`] draws one — the
+/// label, the faint text, the clock — with each card line's accent in its role: a red target's
+/// head (`‼ main RED at 60bf819c`) in the failure register, the queue pane's `‼ EMERGENCY`; a
+/// review's verdict in the register the queue pane gives its state. The lines are the caller's,
+/// already cut to [`session_text_cols`]; see `line_cards`.
+pub(crate) fn session_card_block(
+    lines: &[crate::ui::transcript::line_cards::CardLine],
+    ts: u64,
+    cfg: &RenderConfig,
+) -> Vec<String> {
     use rano::render::Span;
     use rano::style::Role;
+    let text = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let block = SessionBlock {
-        text: text.to_string(),
+        text,
         stamp: clock_time(ts),
     };
-    let mut lines = block.lines(cfg.width);
-    for l in &mut lines {
-        let Some(i) = l.spans.iter().position(|s| s.content.starts_with(ALARM)) else {
-            continue;
-        };
-        let content = std::mem::take(&mut l.spans[i].content);
-        let (head, rest) = match content.find(" · ") {
-            Some(at) => content.split_at(at),
-            None => (content.as_str(), ""),
-        };
-        let mut spans = vec![Span::role(head.to_string(), Role::Failure)];
-        if !rest.is_empty() {
-            spans.push(Span::role(rest.to_string(), Role::Faint));
+    let mut drawn = block.lines(cfg.width);
+    // One drawn line per card line: each was cut to the block's columns, so none wraps.
+    if drawn.len() == lines.len() {
+        for (l, cl) in drawn.iter_mut().zip(lines) {
+            let Some((range, role)) = &cl.accent else {
+                continue;
+            };
+            let Some(i) = l
+                .spans
+                .iter()
+                .position(|s| s.content.starts_with(&cl.text[..range.end]))
+            else {
+                continue;
+            };
+            let content = std::mem::take(&mut l.spans[i].content);
+            let mut spans = Vec::new();
+            if range.start > 0 {
+                spans.push(Span::role(content[..range.start].to_string(), Role::Faint));
+            }
+            spans.push(Span::role(content[range.clone()].to_string(), *role));
+            if range.end < content.len() {
+                spans.push(Span::role(content[range.end..].to_string(), Role::Faint));
+            }
+            l.spans.splice(i..=i, spans);
         }
-        l.spans.splice(i..=i, spans);
     }
-    row_strings(&lines, cfg.palette())
+    row_strings(&drawn, cfg.palette())
 }
 
 /// **The columns a `session ·` row's own text has** — its label and its trailing clock taken

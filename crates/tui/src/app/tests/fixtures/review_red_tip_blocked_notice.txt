@@ -1,0 +1,3 @@
+The review of `main`'s red tip 60bf819c33425f282d547ffa2df5e2d840a75bef (`red-main-60bf819c3342`) is BLOCKED: a reviewer for `main` could not start: the VM did not boot: no KVM on this host
+
+Nothing reviews it until somebody acts. `queue` with `action: "restart"` and `id: "red-main-60bf819c3342"` asks again; if `main` has been rewritten past 60bf819c33425f282d547ffa2df5e2d840a75bef the row is superseded by itself, and a stale one can be withdrawn (`"withdraw"`). Once the cause of the red is gone, `"regate"` gates the tip again.

@@ -3,7 +3,7 @@
 
 use crate::ui::render::trim_to;
 use crate::ui::transcript::job_card::compact_notice;
-use crate::ui::transcript::red_card::compact_emergency;
+use crate::ui::transcript::line_cards::compact_cards;
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::{TranscriptItem, UserPart};
@@ -46,13 +46,12 @@ pub(crate) fn user_row_lines(
             let cols = session_text_cols(it.ts, cfg);
             // **A red merge target is ONE line** — the operator, of the `EMERGENCY —` notice and
             // the warning above it: *"please make all this: … a one-line similar to job - with a
-            // popup"*. The whole notice, the gate's output with it, is the same click away the
-            // job card's is; see `red_card`.
-            if let Some(lines) = compact_emergency(&text, subagents, job_tails, cols) {
-                return (
-                    RowClass::Other,
-                    session_alarm_block(&lines.join("\n"), it.ts, cfg),
-                );
+            // popup"*. **And so is a review's outcome** — the operator, of a reviewer that could
+            // not decide, drawn as dozens of lines: *"same story about reviews - … one line +
+            // popup"*. The whole notice is the same click away the job card's is; see
+            // `line_cards`, `red_card` and `review_card`.
+            if let Some(lines) = compact_cards(&text, subagents, job_tails, cols) {
+                return (RowClass::Other, session_card_block(&lines, it.ts, cfg));
             }
             if let Some(lines) = compact_notice(&text, subagents, job_tails, cols) {
                 return (

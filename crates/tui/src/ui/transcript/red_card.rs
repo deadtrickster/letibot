@@ -25,7 +25,8 @@
 //!
 //! # Only what this head can read is folded
 //!
-//! [`folded_notice`]'s rule and `compact_notice`'s: the head of the text must be exactly one of
+//! The card mechanism is `line_cards`' — this module is the red target's reader in its registry
+//! ([`SESSION`], [`WARNING`]). `folded_notice`'s rule and `compact_notice`'s: the head of the text must be exactly one of
 //! the daemon's openings, with a target, a sha and a repository in it. Anything else is `None`
 //! and the row is drawn as it was before this existed. **But the parser keys on the stable
 //! parts only** — the opening, the target, the sha, the repository, the failing step — and
@@ -36,18 +37,12 @@
 //!
 //! The record is untouched: the model reads the daemon's words, every one of them.
 
-use std::collections::HashMap;
+use rano::style::Role;
 
-use crate::app::SubagentState;
-use crate::ui::render::trim_to;
-use crate::ui::transcript::job_card::{JobTail, compact_notice};
-use crate::ui::*;
+use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind, flat};
 
 /// The mark the line opens with — the queue pane's own for an emergency.
 pub(crate) const ALARM: &str = "‼";
-
-/// What the line ends with: the row is a summary, and the popup is the text.
-const CLICK: &str = "click for details";
 
 /// **The last words of a session notice** — `TOOL_WAYS`' closing clause in
 /// `mergequeue::notices`, which every `health` notice ends with. A row of several notices is
@@ -154,6 +149,11 @@ impl RedTip {
         parts.join(" · ")
     }
 
+    /// **The card this tip is drawn as**: the head in the failure register.
+    pub(crate) fn card(&self) -> Card {
+        Card::new(self.line(), 0, &self.head(), Role::Failure, self.title())
+    }
+
     /// The popup's top edge: the head and the repository.
     pub(crate) fn title(&self) -> String {
         match &self.repo {
@@ -169,10 +169,6 @@ fn repo_name(repo: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| repo.to_string())
-}
-
-fn flat(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// **A `target_red` warning's detail, read** — `None` for a shape this head does not know.
@@ -291,72 +287,28 @@ pub(crate) fn notice_tip(text: &str) -> Option<RedTip> {
     Some(tip)
 }
 
-/// **Where a row's first notice ends**, when the row opens with one: `(the notice, the rest)`.
-///
-/// The daemon joins the notices of one wake with a blank line, and a gate's output — inside the
-/// notice — can hold blank lines of its own, so the split is at the notice's last words and
-/// only when what follows is another notice this head knows how to open (a labelled one, or a
-/// second emergency). Anything else after it is kept INSIDE the card: an extra sentence the
-/// daemon learned to say is the notice's, and the popup shows it.
-pub(crate) fn split_notice(text: &str) -> Option<(&str, &str)> {
-    session_head(text)?;
-    if let Some(at) = text.find(NOTICE_END) {
-        let end = at + NOTICE_END.len();
-        if let Some(next) = text[end..].strip_prefix("\n\n")
-            && (next.starts_with('[') || session_head(next).is_some())
-        {
-            return Some((&text[..end], next));
-        }
-    }
-    Some((text, ""))
+/// **The red target in the card registry** (`line_cards`): a session notice opens with one of
+/// `health`'s three openings and ends with [`NOTICE_END`].
+pub(crate) const SESSION: SessionKind = SessionKind {
+    opens: opens_notice,
+    ends: &[NOTICE_END],
+    read: notice_card,
+};
+
+/// **And its hub warning**, `target_red`.
+pub(crate) const WARNING: WarningKind = WarningKind {
+    codes: &["target_red"],
+    read: warning_card,
+};
+
+fn opens_notice(text: &str) -> bool {
+    session_head(text).is_some()
 }
 
-/// **Whether a row is one this module draws as a line** — the click map's question, which
-/// needs no width.
-pub(crate) fn is_red_row(text: &str) -> bool {
-    split_notice(text).is_some()
+fn notice_card(text: &str) -> Option<Card> {
+    notice_tip(text).map(|t| t.card())
 }
 
-/// The popup's top edge for a red row or warning, if `text` is one.
-pub(crate) fn popup_title(text: &str) -> Option<String> {
-    split_notice(text)
-        .and_then(|(n, _)| notice_tip(n))
-        .or_else(|| warning_tip(text))
-        .map(|t| t.title())
-}
-
-/// **The compact row**: one line per emergency notice, and every other notice of the row drawn
-/// the way it is drawn without one (the job card, or the fold). `None` when the row does not
-/// open with an emergency, or when any part of it is a shape this head does not know — the row
-/// is then drawn as it was.
-pub(crate) fn compact_emergency(
-    text: &str,
-    subagents: &[SubagentState],
-    tails: &HashMap<String, JobTail>,
-    cols: usize,
-) -> Option<Vec<String>> {
-    let (notice, rest) = split_notice(text)?;
-    let tip = notice_tip(notice)?;
-    let mut out = vec![trim_to(&tip.line(), cols)];
-    if !rest.is_empty() {
-        if let Some(more) = compact_emergency(rest, subagents, tails, cols) {
-            out.extend(more);
-        } else if let Some(more) = compact_notice(rest, subagents, tails, cols) {
-            out.extend(more);
-        } else {
-            for l in folded_notice(rest, subagents)?.lines() {
-                out.push(trim_to(l, cols));
-            }
-        }
-    }
-    Some(out)
-}
-
-/// **A `target_red` warning's one line**, cut to `width`, or `None` for a detail this head does
-/// not read (the note is then drawn as it always was).
-pub(crate) fn warning_line(code: &str, detail: &str, width: usize) -> Option<String> {
-    if code != "target_red" {
-        return None;
-    }
-    Some(trim_to(&warning_tip(detail)?.line(), width))
+fn warning_card(detail: &str) -> Option<Card> {
+    warning_tip(detail).map(|t| t.card())
 }

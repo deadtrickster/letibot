@@ -277,14 +277,7 @@ pub fn veto(
                 return Err(format!("`{}` moved while you asked; look again", r.id));
             }
             announce(events, "review", &r.id, "rejected", &said);
-            let told = deliver(
-                &r.session_id,
-                &format!(
-                    "The operator VETOED `{}`: {words}. It does not land. Answer it in the branch \
-                     and commit; the new head goes back to review by itself.",
-                    r.branch
-                ),
-            );
+            let told = deliver(&r.session_id, &super::notices::vetoed(&r, &words));
             Ok(match told {
                 Ok(_) => format!("`{}` vetoed; the child that wrote it was told", r.branch),
                 Err(e) => format!("`{}` vetoed; the child could not be told: {e}", r.branch),

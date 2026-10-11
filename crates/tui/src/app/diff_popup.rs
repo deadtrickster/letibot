@@ -15,7 +15,7 @@ use rano::style::Role;
 use super::editor::FileRef;
 use super::*;
 use crate::ui::transcript::job_card::{EndedJob, JobTail, TAIL_BYTES, notice_jobs};
-use crate::ui::transcript::red_card::is_red_row;
+use crate::ui::transcript::line_cards::is_card_row;
 
 /// The popup's state: what it shows, where the reader is in it, and the rows it last laid out
 /// (kept per width and diff shape, because a file is re-diffed only when either changes).
@@ -90,15 +90,15 @@ impl App {
     /// output this head has not asked for yet is asked for now, so the popup fills in when the
     /// answer lands. Does nothing for a row that is not a notice this head can read.
     ///
-    /// **A red target's notice opens the same way** (`red_card`): its text whole, the gate's
-    /// output with it, and no jobs under it.
+    /// **A card's notice opens the same way** (`line_cards`) — a red target's, a review's: its
+    /// text whole, the gate's output or the reviewer's reasons with it, and no jobs under it.
     pub(crate) fn open_notice_popup(&mut self, k: usize) {
         let Some(text) = self.items.get(k).and_then(agent_row_text) else {
             return;
         };
         let jobs = match notice_jobs(&text) {
             Some(jobs) => jobs,
-            None if is_red_row(&text) => Vec::new(),
+            None if is_card_row(&text) => Vec::new(),
             None => return,
         };
         let asks: Vec<(String, u64)> = jobs
@@ -110,8 +110,9 @@ impl App {
         self.open_popup(PopupBody::Notice { text, jobs });
     }
 
-    /// **Open the note card `i` whole** — the click on a `target_red` warning's one line: the
-    /// detail as the daemon raised it, the gate's output included, in the job card's popup.
+    /// **Open the note card `i` whole** — the click on a card's one line (a `target_red` warning, a
+    /// review's warning): the detail as the daemon raised it, the gate's output or the reviewer's
+    /// reasons included, in the job card's popup.
     pub(crate) fn open_card_popup(&mut self, i: usize) {
         let Some(card) = self.note_cards.get(i) else {
             return;
@@ -217,8 +218,8 @@ impl App {
                                 .map(|(_, j)| (j.id.clone(), j.produced)),
                         );
                     }
-                    // A red target's notice is a notice too (`red_card`).
-                    let is = jobs.is_some() || text.as_deref().is_some_and(is_red_row);
+                    // A card's notice is a notice too (`line_cards`).
+                    let is = jobs.is_some() || text.as_deref().is_some_and(is_card_row);
                     last = Some((sp.row, is));
                     is
                 }

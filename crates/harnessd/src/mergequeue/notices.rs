@@ -157,6 +157,136 @@ pub fn parked(r: &ReviewRow) -> String {
     }
 }
 
+// **The rest of what the review queue says about a verdict**, moved here from where each was
+// built inline (`review`, `serve`, `verbs`, `Harness::handover_notices`) — byte for byte — so
+// that one test can write the TUI's review-card fixtures from the daemon's own words. The TUI
+// draws each as one line (`ui::transcript::review_card`); the model reads every word.
+
+/// The reviewer's reasons, one bullet each, as a refusal lists them.
+fn reason_list(reasons: &[String]) -> String {
+    reasons
+        .iter()
+        .map(|x| format!("  - {x}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **A refusal, to the child that wrote the branch** (`review::deliver_refusal`).
+pub fn refused(r: &ReviewRow, reasons: &[String]) -> String {
+    let list = reason_list(reasons);
+    let wt = r.worktree.as_deref().unwrap_or("its worktree");
+    format!(
+        "Your branch `{branch}` was REFUSED by the review at {head}, so it does not land. The \
+         reviewer's reasons:\n\n{list}\n\nThe branch is still in {wt}. Answer the reasons there \
+         and commit: a new head goes back to review by itself (the verdict is bound to the head it \
+         judged).",
+        branch = r.branch,
+        head = r.head_sha,
+    )
+}
+
+/// **A refusal, to the root of a child that could not be told** (`review::deliver_refusal`);
+/// `missed` is why the child was not.
+pub fn refused_to_root(r: &ReviewRow, reasons: &[String], child: &str, missed: &str) -> String {
+    let list = reason_list(reasons);
+    let wt = r.worktree.as_deref().unwrap_or("its worktree");
+    format!(
+        "The review of `{branch}` — the branch of a child you started (`{child}`), which could \
+         not be told ({why}) — REFUSED it at {head}, so it does not land. The reviewer's \
+         reasons:\n\n{list}\n\nThe branch is in {wt}, and it is yours to move: answer the \
+         reasons there and commit (a new head goes back to review by itself), or ask the \
+         operator for `/queue approve {id}` or `/queue rm {id}`.",
+        branch = r.branch,
+        head = r.head_sha,
+        why = missed,
+        id = r.id,
+    )
+}
+
+/// **`refusal_undelivered`**: a refusal nobody could be told of (`review::deliver_refusal`).
+pub fn refusal_undelivered(r: &ReviewRow, missed: &str) -> String {
+    format!(
+        "the review of `{}` (`{}`) refused it, and the complaints reached nobody ({}). The \
+         verdict stands and is on the row; `/queue restart {}`, `/queue approve {}` or \
+         `/queue rm {}`.",
+        r.branch, r.id, missed, r.id, r.id, r.id
+    )
+}
+
+/// **`queue_needs_human`**: the reviewer could not decide (`review::verdict`); `why` is the
+/// move's own words, `BY could not decide at SHA: REASONS`.
+pub fn needs_human(r: &ReviewRow, why: &str) -> String {
+    format!(
+        "the review of `{}` (`{}`) cannot decide — {why}. `/queue approve {}` \
+         approves it (the merge gate still runs), `/queue veto {} WHY` sends it \
+         back, `/queue rm {}` drops it.",
+        r.branch, r.id, r.id, r.id, r.id
+    )
+}
+
+/// **`queue_blocked`**: the attempts ran out without a verdict (`review::Pool::attempt_failed`).
+pub fn blocked_after(r: &ReviewRow, attempts: u32, why: &str) -> String {
+    format!(
+        "the review of `{}` (`{}`) is BLOCKED after {attempts} attempts without a \
+         verdict: {why} `/queue restart {}` asks again; `/queue approve {}` \
+         approves it over the reviewer (the merge gate still runs).",
+        r.branch, r.id, r.id, r.id
+    )
+}
+
+/// **`queue_blocked`**: a reviewer that could not start (`review::serve`); `why` already says
+/// so, `a reviewer for `BRANCH` could not start: …`.
+pub fn reviewer_could_not_start(r: &ReviewRow, why: &str) -> String {
+    format!(
+        "{why}. The review is BLOCKED (`{}`): `/queue restart {}` asks again, \
+         `/queue approve {}` approves it over the reviewer — the merge gate \
+         still runs.",
+        r.id, r.id, r.id
+    )
+}
+
+/// **`queue_blocked`**: a review that cannot run (`RepoQueue::block`).
+pub fn review_cannot_run(r: &ReviewRow, why: &str, merge_via_session: bool) -> String {
+    format!(
+        "the review of `{}` (`{}`) cannot run and is BLOCKED: {why} {}",
+        r.branch,
+        r.id,
+        if merge_via_session {
+            "This project merges such a branch via its main session, which is told next."
+        } else {
+            "Nothing lands it until a person acts: `/queue restart ID` asks again, \
+             `/queue approve ID` approves it over the reviewer (the merge gate still \
+             runs)."
+        }
+    )
+}
+
+/// **A review handed to the project's main session** (`Harness::handover_notices`).
+pub fn handed_over(r: &ReviewRow) -> String {
+    format!(
+        "The review queue could not review `{branch}` (row `{id}`): {failure} This project \
+         merges such a branch via its main session (`[queue] merge_via_session`), so it is \
+         yours: the branch is in {wt}. Run `{target}`'s merge gate (the `Merge gate` section \
+         of its AGENTS.md) there, and land it on `{target}` yourself if it is green — the \
+         queue sees the landing and withdraws the row. Or ask the operator for `/queue \
+         approve {id}`, which lands it through the queue's own gate.",
+        branch = r.branch,
+        id = r.id,
+        failure = r.failure,
+        wt = r.worktree.as_deref().unwrap_or("its worktree"),
+        target = r.target,
+    )
+}
+
+/// **The operator's veto, to the child that wrote the branch** (`verbs::veto`).
+pub fn vetoed(r: &ReviewRow, words: &str) -> String {
+    format!(
+        "The operator VETOED `{}`: {words}. It does not land. Answer it in the branch \
+         and commit; the new head goes back to review by itself.",
+        r.branch
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +360,207 @@ mod tests {
                 text,
                 &pinned,
                 "the queue no longer writes what the TUI's red card parses ({})",
+                path.display()
+            );
+        }
+    }
+
+    /// **The review the operator pasted** — `agent/panic-groupingsets-join`, whose reviewer could
+    /// not decide, parked for a person. The reasons are the reviewer's as the paste shows them
+    /// (it opened with these words and was cut where the operator stopped copying), completed.
+    fn groupingsets() -> ReviewRow {
+        ReviewRow {
+            id: "s-1789919514688401228-sub-1791743034603570463".into(),
+            repository: "/home/dead/Projects/pgmem".into(),
+            target: "main".into(),
+            kind: ReviewKind::Branch,
+            session_id: "s-1789919514688401228-sub-1791743034603570463".into(),
+            branch: "agent/panic-groupingsets-join".into(),
+            worktree: Some("/home/dead/Projects/pgmem/.worktrees/panic-groupingsets-join".into()),
+            base_sha: "4be1c07d9a2e5f3b8c6d1e0f7a9b2c4d6e8f0a1b".into(),
+            head_sha: "9d3e5a7c1b2f4e6d8c0a9b7e5f3d1c2b4a6e8f0d".into(),
+            brief: "Fix the two panics in GROUPING SETS and in the hash join.".into(),
+            priority: letibot_tokencore::store::MergePriority::Subagent,
+            fixes: None,
+            state: ReviewState::CannotDecide,
+            owner: String::new(),
+            reviewer: None,
+            deadline_ms: None,
+            attempts: 0,
+            failure: String::new(),
+            verdict: Some("needs_human".into()),
+            verdict_by: Some("reviewer:s-gatekeeper-sub-17917".into()),
+            reviewed_sha: Some("9d3e5a7c1b2f4e6d8c0a9b7e5f3d1c2b4a6e8f0d".into()),
+            reasons: vec![
+                "The two root causes are the right ones and both patches are correct in \
+                 themselves. `groupingsets`: an empty grouping set made a zero-width key that the \
+                 executor indexed past, and the patch gives the empty set a key of its own"
+                    .into(),
+                "The guard the brief demands is there. `GROUPING SETS (())` now plans to one \
+                 group, and the regression test that panicked on main passes on the branch"
+                    .into(),
+                "The `join` patch is at the right site. The hash join no longer unwraps a missing \
+                 build-side row; it emits the NULL-extended row the outer join asks for"
+                    .into(),
+                "BUT the ask's acceptance cannot be met on this base, and the branch's own \
+                 measurements say it was not met. On main the memory engine cannot hold row \
+                 values: COPY FROM STDIN only counts the rows it is given, so the acceptance query \
+                 returns zero rows on the branch and on main alike, and a fix cannot be told from \
+                 a no-op"
+                    .into(),
+            ],
+            files: vec![],
+            commands: vec![],
+            evidence: "reviewer:s-gatekeeper-sub-17917 could not decide".into(),
+            created_ms: 1,
+            state_ms: 2,
+            updated_ms: 2,
+        }
+    }
+
+    /// **The TUI's review-card fixtures are what the queue writes** — one per shape a review's
+    /// outcome reaches a session or a hub in: the row parked for a person ([`parked`], four
+    /// shapes), the refusal and the veto said to the branch's session as a parent's message
+    /// (`parent_message_text`, the words the session's row holds), the review handed to the
+    /// project, and the hub warnings the review queue raises. `review_card` in the TUI parses
+    /// these to draw each as one line — the operator, of the pasted wall of text: *"same story
+    /// about reviews - … one line + popup"*. A reworded notice fails here before it falls back
+    /// on a screen. Re-bless with `LETIBOT_BLESS_REVIEW_CARD=1`, and teach `review_card` the new
+    /// shape if it moved a part it keys on (the opening, the branch, the verdict's words).
+    #[test]
+    fn the_tuis_review_card_fixtures_are_what_the_queue_writes() {
+        use crate::sessions::gatekeeper::SESSION;
+        let r = groupingsets();
+        let as_message = |text: String| crate::harness::parent_message_text(SESSION, &text);
+
+        let blocked = ReviewRow {
+            state: ReviewState::Blocked,
+            attempts: 3,
+            failure: "the reviewer `s-gatekeeper-sub-17920` vanished without a verdict".into(),
+            ..r.clone()
+        };
+        let red_tip = ReviewRow {
+            id: "red-main-60bf819c3342".into(),
+            kind: ReviewKind::Target,
+            branch: "main".into(),
+            head_sha: "60bf819c33425f282d547ffa2df5e2d840a75bef".into(),
+            reasons: vec![
+                "The failure is a golden frame that differs, and both commits since the last \
+                 green tip touch the palette"
+                    .into(),
+                "BUT neither commit's own gate run was kept, so which one broke it cannot be told \
+                 from here"
+                    .into(),
+            ],
+            ..r.clone()
+        };
+        let red_tip_blocked = ReviewRow {
+            state: ReviewState::Blocked,
+            failure: "a reviewer for `main` could not start: the VM did not boot: no KVM on this \
+                      host"
+                .into(),
+            ..red_tip.clone()
+        };
+        let refused = ReviewRow {
+            state: ReviewState::Rejected,
+            reasons: vec![
+                "The panic is gone, but the patch catches it rather than removing its cause: the \
+                 executor still indexes past a zero-width key, and only the unwrap moved"
+                    .into(),
+                "The regression test asserts that nothing panics and nothing about the rows".into(),
+            ],
+            ..r.clone()
+        };
+        let handed = ReviewRow {
+            state: ReviewState::Blocked,
+            failure: "the review's worktree is gone: /home/dead/Projects/pgmem/.worktrees/\
+                      panic-groupingsets-join does not exist."
+                .into(),
+            evidence: crate::mergequeue::HANDED_TO_PROJECT.into(),
+            ..r.clone()
+        };
+        let child_gone = "`s-1789919514688401228-sub-1791743034603570463`: no session \
+                          `s-1789919514688401228-sub-1791743034603570463` is live in this daemon";
+        let needs_human_why = format!(
+            "reviewer:s-gatekeeper-sub-17917 could not decide at {}: {}",
+            r.head_sha,
+            r.reasons.join("; ")
+        );
+        let could_not_start_why = format!(
+            "a reviewer for `{}` could not start: the VM did not boot: no KVM on this host",
+            r.branch
+        );
+        let shapes: Vec<(&str, String)> = vec![
+            ("review_cannot_decide_notice.txt", parked(&r)),
+            ("review_blocked_notice.txt", parked(&blocked)),
+            ("review_red_tip_cannot_decide_notice.txt", parked(&red_tip)),
+            (
+                "review_red_tip_blocked_notice.txt",
+                parked(&red_tip_blocked),
+            ),
+            (
+                "review_refused_message.txt",
+                as_message(super::refused(&refused, &refused.reasons)),
+            ),
+            (
+                "review_refused_root_message.txt",
+                as_message(refused_to_root(
+                    &refused,
+                    &refused.reasons,
+                    &refused.session_id,
+                    child_gone,
+                )),
+            ),
+            (
+                "review_vetoed_message.txt",
+                as_message(vetoed(
+                    &r,
+                    "the acceptance query has to return rows on the branch; land the COPY fix first",
+                )),
+            ),
+            ("review_handed_over_notice.txt", handed_over(&handed)),
+            (
+                "review_needs_human_warning.txt",
+                needs_human(&r, &needs_human_why),
+            ),
+            (
+                "review_blocked_after_warning.txt",
+                blocked_after(
+                    &r,
+                    3,
+                    "the reviewer `s-gatekeeper-sub-17920` vanished without a verdict",
+                ),
+            ),
+            (
+                "review_could_not_start_warning.txt",
+                reviewer_could_not_start(&r, &could_not_start_why),
+            ),
+            (
+                "review_cannot_run_warning.txt",
+                review_cannot_run(
+                    &r,
+                    "the branch `agent/panic-groupingsets-join` is gone from the repository.",
+                    false,
+                ),
+            ),
+            (
+                "review_refusal_undelivered_warning.txt",
+                refusal_undelivered(&refused, child_gone),
+            ),
+        ];
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/src/app/tests/fixtures");
+        for (name, text) in &shapes {
+            let path = dir.join(name);
+            if std::env::var_os("LETIBOT_BLESS_REVIEW_CARD").is_some() {
+                std::fs::write(&path, text).unwrap();
+            }
+            let pinned = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(
+                text,
+                &pinned,
+                "the queue no longer writes what the TUI's review card parses ({})",
                 path.display()
             );
         }

@@ -8134,19 +8134,7 @@ impl Harness {
             {
                 continue;
             }
-            out.push(format!(
-                "The review queue could not review `{branch}` (row `{id}`): {failure} This project \
-                 merges such a branch via its main session (`[queue] merge_via_session`), so it is \
-                 yours: the branch is in {wt}. Run `{target}`'s merge gate (the `Merge gate` section \
-                 of its AGENTS.md) there, and land it on `{target}` yourself if it is green — the \
-                 queue sees the landing and withdraws the row. Or ask the operator for `/queue \
-                 approve {id}`, which lands it through the queue's own gate.",
-                branch = r.branch,
-                id = r.id,
-                failure = r.failure,
-                wt = r.worktree.as_deref().unwrap_or("its worktree"),
-                target = r.target,
-            ));
+            out.push(crate::mergequeue::notices::handed_over(&r));
         }
         out
     }

@@ -466,7 +466,7 @@ fn owner_word(owner: &str) -> String {
     }
 }
 
-fn mark_of(state: &str) -> (&'static str, Role) {
+pub(crate) fn mark_of(state: &str) -> (&'static str, Role) {
     match state {
         "waiting" | "queued" => ("[ ]", Role::Pending),
         "reviewing" | "gating" => ("[~]", Role::Code),

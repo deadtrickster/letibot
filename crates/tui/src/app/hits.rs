@@ -54,7 +54,7 @@ pub(crate) enum Target {
     /// notice's index in `items`. A click opens the notice whole, as a click on an edit row
     /// opens its change.
     Notice,
-    /// **One red target's warning, drawn as a line** (`red_card`); its one stop is the card's
+    /// **One warning drawn as a card's line** (`line_cards`); its one stop is the card's
     /// index in `note_cards`. A click opens the detail whole, in the same popup.
     NoteCard,
     /// **A todo row's `waits on …` link** (`todos_wait_links`), over the todos pane; its one stop

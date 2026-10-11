@@ -62,16 +62,17 @@ impl App {
                 "esc closes · ↑↓ PgUp PgDn Home End · ctrl-] edits it",
             ),
             // **The notice names its jobs on the edge**, the way the change names its file.
-            // **A red target's card names the target and the tip**, in the alarm's register
-            // (`red_card`).
-            PopupBody::Notice { jobs, text } if jobs.is_empty() => (
-                Line::new(vec![Span::styled(
-                    crate::ui::transcript::red_card::popup_title(text)
-                        .unwrap_or_else(|| "notice".to_string()),
-                    Style::of(Role::Failure),
-                )]),
-                "esc closes · ↑↓ PgUp PgDn Home End",
-            ),
+            // **A card names what it is about** — a red target's the target and the tip, in the
+            // alarm's register; a review's the branch and the verdict, in the verdict's
+            // (`line_cards`).
+            PopupBody::Notice { jobs, text } if jobs.is_empty() => {
+                let (title, role) = crate::ui::transcript::line_cards::popup_title(text)
+                    .unwrap_or_else(|| ("notice".to_string(), Role::Failure));
+                (
+                    Line::new(vec![Span::styled(title, Style::of(role))]),
+                    "esc closes · ↑↓ PgUp PgDn Home End",
+                )
+            }
             PopupBody::Notice { jobs, .. } => (
                 Line::new(vec![
                     Span::styled(

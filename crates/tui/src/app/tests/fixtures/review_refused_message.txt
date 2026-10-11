@@ -1,0 +1,6 @@
+message from your parent session `s-gatekeeper`: Your branch `agent/panic-groupingsets-join` was REFUSED by the review at 9d3e5a7c1b2f4e6d8c0a9b7e5f3d1c2b4a6e8f0d, so it does not land. The reviewer's reasons:
+
+  - The panic is gone, but the patch catches it rather than removing its cause: the executor still indexes past a zero-width key, and only the unwrap moved
+  - The regression test asserts that nothing panics and nothing about the rows
+
+The branch is still in /home/dead/Projects/pgmem/.worktrees/panic-groupingsets-join. Answer the reasons there and commit: a new head goes back to review by itself (the verdict is bound to the head it judged).

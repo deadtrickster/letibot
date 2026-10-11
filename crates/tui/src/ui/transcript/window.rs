@@ -896,11 +896,12 @@ impl App {
                     if !hist_lines.is_empty() {
                         hist_lines.push(String::new());
                     }
-                    // **A red target's warning is a card's one line** (`red_card`), and a
-                    // click on it opens the detail whole: where it is, kept for the click map.
+                    // **A red target's warning is a card's one line** (`red_card`), and so is
+                    // a review's (`review_card`); a click on it opens the detail whole: where
+                    // it is, kept for the click map.
                     let drawn = note_lines(&cfg, &notes[*note_upto].1);
                     if let Note::Warned(w) = &notes[*note_upto].1
-                        && red_row(&cfg, &notes[*note_upto].1).is_some()
+                        && card_row(&cfg, &notes[*note_upto].1).is_some()
                     {
                         note_cards.push(crate::app::diff_popup::NoteCard {
                             at: hist_lines.len(),

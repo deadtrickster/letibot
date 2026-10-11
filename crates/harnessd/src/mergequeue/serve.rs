@@ -624,18 +624,7 @@ impl RepoQueue {
         if ok {
             self.raise(
                 "queue_blocked",
-                format!(
-                    "the review of `{}` (`{}`) cannot run and is BLOCKED: {why} {}",
-                    r.branch,
-                    r.id,
-                    if settings.merge_via_session {
-                        "This project merges such a branch via its main session, which is told next."
-                    } else {
-                        "Nothing lands it until a person acts: `/queue restart ID` asks again, \
-                         `/queue approve ID` approves it over the reviewer (the merge gate still \
-                         runs)."
-                    }
-                ),
+                super::notices::review_cannot_run(r, why, settings.merge_via_session),
             );
         }
         Ok(ok)

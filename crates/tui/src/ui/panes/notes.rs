@@ -108,9 +108,9 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
 ///
 /// **And a compaction is ONE line**, whatever `NOTE_LINES` says: see [`COMPACTION_ROWS`].
 ///
-/// **And a red merge target is ONE line too** ([`red_row`]).
+/// **And a red merge target is ONE line too, and so is a review's outcome** ([`card_row`]).
 pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
-    if let Some(rows) = red_row(cfg, n) {
+    if let Some(rows) = card_row(cfg, n) {
         return rows;
     }
     match compaction_row(cfg, n) {
@@ -119,25 +119,30 @@ pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     }
 }
 
-/// **A `target_red` warning, as one line** — the operator, of the paragraph it drew with the
-/// gate's output under it: *"please make all this: … a one-line similar to job - with a
-/// popup"*. `‼ main RED at 60bf819c · firecode · bin/firecode test failed · click for details`,
-/// the head in the failure register; a click opens the detail whole (`App::note_cards`), and
-/// `/notes` lists it unfolded as before. `None` for any other note, and for a `target_red`
-/// whose detail `red_card::warning_tip` cannot read — that one is drawn as it always was.
-pub(crate) fn red_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
+/// **A hub warning a card reads, as one line** (`line_cards::WARNING_KINDS`).
+///
+/// A `target_red` warning — the operator, of the paragraph it drew with the gate's output under
+/// it: *"please make all this: … a one-line similar to job - with a popup"*. `‼ main RED at
+/// 60bf819c · firecode · bin/firecode test failed · click for details`, the head in the failure
+/// register. And a review's (`queue_needs_human`, a review's `queue_blocked`,
+/// `refusal_undelivered`) — the operator: *"same story about reviews - … one line + popup"*.
+/// `review · agent/x · could not decide · BUT … · click for details`, the verdict in its role.
+///
+/// A click opens the detail whole (`App::note_cards`), and `/notes` lists it unfolded as before.
+/// `None` for any other note, and for a detail no card reads — that one is drawn as it always
+/// was.
+pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
     use rano::render::{Line, Span};
-    use rano::style::Role;
     let Note::Warned(w) = n else { return None };
-    let line = crate::ui::transcript::red_card::warning_line(&w.code, &w.detail, cfg.width)?;
-    let (head, rest) = match line.find(" · ") {
-        Some(at) => line.split_at(at),
-        None => (line.as_str(), ""),
+    let cl = crate::ui::transcript::line_cards::warning_card(&w.code, &w.detail)?.cut(cfg.width);
+    let row = match &cl.accent {
+        Some((range, role)) => Line::new(vec![
+            Span::raw(cl.text[..range.start].to_string()),
+            Span::role(cl.text[range.clone()].to_string(), *role),
+            Span::raw(cl.text[range.end..].to_string()),
+        ]),
+        None => Line::new(vec![Span::raw(cl.text.clone())]),
     };
-    let row = Line::new(vec![
-        Span::role(head.to_string(), Role::Failure),
-        Span::raw(rest.to_string()),
-    ]);
     Some(row_strings(&[row], cfg.palette()))
 }
 

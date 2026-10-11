@@ -36,6 +36,7 @@ use letibot_tools::gatekeeper::{Decision, ReviewRequest};
 
 use super::gate::now_ms;
 use super::git;
+use super::notices;
 use super::serve::MAX_REVIEW_ATTEMPTS;
 use super::settings::{QueueSettings, RedTarget};
 use crate::sessions::gatekeeper::ReviewerPlacement;
@@ -106,15 +107,7 @@ impl Pool<'_> {
         if attempts >= MAX_REVIEW_ATTEMPTS {
             let ok = self.mv(r, ReviewState::Blocked, base)?;
             if ok {
-                self.raise(
-                    "queue_blocked",
-                    format!(
-                        "the review of `{}` (`{}`) is BLOCKED after {attempts} attempts without a \
-                         verdict: {why} `/queue restart {}` asks again; `/queue approve {}` \
-                         approves it over the reviewer (the merge gate still runs).",
-                        r.branch, r.id, r.id, r.id
-                    ),
-                );
+                self.raise("queue_blocked", notices::blocked_after(r, attempts, &why));
             }
             Ok(ok)
         } else {
@@ -165,15 +158,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                         .set("failure", why.clone())
                         .set("attempts", r.attempts + 1),
                 )? {
-                    p.raise(
-                        "queue_blocked",
-                        format!(
-                            "{why}. The review is BLOCKED (`{}`): `/queue restart {}` asks again, \
-                             `/queue approve {}` approves it over the reviewer — the merge gate \
-                             still runs.",
-                            r.id, r.id, r.id
-                        ),
-                    );
+                    p.raise("queue_blocked", notices::reviewer_could_not_start(r, &why));
                 }
                 out.moved = true;
             }
@@ -360,15 +345,7 @@ fn verdict(
                 ReviewState::CannotDecide,
                 judged("needs_human", why.clone()),
             )? {
-                p.raise(
-                    "queue_needs_human",
-                    format!(
-                        "the review of `{}` (`{}`) cannot decide — {why}. `/queue approve {}` \
-                         approves it (the merge gate still runs), `/queue veto {} WHY` sends it \
-                         back, `/queue rm {}` drops it.",
-                        r.branch, r.id, r.id, r.id, r.id
-                    ),
-                );
+                p.raise("queue_needs_human", notices::needs_human(r, &why));
             }
         }
         (ReviewKind::Target, Decision::Accept) => {
@@ -477,20 +454,7 @@ fn open_fix_branch(
 /// **The refusal goes back to the child that wrote the branch**, or its root when the child is
 /// gone; when nobody can be told, the operator is (it stays on the row either way).
 fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
-    let list = reasons
-        .iter()
-        .map(|x| format!("  - {x}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let wt = r.worktree.as_deref().unwrap_or("its worktree");
-    let to_child = format!(
-        "Your branch `{branch}` was REFUSED by the review at {head}, so it does not land. The \
-         reviewer's reasons:\n\n{list}\n\nThe branch is still in {wt}. Answer the reasons there \
-         and commit: a new head goes back to review by itself (the verdict is bound to the head it \
-         judged).",
-        branch = r.branch,
-        head = r.head_sha,
-    );
+    let to_child = notices::refused(r, reasons);
     let child = r.session_id.clone();
     let mut missed: Vec<String> = Vec::new();
     if !child.is_empty() {
@@ -501,17 +465,7 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     }
     let root = super::root_session(p.store, &child);
     if !root.is_empty() && root != child {
-        let to_root = format!(
-            "The review of `{branch}` — the branch of a child you started (`{child}`), which could \
-             not be told ({why}) — REFUSED it at {head}, so it does not land. The reviewer's \
-             reasons:\n\n{list}\n\nThe branch is in {wt}, and it is yours to move: answer the \
-             reasons there and commit (a new head goes back to review by itself), or ask the \
-             operator for `/queue approve {id}` or `/queue rm {id}`.",
-            branch = r.branch,
-            head = r.head_sha,
-            why = missed.join("; "),
-            id = r.id,
-        );
+        let to_root = notices::refused_to_root(r, reasons, &child, &missed.join("; "));
         match (p.deliver)(&root, &to_root) {
             Ok(_) => return,
             Err(e) => missed.push(format!("`{root}`: {e}")),
@@ -519,17 +473,7 @@ fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     }
     p.raise(
         "refusal_undelivered",
-        format!(
-            "the review of `{}` (`{}`) refused it, and the complaints reached nobody ({}). The \
-             verdict stands and is on the row; `/queue restart {}`, `/queue approve {}` or \
-             `/queue rm {}`.",
-            r.branch,
-            r.id,
-            missed.join("; "),
-            r.id,
-            r.id,
-            r.id
-        ),
+        notices::refusal_undelivered(r, &missed.join("; ")),
     );
 }
 

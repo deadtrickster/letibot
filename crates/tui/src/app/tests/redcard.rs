@@ -19,7 +19,7 @@ const WARNING: &str = include_str!("fixtures/red_main_warning.txt");
 const TO_THE_MODEL: &str = "With the `queue` tool you can read both queues";
 
 /// A head attached to `s` with `notice` as its one row, spoken by the harness.
-fn with_notice(notice: &str) -> App {
+pub(super) fn with_notice(notice: &str) -> App {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -50,7 +50,7 @@ fn with_notice(notice: &str) -> App {
 }
 
 /// A head attached to `s` with one hub warning.
-fn with_warning(code: &str, detail: &str) -> App {
+pub(super) fn with_warning(code: &str, detail: &str) -> App {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -68,12 +68,12 @@ fn with_warning(code: &str, detail: &str) -> App {
     a
 }
 
-fn rows_with<'a>(screen: &'a [String], needle: &str) -> Vec<&'a String> {
+pub(super) fn rows_with<'a>(screen: &'a [String], needle: &str) -> Vec<&'a String> {
     screen.iter().filter(|l| l.contains(needle)).collect()
 }
 
 /// The popup's rows, as text — laid out by a frame first.
-fn popup_text(a: &mut App) -> String {
+pub(super) fn popup_text(a: &mut App) -> String {
     a.screen(120, 30);
     let p = a.diff_popup.as_ref().expect("the popup is open");
     p.laid
@@ -87,7 +87,7 @@ fn popup_text(a: &mut App) -> String {
 }
 
 /// Whether `hay` holds `needle`, the wrap's line breaks read as the spaces they replaced.
-fn holds(hay: &str, needle: &str) -> bool {
+pub(super) fn holds(hay: &str, needle: &str) -> bool {
     let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     flat(hay).contains(&flat(needle))
 }
@@ -224,7 +224,7 @@ fn the_warning_line_is_the_alarm_register() {
         detail: WARNING.into(),
         ts: 1,
     });
-    let rows = crate::ui::red_row(&cfg, &n).expect("a red row");
+    let rows = crate::ui::card_row(&cfg, &n).expect("a red row");
     assert_eq!(rows.len(), 1);
     assert!(rows[0].contains(RED), "{:?}", rows[0]);
 }

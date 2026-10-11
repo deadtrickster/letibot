@@ -1,0 +1,3 @@
+The review of `agent/panic-groupingsets-join` (`s-1789919514688401228-sub-1791743034603570463`), a branch of your tree, is BLOCKED and nothing lands it: the reviewer `s-gatekeeper-sub-17920` vanished without a verdict
+
+`queue` with `action: "restart"` and `id: "s-1789919514688401228-sub-1791743034603570463"` asks a reviewer again; the operator's `/queue approve s-1789919514688401228-sub-1791743034603570463` approves it over the reviewer (the merge gate still runs).
