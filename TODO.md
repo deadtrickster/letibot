@@ -183,8 +183,24 @@ and the description states the value in force, resolved to bytes. 64 MB is delib
 most calls fit in it, and a call that does not is killed at once with a result that says what to
 ask for, which is cheaper than a runaway found by the OOM killer.
 
-**Still open:** the ceiling's rule (a fraction of `MemAvailable`, or `MemAvailable` minus a
-reserve for the daemon and the desktop) — pick, state it in the description, measure.
+**The ceiling is a config option too, and it is not a hard limit** — the operator: *"ceiling is a
+config too, with both absolute and fraction and the max is uncapped but if model wants it - must
+ask me. unaskable ask is 50%."* So there are two bands:
+
+- **Up to the ceiling** (default `0.5`, of `MemAvailable` at call time; absolute sizes allowed),
+  the model's ask is granted without asking anyone.
+- **Above it, up to uncapped**, the ask is legal but goes to the operator as a card naming the
+  amount, what is free, and the command. Refused → the call does not run, and the result says so.
+
+**The mechanism, MEASURED on lab2x1 2026-10-11:** a process started with `systemd-run --user
+--scope -p Delegate=yes` moves itself into a leaf (`<scope>/daemon`), writes `+memory` to the
+scope's `cgroup.subtree_control`, makes the tree (`<scope>/tree`, `+memory` again) and a job under
+it with `memory.max=64M`, `memory.swap.max=0`; a child that joins the job and allocates 200 MB dies
+with SIGKILL, `memory.events` `oom_kill 1`, `memory.peak` 64 MB, and nothing else is touched. The
+daemon must not be IN the cgroup whose children get controllers (cgroup v2's no-internal-processes
+rule) — which is why the tree today, rooted in the daemon's own cgroup, cannot carry a cap.
+(Trap met while measuring: `systemd-run` expands `$VAR` and `$$` in its arguments, so a probe
+written inline as `sh -c 'echo $$ > …'` writes `$` and fails with EINVAL/EIO. Use a script.)
 
 **Done when:** R64's done-when holds, the model's next call after a kill asks for a different
 cap on its own, and `job_list` shows each job's cap and peak.
