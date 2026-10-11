@@ -188,6 +188,33 @@ use super::shell::set_size;
 /// line and the shell is the thing that reads it.
 const SHELL: &str = "/bin/sh";
 
+/// **The relay a confined pane's program runs under**, so the terminal it is handed is one the
+/// boundary's own `/dev/pts` holds.
+///
+/// The operator, on a confined pane where `tty` printed *not a tty*: *"wtf is with tty?"*. The
+/// boundary mounts a fresh devpts at `/dev/pts` (`--dev /dev`), and the pane's pty is the HOST's
+/// `/dev/pts/N`, which is not in it. `/dev/tty` still works — it is the controlling terminal,
+/// reached through the kernel — but glibc's `ttyname` refuses on purpose a pty whose
+/// `/proc/self/fd/0` names a `/dev/pts/N` that is not there (a pty from another devpts instance,
+/// ENODEV), so `tty`, `GPG_TTY=$(tty)`, `ssh`'s prompt and anything else that names its terminal
+/// were told there is none.
+///
+/// MEASURED on lab2x1 (util-linux 2.41.3, bubblewrap) before this was written — every way of
+/// making the HOST's `/dev/pts/N` exist inside fails one way or the other: `--dev-bind` onto it is
+/// refused (devpts creates no files); a tmpfs over `/dev/pts` with the slave bound in makes `tty`
+/// answer and breaks every program that opens a terminal of its own (`openpty` ENOENT — `mc`'s
+/// subshell, `script`, `tmux`); moving the fresh devpts aside and linking `ptmx` back breaks
+/// them too (EACCES); binding the host's whole `/dev/pts` would put the operator's other
+/// terminals inside the boundary. Only a pty opened INSIDE gets both: `script` does exactly
+/// that and relays the bytes, so `tty` answers `/dev/pts/0`, `openpty` works, and the window size
+/// follows (`stty size` read 41 132 on both sides).
+///
+/// `-c` runs the command with `$SHELL -c`, and a pane's environment carries no `SHELL`
+/// ([`env_from`]), so it is `/bin/sh -c` — the line the pane runs without the relay. `-e` hands
+/// back the program's exit code, `-q` says nothing of its own, `-f` writes each burst through,
+/// and the typescript goes to `/dev/null`.
+const RELAY: &str = "/usr/bin/script";
+
 /// **The `TERM` a pane's program is given when the daemon has none — or has one that is
 /// empty.**
 ///
@@ -391,7 +418,24 @@ pub fn argv(cfg: &TermConfig) -> Result<(String, Vec<String>), TermError> {
     // would fail the write — and membership survives the crossing because a cgroup is not a
     // namespace. So: `sh -c <join> … bwrap … -- /bin/sh -c <line>`.
     let mut line: Vec<String> = cfg.confine.clone();
-    line.extend([SHELL.to_string(), "-c".to_string(), cfg.command.clone()]);
+    // **A pty opened inside the boundary, for a program that keeps its terminal** — see
+    // [`RELAY`]. Only for a boundary's PANE argv (`wrap_terminal`, which keeps the controlling
+    // terminal); a job's argv takes the terminal away with `--new-session`, and a relay there
+    // would hand a job a terminal it is meant not to have. No `script` on the box: the line as
+    // it was, with `tty` unable to name the terminal and everything else working.
+    let relay = !cfg.confine.is_empty()
+        && !cfg.confine.iter().any(|a| a == "--new-session")
+        && std::path::Path::new(RELAY).is_file();
+    if relay {
+        line.extend([
+            RELAY.to_string(),
+            "-qefc".to_string(),
+            cfg.command.clone(),
+            "/dev/null".to_string(),
+        ]);
+    } else {
+        line.extend([SHELL.to_string(), "-c".to_string(), cfg.command.clone()]);
+    }
     match &cfg.scope {
         None => {
             let prog = line.remove(0);
@@ -1313,7 +1357,9 @@ mod tests {
         const ASK: &str = "if [ -e \"$1/secret\" ]; then echo seen; else echo absent; fi; \
                            touch ./made && echo wrote; \
                            if ( : </dev/tty ) 2>/dev/null; then echo \"tty=$(stty size </dev/tty)\"; \
-                           else echo no-ctty; fi; echo done";
+                           else echo no-ctty; fi; echo \"name=$(tty)\"; \
+                           if script -qec true /dev/null >/dev/null 2>&1; then echo nested-ok; \
+                           else echo nested-refused; fi; echo done";
         let run = |wrap: Vec<String>| {
             let cfg = TermConfig {
                 command: format!("set -- {}; {ASK}", beside.display()),
@@ -1344,6 +1390,18 @@ mod tests {
             pane.contains("tty=21 77"),
             "the pty is the program's controlling terminal inside the boundary: {pane:?}"
         );
+        // **`tty` names the terminal** — the operator's *"wtf is with tty?"*: the program's pty is
+        // one the boundary's own devpts holds (`RELAY`), so `ttyname` finds it.
+        if std::path::Path::new(RELAY).is_file() {
+            assert!(
+                pane.contains("name=/dev/pts/") && !pane.contains("not a tty"),
+                "the pane's terminal has a name inside the boundary: {pane:?}"
+            );
+            assert!(
+                pane.contains("nested-ok"),
+                "a program in the pane can still open a terminal of its own: {pane:?}"
+            );
+        }
         let job = run(bwrap.wrap(&plan).expect("a job's argv"));
         assert!(
             job.contains("no-ctty"),

@@ -1609,6 +1609,16 @@ live head, which is the one check that is not a test and is the operator's.
 
 ---
 
+
+**2026-10-11, after R60 landed — `tty` in a confined pane.** The operator: *"wtf is with tty?"* — a
+confined pane printed *not a tty*. The boundary's fresh devpts does not hold the host's
+`/dev/pts/N`, and glibc's `ttyname` refuses a pty from another devpts instance on purpose. Fixed
+by running a confined pane's program under `script` (`term.rs` `RELAY`): the pty is opened inside
+the boundary, so `tty` names `/dev/pts/0`, nested terminals still open, and the size follows.
+The alternatives were measured and each broke something (see `RELAY`'s doc). A box without
+`/usr/bin/script` runs the old line. Still open from the operator: whether the operator's OWN
+pane in a confined session should get the session's no-network rule (`--unshare-net` when the
+egress policy denies) — today it does.
 ## A pane's first resize is a real `SIGWINCH` to a program that has not drawn yet, and one test races it — **OPEN, found while landing `agent/term-detach`**
 
 `TermSession::start` spawns the child (`crates/tools/src/exec/term.rs`, `cmd.spawn()`) and
