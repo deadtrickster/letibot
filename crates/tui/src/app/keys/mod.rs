@@ -8,6 +8,7 @@ use letibot_ui::editor::Reaction;
 mod cards;
 mod chords;
 mod input;
+mod mouse;
 mod panes;
 mod window;
 pub use input::key_of;
@@ -109,6 +110,17 @@ impl App {
             Key::CtrlE => Key::End,
             k => k,
         };
+        // **A wheel notch goes to the surface under the pointer** — see [`App::wheel_at`]. One
+        // that nothing on the frame claims, or that arrives while a card owning every key is up,
+        // goes on below as a notch with no position, which is what the wheel always was.
+        let k = match k {
+            Key::Wheel { up, x, y } => match self.wheel_at(up, x, y) {
+                ControlFlow::Break(r) => return r,
+                ControlFlow::Continue(()) if up => Key::WheelUp,
+                ControlFlow::Continue(()) => Key::WheelDown,
+            },
+            k => k,
+        };
         if let ControlFlow::Break(r) = self.key_mode_confirm(&k) {
             return r;
         }
@@ -132,22 +144,15 @@ impl App {
         if let ControlFlow::Break(r) = self.key_diff_popup(&k) {
             return r;
         }
+        // **A click goes to what the last frame drew under it** — see [`App::key_click`]. Placed
+        // after the cards that own every key (they take clicks as theirs) and before every
+        // surface: no surface decides any more whether a click is its own.
+        if let ControlFlow::Break(r) = self.key_click(&k) {
+            return r;
+        }
         if let ControlFlow::Break(r) = self.key_chords(&k) {
             return r;
         }
-        // **A click on an edit or write row opens its change in the diff popup** — the whole
-        // file with the change inline, no editor chrome; `ctrl-]` from there is the editor. The whole row — its
-        // header and the diff under it — is the target, because the row is one call about one
-        // file and a reader aims at the diff as often as at the name. Measured against the last
-        // frame's map (`file_rows`), which holds only rows the conversation drew this frame; a
-        // click anywhere else falls through to whatever it did before.
-        if let Key::Click { y, .. } = k
-            && let Some(f) = self.file_at_row(y)
-        {
-            self.open_diff_popup(&f);
-            return None;
-        }
-
         // **The cards in the chrome, in front of the surface** (R69). A decision, the quit card
         // and a setting card are questions drawn by the composer, on the screen whatever holds the
         // rectangle above them, and their keys come first: the order used to be a list in which
@@ -181,28 +186,6 @@ impl App {
         }
         if let ControlFlow::Break(r) = self.key_payload_window(&k) {
             return r;
-        }
-        // **A click on a count label opens the pane its count names** — the operator's ask:
-        // *"make so that when i click on running subagents or jobs count labels i get to
-        // respective panes"*. The labels sit on the composer's top edge, pinned right, and
-        // the act is exactly the chord's: the subagents label runs `ctrl-g`'s toggle, the
-        // jobs label `ctrl-q`'s — which asks the daemon for the table, so the pane the click
-        // opens has rows to draw and not just a frame.
-        //
-        // **Placed after every card, pane and overlay above** — the whole screen between
-        // the labels and the top owns its own clicks first, and a click that reaches here
-        // is one nothing else claimed. The target itself comes from the last frame's record
-        // ([`App::box_top_hits`]), which exists only for a frame that drew the edge with a
-        // non-zero count: a label that is not on the screen is not a button, and a click
-        // against any other frame — an edge cut by the fit, a head with nothing in flight —
-        // has no target to hit.
-        if let Key::Click { x, y } = k
-            && let Some(label) = self.box_top_label_at(x, y)
-        {
-            return self.toggle_surface(match label {
-                CountLabel::Subagents => Surface::Subagents,
-                CountLabel::Jobs => Surface::Jobs,
-            });
         }
         // **Up with an empty composer recalls the queued line.**
         //
@@ -1171,6 +1154,18 @@ pub enum Key {
     /// terminal's own Shift+drag is what selects.
     WheelUp,
     WheelDown,
+    /// **A wheel notch, with where the pointer was** (R69) — what the decoder makes of a wheel
+    /// report. It scrolls the surface UNDER THE POINTER, read off the last frame's record
+    /// (`app::hits`); [`Key::WheelUp`] and [`Key::WheelDown`] are the same notch with no
+    /// position, which is what one becomes when nothing on the frame is under the pointer or a
+    /// card that owns every key is up. `key_of` used to drop the position, so a decision card
+    /// with overflow, the ctrl-v window, the picker and the setting card each took the wheel
+    /// anywhere on the screen: hovering over the transcript and scrolling moved the card.
+    Wheel {
+        up: bool,
+        x: u16,
+        y: u16,
+    },
     /// Tab: complete the `/command` being typed.
     Tab,
     /// A left-button press, 0-based screen coordinates. An open picker takes
@@ -1227,6 +1222,7 @@ impl Key {
             | Key::PageDown
             | Key::WheelUp
             | Key::WheelDown
+            | Key::Wheel { .. }
             | Key::Tab
             | Key::Click { .. }
             | Key::FocusIn

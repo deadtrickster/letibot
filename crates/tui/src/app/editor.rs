@@ -373,14 +373,6 @@ impl App {
             .map(FileRef::of)
     }
 
-    /// **The file a screen row is about**, from the last frame's map — see `file_rows`.
-    pub(crate) fn file_at_row(&self, y: u16) -> Option<FileRef> {
-        self.file_rows
-            .iter()
-            .find(|(row, _)| *row == y as usize)
-            .map(|(_, f)| f.clone())
-    }
-
     /// **How long the head's loop may wait for input** before rano wants another tick — `None`
     /// with no pane on the screen, when the head's own pace is the only one.
     pub fn editor_wait(&self) -> Option<Duration> {

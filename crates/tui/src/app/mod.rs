@@ -850,10 +850,6 @@ pub struct App {
     /// **The pane row each entry was DRAWN on** — the record the arrows scroll by, never
     /// arithmetic over the list. See `jobs_stop_rows` for the defect this avoids.
     pub(crate) queue_stop_rows: Vec<usize>,
-    /// **The screen row the queue pane's own first body row goes to** — the session header,
-    /// when the frame is tall enough to have one. Recorded rather than assumed because a
-    /// click's `y` is in absolute screen coordinates; see [`App::queue_stop_at_row`].
-    pub(crate) queue_pane_top: usize,
     /// **Which half of the queue the pane is showing** — the operator's second ask, *"nor there
     /// are separate views for review and merge queues"*. The list is the same either way; what
     /// changes is the row under each entry. See [`QueueView`].
@@ -963,10 +959,6 @@ pub struct App {
     /// what makes a click possible at all: a click has a screen row and nothing else, and the only
     /// honest answer to *which stop is on this row* is the one the pane wrote down while drawing.
     pub(crate) todos_stop_rows: Vec<usize>,
-    /// **The screen row the pane's own first body row goes to** — the session header, when the
-    /// frame is tall enough to have one. Recorded rather than assumed because a click's `y` is in
-    /// absolute screen coordinates and the header above the pane is not part of it.
-    pub(crate) todos_pane_top: usize,
     /// **The todo row whose whole text is open, BY ITS IDENTITY**, until Esc — the overlay the
     /// pane's Enter opens, and the answer to the operator's report that a row could not be
     /// expanded: *"in todo list i cant expand your todo items - only truncated titles
@@ -1011,6 +1003,9 @@ pub struct App {
     /// **The surface stack** (R69): what holds the conversation's rectangle, top last. See
     /// `app::surface` for the rule and for the nine `bool`s it replaced.
     pub(crate) surfaces: Vec<Open>,
+    /// **The last frame's click targets** (R69) — see `app::hits`. Rebuilt by every frame and
+    /// read by every click and every wheel step that knows where the pointer is.
+    pub(crate) hits: Vec<Hit>,
     /// **The scroll of the surface on top of the stack** — the one every pane draws through
     /// (`pane_window`) and every key moves. A covered surface keeps its own in its stack entry.
     pub(crate) pane_scroll: usize,
@@ -1632,7 +1627,6 @@ impl App {
             merge_reviews: Vec::new(),
             queue_sel: 0,
             queue_stop_rows: Vec::new(),
-            queue_pane_top: 0,
             queue_view: QueueView::default(),
             queue_tabs: None,
             queue_open: None,
@@ -1652,12 +1646,12 @@ impl App {
             repo_todos_at: None,
             todos_sel: 0,
             todos_stop_rows: Vec::new(),
-            todos_pane_top: 0,
             todos_open: None,
             repo_sel: 0,
             repo_open: false,
             slash_out: None,
             surfaces: Vec::new(),
+            hits: Vec::new(),
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
@@ -1899,6 +1893,7 @@ mod composer;
 pub(crate) mod diff_popup;
 mod editor;
 mod events;
+mod hits;
 mod keys;
 mod notes;
 mod panes;
@@ -1919,6 +1914,7 @@ pub(crate) use commands::*;
 pub(crate) use composer::*;
 pub use editor::*;
 pub(crate) use events::*;
+pub(crate) use hits::*;
 pub use keys::*;
 pub(crate) use notes::*;
 pub(crate) use panes::*;

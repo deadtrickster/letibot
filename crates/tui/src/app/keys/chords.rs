@@ -217,14 +217,7 @@ impl App {
                 //
                 // The two numbers are the last frame's, because whether anything is out of
                 // view is a fact about the width — see [`App::card_window`].
-                if !self.open.is_empty() && self.dec_content_len > self.dec_content_room {
-                    let max = self.dec_content_len - self.dec_content_room;
-                    self.dec_scroll = if up {
-                        self.dec_scroll.saturating_sub(by)
-                    } else {
-                        (self.dec_scroll + by).min(max)
-                    };
-                    self.redraw = true;
+                if self.scroll_card(up, by) {
                     return ControlFlow::Break(None);
                 }
                 if self.scroll_tail_overlay(up, by) {
@@ -248,75 +241,111 @@ impl App {
                     return ControlFlow::Break(None);
                 }
                 if self.focused_surface().is_some() {
-                    // **The polarity is the opposite of the transcript's**, and
-                    // getting it wrong here made PageDown a no-op that looked
-                    // exactly like the swallowing this replaced. `self.scroll`
-                    // counts rows back from the BOTTOM — scrolling up increases
-                    // it — because the transcript is read from its tail.
-                    // `pane_scroll` counts rows hidden above the TOP, because a
-                    // pane is read from its head. So down is the one that grows.
-                    let max = self.pane_len.saturating_sub(self.pane_room);
-                    self.pane_scroll = if up {
-                        self.pane_scroll.saturating_sub(by)
-                    } else {
-                        (self.pane_scroll + by).min(max)
-                    };
-                    self.redraw = true;
+                    self.scroll_pane(up, by);
                     return ControlFlow::Break(None);
                 }
-                if up {
-                    // **Through `scroll_up`, which renders as it goes.** Assigning `scroll`
-                    // here and letting the frame's fill catch up is what made a page crawl:
-                    // the frame clamps against the rows rendered so far, so a press could
-                    // never express "further up than I have drawn".
-                    self.scroll_up(by);
-                } else {
-                    // **Down is a WALK, the wheel included — and arriving at the tail is what
-                    // resumes following.**
-                    //
-                    // The mirror of `scroll_up`, and `hold` for the same reason (R36): moving
-                    // down is moving over the same rows in the other direction, and it is the
-                    // same conversion from lines to a row. It also lands the reader back in
-                    // *following* when it reaches the bottom, which is the one act that does —
-                    // arriving content never will.
-                    //
-                    // **A `WheelDown` used to skip all of that and be the tail in ONE notch.**
-                    // That was 2026-10-05's answer to *"I cant scroll back to bottom with a
-                    // mouse wheel - have to press escape"*, and the cure cost more than the
-                    // complaint: clearing the anchor made a single notch a jump rather than a
-                    // step, so the reader could not walk *down* through a conversation at all.
-                    // The operator again, with a mouse: *"one simple stroke gets me to the
-                    // bottom immediately — effectively like Esc"*. Both reports are one coin,
-                    // and this is the reconciliation — the notch walks three lines like its up
-                    // twin, and a RUN of notches still returns the reader to the bottom, which
-                    // answers October's need without the one-notch jump.
-                    //
-                    // **And 2026-10-09's second report is why the run has to gather speed.**
-                    // A three-line walk needs sixty-four clean notches from 190 lines up, and
-                    // a stream that keeps arriving — the wedged session was in a loop of
-                    // automatic turns — recedes faster than the walk advances: the notch moved
-                    // every time and the count still grew. The run is the reader's own gesture,
-                    // so that is what accelerates; see [`App::wheel_down_notch`].
-                    //
-                    // The deliberate act keeps its own meaning and is not folded in here: Esc
-                    // while parked — *"Esc while parked in the scrollback means \"follow the
-                    // stream again\""* — and the parked `↓` below still clear the anchor in one
-                    // press, and they are the keys the banner names for it.
-                    //
-                    // **And the wheel's notch is sized HERE, at the walk itself** — not in the
-                    // `(up, by)` match above, which the card, the panes and the windows share:
-                    // their paging stays three lines a notch. Only the transcript's walk can
-                    // gather speed, and only the run of notches the reader spent on it counts.
-                    let by = match k {
-                        Key::WheelDown => self.wheel_down_notch(),
-                        _ => by,
-                    };
-                    self.hold(by as isize);
-                }
+                self.scroll_conversation(k, up, by);
                 return ControlFlow::Break(None);
             }
             _ => {}
         }
         ControlFlow::Continue(())
+    }
+
+    /// **The decision card's content window takes a scroll while it has somewhere to go** (R20):
+    /// true when it moved. The card is the thing that needs an answer, it already owns Up/Down
+    /// and Enter, and the wall above its ladder is the one screenful the operator may have to read
+    /// past. When the content fits, nothing moves and the caller does what it always did — a card
+    /// being up must not cost the transcript its scroll. The two numbers are the last frame's,
+    /// because whether anything is out of view is a fact about the width (`App::card_window`).
+    pub(crate) fn scroll_card(&mut self, up: bool, by: usize) -> bool {
+        if self.open.is_empty() || self.dec_content_len <= self.dec_content_room {
+            return false;
+        }
+        let max = self.dec_content_len - self.dec_content_room;
+        self.dec_scroll = if up {
+            self.dec_scroll.saturating_sub(by)
+        } else {
+            (self.dec_scroll + by).min(max)
+        };
+        self.redraw = true;
+        true
+    }
+
+    /// **The focused surface's own scroll**: an output view's tail, nothing for the session
+    /// picker (it keeps its cursor in view itself), and `pane_scroll` for every pane drawn
+    /// through `pane_window`.
+    pub(crate) fn scroll_pane(&mut self, up: bool, by: usize) {
+        if self.scroll_tail_overlay(up, by) || self.focused_surface() == Some(Surface::Picker) {
+            return;
+        }
+        // **The polarity is the opposite of the transcript's**, and
+        // getting it wrong here made PageDown a no-op that looked
+        // exactly like the swallowing this replaced. `self.scroll`
+        // counts rows back from the BOTTOM — scrolling up increases
+        // it — because the transcript is read from its tail.
+        // `pane_scroll` counts rows hidden above the TOP, because a
+        // pane is read from its head. So down is the one that grows.
+        let max = self.pane_len.saturating_sub(self.pane_room);
+        self.pane_scroll = if up {
+            self.pane_scroll.saturating_sub(by)
+        } else {
+            (self.pane_scroll + by).min(max)
+        };
+        self.redraw = true;
+    }
+
+    /// **The conversation's own scroll** — a page key's or a wheel notch's, once nothing in front
+    /// of the conversation took it.
+    pub(crate) fn scroll_conversation(&mut self, k: &Key, up: bool, by: usize) {
+        if up {
+            // **Through `scroll_up`, which renders as it goes.** Assigning `scroll`
+            // here and letting the frame's fill catch up is what made a page crawl:
+            // the frame clamps against the rows rendered so far, so a press could
+            // never express "further up than I have drawn".
+            self.scroll_up(by);
+        } else {
+            // **Down is a WALK, the wheel included — and arriving at the tail is what
+            // resumes following.**
+            //
+            // The mirror of `scroll_up`, and `hold` for the same reason (R36): moving
+            // down is moving over the same rows in the other direction, and it is the
+            // same conversion from lines to a row. It also lands the reader back in
+            // *following* when it reaches the bottom, which is the one act that does —
+            // arriving content never will.
+            //
+            // **A `WheelDown` used to skip all of that and be the tail in ONE notch.**
+            // That was 2026-10-05's answer to *"I cant scroll back to bottom with a
+            // mouse wheel - have to press escape"*, and the cure cost more than the
+            // complaint: clearing the anchor made a single notch a jump rather than a
+            // step, so the reader could not walk *down* through a conversation at all.
+            // The operator again, with a mouse: *"one simple stroke gets me to the
+            // bottom immediately — effectively like Esc"*. Both reports are one coin,
+            // and this is the reconciliation — the notch walks three lines like its up
+            // twin, and a RUN of notches still returns the reader to the bottom, which
+            // answers October's need without the one-notch jump.
+            //
+            // **And 2026-10-09's second report is why the run has to gather speed.**
+            // A three-line walk needs sixty-four clean notches from 190 lines up, and
+            // a stream that keeps arriving — the wedged session was in a loop of
+            // automatic turns — recedes faster than the walk advances: the notch moved
+            // every time and the count still grew. The run is the reader's own gesture,
+            // so that is what accelerates; see [`App::wheel_down_notch`].
+            //
+            // The deliberate act keeps its own meaning and is not folded in here: Esc
+            // while parked — *"Esc while parked in the scrollback means \"follow the
+            // stream again\""* — and the parked `↓` below still clear the anchor in one
+            // press, and they are the keys the banner names for it.
+            //
+            // **And the wheel's notch is sized HERE, at the walk itself** — not in the
+            // `(up, by)` match above, which the card, the panes and the windows share:
+            // their paging stays three lines a notch. Only the transcript's walk can
+            // gather speed, and only the run of notches the reader spent on it counts.
+            let by = match k {
+                Key::WheelDown => self.wheel_down_notch(),
+                _ => by,
+            };
+            self.hold(by as isize);
+        }
     }
 }

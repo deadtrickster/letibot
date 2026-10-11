@@ -235,8 +235,18 @@ impl App {
     /// shifts nothing above. `the_config_cursor_line_is_the_line_rano_marks` holds this to the
     /// widget's real output, so the two cannot drift.
     pub(crate) fn config_sel_line(&self) -> usize {
+        let lines = self.config_stop_rows();
+        let sel = self.config_sel.min(lines.len().saturating_sub(1));
+        lines.get(sel).copied().unwrap_or(2)
+    }
+
+    /// **The pane line of EVERY row**, in the same layout — the selected row's `from …` line
+    /// pushes the rows after it down by one when it has a source. The click map's input (R69):
+    /// a click on a row moves the cursor to the row drawn there.
+    pub(crate) fn config_stop_rows(&self) -> Vec<usize> {
         let rows = self.config_rows();
         let sel = self.config_sel.min(rows.len().saturating_sub(1));
+        let mut out = Vec::with_capacity(rows.len());
         let mut line = 2;
         let mut section = "";
         for (i, r) in rows.iter().enumerate() {
@@ -247,12 +257,13 @@ impl App {
                 line += 1;
                 section = r.section;
             }
-            if i == sel {
-                return line;
-            }
+            out.push(line);
             line += 1;
+            if i == sel && !r.source.is_empty() {
+                line += 1;
+            }
         }
-        line
+        out
     }
 
     /// **The view follows the config cursor** — the pane's rows outgrow a short terminal, and

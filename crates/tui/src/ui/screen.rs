@@ -134,6 +134,9 @@ impl App {
         // **Which rows of the card are which value's**, set only when the card in the slot IS
         // the setting card — see `mode_hits` below.
         let mut pick_spans: Option<Vec<std::ops::Range<usize>>> = None;
+        // **Which card the slot holds, as a click target** (R69) — set by the arm that drew it,
+        // so the record names the card on the screen and not one that is merely open.
+        let mut card_target: Option<Target> = None;
         let (dec, dec_pinned): (Vec<String>, Vec<String>) =
             match (&self.secret, shown_prompt, self.open.first()) {
                 (Some(ask), _, _) => (self.secret_lines(ask, w), Vec::new()),
@@ -153,7 +156,10 @@ impl App {
                 // answers the password releases the command that was going to ask them the other
                 // question. See [`App::prompt_lines`] for what the second card shows.
                 (None, Some(ask), _) => (self.prompt_lines(ask, w), Vec::new()),
-                (None, None, Some(d)) => self.decision_card(d, w),
+                (None, None, Some(d)) => {
+                    card_target = Some(Target::Decision);
+                    self.decision_card(d, w)
+                }
                 // **A key the picker asked for rides in the ask card's slot too**, ahead of the
                 // pickers and the todo card: it is the newest question, it owns the keyboard
                 // while it is up, and a list under it is a list nobody is going to use.
@@ -172,10 +178,14 @@ impl App {
                 // Ahead of the mode picker: a head on its way out is answering the
                 // last question it will be asked, and a list under it is a list
                 // nobody is going to use.
-                (None, None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
+                (None, None, None) if self.quit_card => {
+                    card_target = Some(Target::QuitCard);
+                    (self.quit_card_lines(w), Vec::new())
+                }
                 (None, None, None) if self.pick.is_some() => {
                     let (rows, spans) = self.setting_picker_layout(w);
                     pick_spans = Some(spans);
+                    card_target = Some(Target::SettingCard);
                     (rows, Vec::new())
                 }
                 (None, None, None) => (Vec::new(), Vec::new()),
@@ -337,6 +347,7 @@ impl App {
         // confirmation lines pushed above. The click used to be measured from the top of the
         // chrome and was off by exactly those rows (R67 item 3).
         let card_chrome_at = chrome.len();
+        let (card_rows_len, pinned_len) = (card_rows.len(), dec_pinned.len());
         chrome.extend(card_rows);
         chrome.extend(dec_pinned);
         if show_pane && let Some(l) = pane {
@@ -415,6 +426,9 @@ impl App {
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
         let mut out = self.main_area(w, room, header.is_some());
+        // **The frame's click record starts here**, with what `main_area` just drew — its stop
+        // rows and its scroll are this frame's. See `app::hits`.
+        self.record_main_hits(gutter, term_w, usize::from(header.is_some()), room);
         while out.len() < room {
             out.push(String::new());
         }
@@ -443,6 +457,42 @@ impl App {
             }
             _ => Vec::new(),
         };
+        // **The card in the slot, as a click target** — only on a frame whose chrome the backstop
+        // did not drain, the rule `mode_hits` keeps: rows measured from a front that was cut
+        // would be rows nobody can see. The decision card's ladder is its answer half, which the
+        // fit never trims; the quit card's choices need the whole card.
+        if drained == 0
+            && let Some(target) = card_target
+        {
+            let top = body_rows + card_chrome_at;
+            let stops: Vec<(usize, usize)> = match target {
+                Target::Decision => match self.open.first().cloned() {
+                    Some(d) => self
+                        .decision_ladder_spans(&d, w)
+                        .into_iter()
+                        .enumerate()
+                        .flat_map(|(k, span)| span.map(move |r| (top + card_rows_len + r, k)))
+                        .collect(),
+                    None => Vec::new(),
+                },
+                Target::QuitCard if content_rows == dec_full => {
+                    let [one, two] = self.quit_view().choice_rows(w);
+                    (one..two)
+                        .map(|r| (top + r, 0))
+                        .chain((two..dec_full).map(|r| (top + r, 1)))
+                        .collect()
+                }
+                Target::SettingCard => self.mode_hits.clone(),
+                _ => Vec::new(),
+            };
+            let rect = Rect {
+                x: 0,
+                y: top,
+                w: term_w,
+                h: card_rows_len + pinned_len,
+            };
+            self.record_card_hit(target, rect, stops, h);
+        }
         out.extend(chrome);
         out.truncate(h);
         // **The count labels' hit boxes, recorded here where the frame's final shape is
@@ -461,6 +511,26 @@ impl App {
                 jobs: labels.jobs.map(|(col, w)| (col + gutter, w)),
             })
         });
+        // **And the labels as targets**, from the same record.
+        if let Some(b) = self.box_top_hits {
+            for (label, at) in [
+                (CountLabel::Subagents, b.subagents),
+                (CountLabel::Jobs, b.jobs),
+            ] {
+                if let Some((x, lw)) = at {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x,
+                            y: b.row,
+                            w: lw,
+                            h: 1,
+                        },
+                        target: Target::CountLabel(label),
+                        stops: Vec::new(),
+                    });
+                }
+            }
+        }
         // The caret is the affordance. It goes where the composer says, and the
         // terminal draws it as a steady block because `term::enter` asked for one.
         self.cursor = Some((
@@ -595,27 +665,6 @@ impl App {
             jobs: box_top_label(&line, "job"),
         };
         (crate::ui::rows::row(&line, self.cfg.palette()), labels)
-    }
-
-    /// **Which count label a click landed on, if any** — read off the record the last
-    /// frame made ([`App::box_top_hits`]) and nothing else: no arithmetic about where the
-    /// labels "should" sit, because only the frame knows where they did. `x`/`y` are the
-    /// click's terminal cells, which is what the record keeps.
-    pub(crate) fn box_top_label_at(&self, x: u16, y: u16) -> Option<CountLabel> {
-        let hits = self.box_top_hits.as_ref()?;
-        if hits.row != usize::from(y) {
-            return None;
-        }
-        let x = usize::from(x);
-        let inside =
-            |label: &Option<(usize, usize)>| label.is_some_and(|(col, w)| x >= col && x < col + w);
-        if inside(&hits.subagents) {
-            Some(CountLabel::Subagents)
-        } else if inside(&hits.jobs) {
-            Some(CountLabel::Jobs)
-        } else {
-            None
-        }
     }
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
@@ -800,10 +849,6 @@ impl App {
                 self.pane_window(rows, room)
             }
             Drawn::Surface(Surface::Todos) => {
-                // **Where the pane's own first row goes on the screen**, which is what a click's `y`
-                // has to be measured against: the session header sits above it when the frame is tall
-                // enough for one, and it is not a row of this pane.
-                self.todos_pane_top = usize::from(has_header);
                 // One `stat` before the draw: the file is edited while this pane is
                 // open, which is the case the open-time read could not see.
                 self.refresh_repo_todos();
@@ -833,9 +878,6 @@ impl App {
                 self.pane_window(rows, room)
             }
             Drawn::Surface(Surface::Queue) => {
-                // **Where the pane's own first row goes on the screen**, which is what a click's `y`
-                // is measured against — the same record the todos pane keeps, for the same reason.
-                self.queue_pane_top = usize::from(has_header);
                 let rows = self.queue_lines(w);
                 self.pane_window(rows, room)
             }

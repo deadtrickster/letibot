@@ -129,8 +129,17 @@ fn mouse(m: MouseEvent) -> Option<Key> {
         return None;
     }
     match m.kind {
-        MouseKind::WheelUp => Some(Key::WheelUp),
-        MouseKind::WheelDown => Some(Key::WheelDown),
+        // The position is kept: the notch scrolls what is under the pointer (R69).
+        MouseKind::WheelUp => Some(Key::Wheel {
+            up: true,
+            x: m.x,
+            y: m.y,
+        }),
+        MouseKind::WheelDown => Some(Key::Wheel {
+            up: false,
+            x: m.x,
+            y: m.y,
+        }),
         // A left-button press is a click: an open picker takes the row under the pointer as
         // its selection, and Enter still does the switching.
         MouseKind::Press(MouseButton::Left) => Some(Key::Click { x: m.x, y: m.y }),
@@ -261,8 +270,23 @@ mod tests {
 
     #[test]
     fn the_wheel_arrives_as_sgr_mouse_and_every_other_report_is_dropped() {
-        assert_eq!(decode(b"\x1b[<64;10;5M"), vec![Key::WheelUp]);
-        assert_eq!(decode(b"\x1b[<65;10;5M"), vec![Key::WheelDown]);
+        // **The wheel keeps where the pointer was** (R69), 0-based like a click.
+        assert_eq!(
+            decode(b"\x1b[<64;10;5M"),
+            vec![Key::Wheel {
+                up: true,
+                x: 9,
+                y: 4
+            }]
+        );
+        assert_eq!(
+            decode(b"\x1b[<65;10;5M"),
+            vec![Key::Wheel {
+                up: false,
+                x: 9,
+                y: 4
+            }]
+        );
         // A left-button press is a click, on 0-based coordinates; drags, motion and releases
         // are decoded and dropped: a report the head does not act on must never become typed
         // punctuation.
@@ -289,7 +313,14 @@ mod tests {
             assert!(keys.is_empty(), "cut {cut}: {keys:?}");
             assert_eq!(used, 0, "the partial report must be carried, not eaten");
         }
-        assert_eq!(decode(whole), vec![Key::WheelDown]);
+        assert_eq!(
+            decode(whole),
+            vec![Key::Wheel {
+                up: false,
+                x: 0,
+                y: 0
+            }]
+        );
     }
 
     #[test]

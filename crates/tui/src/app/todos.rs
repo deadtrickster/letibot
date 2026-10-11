@@ -385,25 +385,6 @@ impl App {
         self.todos_stop_rows.get(at).copied().unwrap_or(0)
     }
 
-    /// **The stop drawn on SCREEN ROW `y`, or nothing** — leticl's `todo-stop-at-line`, and the
-    /// answer to the operator's other report on this pane, *"mouse doesnt click"*.
-    ///
-    /// Read from the rows the last draw recorded, so a click and the drawing cannot disagree about
-    /// where a row is. That disagreement is the whole of the old defect: letibot's pane took no
-    /// click at all, and leticl's took one that computed the add row as a negative index and threw
-    /// it away — the add row being the first selectable row and `line - header` making it negative.
-    ///
-    /// Guarded on the WINDOW: a row above the pane's top or below its last drawn row is not a row
-    /// anybody is looking at, and a click into the blank space under a short list moves nothing.
-    pub(crate) fn todo_stop_at_row(&self, y: u16) -> Option<usize> {
-        let y = usize::from(y).checked_sub(self.todos_pane_top)?;
-        if y >= self.pane_room {
-            return None;
-        }
-        let pane_row = y + self.pane_scroll;
-        self.todos_stop_rows.iter().position(|r| *r == pane_row)
-    }
-
     /// **The repo cursor follows the stop cursor**, for the repo's own keys — the unfold and the
     /// body it shows read `repo_sel`, and a second cursor that did not follow would be the two
     /// enumerations this whole change removed.

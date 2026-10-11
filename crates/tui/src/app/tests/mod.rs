@@ -1387,6 +1387,7 @@ mod composer;
 mod decisions;
 mod detected;
 mod editor;
+mod hits;
 mod jobs;
 mod misc;
 mod notes;

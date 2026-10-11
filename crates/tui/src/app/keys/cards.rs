@@ -515,23 +515,6 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                Key::Click { y, .. } => {
-                    // Off the last frame's record (`mode_hits`): a value's row and the `why`
-                    // wrapped under it both pick it, anything else picks nothing, and the record
-                    // is empty when the card was not drawn whole.
-                    if let Some(&(_, at)) = self
-                        .mode_hits
-                        .iter()
-                        .find(|(row, _)| *row == usize::from(*y))
-                        && at < n
-                    {
-                        self.mode_sel = at;
-                        // A click is the reader's too, for the reason the arrows are.
-                        self.pick_unseeded = false;
-                        self.redraw = true;
-                    }
-                    return ControlFlow::Break(None);
-                }
                 _ => {}
             }
         }

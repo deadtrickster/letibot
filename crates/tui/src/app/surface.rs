@@ -236,8 +236,8 @@ impl App {
         Some(top)
     }
 
-    /// **Every surface at once** — a session switch, which is a different conversation under
-    /// every pane.
+    /// **Every surface at once** — for a test that sets one pane up after another.
+    #[cfg(test)]
     pub(crate) fn close_all_surfaces(&mut self) {
         while self.pop_surface().is_some() {}
     }

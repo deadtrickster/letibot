@@ -294,21 +294,6 @@ impl App {
                         .clone();
                     return ControlFlow::Break(self.switch_to(id));
                 }
-                Key::Click { y, .. } => {
-                    // Off the last frame's record of which row is which session's
-                    // (`picker_hits`, see `App::picker_layout`): the session's own line and the
-                    // id line under it both pick it, and anything else — the title, the footer,
-                    // the blank space under a short list — picks nothing.
-                    if let Some(&(_, k)) = self
-                        .picker_hits
-                        .iter()
-                        .find(|(row, _)| *row == usize::from(*y))
-                    {
-                        self.picker_sel = k.min(n - 1);
-                        self.redraw = true;
-                    }
-                    return ControlFlow::Break(None);
-                }
                 _ => {}
             }
         }
@@ -493,23 +478,6 @@ impl App {
                         return ControlFlow::Break(None);
                     }
                 },
-                // **A click moves the cursor, and Enter still does the act** — the same two
-                // acts, kept two, that the pickers here already keep (*"select and confirm stay
-                // two acts"*). Straight off the recorded rows, so the row the pointer is on is
-                // the row the pane drew there. (The act Enter does is now the READ, which is a
-                // click's business no more than the toggle was.)
-                //
-                // **A click into the blank space moves nothing**, and so does one on a row that
-                // is not a stop at all — a repo heading. There is no key that would act on it,
-                // which is the same reason it is not a stop.
-                Key::Click { y, .. } => {
-                    if let Some(sel) = self.todo_stop_at_row(*y) {
-                        self.todos_sel = sel;
-                        self.sync_repo_from_stop(&stops);
-                        self.redraw = true;
-                    }
-                    return ControlFlow::Break(None);
-                }
                 // **Tab is the pane's own acts**, which is what it was beside Enter before the read
                 // took Enter: the card on the control, the toggle on one of the operator's rows,
                 // the unfold on a repo item. On the model's rows there is no act to perform — the
@@ -682,17 +650,6 @@ impl App {
                 self.redraw = true;
                 return ControlFlow::Break(None);
             }
-            // **A click on the strip is the same move**, read from the frame's record
-            // ([`App::queue_tab_at`]) so the hit test and the drawing cannot disagree. It comes
-            // before the stop rows because the strip is drawn above them, and a click that
-            // landed on a label must not be answered as a click on the row under it.
-            if let Key::Click { x, y } = k
-                && let Some(view) = self.queue_tab_at(*x, *y)
-            {
-                self.queue_view = view;
-                self.redraw = true;
-                return ControlFlow::Break(None);
-            }
             if !self.merge.is_empty() {
                 let n = self.merge.len();
                 let at = self.queue_sel.min(n - 1);
@@ -799,16 +756,6 @@ impl App {
                         }
                         let line = format!("queue {} {}", verb.word(), e.id);
                         return ControlFlow::Break(Some(Action::Slash { line }));
-                    }
-                    // **A click moves the cursor, and Enter still opens the entry** — the same
-                    // two acts the pickers here keep (*select and confirm stay two acts*),
-                    // straight off the rows the pane recorded while drawing.
-                    Key::Click { y, .. } => {
-                        if let Some(sel) = self.queue_stop_at_row(*y) {
-                            self.queue_sel = sel;
-                            self.redraw = true;
-                        }
-                        return ControlFlow::Break(None);
                     }
                     _ => {}
                 }
