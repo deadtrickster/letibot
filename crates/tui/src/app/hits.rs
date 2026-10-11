@@ -57,6 +57,9 @@ pub(crate) enum Target {
     /// **One red target's warning, drawn as a line** (`red_card`); its one stop is the card's
     /// index in `note_cards`. A click opens the detail whole, in the same popup.
     NoteCard,
+    /// **A todo row's `waits on …` link** (`todos_wait_links`), over the todos pane; its one stop
+    /// is the link's index in that record. A click opens the job or the child the row waits on.
+    TodoWait,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.
@@ -145,6 +148,26 @@ impl App {
                     target: Target::Surface(s),
                     stops,
                 });
+                // **Each `waits on …` link, over the row it sits on** — exactly the columns its
+                // words were drawn in, and only while the window shows its row.
+                if s == Surface::Todos {
+                    for (k, l) in self.todos_wait_links.clone().into_iter().enumerate() {
+                        if let Some(d) = l.row.checked_sub(self.pane_scroll)
+                            && d < room
+                        {
+                            self.hits.push(Hit {
+                                rect: Rect {
+                                    x: x + l.from,
+                                    y: top + d,
+                                    w: l.to.saturating_sub(l.from),
+                                    h: 1,
+                                },
+                                target: Target::TodoWait,
+                                stops: vec![(top + d, k)],
+                            });
+                        }
+                    }
+                }
                 // **The strip's labels, over the pane they sit in** — only while the window shows
                 // the strip's row; a strip scrolled away is not a target.
                 if s == Surface::Queue

@@ -26,6 +26,7 @@ impl App {
         match t {
             Target::Surface(s) => self.focused_surface() == Some(s),
             Target::QueueTab(_) => self.focused_surface() == Some(Surface::Queue),
+            Target::TodoWait => self.focused_surface() == Some(Surface::Todos),
             Target::Conversation | Target::Notice | Target::NoteCard => {
                 self.drawn() == Drawn::Conversation
             }
@@ -96,6 +97,12 @@ impl App {
                 self.open_card_popup(i);
                 return ControlFlow::Break(None);
             }
+            // **A todo row's `waits on j97 · pg-timing` opens the job** — the operator: *"\"waits
+            // on j97\" - make j97 a link to the real job, also render job slug"*. A button, like
+            // the notice: the click is the act, and `w` on the row is the same act.
+            (Target::TodoWait, Some(k)) => {
+                return ControlFlow::Break(self.open_wait_link(k));
+            }
             (Target::Conversation | Target::Notice | Target::NoteCard, None) => {
                 return ControlFlow::Continue(());
             }
@@ -148,7 +155,9 @@ impl App {
         }
         const NOTCH: usize = 3;
         match target {
-            Target::Surface(_) | Target::QueueTab(_) => self.scroll_pane(up, NOTCH),
+            Target::Surface(_) | Target::QueueTab(_) | Target::TodoWait => {
+                self.scroll_pane(up, NOTCH)
+            }
             Target::Conversation | Target::Notice | Target::NoteCard
                 if self.payload_sel.is_some() =>
             {

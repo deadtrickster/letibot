@@ -492,6 +492,171 @@ impl App {
     }
 }
 
+/// **What a todo row waits on that this head can open** — a job, or a child session. The
+/// operator: *"\"waits on j97\" - make j97 a link to the real job, also render job slug"*.
+///
+/// The row's `when` job condition when it has one, else its first `needs` edge on a job or a
+/// child — the same choice the pane's `waits on …` has always drawn, so what is drawn and what
+/// a click opens are one reading of the row. A row waiting on the operator is not one of these:
+/// its act is the question card, which Enter already opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WaitOn {
+    /// A job handle, `j97`.
+    Job(String),
+    /// A child's session id, `s-…-sub-…`.
+    Child(String),
+}
+
+/// The thing `t` waits on, by the rule [`WaitOn`] names.
+pub(crate) fn wait_of(t: &letibot_sessionlog::event::TodoEntry) -> Option<WaitOn> {
+    use letibot_sessionlog::event::{TodoCondition, TodoNeed};
+    match &t.when {
+        Some(TodoCondition::Job { handle }) => Some(WaitOn::Job(handle.clone())),
+        None => t.needs.iter().find_map(|n| match n {
+            TodoNeed::Job { handle } => Some(WaitOn::Job(handle.clone())),
+            TodoNeed::Child { id } => Some(WaitOn::Child(id.clone())),
+            _ => None,
+        }),
+    }
+}
+
+/// **One drawn `waits on …` link**: the pane row it is on, the columns its words cover
+/// (`from..to`, the pane's own columns, only the part that was not cut off), the row it belongs
+/// to (an index into `App::todos`), and what it opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WaitLink {
+    pub(crate) row: usize,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) todo: usize,
+    pub(crate) target: WaitOn,
+}
+
+impl App {
+    /// **The words a wait is drawn as** — `j97 · pg-timing` for a job the head knows a slug for,
+    /// the bare handle otherwise; a child as the subagents pane names it (its short id, and its
+    /// role when the head knows one) rather than the whole `s-…-sub-…` id, which the row's
+    /// detail view still carries.
+    pub(crate) fn wait_label(&self, w: &WaitOn) -> String {
+        match w {
+            WaitOn::Job(h) => match self.job_slug(h) {
+                Some(slug) => format!("{h} · {slug}"),
+                None => h.clone(),
+            },
+            WaitOn::Child(id) => {
+                let short = letibot_sessionlog::registry::short_id(id);
+                match self.subagents.iter().find(|s| s.session_id == *id) {
+                    Some(s) if !s.role.is_empty() => format!("{short} · {}", s.role),
+                    _ => short,
+                }
+            }
+        }
+    }
+
+    /// **A job's slug, as the head knows it**: the daemon's job table first, then a completion
+    /// notice on the conversation for a job the table no longer lists. `None` for a job nobody
+    /// named and for one the head has never heard of — nothing is invented from the command.
+    pub(crate) fn job_slug(&self, handle: &str) -> Option<String> {
+        match self.jobs.iter().find(|j| j.id == handle) {
+            Some(j) => Some(j.slug.clone()).filter(|s| !s.is_empty()),
+            None => self
+                .notice_job(handle)
+                .and_then(|(_, j)| j.slug)
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// **The newest completion notice on the conversation that names `handle`** — its index in
+    /// `items`, which is what the notice popup opens, and the job as the notice reported it.
+    pub(crate) fn notice_job(
+        &self,
+        handle: &str,
+    ) -> Option<(usize, crate::ui::transcript::job_card::EndedJob)> {
+        self.items.iter().enumerate().rev().find_map(|(k, it)| {
+            let text = crate::ui::transcript::user::agent_row_text(it)?;
+            let jobs = crate::ui::transcript::job_card::notice_jobs(&text)?;
+            jobs.into_iter()
+                .find(|(_, j)| j.id == handle)
+                .map(|(_, j)| (k, j))
+        })
+    }
+
+    /// **Open what a row waits on** — the act a click on its `waits on …` link and `w` on the
+    /// selected row share.
+    ///
+    /// * **A job opens its output**, the view Enter on that job in the jobs pane opens — the
+    ///   window over the job's own bytes, running or ended, with Esc back to the todos.
+    /// * **A job the daemon's table does not list** opens its completion notice whole when the
+    ///   conversation has one (the popup a click on the notice opens), and otherwise says so and
+    ///   opens nothing: a handle is matched exactly, so no other job can be opened in its place.
+    /// * **A child is read without leaving** — the subagents pane's `p`, the peek — since a link in
+    ///   a list of rows is for looking, and going into the child is the subagents pane's Enter.
+    ///   The id is the daemon's to resolve; one it does not hold is refused by name, as `/peek`
+    ///   is.
+    pub(crate) fn open_wait(&mut self, w: &WaitOn) -> Option<Action> {
+        self.redraw = true;
+        if self.session_id.is_empty() {
+            self.say("not attached to a session yet");
+            return None;
+        }
+        match w {
+            WaitOn::Job(h) => {
+                if let Some(i) = self.jobs.iter().position(|j| j.id == *h) {
+                    return self.open_job_out(i);
+                }
+                if let Some((k, _)) = self.notice_job(h) {
+                    self.open_notice_popup(k);
+                    return None;
+                }
+                self.say(&format!(
+                    "job {} is not in this session's job list — nothing to open",
+                    rano::agent::text::clean_line(h)
+                ));
+                None
+            }
+            WaitOn::Child(id) => {
+                if self
+                    .subagents
+                    .iter()
+                    .any(|s| s.session_id == *id && s.state == "opening")
+                {
+                    self.say("that subagent is still opening — nothing to read yet");
+                    return None;
+                }
+                self.sub_out_pending = Some(id.clone());
+                Some(Action::Peek(id.clone()))
+            }
+        }
+    }
+
+    /// **A click on link `k` of the last frame**: the cursor goes to the row the link is on —
+    /// so the pane and the bar say which row was acted on — and its wait opens.
+    pub(crate) fn open_wait_link(&mut self, k: usize) -> Option<Action> {
+        let link = self.todos_wait_links.get(k)?.clone();
+        // The stops are the add control, then every session row in the list's order.
+        self.todos_sel = 1 + link.todo;
+        self.open_wait(&link.target)
+    }
+
+    /// **What the row under the todos cursor waits on**, if it is a session row that waits on a
+    /// job or a child — `w`'s question, and the bar's.
+    pub(crate) fn selected_wait(&self) -> Option<WaitOn> {
+        use letibot_sessionlog::event::TodoBy;
+        let stops = self.todos_stops();
+        let stop = stops.get(self.todos_sel.min(stops.len().saturating_sub(1)))?;
+        let (words, mine) = match stop {
+            TodoStop::Mine(w) => (w, true),
+            TodoStop::Theirs(w) => (w, false),
+            _ => return None,
+        };
+        let t = self
+            .todos
+            .iter()
+            .find(|t| t.content == *words && (t.by == TodoBy::Operator) == mine)?;
+        wait_of(t)
+    }
+}
+
 /// **The title cap, at the OPERATOR's own door** — the refusal `/todo TEXT`, the new-todo card and
 /// the template seed all ask, so one rule is spelled once for the person the same way
 /// `todo_write` spells it for the model.

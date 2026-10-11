@@ -980,6 +980,10 @@ pub struct App {
     /// what makes a click possible at all: a click has a screen row and nothing else, and the only
     /// honest answer to *which stop is on this row* is the one the pane wrote down while drawing.
     pub(crate) todos_stop_rows: Vec<usize>,
+    /// **Where each row's `waits on …` link landed on the last frame**, in the pane's own rows
+    /// and columns — the record a click on the link reads, written by `todos_lines` while it
+    /// drew, because only the draw knows where rano put the words. See [`WaitLink`].
+    pub(crate) todos_wait_links: Vec<WaitLink>,
     /// **The todo row whose whole text is open, BY ITS IDENTITY**, until Esc — the overlay the
     /// pane's Enter opens, and the answer to the operator's report that a row could not be
     /// expanded: *"in todo list i cant expand your todo items - only truncated titles
@@ -1711,6 +1715,7 @@ impl App {
             repo_todos_at: None,
             todos_sel: 0,
             todos_stop_rows: Vec::new(),
+            todos_wait_links: Vec::new(),
             todos_open: None,
             repo_sel: 0,
             repo_open: false,

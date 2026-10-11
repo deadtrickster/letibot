@@ -112,6 +112,9 @@ pub(crate) enum Act {
     /// The todos pane's `n`: pause this session's plan-checks, or resume them — `/nag pause` or
     /// `/nag resume`, by which one holds now.
     NagToggle,
+    /// The todos pane's `w`: open the job or the child the selected row waits on — the keyboard's
+    /// half of a click on the row's `waits on …` link.
+    WaitsOn,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
 }
@@ -180,6 +183,7 @@ const TODOS: &[Binding] = &[
     LIST,
     b(&[On::Enter], Empty, Act::Open, Row),
     b(&[On::Tab], Empty, Act::Alt, Row),
+    b(&[On::Char('w')], Empty, Act::WaitsOn, Row),
     b(
         &[On::Char('n')],
         Empty,
@@ -393,6 +397,12 @@ impl App {
     /// **The words for a row-dependent binding**, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
+            // **Said only on a row that waits on something** — `w` is not on the bar over a
+            // row it would do nothing on.
+            (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {
+                WaitOn::Job(_) => "opens the job it waits on".to_string(),
+                WaitOn::Child(_) => "reads the child it waits on".to_string(),
+            }),
             (Surface::Todos, act) => {
                 let stops = self.todos_stops();
                 let at = self.todos_sel.min(stops.len().saturating_sub(1));

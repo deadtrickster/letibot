@@ -102,6 +102,13 @@ impl App {
             Act::Cursor => self.cursor_act(s, up),
             Act::Open => self.open_act(s),
             Act::Alt => self.todos_alt(),
+            // **`w` opens what the selected row waits on** — the keyboard's half of the click on
+            // its `waits on …` link (`App::open_wait`). A row that waits on no job and no child
+            // declines, and the letter is the composer's.
+            Act::WaitsOn => match self.selected_wait() {
+                Some(w) => ControlFlow::Break(self.open_wait(&w)),
+                None => ControlFlow::Continue(()),
+            },
             Act::Peek => self.subagents_peek(),
             // **Enter reads the same subagent again**, because a running one has new output.
             Act::Reread => match self.sub_out.as_ref() {
@@ -508,30 +515,37 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
-                let row = &self.jobs[i];
-                let job = row.id.clone();
-                // **Where its output went, when it did not come here** (R41): the window for a
-                // redirected job is empty by construction, so the pane needs the file's name.
-                let redirect = row.redirect.clone();
-                self.job_out = Some(JobOut {
-                    job: job.clone(),
-                    state: String::new(),
-                    never_ran: false,
-                    redirect,
-                    from: 0,
-                    to: 0,
-                    produced: 0,
-                    dropped: 0,
-                    lines: Vec::new(),
-                    next: None,
-                    back: Vec::new(),
-                    scroll: 0,
-                    loading: true,
-                    error: None,
-                });
-                self.push_surface(Surface::JobOut);
-                ControlFlow::Break(Some(Action::ReadJobOutput { job, offset: 0 }))
+                ControlFlow::Break(self.open_job_out(i))
             }
         }
+    }
+
+    /// **The output window of job `i` of [`App::jobs`], opened on top of whatever is drawn** —
+    /// the jobs pane's Enter, and a click on a todo row's `waits on j97` link, which opens the
+    /// same view so the two cannot come to show a job two ways.
+    pub(crate) fn open_job_out(&mut self, i: usize) -> Option<Action> {
+        let row = &self.jobs[i];
+        let job = row.id.clone();
+        // **Where its output went, when it did not come here** (R41): the window for a
+        // redirected job is empty by construction, so the pane needs the file's name.
+        let redirect = row.redirect.clone();
+        self.job_out = Some(JobOut {
+            job: job.clone(),
+            state: String::new(),
+            never_ran: false,
+            redirect,
+            from: 0,
+            to: 0,
+            produced: 0,
+            dropped: 0,
+            lines: Vec::new(),
+            next: None,
+            back: Vec::new(),
+            scroll: 0,
+            loading: true,
+            error: None,
+        });
+        self.push_surface(Surface::JobOut);
+        Some(Action::ReadJobOutput { job, offset: 0 })
     }
 }

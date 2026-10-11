@@ -12,7 +12,7 @@ use rano::render::Line;
 
 impl App {
     pub(crate) fn todos_lines(&mut self, w: usize) -> Vec<String> {
-        use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoStatus};
+        use letibot_sessionlog::event::{TodoBy, TodoStatus};
         let (open, postponed) = todo_counts(&self.todos);
         // **Through the one enumeration**: the row the cursor is on is the stop at
         // `todos_sel` of the same list the keys act on, matched here by identity (the
@@ -73,23 +73,15 @@ impl App {
                         // **A row waiting on the OPERATOR says `waits on you`, first** — *"the
                         // heads show loud notification that im waited"*; Enter on it opens the
                         // question. A done or struck-off row asks nobody anything.
-                        waits_on: match &t.when {
-                            _ if !matches!(
-                                t.status,
-                                TodoStatus::Completed | TodoStatus::Cancelled
-                            ) && t
-                                .needs
-                                .iter()
-                                .any(|n| matches!(n, TodoNeed::Operator { .. })) =>
-                            {
-                                Some("you".into())
-                            }
-                            Some(TodoCondition::Job { handle }) => Some(handle.clone()),
-                            None => t.needs.iter().find_map(|n| match n {
-                                TodoNeed::Job { handle } => Some(handle.clone()),
-                                TodoNeed::Child { id } => Some(id.clone()),
-                                _ => None,
-                            }),
+                        //
+                        // **A job is drawn with its slug and a child by its short name** — the
+                        // operator: *"\"waits on j97\" - make j97 a link to the real job, also
+                        // render job slug"*. `waits on j97 · pg-timing`, from the head's job list
+                        // ([`App::wait_label`]); the words are the link a click opens.
+                        waits_on: if asks_operator(t) {
+                            Some("you".into())
+                        } else {
+                            wait_of(t).map(|w| self.wait_label(&w))
                         },
                         // **The mark follows the STOP, whichever half the row is on.** rano draws
                         // the `▸` from this flag alone, so a model's row left at `false` would be
@@ -123,12 +115,85 @@ impl App {
                     .collect()
             }),
         };
-        let content = pane.content(w);
+        // **Drawn once at full width, and cut to `w` from that** — the same cut `content(w)`
+        // makes (`PaneLines::trimmed`), kept beside the uncut rows because a link's columns are
+        // read off the row as rano built it, before anything was cut away.
+        let full = pane.content(usize::MAX);
+        let content = full.clone().trimmed(w);
         // **The rows the stops landed on, taken as they went out** — what the arrows scroll by
         // and a click is tested against. The model's rows are stops now and rano does not record
         // them, so the record is completed here; see [`session_stop_rows`].
         self.todos_stop_rows = session_stop_rows(&content, &self.todos);
+        self.todos_wait_links = self.wait_links(&full, &content, w);
         row_strings(&content.lines, self.cfg.palette())
+    }
+
+    /// **Where each row's `waits on …` words landed**, as links a click opens — the operator:
+    /// *"\"waits on j97\" - make j97 a link to the real job, also render job slug"*.
+    ///
+    /// # Read off the row rano drew, and checked against it
+    ///
+    /// rano draws a session row as its furniture, the content, `— who`, and last the run
+    /// ` · waits on {waits_on}` (`rano::agent::todos::TodosPane::content`); the session rows are
+    /// the block directly under the add control, one row each, in the list's order — the shape
+    /// [`session_stop_rows`] relies on too. So the link's first column is the uncut row's width
+    /// less that last run's, plus the ` · ` before `waits on`, and its end is the row's width.
+    /// **Nothing is assumed that is not checked**: the row's last run must be exactly the words
+    /// this head handed rano for that row, or no link is recorded for it — a rano that drew the
+    /// row another way loses the link, never moves it onto the wrong words.
+    ///
+    /// # A row cut at the pane's edge
+    ///
+    /// `trimmed(w)` cuts a wider row to `w - 1` columns and an ellipsis. The link is then only the
+    /// part of its words still on the screen — the cut row's width less the `…` — and a row cut
+    /// before `waits on` begins has no link at all.
+    fn wait_links(
+        &self,
+        full: &rano::agent::pane::PaneLines,
+        cut: &rano::agent::pane::PaneLines,
+        w: usize,
+    ) -> Vec<WaitLink> {
+        let Some(add) = full.stop_rows.first() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, t) in self.todos.iter().enumerate() {
+            if asks_operator(t) {
+                continue;
+            }
+            let Some(target) = wait_of(t) else {
+                continue;
+            };
+            let row = add + 1 + i;
+            let (Some(line), Some(shown)) = (full.lines.get(row), cut.lines.get(row)) else {
+                continue;
+            };
+            let Some(last) = line.spans.last() else {
+                continue;
+            };
+            let drawn = format!(" · waits on {}", clean_line(&self.wait_label(&target)));
+            if last.content != drawn || !line.plain().contains(&clean_line(&t.content)) {
+                continue;
+            }
+            let end = line.width();
+            let from = end - last.width() + " · ".chars().count();
+            let visible = if end > w {
+                shown.width().saturating_sub(1)
+            } else {
+                end
+            };
+            let to = end.min(visible);
+            if to > from {
+                out.push(WaitLink {
+                    row,
+                    from,
+                    to,
+                    todo: i,
+                    target,
+                });
+            }
+        }
+        out
     }
 
     /// **One row, whole** — the overlay the todos pane's Enter opens.
@@ -186,9 +251,10 @@ impl App {
                     .find(|t| t.content == *words && (t.by == TodoBy::Operator) == mine);
                 match held {
                     Some(t) => {
-                        lines.push(pane::faint(format!("    {}", row_facts(t))));
+                        lines.push(pane::faint(format!("    {}", self.row_facts(t))));
                         if !t.needs.is_empty() {
-                            let needs: Vec<String> = t.needs.iter().map(need_words).collect();
+                            let needs: Vec<String> =
+                                t.needs.iter().map(|n| self.need_words(n)).collect();
                             lines.push(pane::faint(format!("    needs {}", needs.join(", "))));
                         }
                         lines.push(Line::default());
@@ -249,14 +315,50 @@ fn push_whole(out: &mut Vec<Line>, text: &str, w: usize) {
     }
 }
 
-/// **Who wrote a row and where it stands** — the overlay's own header line, and the two facts the
-/// pane's row carries in its margin (`— model`, the mark).
-fn row_facts(t: &TodoEntry) -> String {
-    let mut s = format!("{} · {}", author_words(&t.by), status_words(t.status));
-    if let Some(letibot_sessionlog::event::TodoCondition::Job { handle }) = &t.when {
-        s.push_str(&format!(" · waits on {}", clean_line(handle)));
+impl App {
+    /// **Who wrote a row and where it stands** — the overlay's own header line, and the two facts
+    /// the pane's row carries in its margin (`— model`, the mark). A `when` job is said as the
+    /// pane says it, with its slug: `waits on j97 · pg-timing`.
+    fn row_facts(&self, t: &TodoEntry) -> String {
+        let mut s = format!("{} · {}", author_words(&t.by), status_words(t.status));
+        if let Some(letibot_sessionlog::event::TodoCondition::Job { handle }) = &t.when {
+            let label = self.wait_label(&WaitOn::Job(handle.clone()));
+            s.push_str(&format!(" · waits on {}", clean_line(&label)));
+        }
+        s
     }
-    s
+
+    /// One edge of `needs`, as the sentence a reader can act on. A job carries its slug as the
+    /// pane draws it; a child its short name **and its whole id**, because this view is where the
+    /// id the pane shortened is still to be read.
+    fn need_words(&self, n: &TodoNeed) -> String {
+        match n {
+            TodoNeed::Job { handle } => {
+                format!(
+                    "job {}",
+                    clean_line(&self.wait_label(&WaitOn::Job(handle.clone())))
+                )
+            }
+            TodoNeed::Child { id } => {
+                let label = self.wait_label(&WaitOn::Child(id.clone()));
+                if label == *id {
+                    format!("child {}", clean_line(id))
+                } else {
+                    format!("child {} ({})", clean_line(&label), clean_line(id))
+                }
+            }
+            other => need_words(other),
+        }
+    }
+}
+
+/// **The row waits on the OPERATOR** — an open row with a question edge. It draws `waits on you`
+/// and its act is the question card, not a link.
+fn asks_operator(t: &TodoEntry) -> bool {
+    !matches!(t.status, TodoStatus::Completed | TodoStatus::Cancelled)
+        && t.needs
+            .iter()
+            .any(|n| matches!(n, TodoNeed::Operator { .. }))
 }
 
 /// The author, in the pane's own words — `you` and `the model`, one row apart.
