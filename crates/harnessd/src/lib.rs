@@ -110,6 +110,7 @@ pub mod m1;
 pub mod memwatch;
 pub mod mergequeue;
 pub mod modes;
+pub mod nag_pause;
 pub mod notes_offer;
 pub mod notes_scope;
 pub mod oracle;

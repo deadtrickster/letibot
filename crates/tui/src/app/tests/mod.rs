@@ -679,6 +679,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
         context_tokens: None,
         context_cached: None,
         stored_end: None,
+        nags_paused: None,
     }
 }
 

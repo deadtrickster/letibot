@@ -348,6 +348,55 @@ pub struct SessionBrief {
     /// needs no version bump: a head and a daemon on either side of this change still attach.
     #[serde(default)]
     pub stored_end: Option<StoredEnd>,
+    /// **The operator has paused this session's idle plan-check**, and until when — `None`
+    /// when they have not. Read off the session's own row, so a stored session the daemon is
+    /// not holding says it as well as a live one: a silent board on a session somebody paused
+    /// must not be read, from the picker, as a session whose clock is broken.
+    ///
+    /// Defaulted for `stored_end`'s reason: `None` is also what a daemon too old to know the
+    /// verb has to say, so the field is added without a protocol bump.
+    #[serde(default)]
+    pub nags_paused: Option<NagPause>,
+}
+
+/// **How long the operator has paused a session's idle plan-check** (`/nag pause`).
+///
+/// Two shapes and no third: a pause the operator ends by hand, and one that ends by itself at a
+/// wall-clock time. Wall-clock (unix ms) and not a duration, because it is what survives a
+/// restart and what a head draws: *paused until 14:30* is the sentence, and a duration would
+/// need the moment it was measured from to mean anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NagPause {
+    /// Until `/nag resume`.
+    UntilResumed,
+    /// Until this unix millisecond, or `/nag resume` before it.
+    Until { ms: u64 },
+}
+
+impl NagPause {
+    /// **The store's spelling** — `0` is until resumed, anything else the unix ms it ends at
+    /// (`StoredSession::nags_paused_until` in `letibot-tokencore`, which this crate does not
+    /// depend on, so the mapping lives on this side).
+    pub fn from_stored(v: i64) -> NagPause {
+        if v <= 0 {
+            NagPause::UntilResumed
+        } else {
+            NagPause::Until { ms: v as u64 }
+        }
+    }
+
+    pub fn to_stored(self) -> i64 {
+        match self {
+            NagPause::UntilResumed => 0,
+            NagPause::Until { ms } => ms as i64,
+        }
+    }
+
+    /// **Is the pause over as of `now_ms`?** Never, for one the operator ends by hand.
+    pub fn over_at(self, now_ms: u64) -> bool {
+        matches!(self, NagPause::Until { ms } if ms <= now_ms)
+    }
 }
 
 /// **How a stored conversation's last turn ended**, as its last row tells it.
@@ -429,6 +478,10 @@ pub struct StoredBrief {
     /// the subagents pane from this list had nothing to say about any child but *state
     /// unknown* — the operator's pane, 2026-10-09, was a wall of `[?]`.
     pub stored_end: Option<StoredEnd>,
+    /// The operator's pause of the idle plan-check, off the session's row — see
+    /// [`SessionBrief::nags_paused`]. A pause whose end has already passed is `None` here: it is
+    /// over, whether or not a daemon has yet been there to say so.
+    pub nags_paused: Option<NagPause>,
 }
 
 /// Where a registry can find sessions it is not already holding.
@@ -1682,6 +1735,9 @@ impl Registry {
                     context_tokens: on_disk.and_then(|d| d.context_tokens),
                     context_cached: on_disk.and_then(|d| d.context_cached),
                     stored_end: on_disk.and_then(|d| d.stored_end.clone()),
+                    // The row is the pause's one home, live or not — the harness writes it the
+                    // moment the verb lands, so the store is never behind the session here.
+                    nags_paused: on_disk.and_then(|d| d.nags_paused),
                 }
             })
             .collect();
@@ -1706,6 +1762,7 @@ impl Registry {
                 context_tokens: d.context_tokens,
                 context_cached: d.context_cached,
                 stored_end: d.stored_end,
+                nags_paused: d.nags_paused,
             });
         }
         out
@@ -2678,6 +2735,7 @@ mod stored_end_wire {
             stored_end: Some(StoredEnd::Answered {
                 first_line: "done".into(),
             }),
+            nags_paused: None,
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

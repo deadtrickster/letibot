@@ -1778,10 +1778,17 @@ impl Hub {
     /// thread runs, a worker that won one would be the second writer this tree keeps closing —
     /// and its *"the turn it was meant to steer had ended, so nothing will deliver it"*
     /// sentence would be false, because the child's reader is right there and will run it.
+    ///
+    /// **And a slash verb, for the ones a child answers itself** — `/nag`, whose clock lives on
+    /// the child's own thread and nowhere else (`harnessd/src/nag_pause.rs`), and `/clear`, whose
+    /// harness does. Head verbs, not the daemon's, so this is not a widening of what the daemon
+    /// may SUBMIT: the worker hands back only those verbs, and a child that takes any other slash
+    /// line answers it with `child_door_refused`, exactly as it does when it wins one from the
+    /// queue itself.
     pub fn give_back_to_its_own_reader(&self, cmd: QueuedCommand) -> bool {
         if !matches!(
             cmd.kind,
-            CommandKind::Interrupt { .. } | CommandKind::Message { .. }
+            CommandKind::Interrupt { .. } | CommandKind::Message { .. } | CommandKind::Slash { .. }
         ) {
             return false;
         }

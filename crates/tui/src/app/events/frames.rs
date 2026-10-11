@@ -149,6 +149,17 @@ impl App {
                             .map(|why| format!("auto-compaction is off: {}", why.trim()))
                     })?
                 });
+                // **The operator's `/nag pause`, for a head that attached after it** — the
+                // durable half, as `auto_compact_off` reads its row above. Keyed on the
+                // `paused` spelling the daemon writes only for a pause; `on`, or a daemon too
+                // old to send the row, clears it.
+                self.nags_paused = self.settings.iter().find_map(|r| {
+                    (r.key == "nags").then(|| {
+                        r.value
+                            .strip_prefix("paused")
+                            .map(|until| until.trim().to_string())
+                    })?
+                });
                 // Stamped, so the header can tell whether a turn has named a model
                 // since. See `model_from_settings_at`.
                 self.model_from_settings_at = self.seq;

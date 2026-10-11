@@ -99,6 +99,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             context_tokens: Some(44_700),
             context_cached: Some(40_000),
             stored_end: None,
+            nags_paused: None,
         },
         StoredBrief {
             session_id: "s-old".into(),
@@ -110,6 +111,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             context_tokens: Some(12_000),
             context_cached: None,
             stored_end: None,
+            nags_paused: None,
         },
     ]))));
     let h = serve_registry(r.clone(), socket_path(tag)).expect("bind");
@@ -470,6 +472,7 @@ fn a_resumed_subagent_carries_its_parent_on_the_entry() {
         context_tokens: None,
         context_cached: None,
         stored_end: None,
+        nags_paused: None,
     }]))));
     let server = serve_registry(r.clone(), socket_path("resume-child")).expect("bind");
     let (mut client, _hello, reader) =

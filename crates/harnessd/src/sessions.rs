@@ -479,6 +479,27 @@ pub struct TodoNagClock {
     /// one-based: the first delivery is what makes the next gap twice the window. A different
     /// notice, and the operator speaking (which clears the notice), start the ladder over.
     repeats: u32,
+    /// **Whether the operator has paused this session's checks** (`/nag pause`), handed in by
+    /// whoever owns the clock from the harness it reads the board from ([`Self::hold`]) — the
+    /// pause is the session's fact, on its config and its row, and the clock holds only a copy
+    /// refreshed at every arming. See [`crate::nag_pause`].
+    hold: NagHold,
+}
+
+/// **Is the operator holding this session's plan-check, and until when** — the clock's copy of
+/// the session's `/nag pause`, as an `Instant` it can arm for.
+///
+/// `Paused { until: None }` is a pause the operator ends by hand: nothing is armed at all, which
+/// is the waiter's unbounded sleep. `Paused { until: Some(at) }` arms exactly one deadline — the
+/// pause's end — so the owner wakes to END the pause and re-arm, rather than the pause quietly
+/// outliving its hour because nothing was waiting for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NagHold {
+    #[default]
+    Running,
+    Paused {
+        until: Option<Instant>,
+    },
 }
 
 impl TodoNagClock {
@@ -498,7 +519,16 @@ impl TodoNagClock {
             nagged: None,
             nagged_at: None,
             repeats: 0,
+            hold: NagHold::Running,
         }
+    }
+
+    /// **The session's pause, as of this arming** — set by the owner before every
+    /// [`Self::rearm`] and [`Self::operator_added`], from the harness (`Harness::nag_hold`), so
+    /// the clock cannot hold a pause the session no longer has. It arms nothing by itself; the
+    /// next re-arm reads it.
+    pub fn hold(&mut self, hold: NagHold) {
+        self.hold = hold;
     }
 
     /// **Start (or stand down) the check, as of `now`** — the body of
@@ -529,6 +559,12 @@ impl TodoNagClock {
         children: &ChildSessions,
         jobs: &RunningJobs,
     ) {
+        // **A paused session arms nothing but the pause's end** — the operator's `/nag pause`,
+        // ahead of every other answer: what the plan says is not asked about while they hold it.
+        if let NagHold::Paused { until } = self.hold {
+            self.due = until;
+            return;
+        }
         self.due = if nag_should_arm(todos, self.nagged.as_deref(), children, jobs) {
             Some(now + self.window)
         } else if unfinished_plan(
@@ -599,6 +635,11 @@ impl TodoNagClock {
     ) {
         self.prompt_arrived();
         self.rearm(todos, now, children, jobs);
+        // **And not while the operator has paused the checks** — the sooner check their row
+        // earns is still a check, and `/nag pause` says so in its reply.
+        if matches!(self.hold, NagHold::Paused { .. }) {
+            return;
+        }
         if nag_should_arm(todos, None, children, jobs) {
             self.due = Some(now + self.window.min(OPERATOR_ADD_NAG_AFTER));
         }
@@ -1183,6 +1224,21 @@ impl<'a> Sessions<'a> {
                         }
                     },
                 }
+            }
+            // **The pause is the harness's (its config, its row, its hub); the clock is ours**, so
+            // the verb lands on the one and the re-arm follows on the other — a pause the clock
+            // has not been re-armed with would leave the deadline it had, and that deadline is a
+            // check the operator just asked not to get.
+            Slash::Nag(verb) => {
+                let Some(h) = self.open.get_mut(session_id) else {
+                    return SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    };
+                };
+                let reply = h.nag_verb(verb);
+                self.rearm_todo_nag(session_id);
+                reply
             }
             Slash::FlowyStatus => crate::slash::flowy_status(self.seat.as_ref()),
             Slash::FlowyLogout => match self.detach_seat() {
@@ -2033,16 +2089,19 @@ impl<'a> Sessions<'a> {
     /// (`Harness::running_jobs`, which asks the same `job_fate` the `[todo] … is due` firing reads
     /// through), so a session the daemon does not hold contributes nothing rather than a guess: its
     /// rows are not this daemon's to arm.
+    ///
+    /// **And the operator's pause with them** (`/nag pause`), read off the same harness: a paused
+    /// session's clock arms only the pause's end. See [`NagHold`].
     fn rearm_todo_nag(&mut self, session_id: &str) {
-        let (rows, jobs) = match self.open.get(session_id) {
+        let (rows, jobs, hold) = match self.open.get(session_id) {
             Some(h) => {
                 let rows = h.todo_list();
                 let jobs = h.running_jobs(&rows);
-                (rows, jobs)
+                (rows, jobs, h.nag_hold())
             }
-            None => (Vec::new(), RunningJobs::none()),
+            None => (Vec::new(), RunningJobs::none(), NagHold::Running),
         };
-        self.rearm_todo_nag_from(session_id, rows, jobs);
+        self.rearm_todo_nag_from(session_id, rows, jobs, hold);
     }
 
     /// [`Sessions::rearm_todo_nag`] from a harness in hand — the shared tail's door, which holds
@@ -2050,7 +2109,7 @@ impl<'a> Sessions<'a> {
     fn rearm_todo_nag_on(&mut self, session_id: &str, h: &Harness) {
         let rows = h.todo_list();
         let jobs = h.running_jobs(&rows);
-        self.rearm_todo_nag_from(session_id, rows, jobs);
+        self.rearm_todo_nag_from(session_id, rows, jobs, h.nag_hold());
     }
 
     /// [`Sessions::rearm_todo_nag`] for a push that ADDED an operator row — the clock's
@@ -2061,29 +2120,40 @@ impl<'a> Sessions<'a> {
         };
         let rows = h.todo_list();
         let jobs = h.running_jobs(&rows);
+        let hold = h.nag_hold();
         let children = child_sessions(
             &self.registry,
             &self.parts.tasks,
             letibot_sessionlog::registry::now_ms(),
         );
         let window = self.nag_window;
-        self.nags
+        let clock = self
+            .nags
             .entry(session_id.to_string())
-            .or_insert_with(|| TodoNagClock::with_window(window))
-            .operator_added(&rows, Instant::now(), &children, &jobs);
+            .or_insert_with(|| TodoNagClock::with_window(window));
+        clock.hold(hold);
+        clock.operator_added(&rows, Instant::now(), &children, &jobs);
     }
 
-    fn rearm_todo_nag_from(&mut self, session_id: &str, rows: Vec<TodoItem>, jobs: RunningJobs) {
+    fn rearm_todo_nag_from(
+        &mut self,
+        session_id: &str,
+        rows: Vec<TodoItem>,
+        jobs: RunningJobs,
+        hold: NagHold,
+    ) {
         let children = child_sessions(
             &self.registry,
             &self.parts.tasks,
             letibot_sessionlog::registry::now_ms(),
         );
         let window = self.nag_window;
-        self.nags
+        let clock = self
+            .nags
             .entry(session_id.to_string())
-            .or_insert_with(|| TodoNagClock::with_window(window))
-            .rearm(&rows, Instant::now(), &children, &jobs);
+            .or_insert_with(|| TodoNagClock::with_window(window));
+        clock.hold(hold);
+        clock.rearm(&rows, Instant::now(), &children, &jobs);
     }
 
     /// The operator has spoken to SESSION: a new idle period, and the check may be made again.
@@ -2584,6 +2654,21 @@ impl<'a> Sessions<'a> {
             .collect();
         let mut ran = 0;
         for session_id in due {
+            // **A paused session's deadline is the pause's END, not a check** (`/nag pause 2h`):
+            // the pause is lifted here, said on the hub, and the clock re-armed as if the operator
+            // had typed `/nag resume` — no turn. A deadline that reaches a session still paused
+            // (armed before the pause, or a wall clock a hair behind the monotonic one) runs
+            // nothing either, and the re-arm puts the clock back on the pause's end.
+            if let Some(h) = self.open.get_mut(&session_id)
+                && let Some(p) = h.nag_pause()
+            {
+                if p.over_at(letibot_sessionlog::registry::now_ms()) {
+                    // A row the store refused is said on the hub by `resume_nags` itself.
+                    let _ = h.resume_nags(crate::nag_pause::Resumed::AtItsEnd);
+                }
+                self.rearm_todo_nag(&session_id);
+                continue;
+            }
             let notice = match self.open.get(&session_id) {
                 // Recorded as the clock reads the plan, not as the wording sent
                 // (`Harness::nag_said_as`, R77): the wording moves from one delivery to the next.
@@ -3723,9 +3808,13 @@ impl<'a> Sessions<'a> {
                 // answered it would open a SECOND harness for a subagent whose real one is parked in
                 // `serve_child`, then fork the transcript under it. The child answers its own clear
                 // (`ChildCommand::Clear`), with the harness that holds its board, jobs and children.
+                //
+                // **And `/nag`, for the same reason**: a subagent's clock lives on the thread that
+                // serves it, and this worker holds neither that clock nor that harness
+                // (`ChildCommand::Nag`).
                 if matches!(
                     crate::slash::Slash::parse(line),
-                    crate::slash::Slash::Clear { .. }
+                    crate::slash::Slash::Clear { .. } | crate::slash::Slash::Nag(_)
                 ) && let Some(hub) = &hub
                     && hub.owner() == Owner::OwnThread
                     && hub.give_back_to_its_own_reader(cmd.clone())
@@ -4329,6 +4418,14 @@ impl SessionSource for StoreSessions {
                 context_tokens: s.context_tokens,
                 context_cached: s.context_cached,
                 stored_end: s.last_item.as_ref().map(stored_end),
+                // **A pause already over is no pause**, whoever has yet to say so: a session this
+                // daemon is not holding has no clock to end it, and a picker row that went on
+                // saying *paused* past its hour would be the stale state this field exists to
+                // replace.
+                nags_paused: s
+                    .nags_paused_until
+                    .map(letibot_sessionlog::NagPause::from_stored)
+                    .filter(|p| !p.over_at(letibot_sessionlog::registry::now_ms())),
                 wiring: SessionWiring {
                     // The session's own model and workspace, from its row. The
                     // dialect and endpoint are this daemon's — they are not stored

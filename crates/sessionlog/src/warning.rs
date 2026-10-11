@@ -379,6 +379,16 @@ pub const TABLE: &[(&str, Class)] = &[
     // A slash command's answer. `slash_refused` is the same channel with the other
     // verdict, and it is a failure.
     ("slash", Class::Routine),
+    // **The operator paused this session's plan-check, and the pause ended** (`/nag`, see
+    // `harnessd/src/nag_pause.rs`). Routine by the rule at the top: each is the operator's own
+    // act, or its own deadline, working — and not `Refused`, which is pinned to *the reader's
+    // line answered with "that is not there"* (`READER_INPUT`), and a pause is the opposite of
+    // that. **The pause is still loud, and it is not this row that makes it so**: the row is the
+    // event, and the head's resident line — drawn on every frame while the `nags` settings row
+    // says `paused` — is the state. A dim row is right for an event; a silent board is what the
+    // resident line exists to explain.
+    ("nags_paused", Class::Routine),
+    ("nags_resumed", Class::Routine),
     // An import's three routine notes: whose rows these are, what could not be a row
     // (an unknown tag, a patch, a compaction — *counted and said, never dropped*), and
     // the count and spend it left behind.
@@ -836,14 +846,14 @@ mod the_register_census {
         "todo_move_unresolved",
     ];
 
-    /// **The census, pinned.** 112 codes, of which **11** are the reader's own input refused.
+    /// **The census, pinned.** 114 codes, of which **11** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_37_routine_11_refused_and_64_failures() {
+    fn the_table_is_39_routine_11_refused_and_64_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // **112, not 111.** One arrival, Routine: `cleared`, the boundary row `/clear` leaves
         // where the old conversation ended (`harness/clear.rs`) — a fork that landed, in
@@ -999,12 +1009,14 @@ mod the_register_census {
         //   · **110, not 104**: R61's six — `queue_blocked`, `target_red`, `queue_needs_human`,
         //     `queue_settings_unreadable` and `queue_wrong_build` (Failures) and `queue_lease_lost`
         //     (Routine) — see their rows.
-        assert_eq!(TABLE.len(), 112, "the table's size");
-        assert_eq!(count(Class::Routine), 37);
+        //   · **114, not 112**: `nags_paused` and `nags_resumed` (Routine) — the operator's
+        //     `/nag pause` and its end; see their rows for why the loud half is not the register.
+        assert_eq!(TABLE.len(), 114, "the table's size");
+        assert_eq!(count(Class::Routine), 39);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 64);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 64 of 111 and the middle is 9**, which is why the third register is a
+        // register is 64 of 114 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

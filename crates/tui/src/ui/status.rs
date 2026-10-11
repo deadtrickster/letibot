@@ -100,6 +100,29 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
+    /// **The line a paused plan-check draws** (`/nag pause`), above the composer with the
+    /// link, lock and compaction lines.
+    ///
+    /// A resident line for [`App::compact_off_line`]'s reason — a STATE, true until the pause
+    /// ends — and in the warning register because the operator's ruling was *"pause and the
+    /// pause must be loud"*: a session whose board has stopped asking must never be mistaken
+    /// for one whose clock broke. It names the end, and the verb that ends it sooner.
+    pub(crate) fn nag_pause_line(&self, w: usize) -> Vec<String> {
+        let Some(until) = &self.nags_paused else {
+            return Vec::new();
+        };
+        let said = if until.is_empty() {
+            "nags PAUSED — no plan-check reaches this session; `/nag resume` turns them back on"
+                .to_string()
+        } else {
+            format!(
+                "nags PAUSED {until} — no plan-check reaches this session; `/nag resume` turns \
+                 them back on"
+            )
+        };
+        row_strings(&facts::warning(&said, w), self.cfg.palette())
+    }
+
     /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
     ///
     /// A resident line and not a note, for `link_line`'s reason: it is a state, true until
@@ -244,6 +267,21 @@ impl App {
         // absence is ambiguous and this one's is not.
         if let Some(said) = &self.auto_compact_off {
             row("auto-compact", "off".into(), said);
+        }
+        // **A paused plan-check is the same kind of state**, and the same place: the fact a
+        // person diagnosing *why has nothing asked about my plan* needs first.
+        if let Some(until) = &self.nags_paused {
+            row(
+                "nags",
+                if until.is_empty() {
+                    "PAUSED".into()
+                } else {
+                    format!("PAUSED {until}")
+                },
+                "The operator paused this session's idle plan-check (`/nag pause`): nothing \
+                 is armed or sent while it holds, and the board still takes edits. `/nag \
+                 resume` ends it.",
+            );
         }
         row(
             "seq",

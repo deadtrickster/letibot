@@ -73,6 +73,7 @@ pub const VERBS: &[&str] = &[
     "job",
     "login",
     "models",
+    "nag",
     "queue",
     "supervise",
     "tools",
@@ -149,6 +150,9 @@ pub enum Slash {
         want: Option<bool>,
         at: Option<String>,
     },
+    /// **The operator's pause of this session's idle plan-check** — `/nag`, `/nag pause
+    /// [DURATION]`, `/nag resume`. See [`crate::nag_pause`].
+    Nag(crate::nag_pause::NagVerb),
     Help(String),
 }
 
@@ -295,6 +299,13 @@ impl Slash {
                     .map(str::to_string),
             },
             Some("tools") => Slash::Tools,
+            // **`off` and `on` are kept as the same verbs**, because they are what somebody
+            // reaches for first; the words the replies use are `pause` and `resume`, which is the
+            // operator's correction — *"or rather - pause"*.
+            Some("nag") | Some("nags") => match crate::nag_pause::parse(&words[1..]) {
+                Ok(verb) => Slash::Nag(verb),
+                Err(why) => Slash::Help(why),
+            },
             // Three spellings, because all three are what somebody reaches for.
             Some("default-model") | Some("default_model") | Some("default") => {
                 Slash::DefaultModel(words.get(1).map(|w| w.to_string()))

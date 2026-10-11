@@ -83,7 +83,7 @@ pub use protocol::{
 };
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{
-    Bell, CreateError, PaneBoundary, PromptDriver, Registry, RowSource, SessionBrief,
+    Bell, CreateError, NagPause, PaneBoundary, PromptDriver, Registry, RowSource, SessionBrief,
     SessionWiring, ShellSuggester, StoredEnd, TerminalDriver,
 };
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};

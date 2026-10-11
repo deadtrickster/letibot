@@ -68,10 +68,21 @@ impl App {
                     let stored = s.stored_items as usize;
                     PickRow {
                         depth: row.depth,
-                        name: if s.title.is_empty() {
-                            short_id(&s.session_id)
-                        } else {
-                            s.title.clone()
+                        // **A paused session says so on its row** (`/nag pause`): rano's row has
+                        // no field for it, and the name is the one cell every width keeps — so a
+                        // session whose board is silent on purpose is told from one whose clock
+                        // broke without attaching to it.
+                        name: {
+                            let name = if s.title.is_empty() {
+                                short_id(&s.session_id)
+                            } else {
+                                s.title.clone()
+                            };
+                            if s.nags_paused.is_some() {
+                                format!("{name} · nags paused")
+                            } else {
+                                name
+                            }
                         },
                         session_id: s.session_id.clone(),
                         here: s.session_id == self.session_id,

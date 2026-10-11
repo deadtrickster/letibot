@@ -635,3 +635,108 @@ fn a_childs_check_names_the_operators_row_first() {
 
     kid.release();
 }
+
+/// The warning rows on the child's hub with this code, as their text.
+fn warnings_on(hub: &Hub, code: &str) -> Vec<String> {
+    hub.retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning {
+                code: c, detail, ..
+            } if c == code => Some(detail.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `/nag …` sent to the child as a head sends it — on the child's own queue, where its serving
+/// thread takes it (the worker hands a `/nag` it wins back to that thread; see `Sessions`'
+/// `Slash` arm).
+fn nag_verb_to(hub: &Hub, line: &str) {
+    assert!(
+        hub.submit_daemon(
+            "dead",
+            format!("nag-{line}"),
+            letibot_sessionlog::CommandKind::Slash { line: line.into() },
+        ),
+        "the child's hub takes the command"
+    );
+}
+
+/// **`/nag pause` on a CHILD pauses that child** — its clock is on its own thread, and the verb is
+/// answered there: a parent's row lands on the paused child's board and is not asked about, and
+/// `/nag resume` brings the check. The operator's pause is per session (`nag_pause.rs`), and a
+/// child is a session — *"childs being just a session should get nags"* reads the other way too.
+#[test]
+fn a_paused_child_is_not_checked_until_it_is_resumed() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-child-nag-paused");
+    let path = dir.path().join("sessions.db");
+    let parent = "s-parent-of-the-paused-child";
+    let child = "s-child-paused-by-the-operator";
+
+    let parts = Parts::load(&config(&path, child)).expect("the vocabulary must load");
+    let mut scripts = vec![a_plain_answer_turn(
+        &parts.vocab,
+        "planning",
+        "the task is done",
+        30,
+    )];
+    for i in 0..10 {
+        scripts.push(a_plain_answer_turn(
+            &parts.vocab,
+            "checking",
+            &format!("on it {i}"),
+            30,
+        ));
+    }
+    let canned = canned::Canned::serve_each(scripts, 11);
+    drop(parts);
+
+    let kid = park_a_child(parent, child, canned, &path);
+    nag_verb_to(&kid.hub, "nag pause");
+    // **Answered on the child's own thread**, and loud: the verb's reply and the hub row.
+    wait_for(&kid.hub, |hub| warnings_on(hub, "nags_paused").pop());
+    assert!(
+        warnings_on(&kid.hub, "child_door_refused").is_empty(),
+        "`/nag` is the one verb a child answers itself"
+    );
+
+    kid.parent(parent)
+        .upsert_child(
+            child,
+            &[(PARENTS_ROW.into(), TodoStatus::Pending, Vec::new())],
+        )
+        .expect("the parent's write is accepted");
+    // Ten windows — an armed clock would have fired in one.
+    let until = Instant::now() + WINDOW * 10;
+    while Instant::now() < until {
+        assert!(
+            checks_on(&kid.hub).is_empty(),
+            "a paused child is not asked about the row its parent wrote"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        Store::open(&path)
+            .expect("the store")
+            .session(child)
+            .expect("read")
+            .is_some_and(|s| s.nags_paused_until == Some(0)),
+        "the child's pause is on the child's own row"
+    );
+
+    nag_verb_to(&kid.hub, "nag resume");
+    wait_for(&kid.hub, |hub| warnings_on(hub, "nags_resumed").pop());
+    let found = wait_for(&kid.hub, |hub| {
+        checks_on(hub).into_iter().find(|t| t.contains(PARENTS_ROW))
+    });
+    assert!(
+        found.contains("[todo check]"),
+        "resumed, and asked: {found}"
+    );
+
+    kid.release();
+}

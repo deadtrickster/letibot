@@ -109,6 +109,9 @@ pub(crate) enum Act {
     View,
     /// One of the person's queue verbs on the entry under the cursor.
     Verb(Verb),
+    /// The todos pane's `n`: pause this session's plan-checks, or resume them — `/nag pause` or
+    /// `/nag resume`, by which one holds now.
+    NagToggle,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
 }
@@ -177,6 +180,12 @@ const TODOS: &[Binding] = &[
     LIST,
     b(&[On::Enter], Empty, Act::Open, Row),
     b(&[On::Tab], Empty, Act::Alt, Row),
+    b(
+        &[On::Char('n')],
+        Empty,
+        Act::NagToggle,
+        Text("pauses or resumes the plan-checks"),
+    ),
     PAGE,
     WHEEL,
 ];

@@ -54,6 +54,19 @@ impl App {
                 if code == "auto_compact_no_progress" {
                     self.auto_compact_off = Some(format!("auto-compaction is off: {detail}"));
                 }
+                // **The operator's `/nag pause`, and its end** — the live half of
+                // `nags_paused`. The row's prose is the daemon's and is not parsed: the line is
+                // drawn at once, and the settings are asked for so it names the pause's end in
+                // the daemon's own words (the `nags` row). A resume clears it outright.
+                if code == "nags_paused" {
+                    if self.nags_paused.is_none() {
+                        self.nags_paused = Some(String::new());
+                    }
+                    self.queued.push(Action::Settings);
+                }
+                if code == "nags_resumed" {
+                    self.nags_paused = None;
+                }
                 // A slash LISTING opens the pane; a slash sentence stays a note.
                 // The daemon sends both under one code — `detail` is the command
                 // it echoes back, then the reply — so the head splits them by the

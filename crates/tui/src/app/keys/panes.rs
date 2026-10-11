@@ -127,6 +127,20 @@ impl App {
                 ControlFlow::Break(None)
             }
             Act::Verb(v) => self.queue_verb(v),
+            // **The pane the silence is seen from is where it is switched** — the same verb
+            // typed, so the key and `/nag` cannot drift; the daemon's `nags_paused` /
+            // `nags_resumed` row is what moves this head's resident line.
+            Act::NagToggle => {
+                if self.session_id.is_empty() {
+                    return ControlFlow::Continue(());
+                }
+                let line = if self.nags_paused.is_some() {
+                    "nag resume"
+                } else {
+                    "nag pause"
+                };
+                ControlFlow::Break(Some(Action::Slash { line: line.into() }))
+            }
         }
     }
 

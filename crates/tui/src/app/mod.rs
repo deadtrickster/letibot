@@ -1461,6 +1461,17 @@ pub struct App {
     /// finding, so a `--no-auto-compact` the operator typed themselves is not
     /// re-announced to them on every frame.
     pub(crate) auto_compact_off: Option<String>,
+    /// **The operator has paused this session's plan-check** (`/nag pause`) — `Some` while it
+    /// holds, carrying the daemon's `until …` words (empty for the moment between the
+    /// `nags_paused` row and the settings that name its end).
+    ///
+    /// A STATE, and drawn as one on every frame ([`App::nag_pause_line`]), for the operator's
+    /// ruling: *"pause and the pause must be loud"*. A board that stopped asking looks exactly
+    /// like a clock that broke, and a note in the scrollback would be saying nothing about now.
+    /// Fed by `auto_compact_off`'s two channels: the `nags_paused`/`nags_resumed` rows while this
+    /// head watches, and the `nags` settings row (keyed on its `paused` spelling) for a head
+    /// that attaches after the fact.
+    pub(crate) nags_paused: Option<String>,
 }
 
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
@@ -1706,6 +1717,7 @@ impl App {
             filling: None,
             compacting: None,
             auto_compact_off: None,
+            nags_paused: None,
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),

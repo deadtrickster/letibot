@@ -333,7 +333,13 @@ pub struct ShapelessAdmit {
 /// carried forward as reviews. The new `merge_queue` shares no column list with the old one, so a
 /// daemon of an older build that was already running when the file was migrated fails its own
 /// reads and writes of it rather than serving it.
-pub const SCHEMA_VERSION: i64 = 24;
+///
+/// **25** since the session row carries **the operator's pause of the idle plan-check** —
+/// `nags_paused_until`, additive, described at its migration arm below and at
+/// [`StoredSession::nags_paused_until`]. A pause is the operator's own act on one session, and
+/// one that lived in the daemon's memory would come back as nags after the restart it was
+/// typed to outlast.
+pub const SCHEMA_VERSION: i64 = 25;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -406,7 +412,7 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- not fired for this session.
     auto_compact_after INTEGER,      -- v19; LEDGER tokens coming out of it, still within
                                      -- a headroom of the window. NULL with its pair.
-    prefix_fingerprint TEXT          -- v21; the hash of the FROZEN prefix this session was
+    prefix_fingerprint TEXT,         -- v21; the hash of the FROZEN prefix this session was
                                      -- seated with — the composed instructions and the
                                      -- tool schemas this seat hands a session, with the
                                      -- standing notes excluded, because those are re-read
@@ -414,6 +420,10 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- column existed, which the resume path falls back to
                                      -- the stored prefix row for. See
                                      -- `StoredSession::prefix_fingerprint`.
+    nags_paused_until INTEGER        -- v25; the operator paused this session's idle plan-check.
+                                     -- NULL = not paused; 0 = until they resume it; any other
+                                     -- value = unix ms the pause ends at. See
+                                     -- `StoredSession::nags_paused_until`.
                                                                                                                                                                                                                                                                                                                                                                                   );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -914,6 +924,16 @@ pub struct StoredSession {
     /// this pair absent, and the two readers that care (the settings row, the
     /// resident line a head draws) keep them apart on purpose.
     pub auto_compact_stood_down: Option<(u64, u64)>,
+    /// **The operator paused this session's idle plan-check** — `None` when they have not (or
+    /// have resumed it), `Some(0)` for a pause that lasts until they resume it, and `Some(ms)`
+    /// for one that ends by itself at that unix millisecond.
+    ///
+    /// On the row for `auto_compact_stood_down`'s reason: a pause in the daemon's memory alone
+    /// would die with the process, and the nags the operator turned off would come back after a
+    /// restart they never asked to be nagged across. A `Some(ms)` already in the past is a pause
+    /// that ENDED while nobody held the session; the daemon that opens it reads that as resumed
+    /// and says so, rather than as a pause that never ends.
+    pub nags_paused_until: Option<i64>,
 }
 
 /// **One job's row, as the session store keeps it** — the durable half of the process table.
@@ -2290,6 +2310,28 @@ impl Store {
             // `Store::migrate_queues_to_v24`; nothing is deleted.
             self.migrate_queues_to_v24()?;
         }
+        if from < 25 {
+            // v25: **the operator's pause of the idle plan-check** — see
+            // [`StoredSession::nags_paused_until`] for the three spellings and why the pause is the
+            // session's fact rather than the daemon's.
+            //
+            // NULL in every existing row, and that is the true state of such a row: nobody has
+            // paused a session that predates the verb. Guarded rather than a bare `ALTER TABLE`,
+            // for the reason v19 and v22 give — a fixture walks a current store backwards — and
+            // because the guard is what makes this arm safe to RENUMBER if another migration takes
+            // 25 first: it asks whether the column is there, not which number the file carries.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_until'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_until INTEGER")?;
+            }
+        }
         Ok(())
     }
 
@@ -2701,7 +2743,8 @@ impl Store {
                           WHERE t.session_id = s.id
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
                       ORDER BY i.seq DESC LIMIT 1),
-                    s.prefix_fingerprint
+                    s.prefix_fingerprint,
+                    s.nags_paused_until
                FROM session s{filter}",
         ))?;
         let mut out: Vec<StoredSession> = stmt
@@ -2748,6 +2791,8 @@ impl Store {
                     // POSITION and this is the newest fact on the row; the fingerprint goes
                     // last so nothing above it shifts.
                     prefix_fingerprint: r.get(20)?,
+                    // **Index 21**, appended last for the reason 20 was.
+                    nags_paused_until: r.get(21)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -2935,6 +2980,24 @@ impl Store {
             "UPDATE session SET auto_compact_resident = ?2, auto_compact_after = ?3 \
              WHERE id = ?1",
             params![id, pair.map(|(r, _)| r as i64), pair.map(|(_, a)| a as i64)],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// **Pause this session's idle plan-check, or end the pause** —
+    /// [`StoredSession::nags_paused_until`]'s setter, in its spelling: `None` clears it, `Some(0)`
+    /// is until the operator resumes, `Some(ms)` ends at that unix millisecond.
+    ///
+    /// A setter of its own for [`Store::set_auto_compact_stood_down`]'s reason: it is written by
+    /// one act (the operator's `/nag`) and cleared by its two ends (the verb, or the pause's own
+    /// deadline), and nothing else on the row moves with it.
+    pub fn set_nags_paused_until(&self, id: &str, until: Option<i64>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE session SET nags_paused_until = ?2 WHERE id = ?1",
+            params![id, until],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));

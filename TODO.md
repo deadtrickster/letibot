@@ -2006,6 +2006,38 @@ upsert's contract — the reply says so). The parent's and queue's halves cannot
 
 ---
 
+## R83 — The operator can pause a session's plan-checks, loudly — **BUILT on `nag-switch` 2026-10-11 (not merged); store schema 25, no protocol bump**
+
+The operator: *"and i need a way to stop todo nags"*, then *"or rather - pause and the pause must
+be loud"*. Before this the only lever was per row (an operator `Postponed`).
+
+**What landed.** `/nag` (the state), `/nag pause [30m|2h|1h30m]`, `/nag resume`; `off`/`on` are
+aliases. Per session, on the session's row (`session.nags_paused_until`, schema **v25**, a guarded
+`ADD COLUMN` that is safe to renumber) and on `Config::nags_paused`, so it survives a restart and a
+resume; a pause whose end passed while the session was closed is ended at open and said. While
+paused, `TodoNagClock` arms only the pause's end (`NagHold`): no idle check, no repeat, and not
+R77's sooner check; the board still takes every edit. The pass that reaches the end lifts the pause,
+runs no turn, and re-arms. **Children**: `/nag` sent to a subagent is answered on the child's own
+thread (its clock lives there; the worker hands the verb back); a parent's pause does NOT cover its
+children — per session, said in the verb's reply. **Loud**: `nags_paused` / `nags_resumed` rows on
+the hub (Routine — the register is pinned to refusals; the resident line is the loud half), a
+`nags` settings row (`on` / `paused until 14:30`), a resident warning line above the composer on
+every frame, a `/status` row, `· nags paused` on the picker row, and `n` in the todos pane (R69
+table) toggling it. The model is not told — the notice text is untouched. **R79's held batch while
+paused**: still held, never stranded — it rides the next turn the model takes anyway (a prompt, a
+parent's message, an immediate wake, a continuation), or the first plan-check after the resume;
+results the plan waits on are immediate and never held, so the pause cannot delay them. Code: `crates/harnessd/
+src/nag_pause.rs`; tests `harnessd/tests/nag_pause.rs`, `child_nag.rs`'s paused child, the clock in
+`sessions/idle_nag.rs`, three in `tui/src/app/tests/settings.rs`.
+
+**Left:** a child paused WITH an end does not park until the end (its clock holds that deadline) —
+by design, so the resume is said on time; one paused until resumed parks as usual and comes back
+paused. The jobs pane does not list paused sessions (the picker does). The Sessions-side hand-back
+of `/nag` to a child's reader (`Hub::give_back_to_its_own_reader` now takes a `Slash`) has no test
+of its own; the child's own arm does.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the

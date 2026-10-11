@@ -373,6 +373,15 @@ pub struct Config {
     /// Nothing clears it but a fresh session or a raised window: a manual
     /// `/compact` does not re-arm the automatic one, and never has.
     pub auto_compact_stood_down: Option<(u64, u64)>,
+    /// **The operator's pause of this session's idle plan-check** (`/nag pause`), or `None`
+    /// while the check runs. Carried here for `auto_compact_stood_down`'s reason: the store row
+    /// is written from it ([`crate::harness::Harness::pause_nags`]) and read back at open
+    /// ([`crate::harness::Harness::restore_nag_pause`]), and the settings row is drawn from it.
+    /// See [`crate::nag_pause`].
+    ///
+    /// **Never inherited**: a child's config starts as a clone of its parent's, and the open
+    /// overwrites this from the child's OWN row — a pause is one session's, see the module.
+    pub nags_paused: Option<letibot_sessionlog::NagPause>,
     /// The GGUF the vocabulary is read from. For a split model, the first shard.
     ///
     /// `None` is a daemon for a cloud provider: its ledger uses the byte vocabulary
@@ -1667,6 +1676,7 @@ impl Config {
             media_marker: None,
             auto_compact: true,
             auto_compact_stood_down: None,
+            nags_paused: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             vm_source: None,
@@ -1938,6 +1948,23 @@ impl Config {
                 "/supervise on|off",
             ),
             &["on", "off"],
+        ));
+        // **The idle plan-check, and whether the operator has paused it** — `on`, or `paused
+        // until 14:30`. A row because a pause must be findable where every other runtime switch
+        // is: a silent board is otherwise indistinguishable from a broken clock. The head keys
+        // its resident line on the `paused` spelling; see `crate::nag_pause::setting_value`.
+        out.push(row(
+            "nags",
+            crate::nag_pause::setting_value(
+                self.nags_paused,
+                letibot_sessionlog::registry::now_ms(),
+            ),
+            if self.nags_paused.is_some() {
+                "/nag pause, this session"
+            } else {
+                ""
+            },
+            "/nag pause [30m|2h] · /nag resume",
         ));
         // **And which of those rows this box can actually use** — the operator's ask of
         // 2026-10-04: *"model peeker should green models we have keys for. — if i choose a model

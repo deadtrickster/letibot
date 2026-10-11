@@ -4351,6 +4351,9 @@ impl Harness {
         // every `Config` reader converts with is the count of THIS conversation from the
         // first thing that reads it — a `/reseat` before any turn included.
         h.measure_resident();
+        // **The operator's `/nag pause`, from the session's own row** — before the settings are
+        // first published, so the first `nags` row a head reads is already the true one.
+        h.restore_nag_pause();
         h.publish_settings();
         h.publish_jobs();
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
@@ -11479,6 +11482,156 @@ impl Harness {
              the loop is still standing"
         ))
     }
+
+    /// **The operator's pause of this session's plan-check**, or `None` while it runs. See
+    /// [`crate::nag_pause`].
+    pub fn nag_pause(&self) -> Option<letibot_sessionlog::NagPause> {
+        self.cfg.nags_paused
+    }
+
+    /// **The pause as the clock arms for it** — the wall-clock end turned into an `Instant` from
+    /// now, read fresh at every arming so the clock never holds a pause this session no longer
+    /// has. See [`crate::sessions::NagHold`].
+    pub fn nag_hold(&self) -> crate::sessions::NagHold {
+        use crate::sessions::NagHold;
+        use letibot_sessionlog::NagPause;
+        match self.cfg.nags_paused {
+            None => NagHold::Running,
+            Some(NagPause::UntilResumed) => NagHold::Paused { until: None },
+            Some(NagPause::Until { ms }) => {
+                let left = ms.saturating_sub(letibot_sessionlog::registry::now_ms());
+                NagHold::Paused {
+                    until: Some(std::time::Instant::now() + std::time::Duration::from_millis(left)),
+                }
+            }
+        }
+    }
+
+    /// **`/nag`, on this session** — the report, the pause or the resume, as the verb's reply.
+    /// The clock is its owner's to re-arm afterwards (`Sessions`' arm, `serve_child`'s): this
+    /// half moves the session's fact and says it.
+    pub fn nag_verb(&mut self, verb: crate::nag_pause::NagVerb) -> crate::slash::SlashReply {
+        use crate::nag_pause::{self as np, NagVerb};
+        let now = letibot_sessionlog::registry::now_ms();
+        let lines = match verb {
+            NagVerb::Report => vec![np::report(self.cfg.nags_paused, now)],
+            NagVerb::Pause(d) => {
+                let p = match d {
+                    None => letibot_sessionlog::NagPause::UntilResumed,
+                    Some(d) => letibot_sessionlog::NagPause::Until {
+                        ms: now.saturating_add(d.as_millis() as u64),
+                    },
+                };
+                let mut lines = vec![np::paused_reply(p, now)];
+                if let Err(why) = self.pause_nags(p) {
+                    lines.push(why);
+                }
+                lines
+            }
+            NagVerb::Resume => match self.cfg.nags_paused {
+                None => vec!["nags are not paused in this session, so nothing changed".into()],
+                Some(_) => {
+                    let mut lines = vec![
+                        "nags RESUMED for this session: the plan-check is armed again from now"
+                            .into(),
+                    ];
+                    if let Err(why) = self.resume_nags(np::Resumed::ByVerb) {
+                        lines.push(why);
+                    }
+                    lines
+                }
+            },
+        };
+        crate::slash::SlashReply { lines, ok: true }
+    }
+
+    /// **Pause this session's plan-check** — the config, the row and the hub, together, for
+    /// [`Self::stand_down_auto_compact`]'s reason: a reader who finds one without the others has
+    /// been lied to. The `nags_paused` row is the loud half; the settings row is what a head that
+    /// attaches later reads.
+    ///
+    /// A row the store refused is SAID — in the hub row and in the `Err` the verb's reply carries
+    /// — and the pause still holds in memory: it is real until this daemon stops, and the operator
+    /// is told it will not outlast it.
+    pub fn pause_nags(&mut self, p: letibot_sessionlog::NagPause) -> Result<(), String> {
+        let now = letibot_sessionlog::registry::now_ms();
+        self.cfg.nags_paused = Some(p);
+        let stored = self.store_nag_pause(Some(p));
+        let mut detail = format!(
+            "nags PAUSED by the operator {}: this session's plan-check is not armed or sent              while it holds",
+            crate::nag_pause::until_words(p, now)
+        );
+        if let Err(why) = &stored {
+            detail.push_str(&format!(". {why}"));
+        }
+        self.hub.publish(SessionEvent::Warning {
+            code: "nags_paused".into(),
+            detail,
+            compaction: None,
+        });
+        self.publish_settings();
+        stored
+    }
+
+    /// **End the pause** — by the verb, at its own deadline, or noticed at open after it ran out
+    /// while the session was closed. The `nags_resumed` row says which.
+    pub fn resume_nags(&mut self, why: crate::nag_pause::Resumed) -> Result<(), String> {
+        let Some(was) = self.cfg.nags_paused.take() else {
+            return Ok(());
+        };
+        let stored = self.store_nag_pause(None);
+        let mut detail =
+            crate::nag_pause::resumed_words(why, was, letibot_sessionlog::registry::now_ms());
+        if let Err(why) = &stored {
+            detail.push_str(&format!(". {why}"));
+        }
+        self.hub.publish(SessionEvent::Warning {
+            code: "nags_resumed".into(),
+            detail,
+            compaction: None,
+        });
+        self.publish_settings();
+        stored
+    }
+
+    /// The row half of [`Self::pause_nags`] and [`Self::resume_nags`]. No store is no row and no
+    /// error: a bare harness has nothing to outlast.
+    fn store_nag_pause(&self, p: Option<letibot_sessionlog::NagPause>) -> Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        store
+            .set_nags_paused_until(&self.cfg.session_id, p.map(|p| p.to_stored()))
+            .map_err(|e| {
+                format!(
+                    "Writing it to the session row FAILED ({e}), so it holds only until this                      daemon stops"
+                )
+            })
+    }
+
+    /// **A resume comes back with the operator's pause**, from the session's own row — called
+    /// at open, for every session that opens, children included.
+    ///
+    /// **The row is the answer even when it says nothing**: a child's config is a clone of its
+    /// parent's, and a parent's pause must not ride into it (see [`crate::nag_pause`]), so a
+    /// session with no row, or no store, opens running. A pause whose end passed while nobody
+    /// held the session is ended here and said, rather than restored as a pause nothing would
+    /// ever lift.
+    pub fn restore_nag_pause(&mut self) {
+        let stored = self
+            .store
+            .as_ref()
+            .and_then(|s| s.session(&self.cfg.session_id).ok())
+            .flatten()
+            .and_then(|s| s.nags_paused_until)
+            .map(letibot_sessionlog::NagPause::from_stored);
+        self.cfg.nags_paused = stored;
+        if let Some(p) = stored
+            && p.over_at(letibot_sessionlog::registry::now_ms())
+        {
+            let _ = self.resume_nags(crate::nag_pause::Resumed::WhileClosed);
+        }
+    }
 }
 
 /// **The stored provider count and the ledger length it was measured at, or `None`
@@ -13112,6 +13265,10 @@ enum ChildCommand {
     /// **`/clear`, answered on the thread that owns this child's harness** — a fresh
     /// conversation for the child, with its board, jobs, children and parent kept. No turn runs.
     Clear,
+    /// **`/nag` — the other slash verb a child answers itself**, because the clock it moves lives
+    /// on this thread (`ChildTurns::nag`) and nowhere else. A child is a session, and the
+    /// operator's pause is per session: see [`crate::nag_pause`].
+    Nag,
 }
 
 fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
@@ -13134,7 +13291,7 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
         // parent's words in the operator's mouth and let them authorise — which is why this is
         // a variant of its own rather than `Answer`.
         K::Message { .. } => ChildCommand::Hear,
-        // **`/clear` is the one slash verb a child answers itself.** The rest of a session's
+        // **`/clear` is a slash verb a child answers itself.** The rest of a session's
         // machinery is its parent's, but a clear is about THIS conversation's history — the
         // degradation the operator clears is the child's own — and everything it keeps (the
         // child's board, jobs and own children, its place under its parent) lives in the
@@ -13146,6 +13303,15 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
             ) =>
         {
             ChildCommand::Clear
+        }
+        // **And `/nag`, for the same reason**: the clock it moves is this thread's.
+        K::Slash { line }
+            if matches!(
+                crate::slash::Slash::parse(line),
+                crate::slash::Slash::Nag(_)
+            ) =>
+        {
+            ChildCommand::Nag
         }
         // The rest is a session's own machinery — a compaction, a re-seat, a mode, the operator's
         // door — and a child inherits all of it from its parent rather than owning a copy.
@@ -13385,10 +13551,14 @@ impl ChildTurns {
     /// they are the one input that moves while neither anchor does. **And the jobs with them**,
     /// from this session's own process table: a row that waits on a background job is silent
     /// while it runs, and whether it still runs is not a fact the board or the version holds.
+    ///
+    /// **And the operator's pause is read on every call**, moved or not, so the clock's copy of
+    /// it can never be older than the session's (`Harness::nag_hold`).
     fn rearm(&mut self, sub: &Harness, turned: bool) {
         let v = sub.todo_board_version();
         let moved = v != self.board_version;
         self.board_version = v;
+        self.nag.hold(sub.nag_hold());
         if turned || moved {
             let rows = sub.todo_list();
             let jobs = sub.running_jobs(&rows);
@@ -13534,6 +13704,17 @@ fn serve_child_with(
             // would fire again at once.
             OwnWork::TimedOut => {
                 turns.nag.fired();
+                // **A paused child's deadline is the pause's end, not a check** —
+                // `Sessions::deliver_due_nags`' rule on this thread: the pause is lifted and said,
+                // the clock re-armed, and no turn runs. Still paused (a wall clock a hair behind
+                // the monotonic one) runs nothing and re-arms for the end.
+                if let Some(p) = sub.nag_pause() {
+                    if p.over_at(letibot_sessionlog::registry::now_ms()) {
+                        let _ = sub.resume_nags(crate::nag_pause::Resumed::AtItsEnd);
+                    }
+                    turns.rearm(sub, true);
+                    continue;
+                }
                 // Recorded as the clock reads the plan, not as the wording sent (`nag_said_as`).
                 let notice = sub.nag_said_as();
                 if run_turn(sub, &mut turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
@@ -13607,6 +13788,29 @@ fn serve_child_with(
                 });
                 // No turn ran and the board did not move — `Leave`'s reading of the clock.
                 turns.rearm(sub, false);
+            }
+            // **`/nag` on this child**, answered here and published as the worker publishes every
+            // verb's reply (`slash` / `slash_refused`, the line echoed first), then the clock
+            // re-armed with whatever the verb left — the pause's end, or the plan's own check.
+            ChildCommand::Nag => {
+                let line = match &kind {
+                    letibot_sessionlog::CommandKind::Slash { line } => line.clone(),
+                    _ => unreachable!("`child_command` answers `/nag` and nothing else"),
+                };
+                let reply = match crate::slash::Slash::parse(&line) {
+                    crate::slash::Slash::Nag(verb) => sub.nag_verb(verb),
+                    _ => unreachable!("`child_command` matched this line as `/nag`"),
+                };
+                hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: if reply.ok {
+                        "slash".into()
+                    } else {
+                        "slash_refused".into()
+                    },
+                    detail: format!("/{line}\n{}", reply.lines.join("\n")),
+                    compaction: None,
+                });
+                turns.rearm(sub, true);
             }
             ChildCommand::Leave(why) => {
                 eprintln!(

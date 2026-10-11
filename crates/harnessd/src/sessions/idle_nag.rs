@@ -983,3 +983,58 @@ fn a_wait_attached_to_an_operators_row_keeps_the_check_silent_until_the_job_ends
         "and once it has ended the row is asked about again"
     );
 }
+
+/// **The operator's `/nag pause` stands the clock down — the idle check, the repeat and the
+/// sooner check an added row earns — and a pause with an end arms only that end.**
+///
+/// The operator: *"and i need a way to stop todo nags"*, then *"or rather - pause"*. The pause is
+/// the session's fact (`Harness::nag_hold` reads it off the config); what is pinned here is the
+/// clock's reading of it, with the times injected, so *silent because paused* is told from
+/// *silent because nothing armed* by the deadline the clock holds rather than by waiting.
+#[test]
+fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let plan = [row("make tier 1 green", TodoStatus::Pending)];
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    clock.rearm(&plan, t0, &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(t0 + Duration::from_secs(60)),
+        "the premise: an open plan arms the check"
+    );
+
+    // **Paused until resumed: nothing at all**, the waiter's unbounded sleep.
+    clock.hold(super::NagHold::Paused { until: None });
+    clock.rearm(&plan, t0, &no_children(), &no_jobs());
+    assert_eq!(clock.due_at(), None, "a pause arms no check");
+    // **And R77's sooner check does not slip past it** — the operator's own row is still a check.
+    let added = [plan[0].clone(), row("and the docs", TodoStatus::Pending)];
+    clock.operator_added(&added, t0, &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        None,
+        "an operator's added row earns no check while the pause holds"
+    );
+
+    // **Paused with an end: the end, and only the end** — the owner wakes to lift the pause.
+    let end = t0 + Duration::from_secs(2 * 3600);
+    clock.hold(super::NagHold::Paused { until: Some(end) });
+    clock.operator_added(&added, t0, &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(end),
+        "the pause's end is the one deadline"
+    );
+
+    // **Resumed: the clock arms as it always did.**
+    clock.hold(super::NagHold::Running);
+    let t1 = t0 + Duration::from_secs(5);
+    clock.rearm(&added, t1, &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(t1 + Duration::from_secs(60)),
+        "a resumed clock is armed again from now"
+    );
+}

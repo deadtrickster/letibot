@@ -1057,3 +1057,122 @@ fn the_stood_down_row_sets_and_clears_the_resident_line() {
         "a session the guard never fired on takes the line away"
     );
 }
+
+/// **A paused plan-check is LOUD** (`/nag pause`) — the operator's correction, *"or rather -
+/// pause and the pause must be loud"*. The `nags` settings row's `paused` spelling draws a
+/// resident line above the composer, on every frame, naming the end; the `nags_resumed` row
+/// takes it away; `on` is no line at all. Both channels, as the stood-down line has them: the
+/// row for a head that attaches later, the hub rows for one watching.
+#[test]
+fn a_paused_plan_check_draws_a_resident_line_until_it_is_resumed() {
+    use letibot_sessionlog::protocol::SettingRow;
+    let nags_row = |value: &str| SettingRow {
+        key: "nags".into(),
+        value: value.into(),
+        source: String::new(),
+        editable: String::new(),
+        choices: Vec::new(),
+        tools: Vec::new(),
+    };
+    let mut a = app();
+    a.apply(ServerFrame::Settings {
+        rows: vec![nags_row("on")],
+    });
+    assert!(a.nags_paused.is_none());
+    assert!(
+        !a.screen(120, 30).join("\n").contains("nags PAUSED"),
+        "a running clock draws nothing"
+    );
+
+    a.apply(ServerFrame::Settings {
+        rows: vec![nags_row("paused until 14:30")],
+    });
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("nags PAUSED until 14:30") && screen.contains("/nag resume"),
+        "the resident line names the end and the verb that ends it: {screen}"
+    );
+    // **On every frame**, not once: a second draw still carries it.
+    assert!(a.screen(120, 30).join("\n").contains("nags PAUSED"));
+
+    // `/status` carries it as a state row too.
+    a.command("status");
+    let status = a.screen(120, 60).join("\n");
+    assert!(status.contains("PAUSED until 14:30"), "{status}");
+
+    // **The live channel**: the daemon's `nags_resumed` row clears it at once.
+    let hub = letibot_sessionlog::hub::Hub::new("s");
+    let e = hub.publish(letibot_sessionlog::SessionEvent::Warning {
+        code: "nags_resumed".into(),
+        detail: "nags RESUMED: the pause ran out at 14:30".into(),
+        compaction: None,
+    });
+    a.apply(ServerFrame::Event(e));
+    assert!(a.nags_paused.is_none(), "a resume takes the line away");
+
+    // And `nags_paused` draws it before the settings name its end — and asks for them.
+    let e = hub.publish(letibot_sessionlog::SessionEvent::Warning {
+        code: "nags_paused".into(),
+        detail: "nags PAUSED by the operator until you resume them".into(),
+        compaction: None,
+    });
+    a.queued.clear();
+    a.apply(ServerFrame::Event(e));
+    assert!(a.nags_paused.is_some(), "the pause is drawn at once");
+    assert!(
+        a.queued.contains(&Action::Settings),
+        "and the settings are asked for, so the line can name the end"
+    );
+}
+
+/// **A paused session is marked in the picker**, from its brief's `nags_paused` — the session
+/// list is where a silent board on ANOTHER session would otherwise be read as a broken one.
+#[test]
+fn the_picker_marks_a_paused_session() {
+    let mut paused = brief("s-quiet", "the quiet one", false);
+    paused.nags_paused = Some(letibot_sessionlog::NagPause::UntilResumed);
+    let other = brief("s-loud", "the loud one", false);
+    let mut a = app();
+    a.apply(hello(
+        "s-loud",
+        vec![other, paused],
+        letibot_sessionlog::hub::Hub::new("s-loud").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    let lines = a.picker_lines(96).join("\n");
+    assert!(
+        lines.contains("the quiet one · nags paused"),
+        "the paused session says so on its row: {lines}"
+    );
+    assert!(
+        !lines.contains("the loud one · nags paused"),
+        "and only that one: {lines}"
+    );
+}
+
+/// **The todos pane's `n` is `/nag pause`, and `/nag resume` while paused** — declared in the
+/// binding table, so the hint bar names it.
+#[test]
+fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.push_surface(Surface::Todos);
+    assert_eq!(
+        a.key(Key::Char('n')),
+        Some(Action::Slash {
+            line: "nag pause".into()
+        })
+    );
+    a.nags_paused = Some("until 14:30".into());
+    assert_eq!(
+        a.key(Key::Char('n')),
+        Some(Action::Slash {
+            line: "nag resume".into()
+        })
+    );
+    let bar = a.surface_hint(Surface::Todos);
+    assert!(
+        bar.contains("pauses or resumes the plan-checks"),
+        "the bar names the key: {bar}"
+    );
+}
