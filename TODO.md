@@ -1788,7 +1788,7 @@ feat/memory-engine`, or fix `scripts/merge_gate.sh` on `main` and `/queue regate
 
 ---
 
-## R84 — The landing tree lives outside `.git`, a session can read it, and a gate gets its gitignored inputs — **BUILT on `landing-out-of-git` 2026-10-11 (not merged)**
+## R84 — The landing tree lives outside `.git`, a session can read it, and a gate gets its gitignored inputs — **MERGED on main 2026-10-12 (4ac0f18, d27ed56); the placement rule after it is PARKED, see R84a**
 
 The operator, 2026-10-11: *"also, the merges and branches shoudlnt land into .git. look at firecode
 sission - it fights exactly this"*. The firecode session's finding, in its own words: *"The queue runs
@@ -1829,6 +1829,40 @@ no grant reaches it. So I'll reproduce it instead: a fresh clone"*.
   `leticode.toml` (not written here). A carried tree is a full copy per repository (firecode's
   `images/` may be GiBs on disk a second time). Old landing trees of repositories that no longer exist
   are not swept from the data dir.
+
+## R84a — Worktrees and landing trees beside the checkout (`wt/`, `landing/`) — **PARKED 2026-10-12, built on branch `parked/layout-wt-landing` (e7f4e55), not on main**
+
+The operator proposed the placement: *"so id suggest to correct the placement - ~/Projects/rano/rano
+<- the main checkout and then ~/Projects/rano/wt/* ~/Projects/rano/landing/*"*, and for a repository
+not inside its own project directory chose a per-project option with a fallback. It was built, then
+parked the same night: *"on placement - lets park it in todo. keep worktree, fix that .git thing with
+something small. i dont have time to reason about proposed behaviour changes now"*. Main keeps R84
+(landing in the data dir, out of `.git`) and subagent worktrees stay in `<workspace>/.claude/worktrees`.
+
+What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut on top of `d27ed56`):
+
+- **The rule** (`crates/harnessd/src/layout.rs`), first match wins: `$LETIBOT_LAYOUT_ROOT`;
+  `[layout] root = "<dir>"` in the project's `leticode.toml` (absolute or `~/`; relative, `..` and
+  unknown keys refused by name); the X/X layout (`~/Projects/rano/rano` → root `~/Projects/rano`,
+  so `wt/` and `landing/` in it); otherwise siblings named after the checkout
+  (`~/Projects/firecode-wt`, `~/Projects/firecode-landing`).
+- **Landing** at `<landing>/<target>` (branch name sanitised to one folder), replacing R84's data-dir
+  path; migration of `.git/letibot-landing` as in R84.
+- **Subagent worktrees** at `<wt>/agent-<slug>` instead of `<workspace>/.claude/worktrees/`; existing
+  ones not moved. Because `wt/` can be outside the workspace, a session's write access to its
+  children's trees is kept three ways: the sandbox binds `wt/` read-write, the file tools reach it
+  through `HostBackend::with_extra_root`, and the permission gate treats it as the workspace
+  (`Surroundings::worktrees`).
+
+**The behaviour changes the operator has not ruled on** — the reason it is parked:
+
+1. With the X/X layout and a session rooted at the project directory (`~/Projects/rano`), `landing/`
+   is inside the workspace: the sandbox sees it read-only but `write`/`edit` can still write there
+   (their check knows only the workspace root). Closing it needs a per-session read-only path in the
+   backend.
+2. Child daemons, whose workspace becomes `wt/agent-*` outside the checkout, no longer take the
+   repository's merge-queue lease; only the project's own daemon serves its queue.
+3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
 
 ## R77 — An operator's todo lands last and the nag never names it — **BUILT on `r77-operator-todos` 2026-10-11 (not merged). What was built and what is left are at the end of this entry.**
 
