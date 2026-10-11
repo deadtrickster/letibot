@@ -41,7 +41,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R61 — Review and merge are two queues — **OPEN, designed by the operator 2026-10-11**
+## R61 — Review and merge are two queues — **OPEN, designed by the operator 2026-10-11; the review of why the current one failed, and five requirements, are below**
 
 The operator: *"review is review and merge is merge. separate steps. separate queues."* and
 *"model reviews stay, yes"*. Today they are one: a `merge_queue` row sits in `waiting` until the
@@ -75,6 +75,105 @@ started. **Done when:** a branch that is reviewed, merged and then turns main re
 three rows in two queues and one pane; a review pass with N entries costs no `Store::session` scan
 (`perf` on an idle daemon shows the worker at ~0%); a red main stops landing and does not stop
 enqueueing or reviewing.
+
+### Why the current queue never worked — the review of 2026-10-11, and what R61 must therefore meet
+
+The operator: *"the merge/review queue is a center-piece and it was never reliable so far."* A
+read-only review of main at `435bb88`, the live store, the daemon log and git history:
+
+**What actually happened** (store: `merge_queue` 22 rows, `merge_review` 21; e7798d9 cleared the
+table once, so nothing before 10-10 survives, and only the latest `evidence` is kept, so time in
+each state cannot be reconstructed):
+
+- **9 landed, and the queue's own gate landed ONE** (`agent/thinking-merge`, 10-10 23:27, gate
+  ~6.7 min). The other 8 say *"landed without the queue's gate"*: the queue handed them back
+  (`hand_over`) and the project session merged them by hand. Main took 36 first-parent commits
+  in the same window.
+- **10 failed**: 9 pg-noop entries whose 3 reviewer attempts each died on `store schema is
+  version 23; this build knows 21` (an old binary), after sitting 24–43 h; 1 empty branch.
+- **1 stale**: `group-the-queue-messages`, accepted 22:41, marked stale 09:15 ("gate job died with
+  the daemon"); a later-accepted branch of the same priority landed in between.
+- **2 waiting**: `a-pass-reads-one-row` — empty evidence, no review row, ~11 h, and no daemon for
+  its workspace running, so nothing owns it; `queue-spin` — a REJECT verdict that hit a daemon
+  shutting down, still `waiting`, its branch since given commits and the work landed by hand.
+- **Reviews: 17 of 21 never ran** — 9 the schema mismatch, 8 the firecode VM refusing to copy a
+  72.8 GiB workspace (8 GiB ceiling). 4 verdicts. **148 `gatekeeper` sessions** spawned for 21 rows.
+- **Log**: `merge queue: the queue could not be served: sqlite: database is locked` ×3 — each the
+  queue thread ending for the daemon's life; 41 refusals, 9 conflicts, 5 gate failures.
+- **Processes**: 9 harnessds on one `sessions.db`, all on deleted binaries of different builds
+  (09-21 … 10-11); the 10-07 and 10-09 01:28/01:38 builds have a queue with no claim and no
+  workspace filter (both arrived in 837bd59, 10-09 20:37).
+- **History**: 39 commits on the three files, in recurring classes — reviewer cannot start or is
+  misplaced (e70245c a07523a 8912a8f 4ebdd66); which daemon owns an entry (837bd59 b1adf2a 5e53434
+  7bc3f46); verdict delivery (a1974c0 c05b9c9 08c6742 3d36cea 233939d); stuck rows and escape
+  hatches (4c53014 8178c4e 424c212 e9eb358); landing correctness (a40a9f6 — two branches of real
+  work deleted — 2659cca c22d07d 9f71b36); performance (c12d044). Plus 5 merges "landed by hand on
+  the operator's instruction".
+
+**The defects, ranked** (file:line on `435bb88`):
+
+1. **Many daemons, mixed builds, one table, no single owner.** `cli.rs:1080` starts a queue in
+   every daemon; old builds take any accepted waiting entry and fast-forward THEIR OWN workspace.
+   The schema check stops an old binary opening the store, not one already running.
+2. **One store error ends the queue thread for good.** `mergequeue.rs:4116/4121`
+   (`self.recover()?`, `match self.step()?`); `spawn` prints a line. The pane keeps drawing rows
+   as served. Also an unknown state word from a newer build (`store.rs:1436`).
+3. **An entry nobody serves is silent.** `served_by` (`mergequeue.rs:714`) lets only the daemon
+   whose workspace is the root session's serve it; with that daemon down the row is counted "in
+   review" for ever.
+4. **No row move is conditional.** `put_merge_entry` (`store.rs:3608`) overwrites the whole row;
+   `move_to` writes from a pass-start snapshot; `recover` (`mergequeue.rs:3522`) turns EVERY
+   `Taken` row in the store `Stale`, not only this daemon's.
+5. **The verdict is not tied to a commit.** Rows keep `base_sha`, never the reviewed head;
+   `review_gate` (`mergequeue.rs:1400`) accepts on the word — a branch that moved after accept
+   lands unreviewed, and a reject outlives the commits that answered it.
+6. **The gate has no deadline and cannot be killed.** `run_captured_env` (`mergequeue.rs:516`) is
+   `Command::output()`: no timeout, no process group, output in memory; `step` never checks
+   `stop`; `cli.rs:1813` detaches the thread at exit. A hung step holds the row `taken`; after a
+   restart it is `stale` and the orphan still holds the worktree's `target` lock.
+7. **Landing is in the operator's own checkout, after the install.** `fast_forward_main`
+   (`:385`) runs `git -C <repo> merge --ff-only` on whatever is checked out and records
+   `rev-parse main`; `install-gate-build.sh` installs BEFORE the fast-forward and the push. Main
+   moving during a ~7 min gate parks the entry `Failed` instead of rebasing again; a push failure
+   after the fast-forward leaves local main ahead of a row that says `Failed`.
+8. **Red main is never detected** — every entry's gate fails in turn and is blamed on the branch.
+9. **The review queue is one global session served by every daemon** (`gatekeeper.rs:162`
+   `SESSION = "s-gatekeeper"`, `daemon.rs:216`); `serve_reviews` (`harness.rs:7465`) filters by
+   session, not workspace — two new-build daemons would each spawn a reviewer for one entry.
+10. **Reviewers have no deadline and their retries do not stop.** `review_outcome`
+    (`harness.rs:1129`) treats `Running` as waiting for ever; a vanished child writes nothing and
+    is not counted, so the next pass spawns another (148 for 21).
+11. **The fallback became the path.** Infrastructure failures (placement, wrong build) spend 3
+    attempts in ~5 min and `hand_over` gives the entry to a model session to merge without the
+    gate — 8 of the 9 landings.
+12. **The pane cannot say why an entry is stuck.** A failed read is an empty queue
+    (`sessions.rs:4225`); age is since creation (`tui/…/queue.rs:152`), not in the current state;
+    no owner, no liveness; one overwritten evidence field and no history.
+
+**What R61 must meet, or it repeats these:**
+
+1. **Exactly one owner per queue, with a live heartbeat.** A lease row (owner pid, build,
+   heartbeat) claimed by compare-and-swap; every row shows its owner and the heartbeat's age; a
+   daemon whose build does not match the store serves no queue; recovery touches only rows whose
+   lease it held or whose lease expired.
+2. **Every state change is a conditional move, with history.** `UPDATE … WHERE state = expected
+   AND owner = me`; each transition appended to an event table (from, to, at, by, why), so time
+   in state and why-stuck are read, not guessed. No whole-row upserts.
+3. **The verdict is bound to a commit.** The review records the head it judged; the merge queue
+   lands only that head — moved means back to review. Landing in a dedicated worktree (or a ref
+   update + push) with a compare-and-swap on main's sha; main moved → rebase and gate again, not
+   fail. Install only after the push.
+4. **Every external step has a deadline, can be killed, and its failure is its own outcome.**
+   Gate and reviewer each get a deadline and a process group killed on timeout or shutdown;
+   timeout and infrastructure failure are outcomes distinct from *the branch is bad*. Store
+   errors retried with backoff, never the end of the thread; a dead thread is visible.
+5. **Red main is first-class, and an infrastructure failure never routes around the queue.** Gate
+   main's tip when it changes; red → land nothing, main's tip first in review (see item 4 above).
+   A reviewer that cannot start leaves the entry visibly blocked on infrastructure at high
+   severity — not handed to a model session to merge without the gate.
+
+**Operational, now, before any of this:** stop the daemons on old builds. The 10-07 and 10-09
+builds serve the shared table with no claim and no workspace filter.
 
 ---
 
@@ -122,7 +221,7 @@ the other is inside a 30 s tool call.
 
 ---
 
-## R64 — A runaway process takes its whole window, daemon and session with it — **BUILT 2026-10-11 on `memory-caps`; see "Landed" below**
+## R64 — A runaway process takes its whole window, daemon and session with it — **LANDED on main 2026-10-11 (073c1ea); see "Landed" below**
 
 The operator: *"why my pg-noop session died and took byobu window with it?"* MEASURED in the
 journal: four OOM kills in 7 hours on lab2x1 (185 GB, 512 MB swap), each `Failed with result
@@ -159,7 +258,7 @@ running; `letibot --stop` then stopped it and systemd collected the scope.
 
 ---
 
-## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **BUILT 2026-10-11 on `memory-caps` except the items under "Still open"**
+## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **LANDED on main 2026-10-11 (073c1ea, 51dd340) except the items under "Still open"**
 
 The operator: *"the question is how many for 2. I think model should try to decide, so it should
 know the free, how much it can ask and what are the consequences"*.
@@ -248,7 +347,7 @@ answered by a person in a head; the cross-session ledger above.
 
 ---
 
-## R66 — A harnessd reached 113 GB — **OPEN, 2026-10-11, uninvestigated**
+## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb), cause not reproduced; the two-threads-per-subagent leak is explained in R68.3 / R67.13**
 
 MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
 anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
@@ -296,6 +395,244 @@ catalogue from disk on every `Config::settings`, i.e. on every session open.
 qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
 ledger itself; deepseek does neither. Reproducing it needs the local server running, which is
 the operator's to start.
+
+---
+
+## R67 — Stabilization: the contained fixes the 2026-10-11 review found — **OPEN, each one small, each with a test**
+
+The operator: *"goal is stabilization. many features recently, things arent stable or follwoing
+the same path, like mouse clicks - sometimes they work, sometimes they dont, per pane key maps
+etc etc."* Four read-only reviews of main at `435bb88`. These are the findings that are one
+defect each and fixable without the structural work in R68–R70; every line names where, and
+every fix lands with the test that would have caught it. CONFIRMED means the code path was
+traced; each was re-checked where marked ✓.
+
+**Head (crates/tui):**
+
+1. ✓ **Typing with the queue pane open runs queue verbs.** `app/keys/panes.rs` (`key_queue…`,
+   `Key::Char('r')` ~:736, `'a' | 'v' | 'd'` ~:770) has no empty-composer guard; the subagents
+   pane's `o`/`p` do (`self.editor.text().is_empty()`). Typing "deploy" with `/queue` open sends
+   `d` and `a` against the selected entry.
+2. **A click in the session picker selects the wrong session.** `panes.rs:~294-308` maps
+   `y - (header+2)` to `picker_sel`, but the picker draws two lines per session (row + id line)
+   and footer lines fall inside the bound. **The test `a_click_picks_the_row_under_the_pointer…`
+   (`app/tests/session.rs:1762`) asserts the wrong row** — fix it with the code. The picker also
+   truncates without scrolling.
+3. **Clicks on the mode/setting card are mis-mapped.** `ui/screen.rs:393-394` takes
+   `mode_first_row` from the top of the chrome, above the lines pushed before the card (`:311`);
+   `mode_rows_drawn` counts the MODE row's choices for every subject (`/verbosity`, `/diff`,
+   `/models`); wrapped `why` text breaks one-line-per-value.
+4. **The diff popup blocks the permission card.** `key_diff_popup` (`keys/mod.rs:132`) runs before
+   `key_decision` (`:196`) and returns `Break` for every key; its own comment says cards stay
+   answerable. The hint bar has no diff-popup branch.
+5. **Scrolling in the queue pane moves the hidden transcript.** The wheel/PgUp pane list in
+   `app/keys/chords.rs:270` omits `queue_pane` and `queue_open`; `key_queue_review`'s PageUp arm
+   (`panes.rs:182`) is dead code.
+6. **`!term` gets the operator's raw mouse reports.** `pane_keys` (`keys/mod.rs:719`) forwards SGR
+   mouse sequences verbatim, against `crates/vt/src/screen.rs:27`.
+7. **Any wheel or click cancels allow-all.** `key_mode_confirm` (`app/keys/cards.rs:25`) treats
+   every key as "no".
+8. **`/sessions` and ctrl-s open the picker differently.** `commands.rs:510` neither seeds
+   `picker_sel` nor clears `pick`; the chord does both.
+9. **Help and hints disagree with the bindings.** `ui/panes/help.rs:99` (a click on an edit row
+   opens the diff popup, not rano); the hint bar's "ctrl-n notes" (ctrl-n retires every note,
+   `chords.rs:162`); help omits ctrl-g, ctrl-q, ctrl-o, `/queue`, `/jobs`, `/todos`,
+   `/subagents`; "wheel scrolls the transcript" is not what happens.
+
+**Daemon (crates/harnessd, crates/tools):**
+
+10. **A nag-started turn strands its calls.** `Sessions::deliver_due_nags` (`sessions.rs:2379`)
+    runs a turn and arms neither `arm_sweep` nor `arm_wake`, after `sweep_at` was cleared
+    (`:2367`) — the wake arm's bug (fixed 2026-10-10) on the third door.
+11. **`!` stops working for a session after one failed settle.** `OperatorShellResult`
+    (`sessions.rs ~3525`) returns `Failed` before `clear_bang_in_flight`; every later `!` line is
+    queued for ever. Error to stderr only.
+12. ✓ **One store error ends the merge queue thread for good.** `mergequeue.rs:4116/4121` — the
+    loop must retry with backoff and say so on the hubs (R61 req. 4 makes it structural; this is
+    the stop-gap that keeps today's queue alive).
+13. **The deadline watchdog never exits.** `tools/src/exec/host.rs:629/660` (`Deadlines::run`, an
+    endless `loop` holding its own `Arc`): one `letibot-deadline` thread per `HostProcesses`
+    forever — one of R66's two threads per finished subagent.
+14. **The idle sweep is quadratic, on the worker.** `abandoned_calls` (`harness.rs:20292`):
+    `answered.iter().any` per asked call over the whole transcript; with ~15k results, ~10⁸
+    compares per sweep, every 2 s after a turn. A `HashSet`, and only items since the last sweep.
+15. **Failures that reach no hub** — `let _ = self.append_results(…)` in
+    `Harness::sweep_abandoned_calls` (`harness.rs:5228`, the hub block at 5222 is dead);
+    `JobRecorder::put_job` (`jobwatch.rs:776, 813`); `flush_todos` (`harness.rs:7044, 7056, 7704,
+    8122` — at 8122 an unpersisted fired condition fires again after restart);
+    `StoreSessions::merge_entries`/`merge_reviews` (`sessions.rs:4247, 4266`) answer an empty queue
+    on a failed read; a child's `ChildCommand::Leave` (`harness.rs ~13093`) drops `!`, `/slash`,
+    `/mode` and todo edits sent to a subagent with a stderr line.
+16. **`Catalogue::load` re-reads the 5 MiB model catalogue on every `Config::settings`** — every
+    session open (found by memwatch's large-allocation log).
+
+**Tests (flaky by construction):**
+
+17. **Environment variables set with no lock**, read concurrently by other tests in the same
+    binary: `tools/src/builtins/task.rs:2101,2131` (`FIRECODE_BIN`, read at `firecode.rs:73`),
+    `turn/src/serving.rs:587`, `letibot/src/roles.rs:332-341`, `websearch/src/lib.rs:298`,
+    `tokencore/src/apparatus.rs:189-223`. `confine.rs`/`host.rs` hold a `static LOCK` — do that.
+18. **Silent skips the require-switch cannot catch**: `tools/tests/confine.rs` (13 early
+    `return;`), `notscoped.rs:55`, `src/exec/scope.rs` skip with `eprintln!` + `return` instead of
+    `apparatus::present`, so `LETIBOT_REQUIRE_APPARATUS=1` cannot make a missing cgroup v2 fail.
+19. **Wall-clock upper bounds**: `task.rs:1815` (`< 1s`), `answers.rs:2256` (`< 1s`),
+    `answers.rs:1677`, `1723`, `1908` — trip on a loaded box or a parallel `cargo test`.
+20. **Pre-existing failure:** `tui` `app::tests::detected::a_python_edit_detected_after_a_command_draws_its_diff`
+    fails on main (with and without llama).
+
+**Still open?** Each item names its file and line; re-read it before starting — an item found
+already fixed goes to `TODO-settled.md` with the evidence. **Done when:** each has a test that
+fails on `435bb88` and passes after.
+
+---
+
+## R68 — The daemon: one session lifecycle, one owner per session, one turn tail — **OPEN, structural, after R67**
+
+From the same review; these are the classes R67's daemon items are instances of.
+
+1. **The worker can open a second Harness on a live subagent** (CONFIRMED). A child's hub has two
+   readers: the child's thread (`Hub::take_own_work_until`, `hub.rs:1659`) and the worker
+   (`Hub::try_command`, `hub.rs:1772`, pops anything). `Interrupt` (`sessions.rs ~3286`) and
+   `Message` (`~3620`) give the command back to its own reader; **`Prompt` does not** — so a head
+   prompting an attached subagent can make `harness_as` (`~1564`) build a second Harness: two
+   writers on one transcript, the child's `watch_runs`/`set_prompt`/`notes` replaced, a second
+   deadline thread.
+2. **A subagent's hub can be left with no reader** (CONFIRMED). `run_to_completion`
+   (`harness.rs:15350–15475`): after `adopt`, a failed first turn, a non-Host (VM) placement
+   returning before `serve_child`, and a `Stop` returning from `serve_child` (~13075) all leave the
+   hub registered with nobody reading it and nothing closing it. `wake_route` (`sessions.rs:748`)
+   then says `ItsOwnReader` and the wake, message or interrupt is handed into a void
+   (`HandedOn`). Same for a root whose `Work::Open` failed.
+3. **Nothing is ever released.** `Registry.inner.entries` (`registry.rs:1001 adopt, 940
+   create_under`) has no remove — every subagent's hub (log + view) lives for the daemon's life,
+   and `get` is a linear scan under the registry lock; `Registry.runs` (`watch_runs`,
+   `harness.rs:2602`) keeps each session's `Arc<HostProcesses>`; `prompts`, `notes`; in
+   `Sessions`: `open, slots, seated, fabric_seen, nags, bangs, armed, wall_gave_up`; in
+   `HostProcesses`: `jobs` (`host.rs:1628`), `reaps`, `promotions`, `Deadlines.fired`. A parked
+   child keeps its whole Harness. Measured: 2 threads and ~12 MB per finished subagent.
+4. **The turn tails have diverged.** `arm_wake` is called by `run_prompt`,
+   `run_a_message_from_a_session`, `run_continuation` — not by `wake()`, `deliver_due_nags`,
+   `OperatorShellResult`, `run_operator_shell_here`. Children run a second copy
+   (`submit_spoken_as_a_normal_session`, `harness.rs:8232`, plus `serve_child`): no forced
+   compaction on a wake/nag turn at the wall, never swept (the sweep iterates only
+   `Sessions.open`), `take_new_title` never drained for a child, no `wall_gave_up` latch; the
+   `Answer` arm (~13017) drops its error (`.is_ok()`).
+5. **Busy traffic starves the idle work.** `Bell::next_any_until` (`registry.rs:183`) drains opens,
+   commands, wakes and checks the deadline only when all are empty; wakes are not coalesced. Under
+   a wake storm the idle arm never runs — and each `Harness::wake` (`harness.rs:8008`) reads the
+   store (`serve_reviews`, `queue_notices`, `handover_notices` each read every merge entry).
+6. **`Registry::list()` scans the whole store on the worker** (`registry.rs:1432` →
+   `Store::list_sessions`): `is_root` (`sessions.rs:715`), the parent lookup (~1580), on every
+   open; `attach_session` (~926); `ensure_gatekeeper` (~2292); `child_todos`. 2–3 full scans per
+   session open, under the `StoreSessions.store` mutex every head's list frame also takes.
+   `Registry::created_ms`/`wiring` are already cheap lookups; `parent_of` is missing.
+7. **A gatekeeper that fails to open is retried every 30 s** (`sessions.rs:2252`), each retry a
+   store scan, a `resume_failed`, and possibly a leaked deadline thread. PLAUSIBLE.
+
+**The changes that remove the classes:**
+
+- **One session lifecycle with an explicit close**: `Registry::remove(id)` (entry, runs, prompts,
+  notes); `Sessions::close(id)`; every exit of a child thread closes and removes its hub through
+  one guard; an idle-child policy (reap, or park as store-only and reopen on the next prompt).
+- **One owner per session, enforced in the hub**: an owner tag; `try_command` refuses a hub it
+  does not own; `harness_as` refuses a session live under another owner.
+- **One turn tail for every door, daemon and child alike**: pre-wall compact, title, `arm_wake`,
+  `arm_sweep`, failure publish, refused-compaction, continuation, nag rearm, bang cleanup on any
+  exit — one function `Sessions` and `serve_child` both call.
+- **Store and git off the worker, scans made cheap**: `Registry::parent_of`/`title_of`;
+  incremental `Harness::wake` reads; wakes coalesced per session; an idle clock that cannot be
+  starved. R63 (a thread per root session) is the larger form of this.
+- **One `report(session, code, detail)` sink** in place of `eprintln!` and `let _`: stderr AND
+  the hub (a broadcast when there is no session).
+
+**Done when:** a subagent prompted from a head is served by its own thread only (a test racing
+the worker); a finished subagent leaves no thread and no registry entry (memwatch's thread
+census flat across 50 subagents); a nag, a wake and a prompt turn arm the same things (one test
+per door, one assertion list).
+
+---
+
+## R69 — The head: one surface stack, hit-testing against what was drawn, per-surface key tables — **OPEN, structural, after R67**
+
+The head reviewer's summary of why clicks "sometimes work": mouse and keys share one entry
+(`key_of`, `app/keys/input.rs:126`) and then go down a hand-ordered list of ~25 `key_*` handlers
+(`app/keys/mod.rs:54-260`), first `Break` wins. There is no single focus and no single record of
+what was drawn: each pane is its own `bool`; draw priority (`ui/screen.rs` `main_area`), key
+priority (`keys/mod.rs`) and hint priority (`ui/hint_bar.rs:15`) are three hand-written orders
+that disagree; each clickable surface does its own hit-testing.
+
+The class, as found:
+
+- **Several panes open at once, keys to the hidden one** (CONFIRMED): toggles flip only their own
+  flag (`app/panes.rs:22,38`, `todos.rs:279`, `standing.rs:125`, `commands.rs:699`); draw order
+  todos > queue > standing > subagents > jobs, key order subagents > todos > queue > jobs >
+  standing. ctrl-t then ctrl-g: the todos pane is drawn, ↑↓ and Enter go to the hidden subagents
+  list, and Enter SWITCHES SESSION into a row nobody saw. The shared `pane_scroll` jumps the
+  visible pane. ctrl-] over an open jobs pane: after returning, Enter is swallowed by the hidden
+  pane (`keys/mod.rs:~392`).
+- **Clickability is inconsistent**: the picker, mode card, todos, queue, count labels, edit rows
+  and rano take clicks; subagents, jobs, standing, config, the decision card and the quit card do
+  not (though their row maps exist). The todos/queue/picker/pick handlers `Break` on every click,
+  hit or miss, so the count labels stop working while they are open.
+- **Who owns Enter differs per pane**: `queue_pane` is missing from the owns-Enter list (`keys/mod.rs:~392`) —
+  Enter with typed text sends the prompt on an empty queue and opens an entry on a non-empty one.
+- **The wheel ignores the pointer**: `key_of` drops x/y; a decision card with overflow, the
+  ctrl-v window, the picker and the mode card each take the wheel anywhere on screen.
+- **Mixed coordinates in one read**: keys from one ~100 ms read are handled before the next
+  `screen()`, so a click after a wheel step combines the new `pane_scroll` with last frame's stop
+  rows (`todo_stop_at_row`, `queue_stop_at_row`, `file_rows`). PLAUSIBLE.
+- `editor_drawn()` (`app/editor.rs:198`) ignores the diff popup. PLAUSIBLE, low.
+
+**The mechanism:**
+
+- **One surface stack** (`Vec<Surface>` or one `focus`), whose top is drawn AND receives keys;
+  opening pushes or replaces, Esc pops. Draw order, key order and the hint mode read one value.
+- **Hit-test against the last drawn layout**: each frame records `(Rect, SurfaceId, rows→stops)`
+  with scroll already applied; mouse routing is one function — topmost rect under (x, y), local
+  coordinates, that surface. Wheel events keep x/y. A click that hits nothing falls through.
+  `!term` gets mouse reports only when its program asked for mouse mode, translated to the pane.
+- **Per-surface key tables** `&[(Key, guard, Action, hint)]`: plain-letter bindings always carry
+  the empty-composer guard; the hint bar and help are generated from the focused surface's table;
+  slash commands and chords call one `open_surface(..)`.
+- Re-snapshot the layout between keys in a batch, or drop clicks after a scroll-changing key in
+  the same read.
+
+**Tests to add with it** (none exist today): which surface receives a key with several open;
+a click on every clickable surface against the layout it was drawn with; the driver's mouse
+enable/disable and stdin→`Key` loop (`tui/src/driver.rs`, 4 tests, none about input);
+`ui/screen.rs`, `ui/panes/queue.rs`, `ui/transcript/window.rs` hit maps.
+
+---
+
+## R70 — Tests: split the largest inline blocks into sibling files; count what is comparable — **OPEN, mechanical**
+
+The operator: *"maybe worth moving tests out of files? dont know what rust says here. regarding
+tests number - leticl has 7k+ tests"*.
+
+**The convention**: unit tests in `#[cfg(test)] mod tests` (private access); integration tests in
+`tests/*.rs` (public API, one binary each). The middle path keeps private access and moves the
+code: `#[cfg(test)] mod tests;` + `<module>/tests.rs` — already used by
+`harnessd/src/standing_notes.rs:579`, `notes_offer.rs:526`, and `tui/src/app/tests/` (27 files by
+topic).
+
+**The rule**: an inline test block past ~800 lines or ~40% of its file moves to
+`<module>/tests.rs`; past ~2,000 lines it splits by topic like `app/tests/`. A new `tests/*.rs`
+only for real public-API or end-to-end checks. **Split first** (test lines / file lines):
+`harnessd/src/mergequeue.rs` 6,070 / 11,281; `harness.rs` 4,390 / 20,765 (mod tests at :16534, the
+hottest file — 156 commits since 09-25); `tools/src/builtins/todo.rs` 3,312 / 5,879;
+`tools/src/adjudicate.rs` 3,573 / 7,583; `tools/src/intent.rs` 3,697 / 9,091;
+`tokencore/src/store.rs` 3,798 / 8,211; `letibot/src/launcher.rs` 2,115 / 2,312. Pure moves: the
+count before and after must match (`cargo test -p X --lib -- --list | wc -l`).
+
+**The comparison**: leticl is FiveAM — 786 `def-test` forms in one 28,413-line
+`tests/tests.lisp` (+7 in `replay.lisp`); the "7043" in its TODO is checks EXECUTED (~9 per
+test). letibot: ~3,285 test functions (~2,780 unit, ~505 integration), ~14,000 `assert*!` sites,
+test code 44% of all Rust lines. Different granularity, not a gap; neither count is coverage —
+`cargo llvm-cov` is the like-for-like number if one is wanted.
+
+**Coverage gaps that matter for stabilization**: `harnessd/src/daemon.rs` `Daemon::run`
+(:162-335) has 0 unit tests; `cli.rs` (3,081 lines) 13, all helpers; `sessionlog/src/server.rs`
+3, `client.rs` 2; `turn/src/engine.rs` 1 inline; the head's input dispatch — see R69.
 
 ---
 
