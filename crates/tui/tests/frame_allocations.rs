@@ -8,17 +8,27 @@
 //!
 //! # How it measures
 //!
-//! A counting global allocator: one `fetch_add` per `alloc`/`realloc`. Nothing else in this binary
-//! allocates during a measured region, so the delta around one call is that call's own cost.
+//! A counting global allocator: one increment per `alloc`/`realloc`, **on the allocating thread's
+//! own counter**. The delta around one call on the test's thread is that call's own cost, whatever
+//! any other thread in the binary is doing. (The path measured here is single-threaded: nothing in
+//! `App::screen` or `Terminal::draw` hands work to another thread, which a thread-local count
+//! would not see.)
 //!
-//! # Why there is exactly ONE test in this file, and it is not tidiness
+//! # Why the counter is per thread
 //!
-//! The counter is global and the region is a wall-clock slice, so **a second test running
-//! concurrently in this binary lands in the same count**. It did: three tests here reported 9
+//! It was one global `AtomicUsize`, and the region a wall-clock slice, so **a second test running
+//! concurrently in this binary landed in the same count**. It did: three tests here reported 9
 //! allocations for a frame that provably allocates none, and the frame numbers wandered by ±30
-//! between runs. Cargo gives each test *file* its own process but runs the tests *within* one in
-//! parallel threads, so the fix is one test measuring in sequence — not a thread-local allocator,
-//! which would need care around TLS initialisation to be safe.
+//! between runs — cargo gives each test *file* its own process but runs the tests *within* one in
+//! parallel threads. The first fix was to keep exactly one test in the file, which held only
+//! while nobody added a second (R67 item 22). MEASURED before this change: one extra test that
+//! allocates in a loop, run beside this one, failed it 3 times in 3.
+//!
+//! The thread-local is `const`-initialised and holds a `Cell<usize>`, which has no destructor: so
+//! touching it from inside the allocator registers nothing, lazily initialises nothing and
+//! allocates nothing — the TLS-initialisation re-entrancy that made a thread-local allocator
+//! look unsafe here does not arise. `try_with` covers the one remaining case, an allocation
+//! during the thread's own teardown, by not counting it.
 //!
 //! # Why it is a test and not a benchmark
 //!
@@ -38,22 +48,29 @@
 //!   including frames that changed nothing and wrote no bytes at all.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// This thread's allocations. See the module docs for why `const` and `Cell` are the point.
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn bump() {
+    let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+}
 
 struct Counting;
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        bump();
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        bump();
         unsafe { System.realloc(p, l, new) }
     }
 }
@@ -61,8 +78,9 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
+/// The calling thread's allocations so far.
 fn count() -> usize {
-    ALLOCS.load(Ordering::Relaxed)
+    ALLOCS.with(Cell::get)
 }
 
 /// A head showing a settled conversation, sized like a real terminal.
