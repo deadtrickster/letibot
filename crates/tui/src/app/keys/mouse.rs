@@ -53,10 +53,16 @@ impl App {
         let Key::Click { x, y } = *k else {
             return ControlFlow::Continue(());
         };
-        let Some(hit) = self.hit_at(x, y) else {
+        let Some(hit) = self.hit_at(x, y).cloned() else {
             return ControlFlow::Continue(());
         };
-        let (target, stop) = (hit.target, hit.stop_at(usize::from(y)));
+        // **Anywhere on an entry is the entry** — its second line too (a subagent's facts), the
+        // same block that lights up under the pointer. See `App::stop_block`.
+        let row = usize::from(y);
+        let stop = hit
+            .stop_at(row)
+            .or_else(|| self.stop_block(&hit, row).map(|(s, _)| s));
+        let target = hit.target;
         if !self.still_drawn(target) {
             return ControlFlow::Break(None);
         }

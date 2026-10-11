@@ -19,8 +19,14 @@ impl Drop for Workspace {
 /// test has no business starting `rust-analyzer`.
 const FILE: &str = "notes.txt";
 
+/// **One directory per CALL, not per tag.** Two tests both asked for `workspace("frame")`, and
+/// running in parallel one's `Drop` removed the other's file mid-test — the editor then opened
+/// nothing, now and then. A counter makes a repeated tag harmless.
 fn workspace(tag: &str) -> Workspace {
-    let dir = std::env::temp_dir().join(format!("letibot-editor-{tag}-{}", std::process::id()));
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-editor-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let text: String = (1..=30).map(|i| format!("line {i}\n")).collect();
@@ -1286,4 +1292,36 @@ fn a_drag_holds_the_view_and_esc_lets_it_follow() {
         a.hold,
         "dropping a selection released the operator's own ctrl-p hold"
     );
+}
+
+/// **The whole clickable block lights up** — the operator, 2026-10-12: *"can you light up the
+/// whole clickable block?"*. An edit card is several rows and any of them opens it, so the pointer
+/// over one of them brightens every one.
+#[test]
+fn hovering_an_edit_card_brightens_all_of_its_rows() {
+    let ws = workspace("cardblock");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let rows: Vec<usize> = a.file_rows.iter().map(|(r, _)| *r).collect();
+    assert!(rows.len() > 1, "the premise: the card is several rows: {rows:?}");
+    let top = a
+        .hits
+        .iter()
+        .find(|h| h.target == crate::app::Target::Conversation)
+        .unwrap()
+        .rect
+        .y;
+    a.key(Key::Hover {
+        x: 10,
+        y: (top + rows[rows.len() - 1]) as u16,
+    });
+    let screen = a.screen(100, 40);
+    // Every row of the card with something on it — a blank spacer has nothing to brighten.
+    for r in rows.iter().filter(|r| !screen[top + **r].trim().is_empty()) {
+        assert!(
+            screen[top + r].contains("\x1b[22;1m"),
+            "row {r} of the card is not lit: {:?}",
+            screen[top + r]
+        );
+    }
 }

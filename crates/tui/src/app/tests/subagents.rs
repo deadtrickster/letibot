@@ -1409,3 +1409,34 @@ fn a_child_ending_does_not_re_open_the_fold() {
         "the ended child is drawn, so the group is open:\n{screen}"
     );
 }
+
+/// **A subagent's two lines are one entry**: the pointer over its facts lights both, and a click
+/// there selects it — the same block, under the pointer and under the click.
+#[test]
+fn a_two_line_entry_is_one_block_under_the_pointer_and_the_click() {
+    let mut a = app();
+    let mut fam = vec![brief("s", "parent", false)];
+    for (id, title) in [("s-sub-a", "first task"), ("s-sub-b", "second task")] {
+        let mut b = brief(id, title, true);
+        b.parent_session_id = Some("s".into());
+        fam.push(b);
+    }
+    a.apply(hello("s", fam, Hub::new("s").snapshot()));
+    a.key(Key::CtrlG);
+    let screen = a.screen(120, 30);
+    let task = screen
+        .iter()
+        .position(|l| l.contains("second task"))
+        .expect("the second entry");
+    let facts = task + 1;
+    assert!(!screen[facts].trim().is_empty(), "the premise: a facts line under it");
+    a.key(Key::Hover { x: 8, y: facts as u16 });
+    let lit = a.screen(120, 30);
+    assert!(lit[task].contains("\x1b[22;1m"), "the task line is not lit: {:?}", lit[task]);
+    assert!(lit[facts].contains("\x1b[22;1m"), "the facts line is not lit");
+    let before = a.subagents_sel;
+    a.key(Key::Click { x: 8, y: facts as u16 });
+    assert_ne!(a.subagents_sel, before, "a click on the facts line selected nothing");
+    let picked = a.screen(120, 30);
+    assert!(picked[task].contains('▸'), "the second entry is not the selected one: {:?}", picked[task]);
+}
