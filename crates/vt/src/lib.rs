@@ -40,7 +40,8 @@
 //!
 //! # What this crate will not show, and why the list is in the code
 //!
-//! Mouse reporting, bracketed paste, hyperlinks, truecolour and 256-colour fidelity, fonts,
+//! Mouse reporting (recorded — [`Screen::mouse`] — but never performed, because this crate has no
+//! input path), bracketed paste, hyperlinks, truecolour and 256-colour fidelity, fonts,
 //! underline and italic, and an answer to a program that asks the terminal a question. Each is
 //! stated where it is dropped — [`crate::attr`] for the pen, [`crate::screen`] for the modes,
 //! [`crate::parser`] for the sequences — together with what a pane therefore will not show. The
@@ -65,5 +66,5 @@ pub mod width;
 
 pub use attr::{Attr, Hue, apply_sgr};
 pub use parser::{Csi, Event, MAX_PARAMS, Parser};
-pub use screen::{Cell, Screen};
+pub use screen::{Cell, HISTORY_ROWS, MouseMode, MouseTracking, Screen};
 pub use width::char_width;

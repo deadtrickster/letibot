@@ -13,10 +13,12 @@
 //! | | |
 //! |---|---|
 //! | cursor addressing | `CUP` `HVP` `CUU` `CUD` `CUF` `CUB` `CNL` `CPL` `CHA` `HPA` `VPA` |
-//! | erase | `ED` `EL` `ECH`, and `ED 3` as `ED 2` (there is no scrollback in a pane) |
+//! | erase | `ED` `EL` `ECH`, and `ED 3`, which clears the scrollback as well as the screen |
+//! | scrollback | the rows the main screen scrolls off its top, kept in a ring — see [`Screen::view`] |
 //! | line and character edits | `IL` `DL` `ICH` `DCH` |
 //! | scrolling | `DECSTBM`, scrolling at the region's boundaries, `IND` `RI` `NEL` |
-//! | modes | `?7` autowrap, `?6` origin, `?25` cursor visibility, `?47`/`?1047`/`?1049` the alternate screen |
+//! | modes | `?7` autowrap, `?6` origin, `?25` cursor visibility, `?47`/`?1047`/`?1049` the alternate screen, `?1` application cursor keys |
+//! | mouse modes | `?9` `?1000` `?1002` `?1003` and `?1006`, **recorded** and never acted on — see [`Screen::mouse`] |
 //! | pen | `SGR` through [`crate::attr`], which is the head's own walk |
 //! | screen control | `ESC 7`/`ESC 8` and `CSI s`/`CSI u`, `RIS`, `DECSTR` |
 //! | the shape | [`Screen::resize`], which keeps the cells that still fit and the *state* — see
@@ -24,10 +26,15 @@
 //!
 //! **Not implemented, and each one is a thing the pane will therefore not show:**
 //!
-//! - **Mouse reporting** (`?1000` `?1002` `?1003` `?1006` `?1015`). The mode is consumed and
-//!   dropped. A program that turns it on gets no events, because the pane has no input path of
-//!   its own: keys and clicks are the head's, and the head must not hand a *program* the
-//!   operator's mouse. What this costs: `mc`'s click-to-select, and a `less` scroll by wheel.
+//! - **Mouse reporting is recorded, not performed** (`?9` `?1000` `?1002` `?1003` `?1006`). This
+//!   crate has no input path, so it cannot send a report; what it does is remember **what the
+//!   program asked for** ([`Screen::mouse`]), because that is the one fact the head needs in
+//!   order to decide whether the operator's click is the program's or the head's own. It used to
+//!   be consumed and dropped, and the cost was named here: *"`mc`'s click-to-select, and a `less`
+//!   scroll by wheel"*. The head now forwards a report, translated to the pane, only when the
+//!   program has asked (`letibot_tui`'s `term_pane`). `?1005` and `?1015` (the UTF-8 and urxvt
+//!   encodings) are still dropped: a program that asks for one of those and not `?1006` is sent
+//!   the X10 encoding, which every program that reads a mouse can parse.
 //! - **Bracketed paste** (`?2004`) and **synchronised output** (`?2026`): consumed and dropped.
 //!   The first is an input mode; the second is a promise about when a frame is presented, and
 //!   the pane's frames are the head's to time.
@@ -52,7 +59,30 @@
 //! - **Line reflow.** [`Screen::resize`] changes the shape and keeps what still fits; it does not
 //!   re-wrap a row that is now too long, because this crate has no line model — a row is a row.
 //!   A program that has been told about the new size redraws its own, which is what a full-screen
-//!   program does on `SIGWINCH` anyway.
+//!   program does on `SIGWINCH` anyway. The scrollback is the same: a row kept at 120 columns and
+//!   read back at 80 is cut at 80, not re-wrapped.
+//!
+//! # The scrollback, and why it is the screen's
+//!
+//! R60's first open item, in its own words: *"No scrollback. A program that scrolls off the
+//! pane's rectangle is gone. The decision it waits on is whether the ring is the screen's (a
+//! rendering question) or the daemon's (a storage one)."* **It is the screen's**, and the reason
+//! is what a scrollback row *is*: a row the program's own line feed pushed off the top of the main
+//! screen. Only the thing that applies the line feed knows that happened — the daemon holds bytes,
+//! and a byte log does not know which of its bytes became a row that left the glass. So the ring
+//! is here, beside the grid it is fed from ([`Screen::view`] reads it), and the daemon's log is
+//! what *refills* it: an attach replays the log into a fresh screen, and the rows that log scrolls
+//! off become that screen's history exactly as they did the first time.
+//!
+//! The rules are xterm's, because they are what a person already expects of a terminal:
+//!
+//! - **Only the main screen keeps history.** The alternate screen is a program's own canvas
+//!   (`less`, `mc`, `vim`) and what scrolls off it is the program's business — it can redraw it.
+//! - **Only a scroll of a region that starts at the top row.** A program scrolling a status-line
+//!   region inside its own frame is moving its own furniture, not printing past the glass.
+//! - **`ED 3` clears it and `RIS` clears it**, which is `clear`'s own `E3` and a full reset.
+//! - **Bounded** at [`HISTORY_ROWS`], oldest first out, and a kept row is trimmed of its trailing
+//!   default blanks, so a shell's short lines cost their length and not the pane's width.
 //!
 //! # The line feed is a line feed
 //!
@@ -115,6 +145,42 @@ impl Default for Cell {
     fn default() -> Cell {
         Cell::blank()
     }
+}
+
+/// **How many rows the scrollback keeps** — see the module header's *The scrollback*.
+///
+/// Two thousand, against the one other bound a pane's history already has: the daemon replays at
+/// most 256 KiB of what a program wrote to a head that attaches (`letibot_harnessd`'s
+/// `SCREEN_LOG`), which at a typical 60–120 bytes a line is two to four thousand lines. A ring
+/// much longer than what an attach can refill would be a history that a head switching away and
+/// back loses most of, which is a scrollback that depends on whether you looked away.
+pub const HISTORY_ROWS: usize = 2000;
+
+/// **Which mouse reports the program asked for** — `?9`, `?1000`, `?1002`, `?1003`, recorded by
+/// [`Screen::mouse`] and acted on by the head.
+///
+/// The levels are xterm's and they nest: a program that asked for [`MouseTracking::Drag`] is
+/// sent everything [`MouseTracking::Press`] is, and motion while a button is held.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MouseTracking {
+    /// The program asked for nothing: a click is the head's.
+    #[default]
+    Off,
+    /// `?9` and `?1000`: presses and releases, and the wheel.
+    Press,
+    /// `?1002`: and motion while a button is held.
+    Drag,
+    /// `?1003`: and every motion.
+    Motion,
+}
+
+/// **The program's mouse request, as a head needs it**: what to report, and how to encode it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct MouseMode {
+    pub tracking: MouseTracking,
+    /// `?1006`: the SGR encoding (`ESC [ < b ; x ; y M`). Without it a report is the X10 form,
+    /// three bytes after `ESC [ M`, which cannot address a column past 223.
+    pub sgr: bool,
 }
 
 /// A position in the grid, zero-based, row first.
@@ -183,6 +249,19 @@ pub struct Screen {
     /// A sequence asked for the parser's own state to be dropped (`RIS`, `DECSTR`), which cannot
     /// happen from inside the walk — see [`Screen::feed`].
     parser_reset: bool,
+    /// **The rows the main screen scrolled off its top**, oldest first, each trimmed of its
+    /// trailing default blanks. See the module header's *The scrollback*.
+    history: std::collections::VecDeque<Vec<Cell>>,
+    /// Every row that ever entered [`Screen::history`], counted — so a reader holding a place in
+    /// the scrollback can tell how far it moved even once the ring is full and its length stops
+    /// changing. See [`Screen::scrolled`].
+    scrolled: u64,
+    /// What the program asked the mouse to report. A terminal's mode, not a face's: the alternate
+    /// screen does not have a mouse of its own.
+    mouse: MouseMode,
+    /// `DECCKM` (`?1`): the cursor keys send `ESC O A` rather than `ESC [ A`. Recorded because
+    /// the head writes cursor keys on the program's behalf when it turns a wheel notch into one.
+    app_cursor: bool,
 }
 
 impl Screen {
@@ -203,6 +282,10 @@ impl Screen {
             decsc: None,
             parser: Parser::new(),
             parser_reset: false,
+            history: std::collections::VecDeque::new(),
+            scrolled: 0,
+            mouse: MouseMode::default(),
+            app_cursor: false,
         }
     }
 
@@ -322,6 +405,62 @@ impl Screen {
         (self.face.top, self.face.bottom)
     }
 
+    /// **What the program asked the mouse to report**, and in which encoding.
+    ///
+    /// The head's question, asked on every report the operator's terminal sends: a program that
+    /// asked for nothing is not sent the operator's click (it would arrive as text at a shell's
+    /// prompt — R67 item 6), and one that asked is sent it, translated to the pane.
+    pub fn mouse(&self) -> MouseMode {
+        self.mouse
+    }
+
+    /// Whether the cursor keys are in application mode (`?1h`), so an up arrow is `ESC O A`.
+    pub fn app_cursor_keys(&self) -> bool {
+        self.app_cursor
+    }
+
+    /// **How many rows have ever been pushed into the scrollback** — a counter that keeps moving
+    /// after the ring is full, which is what a head holding the operator's place needs: the
+    /// length stops changing at [`HISTORY_ROWS`] and the rows under the view do not.
+    pub fn scrolled(&self) -> u64 {
+        self.scrolled
+    }
+
+    /// **How many rows of scrollback there are** — the most [`Screen::view`] can go back.
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// **The rectangle as it stood `back` rows ago**: exactly `rows` rows, the last `back` of the
+    /// scrollback followed by the top of the screen.
+    ///
+    /// `back` is clamped to [`Screen::history_len`], so a head that scrolled further than there is
+    /// sees the oldest row at the top rather than a short rectangle, and `back == 0` is
+    /// [`Screen::rows`]. A history row kept at a wider shape is cut at this one's right edge —
+    /// and a wide glyph the cut would halve is dropped whole, the invariant [`Screen::resize`]
+    /// keeps for the grid.
+    ///
+    /// **The alternate screen has no history**, and this does not pretend otherwise: with it up,
+    /// the scrollback is the main screen's and is not under this canvas, so this is the canvas.
+    pub fn view(&self, back: usize) -> Vec<&[Cell]> {
+        let back = if self.alt {
+            0
+        } else {
+            back.min(self.history.len())
+        };
+        let start = self.history.len() - back;
+        let mut out: Vec<&[Cell]> = Vec::with_capacity(self.rows);
+        for row in self.history.range(start..).take(self.rows) {
+            let mut end = row.len().min(self.cols);
+            if end > 0 && end < row.len() && row[end - 1].is_wide_lead() {
+                end -= 1;
+            }
+            out.push(&row[..end]);
+        }
+        out.extend(self.rows().take(self.rows - out.len()));
+        out
+    }
+
     // ---- the walk's own plumbing -------------------------------------------------------------
 
     fn apply(&mut self, ev: Event) {
@@ -437,8 +576,9 @@ impl Screen {
     fn dec_mode(&mut self, c: &Csi, set: bool) {
         for p in c.params() {
             match p {
-                // DECCKM: application cursor keys. A head's business.
-                1 => {}
+                // DECCKM: application cursor keys. Recorded, because the head writes a cursor key
+                // on the program's behalf when it turns a wheel notch into one.
+                1 => self.app_cursor = set,
                 // DECOM: `CUP` is relative to the scrolling region.
                 6 => self.face.origin = set,
                 // DECAWM.
@@ -450,12 +590,24 @@ impl Screen {
                 // them is what the alternate screen's *contents* are on the way out, and a pane
                 // that owns its own buffer has nothing to preserve there. See `switch_screen`.
                 47 | 1047 | 1049 => self.switch_screen(set),
-                // Mouse reporting, bracketed paste, synchronised output, cursor blink: consumed
-                // and dropped. The module header says what the pane therefore will not show.
-                12 | 1000..=1006 | 1015 | 1016 | 2004 | 2026 => {}
+                // **The mouse, recorded.** Resetting any of the tracking levels turns tracking
+                // off, which is xterm's rule: they are one setting with three spellings, not
+                // three switches.
+                9 | 1000 => self.track(MouseTracking::Press, set),
+                1002 => self.track(MouseTracking::Drag, set),
+                1003 => self.track(MouseTracking::Motion, set),
+                1006 => self.mouse.sgr = set,
+                // Highlight tracking, focus events, the UTF-8 and urxvt encodings, bracketed
+                // paste, synchronised output, cursor blink: consumed and dropped. The module
+                // header says what the pane therefore will not show.
+                12 | 1001 | 1004 | 1005 | 1015 | 1016 | 2004 | 2026 => {}
                 _ => {}
             }
         }
+    }
+
+    fn track(&mut self, level: MouseTracking, set: bool) {
+        self.mouse.tracking = if set { level } else { MouseTracking::Off };
     }
 
     /// The alternate screen, and the whole of "the main screen restored intact on exit".
@@ -487,6 +639,9 @@ impl Screen {
         self.parked = None;
         self.alt = false;
         self.decsc = None;
+        self.history.clear();
+        self.mouse = MouseMode::default();
+        self.app_cursor = false;
         // The charset a program selected is part of the terminal's state, and the parser holds it.
         self.parser_reset = true;
     }
@@ -500,6 +655,7 @@ impl Screen {
         self.face.wrap = true;
         self.face.visible = true;
         self.face.pending_wrap = false;
+        self.app_cursor = false;
         self.parser_reset = true;
     }
 
@@ -739,9 +895,17 @@ impl Screen {
                 }
                 self.blank_range(r, 0, c);
             }
-            // `ED 3` is the scrollback, which a pane does not have: it clears the screen, which is
-            // the visible half of what was asked for.
-            2 | 3 => {
+            2 => {
+                for row in 0..self.rows {
+                    self.blank_row(row);
+                }
+            }
+            // `ED 3` is the scrollback — `clear`'s `E3`, which is what a person means by *clear
+            // it all*. The screen goes too: that is what `clear` asks for in the same breath, and
+            // a terminal that left the glass when told to forget its history would be keeping the
+            // one half nobody asked about.
+            3 => {
+                self.history.clear();
                 for row in 0..self.rows {
                     self.blank_row(row);
                 }
@@ -766,7 +930,26 @@ impl Screen {
         self.blank_range(r, c, c.saturating_add(n).saturating_sub(1));
     }
 
+    /// A scroll of the region, and **the one place a row enters the scrollback**: a line feed at
+    /// the bottom margin of a region that starts at the top row of the main screen. See the module
+    /// header for why only that one — `DL` at the top row moves the same cells and keeps nothing,
+    /// because deleting a line is an edit and not a line printed past the glass.
     fn scroll_up(&mut self, n: usize) {
+        if !self.alt && self.face.top == 0 {
+            let n = n.min(self.face.bottom + 1);
+            for row in 0..n {
+                let cells = &self.face.cells[row * self.cols..(row + 1) * self.cols];
+                let end = cells
+                    .iter()
+                    .rposition(|c| !c.is_blank())
+                    .map_or(0, |i| i + 1);
+                if self.history.len() == HISTORY_ROWS {
+                    self.history.pop_front();
+                }
+                self.history.push_back(cells[..end].to_vec());
+                self.scrolled += 1;
+            }
+        }
         self.scroll_up_in(self.face.top, self.face.bottom, n);
     }
 
@@ -1564,5 +1747,128 @@ mod tests {
         s.resize(1, 1);
         assert_eq!(s.size(), (1, 1));
         assert_well_formed(&s);
+    }
+
+    /// **R60 item 1: a line the program scrolled off the top is kept, and can be read back.**
+    ///
+    /// *"No scrollback. A program that scrolls off the pane's rectangle is gone."* — `!term cat
+    /// big.log`, or `!term bash` and anything that prints more than a screen. The rows go into the
+    /// ring in order, [`Screen::view`] reads them back as a rectangle of the screen's own height,
+    /// and the live screen is untouched by looking.
+    #[test]
+    fn a_line_scrolled_off_the_top_is_kept_and_can_be_read_back() {
+        let mut s = screen(3, 10);
+        for i in 1..=8 {
+            s.feed(format!("line {i}\r\n").as_bytes());
+        }
+        // Eight lines and a trailing newline on three rows: `line 7`, `line 8` and the empty row
+        // the cursor sits on are the screen, and six lines went past its top.
+        assert_eq!(lines(&s), vec!["line 7", "line 8", ""]);
+        assert_eq!(s.history_len(), 6);
+        let text = |rows: Vec<&[Cell]>| -> Vec<String> {
+            rows.iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|c| c.ch)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        assert_eq!(text(s.view(0)), vec!["line 7", "line 8", ""]);
+        assert_eq!(text(s.view(2)), vec!["line 5", "line 6", "line 7"]);
+        // Further back than there is: the oldest row at the top, never a short rectangle.
+        assert_eq!(text(s.view(99)), vec!["line 1", "line 2", "line 3"]);
+        assert_eq!(
+            lines(&s),
+            vec!["line 7", "line 8", ""],
+            "looking moved nothing"
+        );
+        // A kept row costs its length, not the pane's width.
+        assert_eq!(s.view(99)[0].len(), "line 1".len());
+    }
+
+    /// **What does not enter the scrollback**, by xterm's rules: the alternate screen's own
+    /// scrolling, a region that does not start at the top, and `DL` at the top row. And what
+    /// empties it: `ED 3` and `RIS`.
+    #[test]
+    fn only_the_main_screen_scrolling_from_the_top_keeps_history() {
+        let mut s = screen(3, 10);
+        s.feed(b"\x1b[?1049h");
+        for _ in 0..5 {
+            s.feed(b"x\r\n");
+        }
+        assert_eq!(s.history_len(), 0, "the alternate screen keeps no history");
+        s.feed(b"\x1b[?1049l");
+        // A region from the second row down: a status line's own furniture.
+        s.feed(b"\x1b[2;3r\x1b[3;1H");
+        for _ in 0..5 {
+            s.feed(b"y\r\n");
+        }
+        assert_eq!(
+            s.history_len(),
+            0,
+            "a region below the top row keeps nothing"
+        );
+        s.feed(b"\x1b[r\x1b[1;1H\x1b[M");
+        assert_eq!(
+            s.history_len(),
+            0,
+            "deleting a line is an edit, not a scroll"
+        );
+        s.feed(b"\x1b[3;1Ha\r\nb\r\n");
+        assert_eq!(s.history_len(), 2);
+        // While the alternate screen is up the view is the canvas, whatever `back` asks.
+        s.feed(b"\x1b[?1049hALT");
+        assert_eq!(s.view(2)[0][0].ch, 'A');
+        s.feed(b"\x1b[?1049l");
+        s.feed(b"\x1b[3J");
+        assert_eq!(s.history_len(), 0, "`ED 3` is the scrollback");
+        s.feed(b"\x1b[3;1Hc\r\nd\r\n");
+        assert_eq!(s.history_len(), 2);
+        s.feed(b"\x1bc");
+        assert_eq!(s.history_len(), 0, "`RIS` is everything");
+    }
+
+    /// **A history row wider than the screen is cut at its edge**, and a wide glyph the cut would
+    /// halve goes whole — the grid's own invariant, kept for what is read back.
+    #[test]
+    fn a_history_row_is_cut_to_the_screen_it_is_read_back_into() {
+        let mut s = screen(2, 6);
+        s.feed("abcd\u{4e2d}\r\n\r\n".as_bytes());
+        assert_eq!(s.history_len(), 1);
+        s.resize(2, 5);
+        let row = s.view(1)[0];
+        assert_eq!(row.iter().map(|c| c.ch).collect::<String>(), "abcd");
+    }
+
+    /// **R74 item 22's other half: the program's mouse request is recorded**, so the head can
+    /// tell a click that is the program's from one that is its own. It used to be consumed and
+    /// dropped (`12 | 1000..=1006 | …`), which left the head nothing to ask.
+    #[test]
+    fn the_programs_mouse_request_is_recorded_not_dropped() {
+        let mut s = screen(3, 10);
+        assert_eq!(s.mouse(), MouseMode::default());
+        s.feed(b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(
+            s.mouse(),
+            MouseMode {
+                tracking: MouseTracking::Drag,
+                sgr: true
+            }
+        );
+        // One setting, three spellings: resetting any of them turns tracking off.
+        s.feed(b"\x1b[?1000l");
+        assert_eq!(s.mouse().tracking, MouseTracking::Off);
+        s.feed(b"\x1b[?1003h\x1b[?1h");
+        assert_eq!(s.mouse().tracking, MouseTracking::Motion);
+        assert!(s.app_cursor_keys());
+        // It survives the alternate screen — a mode is the terminal's, not a face's.
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.mouse().tracking, MouseTracking::Motion);
+        s.feed(b"\x1bc");
+        assert_eq!(s.mouse(), MouseMode::default());
+        assert!(!s.app_cursor_keys());
     }
 }

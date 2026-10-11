@@ -385,9 +385,19 @@ impl Look {
 /// blanks of every row that ended coloured and dropped those of every row that did not. This is the
 /// same convenience with the property stated instead of approximated.
 pub fn lines(screen: &Screen, palette: Palette) -> Vec<String> {
+    painted_rows(screen.rows(), palette)
+}
+
+/// [`lines`] over any rows of cells — the live grid, or [`Screen::view`]'s rectangle with the
+/// scrollback in it. One walk, so a row read back from history is painted exactly as it was
+/// when it was on the glass.
+fn painted_rows<'a>(
+    rows: impl Iterator<Item = &'a [letibot_vt::Cell]>,
+    palette: Palette,
+) -> Vec<String> {
     let p = Painter::new(palette);
-    let mut out = Vec::with_capacity(screen.size().0);
-    for cells in screen.rows() {
+    let mut out = Vec::new();
+    for cells in rows {
         let end = cells
             .iter()
             .rposition(|c| !c.is_blank())
@@ -434,8 +444,23 @@ pub fn lines(screen: &Screen, palette: Palette) -> Vec<String> {
 /// rectangle of no rows is a window that has told us nothing useful, and one row is the smaller
 /// lie. `cols` is clamped the same way.
 pub fn pane_rows(screen: &mut Screen, cols: usize, room: usize, palette: Palette) -> Vec<String> {
+    pane_rows_back(screen, cols, room, palette, 0)
+}
+
+/// [`pane_rows`], **scrolled `back` rows into the scrollback** — the rectangle a pane draws while
+/// the operator is reading what a program printed past the glass (R60 item 1).
+///
+/// The same contract, exactly `room` rows, because [`Screen::view`] keeps it: a `back` beyond the
+/// history shows the oldest row at the top, and `0` is the live screen.
+pub fn pane_rows_back(
+    screen: &mut Screen,
+    cols: usize,
+    room: usize,
+    palette: Palette,
+    back: usize,
+) -> Vec<String> {
     screen.resize(room, cols);
-    lines(screen, palette)
+    painted_rows(screen.view(back).into_iter(), palette)
 }
 
 #[cfg(test)]
