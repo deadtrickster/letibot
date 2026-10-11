@@ -118,6 +118,12 @@ impl App {
             Key::AltG if !self.feedback_key_free(false) => return None,
             Key::AltG => return self.feedback_key(true),
             Key::AltB => return self.feedback_key(false),
+            // **alt-a opens the question a row is waiting on you for** — wherever the keyboard is,
+            // because the line that names it is drawn on every frame.
+            Key::AltA => {
+                self.open_operator_ask(None);
+                return None;
+            }
             k => k,
         };
         // **A wheel notch goes to the surface under the pointer** — see [`App::wheel_at`]. One
@@ -469,10 +475,11 @@ impl App {
         }
         let at = self.sel.min(n - 1);
         if d.kind == "question" {
-            return Some(Action::AnswerQuestion {
-                req_id: d.req_id.clone(),
-                answer: letibot_sessionlog::question::QuestionAnswer::choosing(at),
-            });
+            let req_id = d.req_id.clone();
+            return Some(self.settle_question(
+                req_id,
+                letibot_sessionlog::question::QuestionAnswer::choosing(at),
+            ));
         }
         let option_id = d.options[at].option_id.clone();
         let req_id = d.req_id.clone();
@@ -1082,6 +1089,10 @@ pub enum Key {
     SoftEnter,
     /// **alt-g: mark the current turn good** (TODO R81, `app/feedback.rs`).
     AltG,
+    /// **alt-a: answer the operator's question** — open the card for the first todo row that is
+    /// waiting on the operator (`app/todos.rs`'s `open_operator_ask`). The resident `waiting on
+    /// you` line names it.
+    AltA,
     /// **alt-b: mark the current turn bad** — on an empty composer; readline's word-left
     /// everywhere else, which is what alt-b always was (`app/feedback.rs`).
     AltB,
@@ -1256,6 +1267,7 @@ impl Key {
             | Key::CtrlCaret
             | Key::AltG
             | Key::AltB
+            | Key::AltA
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

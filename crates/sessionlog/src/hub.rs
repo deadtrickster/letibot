@@ -322,6 +322,18 @@ pub enum CommandKind {
         req_id: String,
         reply: Reply,
     },
+    /// **The operator answered the question a todo row waits on** (`ClientFrame::AnswerTodo`,
+    /// `PROTOCOL_VERSION` 47). Not an [`CommandKind::Answer`]: that settles an open decision a
+    /// tool call is blocked on, and nothing is blocked on this one — the row is on the board,
+    /// the board is the harness's, and the answer is validated there against the row's own
+    /// options. A running turn takes it at its next step boundary (it is one of
+    /// [`Hub::try_steering_command`]'s kinds, as an operator's prompt is); between turns the
+    /// worker applies it and runs the turn it makes.
+    AnswerTodo {
+        content: String,
+        question: String,
+        answer: crate::question::QuestionAnswer,
+    },
 }
 
 /// **The spill half of a finished operator run**, as the size note needs it.
@@ -432,6 +444,7 @@ impl CommandKind {
             CommandKind::Interrupt { .. } => "interrupt",
             CommandKind::Message { .. } => "message",
             CommandKind::Answer { .. } => "answer",
+            CommandKind::AnswerTodo { .. } => "answer-todo",
             CommandKind::Mode { .. } => "mode",
             CommandKind::Slash { .. } => "slash",
             CommandKind::ReadJobOutput { .. } => "read-job-output",
@@ -1344,6 +1357,18 @@ impl Hub {
                 }
             };
 
+            // **A row's question is answered by somebody who may decide**, for the reason an open
+            // decision is: a read-only head is watching, and an answer is attributed to a person.
+            // Everything else about it — does the row exist, does it still ask this, is the
+            // answer one the row offered — is the board's to say, and the board is the harness's.
+            if matches!(kind, CommandKind::AnswerTodo { .. }) && !can_decide {
+                return ServerFrame::Rejected {
+                    client_request_id,
+                    reason: REJECT_READ_ONLY.into(),
+                    expected_seq,
+                    actual_seq: actual,
+                };
+            }
             if let CommandKind::Answer { req_id, reply } = &kind {
                 if !can_decide {
                     return ServerFrame::Rejected {
@@ -1457,6 +1482,9 @@ impl Hub {
                 (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
+                }
+                (CommandKind::AnswerTodo { content, .. }, _) => {
+                    format!("the operator answered the question on `{}`", content.trim())
                 }
                 // "requested" said nothing about when, and the answer used to be
                 // "after the turn" — which is why it read as having done nothing.
@@ -1878,6 +1906,7 @@ impl Hub {
                 CommandKind::Prompt { .. }
                     | CommandKind::Interrupt { .. }
                     | CommandKind::Message { .. }
+                    | CommandKind::AnswerTodo { .. }
             )
         })?;
         g.commands.remove(i)

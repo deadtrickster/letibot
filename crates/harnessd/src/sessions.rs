@@ -3402,6 +3402,23 @@ impl<'a> Sessions<'a> {
                                         handle: handle.clone(),
                                     }
                                 }
+                                // **The operator's question, and their answer, cross whole** — the
+                                // head echoes its own rows back on every push, and a question it
+                                // dropped here would be a person no longer waited on for nothing.
+                                letibot_sessionlog::event::TodoNeed::Operator {
+                                    question,
+                                    options,
+                                } => letibot_tokencore::store::TodoNeed::Operator {
+                                    question: question.clone(),
+                                    options: options.clone(),
+                                },
+                                letibot_sessionlog::event::TodoNeed::Answered {
+                                    question,
+                                    reply,
+                                } => letibot_tokencore::store::TodoNeed::Answered {
+                                    question: question.clone(),
+                                    reply: reply.clone(),
+                                },
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
                                 }
@@ -3458,6 +3475,39 @@ impl<'a> Sessions<'a> {
                 Outcome::Ignored
             }
             CommandKind::WithdrawPrompts => Outcome::Ignored,
+            // **The operator answered a row's question, and the session is between turns** — so
+            // the answer is applied and the model is told AT ONCE, as a turn of its own (R79: an
+            // operator's words are never held). The turn is the operator's door (`Door::Prompt`):
+            // it is them speaking, and it earns the plan-check back like any word of theirs. A
+            // refusal — the row moved on, the model detached the question, an option the row never
+            // offered — runs nothing and is said to the heads.
+            CommandKind::AnswerTodo {
+                content,
+                question,
+                answer,
+            } => {
+                let settled = match self.harness(session_id) {
+                    Ok(h) => h.answer_operator_ask(content, question, answer),
+                    Err(e) => Err(e.to_string()),
+                };
+                match settled {
+                    Ok(line) => {
+                        match self.turn(session_id, Door::Prompt, |h| h.submit(&line).map(Some)) {
+                            None => Outcome::Ignored,
+                            Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
+                            Some(Err(e)) => Outcome::Failed(e.to_string()),
+                        }
+                    }
+                    Err(why) => {
+                        self.warn(
+                            session_id,
+                            "todo_answer_refused",
+                            format!("your answer on `{}` was not taken: {why}", content.trim()),
+                        );
+                        Outcome::Ignored
+                    }
+                }
+            }
             // The request is honoured mid-turn by the `bash` wait loop, which reads
             // the hub's promote channel. Reaching here means nothing was running, so
             // the request is stale — clear it and say so, rather than leaving it for
@@ -4470,10 +4520,15 @@ impl SessionSource for StoreSessions {
 
     fn list(&self) -> Vec<StoredBrief> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        // **The picker's `waiting on you` mark, read for every session in one pass** — the board
+        // is the question's one home, so a session nobody has opened since a restart is marked
+        // as surely as a live one.
+        let waiting = g.sessions_waiting_on_operator().unwrap_or_default();
         g.list_sessions()
             .unwrap_or_default()
             .into_iter()
             .map(|s| StoredBrief {
+                waits_on_operator: waiting.get(&s.id).copied().unwrap_or(0),
                 session_id: s.id,
                 title: s.title.unwrap_or_default(),
                 items: s.items,

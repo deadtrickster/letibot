@@ -357,6 +357,15 @@ pub struct SessionBrief {
     /// verb has to say, so the field is added without a protocol bump.
     #[serde(default)]
     pub nags_paused: Option<NagPause>,
+    /// **How many questions this session's board is waiting on the OPERATOR for** — rows with an
+    /// open `operator` edge (`TodoNeed::Operator`). The picker marks a session that has any, so a
+    /// person who is being waited on can see it from the list and not only from inside the
+    /// session. Read off the store's board, live or not: the row is the question's one home.
+    ///
+    /// Defaulted for `nags_paused`'s reason: `0` is also what a daemon too old to know the edge
+    /// has to say.
+    #[serde(default)]
+    pub waits_on_operator: usize,
 }
 
 /// **How long the operator has paused a session's idle plan-check** (`/nag pause`).
@@ -482,6 +491,9 @@ pub struct StoredBrief {
     /// [`SessionBrief::nags_paused`]. A pause whose end has already passed is `None` here: it is
     /// over, whether or not a daemon has yet been there to say so.
     pub nags_paused: Option<NagPause>,
+    /// Open questions the session's board waits on the operator for — see
+    /// [`SessionBrief::waits_on_operator`].
+    pub waits_on_operator: usize,
 }
 
 /// Where a registry can find sessions it is not already holding.
@@ -1740,6 +1752,7 @@ impl Registry {
                     // The row is the pause's one home, live or not — the harness writes it the
                     // moment the verb lands, so the store is never behind the session here.
                     nags_paused: on_disk.and_then(|d| d.nags_paused),
+                    waits_on_operator: on_disk.map(|d| d.waits_on_operator).unwrap_or(0),
                 }
             })
             .collect();
@@ -1765,6 +1778,7 @@ impl Registry {
                 context_cached: d.context_cached,
                 stored_end: d.stored_end,
                 nags_paused: d.nags_paused,
+                waits_on_operator: d.waits_on_operator,
             });
         }
         out
@@ -2738,6 +2752,7 @@ mod stored_end_wire {
                 first_line: "done".into(),
             }),
             nags_paused: None,
+            waits_on_operator: 0,
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

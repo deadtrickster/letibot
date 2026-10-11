@@ -1766,6 +1766,27 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **A todo row's question, answered** (`PROTOCOL_VERSION` 47). A command and not a
+            // sink delivery: nothing is blocked waiting for it, and the board it changes is the
+            // worker's (or, mid-turn, the steering poll's).
+            Ok(ClientFrame::AnswerTodo {
+                client_request_id,
+                content,
+                question,
+                answer,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    0,
+                    CommandKind::AnswerTodo {
+                        content,
+                        question,
+                        answer,
+                    },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             // A head going away is the normal case and says nothing.
             Err(WireError::Eof) => break Ok(()),
             // **Anything else is said before the connection goes.**

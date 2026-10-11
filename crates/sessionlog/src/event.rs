@@ -320,6 +320,16 @@ pub enum TodoNeed {
     /// [`TodoNeed::Child`]'s sibling one layer down: an EDGE, where a `when` of the same handle is
     /// the operator's clock. See `TodoNeed::Job` in the store for the whole of the distinction.
     Job { handle: String },
+    /// **The OPERATOR, asked a question with these choices** — the row waits until a person
+    /// answers. See `TodoNeed::Operator` in the store; a head draws it as `waits on you` and
+    /// opens the question card from it.
+    Operator {
+        question: String,
+        options: Vec<String>,
+    },
+    /// **An operator edge the operator has answered** — met, and kept as the reply. See
+    /// `TodoNeed::Answered` in the store for why it is an edge and not words on the row.
+    Answered { question: String, reply: String },
     /// A kind this build does not know. See `TodoNeed::Unknown` in the store for why an unknown
     /// edge is kept rather than refused: a plan is what would be lost.
     #[serde(other)]

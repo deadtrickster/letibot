@@ -392,6 +392,16 @@ pub const TABLE: &[(&str, Class)] = &[
     // resident line exists to explain.
     ("nags_paused", Class::Routine),
     ("nags_resumed", Class::Routine),
+    // **A todo row waits on the operator** (`harnessd/src/operator_ask.rs`). The asking row is in
+    // the RED register on purpose, and it is the rule at the top read honestly rather than bent:
+    // the register's job is *look at this*, and a person being waited on is the one sentence in
+    // this table whose whole point is that the reader acts — the operator's *"the heads show loud
+    // notification that im waited"*. Its settling (answered, detached, or its row closed) is the
+    // design working: Routine. An answer the board would not take (the row moved on, an option
+    // it never offered) did not happen: Failure.
+    ("waiting_on_operator", Class::Failure),
+    ("operator_question_settled", Class::Routine),
+    ("todo_answer_refused", Class::Failure),
     // An import's three routine notes: whose rows these are, what could not be a row
     // (an unknown tag, a patch, a compaction — *counted and said, never dropped*), and
     // the count and spend it left behind.
@@ -1018,10 +1028,12 @@ mod the_register_census {
         //   · **114, not 112**: `nags_paused` and `nags_resumed` (Routine) — the operator's
         //     `/nag pause` and its end; see their rows for why the loud half is not the register.
         //   · **115, not 114**: `feedback` (Routine) — an operator's mark taken (TODO R81).
-        assert_eq!(TABLE.len(), 115, "the table's size");
-        assert_eq!(count(Class::Routine), 40);
+        //   · **118, not 115**: `waiting_on_operator` and `todo_answer_refused` (Failures) and
+        //     `operator_question_settled` (Routine) — a todo row that waits on the operator.
+        assert_eq!(TABLE.len(), 118, "the table's size");
+        assert_eq!(count(Class::Routine), 41);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 64);
+        assert_eq!(count(Class::Failure), 66);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 64 of 114 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the

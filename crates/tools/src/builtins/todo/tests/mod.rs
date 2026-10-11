@@ -179,5 +179,6 @@ mod cap;
 mod children;
 mod nag;
 mod needs;
+mod operator;
 mod quotes;
 mod wait_on;

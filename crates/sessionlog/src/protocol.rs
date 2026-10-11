@@ -697,7 +697,20 @@ use crate::view::Snapshot;
 /// kind is held - somewhere close to Responding ...."*. A new variant, so a version-45 head would
 /// fail to decode the first one mid-session — the version-4 argument — and the number moves. It
 /// is ephemeral (`scrub::is_interactive`) and folded into no snapshot.
-pub const PROTOCOL_VERSION: u32 = 46;
+///
+/// # 47: a row that waits on the operator is answered (`ClientFrame::AnswerTodo`)
+///
+/// The operator: *"todo can be
+/// dependend on ME … when it says it waits for ME it give me that choice list with an optioin to
+/// enter my freetext. and then when i submit todo becomes unblocked with reply attached"*. A row's
+/// `operator` edge (`TodoNeed::Operator`, an added variant on a tagged enum an older head reads as
+/// `unknown`) is answered with [`ClientFrame::AnswerTodo`] — the row's words, the question, and a
+/// [`crate::question::QuestionAnswer`], the vocabulary `ask_user_question`'s card already speaks.
+/// Its own frame and not `AnswerQuestion`: that one settles an OPEN DECISION a tool call is
+/// blocked on, by `req_id`, and a row's question has neither — it outlives turns and restarts on
+/// the board. A version-46 daemon would fail to parse it — the version-4 argument — so the number
+/// moves.
+pub const PROTOCOL_VERSION: u32 = 47;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1808,6 +1821,20 @@ pub enum ClientFrame {
         req_id: String,
         answer: crate::question::QuestionAnswer,
     },
+    /// **Answer the question a todo row is waiting on** (`PROTOCOL_VERSION` 47) — the row's
+    /// `operator` edge. `content` is the row's exact words (the board's one key), `question` the
+    /// question being answered (so an answer to a question the model has since replaced or taken
+    /// back is refused rather than applied to a different one), and `answer` the card's
+    /// [`crate::question::QuestionAnswer`]: a choice, a choice with a note, typed words, or an
+    /// abstention. The daemon validates it against the row's own options, takes the edge off,
+    /// keeps the reply on the row, and tells the model at once — mid-turn at the next step
+    /// boundary, and between turns as a turn of its own.
+    AnswerTodo {
+        client_request_id: String,
+        content: String,
+        question: String,
+        answer: crate::question::QuestionAnswer,
+    },
     /// What sessions does this daemon hold? Answered with [`ServerFrame::Sessions`].
     ///
     /// Read-only and unserialised: it does not go through the command queue,
@@ -2803,6 +2830,7 @@ mod tests {
                 ClientFrame::Ack { .. }
                 | ClientFrame::Answer { .. }
                 | ClientFrame::AnswerQuestion { .. }
+                | ClientFrame::AnswerTodo { .. }
                 | ClientFrame::Askpass { .. }
                 | ClientFrame::Attach { .. }
                 | ClientFrame::CompactSession { .. }
@@ -2926,9 +2954,10 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 46,
-            "the match above was last reconciled with the frame list at 46 — \
-             `SessionEvent::HeldResults`, the counts of what a session holds back from its model \
+            PROTOCOL_VERSION, 47,
+            "the match above was last reconciled with the frame list at 47 — \
+             `ClientFrame::AnswerTodo`, the operator's answer to a todo row's question (a \
+             version-46 daemon cannot parse it). 46 was `SessionEvent::HeldResults`, the counts of what a session holds back from its model \
              (a version-45 head cannot decode it). 45 was `ClientFrame::Feedback`, \
              an operator's mark answered on the connection thread (a version-44 daemon cannot parse \
              it). 44 was several panes per \

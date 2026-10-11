@@ -78,6 +78,14 @@ impl App {
                             } else {
                                 s.title.clone()
                             };
+                            // **And a session waiting on YOU says so**, louder and first: a
+                            // person who is being waited on has to be able to see it from the
+                            // list, without attaching to every session to find out.
+                            let name = match s.waits_on_operator {
+                                0 => name,
+                                1 => format!("{name} · WAITING ON YOU"),
+                                n => format!("{name} · WAITING ON YOU ({n})"),
+                            };
                             if s.nags_paused.is_some() {
                                 format!("{name} · nags paused")
                             } else {

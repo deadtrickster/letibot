@@ -3,6 +3,19 @@
 
 use super::*;
 
+/// **The id a todo row's question card carries** — `todo-ask:<the row's words>`. Not a daemon
+/// `req_id` (those are minted by the gate), so it cannot collide with one, and
+/// [`App::settle_question`] reads the row back out of it.
+pub(crate) const TODO_ASK: &str = "todo-ask:";
+
+/// **One row's question for the operator**, as this head's board holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OperatorAsk {
+    pub(crate) content: String,
+    pub(crate) question: String,
+    pub(crate) options: Vec<String>,
+}
+
 impl App {
     /// **The operator's rows, out of the union the daemon serves.** The head keeps no second
     /// list: the daemon persists them, every head sees them, and this is the one place that says
@@ -14,6 +27,119 @@ impl App {
             .filter(|t| t.by == letibot_sessionlog::event::TodoBy::Operator)
             .cloned()
             .collect()
+    }
+
+    /// **The rows on this head's board that wait on the operator**, with the question and the
+    /// options — open rows only (a done or struck-off row asks nobody anything), in board order.
+    /// The same reading as the daemon's `operator_asks`, over the wire's copy of the board.
+    pub(crate) fn operator_asks(&self) -> Vec<OperatorAsk> {
+        use letibot_sessionlog::event::{TodoNeed, TodoStatus};
+        let mut out = Vec::new();
+        for t in &self.todos {
+            if matches!(t.status, TodoStatus::Completed | TodoStatus::Cancelled) {
+                continue;
+            }
+            for n in &t.needs {
+                if let TodoNeed::Operator { question, options } = n {
+                    out.push(OperatorAsk {
+                        content: t.content.clone(),
+                        question: question.clone(),
+                        options: options.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// **Open the question card for a row that waits on the operator** — `content` names the row
+    /// (Enter on it in the todo pane), `None` takes the first one (alt-a, from the resident line).
+    ///
+    /// **The card is the question card `ask_user_question` draws**, not a second one: a
+    /// `question` decision with the row's options as its choices, put on this head's own list of
+    /// open cards. Every way of answering it is the card's — arrows and Enter for an option, `N --
+    /// note` for an option with a note, typed words, `abstain` — and [`App::settle_question`]
+    /// sends the answer to the ROW (`Action::AnswerTodo`) because the card's id says it is one.
+    /// It is this head's alone: no decision is open on the daemon, so a resync simply takes it
+    /// down and alt-a puts it back.
+    pub(crate) fn open_operator_ask(&mut self, content: Option<&str>) {
+        let asks = self.operator_asks();
+        let ask = match content {
+            Some(c) => asks.into_iter().find(|a| a.content == c),
+            None => asks.into_iter().next(),
+        };
+        let Some(ask) = ask else {
+            self.say(if self.asks_setting.is_some() {
+                "the board is still being read — alt-a again in a moment"
+            } else {
+                "nothing is waiting on you"
+            });
+            if self.asks_setting.is_some() && !self.queued.contains(&Action::ListTodos) {
+                self.queued.push(Action::ListTodos);
+            }
+            self.redraw = true;
+            return;
+        };
+        let req_id = format!("{TODO_ASK}{}", ask.content);
+        if let Some(first) = self.open.first()
+            && first.req_id != req_id
+            && !first.req_id.starts_with(TODO_ASK)
+        {
+            self.say("answer the open card first — then alt-a opens the question waiting on you");
+            self.redraw = true;
+            return;
+        }
+        self.open.retain(|d| !d.req_id.starts_with(TODO_ASK));
+        self.sel = 0;
+        self.open.insert(
+            0,
+            letibot_sessionlog::view::OpenDecision {
+                req_id,
+                kind: "question".into(),
+                call_id: None,
+                subagent: None,
+                access: String::new(),
+                summary: ask.question.clone(),
+                target: format!("the todo row `{}` waits on your answer", ask.content.trim()),
+                write_targets: Vec::new(),
+                detail: String::new(),
+                options: Vec::new(),
+                choices: ask.options.clone(),
+                because: String::new(),
+                advice: None,
+                deadline: None,
+                on_timeout: letibot_sessionlog::event::OnTimeout::Ask,
+                asked_ts: 0,
+            },
+        );
+        self.redraw = true;
+    }
+
+    /// **A question card's answer, as the action that carries it** — to the ROW for a card
+    /// [`App::open_operator_ask`] opened (and the card comes down: nothing on the daemon will
+    /// settle it), to the open decision for every other question.
+    pub(crate) fn settle_question(
+        &mut self,
+        req_id: String,
+        answer: letibot_sessionlog::question::QuestionAnswer,
+    ) -> Action {
+        if let Some(content) = req_id.strip_prefix(TODO_ASK) {
+            let question = self
+                .open
+                .iter()
+                .find(|d| d.req_id == req_id)
+                .map(|d| d.summary.clone())
+                .unwrap_or_default();
+            self.open.retain(|d| d.req_id != req_id);
+            self.sel = 0;
+            self.redraw = true;
+            return Action::AnswerTodo {
+                content: content.to_string(),
+                question,
+                answer,
+            };
+        }
+        Action::AnswerQuestion { req_id, answer }
     }
 
     /// **Open the new-todo card**, and put the composer where the card expects it.

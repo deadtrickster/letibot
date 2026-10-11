@@ -726,6 +726,25 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Answer the question a todo row waits on** (`PROTOCOL_VERSION` 47): the row's words,
+    /// the question being answered, and what the person did — see
+    /// [`ClientFrame::AnswerTodo`].
+    pub fn answer_todo(
+        &mut self,
+        content: &str,
+        question: &str,
+        answer: crate::question::QuestionAnswer,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::AnswerTodo {
+            client_request_id: client_request_id.clone(),
+            content: content.to_string(),
+            question: question.to_string(),
+            answer,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Ask what sessions this daemon holds. Answered with `ServerFrame::Sessions`
     /// on the same stream the events arrive on, so the caller reads it out of its
     /// own pump rather than blocking here — a head that stopped to wait for a list

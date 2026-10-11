@@ -70,6 +70,7 @@
 //! `created_at` is milliseconds since the Unix epoch, `INTEGER`. Not a string:
 //! this column is only ever ordered and differenced.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use letibot_transcript::TranscriptItem;
@@ -1162,6 +1163,30 @@ pub fn todo_title(content: &str) -> &str {
         .trim()
 }
 
+/// **The rows that wait on the OPERATOR right now** — every open row (not `Completed`, not
+/// `Cancelled`) with a [`TodoNeed::Operator`] edge, and the question it asks, in board order.
+///
+/// **One reading, used by every door that has to be LOUD about it** — the daemon's settings row
+/// and its `waiting_on_operator` row, the picker's mark (through the store's
+/// [`Store::sessions_waiting_on_operator`]), and the answer's own validation — so a row cannot be
+/// waiting on one screen and not on another. A done or struck-off row asks nobody anything: its
+/// question is moot, and a loud line about it would be a person asked to answer for work nobody
+/// is going to do.
+pub fn operator_asks(todos: &[TodoItem]) -> Vec<(&TodoItem, &str, &[String])> {
+    let mut out = Vec::new();
+    for row in todos {
+        if matches!(row.status, TodoStatus::Completed | TodoStatus::Cancelled) {
+            continue;
+        }
+        for need in &row.needs {
+            if let TodoNeed::Operator { question, options } = need {
+                out.push((row, question.as_str(), options.as_slice()));
+            }
+        }
+    }
+    out
+}
+
 /// One line of a session's todo list, as the model wrote it.
 ///
 /// Stored as mutable session metadata — the `set_title` class, not the
@@ -1325,6 +1350,48 @@ pub enum TodoNeed {
     /// what a handle looks like after a restart — is a job that ended**, which is
     /// [`TodoCondition::Job`]'s own ruling one variant up and the reason the two cannot disagree.
     Job { handle: String },
+    /// **The OPERATOR, asked a question** — the row cannot start until a person answers it.
+    ///
+    /// The operator's ask, verbatim: *"a todo can be dependent on todo, and todo can be dependend
+    /// on ME. if model says todo is dependent on ME the other heads of the todo DAG keep firing,
+    /// model told to try to figure it out anyways, and the heads show loud notification that im
+    /// waited. i guess we will force models to do choice for todo - so when it says it waits for
+    /// ME it give me that choice list with an optioin to enter my freetext. and then when i submit
+    /// todo becomes unblocked with reply attached"*.
+    ///
+    /// **`options` are the model's offered choices, and there are always at least two** — *"we
+    /// will force models to do choice"*: `todo_write` refuses fewer, so the operator is never
+    /// handed an open-ended question where a choice would do. Free text and an abstention are
+    /// offered by the head's card IN ADDITION, which is `QuestionAnswer`'s vocabulary and not
+    /// this row's: the card is the same one `ask_user_question` draws.
+    ///
+    /// **Whether it is answered is ON THE BOARD, unlike a child or a job** — nothing outside the
+    /// row knows, so nothing has to be handed in: the edge is unmet while it is here, and the
+    /// operator's answer REPLACES it with [`TodoNeed::Answered`]. That is also what makes it
+    /// survive a restart: the store holds the row, the row holds the question.
+    Operator {
+        question: String,
+        options: Vec<String>,
+    },
+    /// **An [`TodoNeed::Operator`] edge the operator has ANSWERED** — met, always, and kept on the
+    /// row as the reply: *"when i submit todo becomes unblocked with reply attached"*.
+    ///
+    /// **An edge rather than words appended to the row, and the reason is the key.** A row's
+    /// words are its identity — `Row` edges, `update` and the operator's own pane all resolve a
+    /// row by its exact `content` — so writing the reply into `content` would re-name the row
+    /// under every edge into it and under the model's next restatement of its plan (which would
+    /// then ADD the old words back as a new row, still waiting). Kept here, the title and the
+    /// key are untouched and the reply rides with the row wherever the row goes.
+    ///
+    /// **The model cannot write one and cannot clear one** — `todo_write` refuses the kind, and a
+    /// restatement of the row keeps the answers it already has — because an answer is the
+    /// operator's word. A question the operator already answered on this row is therefore not
+    /// asked again by restating it: the restatement's `operator` edge is dropped against the
+    /// answer with the same question.
+    ///
+    /// `reply` is the answer as a sentence — the option chosen and the note on it, the words the
+    /// operator typed, or that they abstained — the same words the model was told.
+    Answered { question: String, reply: String },
     /// **A kind this build does not know** — a need written by a build that has one this one does
     /// not, and it is here because the alternative is worse in a way that is MEASURED, not imagined:
     /// `Harness::new` restores a resumed session's board with `store.todos(id).unwrap_or_default()`,
@@ -3059,6 +3126,34 @@ impl Store {
             .map(|j| serde_json::from_str(&j))
             .transpose()?
             .unwrap_or_default())
+    }
+
+    /// **Every session with a row waiting on the operator, and how many questions are open** —
+    /// the picker's mark, read for all sessions in one pass.
+    ///
+    /// **Narrowed in SQL, decided in Rust.** The `LIKE` is only the cheap half: it keeps the rows
+    /// the JSON could hold an `operator` edge in, and [`operator_asks`] — the one reading every
+    /// other door uses — decides, so a done row's leftover question or a string that merely
+    /// contains the tag is not counted. A list that cannot be parsed counts nothing rather than
+    /// failing the listing: a picker that refused to draw over one bad row would hide every
+    /// session to report one.
+    pub fn sessions_waiting_on_operator(&self) -> Result<BTreeMap<String, usize>> {
+        let mut st = self.conn.prepare(
+            "SELECT session_id, todos_json FROM todo WHERE todos_json LIKE '%\"kind\":\"operator\"%'",
+        )?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = BTreeMap::new();
+        for row in rows {
+            let (id, json) = row?;
+            let Ok(todos) = serde_json::from_str::<Vec<TodoItem>>(&json) else {
+                continue;
+            };
+            let n = operator_asks(&todos).len();
+            if n > 0 {
+                out.insert(id, n);
+            }
+        }
+        Ok(out)
     }
 
     /// Replace the session's todo list wholesale. The whole list every time —

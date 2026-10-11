@@ -55,6 +55,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         // composer (`app/feedback.rs`); alt-g is the other mark (TODO R81).
         KeyCode::Char('b') if m == Mods::ALT => Key::AltB,
         KeyCode::Char('g') if m == Mods::ALT => Key::AltG,
+        // alt-a: answer the question a todo row is waiting on you for (`app/todos.rs`).
+        KeyCode::Char('a') if m == Mods::ALT => Key::AltA,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.

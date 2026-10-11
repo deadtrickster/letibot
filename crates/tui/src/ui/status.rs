@@ -123,6 +123,32 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
+    /// **The line a board waiting on the OPERATOR draws** — *"the heads show loud notification that
+    /// im waited"*. A resident line in the warning register, above the composer with the nag and
+    /// compaction lines, for as long as any open row waits on a question: it quotes the first
+    /// question and the row, counts the rest, and names the key that opens the card (alt-a; Enter
+    /// on the row in the todo pane does the same). Drawn from the board when this head has read
+    /// it, and from the daemon's `asks` settings row until it has.
+    pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
+        let asks = self.operator_asks();
+        let said = match (asks.first(), &self.asks_setting) {
+            (Some(first), _) => {
+                let more = match asks.len() {
+                    1 => String::new(),
+                    n => format!(" (+{} more)", n - 1),
+                };
+                format!(
+                    "WAITING ON YOU: \"{}\" on `{}`{more} — alt-a to answer",
+                    first.question.trim(),
+                    letibot_sessionlog::event::todo_title(&first.content)
+                )
+            }
+            (None, Some(setting)) => format!("WAITING ON YOU: {setting} — alt-a to answer"),
+            (None, None) => return Vec::new(),
+        };
+        row_strings(&facts::warning(&said, w), self.cfg.palette())
+    }
+
     /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
     ///
     /// A resident line and not a note, for `link_line`'s reason: it is a state, true until

@@ -160,6 +160,21 @@ impl App {
                             .map(|until| until.trim().to_string())
                     })?
                 });
+                // **Whether the board waits on the operator**, for a head that attached after
+                // the question was asked — the durable half of the `waiting on you` line, as the
+                // two rows above are for theirs. `none`, or a daemon too old to send the row,
+                // clears it. And the board itself is read when this head has none, so the line
+                // can name the question and the card can offer its options.
+                self.asks_setting = self
+                    .settings
+                    .iter()
+                    .find_map(|r| (r.key == "asks" && r.value != "none").then(|| r.value.clone()));
+                if self.asks_setting.is_some()
+                    && self.operator_asks().is_empty()
+                    && !self.queued.contains(&Action::ListTodos)
+                {
+                    self.queued.push(Action::ListTodos);
+                }
                 // Stamped, so the header can tell whether a turn has named a model
                 // since. See `model_from_settings_at`.
                 self.model_from_settings_at = self.seq;

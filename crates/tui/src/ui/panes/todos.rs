@@ -69,7 +69,21 @@ impl App {
                         // child, not a `when` — the operator: *"will todo pane show me that waits
                         // are armed?"*. Before this only the row's card said so. The first such
                         // edge is the one drawn; the card lists them all.
+                        //
+                        // **A row waiting on the OPERATOR says `waits on you`, first** — *"the
+                        // heads show loud notification that im waited"*; Enter on it opens the
+                        // question. A done or struck-off row asks nobody anything.
                         waits_on: match &t.when {
+                            _ if !matches!(
+                                t.status,
+                                TodoStatus::Completed | TodoStatus::Cancelled
+                            ) && t
+                                .needs
+                                .iter()
+                                .any(|n| matches!(n, TodoNeed::Operator { .. })) =>
+                            {
+                                Some("you".into())
+                            }
                             Some(TodoCondition::Job { handle }) => Some(handle.clone()),
                             None => t.needs.iter().find_map(|n| match n {
                                 TodoNeed::Job { handle } => Some(handle.clone()),
@@ -277,6 +291,20 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Row { content } => format!("row `{}`", clean_line(content)),
         TodoNeed::Child { id } => format!("child {}", clean_line(id)),
         TodoNeed::Job { handle } => format!("job {}", clean_line(handle)),
+        TodoNeed::Operator { question, options } => format!(
+            "YOU — \"{}\" ({}) — enter on the row, or alt-a, answers it",
+            clean_line(question),
+            options
+                .iter()
+                .map(|o| clean_line(o))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        ),
+        TodoNeed::Answered { question, reply } => format!(
+            "answered — \"{}\": {}",
+            clean_line(question),
+            clean_line(reply)
+        ),
         // **Kept rather than dropped** — a plan is what would be lost — and said as the one thing
         // this build can honestly say about it.
         TodoNeed::Unknown => "an edge this build does not know".into(),

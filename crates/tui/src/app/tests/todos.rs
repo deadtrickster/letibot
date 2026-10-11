@@ -2588,3 +2588,164 @@ fn an_armed_wait_shows_on_the_row() {
         "an edge on a row is not a wait on a job: {lines:#?}"
     );
 }
+
+// ─────────────────────── a row that waits on the OPERATOR ───────────────────────
+
+/// The board a session waiting on the operator shows: one row asking, one ready row.
+fn waiting_board(a: &mut App) {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            TodoEntry {
+                content: "deploy the staging box".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: vec![TodoNeed::Operator {
+                    question: "which database should staging use?".into(),
+                    options: vec!["postgres".into(), "sqlite".into()],
+                }],
+            },
+            TodoEntry {
+                content: "write the release notes".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+        ],
+    });
+}
+
+/// **The resident line says the operator is waited on, and goes when nobody is** — *"the heads
+/// show loud notification that im waited"*. Drawn from the board, quoting the question and the row
+/// and naming alt-a; and from the `asks` settings row for a head that has not read the board yet
+/// (which also queues the read).
+#[test]
+fn a_board_waiting_on_the_operator_draws_a_resident_line() {
+    let mut a = app();
+    assert!(a.waiting_line(160).is_empty(), "nobody is waited on yet");
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Settings {
+        rows: vec![letibot_sessionlog::protocol::SettingRow {
+            key: "asks".into(),
+            value: "1 — \"which database should staging use?\" on `deploy the staging box`".into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        }],
+    });
+    let line = a.waiting_line(200).join("");
+    assert!(line.contains("WAITING ON YOU"), "{line}");
+    assert!(
+        a.queued.contains(&Action::ListTodos),
+        "the board is read so the card can offer the options"
+    );
+    waiting_board(&mut a);
+    let line = a.waiting_line(200).join("");
+    assert!(
+        line.contains("\"which database should staging use?\" on `deploy the staging box`"),
+        "{line}"
+    );
+    assert!(line.contains("alt-a to answer"), "{line}");
+    assert!(
+        a.screen(200, 40).join("\n").contains("WAITING ON YOU"),
+        "the line is on the screen"
+    );
+    a.apply(ServerFrame::Settings { rows: Vec::new() });
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: Vec::new(),
+    });
+    assert!(
+        a.waiting_line(200).is_empty(),
+        "the line goes when nobody is waited on"
+    );
+}
+
+/// **The todo pane's row says `waits on you`, and Enter on it opens the question card** — the
+/// card `ask_user_question` draws, with the row's options as its choices. Answering it goes to the
+/// ROW (`Action::AnswerTodo`) and takes the card down: an option by Enter, an option with a note,
+/// typed words, and an abstention — *"that choice list with an optioin to enter my freetext"*.
+#[test]
+fn the_pane_marks_the_row_and_enter_opens_its_question_card() {
+    use letibot_sessionlog::question::QuestionAnswer;
+    let mut a = app();
+    waiting_board(&mut a);
+    a.key(Key::CtrlT);
+    let lines = a.todos_lines(160);
+    let row = lines
+        .iter()
+        .find(|l| l.contains("deploy the staging box"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(row.contains("waits on you"), "{lines:#?}");
+
+    // The cursor starts on the add control; one Down is the waiting row.
+    a.key(Key::Down);
+    assert_eq!(
+        a.key(Key::Enter),
+        None,
+        "the card opens; nothing is sent yet"
+    );
+    let card = a.open.first().expect("the question card is up").clone();
+    assert_eq!(card.kind, "question");
+    assert_eq!(card.summary, "which database should staging use?");
+    assert_eq!(
+        card.choices,
+        vec!["postgres".to_string(), "sqlite".to_string()]
+    );
+
+    let expect = |answer: QuestionAnswer| Action::AnswerTodo {
+        content: "deploy the staging box".into(),
+        question: "which database should staging use?".into(),
+        answer,
+    };
+    // An option, by Enter on the marked row.
+    assert_eq!(a.key(Key::Enter), Some(expect(QuestionAnswer::choosing(0))));
+    assert!(a.open.is_empty(), "the card comes down once answered");
+
+    // alt-a opens it again, from anywhere; the other three shapes are typed.
+    for (typed_line, answer) in [
+        (
+            "sqlite -- only for tests",
+            QuestionAnswer::choosing(1).with_note("only for tests"),
+        ),
+        (
+            "the one already running",
+            QuestionAnswer::free("the one already running"),
+        ),
+        ("abstain", QuestionAnswer::abstaining()),
+    ] {
+        a.key(Key::AltA);
+        assert!(!a.open.is_empty(), "alt-a opens the card");
+        typed(&mut a, typed_line);
+        assert_eq!(a.key(Key::Enter), Some(expect(answer)), "{typed_line}");
+        assert!(a.open.is_empty());
+    }
+}
+
+/// **The picker marks a session that is waiting on you** — from its brief, so a person can see it
+/// from the list without attaching to every session.
+#[test]
+fn the_picker_marks_a_session_waiting_on_the_operator() {
+    let mut asking = brief("s-asking", "the asking one", false);
+    asking.waits_on_operator = 2;
+    let other = brief("s-quiet", "the quiet one", false);
+    let mut a = app();
+    a.apply(hello(
+        "s-quiet",
+        vec![other, asking],
+        Hub::new("s-quiet").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    let lines = a.picker_lines(120).join("\n");
+    assert!(
+        lines.contains("the asking one · WAITING ON YOU (2)"),
+        "{lines}"
+    );
+    assert!(!lines.contains("the quiet one · WAITING"), "{lines}");
+}

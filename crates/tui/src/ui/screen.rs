@@ -227,6 +227,9 @@ impl App {
         // [`App::nag_pause_line`]: a state of the session, never given up by the fit ladder while
         // it is true, so a silent board is never read as a broken one.
         let nag_pause = self.nag_pause_line(w);
+        // **A board waiting on the operator rides the same slot** — see [`App::waiting_line`]: a
+        // state, never given up by the fit ladder while a person is being waited on.
+        let waiting = self.waiting_line(w);
         // **A stop the operator ordered is the loudest thing on the screen while it
         // lasts** (R30), and it goes above the link line because the two are the same
         // slot and only one of them can be true — `link_down` refuses to run while a stop
@@ -316,7 +319,7 @@ impl App {
             pane: pane.is_some(),
             // The completions live in the box's edge now; they never take a row.
             completion_slot: false,
-            link: link.len() + lock.len() + compact_off.len() + nag_pause.len(),
+            link: link.len() + lock.len() + compact_off.len() + nag_pause.len() + waiting.len(),
             stopping: stopping.len(),
             alarmed: self.alarmed(),
         });
@@ -332,6 +335,7 @@ impl App {
         chrome.extend(lock);
         chrome.extend(compact_off);
         chrome.extend(nag_pause);
+        chrome.extend(waiting);
         // **The `allow-all` confirmation sits at the front of the chrome**, above
         // the decision card and the composer, because while it is up every key
         // belongs to it (see `key`) and a question that owns the keyboard has to be

@@ -385,6 +385,26 @@ impl TodoBoard {
                 }
             }
         }
+        // **A question the operator already answered on this row is not asked again.** Checked
+        // before anything moves, for the all-or-nothing rule above: the answer is quoted back, so
+        // the model reads what it was told instead of re-asking it.
+        for (is_mine, at, wait) in &resolved {
+            if let Wait::On(TodoNeed::Operator { question, .. }) = wait {
+                let row = if *is_mine {
+                    &model[*at]
+                } else {
+                    &operator[*at]
+                };
+                if let Some(reply) = answered_reply(row, question) {
+                    return Err(format!(
+                        "the operator already answered \"{}\" on `{}`: {reply}. Act on that \
+                         answer; ask a different question if it raised one.",
+                        question.trim(),
+                        row.content.trim()
+                    ));
+                }
+            }
+        }
         let (mut mine_moved, mut theirs_moved) = (0usize, 0usize);
         for (is_mine, at, wait) in resolved {
             let row = if is_mine {
@@ -393,6 +413,26 @@ impl TodoBoard {
                 &mut operator[at]
             };
             let changed = match wait {
+                // **A question on a row replaces the question it was asking**, if it was asking
+                // one: one row, one thing the operator is asked about it at a time, so a re-worded
+                // question is the model correcting itself rather than a second card.
+                Wait::On(TodoNeed::Operator { question, options }) => {
+                    let same = row.needs.iter().any(|n| {
+                        matches!(n, TodoNeed::Operator { question: q, options: o }
+                            if q == question && o == options)
+                    });
+                    if same {
+                        false
+                    } else {
+                        row.needs
+                            .retain(|n| !matches!(n, TodoNeed::Operator { .. }));
+                        row.needs.push(TodoNeed::Operator {
+                            question: question.clone(),
+                            options: options.clone(),
+                        });
+                        true
+                    }
+                }
                 Wait::On(need) => {
                     if row.needs.contains(need) {
                         false
@@ -401,10 +441,19 @@ impl TodoBoard {
                         true
                     }
                 }
+                // **And the operator's question comes off with them** — the door the check names
+                // for a model that worked the answer out itself. An ANSWER stays: it is the
+                // operator's word on the row, not a wait.
                 Wait::Detach => {
                     let before = row.needs.len();
-                    row.needs
-                        .retain(|n| !matches!(n, TodoNeed::Job { .. } | TodoNeed::Child { .. }));
+                    row.needs.retain(|n| {
+                        !matches!(
+                            n,
+                            TodoNeed::Job { .. }
+                                | TodoNeed::Child { .. }
+                                | TodoNeed::Operator { .. }
+                        )
+                    });
                     row.needs.len() != before
                 }
             };
@@ -537,9 +586,10 @@ impl TodoBoard {
                 .iter_mut()
                 .find(|t| t.by == *by && t.content.trim() == want)
             {
-                if hit.status != *status || &hit.needs != needs {
+                let needs = keep_answers(&hit.needs, needs);
+                if hit.status != *status || hit.needs != needs {
                     hit.status = *status;
-                    hit.needs = needs.clone();
+                    hit.needs = needs;
                     changed += 1;
                 }
             } else {
@@ -609,9 +659,10 @@ impl TodoBoard {
                     && !matches!(status, TodoStatus::Completed)
                     && matches!(hit.status, TodoStatus::Postponed | TodoStatus::Cancelled);
                 let wanted = if kept { hit.status } else { *status };
-                if hit.status != wanted || &hit.needs != needs {
+                let needs = keep_answers(&hit.needs, needs);
+                if hit.status != wanted || hit.needs != needs {
                     hit.status = wanted;
-                    hit.needs = needs.clone();
+                    hit.needs = needs;
                     changed += 1;
                 }
             } else {
@@ -714,6 +765,130 @@ impl TodoBoard {
     /// cleared too early loses them.
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
+    }
+}
+
+/// **The reply the operator gave to this question on this row**, if they have answered it.
+fn answered_reply<'a>(row: &'a TodoItem, question: &str) -> Option<&'a str> {
+    row.needs.iter().find_map(|n| match n {
+        TodoNeed::Answered { question: q, reply } if q.trim() == question.trim() => {
+            Some(reply.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// **A restated row's edges, with the operator's answers kept** — the rule [`TodoNeed::Answered`]
+/// states: an answer is the operator's word, so a restatement that leaves it out does not take it
+/// off, and an `operator` question the restatement carries that the operator ALREADY answered on
+/// this row is dropped rather than asked again (the model restating its plan from an older copy is
+/// the ordinary case, and it must not put a card back in front of somebody who answered it).
+fn keep_answers(had: &[TodoNeed], sent: &[TodoNeed]) -> Vec<TodoNeed> {
+    let answers: Vec<&TodoNeed> = had
+        .iter()
+        .filter(|n| matches!(n, TodoNeed::Answered { .. }))
+        .collect();
+    let answered = |question: &str| {
+        answers.iter().any(
+            |n| matches!(n, TodoNeed::Answered { question: q, .. } if q.trim() == question.trim()),
+        )
+    };
+    let mut out: Vec<TodoNeed> = sent
+        .iter()
+        .filter(|n| match n {
+            TodoNeed::Operator { question, .. } => !answered(question),
+            TodoNeed::Answered { .. } => false,
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    out.extend(answers.into_iter().cloned());
+    out
+}
+
+/// **A row's question, found** — the half of [`TodoBoard::answer_operator`] that says whether
+/// there is anything to answer, with the row's options so the answer can be checked against them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorAsk {
+    pub content: String,
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+impl TodoBoard {
+    /// **The question this row is waiting on the operator for**, by the row's words and the
+    /// question's — or why there is none. Every half of the board the operator can be asked from:
+    /// the model's, the operator's own, and a parent's (a parent may hand its child a row that
+    /// waits on a person).
+    pub fn operator_ask(&self, content: &str, question: &str) -> Result<OperatorAsk, String> {
+        let want = content.trim();
+        let halves = [&self.todos, &self.operator, &self.parent];
+        let mut found_row = false;
+        for half in halves {
+            let half = half.lock().unwrap_or_else(|e| e.into_inner());
+            for row in half.iter().filter(|t| t.content.trim() == want) {
+                found_row = true;
+                for need in &row.needs {
+                    if let TodoNeed::Operator {
+                        question: q,
+                        options,
+                    } = need
+                        && q.trim() == question.trim()
+                    {
+                        return Ok(OperatorAsk {
+                            content: row.content.clone(),
+                            question: q.clone(),
+                            options: options.clone(),
+                        });
+                    }
+                }
+                if let Some(reply) = answered_reply(row, question) {
+                    return Err(format!(
+                        "that question on `{want}` was already answered: {reply}"
+                    ));
+                }
+            }
+        }
+        Err(if found_row {
+            format!(
+                "`{want}` is not waiting on that question any more — the model may have worked it \
+                 out and taken the wait off, or asked a different one"
+            )
+        } else {
+            format!("no row on the board says `{want}` any more")
+        })
+    }
+
+    /// **The operator's answer, put on the row** — the `operator` edge with this question is
+    /// replaced, in place, by [`TodoNeed::Answered`] carrying `reply`. Nothing else about the row
+    /// moves: its words, its status and its other edges are the plan's.
+    ///
+    /// `Err` when there is no such question open on the row (see [`TodoBoard::operator_ask`]). Bumps
+    /// the version, so the harness persists and announces the board at its next flush.
+    pub fn answer_operator(
+        &self,
+        content: &str,
+        question: &str,
+        reply: &str,
+    ) -> Result<(), String> {
+        let want = content.trim();
+        for half in [&self.todos, &self.operator, &self.parent] {
+            let mut half = half.lock().unwrap_or_else(|e| e.into_inner());
+            for row in half.iter_mut().filter(|t| t.content.trim() == want) {
+                if let Some(i) = row.needs.iter().position(|n| {
+                    matches!(n, TodoNeed::Operator { question: q, .. } if q.trim() == question.trim())
+                }) {
+                    row.needs[i] = TodoNeed::Answered {
+                        question: question.trim().to_string(),
+                        reply: reply.to_string(),
+                    };
+                    drop(half);
+                    self.version.fetch_add(1, Ordering::SeqCst);
+                    return Ok(());
+                }
+            }
+        }
+        self.operator_ask(content, question).map(|_| ())
     }
 }
 
@@ -1489,6 +1664,15 @@ pub fn unfinished_plan_for(
         // The name handed back is EMPTY, which is the one string no row can have (`todo_write`
         // refuses an entry whose text trims to nothing): nothing is being held to, so the next
         // check draws its choice from whatever the graph has made ready by then.
+        //
+        // **Except when every one of them is waiting on the OPERATOR** — directly, or through a row
+        // that is. Then nothing is broken and nothing is the model's to unblock: a person has been
+        // asked, the heads say so loudly, and the answer starts a turn of its own the moment it is
+        // given. A check every window that said *nothing can start, the operator has not answered*
+        // would be the model nagged about the operator's silence.
+        if all_on_the_operator(&blocked) {
+            return None;
+        }
         return (!blocked.is_empty()).then(|| (nothing_can_start(&blocked), String::new()));
     };
     // The count of what is BEHIND this one, because the model is entitled to know the plan is bigger
@@ -1644,6 +1828,42 @@ pub fn unfinished_plan_for(
     ))
 }
 
+/// **Is everything that is blocked waiting, in the end, on the operator?** A row is, when every need
+/// it has unmet is an unanswered operator question or a row (on this blocked list) that is itself
+/// on the operator — the graph walked back to its roots. Empty is `false`: there is nothing to be
+/// silent about.
+fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool {
+    if blocked.is_empty() {
+        return false;
+    }
+    // A fixed point over the blocked set: start from the rows waiting directly on the operator and
+    // add any row whose every unmet need is the operator or a row already known to be — so a cycle
+    // or a broken edge is never counted, and the loop ends when a pass adds nothing.
+    let mut on: BTreeSet<&str> = BTreeSet::new();
+    loop {
+        let before = on.len();
+        for (row, unmet) in blocked {
+            if on.contains(row.content.trim()) {
+                continue;
+            }
+            let rooted = unmet.iter().all(|(name, fate)| match fate {
+                NeedFate::OperatorAsked => true,
+                NeedFate::NotDone => on.contains(name.trim()),
+                _ => false,
+            });
+            if rooted {
+                on.insert(row.content.trim());
+            }
+        }
+        if on.len() == before {
+            break;
+        }
+    }
+    blocked
+        .iter()
+        .all(|(row, _)| on.contains(row.content.trim()))
+}
+
 /// **Which READY row the check names** — the operator's first, then the sticky choice, then the
 /// head of the ready set (R77).
 ///
@@ -1729,6 +1949,14 @@ pub enum NeedFate {
     /// what is here is the fate for a caller that did not narrow. Not met yet, because the row's
     /// answer is in a completion the model has not acted on.
     EndedUnread,
+    /// **The operator was asked a question and has not answered it** — the row waits on a person
+    /// ([`TodoNeed::Operator`]). The name beside it is the question.
+    ///
+    /// **Blocked, and the rest of the plan keeps going** — the operator: *"if model says todo is
+    /// dependent on ME the other heads of the todo DAG keep firing, model told to try to figure it
+    /// out anyways"*. So the row is never asked about, the ready rows are, and the sentence about
+    /// this one tells the model to carry on and to try to answer the question itself meanwhile.
+    OperatorAsked,
 }
 
 /// **The rows the check may speak about, read as a graph** — split by whether they can start.
@@ -1853,6 +2081,14 @@ fn unmet_needs(
                     out.push((handle.clone(), NeedFate::EndedUnread));
                 }
             }
+            // **The operator has not answered, so the edge is NOT met** — and the name the message
+            // prints is the QUESTION, because that is what the model has to try to work out while
+            // it waits. Whether it is answered is on the board itself: an answer replaces this edge
+            // with `Answered`, which is met.
+            TodoNeed::Operator { question, .. } => {
+                out.push((question.clone(), NeedFate::OperatorAsked))
+            }
+            TodoNeed::Answered { .. } => {}
             TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
         }
     }
@@ -1895,6 +2131,18 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             NeedFate::EndedUnread => format!(
                 "`{name}`, which has ended — its completion is reaching you; read it before \
                  this row is asked about"
+            ),
+            // **The operator's sentence carries the instruction**, because it is the one blocker
+            // the model may resolve without the blocker moving: the question is quoted, the model
+            // is told to keep going, and the way to stop waiting once it has worked the answer out
+            // is named with the row's own words so it can be sent as it stands.
+            NeedFate::OperatorAsked => format!(
+                "the OPERATOR — they were asked \"{name}\" and have not answered yet. Keep going \
+                 with the rest of the plan meanwhile, and try to work the question out yourself: if \
+                 you find the answer, take the wait off — `todo_write` {{\"wait_on\": \
+                 [{{\"content\": \"{}\", \"detach\": true}}]}} — and say in your reply what you \
+                 decided and why",
+                row.content.trim()
             ),
         })
         .collect();
@@ -2059,6 +2307,7 @@ fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
         "cannot start yet",
         "waiting on a child that is still running",
         "waiting on a job that is still running",
+        "waiting on the operator",
     ] {
         let lines: Vec<String> = blocked
             .iter()
@@ -2081,7 +2330,14 @@ fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
 /// the CHILD when it waits on one, then with the JOB, and only otherwise with the plain rows: what
 /// the lead is for is the thing the plan is least able to answer.
 fn lead_of(unmet: &[(String, NeedFate)]) -> &'static str {
+    // **The operator first**: a person is the blocker the plan can least move, and the lead that
+    // carries the instruction to keep going and try the question meanwhile.
     if unmet
+        .iter()
+        .any(|(_, fate)| matches!(fate, NeedFate::OperatorAsked))
+    {
+        "waiting on the operator"
+    } else if unmet
         .iter()
         .any(|(_, fate)| matches!(fate, NeedFate::ChildRunning(_)))
     {
@@ -2311,7 +2567,20 @@ impl Tool for TodoWriteTool {
                no row's words or status — on the operator's row it only says *not now*. \
                {\"content\": \"…\", \"detach\": true} takes the row's job and subagent waits \
                off again. The job must be one of this session's and still running, the child one \
-               you spawned; anything else is refused by name. `wait_on` goes in a call of its own.",
+               you spawned; anything else is refused by name. `wait_on` goes in a call of its own.\n\nA \
+               row may also WAIT ON THE OPERATOR — a decision only they can make. Give them a \
+               CHOICE: `needs` takes {\"kind\": \"operator\", \"question\": \"<one question>\", \
+               \"options\": [\"<choice>\", \"<choice>\"]} with at least TWO options, or `wait_on` \
+               takes {\"content\": \"<the row>\", \"operator\": {\"question\": …, \"options\": \
+               […]}} for a row already on the board. Their screen then says LOUDLY that you are \
+               waiting on them and shows the question as a card: they pick an option (with a note \
+               if they like), type their own answer, or abstain. That row is NOT asked about while \
+               it waits, and THE REST OF THE PLAN KEEPS GOING — the check keeps asking about every \
+               other row that can start, so carry on with them. Meanwhile try to work the question \
+               out yourself; if you can, take the wait off with {\"content\": \"…\", \"detach\": \
+               true} and say what you decided. Their answer reaches you at once as an `[answer]` \
+               line, the row is unblocked, and the reply stays on the row. An abstention unblocks \
+               it too: it means they will not decide, so state the assumption you are making.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2396,7 +2665,13 @@ impl Tool for TodoWriteTool {
                                                      BACKGROUND JOB by the handle `job_list` \
                                                      prints, and waits for it to END, any ending — \
                                                      the check is silent about the row while the \
-                                                     job runs. Optional, and empty is the ordinary \
+                                                     job runs. {\"kind\": \"operator\", \
+                                                     \"question\": \"…\", \"options\": [\"…\", \
+                                                     \"…\"]} waits on the OPERATOR's answer to a \
+                                                     question (at least two options; they can \
+                                                     also type their own answer or abstain) — the \
+                                                     rest of the plan keeps going meanwhile. \
+                                                     Optional, and empty is the ordinary \
                                                     row: a row that names nothing is ready as soon \
                                                     as it is open. A row name that matches no \
                                                     row, or two, blocks this row and the check says \
@@ -2410,18 +2685,34 @@ impl Tool for TodoWriteTool {
                         "type": "array",
                         "description": "Rows ALREADY on the board — yours or the operator's, \
                                         quoted exactly — that wait on a running job or a \
-                                        subagent you spawned. The check is silent about such a \
-                                        row until the job or subagent ends. Each entry has \
+                                        subagent you spawned, or on the operator's answer to a \
+                                        question. The check is silent about such a row until \
+                                        the job or subagent ends or the operator answers; the \
+                                        rest of the plan keeps being asked about. Each entry has \
                                         `content` and exactly one of `job` (a handle or name \
                                         `job_list` prints), `child` (a session id `task` handed \
-                                        back) or `detach: true` (take its waits off). Words and \
-                                        status are never changed. A call of its own.",
+                                        back), `operator` ({\"question\": \"…\", \"options\": \
+                                        [at least two choices]}) or `detach: true` (take its \
+                                        waits off, the operator's question included). Words \
+                                        and status are never changed. A call of its own.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "content": {"type": "string"},
                                 "job": {"type": "string"},
                                 "child": {"type": "string"},
+                                "operator": {
+                                    "type": "object",
+                                    "properties": {
+                                        "question": {"type": "string"},
+                                        "options": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "minItems": 2
+                                        }
+                                    },
+                                    "required": ["question", "options"]
+                                },
                                 "detach": {"type": "boolean"}
                             },
                             "required": ["content"]
@@ -2711,7 +3002,9 @@ impl TodoWriteTool {
         let shape = || {
             "`wait_on` is a list of {\"content\": \"<the row, quoted exactly>\", \"job\": \"<a \
              handle or name `job_list` prints>\"}, or \"child\": \"<a session id `task` handed \
-             back>\" in place of `job`, or \"detach\": true to take the row's waits off."
+             back>\" in place of `job`, or \"operator\": {\"question\": \"…\", \"options\": \
+             [\"…\", \"…\"]} to wait on the operator's answer, or \"detach\": true to take the \
+             row's waits off."
                 .to_string()
         };
         let Some(list) = v.as_array() else {
@@ -2727,7 +3020,10 @@ impl TodoWriteTool {
                 return refused(format!("wait_on entry {n} is not an object"), shape());
             };
             for key in obj.keys() {
-                if !matches!(key.as_str(), "content" | "job" | "child" | "detach") {
+                if !matches!(
+                    key.as_str(),
+                    "content" | "job" | "child" | "detach" | "operator"
+                ) {
                     return refused(
                         format!("wait_on entry {n} has an unknown field `{key}`"),
                         shape(),
@@ -2737,18 +3033,19 @@ impl TodoWriteTool {
             let Some(content) = obj.get("content").and_then(|c| c.as_str()) else {
                 return refused(format!("wait_on entry {n} has no `content`"), shape());
             };
-            let said: Vec<&str> = ["job", "child", "detach"]
+            let said: Vec<&str> = ["job", "child", "detach", "operator"]
                 .into_iter()
                 .filter(|k| obj.contains_key(*k))
                 .collect();
             let [which] = said.as_slice() else {
                 return refused(
                     format!(
-                        "wait_on entry {n} names {} of `job`, `child` and `detach`",
+                        "wait_on entry {n} names {} of `job`, `child`, `operator` and `detach`",
                         said.len()
                     ),
                     "each entry says exactly ONE thing about its row: the job it waits on, the \
-                     child it waits on, or `\"detach\": true`. Send two entries for two waits."
+                     child it waits on, the question it waits on the operator for, or \
+                     `\"detach\": true`. Send two entries for two waits."
                         .into(),
                 );
             };
@@ -2761,6 +3058,24 @@ impl TodoWriteTool {
                         );
                     }
                     Wait::Detach
+                }
+                // **The operator, asked** — no handle to resolve: the question is the wait, and it
+                // ends when they answer it (or when the model takes it off having worked it out).
+                "operator" => {
+                    let o = obj.get("operator");
+                    let question = o
+                        .and_then(|o| o.get("question"))
+                        .and_then(|q| q.as_str())
+                        .unwrap_or("");
+                    match operator_need(question, o.and_then(|o| o.get("options"))) {
+                        Ok(need) => Wait::On(need),
+                        Err(why) => {
+                            return refused(
+                                format!("wait_on entry {n}'s `operator` is refused: {why}"),
+                                OPERATOR_SHAPE.into(),
+                            );
+                        }
+                    }
                 }
                 "job" => {
                     let Some(asked) = obj.get("job").and_then(|j| j.as_str()) else {
@@ -2839,7 +3154,9 @@ impl TodoWriteTool {
         out.push_str(&format!(
             "\nwaits changed on {mine} of your rows and {theirs} of the operator's (the rest \
              already said that). A row waiting on a running job or a subagent is not asked about \
-             until it ends; then it is asked about again. Its words and status are unchanged. \
+             until it ends; then it is asked about again. A row waiting on the operator is not \
+             asked about until they answer — their heads show the question loudly, the answer \
+             reaches you the moment they give it, and the rest of the plan keeps going meanwhile. Its words and status are unchanged. \
              Restating one of YOUR rows in `todos` restates its `needs` too, so a `todos` entry \
              without the wait takes it off.\n"
         ));
@@ -3158,11 +3475,27 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                      `background: true` and `job_list` print.",
                 )),
             },
+            Some("operator") => {
+                let question = o.get("question").and_then(|q| q.as_str()).unwrap_or("");
+                operator_need(question, o.get("options")).map_err(|why| {
+                    Invocation::failed(format!("{where_} is refused: {why}"), OPERATOR_SHAPE)
+                })
+            }
+            // **An answer is the OPERATOR's word, never the model's.** The kind exists on the board
+            // (it is what an answered `operator` edge becomes) and it is refused here by name, so a
+            // model cannot write itself an answer and start the row on it.
+            Some("answered") => Err(Invocation::failed(
+                format!("{where_} has kind `answered`, which only the operator's answer writes"),
+                "an `answered` edge is the operator's reply to an `operator` question, put on the \
+                 row when they answer it; you cannot write one. A row you restate keeps the answers \
+                 it already has, so leave them out.",
+            )),
             Some(other) => Err(Invocation::failed(
                 format!("{where_} has kind `{other}`, which this build cannot evaluate"),
                 "the kinds of need are `row` — another row on this list, by its exact `content` — \
                  `child` — a subagent you started with `task`, by the session id it gave you — and \
-                 `job` — a background job, by the handle `job_list` prints. Send a row's name as a \
+                 `job` — a background job, by the handle `job_list` prints — and `operator` — a \
+                 question for the operator, with at least two `options`. Send a row's name as a \
                  plain string, or the tagged form {\"kind\": \"row\", \"content\": \"…\"}, \
                  {\"kind\": \"child\", \"id\": \"s-…\"} or {\"kind\": \"job\", \"handle\": \"j…\"}. \
                  A kind nobody can evaluate is refused rather than dropped: a need that cannot be \
@@ -3182,6 +3515,59 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
              {\"kind\": \"job\", \"handle\": \"j…\"}.",
         )),
     }
+}
+
+/// **What an `operator` wait looks like**, for the sentence a refusal ends with.
+const OPERATOR_SHAPE: &str = "an `operator` wait is {\"question\": \"<one question for the \
+     operator>\", \"options\": [\"<choice>\", \"<choice>\", …]} — as a need on one of your \
+     rows, {\"kind\": \"operator\", \"question\": …, \"options\": […]}; through `wait_on`, \
+     {\"content\": \"<the row>\", \"operator\": {\"question\": …, \"options\": […]}}. At least \
+     two options, each a short distinct choice: the operator is given them as a list to pick from, \
+     and can always add a note, type their own answer or abstain besides.";
+
+/// **An `operator` wait, checked** — the one validation `todos`' `needs` and `wait_on` share.
+///
+/// The operator: *"i guess we will force models to do choice for todo - so when it says it waits for
+/// ME it give me that choice list with an optioin to enter my freetext"*. So the QUESTION must say
+/// something and there must be a CHOICE — at least two options, none empty and no two the same —
+/// because a person handed one option, or a blank, has been asked nothing they can pick from. Free
+/// text and an abstention are the card's, offered beside the options on every question, and are not
+/// written here.
+fn operator_need(question: &str, options: Option<&Value>) -> Result<TodoNeed, String> {
+    let question = question.trim();
+    if question.is_empty() {
+        return Err("the question is empty — say what you need the operator to decide".into());
+    }
+    let Some(list) = options.and_then(|o| o.as_array()) else {
+        return Err(
+            "it has no `options` list — the operator is given a choice, so offer one".into(),
+        );
+    };
+    let mut out: Vec<String> = Vec::with_capacity(list.len());
+    for (i, o) in list.iter().enumerate() {
+        let Some(text) = o.as_str().map(str::trim) else {
+            return Err(format!("option {} is not a string", i + 1));
+        };
+        if text.is_empty() {
+            return Err(format!("option {} is empty", i + 1));
+        }
+        if out.iter().any(|seen| seen == text) {
+            return Err(format!("option {} repeats `{text}`", i + 1));
+        }
+        out.push(text.to_string());
+    }
+    if out.len() < 2 {
+        return Err(format!(
+            "it offers {} option{} — the operator must be given a CHOICE, so offer at least two \
+             (they can always type their own answer besides)",
+            out.len(),
+            if out.len() == 1 { "" } else { "s" }
+        ));
+    }
+    Ok(TodoNeed::Operator {
+        question: question.to_string(),
+        options: out,
+    })
 }
 
 /// **The board as the model reads it, for a reader outside this tool** — the same text a
@@ -3241,12 +3627,11 @@ fn render(todos: &[TodoItem]) -> String {
             // `todo_write` that rewrites a row's text silently breaks every edge into it, and the
             // model has no way to know that is what happened. `the_check` says it too, but only
             // about the rows it cannot ask for.
-            if t.needs.is_empty() {
-                String::new()
-            } else {
+            {
                 let named: Vec<String> = t
                     .needs
                     .iter()
+                    .filter(|need| !matches!(need, TodoNeed::Answered { .. }))
                     .map(|need| match need {
                         TodoNeed::Row { content } => format!("`{}`", content.trim()),
                         // **The child, by its id**, because that is what the model has to hand to
@@ -3256,10 +3641,36 @@ fn render(todos: &[TodoItem]) -> String {
                         // `job_output` or `job_kill` — the same rule the child's id keeps, and the
                         // same rule the nag's own line keeps.
                         TodoNeed::Job { handle } => format!("the job `{handle}`"),
+                        // **The operator, by the question** — the words they were asked, so the
+                        // model can see what it is waiting for and try to work it out itself.
+                        TodoNeed::Operator { question, .. } => {
+                            format!("the OPERATOR — asked \"{}\"", question.trim())
+                        }
+                        TodoNeed::Answered { .. } => unreachable!("filtered above"),
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
                     .collect();
-                format!("  (waiting on {})", named.join(", "))
+                // **And what the operator ANSWERED**, on the row it unblocked: *"todo becomes
+                // unblocked with reply attached"*. Said after the waits, so a row that was asked
+                // twice reads in order.
+                let answered: Vec<String> = t
+                    .needs
+                    .iter()
+                    .filter_map(|need| match need {
+                        TodoNeed::Answered { question, reply } => Some(format!(
+                            "  (answered: you asked \"{}\" — {})",
+                            question.trim(),
+                            reply
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                let waiting = if named.is_empty() {
+                    String::new()
+                } else {
+                    format!("  (waiting on {})", named.join(", "))
+                };
+                format!("{waiting}{}", answered.join(""))
             }
         ));
     }

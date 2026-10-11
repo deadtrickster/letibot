@@ -95,6 +95,7 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         deliveries: Some(d),
         subagents: None,
         held: VecDeque::new(),
+        todos: None,
     }
 }
 

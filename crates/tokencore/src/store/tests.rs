@@ -1948,3 +1948,64 @@ fn the_v8_migration_backfills_the_context_of_a_conversation_already_on_disk() {
     let got = s.session("s-empty").unwrap().unwrap();
     assert_eq!(got.context_tokens, None, "no transcript, no number");
 }
+
+/// **A row that waits on the operator survives the store, and the picker can find it** — the
+/// operator: *"todo can be dependend on ME … and then when i submit todo becomes unblocked with
+/// reply attached"*. Both edges round-trip tagged (`operator`, `answered`), a row written before
+/// they existed still loads, and `sessions_waiting_on_operator` counts only OPEN rows with an
+/// unanswered question — a done row's leftover question, and an answered one, ask nobody anything.
+#[test]
+fn an_operator_question_round_trips_and_the_store_counts_who_is_waiting() {
+    let s = store();
+    let _seeded = seeded(&s);
+    for id in ["waits", "quiet"] {
+        s.put_session(&SessionRecord {
+            id: id.into(),
+            title: None,
+            model_id: "qwen".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "deadtrickster".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+    }
+    let row = |content: &str, status: TodoStatus, needs: Vec<TodoNeed>| TodoItem {
+        content: content.into(),
+        status,
+        by: TodoBy::Model,
+        when: None,
+        needs,
+    };
+    let asked = TodoNeed::Operator {
+        question: "which db?".into(),
+        options: vec!["postgres".into(), "sqlite".into()],
+    };
+    let answered = TodoNeed::Answered {
+        question: "which db?".into(),
+        reply: "the operator chose \"postgres\"".into(),
+    };
+    s.put_todos(
+        "waits",
+        &[
+            row("deploy", TodoStatus::Pending, vec![asked.clone()]),
+            row("done already", TodoStatus::Completed, vec![asked.clone()]),
+            row("answered", TodoStatus::Pending, vec![answered.clone()]),
+        ],
+    )
+    .unwrap();
+    s.put_todos(
+        "quiet",
+        &[row("answered", TodoStatus::Pending, vec![answered.clone()])],
+    )
+    .unwrap();
+    let back = s.todos("waits").unwrap();
+    assert_eq!(back[0].needs, vec![asked]);
+    assert_eq!(back[2].needs, vec![answered]);
+    let waiting = s.sessions_waiting_on_operator().unwrap();
+    assert_eq!(waiting.get("waits"), Some(&1));
+    assert!(!waiting.contains_key("quiet"));
+    assert_eq!(operator_asks(&back).len(), 1);
+}

@@ -357,6 +357,14 @@ impl App {
         };
         match stop {
             TodoStop::Add => self.open_todo_card(),
+            // **A row waiting on YOU opens its question** — the act the row is waiting for. The
+            // card carries the row's words, so nothing the read overlay shows is lost.
+            TodoStop::Mine(content) | TodoStop::Theirs(content)
+                if self.operator_asks().iter().any(|a| &a.content == content) =>
+            {
+                let content = content.clone();
+                self.open_operator_ask(Some(&content));
+            }
             row => {
                 self.todos_open = Some(row.clone());
                 self.push_surface(Surface::TodoRow);

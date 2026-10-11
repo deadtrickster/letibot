@@ -623,6 +623,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
             stops: stops.clone(),
         })),
         held: VecDeque::new(),
+        todos: None,
     };
     let child_hub = Hub::new("s-child");
     let mut child = HubSteering {
@@ -637,6 +638,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
             stops: stops.clone(),
         })),
         held: VecDeque::new(),
+        todos: None,
     };
 
     // Nothing has been stopped to begin with, and a prompt is not a stop: it is a turn.
@@ -897,6 +899,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         // No children either: what is asserted here is the message's scoping.
         subagents: None,
         held: VecDeque::new(),
+        todos: None,
     };
 
     // **What `HarnessTaskRunner::send` does**, exactly: the daemon's own name at the
@@ -960,6 +963,7 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
         deliveries: None,
         subagents: None,
         held: VecDeque::new(),
+        todos: None,
     };
 
     // An interrupt queued behind the failed turn: it must come out AFTER the

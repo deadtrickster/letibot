@@ -709,6 +709,13 @@ impl Link {
                     Action::AnswerQuestion { req_id, answer } => {
                         self.client.answer_question(&req_id, answer)?;
                     }
+                    Action::AnswerTodo {
+                        content,
+                        question,
+                        answer,
+                    } => {
+                        self.client.answer_todo(&content, &question, answer)?;
+                    }
                     Action::Resync => {
                         self.client.request_resync()?;
                     }

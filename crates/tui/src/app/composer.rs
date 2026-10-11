@@ -208,10 +208,9 @@ impl App {
                 if typed.is_empty() {
                     return self.answer_marked();
                 }
-                return Some(Action::AnswerQuestion {
-                    req_id: d.req_id.clone(),
-                    answer: question_answer(&d.choices, typed),
-                });
+                return Some(
+                    self.settle_question(d.req_id.clone(), question_answer(&d.choices, typed)),
+                );
             }
             match match_option(&d, text.trim()) {
                 OptionChoice::One {

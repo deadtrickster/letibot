@@ -1488,6 +1488,11 @@ pub struct App {
     /// head watches, and the `nags` settings row (keyed on its `paused` spelling) for a head
     /// that attaches after the fact.
     pub(crate) nags_paused: Option<String>,
+    /// **The daemon's `asks` settings row, when the board waits on the operator** — its value
+    /// (`2 — "which db?" on \`deploy\``), `None` when it says `none`. The durable half of the
+    /// `waiting on you` line ([`App::waiting_line`]) for a head that has not read the board yet;
+    /// once it has, the line is drawn from the board itself (`App::operator_asks`).
+    pub(crate) asks_setting: Option<String>,
 }
 
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
@@ -1737,6 +1742,7 @@ impl App {
             held: None,
             auto_compact_off: None,
             nags_paused: None,
+            asks_setting: None,
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),

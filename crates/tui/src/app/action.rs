@@ -46,6 +46,14 @@ pub enum Action {
         req_id: String,
         answer: letibot_sessionlog::question::QuestionAnswer,
     },
+    /// **Answer the question a todo ROW waits on** (`ClientFrame::AnswerTodo`) — the same card
+    /// and the same four shapes as [`Action::AnswerQuestion`], sent to the row rather than to an
+    /// open decision: the row's words, the question, and what the person did.
+    AnswerTodo {
+        content: String,
+        question: String,
+        answer: letibot_sessionlog::question::QuestionAnswer,
+    },
     Resync,
     /// Ask the daemon what sessions it holds.
     ListSessions,

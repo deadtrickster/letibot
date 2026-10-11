@@ -946,6 +946,10 @@ pub struct HubSteering {
     /// Messages handed back by a failed turn, drained before the hub's queue so the
     /// next poll finds them first. See [`SteeringSource::give_back`].
     held: VecDeque<SteeringMessage>,
+    /// **This session's board**, for the one command a running turn applies to it: the
+    /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
+    /// at the next step boundary rather than after the turn. `None` in a test with no board.
+    todos: Option<Arc<TodoBoard>>,
 }
 
 impl HubSteering {
@@ -959,6 +963,7 @@ impl HubSteering {
             deliveries: None,
             subagents: None,
             held: VecDeque::new(),
+            todos: None,
         }
     }
 }
@@ -1541,8 +1546,47 @@ impl SteeringSource for HubSteering {
                     }
                     Some(SteeringMessage::normal(said))
                 }
-                // Nothing else here: the filter above only hands over prompts, interrupts and
-                // a parent's message, and anything else stays queued for the worker.
+                // **The operator answered a row's question while the turn runs** — R79: an
+                // operator's words are immediate, so the answer is applied to the board HERE and
+                // the model reads it at this step boundary. Recorded as the operator's, and sent
+                // as a notice that stands alone (`normal`): the line is the harness's sentence
+                // ABOUT their answer, and a take-back of queued prompts must not drop an answer
+                // the board has already taken. A refusal (the row moved on, or an answer the row
+                // never offered) is said to the heads and the poll goes on to the next source.
+                CommandKind::AnswerTodo {
+                    content,
+                    question,
+                    answer,
+                } => {
+                    let settled = match &self.todos {
+                        Some(board) => {
+                            crate::operator_ask::settle(board, &content, &question, &answer)
+                        }
+                        None => Err("this session has no board".into()),
+                    };
+                    match settled {
+                        Ok(line) => {
+                            if let Some(t) = &self.trail {
+                                t.say(Speaker::Operator, &line, Some(Instant::now()));
+                            }
+                            Some(SteeringMessage::normal(line))
+                        }
+                        Err(why) => {
+                            self.hub.publish(SessionEvent::Warning {
+                                code: "todo_answer_refused".into(),
+                                detail: format!(
+                                    "your answer on `{}` was not taken: {why}",
+                                    content.trim()
+                                ),
+                                compaction: None,
+                            });
+                            self.try_next()
+                        }
+                    }
+                }
+                // Nothing else here: the filter above only hands over prompts, interrupts, a
+                // parent's message and an answer to a row's question, and anything else stays
+                // queued for the worker.
                 _ => None,
             };
         }
@@ -1812,6 +1856,11 @@ pub struct Harness {
     todos: Arc<TodoBoard>,
     /// The board version this harness last persisted and announced.
     todos_version: u64,
+    /// **The questions the heads were last told this board waits on the operator for** —
+    /// `(row, question)`, compared at every flush so each is announced once when asked and once
+    /// when settled. Seeded from the board at open: a restart does not re-announce, the settings
+    /// row carries the state to a head that attaches.
+    asks_said: Vec<(String, String)>,
     /// **The row the last plan-check named**, so the check keeps asking about THAT row rather than
     /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
     /// this is the one field that remembers it.
@@ -4504,6 +4553,7 @@ impl Harness {
             asked,
             todos: todo_board,
             todos_version: 0,
+            asks_said: Vec::new(),
             nag_choice: None,
             meter: Default::default(),
             intent,
@@ -4539,6 +4589,9 @@ impl Harness {
         // **The operator's `/nag pause`, from the session's own row** — before the settings are
         // first published, so the first `nags` row a head reads is already the true one.
         h.restore_nag_pause();
+        // What the board already waits on the operator for is the state, not news: the settings row
+        // says it, and only a question asked from here on is announced.
+        h.asks_said = crate::operator_ask::waiting(&h.todos.snapshot());
         h.publish_settings();
         h.publish_jobs();
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
@@ -5712,14 +5765,24 @@ impl Harness {
     /// server answers a head's `Settings` from. On open and on every runtime
     /// change, so the pane never shows a mode that was true a minute ago.
     fn publish_settings(&self) {
-        self.session_registry.set_settings(
-            &self.cfg.session_id,
-            self.cfg.settings(
-                &self.mode_source,
-                self.gate().supervising(),
-                &self.door_tools(),
-            ),
+        let mut rows = self.cfg.settings(
+            &self.mode_source,
+            self.gate().supervising(),
+            &self.door_tools(),
         );
+        // **Whether the board waits on the operator** — `none`, or how many and the first
+        // question. A row here because a head that attaches after the question was asked never
+        // saw the `waiting_on_operator` row, and must still draw the loud line.
+        rows.push(letibot_sessionlog::protocol::SettingRow {
+            key: "asks".into(),
+            value: crate::operator_ask::setting_value(&self.todos.snapshot()),
+            source: "this session's todo board".into(),
+            editable: "answer from the todo pane, or the waiting line's key".into(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        });
+        self.session_registry
+            .set_settings(&self.cfg.session_id, rows);
     }
 
     /// **What a head needs to offer the door without holding a schema** — R31 and R32.
@@ -11436,6 +11499,8 @@ impl Harness {
             // interrupt arm of `try_next`.
             subagents: Some(self.subagents.clone()),
             held: VecDeque::new(),
+            // **And the board, so the operator's answer lands mid-turn.** See the `AnswerTodo` arm.
+            todos: Some(self.todos.clone()),
         }
     }
 
@@ -11696,10 +11761,53 @@ impl Harness {
                 .put_todos(&self.cfg.session_id, &items)
                 .map_err(|e| HarnessError::Store(format!("todos: {e}")))?;
         }
+        // **AND SAY IT LOUDLY WHEN A PERSON STARTS OR STOPS BEING WAITED ON** — *"the heads show
+        // loud notification that im waited"*. Compared across flushes, so a re-publish of the same
+        // board says nothing and each question is announced once when it is asked and once when it
+        // is settled (answered, detached by the model, or its row closed). The settings row moves
+        // with it, because that is what a head attaching later reads.
+        let waiting = crate::operator_ask::waiting(&items);
+        if waiting != self.asks_said {
+            for (row, question) in waiting.iter().filter(|w| !self.asks_said.contains(w)) {
+                self.hub.publish(SessionEvent::Warning {
+                    code: "waiting_on_operator".into(),
+                    detail: crate::operator_ask::asked_words(row, question),
+                    compaction: None,
+                });
+            }
+            for (row, question) in self.asks_said.iter().filter(|w| !waiting.contains(w)) {
+                self.hub.publish(SessionEvent::Warning {
+                    code: "operator_question_settled".into(),
+                    detail: format!(
+                        "no longer waiting on you for \"{}\" on `{}`",
+                        question.trim(),
+                        letibot_tokencore::store::todo_title(row)
+                    ),
+                    compaction: None,
+                });
+            }
+            self.asks_said = waiting;
+            self.publish_settings();
+        }
         self.hub.publish(SessionEvent::TodosUpdated {
             todos: items.into_iter().map(Self::todo_entry).collect(),
         });
         Ok(())
+    }
+
+    /// **The operator's answer to a row's question, between turns** — applied to the board,
+    /// persisted and announced, and the line the model must be told handed back for the turn the
+    /// caller runs with it (`Sessions::dispatch`'s `AnswerTodo` arm, and a child's own thread).
+    /// The mid-turn half is `HubSteering`'s arm; both go through [`crate::operator_ask::settle`].
+    pub fn answer_operator_ask(
+        &mut self,
+        content: &str,
+        question: &str,
+        answer: &letibot_sessionlog::question::QuestionAnswer,
+    ) -> Result<String, String> {
+        let line = crate::operator_ask::settle(&self.todos, content, question, answer)?;
+        self.flush_todos_or_say("the operator's answer");
+        Ok(line)
     }
 
     /// The store's todo shape, as the wire spells it. Two types because the two
@@ -11744,6 +11852,14 @@ impl Harness {
                     // **An unknown kind stays unknown on the wire**, which is what lets a head
                     // that does not know one pass it back to a daemon that does rather than
                     // dropping the edge it cannot read.
+                    // **The operator's question travels whole** — the options are what the head's
+                    // card offers, and an answer is checked against them on the way back.
+                    letibot_tokencore::store::TodoNeed::Operator { question, options } => {
+                        letibot_sessionlog::event::TodoNeed::Operator { question, options }
+                    }
+                    letibot_tokencore::store::TodoNeed::Answered { question, reply } => {
+                        letibot_sessionlog::event::TodoNeed::Answered { question, reply }
+                    }
                     letibot_tokencore::store::TodoNeed::Unknown => {
                         letibot_sessionlog::event::TodoNeed::Unknown
                     }
@@ -13869,6 +13985,9 @@ enum ChildCommand {
     /// another agent. its 'sub' is a way to inherit something and be managable. so mid turn, post
     /// turn whatever"*.
     Answer,
+    /// **The operator answered a row's question on this child's board** — applied here, where the
+    /// board lives, and the line it makes is a turn (see [`crate::operator_ask`]).
+    AnswerTodo,
     /// **Hear it: a parent's message, and there is no turn to steer it into.** The child's own
     /// turn is STARTED for it — see [`ChildCommand::Hear`]'s arm in [`serve_child`] and
     /// [`Harness::submit_a_parents_message`] — because the operator's ruling is that a message
@@ -13893,6 +14012,9 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
     use letibot_sessionlog::CommandKind as K;
     match kind {
         K::Prompt { .. } => ChildCommand::Answer,
+        // **The operator answered a question on this child's board** — the child's board is
+        // this thread's, so the answer is applied here and the turn it makes runs here.
+        K::AnswerTodo { .. } => ChildCommand::AnswerTodo,
         // **An interrupt IS this child's stop, whether or not a turn is running.** The turn it
         // was written for is the common case and it never arrives here (a running turn takes its
         // own interrupt through the steering poll); what DOES arrive here is the case that was
@@ -14345,6 +14467,34 @@ fn serve_child_with(
         match child_command(&kind) {
             // **The same door the first prompt took** — a child is a session, and a prompt to it
             // is a turn through the shared tail like any other.
+            // **The operator's answer to a row's question, between this child's turns** — the
+            // daemon's `AnswerTodo` arm, on the thread that owns this board.
+            ChildCommand::AnswerTodo => {
+                let letibot_sessionlog::CommandKind::AnswerTodo {
+                    content,
+                    question,
+                    answer,
+                } = &kind
+                else {
+                    unreachable!("`child_command` answers a todo for AnswerTodo and nothing else");
+                };
+                match sub.answer_operator_ask(content, question, answer) {
+                    Ok(line) => {
+                        run_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&line).map(Some));
+                    }
+                    Err(why) => {
+                        hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                            code: "todo_answer_refused".into(),
+                            detail: format!(
+                                "your answer on `{}` was not taken: {why}",
+                                content.trim()
+                            ),
+                            compaction: None,
+                        });
+                        turns.rearm(sub, false);
+                    }
+                }
+            }
             ChildCommand::Answer => {
                 let text = match &kind {
                     letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
