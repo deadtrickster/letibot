@@ -129,6 +129,36 @@ fn text_span(cs: &[char]) -> Option<(usize, usize)> {
     Some((a, b))
 }
 
+/// **The selection's lines without the frame they were drawn in** — the operator, 2026-10-12:
+/// *"can i copy code block without vertical bars?"*, and *"in some software i see things like
+/// borders code blocks not making into clipboard without shift"*. A code block is drawn as
+/// `┌─ lang`, a `│ ` rail on each line and `└─`; a quote has the same rail; the operator's own
+/// rows carry `▌ `. The frame rows are dropped and the rail is cut off the front of a line —
+/// with the indent before it, which is the frame's, and none of the code's own after it.
+/// Shift+drag is still the terminal's own selection, frame and all, for whoever wants it.
+fn undecorated(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| {
+            let t = l.trim();
+            !(t == "┌─" || t.starts_with("┌─ ") || t == "└─" || t.starts_with("└─ ("))
+        })
+        .map(|l| {
+            let lead = l.len() - l.trim_start().len();
+            let rest = &l[lead..];
+            for rail in ["│ ", "▌ "] {
+                if let Some(code) = rest.strip_prefix(rail) {
+                    return code.to_string();
+                }
+            }
+            if rest == "│" || rest == "▌" {
+                return String::new();
+            }
+            l.clone()
+        })
+        .collect()
+}
+
 impl App {
     /// **What a click at `(x, y)` would act on**, as cells to mark — `None` where a click does
     /// nothing. The same answers the click itself uses: a key hint, then the last frame's hit map.
@@ -260,7 +290,7 @@ impl App {
             }
             lines.push(line.trim_end().to_string());
         }
-        let text = lines.join("\n");
+        let text = undecorated(&lines).join("\n");
         (!text.trim().is_empty()).then_some(text)
     }
 

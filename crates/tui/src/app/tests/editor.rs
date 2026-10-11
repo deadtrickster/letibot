@@ -1132,3 +1132,82 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     assert_eq!(a.take_clipboard().as_deref(), Some("please fix"));
     assert!(a.diff_popup.is_none(), "a drag was taken for a click");
 }
+
+/// **A code block copies as code** — the operator, 2026-10-12: *"can i copy code block without
+/// vertical bars?"*. The block's frame is drawn as text (`┌─ lang`, a `│ ` rail, `└─`), and a
+/// selection across it copies the code alone, its own indentation kept.
+#[test]
+fn a_selected_code_block_copies_without_its_frame() {
+    let hub = Hub::new("s");
+    hub.publish(testing::appended("s.1", "assistant"));
+    hub.record_item(
+        "s.1",
+        TranscriptItem::Assistant {
+            text: "Here it is:\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\nDone."
+                .into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+    );
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    let mut features = rano::term::Features::default();
+    features.clipboard = true;
+    a.set_features(features);
+    let screen = a.screen(100, 30);
+    let top = screen
+        .iter()
+        .position(|l| l.contains("┌─"))
+        .unwrap_or_else(|| panic!("no code block drawn: {screen:#?}"));
+    let bottom = screen
+        .iter()
+        .position(|l| l.contains("└─"))
+        .expect("its foot");
+    a.key(Key::Press {
+        x: 0,
+        y: top as u16,
+    });
+    a.key(Key::Drag {
+        x: 99,
+        y: bottom as u16,
+    });
+    a.key(Key::Release {
+        x: 99,
+        y: bottom as u16,
+    });
+    assert_eq!(
+        a.take_clipboard().as_deref(),
+        Some("fn main() {\n    println!(\"hi\");\n}"),
+        "{}",
+        screen.join("\n")
+    );
+    // From the sentence before it to the one after: the prose stays, only the frame goes.
+    let here = screen
+        .iter()
+        .position(|l| l.contains("Here it is:"))
+        .unwrap();
+    let done = screen.iter().position(|l| l.contains("Done.")).unwrap();
+    a.key(Key::Press {
+        x: 0,
+        y: here as u16,
+    });
+    a.key(Key::Drag {
+        x: 99,
+        y: done as u16,
+    });
+    a.key(Key::Release {
+        x: 99,
+        y: done as u16,
+    });
+    let copied = a.take_clipboard().unwrap_or_default();
+    assert!(copied.starts_with("Here it is:"), "{copied:?}");
+    assert!(
+        copied.contains("\nfn main() {\n    println!(\"hi\");\n}\n"),
+        "{copied:?}"
+    );
+    assert!(copied.trim_end().ends_with("Done."), "{copied:?}");
+    assert!(
+        !copied.contains('│') && !copied.contains("┌") && !copied.contains("└"),
+        "{copied:?}"
+    );
+}
