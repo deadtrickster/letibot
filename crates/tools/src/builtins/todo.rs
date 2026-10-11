@@ -1012,6 +1012,10 @@ pub struct RunningJobs {
     /// by [`RunningJobs::likeliest_wait`], so the check's offer names the job a row is LIKE rather
     /// than the first handle in the table.
     about: BTreeMap<String, String>,
+    /// **Jobs and children that have ENDED and whose completion the model has not yet digested**,
+    /// by handle (or child id), each with how long is left before the backstop releases it. See
+    /// [`RunningJobs::digesting`].
+    digesting: BTreeMap<String, Duration>,
 }
 
 impl RunningJobs {
@@ -1033,6 +1037,42 @@ impl RunningJobs {
     /// narrowing both take.
     pub fn is_running(&self, handle: &str) -> bool {
         self.live.contains(handle)
+    }
+
+    /// **A job or child that has ENDED, whose completion the model has not digested yet** — by its
+    /// handle (or a child's full session id), with how long is left before the backstop gives up
+    /// waiting for the model and lets the check speak anyway.
+    ///
+    /// The operator, 2026-10-11: *"when wait on condition happens - say job finishes, we must delay
+    /// the nag for a bit to let the model process the result"*. Measured on pg-noop the same day: a
+    /// row waiting on a job was silent while the job ran (that is [`waits_on_a_running_job`]) and
+    /// became askable the INSTANT the job ended — before the completion had reached the model, or
+    /// at the end of the very turn that delivered it — so the check asked about a row whose answer
+    /// was sitting, unread or just read, in the same transcript.
+    ///
+    /// **The fact is the harness's, and it is not a clock.** *Digested* means the completion was put
+    /// into the model's transcript AND a turn ended after the one it arrived in; `harnessd` keeps
+    /// that record (`JobWatchers`' read record, fed where completions are delivered) and calls this
+    /// for every edge it still holds open. The `left` is only the backstop: a completion that
+    /// never arrives must not silence a row for ever, so the caller stops reporting the edge once
+    /// it has run out, and [`when_an_ending_is_digested`] arms the idle clock for that moment.
+    pub fn digesting(mut self, handle: impl Into<String>, left: Duration) -> Self {
+        self.digesting.insert(handle.into(), left);
+        self
+    }
+
+    /// **The same snapshot with no ending graced** — for a reader that is a DELIVERY rather than a
+    /// nag: a row's `when: job` firing is the news itself, like the completion it rides in with,
+    /// and must not wait for the model to have digested it.
+    pub fn without_grace(mut self) -> Self {
+        self.digesting.clear();
+        self
+    }
+
+    /// **Whether this ended job or child is one the model has not digested yet** — the read
+    /// [`unmet_needs`] and [`waits_on_an_undigested_ending`] take.
+    pub fn is_digesting(&self, handle: &str) -> bool {
+        self.digesting.contains_key(handle)
     }
 
     /// **A subagent THIS session spawned that is still running**, by its full session id — what
@@ -1151,7 +1191,7 @@ const LIKE_FLOOR: f64 = 0.15;
 
 /// A job's or child's description cut to one clause for the check's line — the line is folded by
 /// the head as one, so it cannot grow a paragraph per running job.
-fn said_short(about: &str) -> String {
+pub fn said_short(about: &str) -> String {
     let one: String = about.split_whitespace().collect::<Vec<_>>().join(" ");
     match one.chars().count() {
         0 => "no description".into(),
@@ -1210,6 +1250,68 @@ pub fn waits_on_a_running_job(row: &TodoItem, jobs: &RunningJobs) -> bool {
         TodoNeed::Job { handle } => jobs.is_running(handle),
         _ => false,
     })
+}
+
+/// **Whether a row waits on a job or child that has ENDED but whose completion the model has not
+/// digested yet** — the grace after a wait, and the third quiet beside
+/// [`waits_on_a_child_with_room_to_breathe`] and [`waits_on_a_running_job`].
+///
+/// The operator, 2026-10-11, verbatim: *"when wait on condition happens - say job finishes, we
+/// must delay the nag for a bit to let the model process the result"*. Without this the silence
+/// [`waits_on_a_running_job`] keeps ended the instant the job did, which is BEFORE the model could
+/// have done anything about it: measured on pg-noop the same day, the check named a CRITERION row
+/// whose job had just gone green while the completion that said so was still on its way in.
+///
+/// **What it guards is the fact, not a timer**: the caller ([`RunningJobs::digesting`]) reports an
+/// edge here only while its completion is still queued or held, or was delivered during the turn
+/// whose end is now being checked. From the next turn end on the row is askable as before — and a
+/// backstop of the caller's ends the grace even if nothing is ever delivered.
+///
+/// **Silent, not blocked**, for the same reason as the other two: `harnessd`'s
+/// `the_check_may_ask_about` filters the row out before the message is rendered.
+pub fn waits_on_an_undigested_ending(row: &TodoItem, jobs: &RunningJobs) -> bool {
+    row.needs.iter().any(|need| match need {
+        TodoNeed::Job { handle } => !jobs.is_running(handle) && jobs.is_digesting(handle),
+        TodoNeed::Child { id } => jobs.is_digesting(id),
+        _ => false,
+    })
+}
+
+/// **When the grace after an ending runs out on its own** — the shortest backstop left among the
+/// endings these rows wait on, or `None` when no row is in that state.
+///
+/// [`when_a_young_child_grows_up`]'s reason, one fact over: the grace normally ends at a turn end,
+/// and a turn end re-arms the idle clock by itself — but a model that read the completion and then
+/// went idle runs no further turn, and without a deadline the row would stay quiet until somebody
+/// happened to do something. This is that deadline.
+pub fn when_an_ending_is_digested(rows: &[TodoItem], jobs: &RunningJobs) -> Option<Duration> {
+    rows.iter()
+        .flat_map(|row| row.needs.iter())
+        .filter_map(|need| match need {
+            TodoNeed::Job { handle } if !jobs.is_running(handle) => {
+                jobs.digesting.get(handle.as_str()).copied()
+            }
+            TodoNeed::Child { id } => jobs.digesting.get(id.as_str()).copied(),
+            _ => None,
+        })
+        .filter(|left| !left.is_zero())
+        .min()
+}
+
+/// **Whose row this is, in the words every sentence about a row uses** — `yours`, `the
+/// operator's`, the parent's own author string, or `the merge queue's`. One spelling for the
+/// check's question and for a completion naming the rows that wait on it.
+pub fn whose_row(by: &TodoBy) -> &str {
+    match by {
+        TodoBy::Operator => "the operator's",
+        // The author string itself (`Parent <session id>`), verbatim: a child reading its own
+        // board must be able to tell what it decided from what it was told, and by whom.
+        TodoBy::Parent(author) => author.as_str(),
+        // **The queue is named as the queue**, because that is what it is: not a session, not the
+        // person, and not the model's own plan.
+        TodoBy::Queue => "the merge queue's",
+        TodoBy::Model => "yours",
+    }
 }
 
 /// **When a plan that is quiet only because a child is young becomes speakable** — how much of the
@@ -1405,17 +1507,9 @@ pub fn unfinished_plan_for(
     // dispose of — the author retires it — which the child has to be told rather than left to guess.
     // The nag is the one place the model hears about a row before acting on it, so leaving the author
     // out is how a model comes to rewrite its own plan at the row somebody else is waiting on.
-    let who = match &next.by {
-        TodoBy::Operator => "the operator's",
-        // The author string itself (`Parent <session id>`), verbatim: a child reading its own
-        // board must be able to tell what it decided from what it was told, and by whom.
-        TodoBy::Parent(author) => author.as_str(),
-        // **The queue is named as the queue**, because that is what it is: not a session, not the
-        // person, and not the model's own plan. The row's state is the store's and the verdict is
-        // what takes it off — which is the advice below, one line down.
-        TodoBy::Queue => "the merge queue's",
-        TodoBy::Model => "yours",
-    };
+    // The queue's row: its state is the store's and the verdict is what takes it off — which is
+    // the advice below, one line down.
+    let who = whose_row(&next.by);
     // **The operator's row the model has not been told about yet** (R77) — the one case the head
     // line changes for. *Told* is read from `chosen`: a check that named this row last time has
     // told the model, and a row the model has itself moved to in progress is one it already knows.
@@ -1630,6 +1724,11 @@ pub enum NeedFate {
     /// daemon already watches it and delivers its settlement as a turn of its own. All a reader of
     /// this line has to know is that the blocker is still there and is not the plan's to move.
     JobRunning,
+    /// **A job or child that has ENDED and whose completion the model has not digested yet** —
+    /// [`waits_on_an_undigested_ending`]'s state, which keeps the idle check SILENT about the row;
+    /// what is here is the fate for a caller that did not narrow. Not met yet, because the row's
+    /// answer is in a completion the model has not acted on.
+    EndedUnread,
 }
 
 /// **The rows the check may speak about, read as a graph** — split by whether they can start.
@@ -1734,6 +1833,10 @@ fn unmet_needs(
             TodoNeed::Child { id } => {
                 if let Some(child) = children.child(id) {
                     out.push((id.clone(), NeedFate::ChildRunning(*child)));
+                } else if jobs.is_digesting(id) {
+                    // **Finished, and its completion not digested yet** — see
+                    // [`waits_on_an_undigested_ending`].
+                    out.push((id.clone(), NeedFate::EndedUnread));
                 }
             }
             // **A job the session is running is NOT met** — it has not ended, which is the whole of
@@ -1744,6 +1847,10 @@ fn unmet_needs(
             TodoNeed::Job { handle } => {
                 if jobs.is_running(handle) {
                     out.push((handle.clone(), NeedFate::JobRunning));
+                } else if jobs.is_digesting(handle) {
+                    // **Ended, and its completion not digested yet** — not met until the model has
+                    // had a turn with it: see [`waits_on_an_undigested_ending`].
+                    out.push((handle.clone(), NeedFate::EndedUnread));
                 }
             }
             TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
@@ -1784,6 +1891,10 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             // still there, and it is not theirs to move — the settlement is already on its way.
             NeedFate::JobRunning => format!(
                 "the job `{name}`, still running — its completion arrives as a turn of its own"
+            ),
+            NeedFate::EndedUnread => format!(
+                "`{name}`, which has ended — its completion is reaching you; read it before \
+                 this row is asked about"
             ),
         })
         .collect();

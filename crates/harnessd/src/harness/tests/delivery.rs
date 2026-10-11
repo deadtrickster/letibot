@@ -323,6 +323,7 @@ fn the_meanwhile_notice_is_the_heads_fixture() {
         "s-r79",
         crate::delivery::Rule::Batch,
         crate::delivery::HELD_RESULTS_CAP,
+        &[],
     );
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../tui/src/app/tests/fixtures/job_notice_meanwhile.txt");
@@ -335,4 +336,287 @@ fn the_meanwhile_notice_is_the_heads_fixture() {
         "the [meanwhile] notice changed; regenerate the head's fixture with \
          LETIBOT_BLESS_JOB_NOTICE=1 and update the head's parser with it"
     );
+}
+
+/// The pg-noop board for the grace tests: the operator's row and the model's CRITERION row, both
+/// attached with `wait_on` to the gate job `j12`, and one row that waits on nothing.
+fn waiting_board() -> Vec<TodoItem> {
+    let wait = || {
+        vec![TodoNeed::Job {
+            handle: "j12".into(),
+        }]
+    };
+    vec![
+        TodoItem {
+            content: "make tier 1 green".into(),
+            status: TodoStatus::InProgress,
+            by: TodoBy::Operator,
+            when: None,
+            needs: wait(),
+        },
+        TodoItem {
+            content: "CRITERION, NOT A TASK — stays open until the gate is green".into(),
+            status: TodoStatus::InProgress,
+            by: TodoBy::Model,
+            when: None,
+            needs: wait(),
+        },
+        TodoItem {
+            content: "write the notes".into(),
+            status: TodoStatus::Completed,
+            by: TodoBy::Model,
+            when: None,
+            needs: Vec::new(),
+        },
+    ]
+}
+
+/// What the end-of-turn check may ask about, read the way `Harness::running_jobs` reads it.
+fn askable(board: &[TodoItem], w: &JobWatchers, cap: Duration, now: SystemTime) -> Vec<String> {
+    let jobs = graced_endings(
+        letibot_tools::builtins::todo::RunningJobs::none(),
+        board,
+        w,
+        cap,
+        now,
+    );
+    crate::sessions::the_plan_as_checked(
+        board,
+        &letibot_tools::builtins::todo::ChildSessions::none(),
+        &jobs,
+    )
+    .into_iter()
+    .map(|r| r.content)
+    .collect()
+}
+
+/// **The grace after a wait ends, step by step: quiet until the model has READ the completion and
+/// finished a turn after the one it arrived in.**
+///
+/// The operator, 2026-10-11: *"when wait on condition happens - say job finishes, we must delay the
+/// nag for a bit to let the model process the result"*. Measured on pg-noop the same day: the
+/// `wait_on` silence ended the instant the gate job did, so the check asked about the CRITERION row
+/// while the completion that answered it was still queued. The fact guarded is the delivery and
+/// the turn end after it — not a timer:
+///
+/// 1. ended, still in the queue → quiet;
+/// 2. delivered at a round boundary of the running turn, and that turn ends → still quiet (the
+///    check at this turn end must not ask about what the model just read);
+/// 3. the NEXT turn ends → askable as before.
+#[test]
+fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
+    let dir = Scratch::new("grace-steps");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let board = waiting_board();
+    let cap = Duration::from_secs(600);
+    let mut s = steering(&hub, deliveries(&w, board.clone(), &dir, cap));
+    assert_eq!(
+        askable(&board, &w, cap, SystemTime::now()).len(),
+        2,
+        "before the job ends nothing is graced (the running-job quiet is the harness's other read)"
+    );
+
+    // 1. The job ends; its completion is queued and not yet read.
+    w.queue_for_test(settled("j12", "exited 0", SystemTime::now()));
+    assert!(
+        askable(&board, &w, cap, SystemTime::now()).is_empty(),
+        "ended but undelivered: both waiting rows are quiet"
+    );
+
+    // 2. Delivered at the running turn's round boundary, and that turn ends.
+    let got = s.try_next().expect("a needed job is immediate");
+    assert!(got.text.contains("`j12` exited 0"), "{}", got.text);
+    assert!(
+        askable(&board, &w, cap, SystemTime::now()).is_empty(),
+        "delivered mid-turn: quiet"
+    );
+    w.turn_ended();
+    assert!(
+        askable(&board, &w, cap, SystemTime::now()).is_empty(),
+        "at the end of the delivering turn the model has only just read it: still quiet"
+    );
+
+    // 3. The next turn ends without the rows being moved: they are the check's again.
+    w.turn_ended();
+    assert_eq!(
+        askable(&board, &w, cap, SystemTime::now()),
+        vec![
+            "make tier 1 green".to_string(),
+            "CRITERION, NOT A TASK — stays open until the gate is green".to_string()
+        ],
+        "a whole turn after the read, the rows are askable"
+    );
+}
+
+/// **A result HELD under R79 is undelivered too, and quiet** — and so is a completion delivered as
+/// a wake's own turn start, until the turn after it. The held queue is the other place an ended job
+/// can sit unread; pg-noop, 2026-10-11.
+#[test]
+fn a_held_or_wake_delivered_completion_is_graced_the_same_way() {
+    let dir = Scratch::new("grace-held");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let board = waiting_board();
+    let cap = Duration::from_secs(600);
+    let d = deliveries(&w, board.clone(), &dir, cap);
+    w.hold(vec![settled("j12", "exited 0", SystemTime::now())]);
+    assert!(
+        askable(&board, &w, cap, SystemTime::now()).is_empty(),
+        "held, not delivered: quiet"
+    );
+    // Delivered as the opening of the next turn the model takes (the batch rides in with it).
+    let note = d.at_turn_start().expect("the batch");
+    assert!(note.contains("`j12` exited 0"), "{note}");
+    w.turn_ended();
+    assert!(
+        askable(&board, &w, cap, SystemTime::now()).is_empty(),
+        "the turn it opened has ended: still quiet"
+    );
+    w.turn_ended();
+    assert_eq!(askable(&board, &w, cap, SystemTime::now()).len(), 2);
+}
+
+/// **The backstop: a grace cannot outlive R79's starvation cap**, so a completion that is never
+/// delivered — or a model that read it and went idle — cannot silence a row for ever. Measured
+/// from the ending; and the idle clock is armed for the moment it runs out, because a model that
+/// went idle takes no turn that would re-arm it. pg-noop, 2026-10-11.
+#[test]
+fn the_grace_has_a_backstop_and_the_clock_is_armed_for_it() {
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let board = waiting_board();
+    let cap = crate::delivery::HELD_RESULTS_CAP;
+    let ended = SystemTime::now() - Duration::from_secs(4 * 60);
+    w.queue_for_test(settled("j12", "exited 0", ended));
+    let now = SystemTime::now();
+    assert!(askable(&board, &w, cap, now).is_empty(), "four minutes in");
+
+    // The clock: nothing askable, so it is armed for the backstop's end — about six minutes out.
+    let jobs = graced_endings(
+        letibot_tools::builtins::todo::RunningJobs::none(),
+        &board,
+        &w,
+        cap,
+        now,
+    );
+    let t0 = std::time::Instant::now();
+    let mut clock = crate::sessions::TodoNagClock::with_window(Duration::from_secs(60));
+    clock.rearm(
+        &board,
+        t0,
+        &letibot_tools::builtins::todo::ChildSessions::none(),
+        &jobs,
+    );
+    let due = clock.due_at().expect("a deadline for the grace's end");
+    let left = due - t0;
+    assert!(
+        left > Duration::from_secs(5 * 60) && left <= Duration::from_secs(6 * 60),
+        "armed for the backstop: {left:?}"
+    );
+
+    // Past the cap, still undelivered: askable.
+    assert_eq!(
+        askable(&board, &w, cap, ended + cap + Duration::from_secs(1)).len(),
+        2,
+        "the backstop releases an undelivered ending"
+    );
+
+    // And a read completion is released by it too, without a second turn end.
+    let w2 = watchers(&hub, false);
+    w2.read_now(&[settled("j12", "exited 0", ended)]);
+    assert!(askable(&board, &w2, cap, now).is_empty());
+    assert_eq!(
+        askable(&board, &w2, cap, ended + cap + Duration::from_secs(1)).len(),
+        2
+    );
+}
+
+/// **The completion names the rows that wait on it — both halves of the board — and says nothing
+/// when none do.** The operator, 2026-10-11: *"the completion should mention associated todos"*.
+/// Measured on pg-noop the same day: the gate's completion arrived and the CRITERION row attached
+/// to it stayed `in_progress` until the plan check came round, because nothing in the notice tied
+/// the two together. A DONE row is not named: it owes nothing.
+#[test]
+fn the_completion_names_the_rows_waiting_on_it() {
+    let board = waiting_board();
+    let job = settled("j12", "exited 0", SystemTime::UNIX_EPOCH);
+    let said = completion_notices(vec![job.clone()], "s-r79", &board).join("\n\n");
+    assert!(
+        said.ends_with(
+            "\nWaiting on this: \"make tier 1 green\" (the operator's), \"CRITERION, NOT A TASK — \
+             stays open until the gate is green\" (yours) — update them with `todo_write` now that \
+             it has ended."
+        ),
+        "{said}"
+    );
+    // The head still reads it: the job card parses, and the line survives the fold.
+    assert!(said.starts_with("[job] a job you backgrounded has ended:"));
+
+    // Nobody waits on j13: not a word.
+    let other = settled("j13", "exited 0", SystemTime::UNIX_EPOCH);
+    let plain = completion_notices(vec![other], "s-r79", &board).join("\n\n");
+    assert!(!plain.contains("Waiting on"), "{plain}");
+
+    // A subagent, by its session id, with a long row cut like the check cuts it.
+    let long = "x".repeat(120);
+    let rows = vec![TodoItem {
+        content: long.clone(),
+        status: TodoStatus::Pending,
+        by: TodoBy::Model,
+        when: None,
+        needs: vec![TodoNeed::Child {
+            id: "s-r79-sub-2".into(),
+        }],
+    }];
+    let child = JobCompletion {
+        kind: BackgroundKind::Subagent,
+        job: "s-r79-sub-2".into(),
+        command: String::new(),
+        state: "done".into(),
+        detail: "all green".into(),
+        ..settled("s-r79-sub-2", "done", SystemTime::UNIX_EPOCH)
+    };
+    let said = completion_notices(vec![child], "s-r79", &rows).join("\n\n");
+    let want = format!(
+        "\nWaiting on this: \"{}…\" (yours) — update it with `todo_write` now that it has \
+         finished.",
+        "x".repeat(79)
+    );
+    assert!(said.ends_with(&want), "{said}");
+
+    // Two completions in one group: each row says which handle it waits on.
+    let two = completion_notices(
+        vec![job, settled("j14", "exited 0", SystemTime::UNIX_EPOCH)],
+        "s-r79",
+        &board,
+    )
+    .join("\n\n");
+    assert!(
+        two.contains("\nWaiting on these: \"make tier 1 green\" (the operator's, on `j12`)"),
+        "{two}"
+    );
+    assert!(two.ends_with("now that they have ended."), "{two}");
+}
+
+/// **A `when: job` firing is not delayed by the grace.** The grace is for the CHECK — it must not
+/// ask about a row before the model has digested the ending — and a condition firing is the news
+/// itself, delivered in the same wake as the completion. A row that both waits on `j12` and fires
+/// on it would otherwise hear its condition a turn late. pg-noop, 2026-10-11.
+#[test]
+fn a_when_job_firing_is_not_held_back_by_the_grace() {
+    let mut row = waiting_board().remove(1);
+    row.when = Some(TodoCondition::Job {
+        handle: "j12".into(),
+    });
+    let rows = vec![row];
+    let graced = letibot_tools::builtins::todo::RunningJobs::none()
+        .digesting("j12", Duration::from_secs(300));
+    let due = due_rows(
+        &rows,
+        &letibot_tools::builtins::todo::ChildSessions::none(),
+        &graced,
+        |_| JobFate::Unknown,
+    );
+    assert_eq!(due.len(), 1, "the condition fires with the completion");
 }

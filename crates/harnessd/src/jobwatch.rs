@@ -293,6 +293,22 @@ pub struct JobWatchers {
     /// session that *started* the work. Read only by [`JobWatchers::tree_root`], which
     /// `subagent_ask_target` addresses a child's ask with.
     root: String,
+    /// **What this session's model has been handed, and how many of its turns have ended since** —
+    /// the record the end-of-turn plan check reads to give a row that waited on a job or child a
+    /// grace after the ending. See [`JobWatchers::grace_left`]. Per session, like `held`: what the
+    /// model read is this model's.
+    read: Arc<Mutex<ReadRecord>>,
+}
+
+/// **The read record** behind [`JobWatchers::grace_left`]: each delivered completion's handle (and
+/// slug), with when it ended and how many turns had ended when it was delivered.
+#[derive(Debug, Default)]
+struct ReadRecord {
+    /// Turns this session has ENDED — counted by the harness after every turn's rounds
+    /// ([`JobWatchers::turn_ended`]).
+    turns_ended: u64,
+    /// Handle or slug → (when it ended, `turns_ended` at the moment it was delivered).
+    seen: HashMap<String, (SystemTime, u64)>,
 }
 
 impl JobWatchers {
@@ -321,6 +337,7 @@ impl JobWatchers {
             wanted: Arc::new(Mutex::new(HashMap::new())),
             // A root session is its own tree: the root and its own id are one.
             root: hub.session_id(),
+            read: Arc::new(Mutex::new(ReadRecord::default())),
         })
     }
 
@@ -389,6 +406,7 @@ impl JobWatchers {
             held: Arc::new(Mutex::new(Vec::new())),
             wanted: Arc::new(Mutex::new(HashMap::new())),
             root: hub.session_id(),
+            read: Arc::new(Mutex::new(ReadRecord::default())),
         })
     }
 
@@ -418,6 +436,7 @@ impl JobWatchers {
             held: Arc::clone(&self.held),
             wanted: Arc::clone(&self.wanted),
             root: self.root.clone(),
+            read: Arc::clone(&self.read),
         })
     }
 
@@ -475,6 +494,8 @@ impl JobWatchers {
             held: Arc::clone(&self.held),
             wanted: Arc::clone(&self.wanted),
             root: tree.root.clone(),
+            // Its own, for `held`'s reason: what this session's model has read is its own.
+            read: Arc::clone(&self.read),
         })
     }
 
@@ -569,6 +590,78 @@ impl JobWatchers {
     /// still outstanding.
     pub fn delivered(&self, handle: &str) {
         self.wanted.lock().expect("wanted results").remove(handle);
+    }
+
+    /// **These completions have just been put into the model's transcript** — recorded with the
+    /// number of turns ended so far, so [`JobWatchers::grace_left`] can tell *delivered in the turn
+    /// that is ending now* from *delivered a turn ago*. Called by the two places a completion is
+    /// worded for the model (`Deliveries::immediates` and `Deliveries::batch`), which is where
+    /// *delivered* is true rather than inferred. Keyed by the handle and by the slug, because a
+    /// row's `TodoNeed::Job` may name either.
+    pub fn read_now(&self, done: &[JobCompletion]) {
+        let mut r = self.read.lock().expect("read record");
+        let at = r.turns_ended;
+        for c in done {
+            r.seen.insert(c.job.clone(), (c.arrived, at));
+            if let Some(slug) = &c.slug {
+                r.seen.insert(slug.clone(), (c.arrived, at));
+            }
+        }
+    }
+
+    /// **A turn of this session has ended** — counted after its rounds have run, whatever they
+    /// came to, by the harness's two doors into `run_rounds`.
+    pub fn turn_ended(&self) {
+        self.read.lock().expect("read record").turns_ended += 1;
+    }
+
+    /// **How much of an ended job's or child's grace is left, or `None` when it has none** — the
+    /// fact the end-of-turn plan check stays quiet on (`waits_on_an_undigested_ending`).
+    ///
+    /// The operator, 2026-10-11: *"when wait on condition happens - say job finishes, we must
+    /// delay the nag for a bit to let the model process the result"*. The fact guarded is
+    /// *the completion was delivered into the model's transcript and a turn ended after the one it
+    /// arrived in*, read off this set's own state rather than off a clock:
+    ///
+    /// * **ended, not delivered yet** — the completion is still in the queue or held under R79:
+    ///   graced;
+    /// * **delivered during the turn whose end is being checked now** — the model has just been
+    ///   handed it and may not have acted yet: graced;
+    /// * **delivered before that** — the model has had a whole turn with it: no grace;
+    /// * **never seen here** — a handle from before a restart, or one that ended in another
+    ///   session: no grace, the reading `TodoCondition::Job` gives a handle it does not know.
+    ///
+    /// **And a backstop**, `cap` after the ending (the harness passes R79's own starvation cap,
+    /// `Config::held_results_cap`), so a completion that never arrives cannot silence a row for
+    /// ever. What is returned is how long is left of it, for the idle clock's deadline.
+    ///
+    /// Not covered, and said: the instant between a job's process ending and its watcher queuing
+    /// the settlement (the watcher is woken by the ending itself, so it is a scheduling gap, not a
+    /// poll interval) reads as *never seen here*.
+    pub fn grace_left(&self, handle: &str, cap: Duration, now: SystemTime) -> Option<Duration> {
+        let left = |ended: SystemTime| {
+            cap.checked_sub(now.duration_since(ended).unwrap_or(Duration::ZERO))
+                .filter(|l| !l.is_zero())
+        };
+        let names = |c: &JobCompletion| c.job == handle || c.slug.as_deref() == Some(handle);
+        let pending = {
+            let q = self.completions.lock().expect("job completions");
+            q.iter().find(|c| names(c)).map(|c| c.arrived)
+        }
+        .or_else(|| {
+            let h = self.held.lock().expect("held results");
+            h.iter().find(|c| names(c)).map(|c| c.arrived)
+        });
+        if let Some(ended) = pending {
+            return left(ended);
+        }
+        let mut r = self.read.lock().expect("read record");
+        let turns = r.turns_ended;
+        // What the backstop has released, and what a full turn has digested, is forgotten — the
+        // record holds only what may still be graced.
+        r.seen
+            .retain(|_, (ended, at)| turns <= *at + 1 && left(*ended).is_some());
+        r.seen.get(handle).and_then(|(ended, _)| left(*ended))
     }
 
     /// **Hold these until the next break** (R79). See [`JobWatchers::held`].

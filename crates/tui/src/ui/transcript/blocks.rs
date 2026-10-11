@@ -214,6 +214,10 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
                 out.push(format!("{who}{body}"));
             } else if PROMISES.iter().any(|p| line.contains(p)) {
                 promised = true;
+            } else if promised && super::job_card::is_waiting_line(line) {
+                // **The plan rows that wait on this completion**, which the daemon writes after
+                // the promise: kept, without its instruction to the model.
+                out.push(super::job_card::folded_waiting(line));
             } else {
                 return None;
             }

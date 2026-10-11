@@ -116,11 +116,14 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
                 .any(|c| rest.starts_with(c))
                 .then_some(("", rest))
         })?;
-    // **The closing is one paragraph**: a second line after it is something this head was not
-    // told about.
-    if closing.contains('\n') {
-        return None;
-    }
+    // **The closing is one paragraph**, followed at most by the line naming the plan rows that
+    // wait on these jobs ([`waiting_line`]); any other line after it is something this head was
+    // not told about.
+    let closing = match closing.split_once('\n') {
+        None => closing,
+        Some((closing, after)) if is_waiting_line(after) => closing,
+        Some(_) => return None,
+    };
     // Which closing goes with which heading is the daemon's rule, and a mismatch is a shape this
     // head does not know.
     if closing.starts_with(CLOSINGS[0]) != mine {
@@ -162,6 +165,32 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
         }
     }
     Some((mine, jobs))
+}
+
+/// **The opening words of the daemon's line naming the plan rows that wait on a completion** —
+/// `harnessd`'s `WAITING_ON_THIS` / `WAITING_ON_THESE`, which it writes as the last line of a
+/// `[job]` or `[task]` group, after the closing paragraph.
+pub(crate) const WAITING: &[&str] = &["Waiting on this: ", "Waiting on these: "];
+
+/// Whether `line` is exactly one such line.
+pub(crate) fn is_waiting_line(line: &str) -> bool {
+    !line.contains('\n') && WAITING.iter().any(|w| line.starts_with(w))
+}
+
+/// **The waiting line of a notice group, folded for a person**: the rows it names, without the
+/// instruction to the model that follows the dash — `Waiting on this: "make tier 1 green" (the
+/// operator's)`. `None` when the group has no such line.
+pub(crate) fn waiting_line(group: &str) -> Option<String> {
+    let line = group.lines().rev().find(|l| is_waiting_line(l))?;
+    Some(folded_waiting(line))
+}
+
+/// One waiting line, cut before ` — update …`, which is addressed to the model.
+pub(crate) fn folded_waiting(line: &str) -> String {
+    match line.rfind(" — update ") {
+        Some(at) => line[..at].to_string(),
+        None => line.to_string(),
+    }
 }
 
 /// The first line of a bullet, after `  - `` ` ``: `LABEL` STATE after DUR, wrote N bytes: CMD.
@@ -282,6 +311,9 @@ pub(crate) fn compact_notice(
                 let [a, b] = job_lines(j, mine, tails.get(&j.id));
                 out.push(trim_to(&a, cols));
                 out.push(trim_to(&b, cols));
+            }
+            if let Some(w) = waiting_line(g) {
+                out.push(trim_to(&w, cols));
             }
         } else {
             for l in folded_notice(g, subagents)?.lines() {

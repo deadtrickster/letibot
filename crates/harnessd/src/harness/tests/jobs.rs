@@ -821,30 +821,30 @@ fn a_settlement_is_two_nouns_out_of_one_channel() {
     };
 
     // **Nothing settled says nothing**, which is what makes a spurious wake cost no generation.
-    assert!(completion_notices(Vec::new(), "s-me").is_empty());
+    assert!(completion_notices(Vec::new(), "s-me", &[]).is_empty());
 
     // **The two nouns are the point.** A reader told `[job]` about a child goes looking for it
     // with `job_output` — which is the wrong door, and is what a hand measurement had to find
     // because nothing asserted this.
-    let only_child = completion_notices(vec![child("s-1-sub-1")], "s-me");
+    let only_child = completion_notices(vec![child("s-1-sub-1")], "s-me", &[]);
     assert_eq!(only_child.len(), 1, "{only_child:?}");
     assert!(only_child[0].starts_with("[task]"), "{:?}", only_child[0]);
     assert!(only_child[0].contains("task_result"), "{:?}", only_child[0]);
-    let only_job = completion_notices(vec![job("j7")], "s-me");
+    let only_job = completion_notices(vec![job("j7")], "s-me", &[]);
     assert_eq!(only_job.len(), 1, "{only_job:?}");
     assert!(only_job[0].starts_with("[job]"), "{:?}", only_job[0]);
     assert!(only_job[0].contains("job_output"), "{:?}", only_job[0]);
 
     // **Both kinds are one wake and two sentences**, job first — the order the old inline code
     // produced, kept so the record of a session reads the same way it did.
-    let both = completion_notices(vec![job("j7"), child("s-1-sub-1")], "s-me");
+    let both = completion_notices(vec![job("j7"), child("s-1-sub-1")], "s-me", &[]);
     assert_eq!(both.len(), 2, "{both:?}");
     assert!(both[0].starts_with("[job]"), "{:?}", both[0]);
     assert!(both[1].starts_with("[task]"), "{:?}", both[1]);
 
     // **Two children are one sentence, not two** — the plural arm of the child's own wording,
     // asserted through the partition so the two functions cannot drift apart.
-    let pair = completion_notices(vec![child("s-1-sub-1"), child("s-1-sub-2")], "s-me");
+    let pair = completion_notices(vec![child("s-1-sub-1"), child("s-1-sub-2")], "s-me", &[]);
     assert_eq!(pair.len(), 1, "{pair:?}");
     assert!(
         pair[0].contains("2 subagents you started have finished"),
@@ -884,7 +884,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
     };
 
     // The level it was handed up to — the ROOT — is not the session that started it.
-    let theirs = completion_notices(vec![job.clone()], "s-root");
+    let theirs = completion_notices(vec![job.clone()], "s-root", &[]);
     assert_eq!(theirs.len(), 1, "{theirs:?}");
     assert!(
         !theirs[0].contains("you backgrounded"),
@@ -910,7 +910,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
 
     // **The same settlement, read by the session that started it** — which is the
     // sentence that was right all along and must not have moved.
-    let mine = completion_notices(vec![job.clone()], "s-child");
+    let mine = completion_notices(vec![job.clone()], "s-child", &[]);
     assert!(
         mine[0].contains("a job you backgrounded has ended"),
         "{:?}",
@@ -926,7 +926,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
         job: "j3".into(),
         ..job.clone()
     };
-    let both = completion_notices(vec![job, mine_job], "s-root");
+    let both = completion_notices(vec![job, mine_job], "s-root", &[]);
     assert_eq!(both.len(), 2, "{both:?}");
     assert!(
         both[0].contains("a job you backgrounded has ended") && both[0].contains("`j3`"),
@@ -954,7 +954,7 @@ fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
         detail: "the grandchild answered".into(),
         memory: None,
     };
-    let handed = completion_notices(vec![child], "s-root");
+    let handed = completion_notices(vec![child], "s-root", &[]);
     assert_eq!(handed.len(), 1, "{handed:?}");
     assert!(
         handed[0].contains("a subagent a session below this one started has finished"),

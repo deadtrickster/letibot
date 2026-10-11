@@ -416,3 +416,54 @@ fn a_meanwhile_batch_draws_its_heading_and_two_lines_per_job() {
     assert!(!joined.contains(BOILERPLATE), "{joined}");
     assert_eq!(a.notice_rows.len(), 5, "{:?}", a.notice_rows);
 }
+
+/// **The line naming the plan rows that wait on a completion is read, and drawn without its
+/// instruction to the model.** `harnessd` appends it after the closing paragraph when a row was
+/// attached to the job with `wait_on` — the operator, 2026-10-11: *"the completion should mention
+/// associated todos"* (pg-noop: a gate's completion arrived and the row waiting on it stayed open).
+/// Before this head knew the line, *"a line after the closing"* would have sent the whole notice
+/// back to raw prose.
+#[test]
+fn the_rows_waiting_on_a_completion_are_kept_on_the_compact_row() {
+    let waiting = "Waiting on this: \"make tier 1 green\" (the operator's), \"CRITERION\" (yours) \
+                   — update them with `todo_write` now that it has ended.";
+    let text = format!("{ONE}\n{waiting}");
+    let (mine, jobs) = ended_jobs(&text).expect("a notice with its waiting line parses");
+    assert!(mine);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        crate::ui::transcript::job_card::waiting_line(&text).as_deref(),
+        Some("Waiting on this: \"make tier 1 green\" (the operator's), \"CRITERION\" (yours)")
+    );
+    // Only that line: a second unknown line after it is still refused.
+    assert!(ended_jobs(&format!("{text}\nSomething else.")).is_none());
+
+    let mut a = with_notice(&text);
+    let screen = a.screen(140, 30);
+    assert_eq!(
+        rows_with(
+            &screen,
+            "Waiting on this: \"make tier 1 green\" (the operator's)"
+        )
+        .len(),
+        1,
+        "{screen:#?}"
+    );
+    assert!(
+        rows_with(&screen, "update them with").is_empty(),
+        "the instruction to the model is not drawn: {screen:#?}"
+    );
+
+    // A subagent's notice folds the same way.
+    let task = "[task] a subagent you started has finished:\n  - `s-1-sub-2` done: all green\n\
+                This is the completion arriving on its own — you do not need to wait for it, and \
+                calling `task_result` to block would only hold you for a result you already have. \
+                Read what it said with `task_result` (task=\"…\"), then carry on with what you were \
+                doing.\nWaiting on this: \"ship it\" (yours) — update it with `todo_write` now that \
+                it has finished.";
+    let folded = crate::ui::transcript::blocks::folded_notice(task, &[]).expect("it folds");
+    assert!(
+        folded.ends_with("\nWaiting on this: \"ship it\" (yours)"),
+        "{folded}"
+    );
+}

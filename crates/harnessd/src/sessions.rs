@@ -49,7 +49,8 @@ use letibot_tokencore::store::{Store, TodoBy, TodoItem, TodoStatus};
 // silence the operator asked for, kept beside the sentence it suppresses.
 use letibot_tools::builtins::todo::{
     ChildSessions, RunningChild, RunningJobs, unfinished_plan,
-    waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, when_a_young_child_grows_up,
+    waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, waits_on_an_undigested_ending,
+    when_a_young_child_grows_up, when_an_ending_is_digested,
 };
 use std::sync::{Arc, Mutex};
 
@@ -218,7 +219,16 @@ pub(crate) const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 /// model as a turn of its own, and a turn's end is what re-arms this very clock, so the silence
 /// ends by itself where the child's has to be given a deadline.
 ///
-/// **Both facts land in one predicate because they are one question** — *is this row work the
+/// **And a row whose job or child has ENDED is not either, until the model has digested the
+/// completion** — the operator, 2026-10-11: *"when wait on condition happens - say job finishes, we
+/// must delay the nag for a bit to let the model process the result"*. Measured on pg-noop the
+/// same day: the silence above ended the instant the job did, so the check named the row while
+/// the completion that answered it was still on its way in. `waits_on_an_undigested_ending` reads
+/// `Harness::running_jobs`' record of what was delivered when (see `JobWatchers::grace_left`): quiet
+/// while the completion is queued or held, quiet at the end of the turn it was delivered in, and
+/// askable from the next turn end — or once the backstop runs out.
+///
+/// **All the facts land in one predicate because they are one question** — *is this row work the
 /// check may speak about now* — and a second filter is the two-answers failure `the_plan_as_checked`
 /// exists to prevent.
 pub(crate) fn the_check_may_ask_about(
@@ -237,6 +247,7 @@ pub(crate) fn the_check_may_ask_about(
             | letibot_tokencore::store::TodoStatus::Cancelled
     ) && !waits_on_a_child_with_room_to_breathe(row, children)
         && !waits_on_a_running_job(row, jobs)
+        && !waits_on_an_undigested_ending(row, jobs)
 }
 
 /// **A status, as the STORE spells it** — the wire→store half of the one conversion the two copies
@@ -547,6 +558,9 @@ impl TodoNagClock {
     ///   child's AGE is none of those, so without this arm the silence the operator asked for would
     ///   have no end: the row would stay quiet until somebody happened to do something, and the
     ///   steering (*"be steared to check the child is not stuck"*) would arrive only by accident.
+    /// * **silent only because an ended job's or child's completion is not digested yet** — armed
+    ///   for the backstop's end, for the young child's reason: the grace ends at the next turn
+    ///   end, and a model that read the completion and went idle takes no further turn.
     /// * **silent only because a JOB is running** — armed for NOTHING, and that is the one place
     ///   this clock's answer differs from the child's above. A running job needs no deadline of its
     ///   own: its settlement is delivered to the model as a turn, and a turn's end is what re-arms
@@ -580,7 +594,15 @@ impl TodoNagClock {
             // clock that armed nothing rather than one that fired at the wrong moment.
             self.nagged_at.map(|at| at + self.interval())
         } else {
-            when_a_young_child_grows_up(todos, children).map(|left| now + left)
+            // **The young child's deadline, or the end of an ending's grace, whichever is first.**
+            // A grace normally ends at a turn end, which re-arms this clock by itself; the deadline
+            // is for the model that read the completion and went idle (see
+            // `when_an_ending_is_digested`).
+            when_a_young_child_grows_up(todos, children)
+                .into_iter()
+                .chain(when_an_ending_is_digested(todos, jobs))
+                .min()
+                .map(|left| now + left)
         };
     }
 

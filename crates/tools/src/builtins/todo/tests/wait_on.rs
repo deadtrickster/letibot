@@ -396,3 +396,84 @@ fn the_offer_names_the_running_job_most_like_the_row() {
     assert!(said.contains(r#""job": "j12""#), "{said}");
     assert!(!said.contains("reads like"), "{said}");
 }
+
+/// **An ended job whose completion the model has not digested keeps its row QUIET** — and an
+/// unnarrowed reader is told why rather than asked about the row.
+///
+/// The operator, 2026-10-11: *"when wait on condition happens - say job finishes, we must delay the
+/// nag for a bit to let the model process the result"*. Measured on pg-noop the same day: the
+/// moment the gate job ended its CRITERION row was askable again, while the completion that said
+/// the gate was green had not reached the model. The harness reports such an ending through
+/// `RunningJobs::digesting`; this pins what the plan check makes of it.
+#[test]
+fn an_ending_the_model_has_not_digested_keeps_the_row_quiet() {
+    let mut row = item(CRITERION, TodoStatus::InProgress);
+    row.needs = vec![TodoNeed::Job {
+        handle: "j123".into(),
+    }];
+    let grace = RunningJobs::none().digesting("j123", Duration::from_secs(540));
+    assert!(
+        waits_on_an_undigested_ending(&row, &grace),
+        "ended but not digested: the check may not speak about the row"
+    );
+    assert!(
+        !waits_on_a_running_job(&row, &grace),
+        "and it is not called running — it has ended"
+    );
+    assert_eq!(
+        when_an_ending_is_digested(std::slice::from_ref(&row), &grace),
+        Some(Duration::from_secs(540)),
+        "the backstop is the silence's own deadline"
+    );
+    // A caller that does not narrow is told the row's answer is on its way, not asked to do it.
+    let said = nag_with(std::slice::from_ref(&row), &ChildSessions::none(), &grace)
+        .expect("an unnarrowed plan still says something");
+    assert!(
+        said.contains("`j123`, which has ended — its completion is reaching you"),
+        "{said}"
+    );
+
+    // **Digested** — the harness stops reporting it — and the row is the check's to name again.
+    assert!(!waits_on_an_undigested_ending(&row, &RunningJobs::none()));
+    assert_eq!(
+        when_an_ending_is_digested(std::slice::from_ref(&row), &RunningJobs::none()),
+        None
+    );
+    let said = nag_with(
+        std::slice::from_ref(&row),
+        &ChildSessions::none(),
+        &RunningJobs::none(),
+    )
+    .unwrap();
+    assert!(said.contains(&format!("  - {CRITERION}")), "{said}");
+}
+
+/// **The same grace for a SUBAGENT a row waits on** — a child that has finished is absent from
+/// `ChildSessions`, which used to make its row askable at once; its undigested completion now keeps
+/// the row quiet the way a job's does. pg-noop, 2026-10-11, the subagent half of the same ask.
+#[test]
+fn a_finished_childs_undigested_completion_keeps_the_row_quiet() {
+    let mut row = operator_row("make tier 1 green", TodoStatus::InProgress);
+    row.needs = vec![TodoNeed::Child {
+        id: "s-1-sub-4".into(),
+    }];
+    let grace = RunningJobs::none().digesting("s-1-sub-4", Duration::from_secs(60));
+    assert!(waits_on_an_undigested_ending(&row, &grace));
+    assert_eq!(
+        when_an_ending_is_digested(std::slice::from_ref(&row), &grace),
+        Some(Duration::from_secs(60))
+    );
+    // A RUNNING job is not graced, even if a stale record names it: running is its own quiet.
+    let mut job_row = item(CRITERION, TodoStatus::InProgress);
+    job_row.needs = vec![TodoNeed::Job {
+        handle: "j9".into(),
+    }];
+    let both = RunningJobs::none()
+        .running("j9")
+        .digesting("j9", Duration::from_secs(60));
+    assert!(!waits_on_an_undigested_ending(&job_row, &both));
+    assert_eq!(
+        when_an_ending_is_digested(std::slice::from_ref(&job_row), &both),
+        None
+    );
+}

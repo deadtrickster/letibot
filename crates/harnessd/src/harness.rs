@@ -1156,7 +1156,7 @@ fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
 ///
 /// An empty queue returns nothing, and that is load-bearing rather than tidy: `wake()` returns
 /// `Ok(None)` on an empty result rather than running a turn with nothing to say.
-fn completion_notices(done: Vec<JobCompletion>, me: &str) -> Vec<String> {
+fn completion_notices(done: Vec<JobCompletion>, me: &str, rows: &[TodoItem]) -> Vec<String> {
     // **Mine first**, then what was handed up — so a session reading one wake reads its
     // own settlements before its children's, and the order of the two groups cannot be
     // mistaken for one list.
@@ -1168,14 +1168,119 @@ fn completion_notices(done: Vec<JobCompletion>, me: &str) -> Vec<String> {
             .into_iter()
             .partition(|c| c.kind == BackgroundKind::Subagent);
         if !jobs.is_empty() {
-            out.push(completion_notice(&jobs, mine));
+            let mut s = completion_notice(&jobs, mine);
+            s.push_str(&waiting_on_these(&jobs, rows));
+            out.push(s);
         }
         if !tasks.is_empty() {
-            out.push(subagent_notice(&tasks, mine));
+            let mut s = subagent_notice(&tasks, mine);
+            s.push_str(&waiting_on_these(&tasks, rows));
+            out.push(s);
         }
     }
     out
 }
+
+/// **The plan rows that wait on these completions, as one line under the notice** — or nothing
+/// when no row does.
+///
+/// The operator, 2026-10-11: *"the completion should mention associated todos"*. A row attached
+/// with `wait_on` (a `TodoNeed::Job` or `TodoNeed::Child` edge) is the plan's own statement that
+/// this ending is what it was waiting for, and the completion is the moment that row has to move —
+/// so the notice names it, on both halves of the board (the model's and the operator's), rather
+/// than leaving the model to remember the edge it attached hours ago. Measured on pg-noop the same
+/// day: a job's completion arrived, the model read it, and the CRITERION row waiting on it was left
+/// `in_progress` until the plan check came round to ask.
+///
+/// **One line, after the closing paragraph, opening with [`WAITING_ON_THIS`] or
+/// [`WAITING_ON_THESE`]** — the head's fold and job card recognise it by those words and nothing
+/// else. Only OPEN rows (`pending`, `in_progress`): a row that is done or set aside owes nothing.
+/// Row text is cut the way the check cuts a job's description (`said_short`), because this is a
+/// pointer to the row and not its restatement.
+fn waiting_on_these(done: &[JobCompletion], rows: &[TodoItem]) -> String {
+    use letibot_tokencore::store::{TodoNeed, TodoStatus};
+    let waits = |row: &TodoItem, c: &JobCompletion| {
+        row.needs.iter().any(|n| match n {
+            TodoNeed::Job { handle } => {
+                c.kind == BackgroundKind::Job
+                    && (*handle == c.job || c.slug.as_deref() == Some(handle.as_str()))
+            }
+            TodoNeed::Child { id } => c.kind == BackgroundKind::Subagent && *id == c.job,
+            _ => false,
+        })
+    };
+    let one = done.len() == 1;
+    let named: Vec<String> = rows
+        .iter()
+        .filter(|r| matches!(r.status, TodoStatus::Pending | TodoStatus::InProgress))
+        .filter_map(|r| {
+            let on: Vec<&JobCompletion> = done.iter().filter(|c| waits(r, c)).collect();
+            if on.is_empty() {
+                return None;
+            }
+            let text = letibot_tools::builtins::todo::said_short(&r.content);
+            let whose = letibot_tools::builtins::todo::whose_row(&r.by);
+            Some(if one {
+                format!("\"{text}\" ({whose})")
+            } else {
+                let handles: Vec<String> = on.iter().map(|c| format!("`{}`", c.job)).collect();
+                format!("\"{text}\" ({whose}, on {})", handles.join(", "))
+            })
+        })
+        .collect();
+    if named.is_empty() {
+        return String::new();
+    }
+    let verb = match (one, done[0].kind) {
+        (true, BackgroundKind::Job) => "it has ended",
+        (true, BackgroundKind::Subagent) => "it has finished",
+        (false, BackgroundKind::Job) => "they have ended",
+        (false, BackgroundKind::Subagent) => "they have finished",
+    };
+    let them = if named.len() == 1 { "it" } else { "them" };
+    format!(
+        "\n{}{} — update {them} with `todo_write` now that {verb}.",
+        if one {
+            WAITING_ON_THIS
+        } else {
+            WAITING_ON_THESE
+        },
+        named.join(", ")
+    )
+}
+
+/// **The endings these rows wait on that the model has not digested yet**, added to `jobs` — the
+/// half of `Harness::running_jobs` that reads the watcher set's read record
+/// ([`JobWatchers::grace_left`]), free so it is asserted without a session. A job `jobs` already
+/// calls running is skipped: running is its own quiet, and the grace is for after.
+pub(crate) fn graced_endings(
+    mut jobs: letibot_tools::builtins::todo::RunningJobs,
+    rows: &[TodoItem],
+    w: &JobWatchers,
+    cap: std::time::Duration,
+    now: std::time::SystemTime,
+) -> letibot_tools::builtins::todo::RunningJobs {
+    use letibot_tokencore::store::TodoNeed;
+    for row in rows {
+        for need in &row.needs {
+            let handle = match need {
+                TodoNeed::Job { handle } if !jobs.is_running(handle) => handle,
+                TodoNeed::Child { id } => id,
+                _ => continue,
+            };
+            if let Some(left) = w.grace_left(handle, cap, now) {
+                jobs = jobs.digesting(handle.clone(), left);
+            }
+        }
+    }
+    jobs
+}
+
+/// The opening words of [`waiting_on_these`]' line for one completion — what the head's fold
+/// (`tui`'s `folded_notice`) and job card recognise the line by.
+pub const WAITING_ON_THIS: &str = "Waiting on this: ";
+/// The same for a group of several completions.
+pub const WAITING_ON_THESE: &str = "Waiting on these: ";
 
 /// **The held batch, as one note** (R79): the `[meanwhile]` line, then the settlements in
 /// [`completion_notices`]' own words — unchanged, so the head's compact job rows read the groups
@@ -1185,9 +1290,10 @@ fn meanwhile_notice(
     me: &str,
     rule: crate::delivery::Rule,
     cap: std::time::Duration,
+    rows: &[TodoItem],
 ) -> String {
     let mut parts = vec![crate::delivery::meanwhile_heading(batch.len(), rule, cap)];
-    parts.extend(completion_notices(batch, me));
+    parts.extend(completion_notices(batch, me, rows));
     parts.join("\n\n")
 }
 
@@ -1238,7 +1344,19 @@ impl Deliveries {
             return Vec::new();
         }
         self.log.immediates(&now, std::time::SystemTime::now());
-        completion_notices(now.into_iter().map(|(c, _)| c).collect(), &self.me)
+        let done: Vec<JobCompletion> = now.into_iter().map(|(c, _)| c).collect();
+        // **Delivered, and recorded as such** — the fact the plan check's grace reads
+        // (`JobWatchers::grace_left`).
+        self.watch.read_now(&done);
+        completion_notices(done, &self.me, &rows)
+    }
+
+    /// The board the notices name rows from — empty in a test with no board.
+    fn rows(&self) -> Vec<TodoItem> {
+        self.todos
+            .as_ref()
+            .map(|t| t.snapshot())
+            .unwrap_or_default()
     }
 
     /// **The held batch, taken and recorded**, as one `[meanwhile]` note — or `None` when nothing
@@ -1250,7 +1368,14 @@ impl Deliveries {
         }
         self.log
             .completions(&held, rule, std::time::SystemTime::now());
-        Some(meanwhile_notice(held, &self.me, rule, self.cap))
+        self.watch.read_now(&held);
+        Some(meanwhile_notice(
+            held,
+            &self.me,
+            rule,
+            self.cap,
+            &self.rows(),
+        ))
     }
 
     /// **A round boundary inside a running turn**: the immediates, and the batch only when the
@@ -4979,7 +5104,9 @@ impl Harness {
     /// round; starting one there would be a second turn about one command.
     pub fn run_after_operator_shell(&mut self) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
-        self.run_rounds()
+        let out = self.run_rounds();
+        self.note_turn_ended();
+        out
     }
 
     /// Append imported rows through the one writer, exactly as a turn's rows go in.
@@ -7308,6 +7435,20 @@ impl Harness {
                     jobs = jobs.running(handle.clone());
                 }
             }
+        }
+        // **And the grace after an ending** — a job or child a row waits on that has ended, whose
+        // completion the model has not digested yet: still queued or held, or delivered during the
+        // turn whose end is being checked. Read off the watcher set's own record of what it
+        // delivered when (`JobWatchers::grace_left`), with R79's starvation cap as the backstop.
+        // A running job is skipped: it is `running` above, and the grace is for after.
+        if let Some(w) = &self.job_watch {
+            jobs = graced_endings(
+                jobs,
+                rows,
+                w,
+                self.cfg.held_results_cap,
+                std::time::SystemTime::now(),
+            );
         }
         // **And what this session COULD wait on, for the check's offer of `wait_on`** — every job
         // its own process table says is running, and every child it spawned that the journal says
@@ -9794,7 +9935,19 @@ impl Harness {
         self.reconcile(&mut sink, &items);
         self.persist()?;
         self.name_from_first_message();
-        self.run_rounds()
+        let out = self.run_rounds();
+        self.note_turn_ended();
+        out
+    }
+
+    /// **A turn's rounds are over** — counted on the watcher set's read record, which is how the
+    /// plan check's grace after an ending tells *delivered in the turn that just ended* from
+    /// *delivered a turn ago* (`JobWatchers::grace_left`). Called by both doors into
+    /// `run_rounds`, whatever the rounds came to: a turn that failed still ended.
+    fn note_turn_ended(&self) {
+        if let Some(w) = &self.job_watch {
+            w.turn_ended();
+        }
     }
 
     /// Give an unnamed session a name, **once**, from the message that opened it.
@@ -12457,6 +12610,11 @@ fn due_rows(
     jobs: &letibot_tools::builtins::todo::RunningJobs,
     fate: impl Fn(&str) -> JobFate,
 ) -> Vec<(String, String, JobFate)> {
+    // **A firing is a delivery, not a nag**: the grace after an ending (`RunningJobs::digesting`)
+    // keeps the CHECK from asking about a row the model has not digested the news for, and this is
+    // that news — so it is read without the grace, or a row whose `when` and `wait_on` name one job
+    // would hear its condition a turn late.
+    let jobs = &jobs.clone().without_grace();
     let mut out = Vec::new();
     for row in rows {
         if !crate::sessions::the_check_may_ask_about(row, children, jobs) {
