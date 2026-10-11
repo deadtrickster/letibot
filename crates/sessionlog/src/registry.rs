@@ -49,7 +49,7 @@
 //! prompting two different sessions are served in the order they pressed enter —
 //! which is the same promise §13.2 already makes for two heads on one session.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -494,7 +494,16 @@ struct Entry {
 }
 
 struct Inner {
+    /// Every session, in the order it arrived — the order `list` and `broadcast` walk.
+    /// **Pushed only through [`Inner::push`]**, which keeps [`Inner::index`] in step.
     entries: Vec<(String, Entry)>,
+    /// **A session id's position in `entries`** — R67 item 27. Every lookup used to be
+    /// `entries.iter().find(..)` under the registry lock: a linear scan on every `get`, from
+    /// every hub's publish path and every head's frame, over a table that only grows (a
+    /// subagent's entry stays for the daemon's life). Nothing removes from `entries` today,
+    /// so a position is stable; the day something does (R68's `Registry::remove`), this
+    /// index is the second thing it has to update.
+    index: HashMap<String, usize>,
     /// The session a head that names none gets. The last one anybody *used*, not
     /// the last one created: a head that reattaches after a crash wants the session
     /// it was in.
@@ -866,6 +875,30 @@ impl std::fmt::Display for CreateError {
     }
 }
 
+impl Inner {
+    /// The entry for `id`, by the index.
+    fn entry(&self, id: &str) -> Option<&Entry> {
+        self.index.get(id).map(|&i| &self.entries[i].1)
+    }
+
+    fn entry_mut(&mut self, id: &str) -> Option<&mut Entry> {
+        match self.index.get(id) {
+            Some(&i) => Some(&mut self.entries[i].1),
+            None => None,
+        }
+    }
+
+    fn has(&self, id: &str) -> bool {
+        self.index.contains_key(id)
+    }
+
+    /// The one way into `entries`, so the index cannot drift from it.
+    fn push(&mut self, id: String, entry: Entry) {
+        self.index.insert(id.clone(), self.entries.len());
+        self.entries.push((id, entry));
+    }
+}
+
 impl Registry {
     pub fn new() -> Arc<Registry> {
         Registry::with_bounds(LogBounds::default(), ViewBounds::default())
@@ -875,6 +908,7 @@ impl Registry {
         Arc::new(Registry {
             inner: Mutex::new(Inner {
                 entries: Vec::new(),
+                index: HashMap::new(),
                 default_id: String::new(),
                 log_bounds,
                 view_bounds,
@@ -902,7 +936,7 @@ impl Registry {
         {
             let mut g = r.lock();
             g.default_id = id.clone();
-            g.entries.push((
+            g.push(
                 id,
                 Entry {
                     jobs: Vec::new(),
@@ -914,7 +948,7 @@ impl Registry {
                     settings: Vec::new(),
                     stale_prefix: None,
                 },
-            ));
+            );
         }
         r
     }
@@ -956,7 +990,7 @@ impl Registry {
         if self.bell.is_closed() {
             return Err(CreateError::Closed);
         }
-        if g.entries.iter().any(|(k, _)| k == &id) {
+        if g.has(&id) {
             return Err(CreateError::Exists(id));
         }
         let hub = Hub::with_bounds(id.clone(), g.log_bounds, g.view_bounds);
@@ -964,7 +998,7 @@ impl Registry {
         if g.default_id.is_empty() {
             g.default_id = id.clone();
         }
-        g.entries.push((
+        g.push(
             id.clone(),
             Entry {
                 jobs: Vec::new(),
@@ -976,7 +1010,7 @@ impl Registry {
                 settings: Vec::new(),
                 stale_prefix: None,
             },
-        ));
+        );
         drop(g);
         // Wake the worker so it opens this session *now* rather than on the first
         // prompt into it. On the bell's own `opens` queue, so a caller that predates
@@ -1017,13 +1051,13 @@ impl Registry {
         if self.bell.is_closed() {
             return Err(CreateError::Closed);
         }
-        if g.entries.iter().any(|(k, _)| k == &id) {
+        if g.has(&id) {
             return Err(CreateError::Exists(id));
         }
         if g.default_id.is_empty() {
             g.default_id = id.clone();
         }
-        g.entries.push((
+        g.push(
             id,
             Entry {
                 jobs: Vec::new(),
@@ -1035,7 +1069,7 @@ impl Registry {
                 settings: Vec::new(),
                 stale_prefix: None,
             },
-        ));
+        );
         Ok(())
     }
 
@@ -1169,11 +1203,7 @@ impl Registry {
     }
 
     pub fn get(&self, session_id: &str) -> Option<Arc<Hub>> {
-        self.lock()
-            .entries
-            .iter()
-            .find(|(k, _)| k == session_id)
-            .map(|(_, e)| e.hub.clone())
+        self.lock().entry(session_id).map(|e| e.hub.clone())
     }
 
     /// Resolve what a head asked to attach to.
@@ -1190,16 +1220,13 @@ impl Registry {
         } else {
             session_id.to_string()
         };
-        g.entries
-            .iter()
-            .find(|(k, _)| k == &want)
-            .map(|(_, e)| e.hub.clone())
+        g.entry(&want).map(|e| e.hub.clone())
     }
 
     /// Remember that this is the session a bare attach should land on.
     pub fn set_default(&self, session_id: &str) {
         let mut g = self.lock();
-        if g.entries.iter().any(|(k, _)| k == session_id) {
+        if g.has(session_id) {
             g.default_id = session_id.to_string();
         }
     }
@@ -1216,10 +1243,8 @@ impl Registry {
     /// What a session is attached to. Empty for a session nobody registered.
     pub fn wiring(&self, session_id: &str) -> SessionWiring {
         self.lock()
-            .entries
-            .iter()
-            .find(|(k, _)| k == session_id)
-            .map(|(_, e)| e.wiring.clone())
+            .entry(session_id)
+            .map(|e| e.wiring.clone())
             .unwrap_or_default()
     }
 
@@ -1231,11 +1256,7 @@ impl Registry {
     /// per arming and needs one number. The name is the column's own (`SessionBrief::created_ms`),
     /// so the two readings of one fact cannot drift apart.
     pub fn created_ms(&self, session_id: &str) -> Option<u64> {
-        self.lock()
-            .entries
-            .iter()
-            .find(|(k, _)| k == session_id)
-            .map(|(_, e)| e.created_ms)
+        self.lock().entry(session_id).map(|e| e.created_ms)
     }
 
     /// Name a session. Empty is allowed and means "no name"; a head then shows the
@@ -1243,7 +1264,7 @@ impl Registry {
     /// Publish the settings a session runs under. See `Entry::settings`.
     pub fn set_settings(&self, session_id: &str, rows: Vec<crate::protocol::SettingRow>) {
         let mut g = self.lock();
-        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+        if let Some(e) = g.entry_mut(session_id) {
             e.settings = rows;
         }
     }
@@ -1258,7 +1279,7 @@ impl Registry {
     /// and says nothing, which is the honest answer: no harness has compared anything.
     pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>) {
         let mut g = self.lock();
-        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+        if let Some(e) = g.entry_mut(session_id) {
             e.stale_prefix = said;
         }
     }
@@ -1267,10 +1288,7 @@ impl Registry {
     /// [`Registry::set_stale_prefix`].
     pub fn stale_prefix(&self, session_id: &str) -> Option<String> {
         let g = self.lock();
-        g.entries
-            .iter()
-            .find(|(k, _)| k == session_id)
-            .and_then(|(_, e)| e.stale_prefix.clone())
+        g.entry(session_id).and_then(|e| e.stale_prefix.clone())
     }
 
     /// **The jobs a session's harness last published.**
@@ -1282,17 +1300,15 @@ impl Registry {
     /// opens on is the daemon's answer and not the head's reconstruction.
     pub fn set_jobs(&self, session_id: &str, jobs: Vec<crate::protocol::JobEntry>) {
         let mut g = self.lock();
-        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+        if let Some(e) = g.entry_mut(session_id) {
             e.jobs = jobs;
         }
     }
 
     pub fn jobs(&self, session_id: &str) -> Vec<crate::protocol::JobEntry> {
         let g = self.lock();
-        g.entries
-            .iter()
-            .find(|(k, _)| k == session_id)
-            .map(|(_, e)| e.jobs.clone())
+        g.entry(session_id)
+            .map(|e| e.jobs.clone())
             .unwrap_or_default()
     }
 
@@ -1337,16 +1353,14 @@ impl Registry {
     /// harness has not opened, which the head says rather than hides.
     pub fn settings(&self, session_id: &str) -> Vec<crate::protocol::SettingRow> {
         let g = self.lock();
-        g.entries
-            .iter()
-            .find(|(k, _)| k == session_id)
-            .map(|(_, e)| e.settings.clone())
+        g.entry(session_id)
+            .map(|e| e.settings.clone())
             .unwrap_or_default()
     }
 
     pub fn set_title(&self, session_id: &str, title: impl Into<String>) {
         let mut g = self.lock();
-        if let Some((_, e)) = g.entries.iter_mut().find(|(k, _)| k == session_id) {
+        if let Some(e) = g.entry_mut(session_id) {
             e.title = title.into();
         }
     }

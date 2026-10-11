@@ -590,6 +590,14 @@ pub struct Deadlines {
     /// What the watchdog did, so a caller can read back *the deadline ended this run* —
     /// the same reason `reaps` exists beside it.
     fired: Mutex<Vec<DeadlineFired>>,
+    /// **The host is gone, so the watchdog is too** — set by [`Deadlines::close`] from
+    /// `HostProcesses`' `Drop`, under `inner`'s lock so the watchdog cannot miss it between
+    /// its check and its wait.
+    ///
+    /// R67 item 13: `run` was an endless `loop` and the thread held its own `Arc` to this, so
+    /// nothing ever ended it — one `letibot-deadline` thread per `HostProcesses` for the life of
+    /// the process, which is one of the two threads R66 counted per finished subagent (7 → 19).
+    closed: std::sync::atomic::AtomicBool,
 }
 
 /// One firing, as a record rather than a side effect.
@@ -620,6 +628,7 @@ impl Deadlines {
             inner: Mutex::new(Vec::new()),
             armed: Condvar::new(),
             fired: Mutex::new(Vec::new()),
+            closed: std::sync::atomic::AtomicBool::new(false),
         });
         let watch = Arc::clone(&d);
         // **A failure to spawn is not swallowed.** A host whose watchdog could not start is
@@ -650,18 +659,32 @@ impl Deadlines {
         self.armed.notify_all();
     }
 
+    /// **End the watchdog** — its host is being dropped, so nothing it could fire for has an
+    /// owner left. The flag is set under the list's lock and the condvar rung after, so a
+    /// watchdog asleep in either wait wakes, reads it and returns, dropping its `Arc`.
+    fn close(&self) {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(g);
+        self.armed.notify_all();
+    }
+
     /// What has fired, oldest first. The read-back half of the record.
     pub fn fired(&self) -> Vec<DeadlineFired> {
         self.fired.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// **The watchdog.** Sleeps until the earliest armed deadline, then ends that run's
-    /// cgroup — on this thread, which is not the run's.
+    /// cgroup — on this thread, which is not the run's. Returns when [`Deadlines::close`]
+    /// says its host is gone.
     fn run(&self, tree: Arc<dyn ScopeTree>) {
         loop {
             let due: Vec<Due> = {
                 let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
+                    if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
                     let now = Instant::now();
                     match g.iter().map(|d| d.at).min() {
                         // Nothing armed: sleep until something is.
@@ -734,7 +757,13 @@ pub struct HostProcesses {
     /// The turn and session scopes, opened lazily and reused.
     session: Mutex<Option<ScopeId>>,
     turn: Mutex<Option<ScopeId>>,
+    /// Every job this host ever ran, in spawn order — the order `jobs()` lists.
     jobs: Mutex<Vec<Arc<Job>>>,
+    /// **The same jobs, by id** — R67 item 27. `find` (every `job_wait`, `job_output`,
+    /// `job_kill`, deadline arm and pane read) used to scan `jobs`, which only grows: a
+    /// session's thousandth `bash` call paid for the nine hundred and ninety-nine before it.
+    /// Written beside `jobs` at the one place a job is added ([`HostProcesses::spawn`]).
+    by_id: Mutex<std::collections::HashMap<JobId, Arc<Job>>>,
     /// **Every slug this host has handed out**, so the next one is unique.
     ///
     /// A record of its own rather than a scan of `jobs`, because a spawn builds its
@@ -861,6 +890,7 @@ impl HostProcesses {
             session: Mutex::new(None),
             turn: Mutex::new(None),
             jobs: Mutex::new(Vec::new()),
+            by_id: Mutex::new(std::collections::HashMap::new()),
             claimed_slugs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
             promotions: Mutex::new(Vec::new()),
@@ -1048,12 +1078,7 @@ impl HostProcesses {
     }
 
     fn find(&self, id: &JobId) -> Option<Arc<Job>> {
-        self.jobs
-            .lock()
-            .expect("jobs")
-            .iter()
-            .find(|j| &j.id == id)
-            .cloned()
+        self.by_id.lock().expect("jobs by id").get(id).cloned()
     }
 
     /// **The slug this spawn takes, made unique against every name this session has
@@ -1625,6 +1650,10 @@ impl ProcessHost for HostProcesses {
             )));
         }
 
+        self.by_id
+            .lock()
+            .expect("jobs by id")
+            .insert(job.id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(job);
         Ok(id)
     }
@@ -1955,6 +1984,8 @@ impl ProcessHost for HostProcesses {
 /// reaped them would be the sweeper this design rejected, wearing a destructor.
 impl Drop for HostProcesses {
     fn drop(&mut self) {
+        // **The deadline watchdog goes with its host** (R67 item 13) — see `Deadlines::closed`.
+        self.deadlines.close();
         let session = self.session.lock().expect("session scope").clone();
         if let Some(s) = session {
             let _ = self.tree.end(&s);
@@ -2212,6 +2243,69 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let p = parent_of(me);
         assert!(p.is_some(), "this process has a parent");
         assert_ne!(p, Some(me));
+    }
+
+    /// The `letibot-deadline` threads alive in this process, by their kernel name (truncated
+    /// to 15 bytes, so `letibot-deadlin`).
+    fn deadline_threads() -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/task")
+            .map(|d| {
+                d.flatten()
+                    .filter(|t| {
+                        std::fs::read_to_string(t.path().join("comm"))
+                            .is_ok_and(|c| c.trim_end().starts_with("letibot-deadl"))
+                    })
+                    .map(|t| t.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **A dropped host takes its deadline watchdog with it** — R67 item 13. The watchdog was an
+    /// endless loop holding its own `Arc<Deadlines>`, so every `HostProcesses` ever built left a
+    /// `letibot-deadline` thread behind for the life of the process: one of the two threads R66
+    /// counted per finished subagent.
+    ///
+    /// Two measurements. The proof is the `Weak`: the watchdog's closure owns the only other
+    /// `Arc`, so the `Deadlines` is freed exactly when that thread has left `run` — which is the
+    /// same fact as the thread ending, and immune to other tests building hosts in parallel. The
+    /// thread itself is then looked for by its tid in `/proc/self/task`.
+    #[test]
+    fn a_dropped_host_takes_its_deadline_thread_with_it() {
+        let before = deadline_threads();
+        let h =
+            HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
+        let weak = Arc::downgrade(&h.deadlines);
+        // Ours is among the threads that appeared; other tests may have added their own.
+        let started: Vec<String> = deadline_threads().difference(&before).cloned().collect();
+        assert!(
+            !started.is_empty() || cfg!(not(target_os = "linux")),
+            "a host starts a watchdog"
+        );
+        drop(h);
+        let until = Instant::now() + Duration::from_secs(10);
+        while weak.upgrade().is_some() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "**the watchdog outlived its host** — the thread still holds the deadlines, so it is \
+             still running, and one is left behind per HostProcesses for the process's life"
+        );
+        // And by tid: the thread is gone from the process. (Threads other tests started in the
+        // same window may still be alive, so this asserts that not every new one survived.)
+        let until = Instant::now() + Duration::from_secs(10);
+        let alive = |started: &[String]| {
+            let now = deadline_threads();
+            started.iter().filter(|t| now.contains(*t)).count()
+        };
+        while !started.is_empty() && alive(&started) == started.len() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started.is_empty() || alive(&started) < started.len(),
+            "no deadline thread ended after its host was dropped: {started:?}"
+        );
     }
 
     #[test]
