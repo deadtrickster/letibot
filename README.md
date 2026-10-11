@@ -162,6 +162,8 @@ answers differently, and where it is weaker than Linux, is written down rather t
 - **There is no namespace boundary**, so the confined seats (`runner`, `coder`) refuse to start
   and say so. `leticode` — the launcher's default — runs on the host and is unaffected; for a
   confined session put it in a firecode VM with `--vm` once firecode's macOS build is installed.
+  **[docs/firecode-on-macos.md](docs/firecode-on-macos.md) is the standalone guide**: installing
+  both from nothing, connecting them, subagents held to a check, docker in a VM, upgrading.
 - **"Is this run waiting for input?" cannot be read** (Linux reads it from `wchan`); an
   operator's `!` run says once that it could not tell.
 - **The runtime dir** is the per-user temp dir (`getconf DARWIN_USER_TEMP_DIR`), since there is
@@ -230,7 +232,8 @@ exist because the local ones disagree about how a tool call is spelled.
 
 `docs/` holds the design documents the code argues against — `design-brief.md` for the thesis,
 `compaction.md` and `closed-loop.md` for the two subsystems with the most measurement behind them,
-and `boundary-and-adjudication.md` for the gate. `agents.md` states the conventions a contribution
+and `boundary-and-adjudication.md` for the gate. `firecode-on-macos.md` is the one written as
+instructions rather than design: letibot and firecode on a Mac, from nothing. `agents.md` states the conventions a contribution
 is held to.
 
 ## Licence
