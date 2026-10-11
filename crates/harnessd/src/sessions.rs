@@ -1653,14 +1653,26 @@ impl<'a> Sessions<'a> {
                 cfg.system.push_str(&extra);
             }
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
-            let mut h = Harness::open_with_registry(
+            let mut h = match Harness::open_with_registry(
                 self.parts,
                 cfg,
                 hub,
                 None,
                 tool,
                 self.registry.clone(),
-            )?;
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    // **The seat's bookkeeping for a session that did not open goes with it**
+                    // (R67 item 21). `seat_tool` inserted the slot — and, with a seat, the
+                    // condition in `seated` — before the open could fail, so a session that never
+                    // opened kept both: a slot nothing fills and an address on the fabric for a
+                    // session nobody holds. A retry inserts them again.
+                    self.slots.remove(session_id);
+                    self.seated.remove(session_id);
+                    return Err(e);
+                }
+            };
             // **The lazy open is the resume a head reaches** — `/resume`, a switch
             // from the picker, a subagent's parent coming back. The row the switch
             // wrote is read here, so a session this daemon did not start running
@@ -6147,6 +6159,57 @@ mod operator_run_failures {
             "the failure is on the session's own log, not only on stderr: {codes:?}"
         );
         drop(harness);
+        registry.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod seat_slots {
+    //! **A session that fails to open leaves no seat slot behind** — R67 item 21.
+    use super::*;
+
+    #[test]
+    fn a_failed_open_takes_its_slot_with_it() {
+        let Some(gguf) = crate::vocab_gguf() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-seat-slots-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("the temp dir");
+        let mut cfg = Config::for_this_box(&dir);
+        cfg.vocab_gguf = Some(gguf);
+        cfg.store = Some(dir.join("sessions.db"));
+        cfg.session_id = "s-first".into();
+        cfg.endpoint = letibot_turn::Endpoint::new("127.0.0.1", 9);
+        let parts = Parts::load(&cfg).expect("the vocabulary loads");
+        let registry = Registry::new();
+        registry
+            .create(&cfg.session_id, "", Sessions::wiring(&cfg))
+            .expect("the first session registers");
+        let mut sessions =
+            Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("it opens");
+        assert!(
+            sessions.slots.contains_key("s-first"),
+            "a root session has a slot"
+        );
+
+        // A root session whose workspace does not exist: `Harness::open` refuses it, after
+        // `seat_tool` has run.
+        let mut wiring = Sessions::wiring(&cfg);
+        wiring.workspace = dir.join("not-there").display().to_string();
+        registry
+            .create("s-broken", "", wiring)
+            .expect("the broken session registers");
+        assert!(sessions.open("s-broken").is_err(), "the open must fail");
+        assert!(
+            !sessions.slots.contains_key("s-broken"),
+            "a session that never opened kept its seat slot"
+        );
+        assert!(!sessions.seated.contains_key("s-broken"));
         registry.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
