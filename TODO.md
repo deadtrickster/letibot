@@ -484,7 +484,7 @@ answered by a person in a head; the cross-session ledger above.
 
 ---
 
-## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb), cause not reproduced; the two-threads-per-subagent leak is explained in R68.3 / R67.13**
+## R66 — A harnessd reached 113 GB — **OPEN: instrumented (memwatch, 4eb1dbb), cause not reproduced; the two-threads-per-subagent leak is explained in R68.3 / R67.13 and closed on `r68-lifecycle`**
 
 MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
 anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
@@ -513,6 +513,12 @@ grow anything.
   for six sequential subagents; +12 MB for three turns each printing ~15 MB of tool output.
 - **A smaller leak, real:** each finished subagent leaves **two threads** behind (7 → 19 for six,
   never released) and ~12 MB. At the 519 subagents that tree started, ~6 GB — not 108.
+  **CLOSED on branch `r68-lifecycle` (R68.2/R68.3):** R67 item 13 ended the `letibot-deadline`
+  thread with its host, and the host now dies: a finished child idle for `child_park_after`
+  (10 min) parks as store-only — its `subagent-*` thread leaves, its hub is removed from the
+  registry, its harness drops. MEASURED (`tests/session_lifecycle.rs`, 50 children): threads
+  (subagent, deadline) 0,1 before → 50,51 with all answered → 0,1 after parking, one registry
+  entry left; with the policy off (the old behaviour) 50,51 and 51 entries stay.
 
 **Instrumented 2026-10-11 (`harnessd::memwatch`), so the next growth is SEEN:** a counting global
 allocator (heap live / peak, and a backtrace for any single allocation ≥ `LETIBOT_LARGE_ALLOC`,
@@ -697,7 +703,7 @@ fails on `435bb88` and passes after. The four reviews these come from are in ful
 
 ---
 
-## R68 — The daemon: one session lifecycle, one owner per session, one turn tail — **OPEN, structural, after R67**
+## R68 — The daemon: one session lifecycle, one owner per session, one turn tail — **LANDED on `r68-lifecycle` 2026-10-11 (c0f8462, 06c19c0, b465b70, 71c7181), not merged; R68.7 and two reads left — see "Status" at the end**
 
 From the same review; these are the classes R67's daemon items are instances of.
 
@@ -772,6 +778,59 @@ the worker); a finished subagent leaves no thread and no registry entry (memwatc
 census flat across 50 subagents); a nag, a wake and a prompt turn arm the same things (one test
 per door, one assertion list).
 
+
+**Status, branch `r68-lifecycle` (2026-10-11):**
+
+- **R68.1 one owner — DONE** (`c0f8462`). `hub::Owner` on the hub (`Worker` by default,
+  `OwnThread` set by `run_to_completion` before adoption); `Hub::try_command` (the worker's pop)
+  answers `None` for a hub it does not own; `Sessions::harness_as` refuses a session live under
+  another owner; `wake_route` routes by owner, so a worker-owned hub that did not open is `Gone`,
+  not `HandedOn` into a void (R68.9); a `Message` for a worker-owned unopened session retries the
+  lazy open. Tests: `registry::the_worker_never_takes_a_command_off_a_hub_owned_by_its_own_thread`,
+  `session_lifecycle::a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only` (five prompts
+  to an attached child while the worker loop runs — failed before: the worker served two and
+  opened a second harness).
+- **R68.2/R68.3 one lifecycle — DONE** (`06c19c0`). `Registry::remove` (entry, `runs`, `prompts`,
+  `notes`, index rewritten, default moved, hub closed); `Sessions::close` (children stopped,
+  backend closed, `open`/`slots`/`seated`/`fabric_seen`/`nags`/`bangs`/`armed` cleared — the
+  `wall_gave_up` map is gone, see R68.4); every exit of a child thread removes its session through
+  one guard (`ChildSessionGuard`), and a failed first turn closes the backend; the monitor-wake
+  thread ends with its hub. **The idle-child policy, decided:** park as store-only, not reap —
+  `Config::child_park_after` (10 min): a child with no command, wake, armed plan-check, attached
+  head, running job or live child of its own for that long leaves its thread and its hub; a head
+  reopens it from the picker (a resume), a parent's `task_message` reopens it through the store
+  (`HarnessTaskRunner::reopen_parked`), and a reopened child is worker-held and parks again
+  (`Sessions::park_idle_children`). `HostProcesses` holds settled output to
+  `SETTLED_CAPTURE_BUDGET` (64 MiB, oldest released first, never a running job's). Tests:
+  `fifty_finished_subagents_leave_no_thread_and_no_registry_entry` (numbers under R66),
+  `a_wake_or_a_message_to_a_closed_child_is_answered_gone` (failed before),
+  `a_message_to_a_parked_child_reopens_it_from_the_store`, `a_removed_session_leaves_every_table_…`,
+  `settled_captures_are_held_to_a_budget_and_the_oldest_go_first`.
+  **Not done:** `reaps`, `promotions` and `Deadlines.fired` are still push-only (small records);
+  a ROOT session is never closed by the daemon (its lifetime is the operator's), so a resumed
+  root still keeps its harness and monitor-wake thread until the daemon stops; `ChildBoards`
+  keeps a parked child's board (by design: a parent's late write still lands).
+- **R68.4 one turn tail — DONE** (`b465b70`). `turn_tail::run_turn` is the sequence (sweep,
+  spoken-to, pre-wall compact, clock, turn, then per turn and continuation: title, monitor wake,
+  failure with reason, compaction with the refused door and its latch, continuation; clock; idle
+  clocks) and a `TurnOwner` says where each lands: `DaemonTurn` for `Sessions` (prompt, message,
+  wake, nag, both `!` doors) and `ChildTurns` for `serve_child` (task, prompt, message, wake, nag
+  — children are now swept, take their titles, get a monitor waiter, and publish `TurnFailed`).
+  `Sessions::after_turn`, `run_continuation`, the daemon's own compaction copy and `wall_gave_up`
+  are gone (the harness's `forced_gave_up` is the one latch). The `!` flag still comes down in
+  the `OperatorShellResult` arm before any return (R67 item 11) — it must, turn or no turn. Test:
+  `tests/turn_tail.rs`, one assertion list against five daemon doors and a child's prompt (failed
+  before at the prompt door — no sweep — and at the child — no `TurnFailed`).
+- **R68.5/R68.6/R68.8 — DONE** (`71c7181`). Wakes coalesce per session in the bell; a due clock
+  waits behind at most `WAKES_AHEAD_OF_A_DUE_CLOCK` (8) wakes (commands still first);
+  `is_root`, `harness_as` and the seat title read `Registry::parent_of`/`title_of` (a resumed
+  session is created with its stored parent and name), so an open lists the store 0 times (was 2);
+  `Registry::close` no longer lists the store. **Left for R61:** `Harness::wake`'s store reads
+  (`serve_reviews`, `queue_notices`, `handover_notices`) and `ensure_gatekeeper`'s `list()` title
+  lookup are the queue's.
+- **R68.7 gatekeeper retry storm — NOT DONE, on purpose**: the gatekeeper's open is being rebuilt
+  by R61; re-check there.
+- **The `report(session, code, detail)` sink — NOT DONE.**
 ---
 
 ## R69 — The head: one surface stack, hit-testing against what was drawn, per-surface key tables — **LANDED on `r69-surfaces` 2026-10-11 (not merged) except the items under "Still open" below**
