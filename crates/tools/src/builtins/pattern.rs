@@ -137,6 +137,15 @@ impl PatternError {
 /// The key is everything that changes the compiled program: the source and the
 /// case flag. Nothing else does — `multi_line` is set the same way for every
 /// entry, and the two limits are constants.
+///
+/// **Shared by every test in the binary, and safe for it** (R67 item 23 asked). An entry is
+/// a pure function of its key, so a test that hits an entry another test compiled gets the
+/// program it would have compiled itself: no test can observe another's entries through what
+/// a `Pattern` matches. The one observable is identity — `Arc::ptr_eq`, which only
+/// `compiling_the_same_pattern_twice_reuses_the_program` reads — and the one thing that can
+/// break it is a [`CACHE_CAP`] clear landing between that test's two compiles, which needs
+/// 256 distinct keys in one process. MEASURED 2026-10-11: the whole `letibot-tools` lib test
+/// binary (937 tests) peaks at 44; integration test files are processes of their own.
 type CacheKey = (String, bool);
 
 static CACHE: LazyLock<Mutex<HashMap<CacheKey, Arc<CompiledPair>>>> =
@@ -637,6 +646,9 @@ mod tests {
         assert_eq!(got, vec![1, 2]);
     }
 
+    /// Reads the process-wide [`CACHE`] by identity — safe beside the other tests in this binary
+    /// for the reason written on [`CacheKey`]: only a cap-clear between the two compiles could
+    /// part them, and this binary compiles 44 distinct keys against a cap of 256.
     #[test]
     fn compiling_the_same_pattern_twice_reuses_the_program() {
         let a = Pattern::compile(r"cache_hit_probe_\w+", false).expect("compiles");
