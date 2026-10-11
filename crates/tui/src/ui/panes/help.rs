@@ -6,6 +6,14 @@ use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::help::HelpPane;
 
 pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
+    // **The panes' rows are generated from their key tables** (R69): how each is opened, what it
+    // is, and every key it takes, read from `Surface::bindings` — the table its keys are
+    // dispatched from. The hand-written rows they replace said "wheel scrolls the transcript"
+    // and never named ctrl-g, ctrl-q, `/queue`, `/jobs`, `/todos` or `/subagents` (R67 item 9).
+    let panes: Vec<(String, String)> = crate::app::Surface::ALL
+        .into_iter()
+        .filter_map(crate::app::App::surface_help)
+        .collect();
     let rows = [
         (
             "enter",
@@ -33,9 +41,8 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "wheel",
-            "scrolls what is in front: a card whose question runs past its window, an open \
-             ctrl-v result, an open pane or listing — and the transcript when none is up. \
-             shift+drag selects text",
+            "scrolls what is under the pointer: a pane, an output, the decision card's \
+             question, the conversation (or its open ctrl-v result). shift+drag selects text",
         ),
         (
             "ctrl-a ctrl-e",
@@ -70,44 +77,21 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              the command blocked on its stdin, and this verb needs no such signal",
         ),
         (
-            "ctrl-s",
-            "the session list: type a number or part of a name to switch",
-        ),
-        (
             "tab",
             "complete the /command being typed; more tabs walk the matches",
         ),
         (
             "click",
-            "moves the cursor to the row under the pointer — in the session list, a setting \
-             card, the todos pane and the queue pane; enter still acts. On an edit or write row \
-             it opens the change in a popup, the whole file with the edit inline: esc closes it, \
-             ctrl-] takes it to the editor. On the subagents or jobs count in the prompt's top \
-             edge, it opens that pane",
-        ),
-        (
-            "ctrl-t",
-            "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves (or click a row), enter reads the row under the cursor whole, tab acts on it (the card, done, unfold), pgup/pgdn scrolls",
-        ),
-        (
-            "ctrl-g  /subagents",
-            "the subagent tree: ↑↓ moves, enter (or o) goes into that subagent's session, p \
-             reads its output without leaving; esc inside a subagent goes back up",
-        ),
-        (
-            "ctrl-q  /jobs",
-            "the background jobs this session started: ↑↓ moves, enter reads a job's output",
+            "moves the cursor to the row under the pointer — in every pane with rows, the \
+             session list, a setting card, the decision card's answers and the quit card; enter \
+             still acts. On an edit or write row it opens the change in a popup, the whole file \
+             with the edit inline: esc closes it, ctrl-] takes it to the editor. On the subagents \
+             or jobs count in the prompt's top edge, it opens that pane. A click on nothing is \
+             nobody's",
         ),
         (
             "ctrl-o",
             "move the command that is running now to the background — it keeps running as a job",
-        ),
-        ("/todos", "the todos pane, the same as ctrl-t"),
-        (
-            "/queue",
-            "the merge queue: ↑↓ moves (or click a row), enter opens the entry, tab switches \
-             between the review and the merge view; a approves, v vetoes, d drops and r \
-             restarts the entry under the cursor (letters act only on an empty prompt)",
         ),
         (
             "/new [title]",
@@ -138,15 +122,6 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              survives a streaming turn. Press again to release — it says how many rows arrived",
         ),
         (
-            "/standing",
-            "the notes the harness reads into the prompt — one row each, with the form the \
-             budget gave it: `verbatim` when the prompt carries the note whole, `indexed` when \
-             it did not fit and the prompt carries its headings and line ranges instead. \
-             enter opens the note's file in the editor pane (rano) — the whole of it, editable, \
-             which is the only place an `indexed` note's text is; a path in a conversation is \
-             reachable here. This is NOT /notes, which is what this head has shown",
-        ),
-        (
             "/notes",
             "the disclosures this head has shown; /notes dismiss [N|all] retires one \
              or every one, /notes restore brings them back",
@@ -171,10 +146,6 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              cannot be trusted to be complete",
         ),
         (
-            "/status",
-            "this head's counters — dropped, scrubbed, resync — and what each means",
-        ),
-        (
             "/verbosity",
             "how much reaches the transcript: bare, a card stating every rung — conversation, \
              terse, normal, loud — and what each gives you; `/verbosity NAME` sets one. \
@@ -186,11 +157,6 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              `/diff split` sets one",
         ),
         ("/interrupt", "interrupt, when a key is awkward"),
-        (
-            "/config",
-            "every setting and where it came from; the first row toggles the diff \
-             view between split and unified, which `/diff NAME` also sets",
-        ),
         (
             "/compact",
             "summarize this session down to one record; the old transcript is forked, not lost",
@@ -236,12 +202,19 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "detach. The turn keeps running: idle means quiet, not unwatched",
         ),
     ];
+    let mut rows: Vec<(String, String)> = rows
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    // After the composer's own keys and the shell verbs, where the old pane rows began.
+    let at = rows
+        .iter()
+        .position(|(k, _)| k == "tab")
+        .unwrap_or(rows.len());
+    rows.splice(at..at, panes);
     let pane = HelpPane {
         title: "keys and commands".into(),
-        rows: rows
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
+        rows,
         footer: "/help or esc closes this".into(),
     };
     row_strings(&pane.lines(w), cfg.palette())

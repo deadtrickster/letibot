@@ -1382,6 +1382,7 @@ fn queue_frame(
 
 mod asks;
 mod attention;
+mod bindings;
 mod commands;
 mod composer;
 mod decisions;

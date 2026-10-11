@@ -319,58 +319,6 @@ impl App {
         out
     }
 
-    /// **The todos pane's own half of the bottom bar** — the keys THIS pane answers, and the act
-    /// depends on the row the cursor is on.
-    ///
-    /// **The footer used to be rano's.** `HintMode::Todos` is a pinned sentence — *"↑↓ moves · enter
-    /// or tab unfolds · pgup/pgdn and the wheel scroll · esc closes"* — and `enter or tab unfolds`
-    /// is false on two of the three stops this cursor can be on: `key_todos_pane` opens the card on
-    /// the add control and marks one of the operator's rows done (and unmarks it again), and only a
-    /// repo item unfolds. **A hint that names the wrong key is worse than none** — the rule rano's
-    /// own `QuitCard` sentence is written under — so the head composes this pane's bar and says what
-    /// its keys do, taking `Reading`'s tail (`esc closes this`, which is true of it) for the way out.
-    ///
-    /// **The scroll keys are not named, and that is the bar's capacity rather than a claim about
-    /// them.** The renderer keeps the head and cuts the tail, so what has to survive the cut is the
-    /// act the cursor is about to take. `/todo rm N` rides along because deleting a row is the
-    /// operator's own act, this is the only place it is named, and a verb nobody can find is a verb
-    /// nobody uses — see `TodoStop`'s doc for why no key removes one.
-    ///
-    /// **One precondition is NOT said, and it is the honest gap**: `key_todos_pane` acts on Enter
-    /// and Tab only while the composer is EMPTY (a half-typed `/command` owns Tab), so with text in
-    /// the composer this bar promises a read Enter will not perform. The sentence it replaces was
-    /// false there too — it said `unfolds` — so this is narrower than what was fixed, not wider.
-    ///
-    /// **Two keys, and the bar says both, because they are now two acts**: Enter reads the row
-    /// whole, Tab performs the pane's own act on it. Before this, one sentence covered both
-    /// because both keys did the same thing; a bar that went on saying `enter or tab toggles it
-    /// done` would name a key that now opens an overlay instead.
-    pub(crate) fn todos_hint(&self) -> String {
-        let stops = self.todos_stops();
-        let at = self.todos_sel.min(stops.len().saturating_sub(1));
-        let act = match stops.get(at) {
-            Some(TodoStop::Add) => "enter or tab opens the card",
-            Some(TodoStop::Mine(_)) => "enter reads it whole · tab toggles it done",
-            Some(TodoStop::Theirs(_)) => "enter reads it whole",
-            Some(TodoStop::Repo(_)) => "enter reads it whole · tab unfolds the item",
-            None => "enter reads the row whole",
-        };
-        format!("↑↓ moves · {act} · /todo rm N removes one of yours")
-    }
-
-    /// **The open row's own half of the bottom bar.**
-    ///
-    /// The overlay is modal — it takes the whole keyboard while it is up
-    /// ([`App::key_todo_open`]) — so the bar has to name the way out, and it names the keys that
-    /// move the window too: a row longer than the screen is the case the overlay exists for, and a
-    /// reader who does not know the page keys exist would think the rest was not there. The tail
-    /// sentence (`esc closes this`) is `Reading`'s, which is what the overlay's mode takes; the
-    /// sentence here is the head's half and says what the key actually does — *back to the list*,
-    /// because the pane is still behind it.
-    pub(crate) fn todos_open_hint(&self) -> String {
-        "↑↓ pgup/pgdn and the wheel scroll · esc goes back to the list".to_string()
-    }
-
     /// **The pane row the stop at the cursor was DRAWN on**, read out of
     /// [`App::todos_stop_rows`] — the record the pane wrote while drawing, and not arithmetic over
     /// the lists it drew from. leticl's `todos-lines` second value, an `aref` of the third.

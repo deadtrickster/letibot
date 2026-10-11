@@ -88,27 +88,22 @@ impl App {
                 self.redraw = true;
                 return ControlFlow::Break(None);
             }
-            // **The panes' chords, through the one door the verbs use** (`open_surface`), as
-            // toggles of the surface stack: the pane in front closes, a pane behind another comes
-            // to the front.
-            Key::CtrlS => return ControlFlow::Break(self.toggle_surface(Surface::Picker)),
-            Key::CtrlT => return ControlFlow::Break(self.toggle_surface(Surface::Todos)),
+            // **The panes' chords, read from the table that advertises them** (`Surface::chord`)
+            // and through the one door the verbs use (`open_surface`), as toggles of the surface
+            // stack: the pane in front closes, a pane behind another comes to the front. ctrl-s
+            // the sessions, ctrl-t the todos, ctrl-g the subagent tree (R/T/X/L/S/P are taken and
+            // A/E/W/U/Y/K/B/F are the composer's readline keys), ctrl-q the jobs (J would have
+            // been the mnemonic and is line-feed; Q is XON, dead the way ctrl-s's XOFF would be,
+            // and cfmakeraw clears IXON so the byte arrives like any other).
+            k if Surface::of_chord(k).is_some() => {
+                let s = Surface::of_chord(k).expect("the guard just asked");
+                return ControlFlow::Break(self.toggle_surface(s));
+            }
             // **Hold the view (R56).** While held the head writes nothing at all, so a
             // mouse selection survives a streaming turn; the second press releases it and
             // says how much arrived while it was held. The whole contract is in
             // [`App::toggle_hold`].
             Key::CtrlP => return ControlFlow::Break(self.toggle_hold()),
-            // Ctrl+G for the subagent tree: R/T/X/L/S/P are taken, A/E/W/U/Y/K/B/F
-            // are the composer's readline keys, and the subagent tree is a *view*,
-            // not a thing the composer needs a letter for.
-            Key::CtrlG => return ControlFlow::Break(self.toggle_surface(Surface::Subagents)),
-            // Ctrl+Q for the background jobs. J would have been the mnemonic and
-            // is line-feed; Q is XON, dead the same way Ctrl+S's XOFF would be —
-            // and fixed the same way: cfmakeraw clears IXON, so nothing is
-            // listening for flow control and the byte arrives like any other.
-            // The act itself is `toggle_surface`'s, shared with `/jobs` and a click
-            // on the count label so the three cannot drift.
-            Key::CtrlQ => return ControlFlow::Break(self.toggle_surface(Surface::Jobs)),
             // **R22: clearing your own screen costs one key.**
             //
             // Retiring a note used to be `/notes dismiss all` — the right power in the wrong
@@ -237,11 +232,17 @@ impl App {
                 // merge queue and its overlay once (R67 item 5) — each time the page keys
                 // scrolled the conversation hidden under the pane — and it moved the one shared
                 // offset whichever of several open panes was actually drawn.
-                if self.focused_surface() == Some(Surface::Picker) || self.pick.is_some() {
+                if self.pick.is_some() {
                     return ControlFlow::Break(None);
                 }
-                if self.focused_surface().is_some() {
-                    self.scroll_pane(up, by);
+                // **The surface in front takes them through its own table** — the binding that
+                // names the page keys and the wheel says what they do there, and a surface whose
+                // table does not name them takes them and moves nothing: a view that is not the
+                // one on the screen does not move.
+                if let Some(s) = self.focused_surface() {
+                    if let Some(b) = self.binding_for(s, k) {
+                        return self.surface_act(s, b.act, k);
+                    }
                     return ControlFlow::Break(None);
                 }
                 self.scroll_conversation(k, up, by);

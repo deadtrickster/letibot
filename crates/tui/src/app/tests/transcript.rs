@@ -1454,7 +1454,7 @@ fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else()
     // so a chord appended to the end is a chord nobody can see — measured, not assumed.
     let bar = a.screen(80, 24).join("\n");
     assert!(
-        bar.contains("ctrl-n notes"),
+        bar.contains("ctrl-n clears notes"),
         "the chord is advertised but not visible at 80 columns:\n{bar}"
     );
     // And it does not push `ctrl-s` off, which is what the bar opens with.
@@ -1707,24 +1707,30 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
     // todos pane to `ctrl-t` and the payload window to `ctrl-v`: 146 → 160, the new entry's
     // own width. What is visible at 80 and at 120 is unchanged (the two pinned entries at 80,
     // the `ctrl-v newest result · /t all` pair whole at 120), which the assertions below keep.
+    //
+    // **Re-measured 2026-10-11 for R69**, which generates the bar from the chords' own table and
+    // says what ctrl-n does — `ctrl-n clears notes`, where rano's sentence said `ctrl-n notes`
+    // about a chord that retires every note (R67 item 9): 160 → 167. Both pinned entries are
+    // still whole inside 80; the `ctrl-v`/`/t` pair is whole from 128 rather than 120.
     assert_eq!(
         bar.trim().chars().count(),
-        160,
+        167,
         "the bar's width changed; re-measure what is visible at 80: {bar}"
     );
     let at80 = a.screen(80, 24).pop().unwrap_or_default();
     assert!(
-        at80.contains("ctrl-s sessions") && at80.contains("ctrl-n notes"),
+        at80.contains("ctrl-s sessions") && at80.contains("ctrl-n clears notes"),
         "R22's two pinned entries left the first 80 columns: {at80}"
     );
     assert!(
         !at80.contains("ctrl-v"),
         "the pair now fits at 80 — better than the measurement, so update it: {at80}"
     );
-    let at120 = a.screen(120, 24).pop().unwrap_or_default();
+    // R69's seven columns moved the pair's end past 120; it is whole at 128.
+    let at128 = a.screen(128, 24).pop().unwrap_or_default();
     assert!(
-        at120.contains("ctrl-v newest result · /t all"),
-        "the pair is not whole at 120, which is where it was measured to be: {at120}"
+        at128.contains("ctrl-v newest result · /t all"),
+        "the pair is not whole at 128, which is where it was measured to be: {at128}"
     );
 }
 

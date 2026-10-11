@@ -50,7 +50,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
         "the add control's act is opening the card, not unfolding anything: {bar}"
     );
     assert!(
-        bar.contains("esc closes this"),
+        bar.contains("esc closes"),
         "and the way out is named, from the tail: {bar}"
     );
     assert!(!bar.contains("unfolds"), "nothing here unfolds: {bar}");

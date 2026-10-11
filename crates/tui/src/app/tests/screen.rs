@@ -730,7 +730,7 @@ fn the_bar_names_the_keys_of_the_output_listing_and_window_in_front() {
     a.slash_out = Some(("/notes".into(), vec!["a note".into()]));
     a.push_surface(Surface::Listing);
     let bar = a.hint_bar(200);
-    assert!(bar.contains("↑↓ scrolls"), "{bar}");
+    assert!(bar.contains("↑↓ pgup/pgdn scroll"), "{bar}");
     assert!(!bar.contains("ctrl-s sessions"), "{bar}");
 
     let mut a = app();

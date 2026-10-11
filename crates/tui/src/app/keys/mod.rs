@@ -5,6 +5,7 @@ use super::*;
 use letibot_sessionlog::view::OpenDecision;
 use letibot_ui::editor::Reaction;
 
+pub(crate) mod bindings;
 mod cards;
 mod chords;
 mod input;

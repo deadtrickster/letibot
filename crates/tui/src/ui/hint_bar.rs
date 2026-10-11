@@ -1,12 +1,64 @@
-//! **The hint bar**: the keys that do something right now — drawn by `rano::agent::hint_bar`,
-//! which keeps the sentences; this head says which one is true now.
+//! **The hint bar**: the keys that do something right now.
+//!
+//! Two sources, and which one is the decision this file makes (R69). **What is this head's is
+//! generated from the tables its keys are dispatched from** — the surface in front
+//! (`Surface::bindings`) and, with nothing in front, the conversation's chords
+//! ([`CONVERSATION`]) — so the bar cannot name a key that does something else. **What is
+//! rano's stays rano's**: the cards and the editor pane (`HintMode::QuitCard`, `Detached`,
+//! `Deciding`, `Pick`, `Editor`, `EditorBehind`), whose sentences are rano's, pinned by tag.
+//!
+//! It is generated rather than handed to rano because rano's `HintBar` appends its own tail to
+//! whatever this head gives it, and several of those tails were wrong about this head: the
+//! conversation's said `ctrl-n notes` (ctrl-n retires every note), the todos pane's said `enter
+//! or tab unfolds` (Enter reads the row), and a subagent's output, a slash listing, the
+//! standing pane and the ctrl-v window had no sentence at all (R67 item 9).
 
 use crate::app::*;
 use rano::agent::hint_bar::{HintBar, HintMode};
-use rano::render::Line;
+use rano::render::{Line, Span};
 use rano::style::Role;
 
+/// **One of the conversation's chords, as the bar names it** — read from the table its dispatch
+/// reads where there is one (`Surface::chord`, `Show::chord`), so the two cannot drift.
+enum Chord {
+    Surface(Surface, &'static str),
+    Show(Show),
+    Says(&'static str, &'static str),
+}
+
+/// **The conversation's chords, in the order the bar names them.** The bar is over capacity at
+/// 80 columns by construction and keeps its head, so the order is a ranking: the panes and the
+/// reflexes first, `/help` — the index — last.
+const CONVERSATION: &[Chord] = &[
+    Chord::Surface(Surface::Picker, "sessions"),
+    Chord::Says("ctrl-n", "clears notes"),
+    Chord::Surface(Surface::Todos, "todos"),
+    Chord::Surface(Surface::Subagents, "subagents"),
+    Chord::Show(Show::Thinking),
+    // **`ctrl-v` and `/t` are adjacent on purpose** (R40): they are the two things a reader
+    // confuses, so the bar states both — one result against all of them.
+    Chord::Says("ctrl-v", "newest result"),
+    Chord::Says("/t", "all tool rows"),
+    Chord::Surface(Surface::Jobs, "jobs"),
+    Chord::Says("ctrl-p", "hold"),
+    Chord::Says("/help", ""),
+];
+
 impl App {
+    /// **The conversation's half of the bar**, from [`CONVERSATION`].
+    pub(crate) fn conversation_hint(&self) -> String {
+        CONVERSATION
+            .iter()
+            .filter_map(|c| match c {
+                Chord::Surface(s, says) => s.chord().map(|(key, _)| format!("{key} {says}")),
+                Chord::Show(s) => s.chord().map(|(key, _)| format!("{key} {}", s.name())),
+                Chord::Says(key, "") => Some(key.to_string()),
+                Chord::Says(key, says) => Some(format!("{key} {says}")),
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
     /// The bottom bar: what the keys do, right now.
     ///
     /// The composer owns the first half and changes it after the first Esc or
@@ -21,106 +73,81 @@ impl App {
             Some(s) => Line::styled(s, Role::Attention),
             None => Line::default(),
         };
-        // The order is the order of precedence: the first of these that is true is what the
-        // keys do right now. **A surface rano has no mode for says its keys in this head's half
-        // (`own`), set in the SAME branch that picks the mode** — so the two halves of the bar
-        // cannot come from two different surfaces.
-        let mut own: Option<&str> = None;
+        let p = self.cfg.palette();
         // **The surface in front is `drawn()`'s answer** (R69), the value `main_area` draws and
         // `App::key` routes on — so the bar cannot describe a pane that is open behind another.
+        // The order below is the order `App::key` asks in: a card that owns every key, then the
+        // diff popup, rano, the cards in the chrome, the surface, the conversation.
         let drawn = self.drawn();
-        let surface = self.focused_surface();
-        let mode = if self.quit_card {
-            HintMode::QuitCard
+        let rano_mode = if self.quit_card {
+            Some(HintMode::QuitCard)
         } else if self.detached() {
-            HintMode::Detached
+            Some(HintMode::Detached)
         } else if drawn == Drawn::DiffPopup && !self.open.is_empty() {
             // **A decision under the diff popup has the card's keys** (`App::key_diff_popup`
-            // yields them), so the bar says what the card's keys do; the popup's own keys are
-            // named in this head's half.
-            own = Some("the diff: pgup/pgdn scroll · esc closes it");
-            HintMode::Deciding
+            // yields them); the popup's own keys lead.
+            let own = "the diff: pgup/pgdn scroll · esc closes it";
+            return crate::ui::render::row(
+                &centred(Line::styled(own, Role::Faint), HintMode::Deciding.tail(), w),
+                p,
+            );
         } else if drawn == Drawn::DiffPopup {
-            // **The popup is a reading screen with no mode of its own in rano**: `Reading`'s
-            // tail (`esc closes this`) is true of it, and its keys go in this head's half. It
-            // used to fall through to whatever was under it — the conversation's chords, all
-            // dead while the popup owns the keyboard.
-            own = Some("↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor");
-            HintMode::Reading
+            return crate::ui::render::row(
+                &centred(
+                    editor,
+                    "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor · esc closes it",
+                    w,
+                ),
+                p,
+            );
         } else if self.editor_focused() {
-            HintMode::Editor
+            Some(HintMode::Editor)
         } else if self.editor_drawn() {
-            HintMode::EditorBehind
+            Some(HintMode::EditorBehind)
         } else if self.pick.is_some() {
             // **The cards in the chrome are in front of the surface** — they take their keys
             // first in `App::key` — so the bar describes the card while one is up.
-            HintMode::Pick
+            Some(HintMode::Pick)
         } else if !self.open.is_empty() {
-            HintMode::Deciding
-        } else if let Some(s) = surface {
-            match s {
-                // **A slash listing is a reading screen** (R67 item 9): its keys are the arrows
-                // and Esc.
-                Surface::Listing => {
-                    own = Some("↑↓ scrolls");
-                    HintMode::Reading
-                }
-                Surface::Help | Surface::Stats => HintMode::Reading,
-                Surface::Picker => HintMode::SessionPicker,
-                // **The row's overlay and the todos pane are READING screens in rano's terms**:
-                // rano keeps the bar's tail sentences and is pinned by tag, and its
-                // `HintMode::Todos` sentence says *enter or tab unfolds* — false of this pane.
-                // So `Reading`'s tail (`esc closes this`) and this head's own half.
-                Surface::TodoRow | Surface::Todos => HintMode::Reading,
-                Surface::Config => HintMode::Config,
-                // **A subagent's output, open over the tree** (R67 item 9): its keys are not the
-                // list's.
-                Surface::SubOut => {
-                    own = Some("↑↓ scroll · enter reads it again · esc back to the subagents");
-                    HintMode::Reading
-                }
-                Surface::Subagents => HintMode::Subagents,
-                Surface::JobOut => HintMode::JobOutput,
-                Surface::QueueEntry => HintMode::QueueEntry,
-                Surface::Queue => HintMode::Queue,
-                Surface::Jobs => HintMode::Jobs,
-                // **`Reading` and not a mode of its own**: rano is pinned by tag, so a new pane
-                // has no `HintMode` to take; its keys go in this head's half.
-                Surface::Standing => HintMode::Reading,
-            }
-        } else if self.payload_sel.is_some() {
+            Some(HintMode::Deciding)
+        } else {
+            None
+        };
+        if let Some(mode) = rano_mode {
+            return crate::ui::render::row(&HintBar { editor, mode }.line(w), p);
+        }
+        let tail = match self.focused_surface() {
+            Some(s) => self.surface_hint(s),
             // **The ctrl-v window** (R67 item 9): the arrows and the page keys page it and Esc
             // closes it (`key_payload_window`); the composer stays live under it.
-            own = Some("↑↓ pgup/pgdn page the result · home/end its ends · enter still sends");
-            HintMode::Reading
-        } else {
-            HintMode::Conversation
-        };
-        // **The panes' own keys, in the half of the bar this head owns.** rano owns each mode's
-        // tail sentence and is pinned by tag, so what a pane adds goes in the `editor` half,
-        // which is the left half of the SAME row and is empty while a pane has the keyboard.
-        // They lead there on purpose: the bar is over capacity at 80 columns by construction,
-        // and the renderer keeps the head, so the keys a pane adds are the ones that survive.
-        let cards_up = self.pick.is_some() || !self.open.is_empty();
-        let editor = if let Some(own) = own {
-            Line::styled(own, Role::Faint)
-        } else if cards_up {
-            editor
-        } else {
-            match surface {
-                Some(Surface::TodoRow) => Line::styled(self.todos_open_hint(), Role::Faint),
-                Some(Surface::Todos) => Line::styled(self.todos_hint(), Role::Faint),
-                Some(Surface::Queue) => {
-                    Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
-                }
-                // **Where Enter goes, said on the bar.** The key opens the note in rano, which
-                // is a different place from this list.
-                Some(Surface::Standing) => {
-                    Line::styled("↑↓ moves · enter opens the note in the editor", Role::Faint)
-                }
-                _ => editor,
+            None if self.payload_sel.is_some() => {
+                "↑↓ pgup/pgdn page the result · home/end its ends · enter still sends · esc closes it"
+                    .to_string()
             }
+            None => self.conversation_hint(),
         };
-        crate::ui::render::row(&HintBar { editor, mode }.line(w), self.cfg.palette())
+        crate::ui::render::row(&centred(editor, &tail, w), p)
     }
+}
+
+/// **The bar's line**: the composer's half, then this head's, centred and cut to `w` — rano's
+/// `HintBar::line` with the tail this head's own. Centred (the operator, 2026-10-04: *"please
+/// center the keymap bottom line"*); a bar wider than the screen keeps its head, which is the
+/// half naming the first keys.
+fn centred(editor: Line, tail: &str, w: usize) -> Line {
+    let mut line = Line::default();
+    if editor.width() > 0 {
+        line.spans.extend(editor.spans.iter().map(|s| Span {
+            content: s.content.clone(),
+            style: editor.style.patch(&s.style),
+        }));
+        line.push(Span::role(format!(" · {tail}"), Role::Faint));
+    } else {
+        line.push(Span::role(tail.to_string(), Role::Faint));
+    }
+    let pad = w.saturating_sub(line.width()) / 2;
+    if pad > 0 {
+        line.spans.insert(0, Span::raw(" ".repeat(pad)));
+    }
+    rano::render::text::truncate_owned(line, w)
 }
