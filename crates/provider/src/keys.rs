@@ -109,6 +109,8 @@ pub struct Gatekeeper {
 pub struct MemorySection {
     pub default: Option<String>,
     pub ceiling: Option<String>,
+    /// `memory.high` for the daemon's own process — a size, a fraction of the box, or `max`.
+    pub daemon_high: Option<String>,
 }
 
 /// Read `[memory]`. Missing file, missing section, unparseable file: all the built-in policy.
@@ -123,6 +125,7 @@ pub fn memory(file: Option<&Path>) -> MemorySection {
     MemorySection {
         default: sec.get("default").cloned(),
         ceiling: sec.get("ceiling").cloned(),
+        daemon_high: sec.get("daemon_high").cloned(),
     }
 }
 

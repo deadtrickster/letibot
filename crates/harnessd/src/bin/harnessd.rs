@@ -9,7 +9,17 @@
 //! The `harnessd:` prefix on an error is unchanged by the move: it is the role's name,
 //! and this is still the daemon role.
 
+/// **Every allocation counted, and a large one logged** — see `letibot_harnessd::memwatch`.
+#[global_allocator]
+static ALLOC: letibot_harnessd::memwatch::Counting = letibot_harnessd::memwatch::Counting;
+
 fn main() {
+    if let Some(b) = std::env::var("LETIBOT_LARGE_ALLOC")
+        .ok()
+        .and_then(|v| letibot_tools::exec::memory::Amount::parse(&v).ok())
+    {
+        letibot_harnessd::memwatch::set_large_threshold(b.resolve(0) as usize);
+    }
     // **Step into the daemon's own leaf before anything else can start a process** (TODO.md
     // R64/R65). `delegate_memory` refuses when the daemon's cgroup holds any other pid, so it
     // must run while this process is still the only one in it — a `git` the startup ran first

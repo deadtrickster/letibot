@@ -278,6 +278,20 @@ grow anything.
 - **A smaller leak, real:** each finished subagent leaves **two threads** behind (7 → 19 for six,
   never released) and ~12 MB. At the 519 subagents that tree started, ~6 GB — not 108.
 
+**Instrumented 2026-10-11 (`harnessd::memwatch`), so the next growth is SEEN:** a counting global
+allocator (heap live / peak, and a backtrace for any single allocation ≥ `LETIBOT_LARGE_ALLOC`,
+64 MiB by default); a watchdog line every `LETIBOT_MEMWATCH_SECS` (60) with rss, heap, threads,
+sessions, hub logs, view items, heads and job rows; a census at each rss step from 1 GiB
+(doubling) — hubs holding most, threads grouped by name — with a `memory_high` warning on every
+session; `BOUND BROKEN` when a hub's log or a head's queue is past its bound, or a view list
+with no bound passes 10,000; and `memory.high` on the daemon's own leaf (`[memory] daemon_high`,
+16 GiB default, `max` = off) so the kernel throttles the daemon instead of taking the box.
+First reading on a scratch daemon: **rss 279 MiB with heap live 35 MiB** — most of a daemon's
+resident memory is NOT on the Rust heap (SQLite's page cache and the vocabulary map use their own
+allocations), so a census showing rss far above heap live points there and not at a Rust
+collection. And the large-alloc log found its first: `Catalogue::load` re-reads the 5 MiB model
+catalogue from disk on every `Config::settings`, i.e. on every session open.
+
 **Not yet tried, and the likeliest place left:** the LOCAL-model path. The killed daemon served
 qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
 ledger itself; deepseek does neither. Reproducing it needs the local server running, which is

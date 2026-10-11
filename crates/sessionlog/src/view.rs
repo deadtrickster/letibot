@@ -447,7 +447,30 @@ pub struct SessionView {
     subagents: Vec<SubagentView>,
 }
 
+/// **How much one session's view holds**, by part — for the daemon's memory census. Counts,
+/// not bytes: which part grows is the question a census answers, and a count is exact where a
+/// byte estimate of a nested struct would be a guess.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewCensus {
+    pub items: usize,
+    pub open: usize,
+    pub settled: usize,
+    pub warnings: usize,
+    pub subagents: usize,
+}
+
 impl SessionView {
+    /// See [`ViewCensus`].
+    pub fn census(&self) -> ViewCensus {
+        ViewCensus {
+            items: self.items.len(),
+            open: self.open.len(),
+            settled: self.settled.len(),
+            warnings: self.warnings.len(),
+            subagents: self.subagents.len(),
+        }
+    }
+
     // (the free function `body_of` at the foot of this file is the definition both
     // readers use — see its own doc)
     pub fn new(session_id: impl Into<String>, bounds: ViewBounds) -> Self {

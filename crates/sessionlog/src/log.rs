@@ -113,6 +113,12 @@ impl SessionLog {
             .unwrap_or(self.head_seq + 1)
     }
 
+    /// **What this log holds right now**: retained events and their serialised bytes — the
+    /// two numbers [`LogBounds`] bounds, read for the daemon's memory census.
+    pub fn held(&self) -> (usize, usize) {
+        (self.ring.len(), self.bytes)
+    }
+
     /// Events that fell off the back of the scrollback. Never elided.
     pub fn dropped(&self) -> u64 {
         self.dropped

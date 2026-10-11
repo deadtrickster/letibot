@@ -1412,6 +1412,22 @@ impl Registry {
     ///
     /// Returns how many logs it reached, so a caller can say *nobody heard* rather than
     /// assuming somebody did.
+    /// **Every session's hub, counted** — plus the jobs row the registry keeps beside it — for
+    /// the daemon's memory census. Collected under the registry lock and counted outside it, in
+    /// [`Registry::broadcast`]'s order.
+    pub fn census(&self) -> Vec<(crate::hub::HubCensus, usize)> {
+        let hubs: Vec<(Arc<Hub>, usize)> = {
+            let g = self.lock();
+            g.entries
+                .iter()
+                .map(|(_, e)| (e.hub.clone(), e.jobs.len()))
+                .collect()
+        };
+        hubs.into_iter()
+            .map(|(h, jobs)| (h.census(), jobs))
+            .collect()
+    }
+
     pub fn broadcast(&self, event: crate::event::SessionEvent) -> usize {
         // **The hubs are collected under the registry lock and published outside it.** The
         // same ordering `list` and `get` follow: the registry lock is never held while a hub

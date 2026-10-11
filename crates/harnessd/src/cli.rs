@@ -459,6 +459,31 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(a) = parse("ceiling", &m.ceiling)? {
             cfg.memory.ceiling = a;
         }
+        // **The daemon's own throttle** (R66): `memory.high` on its leaf, so a daemon that grows
+        // without bound is slowed by the kernel instead of taking the box — 16 GiB unless
+        // `daemon_high` says otherwise (`max` turns it off). Only in a delegated scope; anywhere
+        // else there is no leaf of the daemon's own to set it on, and `memwatch` still logs.
+        let high = match m.daemon_high.as_deref().map(str::trim) {
+            Some("max") => None,
+            other => {
+                let total = letibot_tools::exec::memory::Meminfo::read()
+                    .map(|i| i.total)
+                    .unwrap_or(0);
+                let a = parse("daemon_high", &other.map(str::to_string))?
+                    .unwrap_or(letibot_tools::exec::memory::Amount::Bytes(16 << 30));
+                Some(a.resolve(total))
+            }
+        };
+        if let (Ok(scope), Some(bytes)) = (letibot_tools::exec::delegate_memory(), high) {
+            let leaf = scope.join(letibot_tools::exec::DAEMON_LEAF);
+            match std::fs::write(leaf.join("memory.high"), bytes.to_string()) {
+                Ok(()) => eprintln!(
+                    "harnessd: the daemon's own memory.high is {}",
+                    letibot_tools::exec::human_bytes(bytes)
+                ),
+                Err(e) => eprintln!("harnessd: the daemon's memory.high could not be set: {e}"),
+            }
+        }
     }
     {
         let gk = letibot_provider::gatekeeper(None);
@@ -927,6 +952,21 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // eagerly so that a dialect which does not fit the vocabulary is a startup
     // error rather than a failure on somebody's first prompt.
     let registry = Registry::new();
+    // **The daemon watches its own memory** — `memwatch`. One line a minute in this log, a
+    // census when it crosses a step, and a warning on every session.
+    crate::memwatch::spawn(
+        registry.clone(),
+        std::env::var("LETIBOT_MEMWATCH_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|s: &u64| *s > 0)
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(crate::memwatch::DEFAULT_EVERY),
+        letibot_tools::exec::delegate_memory()
+            .as_ref()
+            .ok()
+            .map(|s| s.join(letibot_tools::exec::DAEMON_LEAF)),
+    );
     // What is on disk, so a head's picker can show sessions from daemons that are no
     // longer running and `ResumeSession` can find them. A daemon with no `--store`
     // sets no source and lists only what it holds, which is what it always did.

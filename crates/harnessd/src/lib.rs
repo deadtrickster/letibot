@@ -105,6 +105,7 @@ pub mod httphead;
 pub mod jobwatch;
 pub mod leticode_config;
 pub mod m1;
+pub mod memwatch;
 pub mod mergequeue;
 pub mod modes;
 pub mod notes_offer;

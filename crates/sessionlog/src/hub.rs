@@ -441,6 +441,30 @@ impl CommandKind {
     }
 }
 
+/// **What one session's hub holds**, for the daemon's memory census (`harnessd::memwatch`).
+///
+/// Every number here is something a bound in this crate claims to keep — the log by
+/// [`crate::log::LogBounds`], each head's queue by the gap bound, the view by
+/// [`crate::view::ViewBounds`] — so the census is also how a broken bound is SEEN rather than
+/// inferred from a daemon that died at 108 GB with nothing in its log to say why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HubCensus {
+    pub session_id: String,
+    pub log_events: usize,
+    pub log_bytes: usize,
+    pub log_bound_bytes: usize,
+    pub view: crate::view::ViewCensus,
+    pub heads: usize,
+    /// The longest queue any head has, and the bound it is held to.
+    pub head_queue_max: usize,
+    pub head_queue_bound: usize,
+    pub head_side_max: usize,
+    pub commands: usize,
+    pub operator_calls: usize,
+    pub secrets: usize,
+    pub screens: usize,
+}
+
 struct Head {
     id: String,
     kind: String,
@@ -1046,6 +1070,28 @@ impl Hub {
 
     /// Detach. Announced, and **nothing else happens**: no turn is cancelled, no
     /// work is reaped. Idle is quiet, not unwatched.
+    /// See [`HubCensus`]. Takes the hub's lock for the count and nothing else.
+    pub fn census(&self) -> HubCensus {
+        let g = self.lock();
+        let (log_events, log_bytes) = g.log.held();
+        let bounds = g.log.bounds();
+        HubCensus {
+            session_id: g.log.session_id().to_string(),
+            log_events,
+            log_bytes,
+            log_bound_bytes: bounds.scrollback_bytes,
+            view: g.view.census(),
+            heads: g.heads.len(),
+            head_queue_max: g.heads.iter().map(|h| h.queue.len()).max().unwrap_or(0),
+            head_queue_bound: bounds.max_gap_events,
+            head_side_max: g.heads.iter().map(|h| h.side.len()).max().unwrap_or(0),
+            commands: g.commands.len(),
+            operator_calls: g.operator_calls.len(),
+            secrets: g.secrets.len(),
+            screens: g.screens.len(),
+        }
+    }
+
     pub fn detach(&self, head_id: &str) {
         let ev = {
             let mut g = self.lock();
