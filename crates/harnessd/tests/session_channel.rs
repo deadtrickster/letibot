@@ -676,7 +676,7 @@ fn a_refusing_verdict_afterword() -> String {
 /// is not a child so we are not doing up"*.
 #[test]
 fn a_peers_message_to_an_idle_worker_owned_session_is_a_row_and_a_turn() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-session-channel-idle");
@@ -792,7 +792,7 @@ fn a_peers_message_to_an_idle_worker_owned_session_is_a_row_and_a_turn() {
 /// own, and this request would not carry it.
 #[test]
 fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-session-channel-busy");
@@ -907,7 +907,7 @@ fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() 
 /// the sentence says so rather than naming the caller's children as the only addressees.
 #[test]
 fn a_message_to_a_session_that_does_not_exist_is_refused_by_name() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-session-channel-nobody");
@@ -962,7 +962,7 @@ fn a_message_to_a_session_that_does_not_exist_is_refused_by_name() {
 /// peer. The behaviour this file exists for is the arm, above.
 #[test]
 fn a_session_may_send_a_peer_it_names() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-session-channel-peer");
@@ -1026,7 +1026,7 @@ fn a_session_may_send_a_peer_it_names() {
 /// first would send the reviewer its own verdict.
 #[test]
 fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-session-channel-refusal");
@@ -1174,7 +1174,7 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
 /// is therefore measured from the child's own act to the peer's own queue.
 #[test]
 fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-session-channel-refusal-gone");

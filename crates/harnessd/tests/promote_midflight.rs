@@ -219,7 +219,7 @@ fn a_ctrl_o_promotes_the_operators_run_in_flight() {
     ) else {
         return;
     };
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let session = "promote-midflight";

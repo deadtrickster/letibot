@@ -186,7 +186,7 @@ fn stop(child: &mut Child) {
 /// **The whole capture**: a live daemon, a run it may not look at, and both voices written down.
 #[test]
 fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = scratch("live");
@@ -345,7 +345,7 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
 /// operator's own daemon, which is running as this uid against a root child.
 #[test]
 fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let su = Path::new("/usr/bin/su");
@@ -453,7 +453,7 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
 /// the operator's, character for character.
 #[test]
 fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     if !Path::new("/usr/bin/sudo").exists() {
@@ -564,7 +564,7 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
 ///    which is one sentence for two facts and is wrong for one of them.
 #[test]
 fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = scratch("ticker");
@@ -687,7 +687,7 @@ fn the_operators_own_run_outlives_the_models_deadline() {
         );
         return;
     }
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     if !Path::new("/usr/bin/su").exists() {

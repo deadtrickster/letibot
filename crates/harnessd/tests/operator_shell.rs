@@ -113,7 +113,7 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
 /// permission decision was made anywhere on the way.**
 #[test]
 fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("rows");
@@ -244,7 +244,7 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
 /// `messages` route dropped it.
 #[test]
 fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("model-reads");
@@ -325,7 +325,7 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
 /// so the operator reads it where they read every other result.
 #[test]
 fn a_command_that_cannot_start_lands_as_a_failed_row() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("nostart");
@@ -394,7 +394,7 @@ fn a_command_that_cannot_start_lands_as_a_failed_row() {
 /// is what `$LETIBOT_ASKPASS` exists to override in `sudo_live.rs`.
 #[test]
 fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("sudo");
@@ -590,7 +590,7 @@ fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
 /// outside the pinned `PATH` — the same rule the tests above keep.
 #[test]
 fn a_bang_line_that_asks_is_answered_and_finishes() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("answered");
@@ -728,7 +728,7 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
 /// other half — `!send` is a verb and not a reply to a question.
 #[test]
 fn the_manual_send_reaches_a_running_commands_stdin() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("manual");
@@ -795,7 +795,7 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
 /// `Continue?` would fail that one in the direction that looks like success.
 #[test]
 fn a_program_that_prints_a_question_and_exits_raises_no_card() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     // ---- 1. A question, and a clean exit.

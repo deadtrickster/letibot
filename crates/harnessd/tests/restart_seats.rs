@@ -70,7 +70,6 @@ use letibot_harnessd::{Dialect, Parts, Sessions};
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
-use letibot_tokencore::apparatus::present_gguf;
 use letibot_tokencore::ledger::{LedgerRow, chain, hash_tokens};
 use letibot_tokencore::store::{
     JobRecord, SessionRecord, StablePrefixRecord, Store, TodoBy, TodoCondition, TodoItem,
@@ -135,7 +134,7 @@ fn config(store: &Path, session_id: &str) -> Config {
     cfg.dialect = WANTED;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    cfg.vocab_gguf = present_gguf();
+    cfg.vocab_gguf = letibot_harnessd::vocab_gguf();
     cfg.provider = None;
     cfg.endpoint = letibot_turn::Endpoint::new("127.0.0.1", 1);
     cfg.http_retries = 0;
@@ -325,7 +324,9 @@ fn wait_for_the_firing(hub: &Hub) -> Option<(String, Duration)> {
 /// exists.
 #[test]
 fn a_restart_fires_the_row_whose_job_is_gone() {
-    let Some(_) = present_gguf() else { return };
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
     let dir = TempDir::new("harnessd-restart-seats");
     let path = dir.path().join("sessions.db");
     let session_id = "s-restart-seats";
@@ -406,7 +407,9 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
 /// on — a ring reaches the worker, and the worker seats the stored fact.
 #[test]
 fn a_ring_seats_the_firing_at_once() {
-    let Some(_) = present_gguf() else { return };
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
     let dir = TempDir::new("harnessd-restart-seats-ring");
     let path = dir.path().join("sessions.db");
     let session_id = "s-restart-seats-ring";

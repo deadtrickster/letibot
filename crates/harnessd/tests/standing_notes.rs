@@ -77,7 +77,7 @@ fn opened(workspace: &std::path::Path, nonce: &str) -> Harness {
 /// half of a compaction by its own doc.
 #[test]
 fn an_edited_agents_md_lands_in_the_next_base() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let ws = TempDir::new("ws-rebuild");

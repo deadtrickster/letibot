@@ -498,7 +498,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
 /// is not "start another daemon".
 #[test]
 fn other_weights_refuse_when_their_gguf_is_not_on_this_box() {
-    let Some(_) = apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("absent-gguf");
@@ -530,7 +530,7 @@ fn other_weights_refuse_when_their_gguf_is_not_on_this_box() {
 /// and the line still said *"the local server"*.
 #[test]
 fn a_same_weights_switch_moves_the_address_and_local_moves_it_back() {
-    let Some(_) = apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("same-weights");
@@ -593,7 +593,7 @@ fn a_same_weights_switch_moves_the_address_and_local_moves_it_back() {
 /// by dying, which is the honest failure for "this cannot be done here".
 #[test]
 fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
-    let Some(qwen) = apparatus::present_gguf() else {
+    let Some(qwen) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let glm = glm_gguf();

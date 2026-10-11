@@ -296,7 +296,7 @@ impl ParkedChild {
 /// with nobody typing into the child.
 #[test]
 fn a_row_a_parent_writes_nags_the_parked_child() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-child-nag");
@@ -447,7 +447,7 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
 /// silence is about the ROW and not about the write never landing.
 #[test]
 fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-child-nag-postponed");

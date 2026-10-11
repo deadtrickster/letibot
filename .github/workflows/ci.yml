@@ -15,7 +15,7 @@ env:
   CARGO_TERM_COLOR: always
   # **The llama.cpp build, and it is a TAG, not a branch.** `harnessd` links
   # `libllama`, and this repository cannot COMPILE without a llama.cpp checkout —
-  # `crates/tokencore/build.rs` fails the build by name when `include/llama.h` or
+  # `crates/llama/build.rs` fails the build by name when `include/llama.h` or
   # `libllama.so` is missing, which is a deliberate refusal rather than a link error
   # nobody can read. So every job below builds it first.
   #
@@ -42,7 +42,7 @@ env:
   # guesses about an older `CMakeLists.txt`.
   LLAMA_REF: v0.3.0
   # **These two names are not this file's invention — they are what the build reads.**
-  # `crates/tokencore/build.rs` locates the checkout through `LETIBOT_LLAMA_DIR` and
+  # `crates/llama/build.rs` locates the checkout through `LETIBOT_LLAMA_DIR` and
   # `LETIBOT_LLAMA_LIB` and fails by name when either is wrong. They are set at JOB
   # level, not per step, because `build.rs` runs for EVERY cargo command: clippy, test
   # and build each compile the shim and need `llama.h`. An earlier draft of this file
@@ -532,6 +532,32 @@ jobs:
           # The installer's own final check, run again here so a change to it that
           # stopped verifying would be visible.
           ( cd "$RUNNER_TEMP/bin" && env -u LD_LIBRARY_PATH ./harnessd --version )
+
+  # **No llama.cpp at all: the build somebody else gets.** The operator's box links their
+  # llama.cpp fork for local models; a person who only uses a cloud provider should not need
+  # one. `--no-default-features` drops harnessd's (and turn's, sessionlog's) `local` feature:
+  # the daemon then serves cloud providers only and says so by name when asked for a local
+  # model (`VocabError::NoLlama`), and every test that needs a vocabulary skips through
+  # `letibot_harnessd::vocab_gguf`. The llama directory is pointed at nothing on purpose, so a
+  # dependency that sneaks libllama back in fails this job by name instead of finding one.
+  no-llama:
+    name: build and test without llama.cpp
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LETIBOT_LLAMA_DIR: /nonexistent
+      LETIBOT_LLAMA_LIB: /nonexistent
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build without llama.cpp
+        run: cargo build --release --no-default-features --bins
+      - name: Nothing links libllama
+        run: |
+          for b in target/release/harnessd target/release/letibot target/release/letibot-tui; do
+            if ldd "$b" | grep -iE 'llama|ggml'; then echo "$b links llama.cpp" >&2; exit 1; fi
+          done
+      - name: Test without llama.cpp
+        run: cargo test --workspace --exclude letibot-llama --no-default-features --no-fail-fast
 
   # **macOS, on Apple silicon: the port's own gate.** Everything Linux-only in the tree has
   # a macOS answer now — process groups for the cgroup tree, libproc for `/proc`, `lsof`

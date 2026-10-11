@@ -71,7 +71,6 @@ use std::process::Command;
 use std::sync::Arc;
 
 use letibot_sessionlog::registry::{Registry as SessionRegistry, SessionWiring};
-use letibot_tokencore::apparatus::present_gguf;
 use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, ReviewRecord};
 use letibot_tools::builtins::task::{Finished, TaskRunner as _, WorktreePlacement};
 use letibot_tools::gatekeeper::NoReviewer;
@@ -147,7 +146,7 @@ impl Fixture {
     /// `None` after announcing the skip, when this box has no vocabulary GGUF — the shape
     /// `compact.rs` uses, and the only apparatus any test here needs.
     fn new(tag: &str) -> Option<Self> {
-        let gguf = present_gguf()?;
+        let gguf = crate::vocab_gguf()?;
         let dir = TempDir::new(&format!("letibot-queue-e2e-{tag}"));
         let db = dir.path().join("sessions.db");
         let mut cfg = Config::for_this_box(dir.path());

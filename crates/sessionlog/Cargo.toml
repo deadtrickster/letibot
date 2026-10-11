@@ -26,14 +26,23 @@ letibot-turn = { workspace = true, optional = true }
 # scrub must be buildable with no path into a filesystem a tool can read.
 letibot-tools = { workspace = true, optional = true }
 
+# **llama.cpp only for the tests that need it** — the GGUF vocabulary, behind `local`.
+# harnessd's `local` (its default) turns this on, so the operator's `cargo test` runs them;
+# `--no-default-features` builds and tests everything else with no llama.cpp on the box.
+letibot-llama = { workspace = true, optional = true }
+
 [features]
-default = []
+default = ["local"]
 turn = ["dep:letibot-turn"]
 tools = ["dep:letibot-tools"]
+local = ["dep:letibot-llama"]
+
+[[test]]
+name = "live_e2e"
+required-features = ["local"]
 
 [dev-dependencies]
-letibot-llama.workspace = true
-letibot-sessionlog = { path = ".", features = ["turn", "tools"] }
+letibot-sessionlog = { path = ".", default-features = false, features = ["turn", "tools"] }
 letibot-tools = { workspace = true, features = ["testing"] }
 letibot-turn = { workspace = true, features = ["glm"] }
 # For the live end-to-end test, which drives a real turn engine against the

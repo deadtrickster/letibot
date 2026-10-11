@@ -103,7 +103,7 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
     if let Some(gguf) = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
-        .or_else(letibot_tokencore::apparatus::present_gguf)
+        .or_else(letibot_harnessd::vocab_gguf)
     {
         cmd.arg("--vocab").arg(gguf);
     }
@@ -149,7 +149,7 @@ fn gone(child: &mut Child) -> bool {
 /// **The stop ends the run, and the daemon goes — not at the run's deadline.**
 #[test]
 fn a_stop_ends_the_run_that_holds_the_worker() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     if !Path::new("/usr/bin/su").exists() {

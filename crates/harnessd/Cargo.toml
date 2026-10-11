@@ -10,7 +10,7 @@ build = "build.rs"
 [features]
 default = ["local"]
 # A local model: llama.cpp's tokenizer, so token ids can be sent to a llama-server.
-local = ["dep:letibot-llama"]
+local = ["dep:letibot-llama", "letibot-sessionlog/local", "letibot-turn/local"]
 
 [dependencies]
 letibot-transcript.workspace = true
@@ -61,8 +61,11 @@ path = "src/bin/harnessd.rs"
 name = "letibot-m1"
 path = "src/bin/letibot-m1.rs"
 
+[[test]]
+name = "reprefill_feasibility"
+required-features = ["local"]
+
 [dev-dependencies]
-letibot-llama.workspace = true
 letibot-tools = { workspace = true, features = ["testing"] }
 
 [[bin]]

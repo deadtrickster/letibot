@@ -41,7 +41,7 @@ fn opened(cfg: &Config, parts: &Parts) -> Harness {
 
 #[test]
 fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-todos");
@@ -108,7 +108,7 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
 
 #[test]
 fn a_session_that_never_wrote_todos_opens_with_an_empty_board() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-todos-empty");
@@ -223,7 +223,7 @@ fn a_session_with_an_open_plan(tag: &str) -> (TempDir, std::path::PathBuf, Strin
 
 #[test]
 fn a_session_reopened_with_an_open_plan_arms_its_idle_clock() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-open");
@@ -246,7 +246,7 @@ fn a_session_reopened_with_an_open_plan_arms_its_idle_clock() {
 
 #[test]
 fn a_reopened_session_with_a_finished_plan_arms_nothing() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-done");
@@ -281,7 +281,7 @@ fn a_reopened_session_with_a_finished_plan_arms_nothing() {
 
 #[test]
 fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-set");
@@ -350,7 +350,7 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
 /// which is the one thing `Postponed` was asked for (*"they persist"*).
 #[test]
 fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (_dir, path, session_id) = a_session_with_an_open_plan("moved-model-row");

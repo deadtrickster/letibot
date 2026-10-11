@@ -149,7 +149,7 @@ fn seed(h: &mut Harness) {
 /// daemon that reported every session stale.
 #[test]
 fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("instructions");
@@ -258,7 +258,7 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
 /// `wired.rs` skips this shape when the box cannot build a boundary, and so does this.
 #[test]
 fn a_tool_that_arrived_is_named_in_the_sentence() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("tools");
@@ -333,7 +333,7 @@ fn a_tool_that_arrived_is_named_in_the_sentence() {
 /// pass on a fixture that never wrote a note at all.
 #[test]
 fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("notes");

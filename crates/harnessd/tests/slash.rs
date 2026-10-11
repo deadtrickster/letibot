@@ -17,10 +17,7 @@ const VOCAB: &str = "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00
 
 #[test]
 fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
-    if !std::path::Path::new(VOCAB).is_file() {
-        eprintln!(
-            "SKIPPED: no GLM vocabulary at {VOCAB} — the check did not run and this is not a pass"
-        );
+    if letibot_harnessd::vocab_file(std::path::Path::new(VOCAB)).is_none() {
         return;
     }
     // The operator's providers.toml must not be touched: point the config home

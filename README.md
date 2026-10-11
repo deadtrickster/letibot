@@ -131,9 +131,22 @@ box with neither `curl` nor a toolchain, install `curl` first (`apt-get install 
 can work around: there is no way to download an installer without a downloader.
 
 Without `curl`, `install.sh` falls back to building from source — which needs **more**, not less:
-`git`, Rust, a C compiler, and a **built llama.cpp checkout**, because `harnessd` links the tokenizer
-and that is not optional. Point it at one with `LETIBOT_LLAMA_DIR` (holding `include/llama.h`) and
+`git`, Rust, a C compiler, and a **built llama.cpp checkout**, because `harnessd` links its tokenizer
+for local models. Point it at one with `LETIBOT_LLAMA_DIR` (holding `include/llama.h`) and
 `LETIBOT_LLAMA_LIB` (holding `libllama.so.0`).
+
+**Cloud only, without llama.cpp.** If you use a cloud provider (DeepSeek, GLM, Grok) and never a
+local model, skip llama.cpp entirely:
+
+```sh
+cargo build --release --no-default-features --bins
+cargo test --workspace --exclude letibot-llama --no-default-features
+```
+
+That drops the `local` feature: nothing links libllama, the daemon serves cloud providers, and
+pointing it at a local model is refused with a sentence saying this build has no llama.cpp. Tests
+that need a model vocabulary skip and say so (`LETIBOT_REQUIRE_APPARATUS=1` turns a skip into a
+failure). CI's `no-llama` job builds and tests exactly this, with no llama.cpp on the runner.
 
 `LETIBOT_VERSION` picks a tag (e.g. `v0.1.1`); `LETIBOT_FROM_SOURCE` forces the source path.
 

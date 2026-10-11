@@ -262,7 +262,7 @@ fn payloads(hub: &Hub) -> String {
 /// person was still typing.
 #[test]
 fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let helper = PathBuf::from(env!("CARGO_BIN_EXE_letibot-askpass"));
@@ -397,7 +397,7 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
 /// process, and this is a failure to read one.
 #[test]
 fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let socket = socket_path("unreadable");

@@ -336,7 +336,7 @@ fn user_row(item: &TranscriptItem) -> Option<(RowSpeaker, String)> {
 /// anybody said — and the note follows it on its own line.
 #[test]
 fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let said = format!("sqlite\n{NOTE}");
@@ -434,7 +434,7 @@ fn the_answer_is_the_operators_own_row_and_the_trail_can_cite_it() {
 /// carry without a label, an index or a quotation around it.
 #[test]
 fn a_typed_answer_lands_as_the_operators_own_words() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let said = "neither — split it into two migrations";
@@ -453,7 +453,12 @@ fn a_typed_answer_lands_as_the_operators_own_words() {
         .utterances
         .iter()
         .find(|u| u.text == said)
-        .unwrap_or_else(|| panic!("the typed answer is not in the trail: {:#?}", trail.utterances));
+        .unwrap_or_else(|| {
+            panic!(
+                "the typed answer is not in the trail: {:#?}",
+                trail.utterances
+            )
+        });
     assert_eq!(cited.speaker, Speaker::Operator);
 }
 
@@ -465,7 +470,7 @@ fn a_typed_answer_lands_as_the_operators_own_words() {
 /// the wire carries for the act is the word the row carries.
 #[test]
 fn an_abstention_lands_as_the_operators_own_row() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (items, trail) = one_exchange(
@@ -483,7 +488,12 @@ fn an_abstention_lands_as_the_operators_own_row() {
         .utterances
         .iter()
         .find(|u| u.text == "abstain")
-        .unwrap_or_else(|| panic!("the abstention is not in the trail: {:#?}", trail.utterances));
+        .unwrap_or_else(|| {
+            panic!(
+                "the abstention is not in the trail: {:#?}",
+                trail.utterances
+            )
+        });
     assert_eq!(cited.speaker, Speaker::Operator);
     // And the tool said the same thing, which is the pair that keeps the row and the result
     // from disagreeing about what happened.

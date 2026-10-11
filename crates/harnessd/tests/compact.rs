@@ -86,7 +86,7 @@ fn opened(cfg: &Config, parts: &Parts) -> Harness {
 
 #[test]
 fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-compact");
@@ -161,7 +161,7 @@ fn a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it() {
 
 #[test]
 fn a_second_compaction_forks_off_the_first_fork() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-compact-twice");
@@ -201,7 +201,7 @@ fn a_second_compaction_forks_off_the_first_fork() {
 
 #[test]
 fn a_session_without_a_store_refuses_to_fork_by_name() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let mut cfg = Config::for_this_box("/tmp");
@@ -241,7 +241,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
 /// a dead port, so the attempt fails fast and touches no server.
 #[test]
 fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     use letibot_tools::authorise::Speaker;
@@ -422,7 +422,7 @@ fn an_unfinished_reasoning_turn(
 /// `SalvageExhausted`.
 #[test]
 fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     use letibot_harnessd::Sessions;
@@ -561,7 +561,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
 /// nothing left to do.
 #[test]
 fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-compact-reseat");
@@ -657,7 +657,7 @@ fn a_compaction_forks_onto_the_prompt_the_daemon_seats_now() {
 /// --continue but still no exec"*.
 #[test]
 fn the_tools_listing_marks_what_the_prompt_has_never_heard_of() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-tools-listing");
@@ -696,7 +696,7 @@ fn the_tools_listing_marks_what_the_prompt_has_never_heard_of() {
 /// evicted span was* applied inside the boundary rather than before it.
 #[test]
 fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-compact-tail");
@@ -797,7 +797,7 @@ fn the_fork_says_what_it_carried_verbatim_and_never_claims_it_was_replaced() {
 /// sentence — the local path, and every re-seat and re-ingest.
 #[test]
 fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-compact-notail");
@@ -849,7 +849,7 @@ fn a_fork_with_no_tail_claims_nothing_about_a_tail() {
 /// caller of it.
 #[test]
 fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-door-deposit");
@@ -927,7 +927,7 @@ fn a_door_call_lands_as_a_deposit_with_its_origin_and_its_size() {
 /// reason `ForkTail::because` is a parameter.
 #[test]
 fn the_compaction_note_says_why_it_has_no_tail() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-compact-why");
@@ -1018,7 +1018,7 @@ fn the_compaction_note_says_why_it_has_no_tail() {
 /// provider → local switch kept the provider's scale for the rest of the session.
 #[test]
 fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-switch-scale");
@@ -1126,7 +1126,7 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
 /// test's assertion, not this one's.
 #[test]
 fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     use letibot_harnessd::Sessions;
@@ -1211,7 +1211,7 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 ///    transcript FORKED (`#t1`), which is the store row the dead child never had.
 #[test]
 fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     use letibot_sessionlog::event::SessionEvent;
@@ -1410,7 +1410,7 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
 /// `/reseat`.
 #[test]
 fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-fork-replaces");

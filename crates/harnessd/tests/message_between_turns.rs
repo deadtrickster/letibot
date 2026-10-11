@@ -728,7 +728,7 @@ impl Drop for TempDir {
 /// it as its parent's words, and the child's turn ran with it.
 #[test]
 fn a_message_to_a_child_between_turns_starts_its_turn() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-message-between");
@@ -824,7 +824,7 @@ fn a_message_to_a_child_between_turns_starts_its_turn() {
 /// its own, and this request would not carry it.
 #[test]
 fn a_message_to_a_running_child_lands_in_that_turn() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-message-running");
@@ -914,7 +914,7 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
 /// child's log.
 #[test]
 fn a_second_message_does_not_start_a_second_turn_for_the_first() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-message-twice");
@@ -990,7 +990,7 @@ fn a_second_message_does_not_start_a_second_turn_for_the_first() {
 /// second refusal, not the third. Both are refusals by name; this pins which is which.
 #[test]
 fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-message-gone");
@@ -1100,7 +1100,7 @@ fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
 /// is the two tests above.
 #[test]
 fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-message-dispatch");
@@ -1216,7 +1216,7 @@ impl Drop for DrainOnDrop<'_, '_> {
 /// is a race. What is staged is the call and the bound, which is where both defects would live.
 #[test]
 fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-exit-drain");
@@ -1318,7 +1318,7 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
 /// closed registry, and an exit that must not spend `SUBAGENT_EXIT_GRACE` on an empty tree.
 #[test]
 fn the_daemons_exit_returns_promptly_when_nothing_is_running() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-exit-quiet");

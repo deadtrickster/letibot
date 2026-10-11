@@ -128,7 +128,7 @@ fn open(cfg: Config, adj: Option<Box<dyn Adjudicator>>) -> Result<(), String> {
 /// has somewhere to put it. Six tools, all `Read`, over a backend that cannot write.
 #[test]
 fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = config(Seat::default());
@@ -190,7 +190,7 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
 /// the thing that keeps it out of a default prompt is the role and nothing else.
 #[test]
 fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = config(Seat::default());
@@ -227,7 +227,7 @@ fn a_registered_tool_the_role_does_not_name_is_not_in_the_prompt() {
 /// that cannot be corrected without a full re-prefill.
 #[test]
 fn a_write_seat_with_no_adjudicator_refuses_to_start_and_says_what_to_attach() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let e = open(
@@ -256,7 +256,7 @@ fn a_write_seat_with_no_adjudicator_refuses_to_start_and_says_what_to_attach() {
 /// the ledger were asked.
 #[test]
 fn a_write_seat_with_an_adjudicator_opens_fully_wired() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = config(Seat::Coder);
@@ -312,7 +312,7 @@ fn a_write_seat_with_an_adjudicator_opens_fully_wired() {
 /// the health of `bwrap`.
 #[test]
 fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let mut cfg = config(Seat::Runner);
@@ -400,7 +400,7 @@ fn the_runner_role_does_not_seat_bash_without_its_own_flag() {
 /// that looks equipped and cannot compile.
 #[test]
 fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_view() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let mut cfg = config(Seat::Coder);
@@ -474,7 +474,7 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 /// have to carry it in the context it is about to hand over.
 #[test]
 fn the_planner_seat_can_write_its_plan_and_not_the_work() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = config(Seat::Planner);
@@ -500,7 +500,7 @@ fn the_planner_seat_can_write_its_plan_and_not_the_work() {
 /// pretending — which is a *different* thing from not being seated.
 #[test]
 fn the_researcher_seat_carries_seams_that_refuse_by_name() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = config(Seat::Researcher);
@@ -540,7 +540,7 @@ fn the_researcher_seat_carries_seams_that_refuse_by_name() {
 /// and it is `NoAdjudicator` — the honest worst case, where nobody decided at all.
 #[test]
 fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     use letibot_harnessd::harness::HubDenials;
@@ -663,7 +663,7 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
 /// than joining a session where a task stopped for no visible reason.
 #[test]
 fn a_denial_is_replayed_to_a_head_that_was_not_there() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     use letibot_sessionlog::SessionEvent;
@@ -717,7 +717,7 @@ fn leticode_cfg(session: &str) -> Config {
 
 #[test]
 fn consenting_to_allow_all_admits_a_shell_command_unasked() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = leticode_cfg("allow-all-exec");
@@ -763,7 +763,7 @@ fn a_leticode_session_asks_the_person_and_the_answer_reaches_the_model() {
     use letibot_sessionlog::protocol::Caps;
     use letibot_tools::events::NullToolSink;
 
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let cfg = leticode_cfg("ask-choice");
@@ -857,7 +857,7 @@ fn a_leticode_session_asks_the_person_and_the_answer_reaches_the_model() {
 /// operator's own base prompt is speaking it.
 #[test]
 fn a_custom_system_prompt_is_what_the_session_opens_under() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let short = "You judge.";
@@ -893,7 +893,7 @@ fn a_custom_system_prompt_is_what_the_session_opens_under() {
 /// new base from it.
 #[test]
 fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let system = "SYSTEM-MARKER: you are the guard. ".repeat(40);
@@ -957,7 +957,7 @@ fn a_fork_puts_the_base_prompt_in_front_of_the_summary() {
 /// this way at all, because it has to ask one for a summary.
 #[test]
 fn reingest_writes_no_summary_and_says_so_in_the_note() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = std::env::temp_dir().join(format!("letibot-reingest-{}", std::process::id()));

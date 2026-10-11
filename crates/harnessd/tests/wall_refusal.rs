@@ -277,7 +277,7 @@ fn at(warnings: &[(String, String)], code: &str, text: &str) -> usize {
 /// the same refusal on every turn for the rest of the daemon's life.
 #[test]
 fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-refused-daemon");
@@ -429,7 +429,7 @@ fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
 /// only through the matcher's unit tests.
 #[test]
 fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-refused-child");
@@ -520,7 +520,7 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
 /// invalid-tokens body from the same log.
 #[test]
 fn a_non_context_400_stays_a_backend_error() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-refused-other");
@@ -616,7 +616,7 @@ fn a_session_at_the_wall(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Par
 
 #[test]
 fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (dir, mut cfg, parts) = a_session_at_the_wall(
@@ -695,7 +695,7 @@ fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
 
 #[test]
 fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     // A todo row conditioned on a job handle nothing knows: **absence is the

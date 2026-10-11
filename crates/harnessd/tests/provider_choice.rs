@@ -107,7 +107,7 @@ impl Drop for TempDir {
 /// into NULL.
 #[test]
 fn a_switch_writes_the_row_and_local_is_written_by_name() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("persist");
@@ -135,7 +135,7 @@ fn a_switch_writes_the_row_and_local_is_written_by_name() {
 /// alone so a build that does know the preset still finds it.
 #[test]
 fn a_resume_restores_the_sessions_own_model_and_a_unknown_preset_is_refused_by_name() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("restore");
@@ -185,7 +185,7 @@ fn a_resume_restores_the_sessions_own_model_and_a_unknown_preset_is_refused_by_n
 /// store recorded before this column existed has no opinion to restore.
 #[test]
 fn a_session_that_never_chose_resumes_on_the_daemon_default() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("unswitched");

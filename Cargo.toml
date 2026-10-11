@@ -92,8 +92,10 @@ letibot-provider = { path = "crates/provider" }
 letibot-websearch = { path = "crates/websearch" }
 letibot-webfetch = { path = "crates/webfetch" }
 letibot-backend = { path = "crates/backend" }
-letibot-turn = { path = "crates/turn" }
-letibot-sessionlog = { path = "crates/sessionlog" }
+# `default-features = false`: their default is `local` (llama.cpp, for their own tests);
+# a dependent gets it only through harnessd's `local`, so the head never links libllama.
+letibot-turn = { path = "crates/turn", default-features = false }
+letibot-sessionlog = { path = "crates/sessionlog", default-features = false }
 letibot-tui = { path = "crates/tui" }
 letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }

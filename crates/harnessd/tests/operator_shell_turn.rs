@@ -444,7 +444,7 @@ impl Drop for TempDir {
 /// turn its rows are for.
 #[test]
 fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let dir = TempDir::new("harnessd-bang-turn");

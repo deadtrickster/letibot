@@ -22,11 +22,28 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 # dialect; the tests turn it on.
 letibot-dialect-glm = { workspace = true, optional = true }
 
+# **llama.cpp only for the tests that need it** — the GGUF vocabulary, behind `local`.
+# harnessd's `local` (its default) turns this on, so the operator's `cargo test` runs them;
+# `--no-default-features` builds and tests everything else with no llama.cpp on the box.
+letibot-llama = { workspace = true, optional = true }
+
 [features]
-default = []
+default = ["local"]
 glm = ["dep:letibot-dialect-glm"]
+local = ["dep:letibot-llama"]
+
+[[test]]
+name = "compaction"
+required-features = ["local"]
+
+[[test]]
+name = "engine_decisions"
+required-features = ["local"]
+
+[[test]]
+name = "live_qwen"
+required-features = ["local"]
 
 [dev-dependencies]
-letibot-llama.workspace = true
-letibot-turn = { path = ".", features = ["glm"] }
+letibot-turn = { path = ".", default-features = false, features = ["glm"] }
 letibot-dialect-glm.workspace = true

@@ -332,7 +332,7 @@ fn watch(
 ///    count naming the payload it went out with.
 #[test]
 fn a_bang_run_in_flight_leaves_the_worker_free() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (setup, cfg) = setup("free", "bang-worker-free");
@@ -502,7 +502,7 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
 /// than the one this branch fixes.
 #[test]
 fn a_second_bang_line_waits_for_the_run_in_flight_and_runs_once() {
-    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     let (setup, cfg) = setup("serial", "bang-worker-serial");

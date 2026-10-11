@@ -70,7 +70,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use letibot_sessionlog::registry::Registry;
-use letibot_tokencore::apparatus::present_gguf;
 use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, ReviewRecord, Store};
 use letibot_tools::builtins::task::{Placement, TaskRunner, TaskSpec, TaskStatus};
 
@@ -240,7 +239,7 @@ struct Fixture {
 impl Fixture {
     /// `None` after announcing the skip, when this box has no vocabulary GGUF.
     fn new(tag: &str) -> Option<Self> {
-        let gguf = present_gguf()?;
+        let gguf = crate::vocab_gguf()?;
         let dir = TempDir::new(tag);
         let db = dir.path().join("sessions.db");
         let mut cfg = Config::for_this_box(dir.path());

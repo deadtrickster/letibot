@@ -906,7 +906,7 @@ mod tests {
 
     impl Fixture {
         fn new(tag: &str) -> Option<Self> {
-            let gguf = letibot_tokencore::apparatus::present_gguf()?;
+            let gguf = crate::vocab_gguf()?;
             let dir = TempDir::new(tag);
             let ws = dir.path.join("ws");
             std::fs::create_dir_all(&ws).expect("the workspace");

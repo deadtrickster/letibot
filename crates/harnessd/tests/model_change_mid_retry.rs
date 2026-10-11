@@ -449,7 +449,7 @@ where
 /// The whole of the change, measured once, in one process.
 #[test]
 fn a_model_change_during_a_retrying_turn_takes_and_the_turn_continues() {
-    let Some(gguf) = letibot_tokencore::apparatus::present_gguf() else {
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     // The operator's `providers.toml` must not be touched: point the config home at a
