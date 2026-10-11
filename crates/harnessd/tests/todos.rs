@@ -393,3 +393,55 @@ fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
         .expect("the session's rows");
     assert_eq!(rows[0].status, TodoStatus::Pending, "{rows:#?}");
 }
+
+/// **A plan the store did not take is said on the session's log** — R67 item 15.
+///
+/// `flush_todos`' failures at the operator's door, the review queue's board and a fired condition
+/// used to be `eprintln!` and nothing else, so the head that just moved a row was told nothing
+/// when the store refused it. The store is made to refuse by moving its `todo` table away through
+/// a second connection; a `/todo` move naming a row that is not there is the second sentence.
+#[test]
+fn a_plan_the_store_refuses_is_said_on_the_hub() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let (_dir, path, session_id) = a_session_with_an_open_plan("refused-write");
+    let cfg = config(&path, &session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
+
+    let other = Store::open(&path).expect("a second connection");
+    other
+        .connection()
+        .execute_batch("ALTER TABLE todo RENAME TO todo_away")
+        .expect("the table moves away");
+
+    h.set_operator_todos(
+        vec![TodoItem {
+            content: "write the notes".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Operator,
+            when: None,
+            needs: Vec::new(),
+        }],
+        &[("a row nobody wrote".into(), TodoStatus::Postponed)],
+    );
+
+    let codes: Vec<String> = hub
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            letibot_sessionlog::SessionEvent::Warning { code, .. } => Some(code.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        codes.iter().any(|c| c == "todos_not_stored"),
+        "the store refused the operator's row and the head was not told: {codes:?}"
+    );
+    assert!(
+        codes.iter().any(|c| c == "todo_move_unresolved"),
+        "a move naming no row was dropped with a stderr line only: {codes:?}"
+    );
+}

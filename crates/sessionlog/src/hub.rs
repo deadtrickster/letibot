@@ -419,7 +419,8 @@ pub trait AnswerSink: Send + Sync {
 }
 
 impl CommandKind {
-    fn verb(&self) -> &'static str {
+    /// The command's one-word name, as the daemon's log and a refusal's sentence spell it.
+    pub fn verb(&self) -> &'static str {
         match self {
             CommandKind::Prompt { .. } => "prompt",
             CommandKind::Compact => "compact",

@@ -194,6 +194,19 @@ pub const TABLE: &[(&str, Class)] = &[
     // it stands. Its pair below is Routine by `resume_note`'s rule — the queue doing what it
     // should, and the line that tells a reader the red one above is over.
     ("merge_queue_store_error", Class::Failure),
+    // **R67 item 15, the harness's half.** A tool call the idle sweep closed out because its
+    // executor was gone (`calls_abandoned`) — a Failure: something did not run, and the row says
+    // so; until now only the row did. And a plan the store did not take (`todos_not_stored`) — a
+    // Failure by `title_not_stored`'s ruling: the board is right in memory and the durable half is
+    // what is missing, and a fired condition left unwritten fires again after a restart.
+    ("calls_abandoned", Class::Failure),
+    ("todos_not_stored", Class::Failure),
+    // **Refused, both: the reader's own act, answered.** A `/todo` move naming a row the model has
+    // since rewritten, and a command a subagent does not run (`!`, a slash command, a mode, a todo
+    // edit sent to a child — its parent owns them). Nothing but the line they sent is at stake,
+    // and the sentence says where to send it instead.
+    ("todo_move_unresolved", Class::Refused),
+    ("child_door_refused", Class::Refused),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.
@@ -765,6 +778,9 @@ mod the_register_census {
     /// just typed and nothing but that line is at stake, it belongs here and the count below
     /// moves with it, on purpose.
     const READER_INPUT: &[&str] = &[
+        // **A command sent to a subagent that only its parent runs** (R67 item 15) — the reader's
+        // line, well formed, at a session that does not own the door it names.
+        "child_door_refused",
         "import_no_db",
         "import_no_session",
         "job_output_refused",
@@ -781,18 +797,27 @@ mod the_register_census {
         "provider_key_refused",
         "reseat_refused",
         "slash_refused",
+        // **A `/todo` move naming a row that is not on the board** — the model rewrote its plan
+        // between the head's read and the write; the board published with it is the correction.
+        "todo_move_unresolved",
     ];
 
-    /// **The census, pinned.** 98 codes, of which **9** are the reader's own input refused.
+    /// **The census, pinned.** 102 codes, of which **11** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_34_routine_9_refused_and_55_failures() {
+    fn the_table_is_34_routine_11_refused_and_57_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **98, not 96.** Two arrivals, one per register, for R67 item 12: the merge queue's
+        // **102, not 98.** Four arrivals for R67 item 15's harness half: `calls_abandoned` and
+        // `todos_not_stored` are Failures (a call that did not run; a plan the store did not take),
+        // and `todo_move_unresolved` and `child_door_refused` move the middle register from 9 to
+        // 11 — each is the reader's own line answered (a move naming a row that is gone; a door a
+        // subagent does not own), with nothing but that line at stake.
+        //
+        // **97, not 95.** Two arrivals, one per register, for R67 item 12: the merge queue's
         // thread no longer ends on a store error, so it says `merge_queue_store_error` (Failure —
         // nothing moves while it stands) and, when a pass works again, `merge_queue_recovered`
         // (Routine — the queue doing what it should, and the end of the red line above).
@@ -929,12 +954,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 98, "the table's size");
+        assert_eq!(TABLE.len(), 102, "the table's size");
         assert_eq!(count(Class::Routine), 34);
-        assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
-        assert_eq!(count(Class::Failure), 55);
+        assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
+        assert_eq!(count(Class::Failure), 57);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 55 of 98 and the middle is 9**, which is why the third register is a
+        // register is 57 of 102 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

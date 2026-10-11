@@ -266,6 +266,7 @@ fn a_wake_arms_the_sweep_that_closes_a_call_nothing_answered() {
     // child settling, a job finishing, the merge queue ringing — every one of which arrives as
     // `Ring::Woken`, the arm under test.
     let hub = registry.get(session_id).expect("the session's hub");
+    let watched = hub.clone();
     let driver = std::thread::spawn(move || {
         registry.bell().ring_wake(session_id);
         let closed = wait_for_the_swept_call(&hub);
@@ -281,5 +282,15 @@ fn a_wake_arms_the_sweep_that_closes_a_call_nothing_answered() {
         closed,
         "the wake left the worker no deadline: the idle arm never ran and the call nothing \
          answered is still open"
+    );
+    // **And the head is told** (R67 item 15): the sweep's hub block was dead code, so a call closed
+    // out here reached the transcript and no sentence said why the spinner stopped.
+    let said = watched.retained().iter().any(|e| {
+        matches!(&e.event, SessionEvent::Warning { code, detail, .. }
+            if code == "calls_abandoned" && detail.contains("call-nothing-answered"))
+    });
+    assert!(
+        said,
+        "the sweep closed a call and said nothing on the session's log"
     );
 }

@@ -5248,13 +5248,40 @@ impl Harness {
                 origin: None,
                 media: None,
             });
-            if let Some(hub) = self.hub.clone().into() {
-                let _ = hub;
-            }
             settled += 1;
         }
-        if settled > 0 {
-            let _ = self.append_results(results);
+        // **And the head is told, and told when the record could not be written** — R67 item 15.
+        // This used to be a hub block that did nothing (`let _ = hub;`) and a `let _ =` on the
+        // append, so a call closed out here was announced to nobody but the transcript, and a
+        // close-out the store refused was announced to nobody at all: the spinner the sweep exists
+        // to end would stay up, and nothing would say why.
+        let named: Vec<String> = results
+            .iter()
+            .filter_map(|r| match r {
+                TranscriptItem::ToolResult { call_id, name, .. } => {
+                    Some(format!("`{name}` ({call_id})"))
+                }
+                _ => None,
+            })
+            .collect();
+        match self.append_results(results) {
+            Ok(()) => self.import_note(
+                "calls_abandoned",
+                format!(
+                    "{settled} tool call(s) had no result and nothing left to answer them — the \
+                     executor was gone and the round had ended: {}. Each is closed out as not run, \
+                     with the stored transcript's tail on its row.",
+                    named.join(", ")
+                ),
+            ),
+            Err(e) => self.import_note(
+                "transcript_store",
+                format!(
+                    "{settled} tool call(s) nothing will answer ({}) could not be closed out: {e}. \
+                     They may still show as running.",
+                    named.join(", ")
+                ),
+            ),
         }
         settled
     }
@@ -7141,6 +7168,15 @@ impl Harness {
             && let Err(why) = self.todos.set_states(moved)
         {
             eprintln!("  todos: a state move did not land: {why}");
+            // The head that sent it is told too (R67 item 15): the union this write publishes is
+            // the correction, and this is the sentence that says why the row did not move.
+            self.import_note(
+                "todo_move_unresolved",
+                format!(
+                    "a `/todo` state move did not land: {why}. The board below is the plan as it \
+                     stands now."
+                ),
+            );
         }
         // **AND PERSIST IT AND TELL EVERY HEAD, which is the half the version bump alone does not
         // do.** `flush_todos` is version-gated and runs at every TURN BOUNDARY — so on a session
@@ -7151,9 +7187,7 @@ impl Harness {
         //
         // The row does not reach the model's TOOL REPLY — that is `todo`'s own — so nothing here is
         // a turn.
-        if let Err(e) = self.flush_todos() {
-            eprintln!("  todos: could not publish the operator's row: {e}");
-        }
+        self.flush_todos_or_say("the operator's row");
     }
 
     /// **The children this daemon is running, as the plan-check reads them.**
@@ -7799,9 +7833,7 @@ impl Harness {
         let n = self.todos.set_queue(rows);
         // Version-gated: the board only publishes and persists when the queue actually MOVED, so a
         // queue standing still costs nothing on every pass.
-        if let Err(e) = self.flush_todos() {
-            eprintln!("  todos: could not publish the review queue's rows: {e}");
-        }
+        self.flush_todos_or_say("the review queue's rows");
         n
     }
 
@@ -8217,9 +8249,9 @@ impl Harness {
         .map(|out| {
             if !fired.is_empty() {
                 self.todos.consume_conditions(&fired);
-                if let Err(e) = self.flush_todos() {
-                    eprintln!("  todos: a fired condition could not be written down: {e}");
-                }
+                // Unwritten, the condition is still pending in the store and fires again after
+                // a restart — which is why this is said on the hub and not only on stderr.
+                self.flush_todos_or_say("a fired condition");
             }
             out
         })
@@ -11250,6 +11282,26 @@ impl Harness {
     /// persist: the list is still real for the life of the session, and saying so
     /// once in the open notes would be the honest form; silently pretending it
     /// persisted would not be.
+    /// **[`Harness::flush_todos`] for a caller with no error to return** — the three doors that
+    /// used to `eprintln!` the failure and nothing else (R67 item 15): the operator's own rows,
+    /// the review queue's board, and a fired condition being spent. Each is a plan the store does
+    /// not hold, and the last is the worst of them: a condition that fired and was not written
+    /// down fires AGAIN after a restart. So the failure reaches the session's hub as
+    /// `todos_not_stored`, beside the daemon's log line.
+    fn flush_todos_or_say(&mut self, what: &str) {
+        if let Err(e) = self.flush_todos() {
+            eprintln!("  todos: {what} could not be written down: {e}");
+            self.import_note(
+                "todos_not_stored",
+                format!(
+                    "the plan moved ({what}) and the store did not take it: {e}. The board you \
+                     see is right for this daemon's life; after a restart it comes back as the \
+                     store last held it."
+                ),
+            );
+        }
+    }
+
     fn flush_todos(&mut self) -> Result<(), HarnessError> {
         let v = self.todos.version();
         if v == self.todos_version {
@@ -13215,6 +13267,22 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
     }
 }
 
+/// **What a subagent's head is told about a command the child does not run** — pure, for the
+/// reason [`child_command`] is: what it says is asserted without a daemon.
+fn child_leave_said(sub_id: &str, kind: &letibot_sessionlog::CommandKind, why: &str) -> String {
+    use letibot_sessionlog::CommandKind as K;
+    let what = match kind {
+        K::OperatorShell { line, .. } => format!("`{line}`"),
+        K::Slash { line } => format!("`{line}`"),
+        other => format!("a `{}` command", other.verb()),
+    };
+    format!(
+        "{what} was not run in {sub_id}: it is {why}. A subagent's compaction, mode, `!` line, \
+         slash commands and todo edits are its parent's — send it to the parent session, or ask \
+         this one in words."
+    )
+}
+
 /// **The sentence a session leaves about the children it stopped on the way down** — or
 /// `None` when it had none.
 ///
@@ -13527,6 +13595,14 @@ pub fn serve_child_under(
                     "  {sub_id}: left a command in this subagent's queue — {why}. A child's \
                      machinery is its parent's, so nothing was run."
                 );
+                // **And the head that sent it is told** (R67 item 15): a `!` line, a slash
+                // command, a mode or a todo edit sent to a subagent was dropped with a stderr line,
+                // and the head attached to the child saw its command vanish.
+                hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: "child_door_refused".into(),
+                    detail: child_leave_said(&sub_id, &kind, why),
+                    compaction: None,
+                });
                 // Nothing ran and nothing moved, so the clock keeps its own anchor —
                 // the same silence a queued-but-unrunable command leaves on the daemon.
                 rearm_the_idle_check(sub, &mut nag, &mut board_version, false);
@@ -19564,6 +19640,26 @@ mod tests {
         }
     }
 
+    /// **What the head attached to a subagent is told about a command the child leaves** — R67
+    /// item 15: the line it typed, named back, and where to send it instead.
+    #[test]
+    fn a_command_a_child_leaves_is_named_back_to_its_head() {
+        use letibot_sessionlog::CommandKind as K;
+        let said = child_leave_said(
+            "s-1-sub-2",
+            &K::OperatorShell {
+                line: "! ls".into(),
+                who: "dead".into(),
+            },
+            "a door a child does not own",
+        );
+        assert!(said.contains("`! ls`"), "{said}");
+        assert!(said.contains("s-1-sub-2"), "{said}");
+        assert!(said.contains("parent"), "{said}");
+        let said = child_leave_said("s-1-sub-2", &K::Compact, "a door a child does not own");
+        assert!(said.contains("`compact`"), "{said}");
+    }
+
     /// **A progress bar is ONE line, and the window must show its last state.**
     ///
     /// The operator's report, 2026-10-05: *"more often than not i'd like to enter the job and
@@ -20951,24 +21047,35 @@ fn one_line(s: &str, n: usize) -> String {
 /// It reads ONE transcript, which is why it is right here and not a per-call guess: an assistant row
 /// that names a call is the request, a `ToolResult` row with that id is the answer, and a call
 /// between the two is one nothing will ever answer.
+///
+/// **Linear, and that is a requirement rather than tidiness** (R67 item 14). The answered ids were a
+/// `Vec` and each asked call was looked up with `iter().any`, which is O(calls × results) over the
+/// whole in-memory transcript — and this runs for every held session two seconds after every
+/// command or wake, ON THE WORKER. The tree the review measured had ~15k `bash` results, so one
+/// sweep of one big session was on the order of 10⁸ string compares with every other session's
+/// work queued behind it. A `HashSet` of borrowed ids makes it one pass and one lookup per call,
+/// and nothing is cloned that is not returned.
 pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
-    let mut asked: Vec<(String, String)> = Vec::new();
-    let mut answered: Vec<String> = Vec::new();
+    let mut asked: Vec<(&str, &str)> = Vec::new();
+    let mut answered: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for item in items {
         match item {
             TranscriptItem::Assistant { tool_calls, .. } => {
                 for c in tool_calls {
-                    asked.push((c.id.clone(), c.name.clone()));
+                    asked.push((c.id.as_str(), c.name.as_str()));
                 }
             }
-            TranscriptItem::ToolResult { call_id, .. } => answered.push(call_id.clone()),
+            TranscriptItem::ToolResult { call_id, .. } => {
+                answered.insert(call_id.as_str());
+            }
             _ => {}
         }
     }
     // A call asked for TWICE and answered once is answered: the set difference, not a count.
     asked
         .into_iter()
-        .filter(|(id, _)| !answered.iter().any(|a| a == id))
+        .filter(|(id, _)| !answered.contains(id))
+        .map(|(id, name)| (id.to_string(), name.to_string()))
         .collect()
 }
 
