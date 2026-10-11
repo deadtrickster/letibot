@@ -744,8 +744,7 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
         "{rang}"
     );
     assert!(
-        crate::mergequeue::serve::QueueDoor::ring_repository(&door, "/no/such/repository")
-            .is_err(),
+        crate::mergequeue::serve::QueueDoor::ring_repository(&door, "/no/such/repository").is_err(),
         "a repository with no root here rings nobody, and says so"
     );
 }
