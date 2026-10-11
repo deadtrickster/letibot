@@ -1890,7 +1890,7 @@ to this design:
 
 ---
 
-## R81 — Metrics and operator feedback: an event table, the instruments, and a way to mark a moment — **OPEN, 2026-10-11, designed in `docs/metrics.md`; phase 1 is buildable** (R80 left free for the clear-context item being filed on `clear-context`)
+## R81 — Metrics and operator feedback: an event table, the instruments, and a way to mark a moment — **PHASE 1 BUILT on `metrics-phase1` 2026-10-11 (not merged); what landed and what is left are at the end of this entry** (R80 left free for the clear-context item being filed on `clear-context`)
 
 The operator: *"we need metrics design, there is simply not enough data to make decisions like
 this. i can't even live feedback so we can analyze sessions, and we need metrics - how often and
@@ -1959,6 +1959,93 @@ behind a busy worker; (4) alt-g / alt-b mark the current turn good / bad; (5) co
 sentences are kept as text by default while R71's floor is tuned; (6) not answered — built ON by
 default with a config switch to turn it off; (7) a LIVE page served from the box (`letibot stats
 serve`), not an export.
+
+**Phase 1, built on `metrics-phase1` (2026-10-11).**
+
+*The file.* `crates/metrics` (`letibot-metrics`): `Event` (typed constructors over the generic
+row of §2.2; the kinds are `metrics::kind`), `emit` — a `try_send` on a bounded 8,192-slot
+channel, a drop counter on a full one, never SQL, never a wait — and behind the `store` feature
+the `metrics-writer` thread (one transaction a second or per 1,000 rows, WAL,
+`synchronous=NORMAL`, a failed batch retried once then dropped and counted), schema 1 exactly as
+§2.2 (with `daily`), the per-kind `TEMP` views the reader loads, and the prune: once at start and
+daily, raw rows older than `keep_days` (90) rolled up into `daily` (n, sums, max; p50/p95 left
+`NULL`) and deleted — except every `operator.feedback` row and every row of a turn a mark points
+at. `metrics.db` lives beside the store (`~/.local/share/letibot/metrics.db`; `$LETIBOT_METRICS_DB`
+overrides; 0600). `providers.toml` `[metrics]`: `enabled` (on by default), `keep_days`, `snippets`
+(default `context.claim` — decision 5). A daemon with no `--store` records nothing.
+
+*A turn, for metrics,* is a prompt — every round of one door — keyed by its FIRST round's engine
+id. The hub tap derives the same key from `TurnStarted.began_ms`, so a mark and its turn join on
+`turn_id`. `turn.start` is written with the turn's end (stamped when it began): the id only
+exists after the first round. A crash mid-turn leaves no turn rows (the rounds are there).
+
+*The instruments* (`crates/harnessd/src/instruments.rs`; each site one line):
+1. `worker.cmd` — `QueuedCommand.enqueued_ms` (new), queue wait and dispatch time per command,
+   in `Daemon::run`; `worker.pass` for the sweep, plan checks, parking and reviews over 250 ms.
+2. `turn.start` / `turn.end` — `turn_tail::run_turn`: door, wake cause, fill and window, model,
+   tokens, rounds, tool calls and errors, TTFB, cost, outcome (`eos`/`length`/`wall`/`stalled`/…).
+3. `round` — `run_rounds`: tokens, `server_prompt_tokens` beside `ledger_tokens` (R72's two units),
+   `ttfb_ms` (new `TurnMetrics.first_byte_ms`: local from the post to the first id, cloud from
+   the request to the first delta), prompt/predicted ms, slot, cost.
+4. `tool.call` — around `runtime.invoke`: duration, outcome (the wire's tag), inline/full bytes,
+   memory peak and cap (bash leaves `MemoryUse` on its thread: `exec::scope::note_memory`).
+5. `delivery` — in `DeliveryLog::record`, R79's one record site: what, how
+   (`immediate`/`batched`/`starved`), rule, wait, batch, mid-turn (the session's turn has run a
+   round) or at the turn's start. The jsonl is kept beside it until phase 2.
+6. `wake` — `Harness::wake`: counts per cause (queue, monitor, result, due row), ran or empty.
+7. `compaction` (automatic and `/compact`, both units, duration) and `wall` (a turn that ends
+   at the wall: both units, continues used).
+8. `nag` (the named row, its status, operator's or not) and `nag.followup` (`touched` /
+   `untouched`: did the turn the check opened move that row).
+9. `context.claim` beside the jsonl, with the sentence as its snippet — and **the `999999` fixed**:
+   `context_fill` reported `shown_tokens(planning_window())`, a round trip through the ratio; it
+   now reports the window as given (`shown_wall`). The jsonl gets the real window too.
+10. The hub tap (`sessionlog::metrics_tap`, one line in `Inner::append_and_fan`): `warning` by
+    code and class, `operator.action` (commands, attach/detach, mid-turn or not), `subagent`,
+    `job`, `decision.answer`, `queue.move`. Plus `mem.sample` from memwatch every fifth tick and
+    at every census step. The registry tells the writer each session's parent, so every row has
+    its tree's root.
+
+*Feedback.* `ClientFrame::Feedback {at_ms, polarity, note, item_id}`, **PROTOCOL_VERSION 45**,
+answered on the connection thread (`metrics_tap::mark`): placed on the turn and round the hub says
+is running (or the last), or on the turn a read-back row was written in; the head's press time
+kept (a clock more than a minute off is replaced by the receipt time); `#tags` parsed; a routine
+`feedback` warning confirms it to every head (new code; census 115). The tui: `/fb NOTE`, `/fb+`,
+`/fb-`, alt-g / alt-b (a second press within 5 s fills the composer with `/fb± `). **alt-b was
+readline's word-left** and stays it wherever there is a line — it marks only on an empty composer
+with nothing in front (the `ctrl-e` rule); alt-g always marks. **No `f` on a selected row**: this
+head has no row cursor; a mark made while the view is scrolled back names the anchored row
+instead. `letibot fb --session S [--turn T] [+|-] NOTE` writes the same row from a shell (on the
+session's last finished turn), no daemon needed.
+
+*`letibot stats`* (read-only): today (the default), `waits` (Q3, per build), `deliveries`
+(Q1 + wakes by cause + turns by door), `tools` (Q8), `models` (Q7: TTFB p50/p95, tok/s, cache
+hit), `turns`, `feedback [--bad]` (Q15), `session ID`, `sql`. `--since 2d|12h|all`, `--db`.
+
+*Tests:* the emitter never blocks (1,000 sends into a full channel return at once, 996 counted);
+the writer batches and accounts for every event (written or counted dropped); retention prunes
+and keeps marked turns and the rollup; each instrument's row on a canned-server turn through the
+production turn tail (`harnessd/tests/metrics_instruments.rs`) and in unit tests (worker wait,
+delivery mid-turn/at start, wake cause, nag follow-up, wall, an empty door writes nothing); the
+mark round-trips over a real socket into a temp `metrics.db` with its turn and round while no
+worker drains the hub (`sessionlog/tests/feedback.rs`); every `stats` verb against a temp db.
+
+**Left after phase 1:**
+- **leticl** needs: send `ClientFrame::Feedback` (`{"frame":"feedback","at_ms":…,"polarity":
+  "good"|"bad"|"note","note":"…","item_id":null|"…"}`) from its own `/fb` and keys, accept
+  protocol 45, and draw the routine `feedback` warning. Until then `letibot fb` is its door.
+- Not built from §5's phase 1: the `notes-offers.jsonl` dual-write; `/fb list` / `/fb rm`
+  (withdrawal as an `outcome = 'withdrawn'` row — the reader already skips those); a gutter mark
+  at the marked row (the confirmation is the warning line); queue depth on `worker.cmd` (n2);
+  `delivery.followup` (did the next round touch the delivered handle); the "writer blocked, turn
+  completes" test at the harness level (the emitter's own test covers the property) and the
+  `perf` < 1 % measurement, which needs a busy hour on the operator's box.
+- Phase 2/3 as designed: rollup percentiles, the jsonl files retired, `adjudication` /
+  `gate.step` pointers, `error` by kind, the degradation block, and the LIVE page the operator
+  chose (`letibot stats serve`, decision 7) — the read side is `letibot_metrics::stats`, so the
+  page is one more caller of the same queries.
+- "Done when" still needs a day of real use: every phase-1 kind present, counts checked against
+  the turn-end log lines and the day's `adjudication` rows.
 ## R80 — `/clear`: a fresh conversation for the same session — **BUILT on `clear-context` 2026-10-11 (not merged); what is left is at the end of this entry**
 
 The operator, verbatim: *"I need to be able to clear context - fresh reseat without loosing session todos and jobs"*, *"and subagents"*, *"this will allow me to fix model degradation"*. MEASURED the same day on pg-noop: 710k of a 1M window, reasoning full of `✓ ✗ ✓ ✓` glyph spam and repeated boilerplate. `/compact` does not cure that — its summary is written by the drifted model in its own voice and becomes the base every later turn imitates — and `/reseat` carries the drift across verbatim.
