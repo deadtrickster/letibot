@@ -213,6 +213,19 @@ fn park_a_child(
     canned: canned::Canned,
     path: &std::path::Path,
 ) -> ParkedChild {
+    park_a_child_with(parent, child, canned, path, |_, _| {})
+}
+
+/// [`park_a_child`], with the board written BEFORE the serving thread starts — `before` is handed
+/// the child's harness and the parent's resolver, so a test can put rows of every author on the
+/// board without racing the clock's first window.
+fn park_a_child_with(
+    parent: &str,
+    child: &str,
+    canned: canned::Canned,
+    path: &std::path::Path,
+    before: impl FnOnce(&mut Harness, &ParentTodos),
+) -> ParkedChild {
     let mut cfg = config(path, child);
     // Cloned rather than moved: `Canned` implements `Drop` (it owns the server thread's
     // handle), so no field of it can be moved out.
@@ -246,6 +259,14 @@ fn park_a_child(
     // thread, exactly as `run_to_completion` runs it before parking.
     sub.submit_as_a_normal_session("do the task, then stop and wait")
         .expect("the first turn answers");
+    before(
+        &mut sub,
+        &ParentTodos::new(
+            parent.to_string(),
+            registry.clone(),
+            parts.child_boards.clone(),
+        ),
+    );
     // Parked. The clock's window is the test's; everything else about it is the
     // production schedule.
     let hub_for_the_struct = hub.clone();
@@ -382,9 +403,15 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         (2..=3).contains(&said.len()),
         "a check and its repeat inside three windows — not one per window: {said:#?}"
     );
-    assert_eq!(
-        said[0], said[1],
-        "the repeat is the same sentence, because the plan has not moved"
+    // **The repeat names the same row and says it is a repeat** (R77): the first check names it
+    // plainly and the second says it was asked already. They were equal only because the first
+    // delivery read the notice twice and already counted itself as asked.
+    assert!(
+        !said[0].contains("asked about this one already")
+            && said[1].contains(&format!(
+                "{PARENTS_ROW} — Parent {parent}, and you were asked about this one already"
+            )),
+        "the repeat is the same row, said as a repeat, because the plan has not moved: {said:#?}"
     );
 
     // **THE WAKE ITSELF, which one write cannot prove.** By now the first check has been
@@ -540,4 +567,71 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+/// **R77, on a child's own clock: the operator's row is named first, and the first check says they
+/// added it.** The child's board holds the parent's row and then the operator's — the operator's
+/// LAST, the way the board's snapshot orders its halves — and the check the child's own thread
+/// delivers names the operator's. The ranking is `unfinished_plan_for`'s, reached through the same
+/// `Harness::nag_notice` the daemon's sessions use, so this is the one predicate seen from the
+/// child's side rather than a copy of it.
+#[test]
+fn a_childs_check_names_the_operators_row_first() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-child-nag-operator");
+    let path = dir.path().join("sessions.db");
+    let parent = "s-parent-beside-the-operator";
+    let child = "s-child-with-an-operator-row";
+    const THEIRS: &str = "make tier 1 green";
+
+    let parts = Parts::load(&config(&path, child)).expect("the vocabulary must load");
+    let mut scripts = vec![a_plain_answer_turn(
+        &parts.vocab,
+        "planning",
+        "the task is done",
+        30,
+    )];
+    for i in 0..10 {
+        scripts.push(a_plain_answer_turn(
+            &parts.vocab,
+            "checking",
+            &format!("on it {i}"),
+            30,
+        ));
+    }
+    let canned = canned::Canned::serve_each(scripts, 20);
+    drop(parts);
+
+    let kid = park_a_child_with(parent, child, canned, &path, |sub, theirs| {
+        theirs
+            .upsert_child(
+                child,
+                &[(PARENTS_ROW.into(), TodoStatus::Pending, Vec::new())],
+            )
+            .expect("the parent's write is accepted");
+        sub.set_operator_todos(
+            vec![letibot_tokencore::store::TodoItem {
+                content: THEIRS.into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+                needs: Vec::new(),
+            }],
+            &[],
+        );
+    });
+
+    let first = wait_for(&kid.hub, |hub| checks_on(hub).into_iter().next());
+    assert!(
+        first.starts_with(&format!("[todo check] the operator added: \"{THEIRS}\"")),
+        "the child's first check names the operator's row, and says they added it: {first}"
+    );
+    assert!(
+        first.contains("(1 more open)") && !first.contains(&format!("  - {PARENTS_ROW}")),
+        "the parent's row is the count, not the line: {first}"
+    );
+
+    kid.release();
 }

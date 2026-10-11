@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, Owner, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
-use letibot_tokencore::store::{Store, TodoItem};
+use letibot_tokencore::store::{Store, TodoBy, TodoItem, TodoStatus};
 // **The plan's own text, and the queue it is served from** — the one renderer, so the idle check
 // and the tool's reply cannot come to describe two different plans. And the children the plan may
 // wait on: `ChildSessions` is the snapshot the daemon builds for them (`child_sessions` below),
@@ -114,6 +114,21 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 /// been sent comes due again at [`TodoNagClock::interval`], which doubles from here and stops at
 /// [`NAG_REPEAT_CAP`].
 const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
+
+/// **How long after the operator ADDS a row the check comes due** — shorter than
+/// [`TODO_NAG_AFTER`], and the reason is the one that window was written for, read the other way
+/// (R77).
+///
+/// The minute exists so a check does not land while a person is still reading the answer they
+/// were just given. An operator who has just added a row to the board is not reading anything: they
+/// have finished saying what they want done, and the session is idle (the worker takes the push
+/// only between turns). The operator's own report — *"i added a todo to pg-noop session … and
+/// didnt arrive the next nag"* — is what waiting the full minute and then not naming the row looks
+/// like from their side. Ten seconds and not zero: a person adding three rows in a row, or adding
+/// one and then typing the prompt that goes with it, has finished inside that, and a check that
+/// started on the first of them would be the interruption the minute is for. Applied only where
+/// the window it replaces is longer, so a clock with a shorter window (a test's) keeps its own.
+const OPERATOR_ADD_NAG_AFTER: Duration = Duration::from_secs(10);
 
 /// **How long after a turn the idle arm looks for a tool call nothing answered.**
 ///
@@ -564,6 +579,31 @@ impl TodoNagClock {
         self.repeats = 0;
     }
 
+    /// **The operator ADDED a row to the board: the check is earned back, and comes due sooner**
+    /// (R77) — [`Sessions::rearm_todo_nag`]'s operator-add door, called only when the push put an
+    /// open row on their half that was not there before ([`the_operator_added`]).
+    ///
+    /// **Earned back** for the reason [`Self::prompt_arrived`] gives a prompt: the operator has said
+    /// something about what the plan should be, and a row on the board is them saying it. Without
+    /// this a session whose notice had already climbed the ladder would hear about their row at
+    /// whatever gap the old notice had grown to. **And sooner**: at [`OPERATOR_ADD_NAG_AFTER`]
+    /// rather than the full window, for the reason that constant gives. A plan that is silent for
+    /// another reason (a young child, a running job) is armed exactly as [`Self::rearm`] arms it —
+    /// the shorter window replaces the base window and nothing else.
+    pub fn operator_added(
+        &mut self,
+        todos: &[TodoItem],
+        now: Instant,
+        children: &ChildSessions,
+        jobs: &RunningJobs,
+    ) {
+        self.prompt_arrived();
+        self.rearm(todos, now, children, jobs);
+        if nag_should_arm(todos, None, children, jobs) {
+            self.due = Some(now + self.window.min(OPERATOR_ADD_NAG_AFTER));
+        }
+    }
+
     /// **Record the notice a delivery just sent, as of `now`** — before the outcome is known, which
     /// is deliberate: a check whose turn failed still counts as said, or the same notice would come
     /// back every window, which is the metronome at a slower rate.
@@ -622,6 +662,25 @@ impl TodoNagClock {
     pub fn fired(&mut self) {
         self.due = None;
     }
+}
+
+/// **Did this push put a row on the operator's half that was not there before?** — the one
+/// question that tells an operator ADD (or re-wording, which is a new row by its words) from the
+/// head re-pushing the rows it already sent, which it does on every add, delete and HELLO (R77).
+///
+/// Open rows only: a row pushed as already done, or set aside, is not work the operator is asking
+/// for. The words are the key, as they are everywhere on this board.
+pub(crate) fn the_operator_added(before: &[TodoItem], after: &[TodoItem]) -> bool {
+    let open_and_theirs = |row: &&TodoItem| {
+        row.by == TodoBy::Operator
+            && matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress)
+    };
+    after.iter().filter(open_and_theirs).any(|row| {
+        !before
+            .iter()
+            .filter(open_and_theirs)
+            .any(|was| was.content == row.content)
+    })
 }
 
 impl Default for TodoNagClock {
@@ -1964,6 +2023,26 @@ impl<'a> Sessions<'a> {
         self.rearm_todo_nag_from(session_id, rows, jobs);
     }
 
+    /// [`Sessions::rearm_todo_nag`] for a push that ADDED an operator row — the clock's
+    /// [`TodoNagClock::operator_added`] in place of its plain re-arm, the inputs read the same way.
+    fn rearm_todo_nag_after_an_operator_add(&mut self, session_id: &str) {
+        let Some(h) = self.open.get(session_id) else {
+            return;
+        };
+        let rows = h.todo_list();
+        let jobs = h.running_jobs(&rows);
+        let children = child_sessions(
+            &self.registry,
+            &self.parts.tasks,
+            letibot_sessionlog::registry::now_ms(),
+        );
+        let window = self.nag_window;
+        self.nags
+            .entry(session_id.to_string())
+            .or_insert_with(|| TodoNagClock::with_window(window))
+            .operator_added(&rows, Instant::now(), &children, &jobs);
+    }
+
     fn rearm_todo_nag_from(&mut self, session_id: &str, rows: Vec<TodoItem>, jobs: RunningJobs) {
         let children = child_sessions(
             &self.registry,
@@ -2475,15 +2554,17 @@ impl<'a> Sessions<'a> {
             .collect();
         let mut ran = 0;
         for session_id in due {
-            let notice = match self.open.get_mut(&session_id) {
-                Some(h) => h.nag_notice(),
+            let notice = match self.open.get(&session_id) {
+                // Recorded as the clock reads the plan, not as the wording sent
+                // (`Harness::nag_said_as`, R77): the wording moves from one delivery to the next.
+                Some(h) => h.nag_notice().map(|_| h.nag_said_as()),
                 None => continue,
             };
             // Nothing to say after all — the plan moved between the arming and the clock — is no
             // turn, and a door that runs no turn owes no sweep.
-            if notice.is_none() {
+            let Some(notice) = notice else {
                 continue;
-            }
+            };
             // **The shared tail arms the sweep and the wake, records the notice as said and
             // re-arms the clock** — what this door used to do by hand, and once did not (R67
             // item 10).
@@ -3174,6 +3255,13 @@ impl<'a> Sessions<'a> {
                     .iter()
                     .map(|s| (s.content.clone(), status_from_the_wire(s.status)))
                     .collect();
+                // **The board before the write**, so an ADD can be told from a re-push (R77): the
+                // head sends its whole half on every add, delete and HELLO.
+                let before = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.todo_list())
+                    .unwrap_or_default();
                 if let Some(h) = self.open.get_mut(session_id) {
                     h.set_operator_todos(converted, &states);
                 }
@@ -3189,7 +3277,20 @@ impl<'a> Sessions<'a> {
                 // worth checking, and `rearm_todo_nag` already decides — an unchanged plan is not
                 // re-armed, so a head that re-pushes the same rows (any add, any delete, every
                 // HELLO) does not become a metronome.
-                self.rearm_todo_nag(session_id);
+                //
+                // **And an ADD is more than a moved board** (R77): the operator has said what they
+                // want done, so the check is earned back and comes due at the shorter window —
+                // `TodoNagClock::operator_added`. A re-push is the ordinary arm above.
+                let after = self
+                    .open
+                    .get(session_id)
+                    .map(|h| h.todo_list())
+                    .unwrap_or_default();
+                if the_operator_added(&before, &after) {
+                    self.rearm_todo_nag_after_an_operator_add(session_id);
+                } else {
+                    self.rearm_todo_nag(session_id);
+                }
                 Outcome::Ignored
             }
             CommandKind::WithdrawPrompts => Outcome::Ignored,

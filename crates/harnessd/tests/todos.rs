@@ -336,6 +336,55 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
     );
 }
 
+/// **R77: an operator's ADD arms the check at the shorter window, not the idle minute.** What
+/// tells an add from a head re-pushing its half is `the_operator_added`, pinned in
+/// `sessions/idle_nag.rs`.
+///
+/// The session opens with the model's row open, so its clock is already armed a minute out. The
+/// operator's row is added LAST, the way the head appends it; the deadline that follows is the
+/// operator-add window's (ten seconds), which is the daemon half of *"didnt arrive the next nag"*.
+#[test]
+fn a_row_the_operator_adds_arms_the_check_sooner_than_the_idle_window() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-add-sooner");
+    let cfg = config(&path, &session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let registry = Registry::new();
+    registry
+        .create(&session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+    let push = |content: &str| QueuedCommand {
+        head_id: "test-head".into(),
+        identity: "dead".into(),
+        client_request_id: "req-1".into(),
+        at_seq: 0,
+        kind: CommandKind::SetOperatorTodos {
+            items: vec![TodoEntry {
+                content: content.into(),
+                status: WireTodoStatus::Pending,
+                by: WireTodoBy::Operator,
+                when: None,
+                needs: Vec::new(),
+            }],
+            moved: Vec::new(),
+        },
+    };
+
+    sessions.dispatch(&session_id, &push("make tier 1 green"));
+    let left = sessions
+        .next_nag_at()
+        .expect("the add arms the check")
+        .saturating_duration_since(std::time::Instant::now());
+    assert!(
+        left <= std::time::Duration::from_secs(10),
+        "**the operator's add is checked at its own short window**, not a minute out: {left:?}"
+    );
+}
+
 /// **THE OPERATOR'S VERB REACHES A ROW THE MODEL WROTE — end to end, through the daemon.**
 ///
 /// The hole, MEASURED: a row the model wrote that waits on a person's hand could not be silenced

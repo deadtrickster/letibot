@@ -56,7 +56,7 @@ use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
-use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan_for};
+use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan, unfinished_plan_for};
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role, Tool,
@@ -7159,12 +7159,44 @@ impl Harness {
     /// One predicate, so the clock and the sentence cannot disagree about what the plan is.
     ///
     /// **And the row this names is remembered, so the question does not wander.** The check picks a
-    /// row once and names it again until it stops being askable — a row the operator adds elsewhere
-    /// on the plan cannot change which row the model is being held to — and a row that becomes
-    /// `InProgress` changes the QUESTION rather than the choice (`unfinished_plan_for`'s own words).
-    /// The clock keeps the TEXT, which is what the ladder counts repeats of; the row itself is this
-    /// harness's to remember, because the text cannot say which row it named.
-    pub fn nag_notice(&mut self) -> Option<String> {
+    /// row once and names it again until it stops being askable — a row the MODEL adds elsewhere on
+    /// the plan cannot change which row it is being held to, and the operator's ready rows come
+    /// before it (R77, `unfinished_plan_for`) — and a row that becomes `InProgress` changes the
+    /// QUESTION rather than the choice. The clock keeps the TEXT, which is what the ladder counts
+    /// repeats of; the row itself is this harness's to remember, because the text cannot say which
+    /// row it named.
+    ///
+    /// **Reading it does not remember it** (R77). Both delivery doors read this once to record the
+    /// notice as said and then run [`Harness::nag_turn`], which reads it again — and when this
+    /// wrote `nag_choice` the second reading already counted the first as *asked*, so the model's
+    /// FIRST check of any row said *"you were asked about this one already"*, and the first check
+    /// after an operator's add could never say they added it. The choice is committed by
+    /// `nag_turn`, the one place a check is actually delivered.
+    pub fn nag_notice(&self) -> Option<String> {
+        self.nag_notice_naming().map(|(text, _)| text)
+    }
+
+    /// **What the idle clock counts a delivered check AS** — the plan's sentence read the way the
+    /// clock's own arming reads it (`sessions::nag_should_arm`: the narrowed rows, no sticky
+    /// choice, no stale-prompt sentence), so *the same notice again* means the same plan and not
+    /// the same wording (R77).
+    ///
+    /// The wording moves on its own: the first check of a row names it plainly (or says the
+    /// operator added it) and the next says *"you were asked about this one already"*. Recording
+    /// the WORDING as said made the second delivery a different notice from the arming's reading
+    /// of an unchanged plan, so every check after it came due at the base window — the metronome
+    /// the ladder exists to prevent. The delivery doors record this instead of the text they send.
+    pub fn nag_said_as(&self) -> Option<String> {
+        let board = self.todos.snapshot();
+        let children = self.child_sessions();
+        let jobs = self.running_jobs(&board);
+        let askable = crate::sessions::the_plan_as_checked(&board, &children, &jobs);
+        unfinished_plan(&askable, &board, &children, &jobs)
+    }
+
+    /// [`Harness::nag_notice`] and the row it named — `None` for the second half when the notice is
+    /// only the stale-prompt sentence, which names no row.
+    fn nag_notice_naming(&self) -> Option<(String, Option<String>)> {
         // **The board and the rows it may speak about, both** — the second is the narrowing
         // (`the_plan_as_checked`, the ONE predicate) and the first is what a row's edges resolve
         // against, since a need is met by a row that is DONE and a done row is exactly what the
@@ -7193,10 +7225,10 @@ impl Harness {
             &children,
             &jobs,
         );
-        let plan = plan.map(|(text, named)| {
-            self.nag_choice = Some(named);
-            text
-        });
+        let (plan, named) = match plan {
+            Some((text, named)) => (Some(text), Some(named)),
+            None => (None, None),
+        };
         // **And the prompt this session is speaking, when it is not this daemon's.**
         //
         // The sentence is composed once, at open, by the fingerprint comparison and left in the
@@ -7221,12 +7253,13 @@ impl Harness {
                      without the question arising."
                 )
             });
-        match (plan, stale) {
+        let text = match (plan, stale) {
             (None, None) => None,
             (Some(plan), None) => Some(plan),
             (None, Some(stale)) => Some(stale),
             (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
-        }
+        };
+        text.map(|text| (text, named))
     }
 
     /// **The plan's nudge as a turn of its own, when nothing else is happening.**
@@ -7250,9 +7283,14 @@ impl Harness {
     /// outcome and not a failure: a caller that asked has its answer, and no turn is spent
     /// on a nudge with no finding behind it.
     pub fn nag_turn(&mut self) -> Result<Option<Reply>, HarnessError> {
-        let Some(text) = self.nag_notice() else {
+        let Some((text, named)) = self.nag_notice_naming() else {
             return Ok(None);
         };
+        // **The choice is remembered HERE, where the check is delivered** — see `nag_notice` for
+        // why reading the notice must not.
+        if let Some(named) = named {
+            self.nag_choice = Some(named);
+        }
         // **The wall is checked BEFORE the send — `submit_as_a_normal_session`'s
         // pre-flight, from the same function.** Insurance, not the load-bearing
         // fix: a refused nag is still classified as the wall (see the `Http` arm
@@ -13242,7 +13280,8 @@ fn serve_child_with(
             // would fire again at once.
             OwnWork::TimedOut => {
                 turns.nag.fired();
-                let notice = sub.nag_notice();
+                // Recorded as the clock reads the plan, not as the wording sent (`nag_said_as`).
+                let notice = sub.nag_said_as();
                 if run_turn(sub, &mut turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
                     turns.rearm(sub, false);
                 }

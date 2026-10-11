@@ -861,3 +861,84 @@ fn the_boundary_is_due_and_a_delivery_disarms_either_way() {
     clock.fired();
     assert!(clock.due_at().is_none());
 }
+
+/// **R77: an operator's ADD earns the check back and arms it at the shorter window** — a notice
+/// that had climbed the ladder is not where their row waits, and neither is the full minute.
+#[test]
+fn an_operator_add_earns_the_check_back_at_the_shorter_window() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let plan = [TodoItem {
+        by: TodoBy::Model,
+        ..row("the model's", TodoStatus::Pending)
+    }];
+    let said = super::unfinished_plan(&plan, &plan, &no_children(), &no_jobs()).expect("open");
+    clock.rearm(&plan, t0, &no_children(), &no_jobs());
+    assert!(clock.due_now(t0 + Duration::from_secs(60)));
+    clock.said(Some(said), t0 + Duration::from_secs(60));
+
+    let added = [
+        plan[0].clone(),
+        row("make tier 1 green", TodoStatus::Pending),
+    ];
+    let at = t0 + Duration::from_secs(70);
+    clock.operator_added(&added, at, &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(at + super::OPERATOR_ADD_NAG_AFTER),
+        "the operator's add is due at its own window, from the add"
+    );
+
+    // A clock whose window is already shorter keeps it — a test's 300ms is not lengthened.
+    let mut quick = super::TodoNagClock::with_window(Duration::from_millis(300));
+    quick.operator_added(&added, t0, &no_children(), &no_jobs());
+    assert_eq!(quick.due_at(), Some(t0 + Duration::from_millis(300)));
+}
+
+/// **An add is told from a re-push by the words**: the head sends its whole half on every add,
+/// delete and HELLO, and only a new open row is the operator asking for something.
+#[test]
+fn an_operator_add_is_a_new_open_row_on_their_half_and_nothing_else() {
+    let before = [row("one", TodoStatus::Pending)];
+    assert!(!super::the_operator_added(&before, &before), "a re-push");
+    assert!(super::the_operator_added(
+        &before,
+        &[
+            row("one", TodoStatus::Pending),
+            row("two", TodoStatus::Pending)
+        ]
+    ));
+    assert!(
+        super::the_operator_added(&before, &[row("one, re-worded", TodoStatus::Pending)]),
+        "a re-wording is a new row by its words"
+    );
+    assert!(
+        !super::the_operator_added(&before, &[]),
+        "a delete is not an add"
+    );
+    assert!(
+        !super::the_operator_added(
+            &before,
+            &[
+                row("one", TodoStatus::Pending),
+                row("done", TodoStatus::Completed)
+            ]
+        ),
+        "a row pushed as done is not work being asked for"
+    );
+    assert!(
+        !super::the_operator_added(
+            &before,
+            &[
+                row("one", TodoStatus::Pending),
+                TodoItem {
+                    by: TodoBy::Model,
+                    ..row("the model's", TodoStatus::Pending)
+                }
+            ]
+        ),
+        "only the operator's half"
+    );
+}

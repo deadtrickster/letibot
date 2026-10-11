@@ -672,6 +672,9 @@ fn apply_states(half: &mut [TodoItem], plan: Vec<(usize, TodoStatus)>) -> usize 
 /// operator's (`TodoBoard::snapshot`). So a model that has started two things and been asked for one
 /// more is pointed at its own in-progress work before the operator's, and at its own pending work
 /// before theirs — the order it would choose itself, which is the point of not shuffling it.
+/// **The idle check reads this order and then puts the operator's ready rows first** (R77,
+/// [`the_row_to_name`]): which row is NAMED is the check's question, and this stays the plan's
+/// order for every other reader.
 ///
 /// A STABLE sort, deliberately: equal keys keep their list order, and that is what makes the
 /// paragraph above true rather than aspirational.
@@ -1039,8 +1042,11 @@ pub fn unfinished_plan(
 /// the CHOICE, which is what makes the question sticky.
 ///
 /// **The choice must not drift under the agent.** The row is picked once and named again until it
-/// stops being askable (done, or postponed by the operator) — so a row the operator adds elsewhere
-/// on the plan cannot change which row this check is about. What a row becoming `InProgress` changes
+/// stops being askable (done, or postponed by the operator) — so a row the MODEL adds elsewhere on
+/// the plan cannot change which row this check is about. **A row the OPERATOR adds is the one
+/// exception, and deliberately** (R77): their open, ready rows are named before the sticky choice,
+/// because they are the person saying what they want done — see [`the_row_to_name`] for the order
+/// and why. What a row becoming `InProgress` changes
 /// is the QUESTION rather than the choice: *you were asked about this and it has not been started*
 /// becomes *it is marked in progress and still open*, which is the model's own claim about itself
 /// and the thing holding it to one row is for. That is also why the answer is a PAIR: the text alone
@@ -1060,8 +1066,8 @@ pub fn unfinished_plan(
 /// case"*. The ready set is the pool the check draws from, and the `in_progress` mark is how the
 /// model CHOOSES inside it (only the model may set that mark; `postponed` is deliberately the
 /// operator's alone, so a model cannot silence the check). The ASK is the row this check is holding
-/// the agent to: the sticky `chosen` while it is still ready, and the head of the ready set
-/// otherwise. The set is recomputed as the graph moves — a row completing makes others ready — and
+/// the agent to: an operator's ready row first, then the sticky `chosen` while it is still ready,
+/// and the head of the ready set otherwise ([`the_row_to_name`]). The set is recomputed as the graph moves — a row completing makes others ready — and
 /// the CHOICE is what sticks.
 ///
 /// **A plan with no edges anywhere is read EXACTLY as it was before any of this existed**, and that
@@ -1083,14 +1089,7 @@ pub fn unfinished_plan_for(
         ready,
         blocked,
     } = as_a_graph(rows, board, children, jobs);
-    // **AND THE ONE ALREADY ASKED ABOUT COMES FIRST**, while it is still ready. A row that has left
-    // the ready set — done, set aside by the operator, or BLOCKED — is no longer a choice, and the
-    // head of the ready set is; `the_check_may_ask_about` is what decided the first two, so this
-    // agrees with the clock by construction rather than by a second rule.
-    let next = chosen
-        .and_then(|content| ready.iter().copied().find(|row| row.content == content))
-        .or_else(|| ready.first().copied());
-    let Some(next) = next else {
+    let Some(next) = the_row_to_name(&ready, chosen) else {
         // **THE DEGENERATE CASE, and it is the one that has to be SAID out loud.** An unfinished
         // plan whose ready set is EMPTY — every row left waits on another — is not a plan to work,
         // it is a plan to UNBLOCK: something has to finish, or a need that names nothing has to be
@@ -1130,6 +1129,14 @@ pub fn unfinished_plan_for(
         TodoBy::Queue => "the merge queue's",
         TodoBy::Model => "yours",
     };
+    // **The operator's row the model has not been told about yet** (R77) — the one case the head
+    // line changes for. *Told* is read from `chosen`: a check that named this row last time has
+    // told the model, and a row the model has itself moved to in progress is one it already knows.
+    // So the FIRST check that names an operator's row after they add it (or re-word it, which is a
+    // new row by its words) says who put it there, and the ones after it name it like any other.
+    let operator_added = next.by == TodoBy::Operator
+        && next.status == TodoStatus::Pending
+        && chosen != Some(next.content.as_str());
     let state = match (next.status, chosen == Some(next.content.as_str())) {
         // **A row the model marked in progress is a claim it made**, and the check holds it to that
         // claim rather than asking the same question it asked before the mark existed.
@@ -1197,13 +1204,60 @@ pub fn unfinished_plan_for(
     } else {
         format!("\n{}", blocked_said(&blocked))
     };
+    // **The head line says the operator added it, and the rest of the notice keeps its shape** —
+    // the bullet, the advice and the waiting line are the same lines in the same order, because
+    // the head's notice fold (`blocks.rs`) reads a `[todo check] ` head and `  - ` bullets, and the
+    // advice still says to quote *the text above*, which the bullet is.
+    let head = if operator_added {
+        format!(
+            "[todo check] the operator added: \"{}\" — this turn is finished and it is not done{rest}",
+            next.content.trim(),
+        )
+    } else {
+        format!("[todo check] this turn is finished and one item is not done{rest}")
+    };
     Some((
         format!(
-            "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{advice}{waiting}",
+            "{head}:\n  - {}{state}\n{advice}{waiting}",
             next.content.trim(),
         ),
         next.content.clone(),
     ))
+}
+
+/// **Which READY row the check names** — the operator's first, then the sticky choice, then the
+/// head of the ready set (R77).
+///
+/// The operator: *"i added a todo to pg-noop session, but it was placed at the end, and didnt
+/// arrive the next nag"*. Measured in that session: their row was row 21 of 22, and a check that
+/// names the sticky `chosen` row or the head of the ready set never reached it — it was only ever
+/// part of *"(N more open)"*. So the order is three steps, and the first is the fix:
+///
+///   1. **The operator's open, ready rows** (`TodoBy::Operator`), in [`open_priority`]'s order —
+///      and among them the one already named, so a second operator row does not pull the question
+///      off the first. Their row is the person saying what they want done; a plan the model wrote
+///      for itself does not outrank it, and neither does the model's own sticky choice.
+///   2. **The row already asked about**, while it is still ready — the stickiness
+///      [`unfinished_plan_for`] describes, now one step down. A row that has left the ready set
+///      (done, set aside by the operator, or BLOCKED) is no longer a choice;
+///      `the_check_may_ask_about` decided the first two, so this agrees with the clock by
+///      construction rather than by a second rule.
+///   3. **The head of the ready set.**
+///
+/// **A BLOCKED operator row is not named**, because it is not in `ready`: it is said on the
+/// waiting line with what it waits for, exactly as any blocked row is. **One function, and the
+/// only one**: the daemon's sessions and a subagent's own thread both reach it through
+/// `Harness::nag_notice` → [`unfinished_plan_for`], and the arming decision through
+/// [`unfinished_plan`], so the clock, the text and the child's board cannot rank differently.
+fn the_row_to_name<'a>(ready: &[&'a TodoItem], chosen: Option<&str>) -> Option<&'a TodoItem> {
+    let theirs = |row: &&TodoItem| row.by == TodoBy::Operator;
+    let named = |row: &&TodoItem| chosen == Some(row.content.as_str());
+    let ready = || ready.iter().copied();
+    ready()
+        .find(|row| theirs(row) && named(row))
+        .or_else(|| ready().find(theirs))
+        .or_else(|| ready().find(named))
+        .or_else(|| ready().next())
 }
 
 /// **Why a row cannot start** — one need the board does not meet, and the reason it does not.

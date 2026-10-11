@@ -335,3 +335,105 @@ fn a_plan_written_and_completed_says_nothing() {
         "the plan as it STANDS is what is asked about"
     );
 }
+
+/// A row the OPERATOR wrote, `item`'s shape with the author changed.
+fn theirs(content: &str, status: TodoStatus) -> TodoItem {
+    TodoItem {
+        by: TodoBy::Operator,
+        ..item(content, status)
+    }
+}
+
+/// **R77: the operator's row is named first, wherever it sits on the board.** The live case:
+/// session `s-1789919514688401228`, the operator's *make tier 1 green* row 21 of 22, pending and
+/// last — and every check named the model's first ready row and counted theirs into *"(N more
+/// open)"*. Ahead of the model's in-progress row, and ahead of the model's sticky choice.
+#[test]
+fn the_operators_row_added_last_is_named_ahead_of_the_models() {
+    let mut plan = vec![
+        item("model in progress", TodoStatus::InProgress),
+        item("model pending", TodoStatus::Pending),
+    ];
+    let (_, named) = unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
+        .expect("open work");
+    assert_eq!(named, "model in progress");
+
+    plan.push(theirs("make tier 1 green", TodoStatus::Pending));
+    let (text, named) = unfinished_plan_for(
+        &plan,
+        &plan,
+        Some(&named),
+        &ChildSessions::none(),
+        &no_jobs(),
+    )
+    .expect("open work");
+    assert_eq!(
+        named, "make tier 1 green",
+        "the operator's row outranks the model's sticky choice: {text}"
+    );
+    assert!(text.contains("(2 more open)"), "{text}");
+    assert!(text.contains("the operator's"), "{text}");
+}
+
+/// **The first check after an add says who added it, and the next one names it plainly** — still
+/// first. A blocked operator row is not named at all: it is said on the waiting line.
+#[test]
+fn the_first_check_after_an_operator_add_says_the_operator_added_it() {
+    let plan = vec![
+        item("model pending", TodoStatus::Pending),
+        theirs("make tier 1 green", TodoStatus::Pending),
+    ];
+    let (first, named) = unfinished_plan_for(
+        &plan,
+        &plan,
+        Some("model pending"),
+        &ChildSessions::none(),
+        &no_jobs(),
+    )
+    .expect("open work");
+    assert!(
+        first.starts_with("[todo check] the operator added: \"make tier 1 green\""),
+        "{first}"
+    );
+    // The rest of the notice keeps its shape: the bullet the head's fold reads, and the advice.
+    assert!(
+        first.contains("\n  - make tier 1 green — the operator's\n"),
+        "{first}"
+    );
+    assert!(first.contains("`operator` field"), "{first}");
+
+    let (later, named) = unfinished_plan_for(
+        &plan,
+        &plan,
+        Some(&named),
+        &ChildSessions::none(),
+        &no_jobs(),
+    )
+    .expect("open work");
+    assert_eq!(named, "make tier 1 green", "still first");
+    assert!(!later.contains("the operator added"), "told once: {later}");
+    assert!(later.contains("asked about this one already"), "{later}");
+
+    // Blocked: the model's row is named, and the operator's is the waiting line.
+    let blocked = vec![
+        item("model pending", TodoStatus::Pending),
+        TodoItem {
+            needs: vec![TodoNeed::Row {
+                content: "model pending".into(),
+            }],
+            ..theirs("make tier 1 green", TodoStatus::Pending)
+        },
+    ];
+    let (text, named) =
+        unfinished_plan_for(&blocked, &blocked, None, &ChildSessions::none(), &no_jobs())
+            .expect("open work");
+    assert_eq!(
+        named, "model pending",
+        "a blocked row is not the next one: {text}"
+    );
+    assert!(!text.contains("the operator added"), "{text}");
+    assert!(
+        text.contains("make tier 1 green"),
+        "said as waiting: {text}"
+    );
+}

@@ -1709,7 +1709,7 @@ feat/memory-engine`, or fix `scripts/merge_gate.sh` on `main` and `/queue regate
 
 ---
 
-## R77 — An operator's todo lands last and the nag never names it — **OPEN, 2026-10-11**
+## R77 — An operator's todo lands last and the nag never names it — **BUILT on `r77-operator-todos` 2026-10-11 (not merged). What was built and what is left are at the end of this entry.**
 
 The operator: *"i added a todo to pg-noop session, but it was placed at the end, and didnt arrive
 the next nag"*. Read in the code:
@@ -1731,6 +1731,40 @@ rather than the full idle one. Subagent boards (`serve_child`'s clock) the same 
 **Done when:** an operator row added at the end of a board with model rows ahead of it is the row
 the next check names, with "the operator added"; a test on `unfinished_plan_for` and one on the
 daemon's re-arm.
+
+**Built (`r77-operator-todos`):**
+
+1. **Ranking** — `todo::the_row_to_name` (`crates/tools/src/builtins/todo.rs`): the operator's open,
+   READY rows first (the one already named among them, then `open_priority`'s order), then the
+   model's sticky `chosen`, then the head of the ready set. A blocked operator row is not named; it
+   is said on the waiting line as any blocked row is. `open_priority` is unchanged — it is the
+   board's order for every other reader; only which row the check NAMES moved.
+2. **"the operator added"** — the first check that names an operator's PENDING row it has not named
+   before says `[todo check] the operator added: "<row>" — this turn is finished and it is not
+   done (N more open):`, then the same bullet/advice/waiting lines (the head's notice fold still
+   reads it). The next check names it with the ordinary repeat wording, still first.
+   **And a defect this exposed:** both delivery doors read `Harness::nag_notice` once to record
+   it and `nag_turn` read it again, and the read wrote `nag_choice` — so the model's FIRST check of
+   any row already said *"you were asked about this one already"*. The read is pure now and
+   `nag_turn` commits the choice. The doors record `Harness::nag_said_as` (the plan read the way
+   `nag_should_arm` reads it) instead of the wording, so the ladder counts the same PLAN and not
+   the same words — the wording changes between the first check and its repeat, and recording it
+   made every check after the second come due at the base window.
+3. **The window** — `SetOperatorTodos` tells an ADD (a new open row on the operator's half, by its
+   words: `sessions::the_operator_added`) from a head re-pushing its half; an add goes through
+   `TodoNagClock::operator_added`: earned back (`prompt_arrived`) and due at
+   `OPERATOR_ADD_NAG_AFTER` (10s, the reason on the constant) rather than `TODO_NAG_AFTER`.
+4. **Subagent boards** — the same `unfinished_plan_for`, reached through the same `nag_notice`, on
+   the child's own clock (`tests/child_nag.rs`, `a_childs_check_names_the_operators_row_first`).
+   The child's door refuses a head's todo edits (`child_command` → `Leave`), so a child never
+   takes the operator-add window; it has nothing to take it from.
+5. **Placement — NOT done, by choice.** The board's snapshot order (model, parent, operator, queue)
+   is what `open_priority` and the pane are written against; ranking in the check is the fix.
+
+**Left:** a later re-arm (a HELLO re-push, a turn ending) after an add arms at the full window and
+so pushes the 10s deadline back — `rearm` sets the deadline rather than keeping the earlier one.
+And *told* is read from the sticky choice, which is in memory: after a daemon restart the first
+check of an operator row that was already named says "the operator added" once more.
 
 ---
 
