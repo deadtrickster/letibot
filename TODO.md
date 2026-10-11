@@ -41,7 +41,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R61 — Review and merge are two queues — **OPEN, designed by the operator 2026-10-11; the review of why the current one failed, and five requirements, are below**
+## R61 — Review and merge are two queues — **OPEN, designed and DECIDED by the operator 2026-10-11 (decisions below the review); ready to build**
 
 The operator: *"review is review and merge is merge. separate steps. separate queues."* and
 *"model reviews stay, yes"*. Today they are one: a `merge_queue` row sits in `waiting` until the
@@ -171,6 +171,49 @@ each state cannot be reconstructed):
    main's tip when it changes; red → land nothing, main's tip first in review (see item 4 above).
    A reviewer that cannot start leaves the entry visibly blocked on infrastructure at high
    severity — not handed to a model session to merge without the gate.
+
+### The operator's decisions, 2026-10-11 — R61 is designed; build it to these
+
+1. **Ownership: a lease per repository among that repository's session daemons** — one holds it,
+   with a heartbeat; another takes over when it dies; a daemon whose build does not match the
+   store never takes it. No dedicated queue process.
+2. **One queue per repository** (one table, a repository column). One repository's red main does
+   not stop another's landings.
+3. **Reviewers run in a VM holding a fresh clone of the BRANCH (not the workspace) when one can be
+   placed; otherwise on the host in a read-only seat.** 8 of 21 reviews died on copying a 72.8 GiB
+   workspace into an 8 GiB VM.
+4. **A reviewer that cannot start RAISES** — the entry blocks visibly at high severity — **with an
+   option to merge via the project's main session, configurable PER PROJECT.** (The operator: *"it
+   should raise yes, with an option to merge via main session, must be configurable per
+   project"*.) Default: raise only.
+5. **The operator may approve over the reviewer** (`/queue approve` on a rejected or unreviewed
+   entry), recorded as the operator's approval; it still runs the merge gate.
+6. **A branch that moves after approval goes back to review** (the verdict is bound to the head it
+   judged). A rebase onto a newer main is not a move.
+7. **The queue pushes after the gate passes** (the `gh` credential per invocation, as now), and
+   installs only after the push succeeded.
+8. **The gate runs here for now**; on the fleet (lubuntu1/2) when R62 lands.
+9. **Gate deadline 30 minutes**, then the entry is `timed out` — an outcome of its own, not
+   `failed`.
+10. **Main's tip is gated on every change of main**, hand merges included, coalesced so a burst of
+    commits is one run.
+11. **Red main is fixed by a fix branch the reviewer of main opens, through the queue like any
+    other, and the operator is told** — with **the default configurable** (per project, like 4).
+12. **The target branch is per project**, not always `main` (found answering 12: pg-noop lands on
+    `feat/memory-engine`, 91 commits ahead of its `main`, and the queue measured its branches
+    against `main` — every one looked 56–60 commits ahead).
+13. **Migration of today's 22 rows**: the 9 landed archived; `queue-spin` dropped (on main by hand
+    as c12d044); `a-pass-reads-one-row` re-enqueued (its branch is unmerged);
+    `group-the-queue-messages` (stale) checked and re-enqueued if its branch is unmerged. **The 10
+    failed, as measured**: 9 pg-noop entries were never judged — the reviewer ran on an old binary
+    (`store schema is version 23; this build knows 21`), failed 3 times, and the queue gave up. Of
+    their branches, 5 (`slt-runner-guards`, `sqlstate-correctness`, `update-arithmetic`,
+    `pg-arrays`, `wasm-extensions`) are fully merged into `feat/memory-engine`; 4
+    (`hash-ring-partitioner`, `datafusion-provider`, `literal-insert-and-row-width`,
+    `mutation-predicates-in-and-compare`) are deleted with no trace in `feat/memory-engine`'s log —
+    to be checked for surviving commits before the operator rules on them. The 10th,
+    `land-the-vm-fixture` (letibot), was empty — its work reached main. **The operator has not
+    ruled on archiving the failed rows**; archive, don't delete.
 
 **Operational, now, before any of this:** stop the daemons on old builds. The 10-07 and 10-09
 builds serve the shared table with no claim and no workspace filter.
