@@ -971,3 +971,36 @@ fn the_editor_keeps_two_columns_clear_on_the_right_of_its_frame() {
         }
     }
 }
+
+/// **The popup names its file once, in its top edge** — the operator, 2026-10-11: the path was
+/// in the edge and again on the first row, because the diff renderer heads every edit view with
+/// the file's name (right for a card in the conversation, a repeat inside a frame that says it).
+#[test]
+fn the_diff_popup_names_its_file_once() {
+    let ws = workspace("popname");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let screen = a.screen(100, 40);
+    let top = screen
+        .iter()
+        .position(|l| l.contains('╭'))
+        .expect("the popup's top edge");
+    assert!(
+        screen[top].contains(FILE),
+        "the edge names it: {:?}",
+        screen[top]
+    );
+    let named = screen[top + 1..]
+        .iter()
+        .take_while(|l| !l.contains('╰'))
+        .filter(|l| l.trim().ends_with(FILE))
+        .count();
+    assert_eq!(
+        named,
+        0,
+        "the file is named again inside the popup:\n{}",
+        screen.join("\n")
+    );
+}
