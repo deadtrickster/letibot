@@ -17,7 +17,8 @@ fn temp(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let d = std::env::temp_dir().join(format!("letibot-fb-{tag}-{}-{n}", std::process::id()));
+    let d = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-fb-{tag}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

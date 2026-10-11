@@ -16,7 +16,7 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    letibot_sessionlog::testing::scratch_root().join(format!(
         "letibot-askpass-{tag}-{}-{n}.sock",
         std::process::id()
     ))
