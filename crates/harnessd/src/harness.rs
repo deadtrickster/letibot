@@ -8746,7 +8746,11 @@ impl Harness {
         // and whether the pre-emptive door stands down (an unmeasured base, `Stuck`), is
         // the wall controller's — one state, changed only by measured counts.
         let refused = matches!(why, WallWhy::Refused);
-        if !refused && !self.cfg.should_compact(resident) {
+        if !refused
+            && !self
+                .cfg
+                .pre_emptive_compact(resident, self.provider.is_some())
+        {
             return false;
         }
         let Some(fold) = self.cfg.wall.fold_for(refused, &self.session.transcript_id) else {
@@ -9915,6 +9919,14 @@ impl Harness {
         let tail_split = tail.split;
         let old_id = self.transcript_id.clone();
         let was_tokens = self.session.ledger.len();
+        // **Whether this fork carries the conversation verbatim** — a re-ingest (`/reseat`):
+        // no summary, no first item of its own, every row of the history in the tail. Then the
+        // provider's last measurement still describes the conversation, and is kept (below).
+        let verbatim = lead.is_none()
+            && outcome.summary.is_empty()
+            && tail_split.is_none()
+            && tail_items.len() == self.session.items.len();
+        let prefix_before = self.session.ledger.prefix_tokens().len() as i64;
         // The prefix the FORK opens under, which is the caller's choice and not
         // always this session's. A compaction keeps the one the conversation has
         // been speaking under; a re-seat is the whole point of being able to hand
@@ -10158,8 +10170,36 @@ impl Harness {
         // Cleared rather than estimated. The count this row holds is the
         // provider's own, and dividing the new base by a measured ratio would put
         // a derived number where every other reader expects a measured one.
+        //
+        // **Except a verbatim fork**, which replaced nothing: a `/reseat` carries every row across
+        // and changes only message zero. Clearing its measurement threw away the one thing a
+        // restart needs to read the ledger in the provider's units — the operator's peerdb
+        // session, 2026-10-12, re-seated, restarted before a round measured again, and was
+        // folded on 2.4M ledger bytes it had never been measured at. So the provider's count is
+        // kept and its ledger anchor moved by exactly the prefix's change: every row sits where
+        // it sat, shifted by the new message zero. That is the measurement, re-addressed, and not
+        // an estimate.
         if let Some(store) = &self.store {
-            let _ = store.set_context(&self.cfg.session_id, None, None, None);
+            let kept = if verbatim {
+                store
+                    .session(&self.cfg.session_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|row| {
+                        let delta =
+                            self.session.ledger.prefix_tokens().len() as i64 - prefix_before;
+                        let ledger = (row.context_ledger? as i64 + delta).max(1) as u64;
+                        Some((row.context_tokens?, row.context_cached, ledger))
+                    })
+            } else {
+                None
+            };
+            let _ = match kept {
+                Some((tokens, cached, ledger)) => {
+                    store.set_context(&self.cfg.session_id, Some(tokens), cached, Some(ledger))
+                }
+                None => store.set_context(&self.cfg.session_id, None, None, None),
+            };
         }
         Ok(ForkReport {
             transcript_id: new_id,

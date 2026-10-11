@@ -456,12 +456,16 @@ fn a_model_change_during_a_retrying_turn_takes_and_the_turn_continues() {
     // scratch directory for this process, and take opencode's key store out of reach so
     // the keys this file writes are the ones that resolve.
     let scratch = letibot_sessionlog::testing::scratch_root().join(format!(
-        "letibot-model-change-{}-{}",
+        "letibot-model-change-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     std::fs::create_dir_all(scratch.join("letibot")).expect("the scratch config dir");
     // SAFETY: this test binary has one test, and everything below runs in sequence on this

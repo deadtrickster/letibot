@@ -91,6 +91,12 @@ impl App {
                     None => None,
                 };
             }
+            // **Esc drops a selection first** — the operator: *"and cancel selection on esc"* —
+            // and that Esc is spent on it: a pane, a popup, a running turn stay as they were.
+            Key::Esc if self.selection.is_some() => {
+                self.drop_selection();
+                return None;
+            }
             _ => {}
         }
         // **The session's prompts, before a recall starts** — see `refresh_prompt_history`.

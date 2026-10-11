@@ -14,20 +14,30 @@
 //!   the far machine's clipboard. A press and a release with no motion
 //!   between them are a click, delivered as the same [`Key::Click`] every click has always been.
 //! * **Motion with no button held** is hover: whatever a click there would act on — a key hint,
-//!   an edit card, a count label, a pane's or a card's row — is underlined, and the terminal is
-//!   asked for the hand pointer (OSC 22) while it is.
+//!   an edit card, a count label, a pane's or a card's row — is drawn a tad brighter, and the
+//!   terminal is asked for the hand pointer (OSC 22) while it is. Not underlined: the operator,
+//!   2026-10-12, *"underline - dont like it"*, *"make text a tad brighter"*.
 //!
 //! Both are drawn onto the finished frame ([`App::paint_pointer`]), after everything else, so no
 //! renderer knows about either.
 
 use super::*;
 
-/// **What the pointer is over**, as cells of the last frame: a row, and the columns to mark —
-/// `None` for the row's own text, first visible cell to last.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// **What the pointer is over**, as cells of the last frame: every row of the clickable block
+/// (an edit card's rows, a pane entry's lines), each with the columns to mark — `None` for the
+/// row's own text, first visible cell to last. The operator, 2026-10-12: *"can you light up the
+/// whole clickable block?"*.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Hovered {
-    pub(crate) y: usize,
-    pub(crate) cols: Option<(usize, usize)>,
+    pub(crate) rows: Vec<(usize, Option<(usize, usize)>)>,
+}
+
+impl Hovered {
+    fn one(y: usize, cols: Option<(usize, usize)>) -> Hovered {
+        Hovered {
+            rows: vec![(y, cols)],
+        }
+    }
 }
 
 /// **The left button's run**, from the press to now.
@@ -121,6 +131,55 @@ pub(crate) fn restyle(row: &str, x0: usize, x1: usize, on: &str, off: &str) -> S
     out
 }
 
+/// **Cells `x0..x1` of a frame row, a tad brighter** — normal intensity and bold, so a faint
+/// hint and an ordinary row both lift, re-applied after every style change inside the run. Where
+/// the run ends, the row's own style is put back exactly — a reset and every style change the
+/// row made before that point, replayed — so nothing after the mark is brightened by it.
+pub(crate) fn brighten(row: &str, x0: usize, x1: usize) -> String {
+    const ON: &str = "\x1b[22;1m";
+    let mut out = String::with_capacity(row.len() + 24);
+    let mut seen = String::new();
+    let mut col = 0usize;
+    let mut inside = false;
+    let close = |out: &mut String, seen: &str| {
+        out.push_str("\x1b[0m");
+        out.push_str(seen);
+    };
+    for p in pieces(row) {
+        match p {
+            Piece::Escape(e) => {
+                out.push_str(e);
+                if e.starts_with("\x1b[") && e.ends_with('m') {
+                    if e == "\x1b[0m" || e == "\x1b[m" {
+                        seen.clear();
+                    } else {
+                        seen.push_str(e);
+                    }
+                    if inside {
+                        out.push_str(ON);
+                    }
+                }
+            }
+            Piece::Cell(c, w) => {
+                if inside && col >= x1 {
+                    close(&mut out, &seen);
+                    inside = false;
+                }
+                if !inside && col >= x0 && col < x1 {
+                    out.push_str(ON);
+                    inside = true;
+                }
+                out.push(c);
+                col += w;
+            }
+        }
+    }
+    if inside {
+        close(&mut out, &seen);
+    }
+    out
+}
+
 /// The first and one-past-last visible, non-blank cells of a row — `None` for a blank one.
 fn text_span(cs: &[char]) -> Option<(usize, usize)> {
     let blank = |c: &char| matches!(*c, ' ' | '\0');
@@ -175,38 +234,70 @@ impl App {
     /// nothing. The same answers the click itself uses: a key hint, then the last frame's hit map.
     fn clickable_at(&self, x: u16, y: u16) -> Option<Hovered> {
         if let Some(k) = self.key_hint_at(x, y) {
-            return Some(Hovered {
-                y: k.y,
-                cols: Some((k.x, k.x + k.w)),
-            });
+            return Some(Hovered::one(k.y, Some((k.x, k.x + k.w))));
         }
         let hit = self.hit_at(x, y)?;
         let row = usize::from(y);
         match hit.target {
-            Target::CountLabel(_) | Target::QueueTab(_) => Some(Hovered {
-                y: row,
-                cols: Some((hit.rect.x, hit.rect.x + hit.rect.w)),
+            Target::CountLabel(_) | Target::QueueTab(_) => Some(Hovered::one(
+                row,
+                Some((hit.rect.x, hit.rect.x + hit.rect.w)),
+            )),
+            // An edit or a write in the conversation opens its change — every row of it, the
+            // whole card; anything else in the conversation is text, selected and not clicked.
+            Target::Conversation => {
+                let top = hit.rect.y;
+                let r = row.checked_sub(top)?;
+                let place = &self.file_rows.iter().find(|(rr, _)| *rr == r)?.1;
+                Some(Hovered {
+                    rows: self
+                        .file_rows
+                        .iter()
+                        .filter(|(_, f)| f == place)
+                        .map(|(rr, _)| (top + rr, None))
+                        .collect(),
+                })
+            }
+            _ => self.stop_block(hit, row).map(|(_, rows)| Hovered {
+                rows: rows.into_iter().map(|r| (r, None)).collect(),
             }),
-            // An edit or a write in the conversation opens its change; anything else in it is
-            // text, and text is selected, not clicked.
-            Target::Conversation => self
-                .file_rows
-                .iter()
-                .any(|(r, _)| self.conversation_row(*r) == Some(row))
-                .then_some(Hovered { y: row, cols: None }),
-            _ => hit.stop_at(row).map(|_| Hovered { y: row, cols: None }),
         }
     }
 
-    /// The screen row a conversation-window row is drawn on, through the conversation's hit.
-    fn conversation_row(&self, r: usize) -> Option<usize> {
-        let top = self
-            .hits
-            .iter()
-            .find(|h| h.target == Target::Conversation)?
-            .rect
-            .y;
-        Some(top + r)
+    /// Whether a row of the last frame has nothing on it.
+    fn blank_row(&self, y: usize) -> bool {
+        self.hint_rows.get(y).is_none_or(|r| {
+            keyhints::cells(r.text())
+                .iter()
+                .all(|c| matches!(*c, ' ' | '\0'))
+        })
+    }
+
+    /// **The block of rows a pane's or a card's entry is drawn on, and its stop** — from the
+    /// entry's first row (the stop the hit map records) to the next entry's, or to the first blank
+    /// row or line of key hints, whichever is sooner, so a two-line entry (a subagent: its task and its facts) is one
+    /// block and the pane's footer under the last entry is none of it. `None` for a row in no
+    /// entry. What lights up under the pointer, and what a click there selects.
+    pub(crate) fn stop_block(&self, hit: &Hit, y: usize) -> Option<(usize, Vec<usize>)> {
+        let mut stops = hit.stops.clone();
+        stops.sort();
+        let i = stops.iter().rposition(|(r, _)| *r <= y)?;
+        let (first, stop) = stops[i];
+        let end = stops
+            .get(i + 1)
+            .map(|(r, _)| *r)
+            .unwrap_or(hit.rect.y + hit.rect.h);
+        let mut rows = vec![first];
+        for r in first + 1..end {
+            // A blank row ends the entry, and so does a line of key hints: a card's keys line
+            // sits right under its last value, and it is the card's, not that value's.
+            let hints = self.hint_rows.get(r).is_some_and(|h| !h.hints.is_empty());
+            if self.blank_row(r) || hints {
+                break;
+            }
+            rows.push(r);
+        }
+        rows.contains(&y).then_some((stop, rows))
     }
 
     /// **The pointer moved with no button held.** The mark follows on the next frame; no full
@@ -229,16 +320,36 @@ impl App {
             from: Some((x, y)),
             to: None,
         };
-        self.selection = None;
+        self.drop_selection();
     }
 
     /// Motion with the left button held: the selection runs from the press to here.
+    ///
+    /// **And the view is held from its first motion** — ctrl-p's hold, by itself: the operator,
+    /// 2026-10-12, *"can we auto trigger ctrl-p once selection starts?"*. A turn streaming in
+    /// under a selection moves the text it was made over; held, the frame stays put while the
+    /// events keep folding. Not when the operator already held it: that hold is theirs, and ends
+    /// when they say so.
     pub(crate) fn drag_to(&mut self, x: u16, y: u16) {
         if self.drag.from.is_some() {
+            if self.selection.is_none() && !self.hold {
+                let _ = self.toggle_hold();
+                self.selection_held = true;
+            }
             self.drag.to = Some((x, y));
             self.selection = self.drag.from.map(|f| (f, (x, y)));
             self.hovered = None;
         }
+    }
+
+    /// **The selection goes, and the hold it took with it** — Esc, or a press elsewhere. A hold
+    /// the operator took with ctrl-p is theirs and stays.
+    pub(crate) fn drop_selection(&mut self) -> bool {
+        let had = self.selection.take().is_some();
+        if std::mem::take(&mut self.selection_held) && self.hold {
+            let _ = self.toggle_hold();
+        }
+        had
     }
 
     /// **The left button came up**: the end of a selection, which is copied — or, with no motion
@@ -319,7 +430,14 @@ impl App {
         }
         let n = text.chars().count();
         self.clipboard_out = Some(text);
-        self.say(&format!("copied {n} character(s)"));
+        self.say(&format!(
+            "copied {n} character(s){}",
+            if self.selection_held {
+                " — esc lets the view follow again"
+            } else {
+                ""
+            }
+        ));
     }
 
     /// **The pointer shape the terminal should show**, when it changed: the hand over something
@@ -347,12 +465,15 @@ impl App {
             }
             return;
         }
-        if let Some(h) = self.hovered
-            && let Some(row) = frame.get_mut(h.y)
-        {
-            let cols = h.cols.or_else(|| text_span(&keyhints::cells(row)));
-            if let Some((a, b)) = cols {
-                *row = restyle(row, a, b, "\x1b[4m", "\x1b[24m");
+        if let Some(h) = &self.hovered {
+            for (y, cols) in &h.rows {
+                let Some(row) = frame.get_mut(*y) else {
+                    continue;
+                };
+                let cols = cols.or_else(|| text_span(&keyhints::cells(row)));
+                if let Some((a, b)) = cols {
+                    *row = brighten(row, a, b);
+                }
             }
         }
     }
@@ -361,6 +482,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_brightened_run_puts_the_rows_own_style_back_where_it_ends() {
+        // A faint hint: brightened through its own reset, and the separator after it faint again.
+        let row = "\x1b[2mesc closes\x1b[0m\x1b[2m · tab\x1b[0m";
+        let b = brighten(row, 0, 10);
+        assert!(b.starts_with("\x1b[2m\x1b[22;1mesc closes"), "{b:?}");
+        let sep = b.find(" · tab").expect("the separator");
+        assert!(
+            b[..sep].ends_with("\x1b[0m\x1b[2m"),
+            "the separator after the mark is not drawn in the row's own style: {b:?}"
+        );
+        // A run that ends mid-span restores the span's style.
+        let b = brighten("\x1b[38;5;8mabcdef", 1, 3);
+        assert!(b.contains("bc\x1b[0m\x1b[38;5;8md"), "{b:?}");
+    }
 
     #[test]
     fn a_restyle_marks_exactly_its_cells_through_the_rows_own_resets() {

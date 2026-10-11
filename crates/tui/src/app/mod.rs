@@ -1044,6 +1044,9 @@ pub struct App {
     pub(crate) selection: Option<((u16, u16), (u16, u16))>,
     /// The pointer shape the terminal should switch to, when it changed (the hand or not).
     pub(crate) pointer_hand: Option<bool>,
+    /// **The view is held because a selection began**, not because the operator pressed ctrl-p
+    /// — so dropping the selection lets it follow again. See `App::drag_to`.
+    pub(crate) selection_held: bool,
     /// **The scroll of the surface on top of the stack** — the one every pane draws through
     /// (`pane_window`) and every key moves. A covered surface keeps its own in its stack entry.
     pub(crate) pane_scroll: usize,
@@ -1728,6 +1731,7 @@ impl App {
             drag: Default::default(),
             selection: None,
             pointer_hand: None,
+            selection_held: false,
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,

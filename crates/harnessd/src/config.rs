@@ -1472,6 +1472,28 @@ impl Config {
         self.auto_compact && self.at_the_wall(resident_tokens)
     }
 
+    /// **The pre-emptive door's question, for a session that may be metered.**
+    ///
+    /// [`Config::should_compact`], except that a metered session with no measured scale is
+    /// never at the wall: its count is LEDGER tokens — bytes, under a cloud provider — and with
+    /// no round measured there is nothing to turn them into the provider's, so the comparison
+    /// with the provider's window is one number against another in a different unit. That is
+    /// what folded the operator's peerdb session on a plain restart, 2026-10-12: a verbatim
+    /// re-seat had cleared the stored measurement (a fork does), the daemon was restarted
+    /// before a round measured again, and 2,431,232 ledger tokens of a conversation deepseek
+    /// had counted around 600,000 were read as 2.4M of a 1M window — and summarised.
+    ///
+    /// Standing down here is the wall controller's own rule (`crate::wall`: *no latch on an
+    /// estimate*) applied to the one unmeasured base it did not fold itself. The first round
+    /// measures; a prompt that really is too long is refused by the provider, and the refused
+    /// door — which this does not touch — compacts then, on evidence.
+    pub fn pre_emptive_compact(&self, resident_tokens: u64, metered: bool) -> bool {
+        if metered && self.ledger_scale.is_none() {
+            return false;
+        }
+        self.should_compact(resident_tokens)
+    }
+
     /// Would a turn starting at `resident` tokens fit, with the headroom reserved?
     ///
     /// The gate the wall continuation reads (`turn_tail::run_turn`), and the
@@ -3166,6 +3188,37 @@ mod compaction_trigger_tests {
         cfg.context_window = Some(1000);
         cfg.auto_compact = false;
         assert!(!cfg.should_compact(999_999));
+    }
+
+    /// **An unscaled count never opens the pre-emptive door on a metered session** — it is
+    /// ledger tokens against the provider's window. A local one has no scale to wait for, and a
+    /// measured scale opens it as `should_compact` would.
+    #[test]
+    fn an_unmeasured_metered_session_is_not_folded_before_it_is_measured() {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.auto_compact = true;
+        cfg.context_window = Some(1_000_000);
+        cfg.ledger_scale = None;
+        let ledger = 2_431_232;
+        assert!(
+            cfg.should_compact(ledger),
+            "the premise: the raw count is over the window"
+        );
+        assert!(
+            !cfg.pre_emptive_compact(ledger, true),
+            "a metered session with no measured scale was folded on its ledger bytes"
+        );
+        assert!(
+            cfg.pre_emptive_compact(ledger, false),
+            "a local session's count is its own"
+        );
+        // Measured at about four ledger bytes a token: 2.43M bytes is ~600k of a 1M window.
+        cfg.ledger_scale = Some((2_400_000, 600_000));
+        assert!(
+            !cfg.pre_emptive_compact(ledger, true),
+            "~600k of 1M is not the wall"
+        );
+        assert!(cfg.pre_emptive_compact(3_990_000, true), "~997k of 1M is");
     }
 
     /// **The wall-continuation gate measures the window, not the flag.**

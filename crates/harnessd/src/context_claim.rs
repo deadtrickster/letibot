@@ -857,12 +857,16 @@ mod tests {
     #[test]
     fn a_finding_is_logged_with_its_score_and_fill() {
         let dir = std::env::temp_dir().join(format!(
-            "context-claim-log-{}-{}",
+            "context-claim-log-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let mut check = Check::new();
         let f = check

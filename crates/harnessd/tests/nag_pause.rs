@@ -46,12 +46,16 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
 /// A store holding one session with an unfinished plan — `todos.rs`'s fixture.
 fn seeded(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!(
-        "harnessd-nag-pause-{tag}-{}-{}",
+        "harnessd-nag-pause-{tag}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("sessions.db");

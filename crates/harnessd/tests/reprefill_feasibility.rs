@@ -168,9 +168,13 @@ struct TempDir(std::path::PathBuf);
 impl TempDir {
     fn new(tag: &str) -> TempDir {
         let p = letibot_sessionlog::testing::scratch_root().join(format!(
-            "letibot-{tag}-{}-{}",
+            "letibot-{tag}-{}-{}-{}",
             std::process::id(),
-            letibot_harnessd::config::now_ns()
+            letibot_harnessd::config::now_ns(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir_all(&p).expect("a temp dir");
         TempDir(p)
