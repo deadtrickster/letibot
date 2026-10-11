@@ -239,10 +239,11 @@ fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str) {
         parent_session_id: None,
     })
     .expect("the session row");
-    // The pair the guard wrote when its one compaction gained no room. The
-    // numbers are the fixture's own scale, not the log's — the QUESTION is
-    // whether the pair survives, not whether this conversation is 1.8M tokens.
-    s.set_auto_compact_stood_down(session_id, Some((43_000, 42_500)))
+    // The pair the controller wrote when its ladder ran out: what was folded, and the
+    // MEASURED count after it — past this fixture's 30720 wall and inside its 32768
+    // window, because a provider's count cannot exceed its window (a pair that does is
+    // the old guard's ledger numbers, and is not restored: see the test below).
+    s.set_auto_compact_stood_down(session_id, Some((43_000, 31_000)))
         .expect("the stood-down pair");
 }
 
@@ -433,6 +434,45 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
 /// restored `Stuck`, the very first request is refused (deepseek's measured body), and
 /// the refused door folds anyway — the sliced fold, two halves, the hardest press —
 /// and the prompt finishes on the summary.
+/// **A stored "measured" past the window is not a provider's count, and is not restored.**
+/// MEASURED 2026-10-11 on pg-noop: a restart restored "a fold of 3213409 measured 1687673"
+/// against a 1000000 window — the old guard's LEDGER pair — and showed compaction OFF
+/// until the first round measured 584730. Such a row is cleared, and the session opens
+/// armed: the next measured round decides.
+#[test]
+fn a_stored_pair_past_the_window_is_not_restored_and_is_cleared() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-implausible-stuck");
+    let path = dir.path().join("sessions.db");
+    let session_id = "implausible-stuck";
+    seed_a_stood_down_session(&path, session_id);
+    Store::open(&path)
+        .unwrap()
+        .set_auto_compact_stood_down(session_id, Some((3_213_409, 1_687_673)))
+        .unwrap();
+    let mut cfg = config(&path, session_id);
+    cfg.context_window = Some(1_000_000);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let hub = Hub::new(session_id);
+    let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
+    assert_eq!(
+        h.restore_auto_compact(),
+        None,
+        "an implausible pair is not restored"
+    );
+    let row = Store::open(&path)
+        .unwrap()
+        .session(session_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.auto_compact_stood_down, None,
+        "and it is cleared from the row"
+    );
+}
+
 #[test]
 fn a_refusal_on_a_stuck_session_still_folds() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

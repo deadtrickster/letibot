@@ -11704,6 +11704,23 @@ impl Harness {
         if self.cfg.wall.is_stuck() {
             return None;
         }
+        // **A pair that cannot be the provider's count is not a finding.** A Stuck the
+        // controller wrote was MEASURED — the provider's `prompt_tokens` — and a provider
+        // counts nothing past its own window (it refuses the request instead), so a
+        // stored "measured" over the window is the old guard's pair in LEDGER tokens.
+        // MEASURED 2026-10-11 on pg-noop: a restart restored "a fold of 3213409 measured
+        // 1687673" against a 1000000 window — ledger numbers — and turned compaction off
+        // until the first round measured 584730 and released it. The operator saw the
+        // false OFF. Such a row is cleared and not restored; the next measured round
+        // decides, which is the controller's rule anyway.
+        if let Some(window) = self.cfg.context_window
+            && measured > window
+        {
+            if let Some(store) = &self.store {
+                let _ = store.set_auto_compact_stood_down(&self.cfg.session_id, None);
+            }
+            return None;
+        }
         self.cfg.wall.restore_stuck(before, measured);
         self.publish_settings();
         Some(format!(
