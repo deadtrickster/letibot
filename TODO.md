@@ -41,6 +41,168 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R61 — Review and merge are two queues — **OPEN, designed by the operator 2026-10-11**
+
+The operator: *"review is review and merge is merge. separate steps. separate queues."* and
+*"model reviews stay, yes"*. Today they are one: a `merge_queue` row sits in `waiting` until the
+gatekeeper's verdict arrives, so the verdict is a state of the merge row, and the merge queue's
+review pass runs on the worker every session shares — which is how `c12d044`'s 0.5 s
+`Store::session` scan, called dozens of times per 30 s pass, pinned every daemon at 100% and left
+prompts queued for minutes (2026-10-11).
+
+**The shape:**
+
+1. **Review queue** — its own table and states. Served by the gatekeeper session and its `task`
+   children, as now (board, nags, subagents). Its outcome is a verdict — approve / reject /
+   cannot-decide. It never touches git.
+2. **Merge queue** — approved branches only. Rebase onto the *current* tip of main, run the gate
+   (`AGENTS.md`'s `## Merge gate`, read from main), fast-forward, push, clean up. No model. Serial,
+   on its own thread, never on a session's worker. **It has its own pane.**
+3. **The hand-off** — an approve verdict enqueues the branch in the merge queue. Reject and
+   cannot-decide go back to the project's session, as `NO_GATEKEEPER`'s message does today.
+4. **Red main is a high-severity emergency.** *"when main becomes red - main itself goes to
+   review"*. Main's red tip is a review-queue entry, taken **first**, as soon as a reviewer is free
+   — not the branch that landed last. While main is red the merge queue lands nothing. Enqueue is
+   never refused in either queue. The pane says it at emergency severity.
+   - **Relaxed for now** — *"lets relax it for a sec, i need more data - so review can proceed, it
+     is just red main is picked up asap. but nothing can be merged."* Other reviews keep being
+     taken while main is red. The stricter rule (the review queue also takes nothing else) is
+     suspended, not discarded.
+5. **Migration** — `merge_queue` rows waiting for a verdict move to the review queue.
+
+**Still open?** `grep -n "review_queue" crates/tokencore/src/store.rs` — no table means not
+started. **Done when:** a branch that is reviewed, merged and then turns main red is visible as
+three rows in two queues and one pane; a review pass with N entries costs no `Store::session` scan
+(`perf` on an idle daemon shows the worker at ~0%); a red main stops landing and does not stop
+enqueueing or reviewing.
+
+---
+
+## R62 — The gate runs locally and on the fleet, never on GitHub — **OPEN, 2026-10-11**
+
+The operator: *"this is mostly local concern - i've been rate limited on github recently with
+actions, so _act_ is our friend. we can use other machines like lubuntu2 to run tests"*, *"so we
+should gain a config - ssh key and fleet list"*, *"for runners id prefere lubuntu1,2 only"*.
+
+1. **`~/.config/letibot/fleet.toml`**, beside `providers.toml` and **never in the repo** — the
+   SSH key's PATH (`~/bin/fleet/headless_server`; the key is never read into a session or a log,
+   only passed as `ssh -i`), the boxes **by name** (`lubuntu1`..`lubuntu3`; `known_hosts` holds
+   them by name, so `ssh dead@192.168.1.76` fails host-key verification while `dead@lubuntu1`
+   works), and which are runners (`lubuntu1`, `lubuntu2`).
+2. **The merge queue's gate runs on a free runner over `ssh -i`** — the `## Merge gate` commands,
+   or `act` against `.github/workflows/ci.yml`. Tools by full path: `~/.local/bin` and
+   `~/.cargo/bin` are not on PATH for a non-interactive ssh command.
+3. **Each runner needs `~/.actrc`** pinning the `ubuntu-latest` image — `act`'s first run asks
+   which image, interactively, and a gate would hang there.
+
+Measured 2026-10-11: lubuntu1/2/3 each 32 cores, 123 GB, docker usable. `act` v0.2.89
+(checksum-verified) installed at `~/.local/bin/act` on lubuntu1 and lubuntu2. `cargo` in
+`~/.cargo/bin` on lubuntu2 and lubuntu3, **not** on lubuntu1. `act` is not on lab2x1.
+
+**Done when:** a branch lands through the merge queue with its gate run on lubuntu1 or lubuntu2,
+the row names the runner, and nothing in the path talks to GitHub Actions.
+
+---
+
+## R63 — One thread per root session — **OPEN, 2026-10-11, after R61**
+
+The operator: *"each session gets a thread, what not to like?"*, *"obviously i should see
+everything going in my thread"*. Today one worker serves every root session's turns
+(`daemon.rs`, `Daemon::run`), so a turn or a long tool call in one session queues the prompt of
+another — measured 89 s on 2026-10-11 behind another session's `sleep 30`.
+
+1. One thread per root session, on the pattern subagents already run on (`serve_child_under`,
+   `Hub::take_own_work_until`, `Hub::wake_its_own_reader`).
+2. Everything that happens on a session's thread is published to its hub. A wake-started turn is
+   drawn as running, with its reason. No failure lands only in the daemon log.
+3. The merge queue's work is off the session worker by R61.
+
+**Done when:** two sessions on one daemon each answer a one-word prompt in under a second while
+the other is inside a 30 s tool call.
+
+---
+
+## R64 — A runaway process takes its whole window, daemon and session with it — **OPEN, 2026-10-11**
+
+The operator: *"why my pg-noop session died and took byobu window with it?"* MEASURED in the
+journal: four OOM kills in 7 hours on lab2x1 (185 GB, 512 MB swap), each `Failed with result
+'oom-kill'` on a `tmux-spawn-*.scope`:
+
+| time | killed | anon RSS |
+|---|---|---|
+| 10-10 19:49 | `letidb-branch` | 116 GB |
+| 10-11 00:47 | `harnessd` (see R66) | 113 GB |
+| 10-11 01:29 | `letidb-fixed-94` | 125 GB |
+| 10-11 02:17 | `letidb-guard` (pg-noop; a subagent started it in the background at 02:16:07) | 77 GB |
+
+**The mechanism.** The launcher's `setsid` makes a new session, not a new cgroup: the daemon
+and every process its tools start stay in the systemd scope of the tmux window that started
+them. `DefaultOOMPolicy=stop`, so when the kernel kills any one process in a scope, systemd stops
+the **whole scope** — the window's shell, the TUI, the daemon, every session it served.
+
+**The fix is two halves, and either alone is not enough:**
+
+1. **The daemon gets its own scope** (`systemd-run --user --scope`, from `scripts/letibot`), so
+   a kill in a window does not reach it. Alone this only moves the blast radius: the tools'
+   processes would still be in the daemon's scope, and a runaway one would stop the daemon.
+2. **Each tool call gets its own scope with a memory cap** — R65.
+
+**Done when:** a tool call that allocates without bound dies alone, with a result that says so,
+and the window, the TUI and the daemon are still there.
+
+---
+
+## R65 — The model chooses each tool call's memory cap, knowing what is free and what a cap costs — **OPEN, designed by the operator 2026-10-11**
+
+The operator: *"the question is how many for 2. I think model should try to decide, so it should
+know the free, how much it can ask and what are the consequences"*.
+
+Verified on lab2x1 that the mechanism exists: the user manager delegates `cpu memory pids`, and
+`systemd-run --user --scope -p MemoryMax=64M` around a 200 MB allocation ends that process alone
+with `Killed`, rc 137.
+
+1. **The model asks.** `bash` (and a backgrounded job) gains a memory argument — `memory: "8G"`.
+2. **The model knows what is free** — said where it decides, in the tool's description or the
+   turn's disclosure: the box's total, `MemAvailable` now, swap, and what this daemon's live
+   calls and jobs already hold under their caps.
+3. **The model knows how much it can ask** — a ceiling per call, derived from what is free at
+   call time. An ask over it is refused with the numbers, not silently clipped.
+4. **The model knows the consequences, in the description and in the result:** over the cap, the
+   call's process tree is killed and only it (rc 137, the result names the cap and the peak).
+   **With no cap, an exhausted box kills whatever the kernel picks, and systemd then stops the
+   whole window** — R64's table. Omitting the argument gets a stated default, not no cap.
+5. **Every result reports its peak** (`memory.peak` of the call's scope), so the model learns
+   what its commands cost instead of guessing again next time; a job's peak is in `job_list`.
+6. **A box with no user systemd says so** — the call runs uncapped, and the disclosure says it
+   is uncapped. Never silently.
+
+**Still open:** the default when the model omits the argument, and the ceiling's rule (a fraction
+of `MemAvailable`, or `MemAvailable` minus a reserve for the daemon and the desktop) — pick, state
+it in the description, measure.
+
+**Done when:** R64's done-when holds, the model's next call after a kill asks for a different
+cap on its own, and `job_list` shows each job's cap and peak.
+
+---
+
+## R66 — A harnessd reached 113 GB — **OPEN, 2026-10-11, uninvestigated**
+
+MEASURED in the kernel's OOM report, 2026-10-11 00:47:00: `Killed process 3985588 (harnessd)
+anon-rss:113190136kB` — the daemon's own heap, not a child's. It was the `/home/dead/Projects/letibot`
+daemon serving `s-1789462738453908838` (qwen-3.8-flash-next on :8082), the session whose
+compaction failed repeatedly the same week and accumulated six copies of the compaction
+instruction in its transcript. Its window's scope peaked at 131.6 GB over 1 d 23 h. The
+allocating thread named in the report is `harness::queue_`.
+
+Nothing is known yet about the cause. **Start with:** what that session's transcript and
+`harness::queue_` hold; whether a daemon's RSS grows per turn on a long session (sample
+`/proc/PID/status` VmRSS across turns on a scratch daemon); whether the failed-compaction retries
+grow anything.
+
+**Done when:** the growth is reproduced on a scratch daemon and either bounded or explained.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
