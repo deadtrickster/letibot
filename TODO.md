@@ -264,6 +264,25 @@ grow anything.
 
 **Done when:** the growth is reproduced on a scratch daemon and either bounded or explained.
 
+**MEASURED 2026-10-11 — what it is NOT, and one smaller leak found on the way:**
+
+- **Not job output.** `HostProcesses` keeps every job it ever ran (`jobs.push`, never removed),
+  each with up to 8 MiB of capture — but across the session tree's 15,405 `bash` results between
+  10-09 and the kill, the retained capture sums to ~0.1 GB.
+- **Not the transcripts.** 76 transcripts, a few MB each in the store.
+- **`harness::queue_…` is not a daemon thread.** It is the task that ALLOCATED when the box ran
+  out — a test binary's thread (a `harness::queue_*` test); the kernel then chose the largest
+  process, harnessd, at 108 GB RSS (131 GB in the task table's total_vm column).
+- **On deepseek (metered) a scratch daemon does not grow like that:** 245 MB at start; +75 MB
+  for six sequential subagents; +12 MB for three turns each printing ~15 MB of tool output.
+- **A smaller leak, real:** each finished subagent leaves **two threads** behind (7 → 19 for six,
+  never released) and ~12 MB. At the 519 subagents that tree started, ~6 GB — not 108.
+
+**Not yet tried, and the likeliest place left:** the LOCAL-model path. The killed daemon served
+qwen-3.8-flash-next on :8082, which streams token ids through `/completion` and keeps the token
+ledger itself; deepseek does neither. Reproducing it needs the local server running, which is
+the operator's to start.
+
 ---
 
 ## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
