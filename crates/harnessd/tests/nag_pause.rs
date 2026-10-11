@@ -109,6 +109,7 @@ fn command(kind: CommandKind) -> QueuedCommand {
         client_request_id: "req-1".into(),
         at_seq: 0,
         kind,
+        enqueued_ms: 0,
     }
 }
 
