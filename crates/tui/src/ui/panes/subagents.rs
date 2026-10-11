@@ -97,6 +97,7 @@ impl App {
         let mut prev: Option<RowClass> = None;
         for (i, it) in items.iter().enumerate() {
             let answered = round_results(items, i);
+            let re = question_before(items, i);
             let ctx = ItemCtx {
                 cfg: &cfg,
                 think: Fold::Folded,
@@ -128,6 +129,7 @@ impl App {
                 payload_max: None,
                 window_rows: usize::MAX,
                 payload_newest: None,
+                replied_to: re.as_deref(),
             };
             let (class, rows) = item_lines(it, &ctx);
             if rows.is_empty() {

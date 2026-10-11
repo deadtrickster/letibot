@@ -501,6 +501,7 @@ impl App {
                         payload_newest: newest_payload.as_deref(),
                         payload_max: Some(&self.payload_max),
                         window_rows: self.screen_rows.saturating_sub(WINDOW_CHROME),
+                        replied_to: question_before(&self.items, k).as_deref(),
                     },
                 ),
             };

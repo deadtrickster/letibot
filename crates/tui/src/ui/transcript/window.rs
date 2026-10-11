@@ -1134,6 +1134,7 @@ impl App {
                             payload_newest: newest_payload.as_deref(),
                             payload_max: Some(payload_max),
                             window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
+                            replied_to: question_before(items, *hist_upto).as_deref(),
                         },
                     ),
                 };

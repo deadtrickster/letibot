@@ -14,6 +14,9 @@ use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use rano::agent::tool_row::ToolRow;
 
+/// The tool whose call is an exchange with a person (`harnessd`'s `ASK_USER_QUESTION`).
+const ASK_USER_QUESTION: &str = "ask_user_question";
+
 pub(crate) fn tool_result_row_lines(
     it: &SnapshotItem,
     item: &TranscriptItem,
@@ -221,6 +224,17 @@ pub(crate) fn tool_result_row_lines(
         cell.set(max);
     }
     let mut rendered = row_strings(&layout.lines, p);
+    // **A question's card is its header**, folded — the operator, of an `ask_user_question`
+    // card whose `[note]` lines and seam sat above the question row and their own answer: *"again,
+    // too much on my screen, i saw the resulting selector anyway"*. Every other tool's folded
+    // card keeps its first payload line and the seam, because there that line is the only place
+    // the result is on the screen; this one's result is the exchange, and the exchange is the two
+    // rows right under it (the `asked` line and the person's answer, `asked_card`). The header
+    // still counts the payload's lines, `/t` unfolds the card as before, and the payload's
+    // window opens on it as it does on any row (ctrl-v on the newest, `payload_view`).
+    if name == ASK_USER_QUESTION && window.is_none() && !tools.is_open() && rendered.len() > 1 {
+        rendered.truncate(1);
+    }
     if let Some(rows) = detected {
         rendered.extend(rows);
     }

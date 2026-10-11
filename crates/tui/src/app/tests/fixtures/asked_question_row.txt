@@ -1,0 +1,8 @@
+asked: Row 4: DuckDB's generated `slt_good_*` family is 605 files under test/random and test/index, and 1,174,513 of the 1,189,434 measured failures — but the gate currently never enumerates those directories at all, so nothing judges them. Whatever the row decides, the measured number moves by an order of magnitude.
+
+A — treat them as in scope and put a DuckDB dialect frontend in front of the engine, so the generated files run as DuckDB means them; the count then measures the engine.
+
+B — exclude the family, with the reason written down in the gate, so the number is the hand-written tests only.
+
+C — treat them as in scope with no dialect layer, and count every dialect mismatch as an engine failure; the number is honest and mostly noise.
+options offered: A — in scope, via a DuckDB dialect frontend | B — exclude it, reason written down | C — in scope, no dialect layer: count it all as engine failures | Not now — leave the row open and the directories unenumerated

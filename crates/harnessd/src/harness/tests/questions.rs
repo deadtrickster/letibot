@@ -181,3 +181,61 @@ fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
         snap.items[0].item_id
     );
 }
+
+/// **The question the operator pasted, and their answer to it** — DuckDB's `slt_good_*` row,
+/// asked through `ask_user_question` and answered with its first option. The TUI draws the
+/// question row as ONE line and names it on the answer's row (`ui::transcript::asked_card`) —
+/// the operator: *"again, too much on my screen, i saw the resulting selector anyway. but what
+/// is interesting - my reply doesnt have any hint on the question. lets mention the question i
+/// replied to"*. This writes the two rows' texts as the session writes them and pins them byte
+/// for byte; re-bless with `LETIBOT_BLESS_ASKED_CARD=1`, and teach `asked_card` the new shape
+/// if `asked: ` or `options offered: ` moved.
+#[test]
+fn the_tuis_asked_card_fixtures_are_what_the_session_writes() {
+    let asked = crate::answers::Asked {
+        question: letibot_tools::builtins::intent::Question {
+            text: "Row 4: DuckDB's generated `slt_good_*` family is 605 files under test/random \
+                   and test/index, and 1,174,513 of the 1,189,434 measured failures — but the \
+                   gate currently never enumerates those directories at all, so nothing judges \
+                   them. Whatever the row decides, the measured number moves by an order of \
+                   magnitude.\n\nA — treat them as in scope and put a DuckDB dialect frontend in \
+                   front of the engine, so the generated files run as DuckDB means them; the \
+                   count then measures the engine.\n\nB — exclude the family, with the reason \
+                   written down in the gate, so the number is the hand-written tests only.\n\nC \
+                   — treat them as in scope with no dialect layer, and count every dialect \
+                   mismatch as an engine failure; the number is honest and mostly noise."
+                .into(),
+            options: vec![
+                "A — in scope, via a DuckDB dialect frontend".into(),
+                "B — exclude it, reason written down".into(),
+                "C — in scope, no dialect layer: count it all as engine failures".into(),
+                "Not now — leave the row open and the directories unenumerated".into(),
+            ],
+            because: "Row 4 cannot be resolved by me without over-committing the project to \
+                      1.17 million failures or excluding them on my own judgement"
+                .into(),
+        },
+        answer: QuestionAnswer::choosing(0),
+        by: "dead".into(),
+    };
+    let said = operator_answer_text(&asked).expect("an answer");
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/src/app/tests/fixtures");
+    for (name, text) in [
+        ("asked_question_row.txt", question_row_text(&asked)),
+        ("asked_answer_row.txt", said),
+    ] {
+        let path = dir.join(name);
+        if std::env::var_os("LETIBOT_BLESS_ASKED_CARD").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        let pinned =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(
+            text,
+            pinned,
+            "the session no longer writes what the TUI's asked card parses ({})",
+            path.display()
+        );
+    }
+}

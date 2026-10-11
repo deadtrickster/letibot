@@ -36,7 +36,7 @@ use rano::style::Role;
 use crate::app::SubagentState;
 use crate::ui::render::trim_to;
 use crate::ui::transcript::job_card::{JobTail, compact_notice};
-use crate::ui::transcript::{red_card, review_card};
+use crate::ui::transcript::{asked_card, red_card, review_card};
 use crate::ui::*;
 
 /// What every card's line ends with: the row is a summary, and the popup is the text.
@@ -124,7 +124,8 @@ pub(crate) struct WarningKind {
 }
 
 /// Every session notice drawn as a card, in the order they are tried.
-pub(crate) const SESSION_KINDS: &[SessionKind] = &[red_card::SESSION, review_card::SESSION];
+pub(crate) const SESSION_KINDS: &[SessionKind] =
+    &[red_card::SESSION, review_card::SESSION, asked_card::SESSION];
 
 /// Every hub warning drawn as a card.
 pub(crate) const WARNING_KINDS: &[WarningKind] = &[red_card::WARNING, review_card::WARNING];
@@ -214,4 +215,44 @@ pub(crate) fn compact_cards(
 /// Whitespace runs as one space: a line is one line.
 pub(crate) fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// **The sentences of a flattened text**: ended by `. `, `; `, `! ` or `? `, trimmed.
+pub(crate) fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let b = text.as_bytes();
+    for i in 0..b.len() {
+        if matches!(b[i], b'.' | b';' | b'!' | b'?') && b.get(i + 1) == Some(&b' ') {
+            let s = text[start..i].trim();
+            if !s.is_empty() {
+                out.push(s);
+            }
+            start = i + 2;
+        }
+    }
+    let s = text[start.min(text.len())..]
+        .trim()
+        .trim_end_matches(['.', ';']);
+    if !s.is_empty() {
+        out.push(s);
+    }
+    out
+}
+
+/// **A sentence's first clause** — cut at the first `, and` / `, so` / `, which` / `: ` / ` — `
+/// far enough in to be a clause, and a cut clause says so with `…`.
+pub(crate) fn first_clause(sentence: &str) -> String {
+    /// A clause shorter than this is not the reason yet (`BUT, as`, `So: `).
+    const AT_LEAST: usize = 12;
+    const MARKS: &[&str] = &[", and ", ", so ", ", which ", ": ", " — "];
+    let cut = MARKS
+        .iter()
+        .flat_map(|m| sentence.match_indices(m).map(|(i, _)| i))
+        .filter(|&i| i >= AT_LEAST)
+        .min();
+    match cut {
+        Some(i) => format!("{}…", &sentence[..i]),
+        None => sentence.to_string(),
+    }
 }

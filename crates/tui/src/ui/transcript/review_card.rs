@@ -54,7 +54,9 @@
 use rano::style::Role;
 
 use crate::ui::panes::queue::mark_of;
-use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind, flat};
+use crate::ui::transcript::line_cards::{
+    CLICK, Card, SessionKind, WarningKind, first_clause, flat, sentences,
+};
 
 /// What a line opens with.
 const REVIEW: &str = "review";
@@ -415,41 +417,4 @@ pub(crate) fn decisive(reasons: &str) -> Option<String> {
         .find(|s| s.starts_with("BUT ") || s.starts_with("BUT,"))
         .or_else(|| sentences.first())?;
     Some(first_clause(pick))
-}
-
-fn sentences(text: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    let b = text.as_bytes();
-    for i in 0..b.len() {
-        if matches!(b[i], b'.' | b';' | b'!' | b'?') && b.get(i + 1) == Some(&b' ') {
-            let s = text[start..i].trim();
-            if !s.is_empty() {
-                out.push(s);
-            }
-            start = i + 2;
-        }
-    }
-    let s = text[start.min(text.len())..]
-        .trim()
-        .trim_end_matches(['.', ';']);
-    if !s.is_empty() {
-        out.push(s);
-    }
-    out
-}
-
-fn first_clause(sentence: &str) -> String {
-    /// A clause shorter than this is not the reason yet (`BUT, as`, `So: `).
-    const AT_LEAST: usize = 12;
-    const MARKS: &[&str] = &[", and ", ", so ", ", which ", ": ", " — "];
-    let cut = MARKS
-        .iter()
-        .flat_map(|m| sentence.match_indices(m).map(|(i, _)| i))
-        .filter(|&i| i >= AT_LEAST)
-        .min();
-    match cut {
-        Some(i) => format!("{}…", &sentence[..i]),
-        None => sentence.to_string(),
-    }
 }

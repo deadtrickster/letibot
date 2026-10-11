@@ -1,5 +1,6 @@
 //! The conversation: its rows, its cards, and the markers for what it is hiding.
 
+pub mod asked_card;
 pub mod assistant;
 pub mod blocks;
 pub mod call;

@@ -480,6 +480,7 @@ fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<Stri
         payload_max: None,
         window_rows: usize::MAX,
         payload_newest: None,
+        replied_to: None,
     };
     item_lines(&it, &ctx).1
 }
@@ -1384,6 +1385,7 @@ fn queue_frame(snapshot: letibot_sessionlog::event::QueueSnapshot) -> ServerFram
     ServerFrame::Queues { snapshot }
 }
 
+mod askedcard;
 mod asks;
 mod attention;
 mod bindings;

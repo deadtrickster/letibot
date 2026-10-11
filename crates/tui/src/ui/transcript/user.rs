@@ -17,6 +17,7 @@ pub(crate) fn user_row_lines(
         cfg,
         subagents,
         job_tails,
+        replied_to,
         ..
     } = *ctx;
     let TranscriptItem::User { parts, speaker } = item else {
@@ -37,7 +38,17 @@ pub(crate) fn user_row_lines(
     // somebody in the conversation speaking, and the separator it draws around
     // itself should say so.
     match speaker {
-        letibot_transcript::Speaker::Operator => (RowClass::Speech, user_block(&text, it.ts, cfg)),
+        letibot_transcript::Speaker::Operator => {
+            let mut rows = user_block(&text, it.ts, cfg);
+            // **An answer names the question it answers** — the operator: *"my reply doesnt
+            // have any hint on the question. lets mention the question i replied to"*. A faint
+            // line under their words, which stay verbatim (the trail cites them); see
+            // `asked_card`.
+            if let Some(re) = replied_to.and_then(crate::ui::transcript::asked_card::replied_to) {
+                rows.extend(reply_note(&re, cfg));
+            }
+            (RowClass::Speech, rows)
+        }
         letibot_transcript::Speaker::Agent => {
             // **A job's completion notice is two lines a job** — the operator: *"i dont need
             // job completion card that huge - first line is j<id> - slug - truncated cmd and
@@ -86,6 +97,20 @@ pub(crate) fn user_row_lines(
             }
         }
     }
+}
+
+/// **The faint `re: "…"` line under an operator's answer**, behind the same `▌` bar their
+/// words wear, cut to the width with the head's `…`.
+fn reply_note(re: &str, cfg: &crate::ui::render::RenderConfig) -> Vec<String> {
+    use rano::render::{Line, Span};
+    use rano::style::Role;
+    let w = cfg.width.max(20).saturating_sub(2);
+    let line = Line::new(vec![
+        Span::role("▌", Role::UserAccent),
+        Span::raw(" "),
+        Span::role(trim_to(re, w), Role::Faint),
+    ]);
+    crate::ui::render::row_strings(&[line], cfg.palette())
 }
 
 /// **A user row's text, as one string** — the parts joined the way the row draws them. The

@@ -183,6 +183,18 @@ pub(crate) struct ItemCtx<'a> {
     /// the chord used to flip the whole conversation's fold AND seed this one row's
     /// window, so a seam that read per-row announced a wall.
     pub(crate) payload_newest: Option<&'a str>,
+    /// **The row drawn just before this one, when it is the session's question to a person**
+    /// (`asked: …`, `asked_card`) — what an operator's row right under it answers. The operator:
+    /// *"my reply doesnt have any hint on the question. lets mention the question i replied
+    /// to"*. `None` everywhere else.
+    pub(crate) replied_to: Option<&'a str>,
+}
+
+/// **The question the row at `k` answers**, when the row before it is the session's question
+/// to a person (`asked_card`): the text the walk hands [`ItemCtx::replied_to`].
+pub(crate) fn question_before(items: &[SnapshotItem], k: usize) -> Option<String> {
+    let prev = items.get(k.checked_sub(1)?)?;
+    agent_row_text(prev).filter(|t| crate::ui::transcript::asked_card::question_of(t).is_some())
 }
 
 pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {

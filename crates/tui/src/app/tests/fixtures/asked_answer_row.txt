@@ -1,0 +1,1 @@
+A — in scope, via a DuckDB dialect frontend

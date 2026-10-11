@@ -2415,8 +2415,10 @@ fn an_answered_question_is_on_the_screen_at_every_rung() {
             screen.contains("sqlite") && screen.contains("only for the CUDA box"),
             "the operator's answer is hidden at `{name}`:\n{screen}"
         );
+        // The result is its header, folded (`asked_card`; the operator: *"again, too much on my
+        // screen, i saw the resulting selector anyway"*) — on the screen, and counting.
         assert!(
-            screen.contains("+59 lines"),
+            screen.contains("ask_user_question") && screen.contains("60 lines"),
             "the result of the person's answer is hidden at `{name}`:\n{screen}"
         );
         assert!(
