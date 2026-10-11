@@ -11103,7 +11103,7 @@ impl Harness {
     /// round's shape says it goes (a notice after a turn that ended, the step boundary
     /// for one that is still calling tools). See `crate::context_claim`.
     fn judge_context_claim(
-        &self,
+        &mut self,
         check: &mut crate::context_claim::Check,
         text: &str,
     ) -> Option<String> {
@@ -11136,7 +11136,12 @@ impl Harness {
     /// operator cannot find on their own screen is a second disagreement. `None` when the
     /// window is unknown: not knowing is not a measurement, and a claim cannot be
     /// checked against it.
-    fn context_fill(&self) -> Option<crate::context_claim::Fill> {
+    fn context_fill(&mut self) -> Option<crate::context_claim::Fill> {
+        // **R72's count, the one the head and the wall show.** `measure_resident` refreshes
+        // `cfg.ledger_scale` from the provider's own last count plus what was sent since, so
+        // `planning_window`, `at_the_wall` and `shown_tokens` below all read that one number —
+        // the slap quotes the fill the operator sees, not the ledger's reasoning-heavy length.
+        self.measure_resident();
         let window = self.cfg.planning_window()?;
         let resident = self.session.ledger.len() as u64;
         Some(crate::context_claim::Fill {

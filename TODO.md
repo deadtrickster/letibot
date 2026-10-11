@@ -832,8 +832,8 @@ calibration set's positives and negatives are separated by the chosen floor, num
   gap a second tier (embeddings) is owed; the numbers are in the module doc.
 - **Measurement** — `Harness::context_fill`, ONE function: `session.ledger.len()` against
   `cfg.planning_window()`, verdict `cfg.at_the_wall(resident)`, numbers shown through
-  `cfg.shown_tokens`. **When R72 lands, switch this function to its number** — nothing else reads
-  the fill.
+  `cfg.shown_tokens`, after `measure_resident()` — R72's count (the provider's last measurement
+  plus what was sent since), so the line quotes the fill the head shows. Nothing else reads it.
 - **Steering** — `run_rounds` judges once per round: a turn with no tool calls gets the notice
   through `append_notice` (`Speaker::Agent`), ahead of the intent check, and the loop continues; a
   round that called tools gets it on the step-boundary queue. Always on. Budget per user turn:
@@ -848,8 +848,7 @@ calibration set's positives and negatives are separated by the chosen floor, num
 
 **Left:** the floor is in-sample — tune it from `context-claims.jsonl`; the 16 missed positives
 want a second tier; no harness-level test of the tool-calling branch (the unit `Check` covers the
-budget, the branch is the intent nudge's own queue); switch `context_fill` to R72's measurement
-when that lands.
+budget, the branch is the intent nudge's own queue).
 
 ---
 
