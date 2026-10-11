@@ -1449,7 +1449,7 @@ impl Config {
 
     /// Would a turn starting at `resident` tokens fit, with the headroom reserved?
     ///
-    /// The gate the wall continuation reads (`Sessions::after_turn`), and the
+    /// The gate the wall continuation reads (`turn_tail::run_turn`), and the
     /// difference from [`Config::should_compact`] is the point: `should_compact`
     /// answers *"must something be tidied first"* and folds in the `auto_compact`
     /// flag, while this answers *"is there room"* as a measurement of the window

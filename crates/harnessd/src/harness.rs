@@ -7637,7 +7637,7 @@ impl Harness {
         // consecutive provider refusals on `s-1789919514688401228` was
         // attributed to `monitor` — this door — so the insurance is not
         // theoretical. As with the nag, this is not the load-bearing fix: a
-        // refused wake is classified as the wall and recovered by `after_turn`
+        // refused wake is classified as the wall and recovered by the turn tail
         // (`Sessions::wake` calls it), and this pre-flight is what spares the
         // refused round-trip when the daemon's own ledger already says the next
         // turn will not fit.
@@ -7671,7 +7671,7 @@ impl Harness {
     /// **The turn after the wall, without a human typing "continue".**
     ///
     /// A wall stop ends the turn with the work half-done, and the compaction that
-    /// follows it (`Sessions::after_turn`) replaces the transcript with a summary —
+    /// follows it (the shared turn tail, `turn_tail::run_turn`) replaces the transcript with a summary —
     /// after which, until now, nothing ran. The worker went idle, the prompt was
     /// still open, and the operator typed "continue" by hand to start the turn the
     /// summary had just recorded the state of. Measured on 2026-09-15 and on every
@@ -7682,7 +7682,7 @@ impl Harness {
     /// the store, the resume chain and the registry, which `Sessions` owns — so the
     /// seam is a user item in the harness's own voice, the same shape as
     /// [`Harness::wake`]: `Speaker::Agent`, never an authorisation, and never
-    /// readable as the operator's words. `Sessions::after_turn` calls this while
+    /// readable as the operator's words. The shared turn tail calls this while
     /// there is room and a bound of continuations left; a wall the compaction did
     /// not clear still comes back as [`HarnessError::ContextWall`], which is the
     /// honest answer.
@@ -7738,19 +7738,19 @@ impl Harness {
     ///   same `should_compact` predicate the round loop just fired on — and
     ///   continued by [`Harness::continue_after_wall`], gated on
     ///   [`Config::room_for_next_turn`] and bounded by
-    ///   [`WALL_CONTINUES`](crate::sessions::WALL_CONTINUES) exactly as
-    ///   `after_turn`'s loop is;
+    ///   [`WALL_CONTINUES`](crate::sessions::WALL_CONTINUES), the one loop every door
+    ///   runs;
     /// * every announcement is the same line the daemon's session gets, named with
     ///   this session's id — the log contrast that settled the finding (a parent
     ///   with `compacting:` lines beside a child with none) is evidence this must
     ///   never leave unreadable again.
     ///
-    /// This is NOT a second compaction policy: the predicate, the bound and the
-    /// wording are the same ones `Sessions` uses, reached from the side that owns
-    /// the harness. `Sessions::after_turn` keeps its own copy of the tail because it
-    /// owns obligations a child's thread has no part of — publishing the turn's
-    /// failure first, the todo nag, the turn clock — and collapsing the two now
-    /// would rewire the daemon's own path for a fix that is not about it.
+    /// **Since R68.4 there is one tail, not two.** This method was a second copy of
+    /// the daemon's (`Sessions::after_turn`, which kept its own because it owned the
+    /// failure publish, the todo nag and the turn clock), and the copies drifted. Both
+    /// are now [`crate::turn_tail::run_turn`]: this is that tail with no owner around
+    /// it ([`crate::turn_tail::Bare`]), the daemon's sessions run it with `Sessions` as
+    /// the owner, and a subagent's thread runs it with [`ChildTurns`].
     pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken_as_a_normal_session(Speaker::Operator, prompt)
     }
@@ -7779,70 +7779,25 @@ impl Harness {
         self.submit_spoken_as_a_normal_session(Speaker::Agent, &parent_message_text(from, text))
     }
 
-    /// **The turn and its tail, with the speaker given** — the body both doors above share, so
-    /// the wall recovery cannot be had by one of them and not the other.
+    /// **The turn and its tail, with the speaker given** — the body both doors above share, and
+    /// since R68.4 nothing but the shared tail itself ([`crate::turn_tail::run_turn`]) with no
+    /// owner around it ([`crate::turn_tail::Bare`]): the pre-wall check, the failure, the
+    /// compaction after the turn (the refused door after a wall) and the continuation past it.
+    /// This used to be a second copy of that sequence, and the copy was a step behind the
+    /// daemon's: no failure published, a different `auto_compact_skipped` sentence.
     fn submit_spoken_as_a_normal_session(
         &mut self,
         speaker: Speaker,
         text: &str,
     ) -> Result<Reply, HarnessError> {
-        // Before the send, the same pre-turn check `Sessions::run_prompt` makes: a
-        // parked child taking a later prompt is the resumed-session case (its last
-        // turn may have filled the window with nothing behind it to check), and a
-        // fresh child's bare prefix fails `should_compact` and costs one comparison.
-        self.compact_if_at_the_wall();
-        let mut out = self.submit_spoken(speaker, text);
-        // **A wall that compacted is not the end of the prompt** — `after_turn`'s
-        // own rule, and the loop shape is deliberately the same: compact, MEASURE
-        // the room (never read it off `auto_compact` — the no-progress guard turns
-        // the flag off without freeing anything), continue, and let a continuation
-        // that meets the wall again come back around for another compaction until a
-        // gate closes. When one does, the wall error from the last turn is what the
-        // caller gets, which is the honest answer for a task that does not fit the
-        // window.
-        let mut walls = 0usize;
-        while matches!(out, Err(HarnessError::ContextWall { .. })) {
-            // **The REFUSED door, not the pre-emptive one** — the wall this loop
-            // answers is one the engine or the provider already raised, and
-            // `compact_if_at_the_wall` would refuse to act exactly when the
-            // no-progress guard has stood the flag down, which is the state this
-            // loop exists for (2026-10-09's child wedge had no `Sessions` to
-            // recover it and no door that would).
-            let attempted = self.compact_because_refused();
-            if !attempted {
-                // The same contradiction `after_turn` reports: a wall fired and
-                // nothing compacted, so WHICH number disagreed is said rather than
-                // left to be inferred from a silence the wall notice contradicts.
-                self.hub.publish(SessionEvent::Warning {
-                    code: "auto_compact_skipped".into(),
-                    detail: format!(
-                        "the turn stopped at the context wall and nothing was compacted: \
-                         automatic compaction is {} for this session. `/compact` does it \
-                         by hand.",
-                        if self.cfg.context_window.is_none() {
-                            "not configured — no --context-window is set, so there is no \
-                             wall to measure against"
-                        } else {
-                            "off"
-                        }
-                    ),
-                    compaction: None,
-                });
-                break;
-            }
-            if !self
-                .cfg
-                .room_for_next_turn(self.session.ledger.len() as u64)
-            {
-                break;
-            }
-            walls += 1;
-            if walls > crate::sessions::WALL_CONTINUES {
-                break;
-            }
-            out = self.continue_after_wall();
-        }
-        out
+        let door = match speaker {
+            Speaker::Operator => crate::turn_tail::Door::Prompt,
+            _ => crate::turn_tail::Door::Message,
+        };
+        crate::turn_tail::run_turn(self, &mut crate::turn_tail::Bare, door, |h| {
+            h.submit_spoken(speaker, text).map(Some)
+        })
+        .expect("a spoken turn always runs")
     }
 
     /// `Sessions::compact_if_at_the_wall`'s contract, from the side that owns the
@@ -7860,7 +7815,7 @@ impl Harness {
     /// window is configured. A wall notice that says *"a compaction was
     /// ATTEMPTED"* needs that to be a fact rather than a hope, and until this
     /// existed a child's was a promise nothing behind it kept.
-    fn compact_if_at_the_wall(&mut self) -> bool {
+    pub(crate) fn compact_if_at_the_wall(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Tidy)
     }
 
@@ -7884,8 +7839,22 @@ impl Harness {
     /// (`forced_gave_up`, this daemon's lifetime), so a history no fold can shrink
     /// cannot spend a summary turn per refused turn. That is the rate limit the
     /// pre-emptive flag used to be, applied to the door it belongs to.
-    fn compact_because_refused(&mut self) -> bool {
+    pub(crate) fn compact_because_refused(&mut self) -> bool {
         self.compact_at_the_wall(WallWhy::Refused)
+    }
+
+    /// **Whether a forced compaction already ran and gained nothing** — the refused door's latch
+    /// (one summary turn per history no fold can shrink). Read by the shared turn tail to say
+    /// WHY a wall was not compacted.
+    pub(crate) fn forced_gave_up(&self) -> bool {
+        self.forced_gave_up
+    }
+
+    /// **A parent's or peer's message as a turn, bare** — the words
+    /// [`Harness::submit_a_parents_message`] speaks, without the tail around them, for a caller
+    /// that runs the tail itself ([`crate::turn_tail::run_turn`]).
+    pub fn parents_message_turn(&mut self, from: &str, text: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken(Speaker::Agent, &parent_message_text(from, text))
     }
 
     /// **One body, two questions.** `should_compact`/`at_the_wall` are the
@@ -12108,7 +12077,7 @@ struct ContextLengthRefusal {
 ///
 /// A provider refuses an over-long prompt with a STATUS, not with a wall event —
 /// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
-/// so every recovery gated on `HarnessError::ContextWall` (`after_turn`'s
+/// so every recovery gated on `HarnessError::ContextWall` (the turn tail's
 /// `out.is_ok() || wall`) reads false and no door reacts. MEASURED 2026-10-09,
 /// session `s-1789919514688401228` on `deepseek/deepseek-flash`: thirty consecutive
 /// 400s, the first attributed to `monitor`, the last to `todo check`, none recovered.
@@ -12853,8 +12822,11 @@ fn stop_children_first(
 /// It ends when the hub is closed — the same liveness test `jobwatch::watch_task` uses for the
 /// thread it parks per child — and **nothing else here is on a clock**: a child asked something an
 /// hour later answers it.
-fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str) -> ChildExit {
-    serve_child_under(sub, hub, sub_id, crate::sessions::TodoNagClock::new())
+///
+/// **Every door here is the shared turn tail** ([`crate::turn_tail::run_turn`], R68.4), with
+/// [`ChildTurns`] as its owner — the loop itself is in [`serve_child_with`].
+fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str, turns: ChildTurns) -> ChildExit {
+    serve_child_with(sub, hub, sub_id, turns)
 }
 
 /// **The one exit every subagent thread takes** (R68.2): closes the child's hub and removes the
@@ -12893,61 +12865,192 @@ pub fn serve_child_under(
     sub: &mut Harness,
     hub: &Hub,
     sub_id: &str,
-    mut nag: crate::sessions::TodoNagClock,
+    nag: crate::sessions::TodoNagClock,
 ) -> ChildExit {
+    let turns = ChildTurns::new(sub, sub_id, nag);
+    serve_child_with(sub, hub, sub_id, turns)
+}
+
+/// **A subagent's own half of the shared turn tail** (R68.4) — the [`TurnOwner`] for a session
+/// served on its own thread, holding the clocks that thread keeps.
+///
+/// Every door of a child — its task, a later prompt, a parent's message, a wake, the idle
+/// plan-check — runs through [`crate::turn_tail::run_turn`], the same sequence the daemon runs
+/// for its own sessions. Before it, a child had a second copy of that sequence
+/// (`submit_spoken_as_a_normal_session` plus this loop's arms), and what the copy was missing is
+/// what this struct now supplies: its title reaches the registry (`take_new_title` was never
+/// drained for a child, so a picker row never took one), its monitors get a waiter, it is
+/// SWEPT for tool calls nothing will answer (the daemon's sweep walked only `Sessions.open`),
+/// and its failures carry their reason.
+pub struct ChildTurns {
+    registry: Arc<letibot_sessionlog::registry::Registry>,
+    id: String,
+    /// The idle plan-check — the same [`crate::sessions::TodoNagClock`] the daemon keeps for its
+    /// own sessions, kept here because this thread is the only one that may drive the harness.
+    nag: crate::sessions::TodoNagClock,
+    /// **The board's version is how this loop sees a write that ran no turn.** A parent's
+    /// `todo_write target=` moves the board from the PARENT's thread and wakes this reader; the
+    /// version is what tells that wake apart from a settlement that found nothing
+    /// (`Harness::wake`'s `Ok(None)`), because only one of them should re-arm the clock.
+    board_version: u64,
+    /// When this child's abandoned-call sweep is due — the child's own copy of the daemon's
+    /// `sweep_at`, armed by every turn and run on this thread when it comes due.
+    sweep_at: Option<std::time::Instant>,
+    /// Whether this child's monitor waiter is running — one per session, `Sessions::armed`'s
+    /// rule.
+    wake_armed: bool,
+}
+
+impl ChildTurns {
+    pub fn new(sub: &Harness, sub_id: &str, nag: crate::sessions::TodoNagClock) -> ChildTurns {
+        ChildTurns {
+            registry: sub.session_registry.clone(),
+            id: sub_id.to_string(),
+            nag,
+            // **Read BEFORE the rows it describes, and that order is load-bearing.** A parent's
+            // write lands between this read and the first re-arm in the worst case, and the two
+            // orders fail differently: rows-then-version arms from the OLD rows and then finds
+            // the version already moved, so the wake re-arms nothing and the nag is lost for
+            // good — while version-then-rows arms from the old rows, sees the version move, and
+            // re-arms from the rows the write just left. The version is the wider read.
+            board_version: sub.todo_board_version(),
+            sweep_at: None,
+            wake_armed: false,
+        }
+    }
+
+    /// **Re-arm the idle plan-check from NOW, when a turn ran or the board moved.**
+    ///
+    /// The two anchors are exactly `Sessions`' two: the end of every turn, and the arm at a
+    /// board write (`SetOperatorTodos`/`SetTodos` for a session the daemon holds, a parent's
+    /// `todo_write target=` bumping the board's version here). `turned` is the first; the
+    /// version comparison is the second, and it is what turns a wake from a parent's write into
+    /// a re-arm while a wake that found nothing stays silent.
+    ///
+    /// **And the children are taken fresh**, exactly as `Sessions::rearm_todo_nag` takes them:
+    /// they are the one input that moves while neither anchor does. **And the jobs with them**,
+    /// from this session's own process table: a row that waits on a background job is silent
+    /// while it runs, and whether it still runs is not a fact the board or the version holds.
+    fn rearm(&mut self, sub: &Harness, turned: bool) {
+        let v = sub.todo_board_version();
+        let moved = v != self.board_version;
+        self.board_version = v;
+        if turned || moved {
+            let rows = sub.todo_list();
+            let jobs = sub.running_jobs(&rows);
+            self.nag.rearm(
+                &rows,
+                std::time::Instant::now(),
+                &sub.child_sessions(),
+                &jobs,
+            );
+        }
+    }
+}
+
+impl crate::turn_tail::TurnOwner for ChildTurns {
+    fn arm_sweep(&mut self) {
+        let at = std::time::Instant::now() + crate::sessions::SWEEP_AFTER;
+        self.sweep_at = Some(self.sweep_at.map_or(at, |prev| prev.min(at)));
+    }
+
+    /// **The parent or a head has spoken: the check is earned back** —
+    /// `Sessions::note_operator_prompt`'s rule, for the session whose operator is whoever
+    /// prompts it.
+    fn spoken_to(&mut self, _h: &mut Harness) {
+        self.nag.prompt_arrived();
+    }
+
+    fn title(&mut self, _h: &mut Harness, title: String) {
+        self.registry.set_title(&self.id, title);
+    }
+
+    fn arm_wake(&mut self, h: &mut Harness) {
+        if self.wake_armed {
+            return;
+        }
+        match crate::turn_tail::spawn_monitor_wake(
+            &self.registry,
+            h,
+            &self.id,
+            std::time::Duration::from_secs(5),
+        ) {
+            Ok(armed) => self.wake_armed = armed,
+            Err(e) => {
+                h.hub().publish(letibot_sessionlog::SessionEvent::Warning {
+                    code: "monitor_wake_not_armed".into(),
+                    detail: format!(
+                        "this session's monitors will be POLLED, not woken: the waiter thread \
+                         could not be started ({e})."
+                    ),
+                    compaction: None,
+                });
+            }
+        }
+    }
+
+    fn turn_ended(&mut self, h: &mut Harness, door: &crate::turn_tail::Door) {
+        // **Said even when the turn failed** — the metronome rule: a check the model never
+        // answered must not come back every window, it is the same notice and the plan has not
+        // moved. Recorded BEFORE the re-arm, which reads it.
+        if let crate::turn_tail::Door::Nag(notice) = door {
+            self.nag.said(notice.clone(), std::time::Instant::now());
+        }
+        self.rearm(h, true);
+    }
+}
+
+/// [`serve_child`]'s loop, with the owner's state — built by the caller so a child's FIRST turn
+/// (its task, run in `run_to_completion`) goes through the same owner as every later one.
+fn serve_child_with(
+    sub: &mut Harness,
+    hub: &Hub,
+    sub_id: &str,
+    mut turns: ChildTurns,
+) -> ChildExit {
+    use crate::turn_tail::{Door, run_turn};
     use letibot_sessionlog::hub::OwnWork;
     // **The park clock** (R68's idle-child policy, `Config::child_park_after`): restarted by
     // every piece of work this loop takes, so it measures idleness and not age. `None` is the
     // old loop — a child that waits for its hub to close, however long that is.
     let park_after = sub.config().child_park_after;
     let mut park_at = park_after.map(|d| std::time::Instant::now() + d);
-    // **The board's version is how this loop sees a write that ran no turn.** A parent's
-    // `todo_write target=` moves the board from the PARENT's thread and wakes this reader;
-    // the version is what tells that wake apart from a settlement that found nothing
-    // (`Harness::wake`'s `Ok(None)`), because only one of them should re-arm the clock.
-    //
-    // **Read BEFORE the rows it describes, and that order is load-bearing.** A parent's
-    // write lands between these two lines in the worst case, and the two orders fail
-    // differently: rows-then-version arms from the OLD rows and then finds the version
-    // already moved, so the wake re-arms nothing and the nag is lost for good — while
-    // version-then-rows arms from the old rows, sees the version move, and re-arms from
-    // the rows the write just left. The version is the wider read, so it goes first.
-    let mut board_version = sub.todo_board_version();
     // **The first turn just ended on this thread, so the clock starts from its end** — the
-    // same arm `Sessions::after_turn` makes for a session the daemon holds, at the same
-    // moment relative to the turn. A child that finished its task with an unfinished plan
-    // is exactly a session whose last turn left work open.
-    //
-    // **And the jobs are read here too**, exactly as `Sessions::rearm_todo_nag` reads them: a
-    // child's own board may wait on a job the child backgrounded, and the silence that buys is
-    // the same one, so the two owners of this clock must take the same reading of it.
-    let rows = sub.todo_list();
-    let jobs = sub.running_jobs(&rows);
-    nag.rearm(
-        &rows,
-        std::time::Instant::now(),
-        &sub.child_sessions(),
-        &jobs,
-    );
+    // same arm the daemon makes for a session it holds, at the same moment relative to the
+    // turn. A child that finished its task with an unfinished plan is exactly a session whose
+    // last turn left work open.
+    turns.rearm(sub, true);
     loop {
-        let deadline = match (nag.due_at(), park_at) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let deadline = [turns.nag.due_at(), park_at, turns.sweep_at]
+            .into_iter()
+            .flatten()
+            .min();
         let work = hub.take_own_work_until(deadline);
+        let now_after = std::time::Instant::now();
+        // **The sweep, on the thread that owns the harness** — `Sessions::sweep_abandoned_calls`
+        // for a session the daemon holds, here for a child, which the daemon's sweep never
+        // reached. It is not activity: nothing was asked of the child.
+        if matches!(work, OwnWork::TimedOut) && turns.sweep_at.is_some_and(|at| at <= now_after) {
+            turns.sweep_at = None;
+            sub.sweep_abandoned_calls();
+            continue;
+        }
         // **Is this the park clock's deadline, and may the child go?** Only when nothing else is
         // due: a plan-check that is armed is work outstanding, and a child with one is not idle.
         if matches!(work, OwnWork::TimedOut)
-            && nag.due_at().is_none_or(|d| d > std::time::Instant::now())
+            && turns.nag.due_at().is_none_or(|d| d > now_after)
             && let (Some(at), Some(window)) = (park_at, park_after)
-            && at <= std::time::Instant::now()
+            && at <= now_after
         {
             // Nothing armed, the window spent: park unless something the harness owns, or a head
             // watching it, says the session is still in use — then look again a window later.
-            if nag.due_at().is_none() && hub.attached_heads() == 0 && sub.park_refusal().is_none() {
+            if turns.nag.due_at().is_none()
+                && hub.attached_heads() == 0
+                && sub.park_refusal().is_none()
+            {
                 return ChildExit::Parked;
             }
-            park_at = Some(std::time::Instant::now() + window);
+            park_at = Some(now_after + window);
             continue;
         }
         // Anything else is activity, and the park clock starts over from it.
@@ -12961,109 +13064,45 @@ pub fn serve_child_under(
             // taken at a round boundary, says `Ok(None)` and runs nothing, which is what stops one
             // settlement being delivered twice.
             OwnWork::Wake => {
-                let turned = match sub.wake() {
-                    Ok(Some(_)) => true,
-                    Ok(None) => false,
-                    Err(e) => {
-                        hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                            code: "wake_failed".into(),
-                            detail: format!(
-                                "{sub_id} was woken because a subagent it started had finished, \
-                                 and the turn that would have read the settlement failed: {e}. \
-                                 The settlement is still in this session's queue and the next \
-                                 wake will find it."
-                            ),
-                            compaction: None,
-                        });
-                        false
-                    }
-                };
                 // **A wake that ran nothing re-arms nothing** — the worker's `Sessions::wake`
-                // returns `Ignored` for the same case rather than calling `after_turn`. A
-                // board that MOVED under the wake does re-arm (below), which is the parent's
-                // write: the daemon's `SetOperatorTodos` arm does the same for a session it
-                // holds.
-                rearm_the_idle_check(sub, &mut nag, &mut board_version, turned);
+                // answers `Ignored` for the same case. A board that MOVED under the wake does
+                // re-arm, which is the parent's write: the daemon's `SetOperatorTodos` arm does
+                // the same for a session it holds.
+                if run_turn(sub, &mut turns, Door::Wake, |h| h.wake()).is_none() {
+                    turns.rearm(sub, false);
+                }
                 continue;
             }
-            // **The idle plan-check, delivered on the thread that owns the harness.** This
-            // is `Sessions::deliver_due_nags`' one-session body, run here because the
-            // worker cannot: it holds no `Harness` for this session, and driving one from
-            // two threads is the shape this tree keeps closing. `nag_turn` is the same
-            // function the worker calls — one text, one predicate, one schedule.
+            // **The idle plan-check, delivered on the thread that owns the harness.** This is
+            // `Sessions::deliver_due_nags`' one-session body, run here because the worker
+            // cannot: it holds no `Harness` for this session. Disarmed before the turn, exactly
+            // as `due_now` disarms for the worker: a delivery that left the old deadline in place
+            // would fire again at once.
             OwnWork::TimedOut => {
-                // Disarmed before the turn, exactly as `due_now` disarms for the worker:
-                // a delivery that left the old deadline in place would fire again at once.
-                nag.fired();
+                turns.nag.fired();
                 let notice = sub.nag_notice();
-                let out = sub.nag_turn();
-                // **Said even when the turn failed** — the metronome rule: a check the
-                // model never answered must not come back every window, it is the same
-                // notice and the plan has not moved.
-                let turned = !matches!(out, Ok(None));
-                if turned {
-                    nag.said(notice, std::time::Instant::now());
+                if run_turn(sub, &mut turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
+                    turns.rearm(sub, false);
                 }
-                if let Err(e) = out {
-                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                        code: "todo_check_failed".into(),
-                        detail: format!(
-                            "{sub_id} was due its idle plan-check and the turn failed: {e}. \
-                             The check is spent — it will come back when the plan moves or \
-                             somebody prompts this session, not on the next window."
-                        ),
-                        compaction: None,
-                    });
-                }
-                rearm_the_idle_check(sub, &mut nag, &mut board_version, turned);
                 continue;
             }
             OwnWork::Command(cmd) => cmd.kind,
         };
         match child_command(&kind) {
+            // **The same door the first prompt took** — a child is a session, and a prompt to it
+            // is a turn through the shared tail like any other.
             ChildCommand::Answer => {
                 let text = match &kind {
                     letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                // **The parent or a head has spoken: the check is earned back** —
-                // `Sessions::note_operator_prompt`'s rule, for the session whose operator
-                // is whoever prompts it. A child told something may have been told a new
-                // plan, and the once-per-saying must not outlive the saying.
-                nag.prompt_arrived();
-                // **The same door the first prompt took** — see `run_to_completion`.
-                // A steering message to a parked child is a prompt like any other,
-                // and a child near the wall must compact on ITS overrun exactly as
-                // on its first: the operator's rule is about the session, not about
-                // which prompt it was.
-                let ran = sub.submit_as_a_normal_session(&text).is_ok();
-                if !ran {
-                    // **Said, and the child stays reachable.** A turn that failed is the same fact
-                    // `turn_failed` reports for a root; a child has no worker to publish it, so it
-                    // goes on the child's own log — which its parent and the operator both read.
-                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                        code: "turn_failed".into(),
-                        detail: format!(
-                            "{sub_id} was asked something after its task and the turn \
-                             failed. The child is still here and can be asked again."
-                        ),
-                        compaction: None,
-                    });
-                }
-                // A prompt is a turn whether it succeeded or failed — `after_turn` runs for
-                // both on the daemon, and the anchor is the turn's own end.
-                rearm_the_idle_check(sub, &mut nag, &mut board_version, true);
+                run_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&text).map(Some));
             }
             // **A parent's message, and there is no turn to steer it into — so one is started.**
-            // This is the between-turns half of the operator's ruling (*"fix task_message - it
-            // should enqueue"*): the message was put on this queue by the parent's
-            // `task_message`, the parent's wake reached this thread, and the turn that reads it
-            // is the child's own. `submit_a_parents_message` is the same seam the prompt above
-            // takes — a child near the wall compacts on this turn exactly as on any other — and
-            // it is NOT `submit_as_a_normal_session`: the words are recorded as the parent's
-            // (`Speaker::Agent`), naming which parent, so they can neither authorise an act nor
-            // be read as something the operator typed. The mid-turn door
-            // (`HubSteering::try_next`) speaks the same text through
+            // The between-turns half of the operator's ruling (*"fix task_message - it should
+            // enqueue"*). The words are recorded as the parent's (`Speaker::Agent`), naming which
+            // parent, so they can neither authorise an act nor be read as something the operator
+            // typed; the mid-turn door (`HubSteering::try_next`) speaks the same text through
             // [`parent_message_text`], so a child cannot tell which state it was in.
             ChildCommand::Hear => {
                 let (from, text) = match &kind {
@@ -13072,39 +13111,15 @@ pub fn serve_child_under(
                     }
                     _ => unreachable!("`child_command` hears a Message and nothing else"),
                 };
-                // **A message is a speaker too, and the clock's own two rules are the
-                // `Answer` arm's** — this arm was added to `main` by the between-turns
-                // message fix, after this branch was written, so the merge left it with no
-                // clock handling at all and the two doors below would otherwise disagree
-                // about the same event. A parent that speaks may have said a new plan (the
-                // once-per-saying must not outlive the saying), and the turn it starts is a
-                // turn: it can move the child's own board, which is the version
-                // `rearm_the_idle_check` is watching.
-                nag.prompt_arrived();
-                if let Err(e) = sub.submit_a_parents_message(&from, &text) {
-                    // The same report the prompt's failure gets, and for the same reason: a
-                    // child has no worker to publish a `turn_failed`, so the sentence goes on
-                    // the child's own log, which its parent and the operator both read.
-                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                        code: "turn_failed".into(),
-                        detail: format!(
-                            "{sub_id} was sent a message from `{from}` and the turn that would \
-                             have read it failed: {e}. The message is spent — ask again, or read \
-                             the child with `task_result`."
-                        ),
-                        compaction: None,
-                    });
-                }
-                // A message is a turn whether it succeeded or failed, exactly as the prompt
-                // above is — `after_turn` runs for both on the daemon.
-                rearm_the_idle_check(sub, &mut nag, &mut board_version, true);
+                run_turn(sub, &mut turns, Door::Message, |h| {
+                    h.parents_message_turn(&from, &text).map(Some)
+                });
             }
             // **The children first, then this session.** Stopping is a tree's downward edge — see
             // the supervision invariant on [`HarnessTaskRunner`] — and this is where a child that
             // is between turns receives it. It then leaves: an interrupt that reaches a session
             // stops that session, and a stopped session that stayed would be the shape this whole
-            // change is against. Its exit is reported upward the way every child's exit is, by the
-            // slot its parent's watcher is blocked on.
+            // change is against.
             ChildCommand::Stop => {
                 sub.stop_children();
                 return ChildExit::Stopped;
@@ -13114,53 +13129,16 @@ pub fn serve_child_under(
                     "  {sub_id}: left a command in this subagent's queue — {why}. A child's \
                      machinery is its parent's, so nothing was run."
                 );
-                // **And the head that sent it is told** (R67 item 15): a `!` line, a slash
-                // command, a mode or a todo edit sent to a subagent was dropped with a stderr line,
-                // and the head attached to the child saw its command vanish.
+                // **And the head that sent it is told** (R67 item 15).
                 hub.publish(letibot_sessionlog::SessionEvent::Warning {
                     code: "child_door_refused".into(),
-                    detail: child_leave_said(&sub_id, &kind, why),
+                    detail: child_leave_said(sub_id, &kind, why),
                     compaction: None,
                 });
-                // Nothing ran and nothing moved, so the clock keeps its own anchor —
-                // the same silence a queued-but-unrunable command leaves on the daemon.
-                rearm_the_idle_check(sub, &mut nag, &mut board_version, false);
+                // Nothing ran and nothing moved, so the clock keeps its own anchor.
+                turns.rearm(sub, false);
             }
         }
-    }
-}
-
-/// **Re-arm the child's idle plan-check from NOW, when a turn ran or the board moved.**
-///
-/// The two anchors are exactly `Sessions`' two: `after_turn` at every turn's end, and the
-/// arm at a board write (`SetOperatorTodos`/`SetTodos` for a session the daemon holds, a
-/// parent's `todo_write target=` bumping the board's version here). `turned` is the
-/// first; the version comparison is the second, and it is what turns a wake from a
-/// parent's write into a re-arm while a wake that found nothing stays silent.
-///
-/// **And the children are taken fresh**, exactly as `Sessions::rearm_todo_nag` takes them:
-/// they are the one input that moves while neither anchor does, so a row that waits on a
-/// child which has gone quiet is re-read rather than remembered. **And the jobs with them**,
-/// from this session's own process table: a row that waits on a background job is silent
-/// while it runs, and whether it still runs is not a fact the board or the version holds.
-fn rearm_the_idle_check(
-    sub: &Harness,
-    nag: &mut crate::sessions::TodoNagClock,
-    board_version: &mut u64,
-    turned: bool,
-) {
-    let v = sub.todo_board_version();
-    let moved = v != *board_version;
-    *board_version = v;
-    if turned || moved {
-        let rows = sub.todo_list();
-        let jobs = sub.running_jobs(&rows);
-        nag.rearm(
-            &rows,
-            std::time::Instant::now(),
-            &sub.child_sessions(),
-            &jobs,
-        );
     }
 }
 
@@ -15523,7 +15501,16 @@ impl HarnessTaskRunner {
         // [`Harness::submit_as_a_normal_session`] compacts at the wall and
         // continues on the summary, bounded; a wall it cannot dig out of still
         // comes back here as the honest failure it is.
-        let reply = match sub.submit_as_a_normal_session(prompt) {
+        // **The task is the child's first turn, through the shared tail with the child's own
+        // owner** (R68.4) — the same owner every later turn of this thread uses, so its title,
+        // its monitors and its sweep are the child's from the first turn on.
+        let mut turns = ChildTurns::new(&sub, &sub_id, crate::sessions::TodoNagClock::new());
+        let first =
+            crate::turn_tail::run_turn(&mut sub, &mut turns, crate::turn_tail::Door::Prompt, |h| {
+                h.submit(prompt).map(Some)
+            })
+            .expect("a prompt always runs a turn");
+        let reply = match first {
             Ok(reply) => reply,
             Err(e) => {
                 // The backend is closed on this exit too — the other two close it below — so a
@@ -15586,7 +15573,7 @@ impl HarnessTaskRunner {
         // closes its hub, so enqueueing on the way out would hold a finished branch out of the
         // queue for the life of the daemon. The answer being given IS the finish.
         self.enqueue_finished(&sub_id);
-        if serve_child(&mut sub, &sub_hub, &sub_id) == ChildExit::Parked {
+        if serve_child(&mut sub, &sub_hub, &sub_id, turns) == ChildExit::Parked {
             slot.mark_parked();
         }
         // The hub closed (the daemon is going away), a stop arrived, or the child parked. Released

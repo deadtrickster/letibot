@@ -122,6 +122,7 @@ pub mod suggest;
 pub mod tasks;
 pub mod term;
 pub mod transcript_source;
+pub mod turn_tail;
 
 pub use answers::{Answers, HeadAdjudicator};
 pub use config::{Config, SpillPolicy, SpillStorage};

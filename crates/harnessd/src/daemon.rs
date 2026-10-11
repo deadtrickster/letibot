@@ -47,7 +47,7 @@ use letibot_sessionlog::server::{ServerHandle, serve_registry};
 use crate::harness::HarnessError;
 use letibot_sessionlog::registry::{Work, WorkOrIdle};
 
-use crate::sessions::{Outcome, SWEEP_AFTER, Sessions};
+use crate::sessions::{Outcome, Sessions};
 
 /// The write end of the self-pipe, for the signal handler. An `AtomicI32` because
 /// that is what a handler may touch; `-1` means no handler is installed.
@@ -267,7 +267,11 @@ impl Daemon {
                         // pass. Without this deadline the worker would sleep until the next command
                         // and the stranded call would sit in the head exactly as it did for the
                         // operator: eight minutes of a spinner with `esc esc` dead.
-                        sessions.arm_sweep(SWEEP_AFTER);
+                        //
+                        // **Armed by the turn itself now, not here** (R68.4): every door's turn goes
+                        // through `turn_tail::run_turn`, which arms the sweep before the turn — so a
+                        // door reached some other way (a scripted submit, a test, a future arm)
+                        // cannot forget it, which is how the nag door did (R67 item 10).
                         let outcome = sessions.dispatch(&session_id, &cmd);
                         on_reply(&session_id, &cmd, outcome);
                     }
@@ -301,8 +305,8 @@ impl Daemon {
                         // stands a session down for an unchanged plan BY DESIGN, and a wake-driven
                         // turn over an unchanged plan leaves the worker nothing to wake for. The
                         // sweep is the clock that exists for exactly this — a call nothing
-                        // answered — and a turn that ends is what arms it.
-                        sessions.arm_sweep(SWEEP_AFTER);
+                        // answered — and a turn that ends is what arms it. The shared turn tail
+                        // arms it (R68.4), for this door and every other.
                         match sessions.wake(&session_id) {
                             Outcome::Replied(r) => eprintln!(
                                 "  {session_id} · monitor -> {} round(s), {} tool call(s)",

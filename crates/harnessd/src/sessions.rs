@@ -38,9 +38,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, Owner, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
-use letibot_sessionlog::{SessionEvent, hub::Hub};
 use letibot_tokencore::store::{Store, TodoItem};
 // **The plan's own text, and the queue it is served from** — the one renderer, so the idle check
 // and the tool's reply cannot come to describe two different plans. And the children the plan may
@@ -54,7 +54,8 @@ use letibot_tools::builtins::todo::{
 use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
-use crate::harness::{CompactReport, Harness, HarnessError, Parts, Reply, WallWhy};
+use crate::harness::{CompactReport, Harness, HarnessError, Parts, Reply};
+use crate::turn_tail::{Door, TurnOwner, publish_failure, run_turn};
 
 /// **The review queue's own session** — one, hardcoded, whose todo board is the queue. See the
 /// module's own docs for the design and for where the rows live versus where the STATES live.
@@ -75,7 +76,7 @@ const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 /// How many times one prompt may continue itself past the context wall.
 ///
 /// Each continuation is a whole turn plus the compaction behind it, and the room
-/// check in [`Sessions::after_turn`] is what normally ends the loop. The cap is
+/// check in [`crate::turn_tail::run_turn`] is what normally ends the loop. The cap is
 /// the runaway guard for the cycle the room check cannot see: a turn that fills
 /// the window in one round, a summary that frees it, repeat — every cycle does
 /// real work, so no flag ever says stop. Three wall-cycles inside one prompt is
@@ -83,12 +84,10 @@ const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 /// not fit the window, and the fourth wall is the operator's to answer — by
 /// `/compact`, a fresh session, or a bigger `--context-window`.
 ///
-/// **Read by both doors that continue past a wall.** The daemon's own sessions
-/// loop over it in [`Sessions::after_turn`]; a subagent's harness — which never
-/// passes through `Sessions`, and is continued by its own thread in
-/// [`Harness::submit_as_a_normal_session`] — bounds itself with the same number,
-/// because "a child may retry one fewer time than its parent" is not a policy
-/// anybody chose.
+/// **Read by the one loop that continues past a wall** — [`crate::turn_tail::run_turn`],
+/// which every door of every session runs, the daemon's own and a subagent's alike
+/// (R68.4). Before, the daemon's sessions and a child's harness each looped over it in
+/// their own copy of the tail.
 pub(crate) const WALL_CONTINUES: usize = 3;
 
 /// How long a session sits IDLE before the unfinished-plan check is sent.
@@ -506,7 +505,7 @@ impl TodoNagClock {
     /// * **silent only because a JOB is running** — armed for NOTHING, and that is the one place
     ///   this clock's answer differs from the child's above. A running job needs no deadline of its
     ///   own: its settlement is delivered to the model as a turn, and a turn's end is what re-arms
-    ///   this clock (`after_turn`, `serve_child_under`), so the row is asked about the moment the
+    ///   this clock (the turn tail's end, `serve_child_under`), so the row is asked about the moment the
     ///   job is over without anything here having to know when that will be.
     pub fn rearm(
         &mut self,
@@ -704,13 +703,6 @@ pub struct Sessions<'a> {
     /// the handle; the harness gets a clone of the same `Arc`, because the round boundary's
     /// pickup reads the same fact mid-turn.
     bangs: HashMap<String, Arc<crate::bangrun::State>>,
-    /// **The refused door's rate limit, per session** — set when a compaction
-    /// FORCED by a context-length refusal completed and the session is still at
-    /// the wall. One summary turn per daemon lifetime is the budget for a
-    /// history no fold can shrink; the pre-emptive flag used to carry this and
-    /// could not, because it also has to stand down while the forced door still
-    /// has work to do. See `compact_because_refused` and `WallWhy`.
-    wall_gave_up: std::collections::HashSet<String>,
     /// **The last reason the review queue's session did not open, as said on a hub** — so
     /// [`Sessions::ensure_gatekeeper`], which runs every review pass, says a standing failure
     /// once and a new one again. `None` once it opens.
@@ -883,7 +875,6 @@ impl<'a> Sessions<'a> {
             // ask and its wake has the row and nothing else, and this is what finds it.
             reviews_at: Some(Instant::now()),
             bangs: HashMap::new(),
-            wall_gave_up: std::collections::HashSet::new(),
             gatekeeper_said: None,
         };
         let (tool, cond) = sessions.seat_tool(&id);
@@ -1376,20 +1367,24 @@ impl<'a> Sessions<'a> {
     /// it as a system update (§5.3). Called after a compaction. Returns whether
     /// an update went in.
     pub fn refresh_fabric(&mut self, session_id: &str) -> Result<bool, HarnessError> {
-        let Some(seat) = self.seat.clone() else {
+        let Some(block) = self.fabric_due(session_id) else {
             return Ok(false);
         };
-        if !self.seated.contains_key(session_id) {
-            return Ok(false);
-        }
-        let (block, _line) = self.fabric_block(&seat);
-        if self.fabric_seen.get(session_id) == Some(&block) {
-            return Ok(false);
-        }
         let h = self.harness(session_id)?;
         h.system_update(&block)?;
         self.fabric_seen.insert(session_id.to_string(), block);
         Ok(true)
+    }
+
+    /// The fabric block a seated root should be told after a compaction, or `None` when it is not
+    /// seated or the block has not changed since it last saw it.
+    fn fabric_due(&self, session_id: &str) -> Option<String> {
+        let seat = self.seat.as_ref()?;
+        if !self.seated.contains_key(session_id) {
+            return None;
+        }
+        let (block, _line) = self.fabric_block(seat);
+        (self.fabric_seen.get(session_id) != Some(&block)).then_some(block)
     }
 
     /// Declare the session's `flowy` monitor — continuous, owned by the session
@@ -1588,15 +1583,23 @@ impl<'a> Sessions<'a> {
     /// can be built in a test with nothing else — so the handover happens here, at
     /// the one layer that holds both.
     fn publish_title(&mut self, session_id: &str) {
-        let Some(h) = self.open.get_mut(session_id) else {
+        let Some(title) = self
+            .open
+            .get_mut(session_id)
+            .and_then(|h| h.take_new_title())
+        else {
             return;
         };
-        if let Some(title) = h.take_new_title() {
-            if let Some(c) = self.seated.get(session_id) {
-                c.set_alias(&title);
-            }
-            self.registry.set_title(session_id, title);
+        self.name_session(session_id, title);
+    }
+
+    /// The title's two homes: the registry (a picker's row) and, for a seated root, the session's
+    /// address on the fabric (`@seat/title`).
+    fn name_session(&mut self, session_id: &str, title: String) {
+        if let Some(c) = self.seated.get(session_id) {
+            c.set_alias(&title);
         }
+        self.registry.set_title(session_id, title);
     }
 
     /// The harness for `session_id`, opening it if a head made the session and
@@ -1835,70 +1838,23 @@ impl<'a> Sessions<'a> {
     /// A second copy of a sequence is a second place to forget one of its steps, so
     /// there is one.
     fn run_prompt(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
-        // **The operator has spoken, so the plan check is earned back** — see
-        // `note_operator_prompt`. Called here rather than in `dispatch`'s `Prompt` arm because
-        // `run_prompt` is the one place a prompt from ANY door arrives (a head's enter, a script,
-        // `--continue`), and a rule applied at one door is a rule the other doors do not have.
-        self.note_operator_prompt(session_id);
-        // **The wall is checked BEFORE the send, not only after the last turn.**
-        //
-        // `compact_if_at_the_wall`'s own contract is to compact *"when the NEXT
-        // turn would not fit"* — and both of its call sites are AFTER a turn, so
-        // the contract holds for every turn except the first one after a resume.
-        // A session that has just been reopened has taken no turn since the daemon
-        // started, so nothing has checked, and the prompt goes out whole.
-        //
-        // Measured 2026-10-02, and it is what made a dead head rather than a slow
-        // one: a resumed leticl session sent 1,463,497 tokens against a 1,048,576
-        // window. The provider's refusal comes back as a BACKEND error and not as
-        // `HarnessError::ContextWall`, so `after_turn`'s `out.is_ok() || wall` is
-        // false and the compaction is never reached — the session could not
-        // recover on its own however many times the operator retyped. With this
-        // check, the same session compacts first and the turn fits (~923k).
-        //
-        // Before the turn clock, not after: a compaction is the tidying, not a
-        // round of the turn, and a composer that counted it would show the
-        // operator a turn duration that is mostly the summary.
-        //
-        // Not a second copy of the tidying: the same function, the same predicate
-        // and the same swallowed failure, called earlier on the one path every
-        // prompt from every door takes (`--continue`, a head's enter, a script).
-        // The invariant it restores is the one the call sites already assumed.
-        self.compact_if_at_the_wall(session_id);
-        // **A turn is one prompt however many ROUNDS it takes, so the clock starts HERE.**
-        // `run_turn_steered` is called inside the round loop, so `TurnStarted` fires per round
-        // and a head timing from it restarts at every one — the composer read `2.1s` a minute
-        // into a turn. The operator's report: *"it should be still responding even while you do
-        // tools calls and such, and not reset, currently it resets."* Stamped where the prompt
-        // arrives, carried through every round of it, and cleared when the turn ends.
-        let began = letibot_sessionlog::event::now_ms();
-        if let Some(h) = self.open.get_mut(session_id) {
-            h.begin_turn_clock(began);
+        // **Opened first, lazily** — the resume a head reaches (`/resume`, a switch from the
+        // picker). A session that cannot be opened ran nothing, and says so on its own log.
+        if let Err(e) = self.harness(session_id) {
+            self.warn(
+                session_id,
+                "session_unavailable",
+                format!("this session could not be opened, so nothing was run: {e}"),
+            );
+            return Err(e);
         }
-        let hub = self.registry.get(session_id);
-        // Opened here rather than held across the tidying above: a live borrow of
-        // `self.open` would stop a compaction from re-entering it.
-        let out = match self.harness(session_id) {
-            Ok(h) => h.submit(text),
-            Err(e) => {
-                if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "session_unavailable".into(),
-                        detail: format!(
-                            "this session could not be opened, so nothing was run: {e}"
-                        ),
-
-                        compaction: None,
-                    });
-                }
-                return Err(e);
-            }
-        };
-        self.publish_title(session_id);
-        self.arm_wake(session_id);
-        // `after_turn` owns the tail now, wall continuations included, so it
-        // takes the outcome and returns the one that finally stands.
-        self.after_turn(session_id, &hub, out)
+        // **Everything around the turn is the shared tail's** (R68.4): the plan-check earned
+        // back (*"but certainly not after my message"*), the wall checked BEFORE the send
+        // (measured 2026-10-02: a resumed session sent 1,463,497 tokens against a 1,048,576
+        // window, because every check ran after a turn), the clock, the failure, the
+        // compaction, the continuation past the wall, the title, the wake and the clocks after.
+        self.turn(session_id, Door::Prompt, |h| h.submit(text).map(Some))
+            .expect("a prompt always runs a turn")
     }
 
     /// **A message to a session the daemon holds, between that session's turns** — the row it
@@ -1918,189 +1874,51 @@ impl<'a> Sessions<'a> {
     /// same text, same trail line — a recipient that could tell which door its message came
     /// through would be reading the machinery instead of the message.
     ///
-    /// **The tail is `run_prompt`'s, deliberately.** A message's turn is a turn: it appends rows,
-    /// it can reach the wall, and a session that was only ever spoken to would have compacted
-    /// never. So the wall is checked before the send, the turn clock starts here, and `after_turn`
-    /// owns the way out — one copy of that sequence, the reason `run_prompt` exists at all.
+    /// **The tail is every door's, deliberately** ([`crate::turn_tail::run_turn`], R68.4). A
+    /// message's turn is a turn: it appends rows, it can reach the wall, and a session that was
+    /// only ever spoken to would have compacted never.
     fn run_a_message_from_a_session(
         &mut self,
         session_id: &str,
         from: &str,
         text: &str,
     ) -> Result<Reply, HarnessError> {
-        self.compact_if_at_the_wall(session_id);
-        let began = letibot_sessionlog::event::now_ms();
-        if let Some(h) = self.open.get_mut(session_id) {
-            h.begin_turn_clock(began);
-        }
-        let hub = self.registry.get(session_id);
-        let out = match self.open.get_mut(session_id) {
-            Some(h) => h.submit_a_parents_message(from, text),
-            None => {
-                return Err(HarnessError::Setup(format!(
-                    "session {session_id} is not open, so nothing could be delivered to it"
-                )));
-            }
-        };
-        self.publish_title(session_id);
-        self.arm_wake(session_id);
-        self.after_turn(session_id, &hub, out)
+        self.turn(session_id, Door::Message, |h| {
+            h.parents_message_turn(from, text).map(Some)
+        })
+        .expect("a message always runs a turn")
     }
 
-    /// **Everything that follows a turn, whatever started it.**
+    /// **One turn of a session the worker holds, through the shared tail** — every door of
+    /// `Sessions` comes here (R68.4), and `harness::serve_child` runs the same
+    /// [`crate::turn_tail::run_turn`] for a child. `None` is a door that found nothing to say.
     ///
-    /// A prompt from a script, a prompt from a head, a monitor firing — three ways
-    /// in and one set of obligations on the way out. Kept in one place because the
-    /// last time they were in three, one of them was missing the compaction.
-    fn after_turn(
+    /// **The harness is taken out of `open` for the length of the turn** and put back after,
+    /// so the owner's half ([`DaemonTurn`]) can reach every other field of `Sessions` while the
+    /// tail holds the harness — the borrow the two need at once. Nothing reads `open` for this
+    /// session during its own turn: the worker is the only thread with a `Sessions`, and it is
+    /// inside the turn.
+    fn turn(
         &mut self,
         session_id: &str,
-        hub: &Option<std::sync::Arc<Hub>>,
-        mut out: Result<Reply, HarnessError>,
-    ) -> Result<Reply, HarnessError> {
-        // The failure reaches the head FIRST: it is the answer to what was asked,
-        // and the tidying after it is not.
-        if let Err(e) = &out {
-            let turn_id = self
-                .open
-                .get(session_id)
-                .map(|h| h.last_turn_id().to_string())
-                .unwrap_or_default();
-            if let Some(hub) = &hub {
-                publish_failure(hub, &turn_id, e);
-            }
-        }
-
-        // **The wall is the one failure that must still compact.** The turn stopped
-        // precisely because the context is full; returning without compacting
-        // leaves the NEXT turn to meet the same wall at round zero, and the one
-        // after that, forever. Everything the turn produced is committed, so there
-        // is nothing to lose by tidying now.
-        //
-        // **And the two outcomes take two DIFFERENT doors** — the split `WallWhy`
-        // exists for. A turn that SUCCEEDED takes the pre-emptive door
-        // (`should_compact`: would the next turn fit?), which the no-progress
-        // guard stands down. A turn that was STOPPED AT THE WALL takes the
-        // refused door, which does not read that flag: the guard turns it off
-        // without freeing anything, and a wall recovery gated on it would refuse
-        // the only lever it has. MEASURED 2026-10-09, session
-        // `s-1789919514688401228`: ONE compaction in the whole log, then thirty
-        // provider refusals in a row — the guard had stood the flag down and this
-        // arm was the only recovery there was.
-        let wall = matches!(out, Err(HarnessError::ContextWall { .. }));
-        let attempted = if out.is_ok() {
-            self.compact_if_at_the_wall(session_id)
-        } else if wall {
-            self.compact_because_refused(session_id)
-        } else {
-            false
+        door: Door,
+        f: impl FnOnce(&mut Harness) -> Result<Option<Reply>, HarnessError>,
+    ) -> Option<Result<Reply, HarnessError>> {
+        let Some(mut h) = self.open.remove(session_id) else {
+            return Some(Err(HarnessError::Setup(format!(
+                "session {session_id} is not open, so nothing could be run in it"
+            ))));
         };
-        if out.is_ok() || wall {
-            // A wall that did not even reach the compaction threshold is a
-            // contradiction, and the operator should be told which of the two
-            // numbers disagreed rather than left to infer it from a silence — the
-            // wall's own message says a compaction was attempted. With the split
-            // there is a THIRD reason the refused door can decline — it already
-            // tried, and the fold gained nothing — and that one is said in its
-            // own words, because "automatic compaction is off" would be a lie
-            // about a door that does not read the flag.
-            if wall
-                && !attempted
-                && let Some(hub) = &hub
-            {
-                hub.publish(SessionEvent::Warning {
-                    code: "auto_compact_skipped".into(),
-                    detail: format!(
-                        "the turn stopped at the context wall and nothing was \
-                         compacted: {}. \
-                         `/compact` does it by hand.",
-                        if self.wall_gave_up.contains(session_id) {
-                            "a forced compaction already ran and gained no room, so this \
-                             daemon will not spend another summary turn on it"
-                        } else if self.base.context_window.is_none() {
-                            "not configured — no --context-window is set, so there is \
-                             no wall to measure against"
-                        } else {
-                            "automatic compaction is off for this session"
-                        }
-                    ),
-
-                    compaction: None,
-                });
-            }
-        }
-
-        // **A wall that compacted is not the end of the prompt.**
-        //
-        // Until now the wall ended the run: the turn stopped, the compaction
-        // tidied, the worker went idle — and the operator typed "continue" by
-        // hand to start the turn the prompt still owed them, every time, which
-        // is the report this loop answers. opencode never had the hole, because
-        // its compaction is a step inside the run loop (`prompt.ts`: overflow →
-        // `compaction.create` → `continue`) and the run never ends; this harness
-        // cannot do that, because the wall is the engine's stop and the
-        // compaction is this struct's act, so the seam is here — after the
-        // tidying, while the prompt is still open.
-        //
-        // The continuation is [`Harness::continue_after_wall`]'s user item, and
-        // each one is a whole turn with this same tail: it publishes its own
-        // failure, compacts after itself, and can meet the wall again, which is
-        // what the loop is for. Two gates bound it. Room is MEASURED, not read
-        // off a flag — the no-progress guard turns `auto_compact` off without
-        // freeing anything, and a flag would then read as room that is not
-        // there — and [`WALL_CONTINUES`] caps the cycles the room check cannot
-        // see. When either gate closes, the wall error from the last turn is
-        // what the caller gets, which is the honest answer.
-        if wall {
-            for _ in 0..WALL_CONTINUES {
-                // **The session's own config, not the daemon's.** `ledger_len` is
-                // counted off the ledger and `room_for_next_turn` has to compare
-                // it in the same units — which means the window scaled by
-                // `ledger_scale`, and that is measured per SESSION and lives on
-                // the session's harness. `self.base` is the command line, where it
-                // is always `None`, so this asked "does 991k ledger tokens fit in
-                // a 1M provider window" and answered no for a conversation the
-                // provider counted at 671k. The same unit confusion as the
-                // `/reseat` refusal, one door along.
-                // Rolled to the current count first (R72), so the room is the
-                // provider's count against its window and not a ratio from the last
-                // round applied to rows that came after it.
-                let room = self
-                    .open
-                    .get_mut(session_id)
-                    .map(|h| {
-                        h.measure_resident();
-                        h.config().room_for_next_turn(h.ledger_len() as u64)
-                    })
-                    .unwrap_or(false);
-                if !room {
-                    break;
-                }
-                out = match self.run_continuation(session_id, hub) {
-                    // The continuation met the wall too; `run_continuation`
-                    // already compacted after it, so the room check above decides
-                    // whether there is another continuation in this prompt.
-                    Err(HarnessError::ContextWall { .. }) => continue,
-                    other => other,
-                };
-                break;
-            }
-        }
-        // **and the turn's own clock stops with it.** A start that outlived its turn would be
-        // inherited by the next prompt's first round, so a fresh prompt would open with the
-        // PREVIOUS turn's duration on the composer.
-        if let Some(h) = self.open.get_mut(session_id) {
-            h.end_turn_clock();
-        }
-        // **Every turn ends here, so this is where the idle clock starts.** `after_turn` is the
-        // one convergence point for a prompt, a scripted submit and a monitor's wake — the same
-        // reason the compaction lives here and not at three call sites.
-        self.rearm_todo_nag(session_id);
-        // **And a subagent this worker holds starts its park window again** (R68's idle-child
-        // policy) — a turn is activity, whatever door it came through.
-        if self.registry.parent_of(session_id).is_some() {
-            self.arm_park();
-        }
+        let out = run_turn(
+            &mut h,
+            &mut DaemonTurn {
+                sessions: self,
+                session_id,
+            },
+            door,
+            f,
+        );
+        self.open.insert(session_id.to_string(), h);
         out
     }
 
@@ -2137,6 +1955,18 @@ impl<'a> Sessions<'a> {
             }
             None => (Vec::new(), RunningJobs::none()),
         };
+        self.rearm_todo_nag_from(session_id, rows, jobs);
+    }
+
+    /// [`Sessions::rearm_todo_nag`] from a harness in hand — the shared tail's door, which holds
+    /// the session's harness out of `open` while it runs.
+    fn rearm_todo_nag_on(&mut self, session_id: &str, h: &Harness) {
+        let rows = h.todo_list();
+        let jobs = h.running_jobs(&rows);
+        self.rearm_todo_nag_from(session_id, rows, jobs);
+    }
+
+    fn rearm_todo_nag_from(&mut self, session_id: &str, rows: Vec<TodoItem>, jobs: RunningJobs) {
         let children = child_sessions(
             &self.registry,
             &self.parts.tasks,
@@ -2152,7 +1982,7 @@ impl<'a> Sessions<'a> {
     /// The operator has spoken to SESSION: a new idle period, and the check may be made again.
     ///
     /// **This is the half of the rule the operator stated as a negative** — *"but certainly not
-    /// after my message"*. Their prompt ends a turn, `after_turn` arms the clock, and the check
+    /// after my message"*. Their prompt ends a turn, the turn tail arms the clock, and the check
     /// cannot arrive until a minute of silence has passed since it; when they speak again, the
     /// plan check is *earned back* because whatever they said may have changed what the plan
     /// should be. Without this the session would be checked once ever, and a plan re-written by
@@ -2470,7 +2300,7 @@ impl<'a> Sessions<'a> {
     /// **When the abandoned-call sweep is due**, or `None` when nothing has armed it — the one
     /// clock in [`Sessions::next_nag_at`] that a turn's door owes, read on its own so a test can
     /// ask whether a door armed IT rather than whether some clock is armed (the plan-check is
-    /// re-armed by `after_turn` on every door, and would answer for a door that forgot this one).
+    /// re-armed by the turn tail on every door, and would answer for a door that forgot this one).
     pub fn sweep_due_at(&self) -> Option<Instant> {
         self.sweep_at
     }
@@ -2522,7 +2352,7 @@ impl<'a> Sessions<'a> {
     /// Nothing closed a session before this. `open` kept every harness the daemon ever built —
     /// transcript, ledger, `HostProcesses` and its job captures, a SQLite connection — and nine
     /// maps beside it kept an entry each (`slots`, `seated`, `fabric_seen`, `nags`, `bangs`,
-    /// `armed`, `wall_gave_up`; the monitor-wake thread `armed` names, which now ends with the
+    /// `armed`; the monitor-wake thread `armed` names, which now ends with the
     /// hub). The order is the harness's own shutdown order: its children are told to stop, its
     /// backend is closed (watchers first, then the host), the registry forgets the session and
     /// closes its hub — which every attached head and the monitor-wake thread see — and only then
@@ -2542,7 +2372,6 @@ impl<'a> Sessions<'a> {
         self.nags.remove(session_id);
         self.bangs.remove(session_id);
         self.armed.remove(session_id);
-        self.wall_gave_up.remove(session_id);
         self.registry.remove(session_id);
         held.is_some()
     }
@@ -2626,7 +2455,7 @@ impl<'a> Sessions<'a> {
     /// Send every check whose deadline has passed, and answer how many ran.
     ///
     /// A check is a TURN — the model reads the plan and can act on it — so it goes through the
-    /// same tail every other turn does (`after_turn`), which is what re-arms or stands the clock
+    /// same tail every other turn does (`turn_tail::run_turn`), which is what re-arms or stands the clock
     /// down afterwards.
     ///
     /// **And it arms what the other two doors arm**, which it did not (R67 item 10). A nag turn
@@ -2647,7 +2476,6 @@ impl<'a> Sessions<'a> {
             .collect();
         let mut ran = 0;
         for session_id in due {
-            let hub = self.registry.get(&session_id);
             let notice = match self.open.get_mut(&session_id) {
                 Some(h) => h.nag_notice(),
                 None => continue,
@@ -2657,378 +2485,16 @@ impl<'a> Sessions<'a> {
             if notice.is_none() {
                 continue;
             }
-            self.arm_sweep(SWEEP_AFTER);
-            let Some(harness) = self.open.get_mut(&session_id) else {
-                continue;
-            };
-            let out = match harness.nag_turn() {
-                Ok(Some(reply)) => Ok(reply),
-                Ok(None) => continue,
-                Err(e) => Err(e),
-            };
-            if let Some(clock) = self.nags.get_mut(&session_id) {
-                clock.said(notice, Instant::now());
-            }
-            self.publish_title(&session_id);
-            self.arm_wake(&session_id);
-            let out = self.after_turn(&session_id, &hub, out);
-            match out {
-                Ok(_) => ran += 1,
-                Err(e) => eprintln!("  {session_id} · todo check -> {e}"),
+            // **The shared tail arms the sweep and the wake, records the notice as said and
+            // re-arms the clock** — what this door used to do by hand, and once did not (R67
+            // item 10).
+            match self.turn(&session_id, Door::Nag(notice), |h| h.nag_turn()) {
+                None => {}
+                Some(Ok(_)) => ran += 1,
+                Some(Err(e)) => eprintln!("  {session_id} · todo check -> {e}"),
             }
         }
         ran
-    }
-
-    /// One continuation turn after a wall, and everything that follows it.
-    ///
-    /// The same tail [`Sessions::run_prompt`] gives a prompt, because a
-    /// continuation IS a prompt — the harness's own, not the operator's — and
-    /// the last time this tail lived in two places, one of them was missing the
-    /// compaction.
-    fn run_continuation(
-        &mut self,
-        session_id: &str,
-        hub: &Option<std::sync::Arc<Hub>>,
-    ) -> Result<Reply, HarnessError> {
-        let out = match self.open.get_mut(session_id) {
-            Some(h) => h.continue_after_wall(),
-            None => {
-                return Err(HarnessError::Setup(
-                    "the session closed before the continuation could run".into(),
-                ));
-            }
-        };
-        self.publish_title(session_id);
-        self.arm_wake(session_id);
-        if let Err(e) = &out {
-            let turn_id = self
-                .open
-                .get(session_id)
-                .map(|h| h.last_turn_id().to_string())
-                .unwrap_or_default();
-            if let Some(hub) = hub {
-                publish_failure(hub, &turn_id, e);
-            }
-        }
-        // A continuation is a turn: it can reach the wall, and it tidies after
-        // itself — the room the compaction leaves is what the loop in
-        // `after_turn` reads.
-        let wall = matches!(out, Err(HarnessError::ContextWall { .. }));
-        if out.is_ok() || wall {
-            self.compact_if_at_the_wall(session_id);
-        }
-        out
-    }
-
-    /// **Compact when the next turn would not fit.** `docs/compaction.md` §1:
-    /// the trigger is the wall and nothing else — depth was measured not to hurt
-    /// quality — so the policy is *as late as possible*, and this is the last
-    /// moment that is still safe.
-    ///
-    /// Why it is here and not inside the engine: compaction reaches the store,
-    /// the resume chain and the registry, which is why `turn::compaction` says
-    /// building the new base is the caller's act. This is that caller.
-    ///
-    /// Measured 2026-09-15, which is why it exists at all: a session reached
-    /// ~244k of 262144 and the NEXT turn came back `500 Context size has been
-    /// exceeded` with nothing recorded. Nothing compacted on its own, because
-    /// until now nothing could — compaction was only ever `/compact` from a head,
-    /// and by the time a person notices, the turn that would have told them has
-    /// already failed.
-    ///
-    /// A failure here is announced and swallowed: the turn the operator asked for
-    /// SUCCEEDED, and turning its reply into an error because the tidying
-    /// afterwards did not work would lose the thing they wanted.
-    ///
-    /// Returns whether a compaction was actually ATTEMPTED — `false` when the
-    /// session is not at the threshold, or automatic compaction is off, or no
-    /// window is configured. A caller that has just told the operator "a
-    /// compaction was attempted" needs that to be a fact rather than a hope.
-    fn compact_if_at_the_wall(&mut self, session_id: &str) -> bool {
-        self.compact_at_the_wall(session_id, WallWhy::Tidy)
-    }
-
-    /// **The other question: a turn was just REFUSED for context length — is
-    /// there a way forward?** [`Harness::compact_because_refused`]'s sibling on
-    /// this side of the seam, for the daemon's own sessions, and the same split
-    /// for the same measured reason: the no-progress guard turns `auto_compact`
-    /// off without freeing anything, so a refusal recovery that read the flag
-    /// would refuse the only lever it has. MEASURED 2026-10-09, session
-    /// `s-1789919514688401228`: ONE `compacting:` line in the whole log, then
-    /// thirty provider 400s in a row, none of them recovered — the guard had
-    /// stood the flag down and every door gated on it.
-    ///
-    /// The refusal is the evidence — no threshold is re-checked — and the latch
-    /// (`wall_gave_up`) is the rate limit: one forced compaction that leaves the
-    /// session still at the wall is this history saying no fold can shrink it,
-    /// and it is not spent again this daemon's lifetime.
-    fn compact_because_refused(&mut self, session_id: &str) -> bool {
-        self.compact_at_the_wall(session_id, WallWhy::Refused)
-    }
-
-    /// **One body, two questions** — `Harness::compact_at_the_wall`'s shape, and
-    /// the arithmetic (`should_compact`/`at_the_wall`) is read from the SAME
-    /// `Config` methods rather than copied. `why` is the only difference.
-    fn compact_at_the_wall(&mut self, session_id: &str, why: WallWhy) -> bool {
-        // **The SESSION's config, not the daemon's.** The wall is a property of
-        // the model this conversation is on and of how its tokens relate to the
-        // ledger's — both of which are per session and neither of which the base
-        // knows. `self.base` was answering for every session at once, so a
-        // session on a metered provider was judged by the daemon's unmeasured
-        // numbers. See `Config::ledger_scale`.
-        //
-        // **Measured first (R72)**: the roll brings the session's pair to `(this ledger,
-        // the provider-sized count)`, so the decision below and the line that prints it
-        // are the same count — the provider's own at its last round plus what was
-        // appended since, never the ledger divided by a ratio from another moment.
-        let Some(now) = self.open.get_mut(session_id).map(|h| h.measure_resident()) else {
-            return false;
-        };
-        let scale = self
-            .open
-            .get(session_id)
-            .and_then(|h| h.config().ledger_scale);
-        let (resident, window, headroom, due, ledger, unit) = match self.open.get(session_id) {
-            Some(h) => {
-                let r = h.ledger_len() as u64;
-                let c = h.config();
-                // **Shown in the operator's units**, not the ledger's; see
-                // `Config::shown_tokens`. The DECISION is still made on the ledger
-                // figure (`should_compact` below), because that is what the
-                // planning arithmetic is in — only the telling converts.
-                //
-                // `ledger` is the same figure unconverted, because the guard's
-                // pair — the numbers this stands compaction down with — is a
-                // MEASUREMENT and goes to the store in the units it was taken in.
-                //
-                // The one gate the two questions differ by: the PRE-EMPTIVE door
-                // reads `should_compact` (the `auto_compact` flag folded in); the
-                // REFUSED door cannot — the flag is off in exactly the state it
-                // exists for — and reads the latch instead.
-                let due = match why {
-                    WallWhy::Tidy => c.should_compact(r),
-                    WallWhy::Refused => !self.wall_gave_up.contains(session_id),
-                };
-                let (window, headroom) = c.shown_wall();
-                (now.tokens, window, headroom, due, r, h.token_unit())
-            }
-            None => return false,
-        };
-        let basis = now.basis();
-        if !due {
-            return false;
-        }
-        let hub = self.registry.get(session_id);
-        // A refusal-answer names what sent it — the operator watching a session
-        // that "compacts automatically" deserves to know why THIS one compacted
-        // with the automatic compaction stood down (the harness sibling's
-        // `because`, in the same words both sides of the seam).
-        let because = match why {
-            WallWhy::Tidy => String::new(),
-            WallWhy::Refused => " The turn before this one was refused for length, so this \
-                                 compaction is under duress: the refusal is the wall either \
-                                 way."
-                .into(),
-        };
-        // **Said where it can be seen, not only where a head would see it.** The
-        // hub reaches attached heads; a one-shot has none, and a compaction it
-        // could not see is precisely the "a session doing something the operator
-        // did not see coming" the banner promises against. Verified 2026-09-15:
-        // the fork was in the store and the terminal said nothing.
-        // **And it NAMES THE SESSION, which is the one thing this line could not say.** The
-        // log is one file every daemon appends to (`~/logs/harnessd.log`), so this line and
-        // the two below it arrived with no way to tell which of seven sessions they were
-        // about — the `→ http 400` lines carry an id and these, the ones that say what
-        // happened, did not. Measured 2026-10-03: attributing a compaction failure took an
-        // hour of archaeology across `ps`, window prints and the store, and the answer was
-        // still inferred rather than read. The id costs fourteen bytes and makes it a
-        // measurement.
-        eprintln!(
-            "  {session_id}: compacting: {resident} of {window} {unit} resident{basis}, \
-             less than the {headroom} the next turn needs"
-        );
-        if let Some(hub) = &hub {
-            hub.publish(SessionEvent::Warning {
-                code: "auto_compact".into(),
-                detail: format!(
-                    "{resident} of {window} {unit} resident{basis}, leaving less than the \
-                     {headroom} the next turn needs — compacting now, as one more message \
-                     so the prefix the server already holds is reused. This is the wall, \
-                     not a judgement about the conversation.{because}"
-                ),
-
-                compaction: None,
-            });
-        }
-        match self.compact(session_id) {
-            Ok(report) => {
-                // The new base measured in its own right: the fork re-based the
-                // anchor, so its count is the base's and not the history's ratio
-                // applied to it. See `Scales`.
-                let base = self.open.get_mut(session_id).map(|h| {
-                    (
-                        h.measure_resident(),
-                        h.config().ledger_scale,
-                        h.token_unit(),
-                    )
-                });
-                let scales = Scales {
-                    before: scale,
-                    after: base.as_ref().and_then(|b| b.1).or(scale),
-                    unit: Some(unit.clone()),
-                };
-                // The same account the operator gets from `/compact`. An automatic
-                // compaction is the one they did NOT ask for, so saying what it did
-                // matters more here, not less.
-                if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "compacted".into(),
-                        detail: compaction_said(&report, scales.clone()),
-                        compaction: Some(Box::new(compaction_wire(
-                            &report,
-                            "compacted",
-                            scales,
-                            resident,
-                            window,
-                            headroom,
-                        ))),
-                    });
-                }
-                let after = self
-                    .open
-                    .get(session_id)
-                    .map(|h| h.ledger_len() as u64)
-                    .unwrap_or(0);
-                // **If it did not help, stop trying.** A summary that is itself
-                // over the threshold would compact again next turn, and again —
-                // a loop that spends a turn each time and never lets the
-                // conversation continue. Better to say so once and let the wall
-                // be the wall: the operator can `/compact` by hand, shorten the
-                // session, or raise the window.
-                // The session's own judgement again, for the same reason — and
-                // `at_the_wall`, NOT `should_compact`, because the flag is
-                // already off on the refused door that reaches this arm. The old
-                // spelling read the guard through the flag it had just stood
-                // down, which is why a refusal could never force a second,
-                // more aggressive fold (2026-10-09's wedge: the ordinary fold
-                // kept a verbatim tail, the `Cut` fold never ran).
-                //
-                // And the act itself is `stand_down_auto_compact`'s, not three
-                // bare assignments here: the flag, the pair and the store row
-                // are one act with one writer, or a restart reads a row that
-                // disagrees with the memory it came back to. `self.base` is
-                // deliberately NOT touched — it is every FUTURE session's config,
-                // and a finding about one conversation is not a daemon-wide
-                // policy. The old `self.base.auto_compact = false` here silently
-                // switched compaction off for sessions that had not opened yet.
-                let still_due = self
-                    .open
-                    .get(session_id)
-                    .map(|h| h.config().at_the_wall(after))
-                    .unwrap_or(false);
-                if still_due {
-                    // The latch is the REFUSED door's rate limit and only its own
-                    // finding: a PRE-EMPTIVE fold that gained nothing does not
-                    // stand the forced door down, because the `Cut` fold the
-                    // refused door reaches is the more aggressive strategy that
-                    // may still cure exactly the case the ordinary fold failed
-                    // on. Latching here would rebuild the wedge one door along.
-                    if matches!(why, WallWhy::Refused) {
-                        self.wall_gave_up.insert(session_id.to_string());
-                    }
-                    if let Some(h) = self.open.get_mut(session_id) {
-                        h.stand_down_auto_compact(ledger, after);
-                    }
-                    if let Some(hub) = &hub {
-                        hub.publish(SessionEvent::Warning {
-                            code: "auto_compact_no_progress".into(),
-                            detail: format!(
-                                "compacted from {resident} to {} {unit} and that is \
-                                 STILL within {} of the {window} window, so automatic \
-                                 compaction is now off for this session rather than \
-                                 looping once per turn{}. The summary itself is near the \
-                                 wall: start a fresh session, or raise --context-window \
-                                 if the server really has more.",
-                                base.as_ref().map(|b| b.0.tokens).unwrap_or(after),
-                                headroom,
-                                match why {
-                                    WallWhy::Tidy => "",
-                                    WallWhy::Refused =>
-                                        " — and a refusal will not force \
-                                     another: this fold could not shrink the history",
-                                }
-                            ),
-
-                            compaction: None,
-                        });
-                    }
-                } else {
-                    // Two facts, not one: the compaction happened, AND the summary
-                    // it produced may be partial. Collapsing them into "compacted"
-                    // is how a truncated record reaches the operator looking whole.
-                    let cut = if report.fork.truncated {
-                        " The summary was CUT OFF at the model's length limit — it is \
-                         incomplete, and the base says so too."
-                    } else {
-                        ""
-                    };
-                    // One unit, one line (R72): the count the wall fired on, and
-                    // the new base's own, which a metered session has not had
-                    // measured yet and the line says so.
-                    let said = match &base {
-                        Some((b, _, unit)) => crate::harness::compacted_line(
-                            resident,
-                            *b,
-                            unit,
-                            self.harness_of(session_id).is_some_and(|h| h.is_metered()),
-                        ),
-                        None => format!("compacted: {resident} → {after} {unit} resident."),
-                    };
-                    eprintln!("  {session_id}: {said}{cut}");
-                    if let Some(hub) = &hub {
-                        hub.publish(SessionEvent::Warning {
-                            code: "auto_compact".into(),
-                            detail: format!("{said}{cut}"),
-
-                            compaction: None,
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                // Said on stderr too. The first run of this code printed
-                // `compacting:` and then nothing at all, because the failure went
-                // only to a hub with no head attached — a compaction that silently
-                // did not happen is worse than one that never fired.
-                //
-                // **Path-neutral, because there are two callers now.** This used to
-                // say "the turn you asked for succeeded; what failed is the tidying
-                // after it" — true of the after-turn call sites and FALSE of the one
-                // `run_prompt` makes BEFORE the send. There no turn ran, and the
-                // next one will not "may hit the wall": it WILL, because this
-                // compaction was the thing making room for it. A message describing
-                // the wrong one of two callers is the defect `republish_after`
-                // already names, one layer down.
-                eprintln!("  {session_id}: compaction FAILED: {e}");
-                if let Some(hub) = &hub {
-                    hub.publish(SessionEvent::Warning {
-                        code: "auto_compact_failed".into(),
-                        detail: format!(
-                            "the automatic compaction did not run: {e}. This session is \
-                             over its context budget and nothing made room, so the next \
-                             turn will hit the context wall. `/compact` retries it.",
-                        ),
-
-                        compaction: None,
-                    });
-                }
-            }
-        }
-        // It ran. Whether it HELPED is the branch above, which says so in its own
-        // words either way; what this answers is the narrower question a caller
-        // asks before claiming an attempt was made.
-        true
     }
 
     /// Read-only access to a session's harness, for a caller that wants the ledger
@@ -3112,75 +2578,37 @@ impl<'a> Sessions<'a> {
     /// than a duplicated turn, but it is the shape of defect this fleet has paid
     /// for and it is cheap to make unspellable.
     pub fn arm_wake(&mut self, session_id: &str) {
+        let Some(mut h) = self.open.remove(session_id) else {
+            return;
+        };
+        self.arm_wake_on(session_id, &mut h);
+        self.open.insert(session_id.to_string(), h);
+    }
+
+    /// [`Sessions::arm_wake`] with the harness in hand — the shared tail's door. The thread itself
+    /// is [`crate::turn_tail::spawn_monitor_wake`], the one a subagent's own thread starts too.
+    fn arm_wake_on(&mut self, session_id: &str, h: &mut Harness) {
         if self.armed.contains(session_id) {
             return;
         }
-        let Some(h) = self.open.get_mut(session_id) else {
-            return;
-        };
-        let Some(monitors) = h.monitors().cloned() else {
-            return;
-        };
-        // Read, not assumed: arm only once something is actually watching.
-        if monitors.live_names().is_empty() {
-            return;
-        }
-        h.declare_monitor_wake();
-        let bell = self.registry.bell().clone();
-        // **The waiter ends with its session** (R68.3), not only with the daemon: a hub that
-        // `Sessions::close` removed is closed, and the thread sees it at its next recheck.
-        let hub = self
-            .registry
-            .get(session_id)
-            .map(|h| Arc::downgrade(&h))
-            .unwrap_or_default();
-        let id = session_id.to_string();
-        let spawned = std::thread::Builder::new()
-            .name(format!("monitor-wake-{}", &id[..id.len().min(24)]))
-            .spawn(move || {
-                // The waiter's **own** cursor, advanced by what it has already rung
-                // for. The harness has a second one, shared with that session's
-                // steering source, which decides what is actually delivered — a
-                // firing picked up mid-turn is not delivered again by the wake.
-                // Two cursors because they answer two questions: "have I rung for
-                // this?" and "has the model seen this?"
-                let mut notified = monitors.settled_count();
-                let alive = || !bell.is_closed() && hub.upgrade().is_some_and(|h| !h.is_closed());
-                while alive() {
-                    let fired = monitors.wait_for_any(notified, SHUTDOWN_RECHECK);
-                    if !alive() {
-                        break;
-                    }
-                    if fired.is_empty() {
-                        continue;
-                    }
-                    notified += fired.len();
-                    bell.ring_wake(&id);
-                }
-            });
-        match spawned {
-            Ok(_) => {
+        match crate::turn_tail::spawn_monitor_wake(&self.registry, h, session_id, SHUTDOWN_RECHECK)
+        {
+            Ok(true) => {
                 self.armed.insert(session_id.to_string());
             }
-            Err(e) => {
-                // Not fatal and not silent. A session whose wake could not be armed
-                // still has monitors and `job_list` still shows them; what it does
-                // not have is the wake, and saying so is the difference between a
-                // poll and a poll nobody was told about.
-                if let Some(hub) = self.registry.get(session_id) {
-                    hub.publish(SessionEvent::Warning {
-                        code: "monitor_wake_not_armed".into(),
-                        detail: format!(
-                            "this session's monitors will be POLLED, not woken: the waiter \
-                             thread could not be started ({e}). A condition that fires \
-                             between turns reaches the model only when something calls \
-                             `job_list`."
-                        ),
-
-                        compaction: None,
-                    });
-                }
-            }
+            Ok(false) => {}
+            // Not fatal and not silent. A session whose wake could not be armed still has
+            // monitors and `job_list` still shows them; what it does not have is the wake, and
+            // saying so is the difference between a poll and a poll nobody was told about.
+            Err(e) => self.warn(
+                session_id,
+                "monitor_wake_not_armed",
+                format!(
+                    "this session's monitors will be POLLED, not woken: the waiter thread could \
+                     not be started ({e}). A condition that fires between turns reaches the \
+                     model only when something calls `job_list`."
+                ),
+            ),
         }
     }
 
@@ -3231,28 +2659,15 @@ impl<'a> Sessions<'a> {
             }
             WakeRoute::Gone => return Outcome::Ignored,
         }
-        let Some(harness) = self.open.get_mut(session_id) else {
-            return Outcome::Ignored;
-        };
-        let woke = harness.wake();
-        // `Ignored` is not a turn: nothing ran, nothing grew, and there is nothing
-        // to tidy after it.
-        let Some(out) = (match woke {
-            Ok(None) => None,
-            Ok(Some(reply)) => Some(Ok(reply)),
-            Err(e) => Some(Err(e)),
-        }) else {
-            return Outcome::Ignored;
-        };
-        self.publish_title(session_id);
-        // A monitor's turn is a turn: it appends rows, it can reach the wall, and a
-        // session that only ever woke would have compacted never. The wall's
-        // continuation is in there too, so a monitor's work resumes the same way a
-        // prompt's does.
-        let out = self.after_turn(session_id, &hub, out);
-        match out {
-            Ok(reply) => Outcome::Replied(Box::new(reply)),
-            Err(e) => Outcome::Failed(e.to_string()),
+        // **A wake's turn is a turn** — it appends rows, it can reach the wall, and a session that
+        // only ever woke would have compacted never — so it takes the shared tail like every
+        // other door: the sweep and the monitor wake are armed by it too, which this door used
+        // to leave to its caller or to nobody (R68.4). `None` is a wake with nothing to say:
+        // nothing ran, nothing grew, and there is nothing to tidy after it.
+        match self.turn(session_id, Door::Wake, |h| h.wake()) {
+            None => Outcome::Ignored,
+            Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
+            Some(Err(e)) => Outcome::Failed(e.to_string()),
         }
     }
 
@@ -3410,19 +2825,17 @@ impl<'a> Sessions<'a> {
             return Outcome::Failed(e);
         }
         // **And the turn its rows are for** — the same sending half the settle arm runs,
-        // because the operator asked for their command's result to reach the model.
-        let out = match self.open.get_mut(session_id) {
-            Some(h) => h.run_after_operator_shell(),
-            None => {
-                return Outcome::Failed(self.not_open(session_id, "the turn after your `!` line"));
-            }
-        };
-        self.publish_title(session_id);
-        let hub = self.registry.get(session_id);
-        let out = self.after_turn(session_id, &hub, out);
-        match out {
-            Ok(reply) => Outcome::Replied(Box::new(reply)),
-            Err(e) => Outcome::Failed(e.to_string()),
+        // because the operator asked for their command's result to reach the model. Through the
+        // shared tail, which this door used to run without the wake or the sweep (R68.4).
+        if !self.open.contains_key(session_id) {
+            return Outcome::Failed(self.not_open(session_id, "the turn after your `!` line"));
+        }
+        match self.turn(session_id, Door::OperatorShell, |h| {
+            h.run_after_operator_shell().map(Some)
+        }) {
+            None => Outcome::Ignored,
+            Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
+            Some(Err(e)) => Outcome::Failed(e.to_string()),
         }
     }
 
@@ -3767,7 +3180,7 @@ impl<'a> Sessions<'a> {
                 }
                 let _ = n;
                 // **ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS.** The idle clock used
-                // to start in exactly one place — the end of a turn (`after_turn`) — so a row added
+                // to start in exactly one place — the end of a turn (the turn tail) — so a row added
                 // to an IDLE session had no clock at all and was never checked: the model is quiet,
                 // the operator has just said what they want done, and nothing ever reminds it. The
                 // operator found it the direct way: *"my todos will be reminded to a model?"*, and
@@ -3963,22 +3376,20 @@ impl<'a> Sessions<'a> {
                 // The rows above are the printing; this is the turn. `Ignored` here was
                 // the whole defect: the deposit sat in the transcript until something else
                 // started a turn, which is a command nobody answered.
-                let out = match self.open.get_mut(session_id) {
-                    Some(h) => h.run_after_operator_shell(),
-                    None => {
-                        return Outcome::Failed(
-                            self.not_open(session_id, "the turn after your `!` line"),
-                        );
-                    }
-                };
-                self.publish_title(session_id);
+                if !self.open.contains_key(session_id) {
+                    return Outcome::Failed(
+                        self.not_open(session_id, "the turn after your `!` line"),
+                    );
+                }
                 // A `!` turn is a turn: it appends rows, it can reach the wall, and a
                 // session that only ever ran shell lines would have compacted never — the
-                // same routing `wake` uses, for the same reason.
-                let out = self.after_turn(session_id, &hub, out);
-                match out {
-                    Ok(reply) => Outcome::Replied(Box::new(reply)),
-                    Err(e) => Outcome::Failed(e.to_string()),
+                // shared tail every door takes (R68.4).
+                match self.turn(session_id, Door::OperatorShell, |h| {
+                    h.run_after_operator_shell().map(Some)
+                }) {
+                    None => Outcome::Ignored,
+                    Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
+                    Some(Err(e)) => Outcome::Failed(e.to_string()),
                 }
             }
             // **What it produced.** The row goes in with its `origin` set, so every head
@@ -4383,33 +3794,68 @@ impl<'a> Sessions<'a> {
     }
 }
 
-/// Announce a failed turn on the session's own log, as a **terminal** event.
-///
-/// `crates/ui/DESIGN.md` §4.5, paid. This used to publish a `Warning` and nothing
-/// else, so a head's `TurnState` stayed `Running` for the rest of the session and
-/// its spinner span at a dead turn — the head covered for it with *"nothing
-/// received for 17.0s"*, which cannot tell a failed turn from a slow one. Only the
-/// party that saw the error can, and that party is this function.
-///
-/// Both frames go out: `TurnFailed` is what stops the spinner and puts the reason
-/// under the turn, and the `Warning` is what puts it in the scrollback with a code
-/// somebody can grep the log for. They are not the same disclosure — one is state,
-/// the other is history — and neither is a substitute for the other.
-fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
-    hub.publish(SessionEvent::TurnFailed {
-        turn_id: turn_id.to_string(),
-        error: e.to_string(),
-        // §5.7 commits nothing on a failed turn, so there is no partial to keep.
-        // The field is here so a future failure that *does* keep one cannot arrive
-        // looking like this.
-        partial_kept: false,
-    });
-    hub.publish(SessionEvent::Warning {
-        code: "turn_failed".into(),
-        detail: e.to_string(),
+/// **The daemon's half of the shared turn tail** (R68.4) — the [`TurnOwner`] for a session the
+/// worker holds. Each method is one step of [`crate::turn_tail::run_turn`]'s sequence, landing
+/// where the daemon keeps that step's state; the ORDER is the tail's.
+struct DaemonTurn<'s, 'a, 'id> {
+    sessions: &'s mut Sessions<'a>,
+    session_id: &'id str,
+}
 
-        compaction: None,
-    });
+impl TurnOwner for DaemonTurn<'_, '_, '_> {
+    /// Before the turn, as the command and wake arms of `Daemon::run` used to do at their call
+    /// sites and the nag door did by hand (R67 item 10): a turn can strand a call, and only an
+    /// idle pass closes it out.
+    fn arm_sweep(&mut self) {
+        self.sessions.arm_sweep(SWEEP_AFTER);
+    }
+
+    /// The operator (or a peer) has spoken: the plan-check is earned back.
+    fn spoken_to(&mut self, _h: &mut Harness) {
+        self.sessions.note_operator_prompt(self.session_id);
+    }
+
+    /// **A compaction forked the transcript, so a seated root is told the fabric again** when it
+    /// changed — what `Sessions::compact` does after a `/compact`, for the compactions the tail
+    /// runs at the wall.
+    fn compacted(&mut self, h: &mut Harness) {
+        let Some(block) = self.sessions.fabric_due(self.session_id) else {
+            return;
+        };
+        match h.system_update(&block) {
+            Ok(_) => {
+                self.sessions
+                    .fabric_seen
+                    .insert(self.session_id.to_string(), block);
+            }
+            Err(e) => self
+                .sessions
+                .warn(self.session_id, "fabric_refresh_failed", e.to_string()),
+        }
+    }
+
+    fn title(&mut self, _h: &mut Harness, title: String) {
+        self.sessions.name_session(self.session_id, title);
+    }
+
+    fn arm_wake(&mut self, h: &mut Harness) {
+        self.sessions.arm_wake_on(self.session_id, h);
+    }
+
+    /// **Every turn ends here, so this is where the idle clocks start** — the plan-check (with a
+    /// spent nag recorded as said first: the metronome rule) and, for a subagent the worker
+    /// holds, its park window.
+    fn turn_ended(&mut self, h: &mut Harness, door: &Door) {
+        if let Door::Nag(notice) = door
+            && let Some(clock) = self.sessions.nags.get_mut(self.session_id)
+        {
+            clock.said(notice.clone(), Instant::now());
+        }
+        self.sessions.rearm_todo_nag_on(self.session_id, h);
+        if self.sessions.registry.parent_of(self.session_id).is_some() {
+            self.sessions.arm_park();
+        }
+    }
 }
 
 /// The store, as somewhere a registry can find sessions it is not holding.
