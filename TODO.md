@@ -479,11 +479,24 @@ traced; each was re-checked where marked ✓.
     binary: `tools/src/builtins/task.rs:2101,2131` (`FIRECODE_BIN`, read at `firecode.rs:73`),
     `turn/src/serving.rs:587`, `letibot/src/roles.rs:332-341`, `websearch/src/lib.rs:298`,
     `tokencore/src/apparatus.rs:189-223`. `confine.rs`/`host.rs` hold a `static LOCK` — do that.
+    **DONE** (`f08b7ba`, branch `r67-tests`): not a lock — every reader is production code, so a
+    lock would have to be taken by all of them. Each function grew a seam taking the reading as a
+    value (`firecode_available_at` + `TaskTool::with_firecode_bin`, `skip_unreachable`,
+    `askpass_in`, `resolve_key_from`, `present_given`/`gguf_path_from`); no test sets a variable.
+    serving.rs's test also stopped panicking under a run's own `LETIBOT_REQUIRE_MODEL=1`.
 18. **Silent skips the require-switch cannot catch**: `tools/tests/confine.rs` (13 early
     `return;`), `notscoped.rs:55`, `src/exec/scope.rs` skip with `eprintln!` + `return` instead of
     `apparatus::present`, so `LETIBOT_REQUIRE_APPARATUS=1` cannot make a missing cgroup v2 fail.
+    **DONE** (`0157743`): confine.rs, notscoped.rs, and the same skip in background.rs, exec.rs,
+    deadline.rs, toolchain_grant.rs go through `apparatus::absent` (refusal still asserted first).
+    MEASURED with `LETIBOT_BWRAP=/nonexistent/bwrap LETIBOT_REQUIRE_APPARATUS=1`: confine was 23
+    passed on main, 5 failed after. scope.rs's tests have no skip (checked at `435bb88` too).
 19. **Wall-clock upper bounds**: `task.rs:1815` (`< 1s`), `answers.rs:2256` (`< 1s`),
     `answers.rs:1677`, `1723`, `1908` — trip on a loaded box or a parallel `cargo test`.
+    **DONE** (`7761f7b`): task.rs asserts the cause (zero `collect` calls; and, same class at
+    `a_watched_subagent_is_not_waited_on`, the longest wait asked of the child); answers.rs:2256's
+    bound dropped (the `Answered` match is the claim); the three refuses-at-once tests keep a
+    clock — the fact is about time — at half the 30 s budget, reason written beside each.
 20. **Pre-existing failure:** `tui` `app::tests::detected::a_python_edit_detected_after_a_command_draws_its_diff`
     fails on main (with and without llama).
 
@@ -494,11 +507,21 @@ traced; each was re-checked where marked ✓.
 22. **A shared global counter makes one allocation test single-test-only.**
     `tui/tests/frame_allocations.rs:43` counts every allocation in the binary through a global
     `ALLOCS`; safe while the binary holds one test, flaky the day a second is added.
+    **DONE** (`8813962`): per-thread `const` thread-local counter. MEASURED: a second allocating
+    test beside it failed it 3/3 before, passed 3/3 after.
 23. **A process-wide cache shared across tests**: `tools/src/builtins/pattern.rs:142` (`CACHE`).
+    **DONE, documentation only** (`eb25ba8`): entries are pure functions of their key, so no test
+    can observe another's through a match; identity breaks only on a 256-key cap clear, and the
+    whole lib test binary peaks at 44 keys (measured). The reason is written on `CacheKey`.
 24. **Slow polls in tests**: 70 `sleep` calls under test dirs, many 10–20 ms polls;
     `tools/tests/deadline.rs:179,235` arms a 400 ms deadline (a lower bound — safe, slow);
     `tui/tests/stop_daemon.rs` and `reconnect.rs` poll at 10 ms. Most `recv_timeout(200ms)` sit
     inside 10–30 s deadline loops, which is fine.
+    **NOT DONE, on purpose**: deadline.rs's 400 ms is the quantity under test, and its poll is the
+    premise ("a run nobody is waiting on") — `wait_job` would change what it tests. The 10 ms
+    polls in stop_daemon.rs return the moment their condition holds, inside 10 s bounds; reconnect
+    has no 10 ms poll (its 20–120 ms sleeps are retry pacing and quiet-detection). No condition to
+    wait on without new hooks in the head's link, so not cheap — left.
 25. **No click test for queue rows** (`panes.rs:798`); `cards.rs:498` (`key_pick`) is reached only
     through settings. Existing click tests: the picker (`app/tests/session.rs:1762` — wrong, item 2),
     the count labels (`screen.rs:384-636`), todos (`todos.rs:293-332`), settings, the editor, the
