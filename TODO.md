@@ -697,6 +697,85 @@ its risk is size, not absence. Flaky-by-construction tests are R67 items 17–19
 
 ---
 
+## R71 — A model that stops because "my context is full" when it is not gets told so — **OPEN, the operator's ask 2026-10-11**
+
+The operator: *"we have similarity for notes and todos, i want to catch stupid things like this -
+"My context is at the wall" when models sometimes stop because yeah "my context is full, my
+context is almost full, my context is at the wall, blabla" when we see something like that we
+should slap model."*
+
+**MEASURED in the store, 2026-10-11** (assistant rows whose text matches *context is…full*,
+*context…at the wall*, *context is nearly/almost…*, *running out of context*, *context budget*,
+*out of context*; the query stopped at its 40-row cap — the real count is higher): 16 rows in the
+letibot session `s-1789462738453908838` and 12 in its subagents, 6 in pg-noop
+(`s-1789919514688401228`), 4 in leticl (`s-1791151788256943467`), 2 in `s-1789668727263064994`.
+The sentences, verbatim:
+
+- 10-11 11:48, leticl — *"My context is at the wall, so I'll stop here rather than start a piece I
+  can't finish"*
+- 10-11 11:30 (and 06:13, 02:41 — the same message re-sent), leticl — *"My context is nearly spent,
+  and that's the honest reason to stop rather than start the carry-by-words change"*
+- 10-10 18:49, pg-noop — *"seven concurrent answers is well past my integration ceiling, and my own
+  context is nearly exhausted"*
+- 10-09 01:28 — *"with my remaining context, the realistic outcome of starting now is a
+  non-compiling tree at the wall"*
+- 10-07 10:49 — *"It hit the **context wall** — 1,131,717 of 1,146,137 tokens resident, with the
+  next round unable to fit — and it was compacted"* — **a TRUE report, with numbers, and the check
+  must not slap it.** That is the line between the two: a claim the daemon can check against
+  what it measured.
+
+**Why it is wrong, not merely annoying:** the model cannot see its own fill — the daemon can. The
+wall is the HARNESS's to handle: `Config::at_the_wall` (`config.rs:1381`, `resident + headroom >=
+planning_window`) and `compact_at_the_wall` (`harness.rs:8352`) compact when it is reached, and a
+refused request compacts too (`WallWhy::Refused`). A model that stops "because of the wall" has
+stopped work the harness would have carried, on a guess.
+
+**The mechanism — the notes' similarity, one more corpus:**
+
+1. **Detect** with `letibot_tools::similarity` (TF-IDF cosine, `crates/tools/src/similarity.rs`,
+   the same arithmetic notes use for `DUPLICATE_FLOOR` and `OFFER_FLOOR`): a `Corpus` built from
+   an exemplar set of excuse sentences (the ones above plus their family — *my context is full /
+   almost full / at the wall / nearly spent / running low, I'm near my context limit, with my
+   remaining context, to save context, before I run out of room*), scored per SENTENCE of the
+   turn's assistant text (fenced code skipped, as `intent::commitments` does), best score against
+   a floor. Similarity rather than a phrase list because the operator's own list is open-ended
+   ("blabla") — and a lexical list is exactly the `OPENERS` shape that misses a re-wording.
+2. **Check the claim against the measurement**: the session's real fill —
+   `session.ledger.len()` against `cfg.planning_window()`, or the last round's
+   `metrics.prompt_tokens` against `cfg.context_window`. Below the wall → the claim is false.
+   At the wall → the claim is true, and the harness compacts as it does today; still say *the wall
+   is the harness's, not a reason to stop*.
+3. **Slap, where the intent check steers**: in `run_rounds`' no-tool-calls branch
+   (`harness.rs ~10290`, beside `close_the_turn`) as a notice, and on the step-boundary queue for a
+   turn that ran tools (`~10447`). Recorded as the harness speaking (`append_notice`,
+   `Speaker::Agent`), never as the operator. The words: *"[context check] you said "<sentence>".
+   Your context is <N>% full — <resident> of <window> tokens. That is not the wall, and the wall
+   is not yours to manage: the harness compacts when it is reached and the work carries on.
+   Continue with what you stopped."* With the numbers, because a number is what the model did not
+   have.
+4. **Always on, not behind `--intent-prose`.** That flag exists because the prose heuristic can be
+   wrong about intent; this one is gated by a measurement, so a false positive costs one line
+   telling the model the truth about its own fill.
+5. **Once per claim, not a loop**: the same budget as the intent check (`nudges_left`); a model
+   that repeats the excuse after the slap is a finding for the operator (a warning on the hub),
+   not a second slap.
+6. **Logged** like `notes-offers.jsonl`: sentence, score, measured fill, window, whether slapped —
+   so the floor is tuned from what happened.
+
+**Calibrate before trusting the floor**: positives = every assistant sentence the store query
+above finds (deduplicated — the same message is often re-sent); negatives = assistant sentences
+that say "context" in the other senses (*the context of this change*, *context window* as a
+subject of work — this repository talks about context windows constantly) and the TRUE report of
+10-07. Pick the floor that separates them and write the numbers into the doc, as
+`similarity.rs:100-118` does for its own floors. (That doc is stale on one: it says `OFFER_FLOOR`
+is 0.14, the code is 0.18 — `notes_offer.rs:114`.)
+
+**Done when:** replaying the leticl turn of 10-11 11:48 at its real fill produces the slap with
+the numbers, and the next round continues the work; the 10-07 report produces none; the
+calibration set's positives and negatives are separated by the chosen floor, numbers in the doc.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
