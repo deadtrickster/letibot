@@ -1238,6 +1238,13 @@ fn is_known_section(name: &str) -> bool {
     SYSTEM_SECTIONS.iter().any(|(n, _)| *n == name)
 }
 
+/// A sixteenth of `w`, floored at 2k and capped at a quarter — see
+/// [`Config::headroom`] for why each bound is there. One spelling, because the
+/// planning window and the shown one must reserve by the same rule.
+fn headroom_of(w: u64) -> u64 {
+    (w / 16).max(2048).min(w / 4)
+}
+
 impl Config {
     /// How much of the window must stay free for a turn to be safe to start.
     ///
@@ -1259,8 +1266,22 @@ impl Config {
         // window, `should_compact` true on every turn, and compaction a loop that
         // never lets a conversation start. Caught by asking what the formula does
         // at the edges rather than at 262144.
-        let w = self.planning_window().unwrap_or(0);
-        (w / 16).max(2048).min(w / 4)
+        headroom_of(self.planning_window().unwrap_or(0))
+    }
+
+    /// **The window and its reserve as a line prints them** — in the units the
+    /// window was given in, which on a metered session are the provider's.
+    ///
+    /// `shown_tokens(planning_window())` was the old spelling, and a round trip
+    /// through a ratio is not the identity: the operator read *"937686 of 999999"*
+    /// for a 1,000,000-token window (R72). The decision is still
+    /// `at_the_wall`/`should_compact` on the ledger figure; with the pair rolled to
+    /// the current count by `Harness::measure_resident`, that decision IS the count
+    /// against this window with this reserve, so printing these is printing what
+    /// was decided — without a rounding error a reader has to explain.
+    pub fn shown_wall(&self) -> (u64, u64) {
+        let w = self.context_window.unwrap_or(0);
+        (w, headroom_of(w))
     }
 
     /// Is this turn's resident size close enough to the wall to compact first?
@@ -1276,9 +1297,20 @@ impl Config {
     ///
     /// The ratio is measured, not assumed, because it is not a constant: it is
     /// how much of the conversation is reasoning, which varies per session and
-    /// over the life of one. Clamped to [1/4, 4] so a single odd turn cannot
+    /// over the life of one. Clamped to [1/4, 16] so a single odd turn cannot
     /// move the wall somewhere absurd, and `None` stays `None` — an unknown
     /// window is not a large one.
+    ///
+    /// **The upper bound was 4, and a real session is past it** (R72). The ratio is
+    /// how much of the history is reasoning the provider does not count, and leticl's
+    /// `s-1791151788256943467` on deepseek-flash measured 3,454,266 ledger tokens for
+    /// a conversation the provider counted at ~740k — 4.67. A clamp at 4 turns that
+    /// into a window of 4M ledger tokens, which the ledger reaches while the provider
+    /// still counts ~860k of 1M: compaction 14% early, from the clamp alone. Since the
+    /// pair is rolled to the current count before every wall decision
+    /// (`Harness::measure_resident`), it is a measurement rather than one turn's odd
+    /// ratio, and the bound is only a guard against nonsense — 16 is a history 94%
+    /// reasoning.
     pub fn planning_window(&self) -> Option<u64> {
         let w = self.context_window?;
         let Some((ledger, provider)) = self.ledger_scale else {
@@ -1288,7 +1320,7 @@ impl Config {
             return Some(w);
         }
         let scaled = (w as u128 * ledger as u128) / provider as u128;
-        Some((scaled.clamp((w / 4) as u128, (w as u128) * 4)) as u64)
+        Some((scaled.clamp((w / 4) as u128, (w as u128) * 16)) as u64)
     }
 
     /// **Ledger tokens as the provider would count them**, or `None` if nobody
@@ -3333,9 +3365,17 @@ mod tests {
         cfg.ledger_scale = Some((1_000_000, 1));
         assert_eq!(
             cfg.planning_window(),
-            Some(4_000_000),
-            "clamped at four times"
+            Some(16_000_000),
+            "clamped at sixteen times"
         );
+        // **And a real reasoning-heavy session is inside the bound, not cut by it**
+        // (R72): leticl on deepseek-flash, 3,454,266 ledger tokens counted ~740k by
+        // the provider. At the old bound of four this was a 4M window, at the wall
+        // with ~860k of the provider's 1M used.
+        cfg.ledger_scale = Some((3_454_266, 740_000));
+        assert!(!cfg.should_compact(3_454_266), "740k of 1M is not the wall");
+        let w3 = cfg.planning_window().expect("a window");
+        assert!((4_600_000..4_700_000).contains(&w3), "got {w3}");
 
         // An unknown window is still not a large one.
         cfg.context_window = None;

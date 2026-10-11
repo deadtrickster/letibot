@@ -1576,7 +1576,6 @@ pub fn summarise_overrun(
         &items[*tail_from..],
         1,
         2,
-        "the most recent exchanges",
         sink,
         answerer,
     )?;
@@ -1587,7 +1586,6 @@ pub fn summarise_overrun(
         &items[..*cut],
         2,
         2,
-        "the older part",
         sink,
         answerer,
     )?;
@@ -1710,8 +1708,7 @@ impl EventSink for CompactionSink<'_> {
 /// One summary turn over one slice, in a throwaway session.
 ///
 /// `half` and `halves` are what the caller knows and this cannot: the local plan runs
-/// two of these, the cloud plan one. `what` names the slice in the operator's words,
-/// for the line that opens and closes each half.
+/// two of these, the cloud plan one.
 fn summarise_one(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,
@@ -1719,7 +1716,6 @@ fn summarise_one(
     slice: &[TranscriptItem],
     half: u64,
     halves: u64,
-    what: &str,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
@@ -1738,34 +1734,27 @@ fn summarise_one(
         .append_items(engine, &[instruction], &mut quiet)
         .map_err(TurnFailure::from)?;
 
-    // **The half's own prompt, in LEDGER tokens** — prefix, slice and instruction —
-    // which is the unit every other count in this tree is in, so a reader can put it
-    // beside a `--status` figure without a conversion nobody named.
+    // **The half's own prompt, in LEDGER tokens** — prefix, slice and instruction.
+    // It is the bar's denominator for this half and nothing else: the halves OVERLAP by
+    // design (`summarise_overrun`: the tail runs from `tail_from`, the old part up to
+    // `cut`, and `cut > tail_from`), and each is in the ledger's unit, reasoning
+    // included — so two of these are not a sum and not the provider's count, and they
+    // are not printed as one (R73).
     let prompt_tokens = scratch.ledger.len() as u64;
-    sink.emit(TurnEvent::Warning {
-        code: "compact_half",
-        detail: format!(
-            "compacting half {half} of {halves}: {what} — {} item(s), {prompt_tokens} \
-             token(s) to read. Nothing of this half reaches the transcript; it is \
-             summarised in a scratch session of its own.",
-            slice.len()
-        ),
-    });
 
-    let (ok, wrote, unit) = {
-        let mut progress = CompactionSink {
-            inner: sink,
-            half,
-            halves,
-            prompt_tokens,
-            processed: 0,
-            chars: 0,
-            tokens: None,
-            deltas: 0,
-        };
-        let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
+    // **Progress, not warnings (R73).** Each half used to open and close with a
+    // `compact_half` WARNING — four permanent rows for one fold, each with a token
+    // count a reader added up: the operator pasted *"compacting half 1 of 2 … 976900
+    // token(s) to read"* and *"half 2 of 2 … 976930 token(s) to read"* — 1.95M for a
+    // session the head showed at 740k. A fold is one operation, so it is one line that
+    // updates in place: the `CompactionProgress` this sink already sends, published
+    // once as the half begins (so the line names the half before the server has said
+    // anything) and once as it ends. The closing account is the caller's `compacted`
+    // row, in the provider's units (R72).
+    let ok = run_half(sink, half, halves, prompt_tokens, |progress| {
+        engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
             loop {
-                match answerer.run(engine, &mut scratch, &mut progress) {
+                match answerer.run(engine, &mut scratch, progress) {
                     Ok(ok) => break Ok(ok),
                     Err(TurnFailure::UnfinishedReasoning { .. }) => {
                         append_salvage_notice(
@@ -1782,17 +1771,41 @@ fn summarise_one(
                     Err(e) => return Err(e),
                 }
             }
-        })?;
-        let (w, u) = progress.written();
-        (ok, w, u)
-    };
-    // The closing line, in the same voice as the opening one: minutes of nothing became
-    // a pair of sentences and a number that moved between them.
-    sink.emit(TurnEvent::Warning {
-        code: "compact_half",
-        detail: format!("half {half} of {halves} answered: {wrote} {unit} written."),
-    });
+        })
+    })?;
     Ok(harvest(&ok.items))
+}
+
+/// **One half's life on the progress line** — published as it begins, carried while
+/// `body` runs, published once more as it ends — and NOTHING else reaches `sink`.
+///
+/// Split out of [`summarise_one`] so the promise R73 is about can be tested without a
+/// model: the whole of what a head is told about a half is `CompactionProgress`, which
+/// a head draws as one line it updates in place, and never a `Warning`, which every
+/// head draws as a permanent row.
+fn run_half<T>(
+    sink: &mut dyn EventSink,
+    half: u64,
+    halves: u64,
+    prompt_tokens: u64,
+    body: impl FnOnce(&mut CompactionSink<'_>) -> Result<T, TurnFailure>,
+) -> Result<T, TurnFailure> {
+    let mut progress = CompactionSink {
+        inner: sink,
+        half,
+        halves,
+        prompt_tokens,
+        processed: 0,
+        chars: 0,
+        tokens: None,
+        deltas: 0,
+    };
+    progress.publish();
+    let out = body(&mut progress)?;
+    // The half's last word on the line, with its final count — the strided publish
+    // may have skipped the last few deltas.
+    progress.publish();
+    Ok(out)
 }
 
 /// **Summarise the first half, then continue on `summary ++ second half`.**
@@ -1906,7 +1919,6 @@ pub fn summarise_first_half(
         &items[..split],
         1,
         1,
-        "the conversation so far",
         sink,
         answerer,
     )
@@ -2105,6 +2117,45 @@ mod compaction_sink {
             progress_of(&rec.seen[3]),
             (2, 2, 940_612, 0, 480, "chars"),
             "96 deltas x 5 chars"
+        );
+    }
+
+    /// **R73: a half is one updating line, never a row.** The operator, pasting what
+    /// leticl drew for ONE compaction: four `compact_half` warnings — *"compacting half
+    /// 1 of 2 … 976900 token(s) to read"*, *"half 1 of 2 answered: 6189 chars
+    /// written"*, and the same again for half 2 — each a permanent row with a remedy
+    /// line under it, and two token counts that read as 1.95M for a session at 740k.
+    /// A half now tells a head exactly two kinds of thing: where the line stands, and
+    /// (through the body) how it moves. Every event is `CompactionProgress`.
+    #[test]
+    fn a_half_is_progress_from_its_first_event_to_its_last_and_never_a_warning() {
+        let mut rec = Recorder::default();
+        let got = super::run_half(&mut rec, 1, 2, 976_900, |s| {
+            s.emit(TurnEvent::Delta {
+                turn_id: "scratch#1".into(),
+                target: DeltaTarget::Text,
+                text: "## Goal".into(),
+            });
+            Ok(7)
+        })
+        .expect("the half runs");
+        assert_eq!(got, 7);
+        assert!(
+            rec.seen
+                .iter()
+                .all(|e| matches!(e, TurnEvent::CompactionProgress { .. })),
+            "nothing but progress reaches a head: {:?}",
+            rec.seen
+        );
+        assert_eq!(
+            progress_of(&rec.seen[0]),
+            (1, 2, 976_900, 0, 0, "chars"),
+            "the line names the half before the server has said anything"
+        );
+        assert_eq!(
+            progress_of(rec.seen.last().unwrap()),
+            (1, 2, 976_900, 0, 7, "chars"),
+            "and its last word carries the final count"
         );
     }
 

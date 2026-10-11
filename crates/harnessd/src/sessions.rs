@@ -1987,10 +1987,16 @@ impl<'a> Sessions<'a> {
                 // a 1M provider window" and answered no for a conversation the
                 // provider counted at 671k. The same unit confusion as the
                 // `/reseat` refusal, one door along.
+                // Rolled to the current count first (R72), so the room is the
+                // provider's count against its window and not a ratio from the last
+                // round applied to rows that came after it.
                 let room = self
                     .open
-                    .get(session_id)
-                    .map(|h| h.config().room_for_next_turn(h.ledger_len() as u64))
+                    .get_mut(session_id)
+                    .map(|h| {
+                        h.measure_resident();
+                        h.config().room_for_next_turn(h.ledger_len() as u64)
+                    })
                     .unwrap_or(false);
                 if !room {
                     break;
@@ -2506,11 +2512,19 @@ impl<'a> Sessions<'a> {
         // knows. `self.base` was answering for every session at once, so a
         // session on a metered provider was judged by the daemon's unmeasured
         // numbers. See `Config::ledger_scale`.
+        //
+        // **Measured first (R72)**: the roll brings the session's pair to `(this ledger,
+        // the provider-sized count)`, so the decision below and the line that prints it
+        // are the same count — the provider's own at its last round plus what was
+        // appended since, never the ledger divided by a ratio from another moment.
+        let Some(now) = self.open.get_mut(session_id).map(|h| h.measure_resident()) else {
+            return false;
+        };
         let scale = self
             .open
             .get(session_id)
             .and_then(|h| h.config().ledger_scale);
-        let (resident, window, headroom, due, ledger) = match self.open.get(session_id) {
+        let (resident, window, headroom, due, ledger, unit) = match self.open.get(session_id) {
             Some(h) => {
                 let r = h.ledger_len() as u64;
                 let c = h.config();
@@ -2531,16 +2545,12 @@ impl<'a> Sessions<'a> {
                     WallWhy::Tidy => c.should_compact(r),
                     WallWhy::Refused => !self.wall_gave_up.contains(session_id),
                 };
-                (
-                    c.shown_tokens(r),
-                    c.shown_tokens(c.planning_window().unwrap_or(0)),
-                    c.shown_tokens(c.headroom()),
-                    due,
-                    r,
-                )
+                let (window, headroom) = c.shown_wall();
+                (now.tokens, window, headroom, due, r, h.token_unit())
             }
             None => return false,
         };
+        let basis = now.basis();
         if !due {
             return false;
         }
@@ -2570,19 +2580,17 @@ impl<'a> Sessions<'a> {
         // still inferred rather than read. The id costs fourteen bytes and makes it a
         // measurement.
         eprintln!(
-            "  {session_id}: compacting: {resident} of {window} tokens resident, less than \
-             the {} the next turn needs",
-            headroom
+            "  {session_id}: compacting: {resident} of {window} {unit} resident{basis}, \
+             less than the {headroom} the next turn needs"
         );
         if let Some(hub) = &hub {
             hub.publish(SessionEvent::Warning {
                 code: "auto_compact".into(),
                 detail: format!(
-                    "{resident} of {window} tokens resident, leaving less than the \
-                     {} the next turn needs — compacting now, as one more message so \
-                     the prefix the server already holds is reused. This is the wall, \
-                     not a judgement about the conversation.{because}",
-                    headroom
+                    "{resident} of {window} {unit} resident{basis}, leaving less than the \
+                     {headroom} the next turn needs — compacting now, as one more message \
+                     so the prefix the server already holds is reused. This is the wall, \
+                     not a judgement about the conversation.{because}"
                 ),
 
                 compaction: None,
@@ -2590,17 +2598,32 @@ impl<'a> Sessions<'a> {
         }
         match self.compact(session_id) {
             Ok(report) => {
+                // The new base measured in its own right: the fork re-based the
+                // anchor, so its count is the base's and not the history's ratio
+                // applied to it. See `Scales`.
+                let base = self.open.get_mut(session_id).map(|h| {
+                    (
+                        h.measure_resident(),
+                        h.config().ledger_scale,
+                        h.token_unit(),
+                    )
+                });
+                let scales = Scales {
+                    before: scale,
+                    after: base.as_ref().and_then(|b| b.1).or(scale),
+                    unit: Some(unit.clone()),
+                };
                 // The same account the operator gets from `/compact`. An automatic
                 // compaction is the one they did NOT ask for, so saying what it did
                 // matters more here, not less.
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "compacted".into(),
-                        detail: compaction_said(&report, scale),
+                        detail: compaction_said(&report, scales.clone()),
                         compaction: Some(Box::new(compaction_wire(
                             &report,
                             "compacted",
-                            scale,
+                            scales,
                             resident,
                             window,
                             headroom,
@@ -2656,12 +2679,13 @@ impl<'a> Sessions<'a> {
                         hub.publish(SessionEvent::Warning {
                             code: "auto_compact_no_progress".into(),
                             detail: format!(
-                                "compacted from {resident} to {after} tokens and that is \
+                                "compacted from {resident} to {} {unit} and that is \
                                  STILL within {} of the {window} window, so automatic \
                                  compaction is now off for this session rather than \
                                  looping once per turn{}. The summary itself is near the \
                                  wall: start a fresh session, or raise --context-window \
                                  if the server really has more.",
+                                base.as_ref().map(|b| b.0.tokens).unwrap_or(after),
                                 headroom,
                                 match why {
                                     WallWhy::Tidy => "",
@@ -2679,26 +2703,28 @@ impl<'a> Sessions<'a> {
                     // it produced may be partial. Collapsing them into "compacted"
                     // is how a truncated record reaches the operator looking whole.
                     let cut = if report.fork.truncated {
-                        " The summary was CUT OFF at the model's length limit — it is                          incomplete, and the base says so too."
+                        " The summary was CUT OFF at the model's length limit — it is \
+                         incomplete, and the base says so too."
                     } else {
                         ""
                     };
-                    // `after` comes off the report in ledger tokens, like
-                    // `resident`; both are converted so the pair can be compared.
-                    let after = self
-                        .harness_of(session_id)
-                        .map(|h| h.config().shown_tokens(after))
-                        .unwrap_or(after);
-                    eprintln!(
-                        "  {session_id}: compacted: {after} tokens resident now, was \
-                         {resident}.{cut}"
-                    );
+                    // One unit, one line (R72): the count the wall fired on, and
+                    // the new base's own, which a metered session has not had
+                    // measured yet and the line says so.
+                    let said = match &base {
+                        Some((b, _, unit)) => crate::harness::compacted_line(
+                            resident,
+                            *b,
+                            unit,
+                            self.harness_of(session_id).is_some_and(|h| h.is_metered()),
+                        ),
+                        None => format!("compacted: {resident} → {after} {unit} resident."),
+                    };
+                    eprintln!("  {session_id}: {said}{cut}");
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
                             code: "auto_compact".into(),
-                            detail: format!(
-                                "compacted: {after} tokens resident now, was {resident}.{cut}"
-                            ),
+                            detail: format!("{said}{cut}"),
 
                             compaction: None,
                         });
@@ -4068,6 +4094,35 @@ fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
     }
 }
 
+/// **The two pairs a compaction's numbers convert through** — the history's, and the
+/// new base's (R72).
+///
+/// One pair used to convert both, and it was the HISTORY's: the ratio of a
+/// conversation three quarters reasoning, applied to a summary and a verbatim tail
+/// whose share was nothing like it. `Harness::measure_resident` re-bases on the fork,
+/// so the caller that has run it passes the base's own pair as `after`; a caller that
+/// has one pair passes it and both sides read it, which is the old behaviour exactly.
+///
+/// `unit` is what the converted numbers are in, named in the sentence (R72: every
+/// printed count names its unit) — `Harness::token_unit`; `None` says `tokens`, which
+/// is what a caller with no session to ask has always printed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Scales {
+    pub before: Option<(u64, u64)>,
+    pub after: Option<(u64, u64)>,
+    pub unit: Option<String>,
+}
+
+impl From<Option<(u64, u64)>> for Scales {
+    fn from(scale: Option<(u64, u64)>) -> Self {
+        Scales {
+            before: scale,
+            after: scale,
+            unit: None,
+        }
+    }
+}
+
 /// **What a compaction tells the head.**
 ///
 /// The result used to go to the daemon's stderr and nowhere else. On the
@@ -4092,18 +4147,21 @@ fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
 /// itself did.
 pub(crate) fn compaction_said(
     r: &crate::harness::CompactReport,
-    scale: Option<(u64, u64)>,
+    scales: impl Into<Scales>,
 ) -> String {
-    let shown = shown_tokens(scale);
+    let scales = scales.into();
+    let shown = shown_tokens(scales.before);
+    let shown_after = shown_tokens(scales.after);
+    let unit = scales.unit.as_deref().unwrap_or("tokens");
     // **An empty summary is a re-ingest**, which is the same signal
     // `fork_to_summary` reads to decide what note to write. Nothing was
     // summarised, so "compacted" would be a lie and `was → base` would be one
     // number printed twice.
     if r.summary_turn.summary.is_empty() {
         return format!(
-            "re-seated: {} tokens of conversation carried onto the new prompt as they are, \
+            "re-seated: {} {unit} of conversation carried onto the new prompt as they are, \
              on transcript {}. Nothing was summarised and nothing was dropped.",
-            shown(r.fork.base_tokens),
+            shown_after(r.fork.base_tokens),
             r.fork.transcript_id
         );
     }
@@ -4111,9 +4169,9 @@ pub(crate) fn compaction_said(
     // line said `1352917 → 11353` beside a header reading 900k, and the operator
     // read the first number as a lie rather than as the other unit.
     let mut said = format!(
-        "compacted: {} → {} tokens, on transcript {}.",
+        "compacted: {} → {} {unit}, on transcript {}.",
         shown(r.fork.was_tokens),
-        shown(r.fork.base_tokens),
+        shown_after(r.fork.base_tokens),
         r.fork.transcript_id
     );
     // **What was carried rather than described.** Zero on a local model, and a
@@ -4172,17 +4230,19 @@ pub(crate) fn compaction_said(
 pub(crate) fn compaction_wire(
     r: &crate::harness::CompactReport,
     kind: &str,
-    scale: Option<(u64, u64)>,
+    scales: impl Into<Scales>,
     resident: u64,
     window: u64,
     headroom: u64,
 ) -> letibot_sessionlog::event::CompactionReport {
-    let shown = shown_tokens(scale);
+    let scales = scales.into();
+    let shown = shown_tokens(scales.before);
+    let shown_after = shown_tokens(scales.after);
     use letibot_sessionlog::event::{CompactionReport, CompactionSection, CompactionTail};
     CompactionReport {
         kind: kind.to_string(),
         tokens_before: shown(r.fork.was_tokens),
-        tokens_after: shown(r.fork.base_tokens),
+        tokens_after: shown_after(r.fork.base_tokens),
         transcript: r.fork.transcript_id.clone(),
         resident,
         window,

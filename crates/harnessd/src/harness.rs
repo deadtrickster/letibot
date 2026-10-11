@@ -1586,6 +1586,16 @@ pub struct Harness {
     /// has work to do (2026-10-09's wedge, exactly). See
     /// [`Harness::compact_because_refused`].
     forced_gave_up: bool,
+    /// **Where the provider last counted this conversation** (R72) — the anchor the
+    /// wall's resident count is rolled forward from. `cfg.ledger_scale` is kept as
+    /// the pair `(ledger now, resident now)` that [`Harness::measure_resident`] last
+    /// computed from it, so every `Config` method that converts reads the current
+    /// count and not a ratio from another moment.
+    ///
+    /// `None` with `cfg.ledger_scale` set is a scale this session did not measure —
+    /// a subagent's, inherited from its parent — and keeps the old ratio reading.
+    /// See [`WallAnchor`].
+    wall_anchor: Option<WallAnchor>,
     /// How this daemon RENDERS a prompt: the dialect's template and the tool-schema
     /// serialiser. Kept so a re-seat can build a new stable prefix the same way
     /// `open` built the first one — one renderer, so the prefix a re-seat writes
@@ -4193,14 +4203,28 @@ impl Harness {
         // but the two are the same as unmeasured, and the unscaled window is the
         // honest answer for both — it compacts early, which is the direction nobody
         // loses a session to. See `Config::tokens_are_unscaled`.
+        //
+        // **And the pair is an ANCHOR now, not a ratio (R72).** The equality test that
+        // stood here refused the pair whenever anything had been appended after the last
+        // round — a notice was enough — and the unscaled window it fell back to compacted
+        // a session the provider counted at ~740k down to 75k on its first idle pass. See
+        // `recovered_scale` for both measurements and `Harness::measure_resident` for the
+        // roll forward, which runs once the harness exists, at the end of `open`.
+        let mut wall_anchor = None;
         if cfg.provider.is_some()
             && cfg.ledger_scale.is_none()
             && let Some(store) = &store
             && let Ok(Some(row)) = store.session(&cfg.session_id)
-            && let Some(scale) =
+            && let Some((ledger, provider)) =
                 recovered_scale(row.context_tokens, row.context_ledger, session.ledger.len())
         {
-            cfg.ledger_scale = Some(scale);
+            cfg.ledger_scale = Some((ledger, provider));
+            wall_anchor = Some(WallAnchor {
+                transcript: session.transcript_id.clone(),
+                ledger,
+                provider,
+                measured: true,
+            });
         }
         // **Fill the harness view's slot, now that there is something to disclose.**
         // The tool was registered before the gate and the backend existed — it had
@@ -4250,6 +4274,7 @@ impl Harness {
             resumed: resume,
             compacting: false,
             forced_gave_up: false,
+            wall_anchor,
             render: parts.wiring.clone(),
             supplies,
             open_notes: notes,
@@ -4289,6 +4314,10 @@ impl Harness {
             // record and cannot re-derive.
             own_server,
         };
+        // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
+        // every `Config` reader converts with is the count of THIS conversation from the
+        // first thing that reads it — a `/reseat` before any turn included.
+        h.measure_resident();
         h.publish_settings();
         h.publish_jobs();
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
@@ -5570,6 +5599,76 @@ impl Harness {
     /// number a compaction is measured against.
     pub fn ledger_len(&self) -> usize {
         self.session.ledger.len()
+    }
+
+    /// **How big this conversation is, in the units its wall is in** — and the pair
+    /// every `Config` conversion reads, brought up to date with it. R72.
+    ///
+    /// For a session with a measurement: the provider's own count at its last round,
+    /// plus what has been appended since and will be sent (see [`roll_resident`]), and
+    /// `cfg.ledger_scale` becomes `(ledger now, that count)` — so `should_compact`,
+    /// `at_the_wall`, `room_for_next_turn` and `shown_tokens` all judge and print the
+    /// one number, and `shown_tokens(ledger_len())` IS it, exactly. Called before every
+    /// wall decision, because the ledger moves between rounds (a tool result, a notice)
+    /// and a pair from the last round would convert those rows by a ratio they have
+    /// nothing to do with.
+    ///
+    /// Without a measurement the reading is the ledger's own, and says so
+    /// (`measured: None`): unscaled on a metered model that has not run a round —
+    /// `Config::tokens_are_unscaled` — and the truth on a local one before its first.
+    /// A scale this session did not anchor (a subagent's, inherited) is read the way it
+    /// always was, as a ratio, rather than mistaken for a count of this conversation.
+    pub fn measure_resident(&mut self) -> Resident {
+        let len = self.session.ledger.len() as u64;
+        if self.cfg.ledger_scale.is_none() {
+            // A switch cleared the scale (`set_provider`, `set_own_server`): the anchor
+            // was a measurement on the model before, and goes with it.
+            self.wall_anchor = None;
+            return Resident {
+                tokens: len,
+                measured: None,
+                since: 0,
+            };
+        }
+        let Some(anchor) = &self.wall_anchor else {
+            return Resident {
+                tokens: self.cfg.shown_tokens(len),
+                measured: None,
+                since: 0,
+            };
+        };
+        let (anchor, now) = roll_resident(
+            anchor,
+            &self.session.transcript_id,
+            &self.session.ledger,
+            &self.session.items,
+            self.provider.is_some(),
+        );
+        self.wall_anchor = Some(anchor);
+        if len > 0 && now.tokens > 0 {
+            self.cfg.ledger_scale = Some((len, now.tokens));
+        }
+        now
+    }
+
+    /// Whether this session's turns go to a metered provider — the case where the
+    /// ledger and the provider's count are two different numbers.
+    pub fn is_metered(&self) -> bool {
+        self.provider.is_some()
+    }
+
+    /// **The unit a printed count is in**, for the lines that print one: a count with
+    /// no unit beside another in a different one is how *"3191928 of 3404045"* and
+    /// *"937686 of 999999"* came to sit on adjacent log lines for the same check (R72).
+    pub fn token_unit(&self) -> String {
+        match (&self.provider, self.cfg.ledger_scale) {
+            (Some(p), Some(_)) => format!("{} tokens", p.name()),
+            (Some(p), None) => format!(
+                "ledger tokens (unscaled: no round on {} has measured yet)",
+                p.name()
+            ),
+            (None, _) => "tokens".into(),
+        }
     }
 
     /// The whole submitted token vector, for a caller that wants to check the
@@ -8350,6 +8449,11 @@ impl Harness {
     /// decision — the arithmetic is NOT copied — and `why` is the only thing the
     /// two doors disagree on.
     fn compact_at_the_wall(&mut self, why: WallWhy) -> bool {
+        // **Measured first, so the decision and the line are one count (R72).** The
+        // roll brings `ledger_scale` to `(this ledger, the provider-sized count)`, and
+        // `should_compact` on the ledger figure below is then exactly the provider's
+        // count against the provider's window.
+        let now = self.measure_resident();
         let resident = self.session.ledger.len() as u64;
         // The one gate the two questions differ by: the PRE-EMPTIVE door reads
         // `auto_compact` (and the no-progress guard's whole purpose lives there);
@@ -8363,14 +8467,13 @@ impl Harness {
         }
         // **Shown in the operator's units, decided in the ledger's** — the same rule
         // the `Sessions` sibling states: `should_compact` above is the decision,
-        // `shown_tokens` is only the telling.
+        // and the line prints the count it was made on, in the window's own units
+        // (`Config::shown_wall`), with the unit named.
         let scale = self.cfg.ledger_scale;
-        let (r, w, h) = (
-            self.cfg.shown_tokens(resident),
-            self.cfg
-                .shown_tokens(self.cfg.planning_window().unwrap_or(0)),
-            self.cfg.shown_tokens(self.cfg.headroom()),
-        );
+        let (w, h) = self.cfg.shown_wall();
+        let r = now.tokens;
+        let unit = self.token_unit();
+        let basis = now.basis();
         // A refusal-answer names what sent it, because the operator watching a
         // session that "compacts automatically" deserves to know why THIS one
         // compacted with the automatic compaction stood down.
@@ -8385,29 +8488,38 @@ impl Harness {
         // log is one file every daemon appends to, and a child's compaction lines
         // land between its parent's work with nothing to say whose they were.
         eprintln!(
-            "  {}: compacting: {r} of {w} tokens resident, less than the {h} the next \
-             turn needs",
+            "  {}: compacting: {r} of {w} {unit} resident{basis}, less than the {h} the \
+             next turn needs",
             self.cfg.session_id
         );
         self.hub.publish(SessionEvent::Warning {
             code: "auto_compact".into(),
             detail: format!(
-                "{r} of {w} tokens resident, leaving less than the {h} the next turn \
-                 needs — compacting now, as one more message so the prefix the server \
-                 already holds is reused. This is the wall, not a judgement about the \
-                 conversation.{because}"
+                "{r} of {w} {unit} resident{basis}, leaving less than the {h} the next \
+                 turn needs — compacting now, as one more message so the prefix the \
+                 server already holds is reused. This is the wall, not a judgement about \
+                 the conversation.{because}"
             ),
             compaction: None,
         });
         match self.compact() {
             Ok(report) => {
+                // The new base measured in its own right — the fork re-bases the anchor
+                // (`roll_resident`), so the after-count is the base's, not the old
+                // history's ratio applied to it.
+                let base = self.measure_resident();
+                let scales = crate::sessions::Scales {
+                    before: scale,
+                    after: self.cfg.ledger_scale,
+                    unit: Some(unit.clone()),
+                };
                 self.hub.publish(SessionEvent::Warning {
                     code: "compacted".into(),
-                    detail: crate::sessions::compaction_said(&report, scale),
+                    detail: crate::sessions::compaction_said(&report, scales.clone()),
                     compaction: Some(Box::new(crate::sessions::compaction_wire(
                         &report,
                         "compacted",
-                        scale,
+                        scales,
                         r,
                         w,
                         h,
@@ -8466,14 +8578,11 @@ impl Harness {
                     } else {
                         ""
                     };
-                    let after = self.cfg.shown_tokens(after);
-                    eprintln!(
-                        "  {}: compacted: {after} tokens resident now, was {r}.{cut}",
-                        self.cfg.session_id
-                    );
+                    let said = compacted_line(r, base, &self.token_unit(), self.provider.is_some());
+                    eprintln!("  {}: {said}{cut}", self.cfg.session_id);
                     self.hub.publish(SessionEvent::Warning {
                         code: "auto_compact".into(),
-                        detail: format!("compacted: {after} tokens resident now, was {r}.{cut}"),
+                        detail: format!("{said}{cut}"),
                         compaction: None,
                     });
                 }
@@ -9757,6 +9866,10 @@ impl Harness {
             // is to be over the wall — stopping it there would make compaction
             // impossible exactly when it is needed, which is what happened on the
             // first run of this check.
+            // **Measured before it is judged (R72)**: the tool results of the round just
+            // ended are in the ledger and not in the last round's count, and the roll adds
+            // them as sent rather than through a ratio they have nothing to do with.
+            let now = (round > 0 && !self.compacting).then(|| self.measure_resident());
             if round > 0
                 && !self.compacting
                 && let Some(window) = self.cfg.planning_window()
@@ -9764,15 +9877,14 @@ impl Harness {
             {
                 let resident = self.session.ledger.len() as u64;
                 if resident + self.cfg.headroom() >= window {
-                    // In the units the operator's header shows; see
-                    // `Config::shown_tokens`. The ledger's own figures are named
-                    // once at the end rather than per number, because three
-                    // conversions in one sentence is not a sentence.
-                    let (r, w, h) = (
-                        self.cfg.shown_tokens(resident),
-                        self.cfg.shown_tokens(window),
-                        self.cfg.shown_tokens(self.cfg.headroom()),
-                    );
+                    // In the units the operator's header shows, and the count the
+                    // decision was made on; see `Harness::measure_resident`. The
+                    // ledger's own figures are named once at the end rather than per
+                    // number, because three conversions in one sentence is not a
+                    // sentence.
+                    let (w, h) = self.cfg.shown_wall();
+                    let r = now.map(|n| n.tokens).unwrap_or(resident);
+                    let unit = self.token_unit();
                     let also = if self.cfg.tokens_are_converted() {
                         format!(
                             " (counted as the provider counts them; this box's own \
@@ -9801,7 +9913,7 @@ impl Harness {
                         code: "context_wall".into(),
                         detail: format!(
                             "stopping this turn after {round} round(s): {r} of {w} \
-                             tokens are resident and the next round needs {h} free{also}. \
+                             {unit} are resident and the next round needs {h} free{also}. \
                              Everything so far is committed, and the session compacts \
                              before the next turn — this is the wall, not a failure of \
                              the work."
@@ -9822,7 +9934,8 @@ impl Harness {
                     // adjacency — the same correction the `compacting:` line already had.
                     let session_id = &self.cfg.session_id;
                     eprintln!(
-                        "  {session_id}: context wall: stopped after {round} round(s) at {resident} of {window} tokens"
+                        "  {session_id}: context wall: stopped after {round} round(s) at {r} of {w} \
+                         {unit} ({resident} of {window} ledger tokens)"
                     );
                     return Err(HarnessError::ContextWall {
                         rounds: round,
@@ -10148,17 +10261,15 @@ impl Harness {
                     if let TurnFailure::Http(letibot_turn::HttpError::Status { body, .. }) = &f
                         && let Some(refusal) = context_length_refusal(body)
                     {
+                        let r = self.measure_resident().tokens;
                         let resident = self.session.ledger.len() as u64;
                         let window = self
                             .cfg
                             .planning_window()
                             .or(self.cfg.context_window)
                             .unwrap_or(0);
-                        let (r, w, h) = (
-                            self.cfg.shown_tokens(resident),
-                            self.cfg.shown_tokens(window),
-                            self.cfg.shown_tokens(self.cfg.headroom()),
-                        );
+                        let (w, h) = self.cfg.shown_wall();
+                        let unit = self.token_unit();
                         let theirs = match (refusal.requested, refusal.limit) {
                             (Some(req), Some(lim)) => format!(
                                 " The provider's own count: {req} tokens against a {lim} \
@@ -10187,8 +10298,8 @@ impl Harness {
                             code: "context_wall".into(),
                             detail: format!(
                                 "stopping this turn after {round} round(s): the PROVIDER \
-                                 refused the prompt for length. This box's ledger says {r} \
-                                 of {w} tokens resident with {h} reserved for the next \
+                                 refused the prompt for length. This box counts {r} \
+                                 of {w} {unit} resident with {h} reserved for the next \
                                  round.{theirs}{no_window} Everything already produced is \
                                  committed, and the session compacts before the next turn \
                                  — this is the wall, not a failure of the work.",
@@ -10197,7 +10308,8 @@ impl Harness {
                         });
                         eprintln!(
                             "  {}: context wall: the provider refused the prompt for \
-                             length after {round} round(s) at {resident} of {window} tokens",
+                             length after {round} round(s) at {r} of {w} {unit} ({resident} \
+                             of {window} ledger tokens)",
                             self.cfg.session_id
                         );
                         return Err(HarnessError::ContextWall {
@@ -10250,14 +10362,38 @@ impl Harness {
             // ledger and the server count the same prompt, so a local round measures a ratio
             // that is 1 by construction — and measuring it rather than assuming it is the
             // same rule the rest of this field follows.
+            //
+            // **And paired with the ledger the PROMPT had, not the one after the reply
+            // (R72).** `prompt_tokens` counts what was sent; the round's own rows — the
+            // model's reply and what was steered in while it spoke — were appended after
+            // it, so the ledger read here is longer than the prompt by exactly those rows.
+            // Pairing the two made a ratio of two moments, and on a reasoning-heavy reply
+            // the difference is mostly reasoning. The prompt's ledger is the row boundary
+            // before them: the rows are one-to-one with `appended`, and the last
+            // `items + steering_applied` of them came after the prompt.
+            let rendered_at = {
+                let rows = self.session.ledger.rows();
+                let after = ok.items.len() + ok.steering_applied.len();
+                match rows.len().checked_sub(after) {
+                    Some(0) => u64::from(self.session.ledger.prefix_len()),
+                    Some(n) => u64::from(rows[n - 1].end()),
+                    None => self.session.ledger.len() as u64,
+                }
+            };
             if ok.metrics.prompt_tokens > 0 {
-                self.cfg.ledger_scale =
-                    Some((self.session.ledger.len() as u64, ok.metrics.prompt_tokens));
+                self.wall_anchor = Some(WallAnchor {
+                    transcript: self.session.transcript_id.clone(),
+                    ledger: rendered_at,
+                    provider: ok.metrics.prompt_tokens,
+                    measured: true,
+                });
+                self.cfg.ledger_scale = Some((rendered_at, ok.metrics.prompt_tokens));
+                self.measure_resident();
             }
             // Persisted with the ledger beside the count, so a restart recovers the
             // pair above instead of pairing the count with whatever ledger it has
             // then. See the gate in `Harness::open`.
-            self.persist_context(&ok.metrics)?;
+            self.persist_context(&ok.metrics, rendered_at)?;
             truncated |= ok.truncated;
             // A steering message injected at the step boundary is already in the
             // transcript, and its own `TranscriptAppended` came through the same
@@ -11176,7 +11312,7 @@ impl Harness {
 
     /// The round's prompt size onto the session row. See the call in `run_rounds`
     /// for why this is the number a head shows as the session's context.
-    fn persist_context(&self, metrics: &TurnMetrics) -> Result<(), HarnessError> {
+    fn persist_context(&self, metrics: &TurnMetrics, rendered_at: u64) -> Result<(), HarnessError> {
         let Some(store) = &self.store else {
             return Ok(());
         };
@@ -11185,11 +11321,12 @@ impl Harness {
                 &self.cfg.session_id,
                 Some(metrics.prompt_tokens),
                 Some(metrics.cached_tokens),
-                // **The same ledger the in-memory pair above just used**, so a
+                // **The same ledger the in-memory anchor above just used**, so a
                 // restart recovers what this daemon had rather than a second
-                // opinion about it. Both are taken AFTER the round's rows are
-                // appended, so the two agree by construction.
-                Some(self.session.ledger.len() as u64),
+                // opinion about it: the ledger length of the PROMPT the count
+                // measured (R72), which the round's reply was appended after. A
+                // restart adds those rows back as `recovered_scale` describes.
+                Some(rendered_at),
             )
             .map_err(|e| HarnessError::Store(format!("context: {e}")))
     }
@@ -11376,8 +11513,8 @@ impl Harness {
     }
 }
 
-/// **The stored ledger-to-provider pair, or `None` when it does not measure the
-/// conversation in hand.**
+/// **The stored provider count and the ledger length it was measured at, or `None`
+/// when there is nothing to anchor to.**
 ///
 /// The decision is a free function for the reason `sweep_abandoned_calls` gives
 /// about its own: it can be tested without a daemon, a model or a socket. That is
@@ -11387,22 +11524,52 @@ impl Harness {
 /// DeepSeek. The bug this replaces was found in production precisely because
 /// nothing checked the pairing.
 ///
-/// `ledger_now` is what this box counts for the conversation it has just rebuilt.
-/// The stored ledger is what it counted for the prompt the provider's number
-/// belongs to, and **equality is the whole test**: a ratio is a function of the
-/// two SIZES, so a matching ledger size is exactly the equivalence the ratio
-/// needs, and it is a stronger claim than the length alone suggests — content
-/// that differed while measuring the same would still yield the right ratio.
+/// **What it returns is an ANCHOR, not a ratio** — `(ledger, provider)`: the
+/// provider counted `provider` tokens for the prompt whose ledger was `ledger`
+/// long. [`roll_resident`] adds what was appended after `ledger` to it, sized the
+/// way the provider will be sent it, and that sum is the resident count.
 ///
-/// It refuses in three cases, and each lands the safe way (an unscaled window,
-/// which compacts EARLY):
+/// # Why equality was the test, and why it is not any more
+///
+/// This used to give the pair back only when the stored ledger EQUALLED the
+/// rebuilt one, because the pair was used as a RATIO: `ledger_now ÷ ratio`. A
+/// count from a smaller conversation divided into a bigger ledger overstates the
+/// ratio, and the session compacts too late — MEASURED 2026-10-02: a store holding
+/// 940,211, measured on a ~950k-token conversation, was paired with a rebuilt
+/// ledger of 1,486,369; the window came out 1,580,888 for a session already 1.46M
+/// deep, and it died at the provider's 400 on every attempt.
+///
+/// The equality closed that, and opened the opposite hole. Anything appended after
+/// the last round's `persist_context` — a notice, a nag, the tool result of a turn
+/// that did not end in a round — broke it, the pair was refused, the window went
+/// UNSCALED, and the raw ledger was compared against the provider's window.
+/// MEASURED 2026-10-11 (R72), leticl's `s-1791151788256943467` on deepseek-flash,
+/// the first idle pass after a restart:
+///
+/// ```text
+/// compacting: 3454266 of 1000000 tokens resident, less than the 62500 the next turn needs
+/// compacted: 75408 tokens resident now, was 3454266.
+/// ```
+///
+/// — a session the provider counted at ~740k, folded to 75k. The comment at the
+/// call chose that direction on purpose (*"it compacts early, which is the
+/// direction nobody loses a session to"*), and early by 4.6× is losing the
+/// session's working context on every restart.
+///
+/// An anchor has neither failure. The 2026-10-02 conversation comes back as
+/// 940,211 PLUS the ~536k ledger tokens appended since, sized as sent — larger, so
+/// it compacts; the 2026-10-11 one comes back as ~740k plus one notice — and does
+/// not. Nothing is divided, so a stale count cannot shrink a big ledger, and a
+/// later append cannot throw the count away.
+///
+/// It refuses in three cases, and each lands on the unscaled window:
 ///
 ///   * no stored pair — a row written before v12, or one whose turn never
 ///     finished. Unverifiable is not the same as wrong, but the two are the same
 ///     as unmeasured;
-///   * a ledger that has moved since — rows appended, or a compaction forked the
-///     transcript, either of which makes the provider's number describe a
-///     conversation this one is not;
+///   * a stored ledger LONGER than the one rebuilt — the conversation it measured
+///     is not this one (a fork clears the row, so this is a row nothing else
+///     explains, and a count of something else is not evidence);
 ///   * a zero on either side, which is not a measurement of anything.
 fn recovered_scale(
     stored_provider: Option<u64>,
@@ -11410,13 +11577,196 @@ fn recovered_scale(
     ledger_now: usize,
 ) -> Option<(u64, u64)> {
     let provider_tokens = stored_provider?;
-    if provider_tokens == 0 || ledger_now == 0 {
+    let stored_ledger = stored_ledger?;
+    if provider_tokens == 0 || stored_ledger == 0 || ledger_now == 0 {
         return None;
     }
-    if stored_ledger != Some(ledger_now as u64) {
+    if stored_ledger > ledger_now as u64 {
         return None;
     }
-    Some((ledger_now as u64, provider_tokens))
+    Some((stored_ledger, provider_tokens))
+}
+
+/// **The closing line of an automatic compaction**, in one unit, said once: *"compacted:
+/// 937686 → 75408 deepseek tokens resident"*. Shared by both doors (`Harness` and
+/// `Sessions`), so the two cannot word the same fact two ways.
+///
+/// The after-count of a metered session is an ESTIMATE until a round on the new base
+/// measures it — the provider has not seen the base yet — and the line says so rather
+/// than printing an estimate beside a measurement as if they were the same kind of
+/// number.
+pub(crate) fn compacted_line(before: u64, after: Resident, unit: &str, metered: bool) -> String {
+    let estimated = if metered && after.measured.is_none() {
+        " (the new base sized as it will be sent; the next round measures it)"
+    } else {
+        ""
+    };
+    format!(
+        "compacted: {before} → {} {unit} resident{estimated}.",
+        after.tokens
+    )
+}
+
+/// **Where the provider last counted this conversation** — the ledger length of the
+/// prompt it was sent, and its own count of that prompt. R72.
+///
+/// The wall used to be judged as `ledger.len() ÷ ratio`, with the ratio
+/// `(ledger, prompt_tokens)` learned at the end of the last round. That ratio is
+/// not a property of two tokenizers — the ledger holds reasoning the provider does
+/// not count (see `Config::ledger_scale`'s table) — so it is a property of how much
+/// of the history was reasoning AT ONE MOMENT, and it was taken with the two halves
+/// at two different moments besides: `prompt_tokens` is the prompt BEFORE the
+/// round's reply, the ledger length was read AFTER it. Every row appended after it
+/// was converted by that ratio — a tool result the provider is sent whole was
+/// counted at a third of its size, and a reasoning block it is not sent at all was
+/// counted at a third more than nothing. The operator's report: *"leticl head shows
+/// me 740k tokens yet it just started compaction citing 900k+ tokens"*.
+///
+/// So the wall counts the provider's own number and adds to it only what came
+/// after, sized the way it will be sent. See [`roll_resident`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WallAnchor {
+    /// The transcript the count was taken on. A compaction forks a new one, and a
+    /// count of the old conversation says nothing about the new one's size.
+    transcript: String,
+    /// The ledger length of the prompt the count belongs to — a row boundary.
+    ledger: u64,
+    /// The count. The provider's own when `measured`; otherwise the estimate that
+    /// stands in for one after a fork, until a round on the new base measures.
+    provider: u64,
+    /// Whether `provider` came from the provider.
+    measured: bool,
+}
+
+/// **One reading of how big this conversation is, in the units its wall is in** —
+/// the provider's on a metered session, the ledger's on a local one (where the
+/// two are the same count by construction: the ledger IS the prompt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resident {
+    /// The whole count. What the wall is judged on, and what a line prints.
+    pub tokens: u64,
+    /// The provider's own count at its last round, when `tokens` is built on one —
+    /// the number the head shows. `None` when nothing measured this transcript.
+    pub measured: Option<u64>,
+    /// What was appended after that count and will be sent, sized as sent.
+    /// `tokens == measured + since` whenever `measured` is `Some`.
+    pub since: u64,
+}
+
+impl Resident {
+    /// **The count's provenance, said once, in the line that prints the count** —
+    /// so the head's number and the wall's are visibly the same quantity: *"(740000
+    /// at the last round + 3000 appended since)"*. Empty when there is no
+    /// measurement to relate to.
+    pub fn basis(&self) -> String {
+        match self.measured {
+            Some(m) if self.since > 0 => {
+                format!(" ({m} at the last round + {} appended since)", self.since)
+            }
+            Some(_) => " (the provider's count at the last round)".into(),
+            None => String::new(),
+        }
+    }
+}
+
+/// **What the ledger holds after `from` that the next request will carry**, in
+/// ledger tokens — the provider-sized estimate of an append.
+///
+/// Ledger tokens are the session's own vocabulary, not the provider's; WITHOUT the
+/// reasoning the two agree to 4-17% (`Config::ledger_scale`'s table), which is
+/// ordinary variance between two tokenizers and stable, unlike the reasoning share.
+/// So the estimate keeps every row the request carries and drops the ones it does
+/// not:
+///
+///   * `Reasoning` on a metered session — what moves the ledger and not the
+///     provider's count; the table above measures it at 27-34% of a history, and
+///     the session R72 is about at more than three quarters;
+///   * `SegmentMark` on a metered session — the store's, never sent
+///     (`letibot_provider::messages`).
+///
+/// On a LOCAL session the request is the ledger itself (`engine.rs`: `let mut
+/// prompt = session.ledger.tokens().to_vec()`), so everything after `from` is
+/// carried, reasoning included, and this is the ledger's own difference.
+///
+/// Rows and items are one-to-one (`Session::append_items`), so a row is classified
+/// by the item at its index. A row that STARTS before `from` is not counted: `from`
+/// is a row boundary wherever this harness wrote it.
+fn sent_since(
+    ledger: &letibot_tokencore::ledger::TokenLedger,
+    items: &[TranscriptItem],
+    from: u64,
+    metered: bool,
+) -> u64 {
+    let len = ledger.len() as u64;
+    if !metered {
+        return len.saturating_sub(from);
+    }
+    ledger
+        .rows()
+        .iter()
+        .zip(items)
+        .filter(|(row, _)| u64::from(row.tok_offset) >= from)
+        .filter(|(_, item)| {
+            !matches!(
+                item,
+                TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. }
+            )
+        })
+        .map(|(row, _)| u64::from(row.tok_len))
+        .sum()
+}
+
+/// **The resident count, rolled forward from `anchor` to the ledger as it stands.**
+///
+/// Two cases, and the second is the one a fork reaches:
+///
+///   * the anchor is on this transcript and not past its end — the provider's
+///     count plus [`sent_since`] the anchor. The count the head shows is `measured`,
+///     and the rest is said as `since`, so a line can name both;
+///   * it is not — a compaction forked a new transcript, or the ledger is shorter
+///     than the anchor. The count described a conversation this one is not, so the
+///     estimate starts over from the new base: its prefix plus everything sent,
+///     unmeasured, and the returned anchor is re-based there so the next roll adds
+///     only what comes after. The first round on the new base replaces it with a
+///     measurement. Dividing the base by the OLD ratio was what printed "compacted:
+///     726656 tokens resident now" for a summary and a verbatim tail whose reasoning
+///     share was nothing like the history it replaced.
+///
+/// Returns the anchor to keep and the reading.
+fn roll_resident(
+    anchor: &WallAnchor,
+    transcript_now: &str,
+    ledger: &letibot_tokencore::ledger::TokenLedger,
+    items: &[TranscriptItem],
+    metered: bool,
+) -> (WallAnchor, Resident) {
+    let len = ledger.len() as u64;
+    if anchor.transcript == transcript_now && anchor.ledger <= len {
+        let since = sent_since(ledger, items, anchor.ledger, metered);
+        return (
+            anchor.clone(),
+            Resident {
+                tokens: anchor.provider + since,
+                measured: anchor.measured.then_some(anchor.provider),
+                since: if anchor.measured { since } else { 0 },
+            },
+        );
+    }
+    let prefix = u64::from(ledger.prefix_len());
+    let tokens = prefix + sent_since(ledger, items, prefix, metered);
+    (
+        WallAnchor {
+            transcript: transcript_now.to_string(),
+            ledger: len,
+            provider: tokens,
+            measured: false,
+        },
+        Resident {
+            tokens,
+            measured: None,
+            since: 0,
+        },
+    )
 }
 
 /// **`0` is unbounded**, which is the default; see [`Config::max_tool_rounds`].
@@ -17291,37 +17641,39 @@ mod tests {
         assert_ne!(next, adopted);
     }
 
-    /// **A stored pair measures ONE conversation, and it is used only for that
-    /// one.** See [`super::recovered_scale`].
+    /// **A stored pair is an anchor on ONE conversation, and what came after it is
+    /// added, never divided.** See [`super::recovered_scale`].
     ///
-    /// The defect this closes, measured 2026-10-02: a store holding 940,211 —
-    /// the provider's count for a ~950k-token conversation — was paired with a
-    /// ledger of 1,486,369 that the daemon had just rebuilt, because nothing
-    /// recorded which conversation the number belonged to. The ratio came out
-    /// 0.63 where the truth was 1.016, and the window 1,580,888 instead of about
+    /// The defect the old equality test closed, measured 2026-10-02: a store holding
+    /// 940,211 — the provider's count for a ~950k-token conversation — was paired
+    /// with a ledger of 1,486,369 that the daemon had just rebuilt, as a RATIO. It came
+    /// out 0.63 where the truth was 1.016, and the window 1,580,888 instead of about
     /// 1,015,628 — so a session 1.46M tokens deep planned against a window it was
     /// already far past, never compacted, and died at the provider's 400 on every
-    /// attempt.
+    /// attempt. As an anchor the same row is 940,211 PLUS the rows after it — a count
+    /// that grows with the conversation, so it compacts.
     #[test]
     fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
-        // The pair that matches: both halves of one measurement, and the ledger
-        // this daemon has rebuilt is the same size.
+        // The pair that matches: both halves of one measurement.
         assert_eq!(
             super::recovered_scale(Some(940_211), Some(940_211), 940_211),
             Some((940_211, 940_211)),
-            "a pair measured on this conversation IS the ratio"
         );
-        // **The bug.** The same count, which was true — of a smaller conversation.
-        // Smaller is the dangerous direction: divided into a bigger ledger it
-        // OVERSTATES the ratio, so the window grows and compaction comes too late.
+        // The 2026-10-02 row: an anchor at the conversation it measured, which the roll
+        // then adds the later rows to — see the restart test below for the addition.
         assert_eq!(
-            super::recovered_scale(Some(940_211), Some(940_211), 1_486_369),
-            None,
-            "a count from a smaller conversation must not be paired with this ledger"
+            super::recovered_scale(Some(940_211), Some(950_000), 1_486_369),
+            Some((950_000, 940_211)),
+            "the count is anchored where it was taken, not paired with today's ledger"
         );
-        // A row written before v12 has no ledger to check against. Unverifiable is
-        // not the same as wrong, but it IS the same as unmeasured — and the
-        // unscaled window is the honest answer for unmeasured.
+        // A stored ledger LONGER than the conversation in hand measured something else.
+        assert_eq!(
+            super::recovered_scale(Some(940_211), Some(1_486_369), 950_000),
+            None
+        );
+        // A row written before v12 has no ledger to anchor to. Unverifiable is not
+        // the same as wrong, but it IS the same as unmeasured — and the unscaled
+        // window is the honest answer for unmeasured.
         assert_eq!(super::recovered_scale(Some(940_211), None, 940_211), None);
         // No provider count at all: a row whose turn never finished.
         assert_eq!(super::recovered_scale(None, Some(940_211), 940_211), None);
@@ -17331,6 +17683,233 @@ mod tests {
             None
         );
         assert_eq!(super::recovered_scale(Some(940_211), Some(0), 0), None);
+    }
+
+    /// A ledger and its items, built row by row with tokens of a given count — the
+    /// shape `Session::append_items` keeps (one row per item), with no vocabulary.
+    struct Wall {
+        ledger: letibot_tokencore::ledger::TokenLedger,
+        items: Vec<TranscriptItem>,
+    }
+
+    impl Wall {
+        fn new(prefix: usize) -> Wall {
+            Wall {
+                ledger: letibot_tokencore::ledger::TokenLedger::new("t-wall", &vec![1; prefix])
+                    .expect("a ledger"),
+                items: Vec::new(),
+            }
+        }
+        fn push(&mut self, item: TranscriptItem, tokens: usize) -> &mut Wall {
+            let id = format!("t-wall.{}", self.items.len());
+            self.ledger
+                .append(&id, &vec![2; tokens])
+                .expect("an append");
+            self.items.push(item);
+            self
+        }
+        fn sent(&mut self, tokens: usize) -> &mut Wall {
+            self.push(
+                TranscriptItem::System {
+                    text: "sent".into(),
+                    origin: SystemOrigin::Update,
+                },
+                tokens,
+            )
+        }
+        fn thought(&mut self, tokens: usize) -> &mut Wall {
+            self.push(
+                TranscriptItem::Reasoning {
+                    text: "thinking".into(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                    truncated: false,
+                },
+                tokens,
+            )
+        }
+        fn len(&self) -> u64 {
+            self.ledger.len() as u64
+        }
+        fn anchor(&self, provider: u64) -> super::WallAnchor {
+            super::WallAnchor {
+                transcript: "t-wall".into(),
+                ledger: self.len(),
+                provider,
+                measured: true,
+            }
+        }
+    }
+
+    fn deepseek_window() -> Config {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.context_window = Some(1_000_000);
+        cfg.auto_compact = true;
+        cfg
+    }
+
+    /// **R72: a reasoning-heavy history is judged at the window's REAL edge.**
+    ///
+    /// The provider counted 880k at its last round, over a ledger ~3.4× that (the
+    /// reasoning it is not sent). Then a round fails inside its own reasoning — R7's
+    /// *"the turn spent its whole output on reasoning"* — which commits 200k ledger
+    /// tokens of thought and measures nothing, and a 12k tool result lands. The
+    /// provider will be sent 892k of a 1M window whose wall is at 937.5k: room.
+    ///
+    /// The ratio reading — `ledger ÷ (ledger, provider)` as learned at the round —
+    /// counted the 200k of unsent thought at nearly a third of its size and the
+    /// session past the wall (941.7k against 937.5k), compacting a conversation with
+    /// 108k of its window free.
+    #[test]
+    fn a_reasoning_heavy_history_meets_the_wall_at_the_providers_count() {
+        let mut w = Wall::new(20_000);
+        // ~3.4 ledger tokens per provider token: 880k sent, ~2.1M of thought.
+        for _ in 0..100 {
+            w.sent(8_600).thought(21_400);
+        }
+        let anchor = w.anchor(880_000);
+        let at_round = w.len();
+        w.thought(200_000).sent(12_000);
+
+        let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
+        assert_eq!(
+            now.tokens, 892_000,
+            "the provider's 880k + the 12k it will be sent"
+        );
+        assert_eq!(now.measured, Some(880_000));
+        assert_eq!(now.since, 12_000);
+
+        let mut cfg = deepseek_window();
+        cfg.ledger_scale = Some((w.len(), now.tokens));
+        assert!(
+            !cfg.should_compact(w.len()),
+            "892k of 1M is not the wall (937.5k); compacting here is 27% early"
+        );
+        assert_eq!(
+            cfg.shown_tokens(w.len()),
+            892_000,
+            "the line prints the same count"
+        );
+        // The old reading, for the record: the round's ratio applied to today's ledger.
+        let old = (w.len() as u128 * 880_000 / at_round as u128) as u64;
+        assert!(
+            old > 937_500,
+            "the ratio reading put it past the wall: {old}"
+        );
+
+        // And at the real edge it fires: a 50k tool result takes it to 942k.
+        w.sent(50_000);
+        let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
+        assert_eq!(now.tokens, 942_000);
+        cfg.ledger_scale = Some((w.len(), now.tokens));
+        assert!(
+            cfg.should_compact(w.len()),
+            "942k + 62.5k reserve is past 1M"
+        );
+    }
+
+    /// **R72: a restart whose last append was a notice comes back at the provider's
+    /// count, and does not compact.**
+    ///
+    /// MEASURED 2026-10-11, leticl's `s-1791151788256943467` after a daemon restart:
+    /// `compacting: 3454266 of 1000000 tokens resident` → `compacted: 75408` — a
+    /// session the provider counted at ~740k, because the stored pair's ledger no
+    /// longer EQUALLED the rebuilt one (something was appended after the last round),
+    /// so the window went unscaled and the raw ledger was compared with it.
+    #[test]
+    fn a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact() {
+        let mut w = Wall::new(20_000);
+        for _ in 0..100 {
+            w.sent(7_200).thought(26_900);
+        }
+        // The last round: its prompt was this long, and the provider counted 740k.
+        let (stored_ledger, stored_provider) = (w.len(), 740_000u64);
+        // Then the round's reply (thought and a short answer) and a notice.
+        w.thought(40_000).sent(1_500).sent(600);
+
+        let anchor =
+            super::recovered_scale(Some(stored_provider), Some(stored_ledger), w.len() as usize)
+                .expect("a later append does not throw the count away");
+        let anchor = super::WallAnchor {
+            transcript: "t-wall".into(),
+            ledger: anchor.0,
+            provider: anchor.1,
+            measured: true,
+        };
+        let (_, now) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, true);
+        assert_eq!(now.tokens, 742_100, "740k + the answer and the notice");
+
+        let mut cfg = deepseek_window();
+        cfg.provider = Some(crate::config::ProviderConfig {
+            name: "deepseek".into(),
+            ..Default::default()
+        });
+        cfg.ledger_scale = Some((w.len(), now.tokens));
+        assert!(
+            w.len() > 3_400_000,
+            "the ledger is the 3.45M the log printed"
+        );
+        assert!(
+            !cfg.should_compact(w.len()),
+            "742k of 1M must not compact on the first idle pass after a restart"
+        );
+        assert!(!cfg.tokens_are_unscaled());
+    }
+
+    /// **A fork re-bases the count on the new base**, rather than applying the
+    /// history's ratio to a summary whose reasoning share is nothing like it; and a
+    /// local session counts every row, because its prompt IS the ledger.
+    #[test]
+    fn a_fork_rebases_the_count_and_a_local_session_counts_the_ledger() {
+        let mut w = Wall::new(5_000);
+        w.sent(1_000).thought(4_000).sent(2_000);
+        let stale = super::WallAnchor {
+            transcript: "t-before-the-fork".into(),
+            ledger: 3_000_000,
+            provider: 900_000,
+            measured: true,
+        };
+        let (rebased, now) = super::roll_resident(&stale, "t-wall", &w.ledger, &w.items, true);
+        assert_eq!(
+            now.tokens, 8_000,
+            "prefix + what is sent, the thought left out"
+        );
+        assert_eq!(now.measured, None, "nothing measured the new base yet");
+        assert_eq!(rebased.ledger, w.len());
+        assert!(!rebased.measured);
+        // The next roll adds only what came after the re-base.
+        w.sent(500);
+        let (_, next) = super::roll_resident(&rebased, "t-wall", &w.ledger, &w.items, true);
+        assert_eq!(next.tokens, 8_500);
+
+        // Local: the ledger is the prompt, reasoning and all.
+        let anchor = super::WallAnchor {
+            transcript: "t-wall".into(),
+            ledger: u64::from(w.ledger.prefix_len()),
+            provider: 5_000,
+            measured: true,
+        };
+        let (_, local) = super::roll_resident(&anchor, "t-wall", &w.ledger, &w.items, false);
+        assert_eq!(local.tokens, w.len(), "ratio 1 by construction");
+    }
+
+    /// The closing line names its unit and says when the after-count is an estimate.
+    #[test]
+    fn the_compacted_line_is_one_unit_said_once() {
+        let base = super::Resident {
+            tokens: 75_408,
+            measured: None,
+            since: 0,
+        };
+        let said = super::compacted_line(937_686, base, "deepseek tokens", true);
+        assert!(
+            said.starts_with("compacted: 937686 → 75408 deepseek tokens resident"),
+            "{said}"
+        );
+        assert!(said.contains("the next round measures it"), "{said}");
+        assert_eq!(
+            super::compacted_line(240_000, base, "tokens", false),
+            "compacted: 240000 → 75408 tokens resident."
+        );
     }
 
     /// **Infinity is `0`, and it is one line, so it gets one test.**

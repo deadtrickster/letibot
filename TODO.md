@@ -810,7 +810,7 @@ calibration set's positives and negatives are separated by the chosen floor, num
 
 ---
 
-## R72 — The wall is judged in a number nobody sees: the head says 740k, compaction says 937k, a restart says 3.45M — **OPEN, 2026-10-11, high: a restart compacted a live session from ~740k to 75k**
+## R72 — The wall is judged in a number nobody sees: the head says 740k, compaction says 937k, a restart says 3.45M — **LANDED on `r72-wall-units` (2026-10-11), two halves still OPEN below; was high: a restart compacted a live session from ~740k to 75k**
 
 The operator: *"leticl head shows me 740k tokens yet it just started compaction citing 900k+
 tokens"*. MEASURED in `~/logs/harnessd.log` for leticl's `s-1791151788256943467` (deepseek-flash,
@@ -866,9 +866,71 @@ restart of a session whose last append was a notice recovers its provider-sized 
 and does not compact it; a test pins the ledger-heavy-in-reasoning case (ratio 3.4) and the wall
 fires at the window's real edge, not 27% before it.
 
+**What landed (`r72-wall-units`):**
+
+- **The pair is an anchor, not a ratio.** `WallAnchor` (`harness.rs`) is *(transcript, ledger
+  length of the prompt the provider counted, its `prompt_tokens`)*, set at the end of every round
+  in `run_rounds`. The ledger half is now the PROMPT's (`rendered_at`: the row boundary before the
+  round's own `items + steering_applied`), not the length after the reply was appended — the old
+  pair took its two halves at two different moments. `persist_context` stores the same
+  `rendered_at` as `context_ledger`.
+- **Resident = the provider's count + what was appended since, sized as sent.** `roll_resident` /
+  `sent_since`: on a metered session every row after the anchor except `Reasoning` and
+  `SegmentMark`, in ledger tokens (tokenizer-only ratio ~1); on a local one the ledger difference
+  (the ledger IS the prompt, ratio 1 by construction). After a fork (another transcript, or a
+  ledger shorter than the anchor) it re-bases on the new base: prefix + sent rows, marked
+  unmeasured until a round measures it. `Harness::measure_resident` runs the roll and writes
+  `cfg.ledger_scale = (ledger now, resident now)`, so every existing `Config` predicate
+  (`should_compact`, `at_the_wall`, `room_for_next_turn`, `shown_tokens`) decides and prints the
+  one count. It is called before every wall decision: both `compact_at_the_wall` doors (Harness and
+  Sessions), the mid-turn wall check in `run_rounds`, the context-length refusal path, the
+  `after_turn` room gate, and the end of `Harness::open`.
+- **Resume: anchor + delta, no equality test.** `recovered_scale` returns `(context_ledger,
+  context_tokens)` whenever the stored ledger is not LONGER than the rebuilt one; the roll adds
+  the rows after it. The 2026-10-02 case (count from a smaller conversation) now comes back
+  BIGGER, not divided down.
+- **The clamp on the ratio is [1/4, 16], was [1/4, 4]**: this session's real ratio was 4.67
+  (3,454,266 / ~740k), and at 4 the clamp alone compacted it ~14% early.
+- **Units on every line**: `compacting: R of W <unit> resident (M at the last round + S appended
+  since)`, the window printed as given (`Config::shown_wall`, no more `999999`), `context wall:
+  … at R of W <unit> (L of P ledger tokens)`, `compacted: A → B <unit> resident (the new base sized
+  as it will be sent; the next round measures it)` (`compacted_line`), and the `compacted` report
+  sentence names the unit and converts the new base through the base's own pair (`Scales`), not
+  the history's ratio.
+- Tests (`harness.rs`): `a_reasoning_heavy_history_meets_the_wall_at_the_providers_count` (ratio
+  ~3.4; the old ratio reading put 892k at 941.7k, past the 937.5k wall),
+  `a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact` (3.47M ledger,
+  742.1k provider, not compacted), `a_fork_rebases_the_count_and_a_local_session_counts_the_ledger`,
+  `the_compacted_line_is_one_unit_said_once`, the reworked
+  `a_stored_token_pair_is_used_only_for_the_conversation_it_measured`, and the clamp case in
+  `config.rs`. Each of the first two and the clamp case was run against the old logic and failed.
+
+**Still open:**
+
+1. **No replay of `s-1791151788256943467`'s last rounds was done** — the tests are built from the
+   logged numbers, not from the store. In particular the field's 937,686 against the head's 740k
+   is not fully explained by the mechanisms fixed here: with the old pair taken at a round's end,
+   the wall right after that round equals that round's `prompt_tokens` by construction, so a
+   200k gap needs either a large append after the round (converted at a third of its size, which
+   would make the old number LOW, not high) or rows that were not re-measured (a round that
+   failed inside its reasoning commits reasoning and measures nothing). Worth reading the store.
+2. **Which reasoning the provider counts is assumed, not measured.** `sent_since` leaves every
+   `Reasoning` row out; `letibot_provider::messages` DOES echo `reasoning_content` on requests
+   that carry `tools`, and DeepSeek appears to drop it from the count (the ratio says so) — but if
+   a provider counts the current tool chain's reasoning, the estimate is short by one round's
+   reasoning until the next round re-measures. The headroom (w/16) covers a round; a measurement
+   per provider would settle it.
+3. **A restart after a compaction and before any round** still comes back unscaled: the fork
+   clears `context_tokens` on purpose ("cleared rather than estimated"), and nothing stores the
+   re-based estimate. On a reasoning-heavy verbatim tail that is the same early compaction this
+   item is about, one fork later.
+4. The head's number is the last round's `prompt_tokens`; the wall's is that plus what was
+   appended since. They are now one quantity and the line says how they relate, but they are
+   not the same digits between rounds — by design, since the appended rows will be sent.
+
 ---
 
-## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **OPEN, 2026-10-11**
+## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **daemon half LANDED on `r72-wall-units` (2026-10-11); leticl's half OPEN**
 
 The operator, pasting what leticl's head showed for ONE compaction: *"this is how much text i get
 for a compaction in leticl"*:
@@ -909,6 +971,31 @@ for a compaction in leticl"*:
 **Done when:** one compaction draws one updating line and one closing line in both heads, the
 closing line's numbers are in the provider's unit (R72) and add up, and no `compact_half` row
 remains in the log.
+
+**What landed (`r72-wall-units`):** `summarise_one` (`crates/turn/src/compaction.rs`) emits no
+`compact_half` warning any more. Each half runs through `run_half`, which publishes the half's
+`CompactionProgress` as it begins (so the line names *half 1 of 2* before the server says
+anything), lets the existing `CompactionSink` update it while the server reads and writes, and
+publishes once more with the final count — nothing else reaches the sink (test:
+`a_half_is_progress_from_its_first_event_to_its_last_and_never_a_warning`, which failed with the
+old warning emits put back). The per-half prompt size stays only as the progress bar's
+denominator and its comment says why it is not a sum (ledger units, halves overlap). The closing
+account is the `compacted` report, now in the provider's unit (R72's `Scales::unit`). The Rust
+head already draws `CompactionProgress` as one walking line (`crates/tui/src/ui/loading.rs`,
+`compacting_line`) and clears it on `compacted`/`auto_compact_failed`, so it needed no change;
+`compact_half` stays classed `Routine` in `crates/sessionlog/src/warning.rs` and in the notes pane's
+`COMPACTION_ROWS` for logs written before this.
+
+**Still open:**
+
+1. **leticl** (its repo, not this one): stop adding a remedy line under routine codes
+   (`src/cards/note-card.lisp:182`, `src/session/warnings.lisp:289`), and draw
+   `CompactionProgress` as one line updated in place (half N of M, read/written count) cleared by
+   the `compacted` warning, if it does not already.
+2. An automatic compaction still publishes three rows: the wall's `auto_compact` announcement,
+   the `compacted` report, and an `auto_compact` *"compacted: A → B … resident"* line after it
+   (both doors). The last one duplicates the report's numbers and was kept because it is the only
+   hub line carrying *"the summary was CUT OFF"*; folding that into the report would make it one.
 
 ---
 
