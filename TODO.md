@@ -1825,6 +1825,67 @@ to this design:
 
 ---
 
+## R81 — Metrics and operator feedback: an event table, the instruments, and a way to mark a moment — **OPEN, 2026-10-11, designed in `docs/metrics.md`; phase 1 is buildable** (R80 left free for the clear-context item being filed on `clear-context`)
+
+The operator: *"we need metrics design, there is simply not enough data to make decisions like
+this. i can't even live feedback so we can analyze sessions, and we need metrics - how often and
+what delivered mid turn etc etc etc, with times and usual. and not only for this topic. MORE
+METRICS"*.
+
+**Why:** R61–R79 were each decided from a hand query, a log grep or one report. Today per-turn
+tokens/latency/cost are computed (`TurnMetrics`) and dropped; tool durations exist nowhere;
+deliveries, wakes, nags and worker queue waits are not recorded at all; `~/logs/harnessd.log` has
+no timestamps; the hub's typed `SessionEvent` stream is lost on restart; and the operator has no
+way to mark a moment of a session. Only `adjudication` and `queue_transition` are good records.
+The inventory, with exact locations and what each source can and cannot answer, is
+`docs/metrics.md` §1.
+
+**Design (`docs/metrics.md` §2):** an append-only `event` table in a SIBLING file
+`~/.local/share/letibot/metrics.db` (not the store: lock contention across 11 daemons, no schema
+bump for mixed builds, cheap retention, no content); one row = ts, daemon, build, session, root,
+transcript, turn, round, kind, name, outcome, dur_ms, three integer slots and a small JSON `attrs`;
+~50–55k rows/day at 10-10's rate (~10–12 MB/day), raw kept 90 days, rollups and marked turns
+forever. Emission is a non-blocking `try_send` to one writer thread per daemon that batches one
+transaction per second — **no SQL on the worker** (the c12d044 lesson).
+
+**Phase 1 scope:**
+
+1. `crates/metrics`: `Event` enum, `emit`, the writer thread, `metrics.db` schema 1, drop counter,
+   daily prune, `[metrics] enabled / keep_days / snippets`.
+2. The hub tap: one line in `Hub::publish` (`crates/sessionlog/src/hub.rs:869`).
+3. Ten instruments (`docs/metrics.md` §6, locations in §4): worker command queue wait + slow
+   idle passes (`QueuedCommand` gains `enqueued_ms`; `daemon.rs:275`); turn start/end
+   (`turn_tail::run_turn`); round with time-to-first-byte (`harness.rs:10057`,
+   `engine.rs` first frame); tool call duration/outcome/bytes/memory peak (`harness.rs:10153`);
+   deliveries with arrived/delivered/rule/mid-turn (`jobwatch.rs:694`, `harness.rs:1269`,
+   `:7800`, and R79's hold code); wakes by cause (`Sessions::wake`); compaction + wall in both
+   units; nags with the named row and whether the next turn touched it; context claims (R71,
+   dual-written with the jsonl and carrying the real window); warnings, operator commands and
+   subagent transitions through the tap. `mem.sample` from memwatch if it fits.
+4. Feedback: `/fb`, `/fb+`, `/fb-` and two keys in the tui (and `f` on a selected row), a
+   `ClientFrame::Feedback` (protocol 45) handled on the head-conn thread, not the worker; a
+   routine `feedback` warning so both heads draw the mark; `letibot fb` from a shell.
+5. `letibot stats` (read-only): today, turns, deliveries, waits, feedback, `session S`, `sql`.
+
+**Done when:**
+
+- A day of normal use produces `metrics.db` with every phase-1 kind present; `letibot stats`
+  prints today's turns, p95 worker wait per build, deliveries by rule, and marks; tool-call counts
+  agree with that day's `adjudication` rows within 1 %, turn counts with the turn-end log lines.
+- A test runs a turn with the writer blocked and the channel full: the turn completes, no stall,
+  `metrics.dropped` > 0. A `perf` sample over a busy hour puts < 1 % of the worker's samples in
+  `metrics::`.
+- `/fb- …` typed while the worker is pinned for 30 s is written within 1 s with the head's
+  press time and the running turn's id and round.
+- R79's question is one query: `docs/metrics.md` Q1 and Q2 return rows for the old and new
+  delivery code.
+
+**Open for the operator** (`docs/metrics.md` §7): sibling db vs store table; retention; the
+feedback frame vs riding `Slash`; the feedback keys; snippets default; on by default; the page as
+export + artifact or `letibot stats serve`.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
