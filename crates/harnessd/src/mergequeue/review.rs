@@ -591,3 +591,6 @@ pub fn enqueue_finished(
         .map_err(|e| format!("the review row for `{handle}` could not be written: {e}"))?;
     store.review_row(handle).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests;

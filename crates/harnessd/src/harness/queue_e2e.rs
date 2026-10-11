@@ -631,3 +631,305 @@ fn a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not() {
     assert!(said.contains("/queue approve m-handed"), "{said}");
     assert!(project.handover_notices().is_empty(), "said ONCE");
 }
+
+// ===== A refusal, at the end that reaches a model =====
+
+/// **A review row of the child `s-parent-sub-1`, under this fixture's `s-parent`**, with the
+/// child's session row naming its parent — the root is only reachable by walking the store, so a
+/// row written as its own root would pass whether the walk worked or not.
+fn a_childs_review(s: &Store, id: &str, branch: &str, worktree: &str) {
+    s.put_session(&letibot_tokencore::store::SessionRecord {
+        id: id.into(),
+        title: None,
+        model_id: String::new(),
+        dialect_sha: String::new(),
+        workspace_root: String::new(),
+        owner: String::new(),
+        approvers: Vec::new(),
+        role: None,
+        parent_session_id: Some("s-parent".into()),
+    })
+    .expect("the child's session row");
+    s.enqueue_review(
+        &NewReview {
+            id: id.into(),
+            repository: "/the/repository".into(),
+            target: "main".into(),
+            kind: ReviewKind::Branch,
+            session_id: id.into(),
+            branch: branch.into(),
+            worktree: Some(worktree.into()),
+            base_sha: "base".into(),
+            head_sha: "head".into(),
+            brief: "the ask".into(),
+            priority: MergePriority::Subagent,
+            fixes: None,
+            evidence: String::new(),
+        },
+        "test",
+        1,
+    )
+    .expect("the row");
+}
+
+/// **A reviewer's `reject`, handed in at the desk and served** by the review pool, whose
+/// `deliver` is exactly what `Harness::serve_reviews` wires: [`HarnessTaskRunner::send`] on the
+/// daemon's registry. Three passes, so a delivery that repeated would be seen.
+fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
+    let s = fx.store();
+    assert!(
+        s.move_review(
+            id,
+            ReviewState::Waiting,
+            ReviewState::Reviewing,
+            &Move::new("e2e", "claimed")
+                .set("owner", "e2e")
+                .set("reviewer", "s-gk-sub-1"),
+            2,
+        )
+        .unwrap()
+    );
+    let desk = letibot_tools::builtins::verdict::ReviewDesk::new();
+    desk.opened(
+        "s-gk",
+        "s-gk-sub-1",
+        id,
+        letibot_tools::gatekeeper::ReviewRequest {
+            brief: "the ask".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "base".into(),
+            head_sha: "head".into(),
+            cwd: String::new(),
+        },
+    );
+    desk.submit(
+        "s-gk-sub-1",
+        letibot_tools::gatekeeper::Submission {
+            decision: letibot_tools::gatekeeper::Decision::Reject,
+            reasons: reasons.iter().map(|r| r.to_string()).collect(),
+            looked_at: Default::default(),
+        },
+    )
+    .expect("the verdict is taken");
+    let runner = fx.runner(Vec::new());
+    let deliver = |to: &str, text: &str| runner.send(to, text);
+    let registry = fx.registry.clone();
+    let events = move |e: SessionEvent| {
+        registry.broadcast(e);
+    };
+    let settings = |_: &Path| Ok(crate::mergequeue::settings::QueueSettings::default());
+    let pool = crate::mergequeue::review::Pool {
+        store: &s,
+        runner: &runner,
+        desk: &desk,
+        host: "s-gk",
+        me: "e2e",
+        placement: crate::sessions::gatekeeper::ReviewerPlacement::Host,
+        events: &events,
+        deliver: &deliver,
+        settings: &settings,
+        clones: std::env::temp_dir(),
+    };
+    for _ in 0..3 {
+        crate::mergequeue::review::serve(&pool).expect("a pass");
+    }
+    assert_eq!(
+        s.review_row(id).unwrap().unwrap().state,
+        ReviewState::Rejected
+    );
+}
+
+/// **Every message a hub's queue holds** — drained, which is what the session's own reader does
+/// with it: a `Message` here is a turn the model runs about it.
+fn queued_messages(hub: &Hub) -> Vec<String> {
+    std::iter::from_fn(|| hub.try_command())
+        .filter_map(|c| match c.kind {
+            letibot_sessionlog::CommandKind::Message { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A refusal reaches the LIVE child that wrote the branch as a message on its own queue** — the
+/// door `task_message` uses, so the child's model hears the reviewer's reasons and nothing else
+/// does. Once, over three passes.
+#[test]
+fn a_refusal_is_queued_to_the_live_child_that_wrote_the_branch() {
+    let Some(fx) = Fixture::new("refusal-child") else {
+        return;
+    };
+    let child = fx
+        .registry
+        .create("s-parent-sub-1", "", SessionWiring::default())
+        .expect("the child registers");
+    a_childs_review(
+        &fx.store(),
+        "s-parent-sub-1",
+        "agent/s-parent-sub-1",
+        "/w/worktrees/the-child",
+    );
+    refuse(
+        &fx,
+        "s-parent-sub-1",
+        &["the retry is not bounded: `loop` can run for ever"],
+    );
+
+    let heard = queued_messages(&child);
+    assert_eq!(heard.len(), 1, "one refusal is one message: {heard:?}");
+    for asked in [
+        "Your branch `agent/s-parent-sub-1` was REFUSED",
+        "the retry is not bounded: `loop` can run for ever",
+        "/w/worktrees/the-child",
+    ] {
+        assert!(
+            heard[0].contains(asked),
+            "`{asked}` is missing from: {}",
+            heard[0]
+        );
+    }
+    assert!(
+        queued_messages(&fx.parent).is_empty(),
+        "the root is the FALLBACK, not a second audience"
+    );
+    assert!(queued_messages(&fx.elsewhere).is_empty());
+    assert!(warning(&fx.parent, "refusal_undelivered").is_none());
+}
+
+/// **When the child's session has closed, the refusal is queued to the session that ENQUEUED it**
+/// — the project's root, found by walking the store — as a message its model runs a turn about,
+/// not a pane row and not a `!` line on a head. This is the case of 2026-10-11: the child that
+/// finished is the party most likely to be gone.
+#[test]
+fn a_refusal_is_queued_to_the_root_when_the_child_has_closed() {
+    let Some(fx) = Fixture::new("refusal-root") else {
+        return;
+    };
+    // The child's session ended: registered once, closed since.
+    let child = fx
+        .registry
+        .create("s-parent-sub-1", "", SessionWiring::default())
+        .expect("the child registers");
+    child.close();
+    a_childs_review(
+        &fx.store(),
+        "s-parent-sub-1",
+        "agent/s-parent-sub-1",
+        "/w/worktrees/the-child",
+    );
+    refuse(
+        &fx,
+        "s-parent-sub-1",
+        &["the test it added asserts nothing"],
+    );
+
+    let heard = queued_messages(&fx.parent);
+    assert_eq!(heard.len(), 1, "one delivery, to the root: {heard:?}");
+    for asked in [
+        "a child you started (`s-parent-sub-1`)",
+        "could not be told",
+        "the test it added asserts nothing",
+        "/w/worktrees/the-child",
+        "`/queue approve s-parent-sub-1`",
+    ] {
+        assert!(
+            heard[0].contains(asked),
+            "`{asked}` is missing from: {}",
+            heard[0]
+        );
+    }
+    assert!(queued_messages(&fx.elsewhere).is_empty());
+    assert!(warning(&fx.parent, "refusal_undelivered").is_none());
+}
+
+/// **A review the queue could not run, of a CHILD's branch, under `merge_via_session`, reaches the
+/// child's ROOT** — the queue rings the project session the row's tree walks up to (the daemon's
+/// own door, [`crate::mergequeue::RegistryDoor`]), and that session's model is told once.
+/// `a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not` writes the row as the
+/// root's own; this is the row as `enqueue_finished` writes it.
+#[test]
+fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
+    let Some(fx) = Fixture::new("handover-child") else {
+        return;
+    };
+    let (root, _base_sha, branches) =
+        repo_with_children(fx.dir.path(), &[(SLUG, "ONE\ntwo\nthree\n")]);
+    let repo = std::fs::canonicalize(&root).unwrap();
+    let handle = "s-parent-sub-1";
+    let s = fx.store();
+    a_childs_review(
+        &s,
+        handle,
+        &branches[0].branch,
+        &branches[0].worktree.display().to_string(),
+    );
+    s.move_review(
+        handle,
+        ReviewState::Waiting,
+        ReviewState::Waiting,
+        &Move::new("e2e", "resolved")
+            .set("repository", repo.display().to_string())
+            .set("head_sha", branches[0].sha.clone()),
+        2,
+    )
+    .unwrap();
+    let me = LeaseClaim {
+        owner: "e2e/1/1".into(),
+        pid: 1,
+        host: "e2e".into(),
+        build: "e2e".into(),
+    };
+    s.acquire_queue_lease(&repo.display().to_string(), &me, 1, u64::MAX / 2)
+        .expect("the lease");
+    let q = RepoQueue::new(
+        s,
+        repo.clone(),
+        Arc::new(QueueEnv {
+            me,
+            gate: Arc::new(GreenGate),
+            door: Arc::new(crate::mergequeue::RegistryDoor {
+                registry: fx.registry.clone(),
+                store_path: fx.db.clone(),
+            }),
+            settings: Arc::new(|_| {
+                Ok(crate::mergequeue::settings::QueueSettings {
+                    merge_via_session: true,
+                    ..Default::default()
+                })
+            }),
+            gate_deadline: std::time::Duration::from_secs(60),
+            review_deadline_ms: crate::mergequeue::serve::REVIEW_DEADLINE_MS,
+            // Nobody starts a reviewer here, so the claim is blocked on the next pass.
+            reviewer_start_grace_ms: 0,
+            idle: std::time::Duration::from_millis(10),
+        }),
+    );
+    passes(&q, 1);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    passes(&q, 3);
+    let r = fx.store().review_row(handle).unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Blocked, "{r:?}");
+    assert!(
+        r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
+            && r.evidence
+                .contains("the project session `s-parent` was rung"),
+        "the ROOT was rung, not the child the row names: {}",
+        r.evidence
+    );
+    let blocked = warning(&fx.parent, "queue_blocked").expect("raised for the operator");
+    assert!(blocked.contains("which is told next"), "{blocked}");
+
+    let mut sessions = Sessions::open_first(&fx.parts, fx.cfg.clone(), fx.registry.clone())
+        .expect("the session opens");
+    let project = sessions
+        .held("s-parent")
+        .expect("the project's own session");
+    let notices = project.handover_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains(&format!("`{}`", branches[0].branch))
+            && notices[0].contains(&format!("/queue approve {handle}")),
+        "{}",
+        notices[0]
+    );
+    assert!(project.handover_notices().is_empty(), "said ONCE");
+}

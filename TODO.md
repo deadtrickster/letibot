@@ -301,6 +301,16 @@ pane draws both queues…`. Per requirement and decision, with the test that fai
 - **The perf done-when** (*a review pass with N entries costs no `Store::session` scan*) holds by
   construction — the passes read `review_queue`, `merge_queue` and `queue_lease` only — and was not
   measured with `perf`.
+- **Refusal delivery is covered again** (`tests/refusal_notice.rs` was deleted with the old door):
+  `mergequeue::review::tests` drives `serve` with a by-name `deliver` — the live child gets the
+  reviewer's words, the root when the child is gone, a raise quoting both attempts when nobody is,
+  once over many passes, a second verdict's words after the branch moves, `needs_human` raised and
+  messaged to nobody — and `harness::queue_e2e` proves the seam is `HarnessTaskRunner::send`: the
+  message lands on the child's hub queue, or the root's when the child's hub is closed, and a
+  child's blocked review under `merge_via_session` rings the ROOT and is told once. **Still left**:
+  a refusal whose root is not held by the daemon is not resumed (as `RegistryDoor::ring_project`
+  resumes it) — it is raised `refusal_undelivered` and nothing tells a model later; and the
+  comment in `Harness::wake` says `handover_notices` carries such a refusal, which it does not.
 
 ---
 
