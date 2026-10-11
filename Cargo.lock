@@ -584,6 +584,7 @@ dependencies = [
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
  "letibot-harnessd",
+ "letibot-metrics",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tui",

@@ -61,6 +61,7 @@ use std::process::ExitCode;
 
 pub mod launcher;
 mod roles;
+mod stats;
 
 /// What this invocation is being asked to be.
 ///
@@ -282,7 +283,19 @@ fn main() -> ExitCode {
         Some(word) => match Role::from_subcommand(word) {
             Some(role) => roles::run(role, &rest[1..]),
             None => {
-                if word == "--help" || word == "-h" || word == "help" {
+                // **Verbs over the metrics file** (TODO R81), not roles: nothing invokes them by
+                // a program name, so they have no symlink and no row in the table.
+                let tail = || -> Vec<String> {
+                    rest[1..]
+                        .iter()
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .collect()
+                };
+                if word == "stats" {
+                    stats::run_stats(&tail())
+                } else if word == "fb" {
+                    stats::run_fb(&tail())
+                } else if word == "--help" || word == "-h" || word == "help" {
                     print_usage();
                     ExitCode::SUCCESS
                 } else if word == "--version" || word == "-V" {
@@ -314,6 +327,10 @@ fn print_usage() {
            askpass [PROMPT]            what `sudo` runs (also installed as `letibot-askpass`)\n  \
            m1                          the M1 measurement\n  \
            render | render-qwen        the renderers the fidelity gate runs\n\n\
+         METRICS\n  \
+           stats [VERB]                read metrics.db: today, waits, deliveries, tools, models,\n  \
+                                       turns, feedback, session ID, sql (`letibot stats --help`)\n  \
+           fb --session S [+|-] NOTE   mark a session's last turn from a shell\n\n\
          A role is reachable by its own name through a symlink, which is how anything\n\
          that invokes a PATH rather than typing a command reaches it — `sudo` runs the\n\
          askpass helper with no arguments but the prompt.\n",

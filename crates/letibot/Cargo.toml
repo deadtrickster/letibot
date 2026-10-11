@@ -21,6 +21,9 @@ default = ["local"]
 local = ["letibot-harnessd/local"]
 
 [dependencies]
+# `letibot stats` and `letibot fb` (TODO R81): the metrics file's reader, and the one row a
+# shell mark writes.
+letibot-metrics = { workspace = true, features = ["store"] }
 # The askpass role's whole surface: attach to the daemon and carry one question.
 letibot-sessionlog.workspace = true
 # The render role: `cli::run` is the renderer, moved out of its bin so this
