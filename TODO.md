@@ -1363,6 +1363,100 @@ head already draws `CompactionProgress` as one walking line (`crates/tui/src/ui/
 
 ---
 
+## R74 — What the 2026-10-11 landings left open — **OPEN, the consolidated list**
+
+Everything merged on 2026-10-11 (main `cf47e65`: R61, R64, R65, R66 instrumentation, R67, R68, R69,
+R71, R72 + follow-up, R73, the no-llama build), and the gaps each landing reported or a check
+found. One place to read them; each line names the item that owns it, whose own "left" list has
+the detail.
+
+**R61 — the queues**
+1. A rejection whose root session is not open in any daemon is only raised (`refusal_undelivered`)
+   — no model hears it later. Not a regression (the old door did the same).
+2. Every daemon start gates its repositories' target tips — ~7 minutes of gate even with nothing
+   queued.
+3. Each wake reads the whole `review_queue` table (`queue_notices`, `handover_notices` in
+   `Harness::wake`) — should read only open rows.
+4. No `/queue regate`: a timed-out or blocked target holds all landings until its tip changes or a
+   daemon restarts.
+5. One `s-gatekeeper` review session per box.
+6. The pane's per-row history covers only the last 60 moves overall.
+7. The tools-crate `Reviewer` trait and `wake` are unused and can go.
+8. The "worker ~0% when idle" done-when was not measured with `perf`.
+9. Per-project config is `[queue]` in `leticode.toml` (`target`, `merge_via_session`,
+   `red_target`) — three rulings deferred by the operator: withdraw vs delete for `/queue rm` and
+   `clean`; `red_target` default `fix`; `git branch -D` after landing.
+
+**R72 — compaction counting**
+10. A single tool result larger than the whole window is still appended in full; the next round
+    refuses to send it, but compaction then folds a history already over the window. Capping tool
+    results is a larger design.
+11. Excluding reasoning rows from the provider-sized count is an assumption: a provider that counts
+    the current tool chain's reasoning makes the count one round short until the next measurement.
+12. A restart after a compaction but before any round falls back to the unscaled ledger count
+    (measured harmless at 22,496 against a 37,500 wall).
+13. The follow-up (`e834316`) was not re-checked live in tmux; the real leticl session was never
+    replayed against the fix.
+
+**R71 — the context-excuse check**
+14. 16 of 79 calibration excuses score under the floor (a clause deep in a long sentence, or no
+    word saying whose context) — a second, embeddings tier.
+15. The floor (0.25) is in-sample; re-tune it from `.letibot/context-claims.jsonl`.
+16. No harness-level test of the tool-calling branch (the step-boundary queue).
+
+**R68 — daemon lifecycle**
+17. The agent's decisions to confirm: idle children PARK after 10 minutes (`child_park_after`) and
+    reopen from the store on a message or a head; a message to a held session now earns the
+    plan-check back; children's failures are `TurnFailed` instead of `wake_failed` /
+    `todo_check_failed`.
+18. Root sessions are never closed automatically — a resumed root keeps its harness and its
+    monitor-wake thread until the daemon stops.
+19. `reaps`, `promotions` and `Deadlines.fired` still only grow (small records).
+20. The single `report(session, code, detail)` sink is not built.
+21. R68.7 (the gatekeeper retry storm) is probably moot after R61; not checked.
+
+**R69 — the head's input**
+22. `!term` gets no mouse reports at all; forwarding them when the program asks for mouse mode
+    needs the vt screen to record that mode.
+23. Six modal cards (allow-all confirmation, new-todo, password, `!term close`, prompt, key ask)
+    are not on the surface stack and have no key tables.
+24. `editor::the_editor_pane_wears_the_heads_frame_not_nanos` failed once at a fixture `unwrap`
+    and passed on every rerun — a flake to find.
+
+**R65 — memory caps**
+25. The operator card for an ask above the ceiling has never been answered by a person in a head.
+26. Two sessions can each be granted 50% — the box-wide ledger proposal is open.
+27. Each fleet runner needs `~/.actrc` pinning the `ubuntu-latest` image, or `act` asks
+    interactively.
+
+**R67 — the contained fixes**
+28. Item 14: the abandoned-call sweep is linear but still reads the whole transcript each pass (a
+    late answer must count).
+29. Item 24: slow test polls left on purpose.
+30. Item 6: a mouse report split across two reads still reaches `!term` (R69's stripping is per
+    read).
+31. Item 15: the subagent "command dropped" warning is tested only as a pure function.
+32. Item 21: half of it was not a defect. The status marks cite pre-rebase commit hashes.
+
+**Tests and the gate**
+33. Under `LETIBOT_REQUIRE_APPARATUS=1` a box without a working sandbox (bwrap, user namespaces)
+    now FAILS the gate where it silently passed.
+34. TUI timing tests flake under heavy parallel load (two failures once while five agents
+    compiled; clean on reruns) — likely `reconnect`/`stop_daemon`.
+35. `tools/tests/confine.rs` sets `LETIBOT_TEST_FAKE_TOKEN` with no lock (nothing else reads it).
+36. `cargo test -p letibot-harnessd` / `-p letibot-sessionlog` also run the `*_live` files, which
+    AGENTS.md says not to run broadly (they skipped — nothing listened on 8080).
+37. The workspace-wide `cargo clippy --all-targets` gate step has not been run on the result.
+
+**Open work, in order**
+38. R63 — a thread per root session (unblocked by R68).
+39. R62 — the gate on lubuntu1/2; R61's `GateRunner` is the seam.
+40. R70 — move the largest inline test blocks into sibling files (unblocked now the big edits have
+    landed).
+41. R60 — the three things `!term` still does not do.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
