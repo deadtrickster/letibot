@@ -105,6 +105,25 @@ fn write_shim(path: &Path, real: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// **Run a script this test just wrote, through the ETXTBSY window.**
+    ///
+    /// Writing an executable and then exec'ing it races every other test thread that forks: a
+    /// child forked while the write descriptor was open holds it until its own exec, and an exec
+    /// of the file in that window fails with `Text file busy`. Measured 2026-10-11 under
+    /// `cargo test -p letibot-tools -p letibot-harnessd -p letibot-tui`, passing alone. The
+    /// window closes as soon as that child execs, so a short retry is the whole fix.
+    fn run(cmd: &Path, args: &[&str]) -> std::process::Output {
+        for _ in 0..50 {
+            match std::process::Command::new(cmd).args(args).output() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                other => return other.unwrap(),
+            }
+        }
+        panic!("{} stayed busy for a second", cmd.display())
+    }
+
     #[test]
     fn the_shim_adds_dash_a_and_leaves_a_probe_alone() {
         let d = std::env::temp_dir().join(format!("letibot-sudo-shim-{}", std::process::id()));
@@ -115,18 +134,12 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shim = d.join("sudo");
         write_shim(&shim, &fake).unwrap();
-        let out = std::process::Command::new(&shim)
-            .args(["apt", "install", "x"])
-            .output()
-            .unwrap();
+        let out = run(&shim, &["apt", "install", "x"]);
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
             "-A apt install x"
         );
-        let out = std::process::Command::new(&shim)
-            .args(["-n", "true"])
-            .output()
-            .unwrap();
+        let out = run(&shim, &["-n", "true"]);
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "-n true");
         // Idempotent: a second write changes nothing.
         write_shim(&shim, &fake).unwrap();
