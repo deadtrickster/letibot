@@ -131,6 +131,9 @@ impl App {
         } else {
             self.prompt.as_ref()
         };
+        // **Which rows of the card are which value's**, set only when the card in the slot IS
+        // the setting card — see `mode_hits` below.
+        let mut pick_spans: Option<Vec<std::ops::Range<usize>>> = None;
         let (dec, dec_pinned): (Vec<String>, Vec<String>) =
             match (&self.secret, shown_prompt, self.open.first()) {
                 (Some(ask), _, _) => (self.secret_lines(ask, w), Vec::new()),
@@ -171,7 +174,9 @@ impl App {
                 // nobody is going to use.
                 (None, None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
                 (None, None, None) if self.pick.is_some() => {
-                    (self.setting_picker_lines(w), Vec::new())
+                    let (rows, spans) = self.setting_picker_layout(w);
+                    pick_spans = Some(spans);
+                    (rows, Vec::new())
                 }
                 (None, None, None) => (Vec::new(), Vec::new()),
             };
@@ -328,6 +333,10 @@ impl App {
         // because the length of the content is a function of the width and nothing else
         // knows it.
         let (card_rows, _) = self.card_window(w, &dec, content_rows);
+        // Where the card starts in the chrome: BELOW the stopping, link, lock, compact-off and
+        // confirmation lines pushed above. The click used to be measured from the top of the
+        // chrome and was off by exactly those rows (R67 item 3).
+        let card_chrome_at = chrome.len();
         chrome.extend(card_rows);
         chrome.extend(dec_pinned);
         if show_pane && let Some(l) = pane {
@@ -377,12 +386,8 @@ impl App {
         if hint {
             chrome.push(self.hint_bar(w));
         }
-        // The mode card's click facts, redone without a repaint: the card is
-        // the front of chrome, so its first choice sits one row below the
-        // card's first line. Clicks are trusted only when the whole card
-        // survived — neither the fit loop (`dec_rows == dec_full`) nor this
-        // backstop cut it — because a click into a list nobody saw whole would
-        // pick a mode nobody saw. The arrows still work either way.
+        // The setting card's click facts are recorded below, once the frame's final shape is
+        // known (`mode_hits`).
         let pre_chrome = chrome.len();
         // Backstop. The ladder above cannot always win — `h` can be 2 — and a head
         // that returns more lines than the terminal has scrolls its own composer
@@ -390,18 +395,11 @@ impl App {
         if chrome.len() >= h {
             chrome.drain(..chrome.len() - h.max(1));
         }
-        let card_at = h.saturating_sub(chrome.len());
-        self.mode_first_row = card_at + 1;
-        self.mode_rows_drawn = if self.pick.is_some()
-            && self.open.is_empty()
-            && self.secret.is_none()
-            && content_rows == dec_full
-            && pre_chrome == chrome.len()
-        {
-            self.mode_choices().len()
-        } else {
-            0
-        };
+        // Clicks on the setting card are trusted only when the whole card survived — neither
+        // the fit loop (`content_rows == dec_full`) nor the backstop (`pre_chrome ==
+        // chrome.len()`) cut it — because a click into a list nobody saw whole would pick a
+        // value nobody saw. The arrows still work either way.
+        let pick_whole = content_rows == dec_full && pre_chrome == chrome.len();
 
         // The session header, pinned above everything. One row, and it is the row
         // both surveyed heads spend first: opencode puts the title left and
@@ -429,13 +427,29 @@ impl App {
         // Rows the backstop took off the front of the chrome, read before the extend
         // below consumes it — the edge's index has to come down by exactly this many.
         let drained = pre_chrome - chrome.len();
+        // **The setting card's hit rows**: `(y, k)` for every row value `k` was drawn on, its
+        // `why` lines included — the card's own record of its rows (`setting_picker_layout`)
+        // placed where THIS frame put the card. Empty unless the card is the setting card and
+        // was drawn whole.
+        self.mode_hits = match pick_spans {
+            Some(spans) if pick_whole => {
+                let top = body_rows + card_chrome_at;
+                spans
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(k, span)| span.clone().map(move |r| (top + r, k)))
+                    .filter(|(y, _)| *y < h)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         out.extend(chrome);
         out.truncate(h);
         // **The count labels' hit boxes, recorded here where the frame's final shape is
         // known.** The backstop above may have drained rows off the front of the chrome
         // and the truncate may have cut its tail, and the edge is a target only while it
-        // is still in the frame — the same rule the mode card's record keeps
-        // (`mode_rows_drawn`), for the same reason: a click into a frame that cut the
+        // is still in the frame — the same rule the setting card's record keeps
+        // (`mode_hits`), for the same reason: a click into a frame that cut the
         // thing it lands on is a click nobody can see the target of. The columns are the
         // row's own plus the gutter, because a click's `x` is in terminal cells.
         self.box_top_hits = box_top_at.and_then(|(at, labels)| {

@@ -120,8 +120,25 @@ impl App {
     /// The click arithmetic in [`App::screen`] counts on this: the title is one row and the
     /// first value is the next one.
     pub(crate) fn setting_picker_lines(&self, w: usize) -> Vec<String> {
+        self.setting_picker_layout(w).0
+    }
+
+    /// **The setting card's rows, and which of them belong to which value** — `spans[k]` is
+    /// the range of card rows value `k` (an index into [`App::pick_values`], the order
+    /// `mode_sel` counts in) was drawn on: its own row and the `why` text wrapped under it.
+    ///
+    /// Read off rano's own record of where each value's row landed (`PaneLines::stop_rows`),
+    /// not off one-row-per-value arithmetic — a value's meaning wraps under it, so the rows
+    /// below the first one with a `why` were each a value further down than the click counted
+    /// (R67 item 3). A value's span runs to the next value's row; the last one's stops above
+    /// the lines rano puts under the list (the keys, the legend, the consequence), which are
+    /// this function's own fields and so are counted here, not guessed.
+    pub(crate) fn setting_picker_layout(
+        &self,
+        w: usize,
+    ) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
         let Some(subject) = self.pick else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let current = self.pick_current();
         let picker = SettingPicker {
@@ -160,6 +177,17 @@ impl App {
                 .map(|l| l.to_string())
                 .collect(),
         };
-        row_strings(&picker.content(w).lines, self.cfg.palette())
+        // The keys line, then the legend and the consequence, each one line — see
+        // `SettingPicker::content`.
+        let under = 1 + usize::from(picker.legend.is_some()) + picker.consequence.len();
+        let content = picker.content(w);
+        let stops = &content.stop_rows;
+        let foot = content.lines.len().saturating_sub(under);
+        let spans = stops
+            .iter()
+            .enumerate()
+            .map(|(k, &start)| start..stops.get(k + 1).copied().unwrap_or(foot).max(start + 1))
+            .collect();
+        (row_strings(&content.lines, self.cfg.palette()), spans)
     }
 }

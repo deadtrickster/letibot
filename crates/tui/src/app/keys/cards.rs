@@ -508,14 +508,16 @@ impl App {
                     return ControlFlow::Break(self.take_pick(choices[at].clone()));
                 }
                 Key::Click { y, .. } => {
-                    // The arithmetic the last frame did: the card's first
-                    // choice sat at `mode_first_row`, and only a row the card
-                    // provably drew in full is trusted — `mode_rows_drawn` is
-                    // zero when the fit loop or the backstop cut the card, so
-                    // a click into a list nobody saw whole moves nothing.
-                    let row = usize::from(*y).saturating_sub(self.mode_first_row);
-                    if n > 0 && row < self.mode_rows_drawn {
-                        self.mode_sel = row.min(n - 1);
+                    // Off the last frame's record (`mode_hits`): a value's row and the `why`
+                    // wrapped under it both pick it, anything else picks nothing, and the record
+                    // is empty when the card was not drawn whole.
+                    if let Some(&(_, at)) = self
+                        .mode_hits
+                        .iter()
+                        .find(|(row, _)| *row == usize::from(*y))
+                        && at < n
+                    {
+                        self.mode_sel = at;
                         // A click is the reader's too, for the reason the arrows are.
                         self.pick_unseeded = false;
                         self.redraw = true;

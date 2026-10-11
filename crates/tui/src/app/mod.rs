@@ -812,16 +812,12 @@ pub struct App {
     /// Cleared by anything the READER does to the cursor, so an answer landing while they are
     /// arrowing cannot snap it back — a worse defect than the one it fixes.
     pub(crate) pick_unseeded: bool,
-    /// How many choice rows the mode card actually drew on the last screen —
-    /// zero unless the whole card fit, because a click is only trusted for a
-    /// list the frame proved was all on screen. A partially drawn card is
-    /// exactly the case where trusting clicks picks a mode nobody saw.
-    pub(crate) mode_rows_drawn: usize,
-    /// The screen row the card's first choice sat on, as the last frame
-    /// composed it. A click redoes this frame's arithmetic without a repaint —
-    /// the same trick the session picker's header arithmetic does, one card
-    /// lower.
-    pub(crate) mode_first_row: usize,
+    /// **Which value of the setting card each screen row of the last frame belongs to**:
+    /// `(y, k)` for every row value `k` was drawn on — its own row and its wrapped `why`. Empty
+    /// unless the whole card fit, because a click is only trusted for a list the frame proved
+    /// was all on screen. Recorded where the frame placed the card, below whatever chrome was
+    /// pushed above it; see [`App::setting_picker_layout`].
+    pub(crate) mode_hits: Vec<(usize, usize)>,
     /// **The count labels on the composer's top edge, as the last frame drew them** —
     /// [`BoxTopHits`] for the shape, `None` whenever the frame drew no edge, cut it, or
     /// the head was never drawn at all. The labels are the composer's own affordance:
@@ -1688,8 +1684,7 @@ impl App {
             quit_sel: 0,
             mode_sel: 0,
             pick_unseeded: false,
-            mode_rows_drawn: 0,
-            mode_first_row: 0,
+            mode_hits: Vec::new(),
             box_top_hits: None,
             todos_pane: false,
             subagents_pane: false,

@@ -662,6 +662,16 @@ fn the_mode_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     );
 }
 
+/// The screen row a setting card's value `n` (1-based, as the card numbers it) was drawn on,
+/// found on the frame — never counted, which is how the click arithmetic went wrong.
+fn value_row(frame: &[String], n: usize, name: &str) -> u16 {
+    let label = format!("{n}  {name}");
+    frame
+        .iter()
+        .position(|l| l.contains(&label))
+        .unwrap_or_else(|| panic!("{label:?} is drawn: {frame:#?}")) as u16
+}
+
 #[test]
 fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
     let mut a = app();
@@ -672,11 +682,11 @@ fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
     ));
     a.apply(mode_settings("read-only", MODES));
     assert_eq!(a.command("mode"), Some(Action::Settings));
-    a.screen(110, 24);
-    // The frame recorded where the card's first choice sat; the click's y
-    // is the same 0-based coordinate.
-    let first = u16::try_from(a.mode_first_row).unwrap();
-    a.key(Key::Click { x: 6, y: first + 2 });
+    let frame = a.screen(110, 24);
+    a.key(Key::Click {
+        x: 6,
+        y: value_row(&frame, 3, MODES[2]),
+    });
     assert_eq!(a.mode_sel, 2);
     let row = a
         .screen(110, 24)
@@ -687,12 +697,18 @@ fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
         row.contains('▸'),
         "the mark moved to the clicked row: {row}"
     );
-    // A click into the blank space under the card moves nothing: the card
-    // proved six rows, and below them are its hints and the composer.
-    a.key(Key::Click { x: 6, y: first + 9 });
+    // A click on the card's keys line, under the values, moves nothing.
+    let keys = frame
+        .iter()
+        .position(|l| l.contains("esc leaves it alone"))
+        .unwrap() as u16;
+    a.key(Key::Click { x: 6, y: keys });
     assert_eq!(a.mode_sel, 2);
     // Select and confirm stay two acts: the click only moves the mark.
-    a.key(Key::Click { x: 6, y: first + 1 });
+    a.key(Key::Click {
+        x: 6,
+        y: value_row(&frame, 2, MODES[1]),
+    });
     assert_eq!(a.mode_sel, 1);
     assert_eq!(
         a.key(Key::Enter),
@@ -702,6 +718,61 @@ fn a_click_on_the_mode_card_picks_the_row_under_the_pointer() {
         })
     );
     assert!(a.pick.is_none());
+}
+
+/// **A click on the setting card is measured from where the card was drawn** (R67 item 3).
+/// The card's first row was taken from the top of the whole chrome, so every line pushed above
+/// it — the daemon link line here — shifted every click by that many rows.
+#[test]
+fn a_click_on_the_mode_card_lands_under_a_link_line() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(mode_settings("read-only", MODES));
+    a.command("mode");
+    a.link_down("the daemon closed the connection");
+    let frame = a.screen(110, 30);
+    assert!(
+        frame.iter().any(|l| l.contains("connection is down")),
+        "{frame:#?}"
+    );
+    for (k, name) in MODES.iter().enumerate() {
+        a.key(Key::Click {
+            x: 6,
+            y: value_row(&frame, k + 1, name),
+        });
+        assert_eq!(a.mode_sel, k, "a click on {name}'s row");
+    }
+}
+
+/// **Every value of every setting card is clickable, its wrapped meaning included** (R67 item 3).
+/// `/verbosity` carries a `why` under each value, wrapped, so one row is not one value — and the
+/// count of clickable rows was the MODE row's choices whatever the card was about.
+#[test]
+fn a_click_on_the_verbosity_card_picks_the_value_drawn_there() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(mode_settings("read-only", MODES));
+    a.command("verbosity");
+    let names: Vec<String> = a.pick_values().into_iter().map(|(v, _)| v).collect();
+    assert!(names.len() > 2);
+    let frame = a.screen(110, 60);
+    for (k, name) in names.iter().enumerate().rev() {
+        let y = value_row(&frame, k + 1, name);
+        a.key(Key::Click { x: 6, y });
+        assert_eq!(a.mode_sel, k, "a click on {name}'s row");
+        // The line under it is its meaning, and picks it too.
+        a.mode_sel = usize::MAX;
+        a.key(Key::Click { x: 12, y: y + 1 });
+        assert_eq!(a.mode_sel, k, "a click on {name}'s meaning");
+    }
 }
 
 #[test]
