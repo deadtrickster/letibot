@@ -176,9 +176,15 @@ with `Killed`, rc 137.
 6. **A box with no user systemd says so** — the call runs uncapped, and the disclosure says it
    is uncapped. Never silently.
 
-**Still open:** the default when the model omits the argument, and the ceiling's rule (a fraction
-of `MemAvailable`, or `MemAvailable` minus a reserve for the daemon and the desktop) — pick, state
-it in the description, measure.
+**The default is a config option, 64 MB out of the box** — the operator: *"default memory either
+as absolute or a fraction is a config option with 64mb being a good default"*. The setting takes
+either an absolute size (`64M`, `2G`) or a fraction (`0.05` — of `MemAvailable` at call time),
+and the description states the value in force, resolved to bytes. 64 MB is deliberately small:
+most calls fit in it, and a call that does not is killed at once with a result that says what to
+ask for, which is cheaper than a runaway found by the OOM killer.
+
+**Still open:** the ceiling's rule (a fraction of `MemAvailable`, or `MemAvailable` minus a
+reserve for the daemon and the desktop) — pick, state it in the description, measure.
 
 **Done when:** R64's done-when holds, the model's next call after a kill asks for a different
 cap on its own, and `job_list` shows each job's cap and peak.
