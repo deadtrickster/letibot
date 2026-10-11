@@ -834,6 +834,50 @@ fires at the window's real edge, not 27% before it.
 
 ---
 
+## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **OPEN, 2026-10-11**
+
+The operator, pasting what leticl's head showed for ONE compaction: *"this is how much text i get
+for a compaction in leticl"*:
+
+```
+· compact_half — compacting half 1 of 2: the most recent exchanges — 1256 item(s), 976900 token(s)
+  to read. Nothing of this half reaches the transcript; it is summarised in a scratch session of its own.
+  → nothing to fix — the conversation is being summarised. The bar above the composer is that fold; …
+· compact_half — half 1 of 2 answered: 6189 chars written.
+  → nothing to fix — …
+· compact_half — compacting half 2 of 2: the older part — 43 item(s), 976930 token(s) to read. …
+  → nothing to fix — …
+· compact_half — half 2 of 2 answered: 7357 chars written.
+  → nothing to fix — …
+```
+
+**Three defects, two of them here:**
+
+1. **Progress is sent as warnings.** `summarise_one` (`crates/turn/src/compaction.rs:1745`) emits
+   `TurnEvent::Warning { code: "compact_half" }` at the start and at the end of each half — four
+   warning rows for one operation, each a permanent row in the log and the view. The fold already
+   has a progress bar (`CompactionSink`); `compact_half` was classed `Routine`
+   (`crates/sessionlog/src/warning.rs:148`) to stop it reading as a fault, which kept it a row.
+   It should be progress that updates one line in place — *"compacting: half 1 of 2 · 41%"* — and
+   one closing line: *"compacted: 937k → 75k tokens (deepseek's count), summary 13.5k chars"*.
+2. **The token numbers mislead.** Each half says ~977k "to read", and a reader adds them to 1.95M
+   for a session the head showed at 740k. Two reasons: they are LEDGER tokens
+   (`scratch.ledger.len()`, `:1742`, reasoning included — the unit R72 is about), and the halves
+   OVERLAP by design (`summarise_overrun`, `:~1560`: the tail runs from `tail_from`, the old part
+   up to `cut`, and `cut > tail_from`), each filled to what fits. Say the unit; say the overlap or
+   print the halves' share of one total.
+3. **leticl adds a remedy line under every one** (`leticl/src/cards/note-card.lisp:182`,
+   `"compact_half" . "nothing to fix — …"`; `src/session/warnings.lisp:289`). That is leticl's to
+   fix — a remedy line belongs to a fault, and a routine event has none — and moot once (1) sends
+   progress instead of warnings. Filed here so it is not lost; leticl's own TODO is the place for
+   its half.
+
+**Done when:** one compaction draws one updating line and one closing line in both heads, the
+closing line's numbers are in the provider's unit (R72) and add up, and no `compact_half` row
+remains in the log.
+
+---
+
 ## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
