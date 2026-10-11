@@ -1062,156 +1062,6 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
-/// **What a reviewer child's own state says about its review**, or `None` while it is still at it
-/// — and it can no longer say `verdict`.
-///
-/// Pure, so the mapping is asserted without a child. **The verdict is not here any more, and that
-/// is the whole of this slice**: it is the child's own act, handed in through `review_verdict`
-/// ([`letibot_tools::builtins::verdict::ReviewDesk`]), and `Harness::serve_reviews` reads it off
-/// the desk before it ever looks at the child's state. What is left for this function is what a
-/// child's STATE can say, and every one of its answers is *no verdict*:
-///
-/// * **A child that answered in prose anyway** — `Done`, with no submission — is a FAILED ATTEMPT,
-///   exactly as a reply with no readable closing block used to be. Nothing judged the branch; the
-///   sentence says so, `decision` stays NULL, the attempt is counted, and the queue's own bound
-///   retries it (and parks the entry with the sentence on its row once the attempts are spent).
-///   The reply itself is in the reviewer's own session, where a person can read it — and it is not
-///   evidence, which is the point: a label read out of a model's prose is a label somebody
-///   guessed at, and this one decides whether a branch lands.
-/// * **A failed attempt** — the child's turn failed (a provider's `429`, a spawn that could not
-///   happen). **Not a verdict**, and it used to be written into `decision` as the words
-///   `failed`/`unreadable`/`could_not_start`. `mergequeue::review_gate` reads any word outside the
-///   gatekeeper's closed set as a REFUSAL, so a failure became a park on the entry's row —
-///   *"the reviewer's verdict on `x` is `failed`, which is not one of accept, reject, needs_human"*
-///   — and because `answered_ms` was set with it, nothing ever asked again. That is exactly the
-///   operator's *"4 failed items"*: entries behind a transient condition, with nothing in the
-///   queue able to say *try that one again*.
-/// * **Still working** — `None`, and the host leaves the row alone.
-///
-/// **A child that DIES without submitting is the fourth ending, and it is not here either**: a
-/// child that is gone is not a judgement, so `serve_reviews` drops the review and writes nothing.
-/// The row stays on the board, the entry is still waiting for a verdict, and the queue's clock
-/// starts a new reviewer — see `Harness::serve_reviews`.
-#[derive(Debug, PartialEq, Eq)]
-enum ReviewOutcome {
-    /// A judgement, in the gatekeeper's own closed set.
-    Verdict {
-        decision: String,
-        reasons: Vec<String>,
-        files: Vec<String>,
-        commands: Vec<String>,
-    },
-    /// **An attempt that reached no judgement**, with why, verbatim — the provider's own words
-    /// when there are any, which is what a person reads on the entry's row.
-    Failed { why: String },
-}
-
-impl ReviewOutcome {
-    /// **What a reviewer handed in, as the row's outcome** — the only way a `Verdict` is made.
-    ///
-    /// It takes a [`letibot_tools::gatekeeper::Submission`], which has no branch and no base: the
-    /// words are the reviewer's and the placement is the queue's, and
-    /// [`write_outcome`] writes them onto the row the queue already keyed by the entry.
-    fn handed_in(said: letibot_tools::gatekeeper::Submission) -> Self {
-        ReviewOutcome::Verdict {
-            decision: said.decision.as_str().to_string(),
-            reasons: said.reasons,
-            files: said.looked_at.files,
-            commands: said.looked_at.commands,
-        }
-    }
-}
-
-/// See [`ReviewOutcome`] — what a reviewer child's own state says, which is never a verdict.
-fn review_outcome(
-    req: &letibot_tools::gatekeeper::ReviewRequest,
-    child: &str,
-    status: letibot_tools::builtins::task::TaskStatus,
-) -> Option<ReviewOutcome> {
-    use letibot_tools::builtins::task::TaskStatus;
-    match status {
-        // **A reviewer that answered in prose has judged nothing.** The call is the answer
-        // (`review_verdict`), and a reply without it is an attempt that reached no judgement —
-        // counted, with the sentence a person reads, and retried by the queue's own bound.
-        TaskStatus::Done { .. } => Some(ReviewOutcome::Failed {
-            why: format!(
-                "the reviewer `{child}` answered without handing a verdict in for `{}`: it \
-                 never called `review_verdict`, which is the only door a verdict goes through. \
-                 Its reply is in the reviewer's own session and is not evidence — the entry \
-                 waits for a judgement, and this attempt is counted against it.",
-                req.branch
-            ),
-        }),
-        TaskStatus::Failed { why } => Some(ReviewOutcome::Failed { why }),
-        TaskStatus::Running { .. } | TaskStatus::Unknown => None,
-    }
-}
-
-/// **What a gatekeeper's attempt did, onto the queue's review row** — the row the queue reads on
-/// its next pass (`mergequeue::review_gate`, `mergequeue::review_retry`).
-///
-/// **The two arms write two different rows, and that is the point.** A verdict sets `decision`
-/// and `answered_ms` and clears the failure — a row that has been judged. A failed attempt
-/// leaves `decision` NULL and `answered_ms` NULL, sets `failure` (verbatim), `failed_ms` and
-/// `attempts + 1` — a row that is still waiting for a verdict and that carries why the last
-/// attempt did not produce one. `mergequeue::review_retry` reads those three columns to decide
-/// whether the queue asks again, and how long it waits first.
-///
-/// **`asked_ms` is the row's own and is not restamped here.** It is when the review was first
-/// asked for, which is a fact about the review rather than about this attempt; a restart is the
-/// one thing that restamps it (`Store::restart_review`), because a restart is a new ask.
-///
-/// A write that fails is said on stderr and the row keeps what it had, so the next pass tries
-/// again rather than the failure being lost.
-fn write_outcome(
-    store: &Store,
-    row: &letibot_tokencore::store::ReviewRecord,
-    outcome: ReviewOutcome,
-) {
-    let now = (crate::config::now_ns() / 1_000_000) as u64;
-    let rec = match outcome {
-        ReviewOutcome::Verdict {
-            decision,
-            reasons,
-            files,
-            commands,
-        } => letibot_tokencore::store::ReviewRecord {
-            answered_ms: Some(now),
-            decision: Some(decision),
-            // **A verdict clears the failure.** The row is *judged*; leaving the last attempt's
-            // failure beside a decision would make a reader ask which of the two the queue
-            // acted on.
-            failed_ms: None,
-            failure: String::new(),
-            attempts: 0,
-            reasons,
-            files,
-            commands,
-            ..row.clone()
-        },
-        ReviewOutcome::Failed { why } => letibot_tokencore::store::ReviewRecord {
-            // **`decision` stays NULL.** This is the line the whole change is for: a failure is
-            // not a word out of the gatekeeper's closed set, and writing one there is how a
-            // queue came to park four entries on a verdict nobody gave.
-            decision: None,
-            answered_ms: None,
-            failed_ms: Some(now),
-            failure: why,
-            attempts: row.attempts.saturating_add(1),
-            reasons: Vec::new(),
-            files: Vec::new(),
-            commands: Vec::new(),
-            ..row.clone()
-        },
-    };
-    if let Err(e) = store.put_review(&rec) {
-        eprintln!(
-            "  merge queue: the outcome of the attempt on `{}` was not written: {e}",
-            row.entry_id
-        );
-    }
-}
-
 /// **The same sentence for a subagent, and the same rule behind it.**
 ///
 /// A subagent settles through the job channel because it *is* one — the operator's
@@ -7414,463 +7264,168 @@ impl Harness {
         self.subagents.wait_for_children(timeout)
     }
 
-    /// **What this session's model is told about the merge queue**: each entry it queued (from
-    /// anywhere in its tree) that is waiting because its repository has no merge gate, once.
+    /// **What this session's model is told about the queues: a repository that declares no gate.**
     ///
-    /// The queue rings this session when an entry starts waiting (`GatekeeperDoor::gate_missing`);
-    /// the sentence names the branch, the repository, and what to do — `merge_gate` for the
-    /// choices, the operator to pick, the `AGENTS.md` section on main — so the model offers the
-    /// operator the choices without being asked to.
-    ///
-    /// **This is one of the two things a project's session is told about its queue**, and the other
-    /// is [`Harness::handover_notices`]: *your repository has no gate* and *the queue has handed
-    /// your entry back to you* are different facts with different actions, so they are two
-    /// functions with their own sentences — and one set of told-ids, because one entry can be in
-    /// only one of the two states.
+    /// For each repository a branch from this session's tree is waiting in, whose target is held
+    /// `blocked` because its `AGENTS.md` has no `Merge gate` section — once per daemon. The
+    /// sentence names the repository and what to do: `merge_gate` for the choices, the operator to
+    /// pick, the section committed on the target.
     pub fn queue_notices(&mut self) -> Vec<String> {
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
         };
-        let root = self.cfg.workspace.clone();
+        let healths = store.target_healths().unwrap_or_default();
         let mut out = Vec::new();
-        for e in store.merge_entries().unwrap_or_default() {
-            if e.state != letibot_tokencore::store::MergeState::Waiting
-                || !e.evidence.starts_with(crate::mergequeue::WAITING_FOR_GATE)
-                || self.gate_told.contains(&e.id)
-                || crate::mergequeue::root_session(store, &e.session_id) != me
+        for r in store.review_rows(None).unwrap_or_default() {
+            if !(r.state.is_open() || r.state == letibot_tokencore::store::ReviewState::Approved)
+                || crate::mergequeue::root_session(store, &r.session_id) != me
             {
                 continue;
             }
-            self.gate_told.insert(e.id.clone());
-            let repo = e
-                .worktree
-                .as_deref()
-                .and_then(|w| crate::mergequeue::repo_of_worktree(std::path::Path::new(w)))
-                .map(|r| match r.strip_prefix(&root) {
-                    Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
-                    Ok(rel) => rel.display().to_string(),
-                    Err(_) => r.display().to_string(),
-                })
-                .unwrap_or_else(|| ".".to_string());
+            let Some(h) = healths.iter().find(|h| {
+                h.repository == r.repository
+                    && h.target == r.target
+                    && h.state == letibot_tokencore::store::HealthState::Blocked
+                    && h.evidence.starts_with(crate::mergequeue::WAITING_FOR_GATE)
+            }) else {
+                continue;
+            };
+            let key = format!("gate:{}", h.repository);
+            if !self.gate_told.insert(key) {
+                continue;
+            }
             out.push(format!(
-                "The merge queue is holding `{branch}` (entry `{id}`): the repository `{repo}` has \
-                 no merge gate on main, so nothing of it lands. Call `merge_gate` with repo \
-                 `{repo}` to see what it suggests, put those choices to the operator — they may \
-                 type their own command — and once they pick, add the `Merge gate` section to \
-                 that repository's AGENTS.md and commit it to main. The entry goes on by itself \
-                 when the section is there.",
-                branch = e.branch,
-                id = e.id,
+                "The merge queue cannot land anything in `{repo}`: its target `{target}` has no \
+                 `Merge gate` section in AGENTS.md, so there is nothing to judge a branch by \
+                 (`{branch}` is waiting there). Call `merge_gate` with repo `{repo}` to see what it \
+                 suggests, put those choices to the operator — they may type their own command — \
+                 and once they pick, add the section to that repository's AGENTS.md and commit it \
+                 to `{target}`. The queue goes on by itself when the section is there.",
+                repo = h.repository,
+                target = h.target,
+                branch = r.branch,
             ));
         }
         out
     }
 
-    /// **What this session's model is told about the entries the queue has handed to it** — the
-    /// fallback, arriving at the session it was rung for.
-    ///
-    /// The operator's argument, in their words: *"even if gatekeeper session dies or didnt start -
-    /// the queue tooling can send a message back to the main project session and projects will gate
-    /// and merge on their own"*, *"because their code lives inside them in worktrees anyway"*. The
-    /// queue's half is `MergeQueueDaemon::hand_over` — the row, then the ring — and this is the
-    /// ring's other end: the session that was rung reads the store for the entries it is the
-    /// PROJECT of which the queue has handed over ([`crate::mergequeue::handed_over_to`]), and
-    /// builds the message out of the row ([`crate::mergequeue::handover_message`]).
-    ///
-    /// **Two kinds of handover, one door.** *No gatekeeper can judge this branch* and *a review
-    /// refused it and the complaints did not reach the child* are the same shape of stuck — an
-    /// entry parked with nobody in the queue able to move it, and the session that owns the
-    /// worktree being the one that can — and they are opposite instructions: the first tells the
-    /// project to gate and land the branch, and the second tells it that the branch does NOT land
-    /// as it stands. Which one this session is handed is the row's own clause, read by
-    /// [`crate::mergequeue::handover_message`], and this function does not decide it.
-    ///
-    /// **Nothing is passed by the ring, and nothing needs to be.** A ring is a bell: it says *look*
-    /// and not *here is what*. The row is the durable half and the only medium the queue's thread
-    /// and this session's share — the same arrangement as the review queue's own board, one entry
-    /// over — so a session that was busy when the ring came, or that is opened a minute later,
-    /// reads the same message as one that was idle.
-    ///
-    /// **Said once per daemon**, on [`Harness::queue_notices`]'s own rule and its own set: a wake is
-    /// not the only door that builds notices, and an entry still carrying the handover on its row
-    /// must not be re-told every time something else wakes this session.
+    /// **The reviews the queue handed to THIS project's main session** (R61 decision 4's
+    /// per-project option, `[queue] merge_via_session = true`): a review that could not run, so
+    /// the project gates and merges the branch itself — told once, read off the row.
     pub fn handover_notices(&mut self) -> Vec<String> {
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for e in crate::mergequeue::handed_over_to(store, &me) {
-            if self.gate_told.contains(&e.id) {
+        for r in store.review_rows(None).unwrap_or_default() {
+            if r.state != letibot_tokencore::store::ReviewState::Blocked
+                || !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
+                || crate::mergequeue::root_session(store, &r.session_id) != me
+                || !self.gate_told.insert(format!("handed:{}", r.id))
+            {
                 continue;
             }
-            self.gate_told.insert(e.id.clone());
-            out.push(crate::mergequeue::handover_message(&e));
+            out.push(format!(
+                "The review queue could not review `{branch}` (row `{id}`): {failure} This project \
+                 merges such a branch via its main session (`[queue] merge_via_session`), so it is \
+                 yours: the branch is in {wt}. Run `{target}`'s merge gate (the `Merge gate` section \
+                 of its AGENTS.md) there, and land it on `{target}` yourself if it is green — the \
+                 queue sees the landing and withdraws the row. Or ask the operator for `/queue \
+                 approve {id}`, which lands it through the queue's own gate.",
+                branch = r.branch,
+                id = r.id,
+                failure = r.failure,
+                wt = r.worktree.as_deref().unwrap_or("its worktree"),
+                target = r.target,
+            ));
         }
         out
     }
 
-    /// **The merge queue's reviews this session hosts: start a gatekeeper for each one that has
-    /// none, and write the verdict of each one that has handed one in.**
-    ///
-    /// The queue's door (`mergequeue::GatekeeperDoor`) writes a request row naming this session
-    /// as the one that reviews it and rings it; this is that session's half. **A gatekeeper is a
-    /// `task` child of THIS session** — started through `self.subagents`, the same runner the
-    /// `task` tool uses — so its `parent_session_id` is this session, its settlement is published
-    /// on this session's hub, its slot is one this session's `task_result`/`task_message` reach,
-    /// and its approvals ask at this session's head. The one session whose rows name it is the
-    /// review queue's (`crate::sessions::gatekeeper::SESSION`), which is why the reviewer runs
-    /// under the queue's own session and not under the tree the branch came from.
-    ///
-    /// **Called from three places, and the third is the one that was missing.** The top of every
-    /// wake — the queue's ring, and the child's own settlement (a child's end wakes its parent);
-    /// **the round boundary of a turn this session is running** (`Harness::run_rounds`), because a
-    /// wake cannot reach a session that is inside a turn; and `Sessions::serve_reviews`, the
-    /// daemon's own clock, which reads the store for the sessions it holds whatever their turn
-    /// state and whatever daemon asked for the review.
-    ///
-    /// MEASURED, 2026-10-10: eighteen `Due` rows with `attempts = 0` against them, none answered,
-    /// no gatekeeper child and nothing in the log — for half an hour, while both hosting sessions
-    /// were busy. The wake was queued behind the turn and the turn had no boundary that looked.
-    ///
-    /// **Idempotent on two pieces of evidence, and both are needed.** The store's
-    /// `attempts`/`failed_ms`, through [`crate::mergequeue::review_retry`], says whether an
-    /// attempt is *owed* — a row whose last attempt failed is not re-asked until its backoff has
-    /// elapsed, and a row that has been answered is not in `rows` at all. The review DESK says
-    /// whether this daemon is already serving it, which the store cannot say: a request row and an
-    /// attempt in flight are the same row (`decision` NULL, `attempts` 0, `failed_ms` NULL). So the
-    /// two passes above may see the same row as often as they like — the store decides what is
-    /// owed, the desk decides what is already in hand. **That guard is what makes "one review per
-    /// entry" true of a session's children**, and it is why the gatekeeper session's prompt tells
-    /// its model NOT to start a reviewer itself: two children on one row would be two reviewers
-    /// reading one branch.
-    ///
-    /// # Where the verdict comes from, which is the whole of this slice
-    ///
-    /// **The reviewer hands its verdict in ITSELF**, through the one tool a reviewer holds
-    /// (`review_verdict` → [`letibot_tools::builtins::verdict::ReviewDesk`]), and this pass reads
-    /// it off the desk and writes it with [`write_outcome`] — the same door, the same row, the
-    /// same store as before. What the child's own answer can say is now only what its STATE says
-    /// ([`review_outcome`]), and every arm of that is *no verdict*:
-    ///
-    /// * **A verdict handed in** is written onto the entry's `merge_review` row, the refusal goes
-    ///   back to the child that did the work, and the row leaves this session's board. The review
-    ///   is closed with it: a second `review_verdict` from that child is refused by name rather
-    ///   than written twice.
-    /// * **A child that answered in prose anyway** — settled, no submission — is a FAILED ATTEMPT
-    ///   with the sentence on its row; the queue's own bound retries it, and the attempts are the
-    ///   same three the provider's failures spend.
-    /// * **A child that died without submitting** writes nothing at all. The row STAYS on the
-    ///   board, the entry is still waiting for a verdict, and the queue's clock starts a new
-    ///   reviewer — a child that is gone is not a judgement, and it is not a failure either (the
-    ///   next pass starts a replacement, which is what makes a daemon restart mid-review
-    ///   survivable).
-    ///
-    /// **The reviewer is the one child whose placement is decided FOR it**, and this is where the
-    /// decision is spent: `crate::sessions::gatekeeper::reviewer_placement` reads
-    /// `Config::gatekeeper_vm` and the box's own answer, and its `ReviewerPlacement::placement()`
-    /// is what the spec carries. A reviewer is a HOST session seating `bash`, so on this machine
-    /// every `bash` call it makes is a permission card, and a card with no head attached times out
-    /// and fails the review; inside a VM the boundary is the VM and nothing asks. The session's own
-    /// prompt is composed from the SAME function (`Sessions::ensure_gatekeeper`), so what it was
-    /// told and where its children go cannot drift apart.
-    ///
-    /// **And the spec carries WHICH TREE that VM is booted on**, which is the other half of the
-    /// same decision and the one that had no answer at all: `TaskSpec::vm_source` is the entry's
-    /// repository, not this session's workspace — see `mergequeue::review_copy_source`. Without
-    /// it the reviewer's copy was the daemon's workspace, and on a workspace that is a folder of
-    /// repositories the copy is refused by the ceiling and the review never starts. **A
-    /// VM-placed reviewer had never been exercised end to end on this box**, which is why this
-    /// surfaced only when the queue tried to review rather than when the placement landed: the
-    /// tests that start a real reviewer build a fixture, and a fixture states no VM —
-    /// `Config::for_this_box`'s default, so a test cannot boot one by forgetting a line, and the
-    /// test that means to exercise a VM placement asks for one by name — while `review_pass`
-    /// records what the pass ASKED FOR without opening a VM. The `firecode`
-    /// backend itself is exercised — `tools/tests/firecode_live.rs`, and only when
-    /// `FIRECODE_LIVE=1` is set — and it was never handed a reviewer's tree.
-    ///
-    /// **Returns how many gatekeepers it started**, so a caller that is looking at a log can say
-    /// so; the writing-back half of this function is not counted.
-    /// After a daemon restart the children are gone and the rows are not, and the next pass
-    /// starts a new gatekeeper for each.
+    /// **The reviews this daemon's queues claimed, served by THIS session's runner** — the
+    /// review queue's session (`sessions::gatekeeper::SESSION`) is the host; every other session
+    /// serves nothing. The body is [`crate::mergequeue::review::serve`]: start a reviewer for each
+    /// claimed row nobody is on (placed per decision 3), write the verdict it handed in bound to
+    /// the head it judged (decision 6), count an attempt that reached none, and kill a reviewer
+    /// whose row moved on without it (a deadline, a person). Answers how many reviewers started.
     pub fn serve_reviews(&mut self) -> usize {
-        use letibot_tools::builtins::task::TaskStatus;
-        let me = self.hub.session_id();
+        if !self.is_the_queue() {
+            return 0;
+        }
         let Some(store) = self.store.as_ref() else {
             return 0;
         };
-        // **The same bound the queue rings under, read here because this is where the turn is
-        // spent.** The queue's pass and this function are the two halves of one decision, and
-        // `mergequeue::review_retry` is that decision: *`Due`* is ask, *`Wait`* is a failed
-        // attempt whose backoff has not elapsed, *`Exhausted`* is a reviewer that could not be
-        // asked and whose attempts are spent. Without this the host would re-spawn on every
-        // wake — and a failed child's own settlement wakes its parent, so the loop would be one
-        // model turn per beat, which is the exact thing the bound exists to stop.
-        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
-        let rows: Vec<letibot_tokencore::store::ReviewRecord> = store
-            .reviews()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|r| r.answered_ms.is_none() && r.session_id == me)
-            .filter(|r| {
-                crate::mergequeue::review_retry(Some(r), now_ms)
-                    == crate::mergequeue::ReviewRetry::Due
-            })
-            .collect();
-        // **Where a reviewer runs, decided ONCE PER PASS.** The one child whose placement is not
-        // the caller's word — see `gatekeeper::reviewer_placement` for the whole of the decision,
-        // for why the box's own answer cannot be overridden into a VM it cannot boot, and for what
-        // the session's own prompt says about it (the same function, so the two cannot disagree).
-        // Read here rather than in the loop because `firecode_available()` walks `$PATH`.
-        //
-        // **And WHICH TREE it is booted on is the second half of that decision, and the half that
-        // was missing.** A `Firecode` placement copies a tree into the VM, and until this the tree
-        // was always the session's own workspace — which for the review queue is the daemon's
-        // workspace, and the daemon's workspace is not always the repository: on the operator's
-        // box it is a FOLDER holding the repository, some worktrees and a pile of scratch, 72.8
-        // GiB of it. The copy was refused at `crates/tools`' 8 GiB ceiling three times in one
-        // night, for two branches, and every reviewer that could not start was written as a
-        // FAILED ATTEMPT on its row — so the queue could land nothing at all. The source is
-        // therefore the entry's own repository (`mergequeue::review_copy_source`), and it is read
-        // per row because the answer is a fact about the BRANCH.
+        let me = crate::mergequeue::lease::this_daemon().owner.clone();
         let placement = crate::sessions::gatekeeper::reviewer_placement(
             self.cfg.gatekeeper_vm,
             letibot_tools::firecode::firecode_available(),
-        )
-        .placement();
-        // **Start the ones nobody is reviewing.**
-        let mut started = 0;
-        // **Whether this pass moved what is ON this session's board** — a review child started, or
-        // one that is gone — because a row that is being worked and a row nobody has started are
-        // two different rows, and the board says which ([`Self::fill_queue_board`]). Re-filled at
-        // the end of this pass rather than left to the daemon's next one, so the row a session is
-        // nagged about is never one whose child is already running.
-        let mut moved = false;
-        for row in &rows {
-            if self.reviews.is_open_for(&row.entry_id) {
-                continue;
+        );
+        let registry = self.session_registry.clone();
+        let runner = self.subagents.clone();
+        let deliver = move |to: &str, text: &str| {
+            letibot_tools::builtins::task::TaskRunner::send(&*runner, to, text)
+        };
+        let host = self.hub.session_id();
+        let pool = crate::mergequeue::review::Pool {
+            store,
+            runner: &*self.subagents,
+            desk: &self.reviews,
+            host: &host,
+            me: &me,
+            placement,
+            events: &move |e| {
+                registry.broadcast(e);
+            },
+            deliver: &deliver,
+            settings: &crate::mergequeue::settings::for_repository,
+            clones: std::env::temp_dir().join("letibot-review-clones"),
+        };
+        let served = match crate::mergequeue::review::serve(&pool) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  review queue: the reviewers could not be served: {e}");
+                return 0;
             }
-            let Ok(Some(entry)) = store.merge_entry(&row.entry_id) else {
-                continue;
-            };
-            let req = letibot_tools::gatekeeper::ReviewRequest {
-                brief: entry.brief.clone(),
-                branch: entry.branch.clone(),
-                base_sha: entry.base_sha.clone(),
-            };
-            let spec = letibot_tools::builtins::task::TaskSpec {
-                role: "gatekeeper".into(),
-                placement,
-                // **The tree the VM is booted on: the ENTRY's repository.** `None` for an entry
-                // the queue can find no repository for — and for a workspace that is itself in none
-                // — which is *the child's own copy source*: `Config::vm_copy_source` resolves the
-                // child's workspace by the same rule and falls back to the workspace only when
-                // there is no repository to name. See `mergequeue::review_copy_source` for the
-                // resolution and for the 72.8 GiB it exists to stop copying.
-                vm_source: crate::mergequeue::review_copy_source(&self.cfg.workspace, &entry),
-                ..Default::default()
-            };
-            match self
-                .subagents
-                .start(&letibot_tools::gatekeeper::review_prompt(&req), &spec)
-            {
-                Ok(handle) => {
-                    started += 1;
-                    moved = true;
-                    self.gatekeepers.insert(handle.clone());
-                    // **The review is OPENED on the desk, under the handle the child was started
-                    // with** — which is its session id, and therefore the name its own
-                    // `review_verdict` call arrives under. This line is what makes the child's
-                    // verdict reach this queue and no other: the desk answers nobody else.
-                    self.reviews.opened(&me, &handle, &row.entry_id, req);
-                }
-                Err(why) => {
-                    // **A gatekeeper that could not start is a FAILED ATTEMPT**, not a verdict and
-                    // not a refusal: nothing judged the branch. It is written as a failure, so
-                    // the queue's own bound retries it and — when the attempts are spent — the
-                    // entry parks with this sentence on its row, where a person can read it and
-                    // restart it. It used to be written as the decision word `could_not_start`,
-                    // which `review_gate` read as a refusal: the entry parked on a judgement
-                    // nobody made, and no further attempt was ever possible.
-                    write_outcome(store, row, ReviewOutcome::Failed { why });
-                }
-            }
-        }
-        // **And write what has come back — the child's own verdict first, then whatever its
-        // state says.** The order is the point: a reviewer that handed a verdict in HAS judged,
-        // and neither the prose it wrote afterwards nor a turn that died after the call is a
-        // second answer.
-        let open = self.reviews.open(&me);
-        let mut still: Vec<String> = Vec::with_capacity(open.len());
-        for r in open {
-            let letibot_tools::builtins::verdict::Review {
-                child: handle,
-                entry_id,
-                req,
-            } = r;
-            let Some(row) = rows.iter().find(|x| x.entry_id == entry_id) else {
-                // Answered elsewhere, or the entry left the queue: nothing to write — and the row
-                // is off the board for the same reason. The review is over.
-                moved = true;
-                continue;
-            };
-            // **(1) THE VERDICT THE REVIEWER HANDED IN.** This is the one arm that moves an
-            // entry, and it moves it because the CHILD judged — not because this session read
-            // its prose. The submission is TAKEN, so a second pass cannot write it twice, and
-            // the review is closed with it: a second `review_verdict` from this child is refused
-            // by the desk by name (`ReviewDesk::submit`).
-            if let Some(said) = self.reviews.take_verdict(&handle) {
-                moved = true;
-                // **A refusal is the ball going back, and this is where it goes.** The
-                // operator's model of this queue, in their words: *"gatekeeper reviews and
-                // drives subagents to completion by nagging them via messages. so it gets queue
-                // item - reviews if ok - puts into merge queue ... and if it is not happy - it
-                // sends a message with complaints to original subagent"*. The complaints are
-                // the reviewer's own reasons, which the write below puts on the review row; the
-                // recipient is `entry.id`, the child that did the work. Whether this is a
-                // refusal is read off the submission because the write consumes it.
-                let refused = said.decision != letibot_tools::gatekeeper::Decision::Accept;
-                write_outcome(store, row, ReviewOutcome::handed_in(said));
-                if refused {
-                    self.send_a_refusal_back(store, &entry_id);
-                }
-                continue;
-            }
-            // **(2) OTHERWISE THE CHILD'S OWN STATE DECIDES, and it can only say NO VERDICT.**
-            let status = self.subagents.collect(&handle, std::time::Duration::ZERO);
-            // A handle this runner no longer knows is a child that is gone: dropped, so the next
-            // ring starts a new gatekeeper for the row that is still waiting — and the row goes
-            // back to being ordinary work nobody has started, which is what the board must say
-            // about it. **Nothing is written**, which is the half of this that matters: a child
-            // that died without submitting is not a judgement and not a failure, and the entry
-            // is still waiting for a verdict.
-            let gone = status == TaskStatus::Unknown;
-            match review_outcome(&req, &handle, status) {
-                Some(o) => {
-                    moved = true;
-                    write_outcome(store, row, o);
-                }
-                None if !gone => still.push(handle),
-                None => moved = true,
-            }
-        }
-        // **And the desk is told which reviews are still in flight** — every other one is over:
-        // judged, gone, or its entry left the queue. A closed review takes no verdict, which is
-        // what makes a late `review_verdict` from a child that is already judged a refusal rather
-        // than a second write.
-        self.reviews.keep(&me, &still);
-        // **And the board, when any of that moved it — and only for the session whose board the
-        // queue IS.** `fill_queue_board` is the one writer of the queue's half and it is
-        // version-gated (`TodoBoard::set_queue` compares the rows), so a pass that changed nothing
-        // costs no write and no publish. The guard is not tidiness: a row written by an OLDER build
-        // names the tree the branch came from (`mergequeue::GatekeeperDoor`'s migration note), and
-        // that session still serves it — it must not find the daemon's whole queue on its own
-        // board for having done so.
-        if moved && self.is_the_queue() {
+        };
+        if served.moved {
             self.fill_queue_board();
         }
-        started
+        served.started
     }
 
-    /// **Whether this session is the review queue's own** — the one
+    /// Whether this harness is the review queue's own session — the one
     /// [`crate::sessions::gatekeeper::SESSION`] names, whose board is the queue.
-    ///
-    /// One caller ([`Harness::serve_reviews`], deciding whether the board it just moved is ITS),
-    /// and it is a function because the two questions it answers — *does this session serve
-    /// reviews* (any session a row names) and *is this session the queue* (exactly one) — are
-    /// different, and collapsing them is how an ordinary session comes to carry the queue's rows.
     fn is_the_queue(&self) -> bool {
         self.hub.session_id() == crate::sessions::gatekeeper::SESSION
     }
 
-    /// **The queue, as THIS session's board — one row per entry waiting for a verdict.**
-    ///
-    /// The operator's design, in their words: *"reviews are subagents managed by the main gatekeeper
-    /// session which is hardcoded … it is a normal auto-driving session that treats review queue as
-    /// todo list - so nags and all"*, and *"parents with children sending their homework to the
-    /// teachers. School administration doesnt teach or checks homework. it just makes sure pencils
-    /// are here and rooms are warm"*. So the daemon is the ADMINISTRATION: it fills the queue, keeps
-    /// the worktrees and runs the gates and the landing. The teacher is a session, and this is the
-    /// filling.
-    ///
-    /// # Where each half lives, because the two must not be confused
-    ///
-    /// The **ROW** is on this session's board, on its own half (`TodoBy::Queue`), and it is a
-    /// **view**: `set_queue` REPLACES that half whole, so a row is on the board exactly while its
-    /// entry is waiting for a verdict and is gone the moment the verdict arrives — wherever it was
-    /// written, by whomever.
-    ///
-    /// The **STATE** is `MergeEntry::state` and `ReviewRecord::decision` in the store and nowhere
-    /// else. Nothing here writes either, and nothing that COUNTS the queue — the status line, the
-    /// merge-queue pane, a head attached to another daemon — reads this board. That is the
-    /// operator's boundary: *"there is a mechanical review queue with well defined states. it is
-    /// just not me moving between them but gatekeeper subagent"* — the states do not move, only who
-    /// moves an entry between them.
-    ///
-    /// # Which entries, and only this daemon's
-    ///
-    /// `gatekeeper::queue_rows` decides it out of the queue's own two functions (`is_ready`,
-    /// `review_gate`) and the queue's own serving rule (`mergequeue::served_by`) — one answer rather
-    /// than a second opinion about what "waiting for a verdict" is.
-    ///
-    /// Returns how many rows the board holds afterwards. A flush failure is printed rather than
-    /// swallowed, the way `set_operator_todos` prints its own: the rows are on the board either way.
-    ///
-    /// **The workspace is the SESSION's own**, canonical — the rule `served_by` compares, and the
-    /// same one the review pass uses ([`Harness::serving`]), so the board and the pass cannot come
-    /// to different answers about which queue this session is looking at. For the review queue's
-    /// session that is the daemon's workspace (it is created with `Sessions::wiring`), and for a
-    /// session a head made it is the directory the head was standing in.
-    ///
-    /// **A row a review child is on is marked with that child** ([`gatekeeper::row`]): the child
-    /// is a fact about THIS session's own children and nothing in the store holds it, so it is
-    /// read here, from the desk, at the moment the rows are drawn. A pass that started or lost
-    /// a child re-fills in the same breath ([`Harness::serve_reviews`]).
+    /// **The review queue, onto this session's board** — one row per review this daemon's queues
+    /// serve that is waiting for a reviewer or under one, the rows a child is on marked with it.
+    /// A VIEW, replaced whole from the store; the states stay in the store.
     pub fn fill_queue_board(&mut self) -> usize {
         let Some(store) = self.store.as_ref() else {
             return 0;
         };
-        let serving = self.serving();
-        // **The reviews in flight, read once** — the desk is a `Mutex` and this walks every row,
-        // so a lookup per row would take it once per entry for one answer that cannot change
-        // under us (this session is the only writer on this thread).
+        let me = crate::mergequeue::lease::this_daemon().owner.clone();
         let open = self.reviews.open(&self.hub.session_id());
         let rows: Vec<letibot_tokencore::store::TodoItem> =
-            crate::sessions::gatekeeper::waiting(store, &serving)
+            crate::sessions::gatekeeper::waiting(store, &me)
                 .iter()
-                .map(|entry| {
+                .map(|r| {
                     let child = open
                         .iter()
-                        .find(|r| r.entry_id == entry.id)
-                        .map(|r| r.child.as_str());
-                    crate::sessions::gatekeeper::row(entry, child)
+                        .find(|o| o.entry_id == r.id)
+                        .map(|o| o.child.as_str());
+                    crate::sessions::gatekeeper::row(r, child)
                 })
                 .collect();
         let n = self.todos.set_queue(rows);
-        // Version-gated: the board only publishes and persists when the queue actually MOVED, so a
-        // queue standing still costs nothing on every pass.
         self.flush_todos_or_say("the review queue's rows");
         n
     }
 
-    /// **The workspace this session's daemon serves, canonical** — `served_by` compares canonical
-    /// forms and a session's `workspace_root` is stored as it was typed, so this is the one
-    /// spelling of *the queue this session is looking at*, read by the board and by the review
-    /// pass. A path that does not canonicalize (it is gone, or this process may not look) is used
-    /// as it is, which is what `Sessions::fill_gatekeeper_board` did at its own call site.
-    fn serving(&self) -> std::path::PathBuf {
-        std::fs::canonicalize(&self.cfg.workspace).unwrap_or_else(|_| self.cfg.workspace.clone())
-    }
-
-    /// **Install the runner a test owns**, so the review queue's half of a review can be measured
-    /// without a model, a provider or a real child.
-    ///
-    /// [`HarnessTaskRunner::for_enqueue`]'s posture, and for its reason: the field stays private
-    /// and this is `#[cfg(test)]`, so it is in no binary. `Harness::open` builds the real runner
-    /// from the parts, and a test that wants to see *what the pass asked for* replaces it after
-    /// the open — which is exactly the seam `serve_reviews`'s own tests need, since the child a
-    /// real runner starts would need a model.
     #[cfg(test)]
     pub(crate) fn set_subagents_for_test(
         &mut self,
@@ -7879,258 +7434,73 @@ impl Harness {
         self.subagents = runner;
     }
 
-    /// **A refusing verdict, back to a live session** — the complaints, through the same door every
-    /// message goes through.
-    ///
-    /// **The recipient is the entry's `session_id`, the child that did the work, and NOT the review
-    /// row's `session_id`.** The review row's is the session that HOSTED the review — the one whose
-    /// agent was told to judge, and the one a person attaches to when they want to read the
-    /// argument — so a message there would be the reviewer being handed its own verdict.
-    ///
-    /// **And when that child is gone the ROOT that enqueued the entry is asked second.** A subagent
-    /// that finished is a session whose turn has ended, so the child is the party most likely to be
-    /// missing by the time a reviewer has read its branch, and the root is the model that holds the
-    /// verbs that move the entry. The order, the walk and the two sentences live in the queue
-    /// ([`crate::mergequeue::deliver_the_refusal`]) rather than here, so this door and
-    /// [`crate::mergequeue::report_verdict`]'s refuse arm cannot come to two answers about who a
-    /// refusal reaches.
-    ///
-    /// **A delivery NOBODY could take is said, and it does not undo the verdict.** The row is the
-    /// durable fact and it is already written; what a person needs is not a retry but to know that
-    /// the ball did not go back — and the sentence is [`crate::mergequeue::complaints_instead`], the
-    /// same one the door reports, with each attempt's own words in it. **A refusal that reached the
-    /// root publishes nothing**: the ball went back to a model that can act, and a Failure here
-    /// would say something went wrong that did not.
-    ///
-    /// `store` is passed rather than read from `self` because the caller already holds it: the
-    /// review row's own write is the half this follows.
-    fn send_a_refusal_back(&self, store: &Store, entry_id: &str) {
-        let entry = match store.merge_entry(entry_id) {
-            Ok(Some(e)) => e,
-            Ok(None) => {
-                self.hub.publish(SessionEvent::Warning {
-                    code: "refusal_undelivered".into(),
-                    detail: format!(
-                        "the review of `{entry_id}` refused it, and the entry left the queue \
-                         before the complaints could be sent: there is no row left to name the \
-                         branch or the worktree the child would go back to. Nothing was sent."
-                    ),
-                    compaction: None,
-                });
-                return;
-            }
-            Err(e) => {
-                self.hub.publish(SessionEvent::Warning {
-                    code: "refusal_undelivered".into(),
-                    detail: format!(
-                        "the review of `{entry_id}` refused it, and the entry could not be read \
-                         back ({e}), so the complaints were not sent. Nothing was sent."
-                    ),
-                    compaction: None,
-                });
-                return;
-            }
-        };
-        let review = store.merge_review(entry_id).ok().flatten();
-        let runner = self.subagents.clone();
-        let delivered = crate::mergequeue::deliver_the_refusal(
-            store,
-            &entry,
-            review.as_ref(),
-            &move |to: &str, text: &str| {
-                letibot_tools::builtins::task::TaskRunner::send(&*runner, to, text)
-            },
-        );
-        if let crate::mergequeue::Delivered::Nobody(missed) = &delivered {
-            // **And the PROJECT that owns the branch is told**, which is what this arm used to end
-            // at *"a person has to move it"*. The operator's principle: *"a person is the last
-            // resort, not the mechanism"* — and the child that should have carried the complaints
-            // back is exactly the session that is gone, so the root of the tree it belonged to is
-            // the only session left that owns the worktree and can put the work in front of the
-            // review again: `mergequeue::hand_over_from_session` writes the handover onto the
-            // entry's row and rings it. **A person is the last resort** — the verbs are named on
-            // the row and in this log when the project is gone too, and not before.
-            let told = crate::mergequeue::hand_over_from_session(
-                store,
-                &self.session_registry,
-                entry_id,
-                &crate::mergequeue::complaints_instead(&entry, missed),
-            );
-            let detail = match told {
-                Ok(what) => format!(
-                    "the review of `{entry_id}` refused it, and the complaints reached nobody. {}\n\n\
-                     The verdict stands — the entry does not land until a review accepts it — and \
-                     the project it came from is told: {what}",
-                    crate::mergequeue::complaints_instead(&entry, missed)
-                ),
-                // **Nobody to tell is said, not swallowed**, and the person's verbs are what is
-                // left — which is the last resort this whole fallback is written to keep as the
-                // last resort.
-                Err(e) => format!(
-                    "the review of `{entry_id}` refused it, and the complaints reached nobody. \
-                     {}\n\nThe verdict stands — the entry does not land until a review accepts it \
-                     — and nobody could be told either: {e} A person has to move it: \
-                     `/queue restart {entry_id}`, `/queue approve {entry_id}`, or \
-                     `/queue rm {entry_id}`.",
-                    crate::mergequeue::complaints_instead(&entry, missed)
-                ),
-            };
-            self.hub.publish(SessionEvent::Warning {
-                code: "refusal_undelivered".into(),
-                detail,
-                compaction: None,
-            });
-        }
-    }
-
-    /// **Re-attempt one merge-queue entry's review** — `/queue restart ENTRY-ID`, and the key on
-    /// the pane's failed row, arriving at the one door both spellings share.
-    ///
-    /// The rule is `mergequeue::restartable`'s and the writes are `mergequeue::restart`'s; what
-    /// this adds is the one thing only the daemon can: **the announcement**. A restart is an
-    /// entry moving from `Failed` back to `Waiting`, and every head that folded the queue's
-    /// events must see it — the pane is open in whichever session the person is in, and the
-    /// entry may have come from another one entirely.
-    ///
-    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said
-    /// rather than swallowed — the tree's rule for every verb, and the one this whole report is
-    /// about, since a queue that silently did nothing is indistinguishable from one that worked.
-    pub fn restart_review(&self, entry_id: &str) -> Result<String, String> {
-        let store = self.store.as_ref().ok_or_else(|| {
-            "this daemon has no store, so there is no merge queue to restart.".to_string()
-        })?;
+    fn queue_verb(
+        &self,
+        what: &str,
+        act: impl FnOnce(&Store, &dyn Fn(SessionEvent)) -> Result<String, String>,
+    ) -> Result<String, String> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| format!("this daemon has no store, so there are no queues to {what}"))?;
         let registry = self.session_registry.clone();
-        crate::mergequeue::restart(
-            store,
-            entry_id,
-            (crate::config::now_ns() / 1_000_000) as u64,
-            &move |e| {
-                registry.broadcast(e);
-            },
-        )
-    }
-
-    /// **Approve one merge-queue entry** — `/queue approve ENTRY-ID`, and the `a` key on the
-    /// pane's row, arriving at the one door both spellings share.
-    ///
-    /// The rule is `mergequeue::approvable`'s and the writes are `mergequeue::approve`'s —
-    /// including **the git the landing needs** when the work is still uncommitted in the worktree,
-    /// which is the operator's ruling in their own words: *"no way i touch git myself, we build
-    /// this queue not for that"*. What this adds is the daemon's own half: **the announcement**, so
-    /// every head that folded the queue sees the entry move back to `waiting` — the pane may be
-    /// open in a session that is not the one the entry came from — and `by`, the session the verb
-    /// came from, which the act writes on the review row as the person who decided.
-    ///
-    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said rather
-    /// than swallowed.
-    pub fn approve_review(&self, entry_id: &str, by: &str) -> Result<String, String> {
-        let store = self.store.as_ref().ok_or_else(|| {
-            "this daemon has no store, so there is no merge queue to approve anything in."
-                .to_string()
-        })?;
-        let registry = self.session_registry.clone();
-        crate::mergequeue::approve(
-            store,
-            entry_id,
-            by,
-            (crate::config::now_ns() / 1_000_000) as u64,
-            &move |e| {
-                registry.broadcast(e);
-            },
-        )
-    }
-
-    /// **Veto one merge-queue entry** — `/queue veto ENTRY-ID [in your words]`, and the `v` key on
-    /// the pane's row.
-    ///
-    /// The rule is `mergequeue::vetoable`'s and the writes are `mergequeue::veto`'s; what this adds
-    /// is the two things only the daemon has: **the delivery** and **the announcement**.
-    ///
-    /// **The delivery goes through the same door `task_message` uses** (`TaskRunner::send`, the
-    /// `CommandKind::Message` a child's own reader answers by starting a turn), and it is that door
-    /// rather than a second one on purpose: a veto cannot report a delivery that door would have
-    /// refused, so *the ball went back* means the same thing here as it means to a parent. A child
-    /// that is gone is refused by the act, with the child's id in the sentence and the two moves
-    /// that are left — `/queue approve` and `/queue rm` — rather than a claim that a message
-    /// landed.
-    pub fn veto_review(&self, entry_id: &str, why: &str) -> Result<String, String> {
-        let store = self.store.as_ref().ok_or_else(|| {
-            "this daemon has no store, so there is no merge queue to veto anything in.".to_string()
-        })?;
-        let registry = self.session_registry.clone();
-        let runner = self.subagents.clone();
-        crate::mergequeue::veto(
-            store,
-            entry_id,
-            why,
-            (crate::config::now_ns() / 1_000_000) as u64,
-            &|handle, text| letibot_tools::builtins::task::TaskRunner::send(&*runner, handle, text),
-            &move |e| {
-                registry.broadcast(e);
-            },
-        )
-    }
-
-    /// **Drop one merge-queue entry** — `/queue rm ENTRY-ID`, and the `d` key on the pane's row.
-    ///
-    /// The rule is `mergequeue::removable`'s and the write is `mergequeue::remove`'s. The
-    /// announcement is the one event the queue has for an ABSENCE (`MergeEntryRemoved`): a head
-    /// that folded the entry in has to be told it went, or an open pane goes on drawing a row the
-    /// queue no longer holds.
-    pub fn remove_merge_entry(&self, entry_id: &str) -> Result<String, String> {
-        let store = self.store.as_ref().ok_or_else(|| {
-            "this daemon has no store, so there is no merge queue to remove anything from."
-                .to_string()
-        })?;
-        let registry = self.session_registry.clone();
-        crate::mergequeue::remove(store, entry_id, &move |e| {
+        act(store, &move |e| {
             registry.broadcast(e);
         })
     }
 
-    /// **Re-ask the review of every parked merge-queue entry** — `/queue reset [ENTRY-ID]`, the
-    /// operator's sweep, arriving at the one door the verb and the pane share.
-    ///
-    /// The operator's ruling, in their words: *"as for reset - no reset resets review states. and
-    /// /queue clean deletes"*. The rule is `mergequeue::parked`'s and the writes are
-    /// `mergequeue::reset`'s — the entry back to `waiting`, its review row cleared, and nothing
-    /// else about it touched. What this adds is the one thing only the daemon can: **the
-    /// announcement**, one `MergeEntryMoved` per row, because the pane is open in whichever
-    /// session the person is in and the entries may have come from several others.
-    ///
-    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said rather
-    /// than swallowed — a sweep that silently reset nothing is indistinguishable from one that
-    /// worked.
-    pub fn reset_reviews(&self, entry: Option<&str>) -> Result<String, String> {
-        let store = self.store.as_ref().ok_or_else(|| {
-            "this daemon has no store, so there is no merge queue to reset.".to_string()
-        })?;
-        let registry = self.session_registry.clone();
-        crate::mergequeue::reset(
-            store,
-            entry,
-            (crate::config::now_ns() / 1_000_000) as u64,
-            &move |e| {
-                registry.broadcast(e);
-            },
-        )
+    /// `/queue restart ID` — a parked review back to waiting, a parked landing back in line.
+    pub fn restart_review(&self, entry_id: &str) -> Result<String, String> {
+        let me = self.hub.session_id();
+        self.queue_verb("restart anything in", |s, ev| {
+            crate::mergequeue::verbs::restart(s, entry_id, &me, ev)
+        })
     }
 
-    /// **Delete entries from the merge queue** — `/queue clean [ENTRY-ID]`, the operator's sweep.
-    ///
-    /// The operator's ruling: *"/queue clean deletes"*. The rule is `mergequeue::removable`'s and
-    /// the writes are `mergequeue::clean`'s — one `rm` per row, with `rm`'s own state guard, so a
-    /// row the daemon claims mid-sweep is not deleted out from under it. What this adds is **the
-    /// announcement**: `MergeEntryRemoved`, one per row, the queue's one event about an ABSENCE —
-    /// a head that folded the entries in has to be told they went, or an open pane goes on drawing
-    /// rows the queue no longer holds.
+    /// `/queue approve ID` — the operator's approval over the reviewer (decision 5).
+    pub fn approve_review(&self, entry_id: &str, by: &str) -> Result<String, String> {
+        self.queue_verb("approve anything in", |s, ev| {
+            crate::mergequeue::verbs::approve(s, entry_id, by, ev)
+        })
+    }
+
+    /// `/queue veto ID WHY` — the operator's rejection, delivered to the child that did the work.
+    pub fn veto_review(&self, entry_id: &str, why: &str) -> Result<String, String> {
+        let me = self.hub.session_id();
+        let runner = self.subagents.clone();
+        self.queue_verb("veto anything in", |s, ev| {
+            crate::mergequeue::verbs::veto(
+                s,
+                entry_id,
+                why,
+                &me,
+                &|to, text| letibot_tools::builtins::task::TaskRunner::send(&*runner, to, text),
+                ev,
+            )
+        })
+    }
+
+    /// `/queue rm ID` — withdrawn, with the history kept.
+    pub fn remove_merge_entry(&self, entry_id: &str) -> Result<String, String> {
+        let me = self.hub.session_id();
+        self.queue_verb("remove anything from", |s, ev| {
+            crate::mergequeue::verbs::remove(s, entry_id, &me, ev)
+        })
+    }
+
+    /// `/queue reset [ID]` — every parked row restarted, or the one named.
+    pub fn reset_reviews(&self, entry: Option<&str>) -> Result<String, String> {
+        let me = self.hub.session_id();
+        self.queue_verb("reset", |s, ev| {
+            crate::mergequeue::verbs::reset(s, entry, &me, ev)
+        })
+    }
+
+    /// `/queue clean [ID]` — every parked row withdrawn, or the one named.
     pub fn clean_entries(&self, entry: Option<&str>) -> Result<String, String> {
-        let store = self.store.as_ref().ok_or_else(|| {
-            "this daemon has no store, so there is no merge queue to clean.".to_string()
-        })?;
-        let registry = self.session_registry.clone();
-        crate::mergequeue::clean(store, entry, &move |e| {
-            registry.broadcast(e);
+        let me = self.hub.session_id();
+        self.queue_verb("clean", |s, ev| {
+            crate::mergequeue::verbs::clean(s, entry, &me, ev)
         })
     }
 
@@ -15322,7 +14692,7 @@ impl HarnessTaskRunner {
     ///
     /// # Two readers of one fact, and they go to two different places
     ///
-    /// The `Warning` goes to **the parent's hub** and the `MergeEntryAdded` goes to **every
+    /// The `Warning` goes to **the parent's hub** and the `QueueMoved` goes to **every
     /// session's log** ([`letibot_sessionlog::registry::Registry::broadcast`]), and the
     /// difference is the whole of the events decision:
     ///
@@ -15336,29 +14706,30 @@ impl HarnessTaskRunner {
     /// The enqueue itself is idempotent by id (the handle), so a later `task_result` on the
     /// same child is a no-op rather than a second entry — and the events are emitted once per
     /// call rather than once per entry, which is why the second notice is not a second
-    /// `MergeEntryAdded`.
+    /// `QueueMoved`.
     ///
     /// [`TaskRunner::finished`]: letibot_tools::builtins::task::TaskRunner::finished
     fn enqueue_finished(&self, sub_id: &str) {
-        use letibot_tools::builtins::task::Finished;
         match self.enqueue_entry(sub_id) {
             Ok(Some(entry)) => {
-                // **The pane's row**, for every session — see the doc above for why this one is
-                // broadcast and the sentence below is not. The whole entry travels, so a head
-                // that missed the snapshot sees it rather than only later changes.
+                // **The pane's move**, for every session — see the doc above for why this one is
+                // broadcast and the sentence below is not.
                 self.registry
-                    .broadcast(letibot_sessionlog::SessionEvent::MergeEntryAdded {
-                        entry: crate::mergequeue::wire_entry(&entry),
+                    .broadcast(letibot_sessionlog::SessionEvent::QueueMoved {
+                        queue: "review".into(),
+                        id: entry.id.clone(),
+                        to: entry.state.as_str().into(),
+                        why: entry.evidence.clone(),
                     });
                 // **The person's sentence**, for this conversation only.
                 if let Some(hub) = self.registry.get(&self.base.session_id) {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
                         code: "merge_queued".into(),
                         detail: format!(
-                            "`{}` is in the merge queue as `{}` — the gatekeeper reviews it \
-                             against the brief the child was given, then the queue rebases it at \
-                             the tip of main and runs the gate.",
-                            entry.branch, entry.id
+                            "`{}` is in the review queue as `{}` — a reviewer judges its head \
+                             against the brief the child was given; once approved, the merge queue \
+                             rebases it onto `{}`'s tip, runs the gate and lands it.",
+                            entry.branch, entry.id, entry.target
                         ),
                         compaction: None,
                     });
@@ -15399,7 +14770,7 @@ impl HarnessTaskRunner {
     fn enqueue_entry(
         &self,
         handle: &str,
-    ) -> Result<Option<letibot_tokencore::store::MergeEntry>, String> {
+    ) -> Result<Option<letibot_tokencore::store::ReviewRow>, String> {
         let Some(child) = self
             .placed
             .lock()
@@ -15412,28 +14783,14 @@ impl HarnessTaskRunner {
         };
         let Some(path) = self.base.store.clone() else {
             return Err(format!(
-                "this daemon has no `--store`, and the merge queue lives in the session \
-                 store — so there is nowhere to write the entry for `{}`. The branch is still \
-                 in `{}`, and nothing is lost; a daemon started with `--store` will serve it \
-                 when the child is enqueued again.",
+                "this daemon has no `--store`, and the queues live in the session store — so \
+                 there is nowhere to put `{}` up for review. The branch is still in `{}`, and \
+                 nothing is lost; a daemon started with `--store` will serve it when the child is \
+                 enqueued again.",
                 child.placement.branch, child.placement.path
             ));
         };
-        // **The row, built by the queue's own function** — so the enqueue and the daemon's
-        // reads agree about what an entry is by construction rather than by two copies of the
-        // same five assignments. The entry's `session_id` is the CHILD's, which is what the
-        // column documents itself as holding: the subagent that finished the branch, not the
-        // parent that noticed.
         let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
-        let Some(entry) = crate::mergequeue::entry_for_finished(
-            handle,
-            handle,
-            &child.brief,
-            &child.placement,
-            now_ms,
-        ) else {
-            return Ok(None);
-        };
         let mut cell = self.merge_store.lock().expect("merge store");
         if cell.is_none() {
             *cell = Some(
@@ -15442,10 +14799,16 @@ impl HarnessTaskRunner {
             );
         }
         let store = cell.as_ref().expect("just opened");
-        store
-            .put_merge_entry(&entry)
-            .map_err(|e| format!("the entry for `{handle}` could not be written: {e}"))?;
-        Ok(Some(entry))
+        // **The row, built by the queue's own function** — the repository the worktree is in,
+        // the project's target (decision 12), and the head as it is now.
+        crate::mergequeue::review::enqueue_finished(
+            store,
+            handle,
+            &child.brief,
+            &child.placement,
+            &crate::mergequeue::settings::for_repository,
+            now_ms,
+        )
     }
 
     fn run_to_completion(
@@ -21188,237 +20551,20 @@ pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod gatekeeper_reviews {
-    //! **The host's half of a merge-queue review** — what a reviewer child's own STATE says about
-    //! its review (`review_outcome`), what a verdict it HANDED IN does to the queue's row, the
-    //! seat it runs in, and the mark a head hides it by. The spawn itself is
-    //! `HarnessTaskRunner::start` with the seat named, which is every child's path; what is new is
-    //! asserted here.
+    //! **The seats a review child and a notes keeper run in, and the mark a head hides them by.**
+    //! What a reviewer's state and its verdict do to the queue's rows is asserted with the
+    //! queues themselves (`mergequeue::serve::tests`).
     use super::*;
-    use letibot_tools::builtins::task::TaskStatus;
-    use letibot_tools::gatekeeper::{Decision, LookedAt, ReviewRequest, Submission};
+    use letibot_tools::gatekeeper::ReviewRequest;
 
     fn req() -> ReviewRequest {
         ReviewRequest {
             brief: "make the reader keep the last record".into(),
             branch: "agent/reader".into(),
             base_sha: "abc123".into(),
+            head_sha: "def456".into(),
+            cwd: String::new(),
         }
-    }
-
-    /// A verdict as the child hands one over — the shape `review_verdict` builds from its
-    /// arguments, with no branch and no base in it at all.
-    fn handed_in() -> Submission {
-        Submission {
-            decision: Decision::Accept,
-            reasons: vec!["the test covers it".into()],
-            looked_at: LookedAt {
-                files: vec!["src/reader.rs".into()],
-                commands: vec!["git diff abc123...agent/reader".into()],
-            },
-        }
-    }
-
-    /// **A reviewer's own STATE can only say *no verdict*.** This is the pure half of the change:
-    /// the answer that used to be parsed for a closing block is now an answer and nothing more —
-    /// a child that wrote `verdict: accept` in prose and never called `review_verdict` has judged
-    /// nothing, and what the queue records is a failed ATTEMPT with the sentence saying why. The
-    /// other two states are unchanged: a running child and a gone child are both *nobody has
-    /// judged yet*.
-    #[test]
-    fn a_reviewers_own_state_can_only_say_no_verdict() {
-        let prose = "Read the diff.\n\nverdict: accept\nreasons: - the test covers it\n\
-                     files: src/reader.rs\ncommands: git diff abc123...agent/reader";
-        let outcome = review_outcome(
-            &req(),
-            "sub-1",
-            TaskStatus::Done {
-                answer: prose.into(),
-                child: None,
-            },
-        )
-        .expect("settled");
-        let why = match &outcome {
-            ReviewOutcome::Failed { why } => why.clone(),
-            other => {
-                panic!("an answer nobody handed a verdict in with is not a verdict: {other:?}")
-            }
-        };
-        assert!(
-            why.contains("sub-1") && why.contains("review_verdict") && why.contains("agent/reader"),
-            "the sentence names the child, the door and the branch: {why}"
-        );
-        assert!(
-            !why.contains("accept"),
-            "and it does NOT carry the word the prose used, which is the whole point: {why}"
-        );
-
-        assert_eq!(
-            review_outcome(
-                &req(),
-                "sub-1",
-                TaskStatus::Running {
-                    note: None,
-                    child: None,
-                }
-            ),
-            None
-        );
-        assert_eq!(review_outcome(&req(), "sub-1", TaskStatus::Unknown), None);
-    }
-
-    /// **A failed attempt is not a verdict, and the row it writes says so.**
-    ///
-    /// The operator's report, verbatim: *"so merge queue has 4 failed items, we need a way to
-    /// restart them"*. Four gatekeeper reviews sat on a provider that answered `http 429:
-    /// Weekly/Monthly Limit Exhausted` — a quota, which is weather — and the queue had no way to
-    /// try one again, because the failure had been written where a JUDGEMENT goes.
-    ///
-    /// This is the row half of that, asserted against a real store: a child whose turn failed and
-    /// a child that answered in prose without handing a verdict in are both `Failed { why }`, and
-    /// the row they leave has `decision` NULL (so `mergequeue::review_gate` does not read it as a
-    /// refusal), `answered_ms` NULL (so the review is still outstanding), the reason verbatim in
-    /// `failure`, and the attempt counted.
-    #[test]
-    fn a_failed_attempt_is_not_recorded_as_a_verdict() {
-        // The two endings that reach no judgement. The second is the one that used to be the
-        // word `unreadable`, and it is now the ordinary way a model fails this protocol: an
-        // answer in prose is not a verdict, and reading it as a decision is the same defect one
-        // hop along.
-        for status in [
-            TaskStatus::Failed {
-                why: "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
-                      2026-10-12 15:01:48"
-                    .into(),
-            },
-            TaskStatus::Done {
-                answer: "looks fine to me".into(),
-                child: None,
-            },
-        ] {
-            let outcome = review_outcome(&req(), "sub-1", status).expect("settled");
-            let why = match &outcome {
-                ReviewOutcome::Failed { why } => why.clone(),
-                other => panic!("an attempt that reached no judgement is not a verdict: {other:?}"),
-            };
-            assert!(!why.is_empty(), "a failure carries its reason");
-
-            let dir =
-                std::env::temp_dir().join(format!("letibot-review-fail-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let store = Store::open(&dir.join("sessions.db")).expect("a store");
-            let row = letibot_tokencore::store::ReviewRecord {
-                entry_id: "m-1".into(),
-                session_id: "s-host".into(),
-                branch: "agent/reader".into(),
-                base_sha: "abc123".into(),
-                asked_ms: 1_000,
-                answered_ms: None,
-                decision: None,
-                attempts: 0,
-                failed_ms: None,
-                failure: String::new(),
-                reasons: Vec::new(),
-                files: Vec::new(),
-                commands: Vec::new(),
-            };
-            store.put_review(&row).expect("the request row");
-            write_outcome(&store, &row, outcome);
-
-            let back = store.merge_review("m-1").expect("reads").expect("the row");
-            assert!(
-                back.decision.is_none(),
-                "a failure is not a verdict — `review_gate` reads any word here as a refusal, \
-                 which is how four entries came to be parked on a judgement nobody made: {:?}",
-                back.decision
-            );
-            assert!(
-                back.answered_ms.is_none(),
-                "the review is still outstanding: nothing answered it"
-            );
-            assert_eq!(back.attempts, 1, "the attempt is counted");
-            assert!(back.failed_ms.is_some(), "and it is stamped");
-            assert_eq!(
-                back.failure, why,
-                "the failure is carried VERBATIM, which is what a person reads on the row"
-            );
-            // **And the queue's own retry can see it**, which is the whole point: a row whose
-            // last attempt failed is one the queue may ask again, boundedly.
-            assert_ne!(
-                crate::mergequeue::review_retry(Some(&back), back.failed_ms.unwrap()),
-                crate::mergequeue::ReviewRetry::Exhausted,
-                "one failed attempt is not the end of the road"
-            );
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-    }
-
-    /// **A verdict a reviewer HANDED IN is written onto the row, and it clears the failure.** The
-    /// other half of the pair: the change above must not have made a real judgement look like an
-    /// attempt — and the judgement now arrives as a `Submission` off the desk, not as a reply this
-    /// session read.
-    #[test]
-    fn a_handed_in_verdict_still_writes_the_verdict() {
-        let dir = std::env::temp_dir().join(format!("letibot-review-ok-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::open(&dir.join("sessions.db")).expect("a store");
-        let row = letibot_tokencore::store::ReviewRecord {
-            entry_id: "m-2".into(),
-            session_id: "s-host".into(),
-            branch: "agent/reader".into(),
-            base_sha: "abc123".into(),
-            asked_ms: 1_000,
-            // **A row that had already failed once**, so the clearing is asserted rather than
-            // the absence of a value nobody set.
-            answered_ms: None,
-            decision: None,
-            attempts: 1,
-            failed_ms: Some(1_500),
-            failure: "http 429: Weekly/Monthly Limit Exhausted".into(),
-            reasons: Vec::new(),
-            files: Vec::new(),
-            commands: Vec::new(),
-        };
-        store.put_review(&row).expect("the failed-attempt row");
-        write_outcome(&store, &row, ReviewOutcome::handed_in(handed_in()));
-        let back = store.merge_review("m-2").expect("reads").expect("the row");
-        assert_eq!(back.decision.as_deref(), Some("accept"));
-        assert!(back.answered_ms.is_some());
-        assert_eq!(
-            back.reasons,
-            vec!["the test covers it"],
-            "the reviewer's own reasons are what the row carries"
-        );
-        assert_eq!(back.files, vec!["src/reader.rs"]);
-        assert_eq!(
-            back.failure, "",
-            "a verdict clears the last attempt's failure"
-        );
-        assert_eq!(back.failed_ms, None);
-        // **And the queue's own gate reads it as an acceptance** — the whole point of writing the
-        // word the reviewer chose rather than a word this session invented.
-        let entry = letibot_tokencore::store::MergeEntry {
-            id: "m-2".into(),
-            session_id: "s-host".into(),
-            branch: "agent/reader".into(),
-            base_sha: "abc123".into(),
-            priority: letibot_tokencore::store::MergePriority::Subagent,
-            needs: Vec::new(),
-            state: letibot_tokencore::store::MergeState::Waiting,
-            brief: String::new(),
-            evidence: String::new(),
-            created_ms: 1,
-            updated_ms: 1,
-            worktree: None,
-            landed_sha: None,
-            gate_steps: Vec::new(),
-        };
-        assert_eq!(
-            crate::mergequeue::review_gate(&entry, Some(&back)),
-            crate::mergequeue::ReviewGate::Accepted
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **A session above its repositories is told which ones it can name** — `task_start`'s

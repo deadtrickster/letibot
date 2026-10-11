@@ -429,34 +429,16 @@ pub trait SessionSource: Send + Sync {
     fn todos(&self, _session_id: &str) -> Vec<crate::event::TodoEntry> {
         Vec::new()
     }
-    /// The merge queue, whole, for a head's bootstrap read.
+    /// **The review queue and the merge queue, whole, for a head's bootstrap read** (R61).
     ///
-    /// The default is empty rather than an error, for the reason [`Self::todos`] is: a source
-    /// with no store has no queue, and a daemon that has not enqueued anything has an empty
-    /// one — from the outside these are the same state, which is exactly what the pane should
-    /// show. The queue is daemon-level, not per-session, so there is no `session_id`. Live
-    /// changes do not come through here; they arrive as [`crate::SessionEvent::MergeEntryAdded`]
-    /// and [`crate::SessionEvent::MergeEntryMoved`].
-    ///
-    /// **A read that FAILED is an `Err`, never an empty list** (R67 item 15): the two look
-    /// identical on a pane, and the source used to print the failure to the daemon's stderr and
-    /// answer empty — a queue holding work drawn as *nothing there*. The registry says the error
-    /// on the asking session's hub ([`Registry::merge_queue_for`]).
-    fn merge_entries(&self) -> Result<Vec<crate::event::MergeEntry>, String> {
-        Ok(Vec::new())
-    }
-
-    /// **The reviewer's verdicts, whole, for a head's bootstrap read** — the other half of what
-    /// the queue pane draws, and the reason it travels beside the entries rather than inside
-    /// one: see [`crate::event::MergeReview`].
-    ///
-    /// The default is empty for the reason [`Self::merge_entries`]' is: a source with no store
-    /// has no queue, and a queue nobody has reviewed has no verdicts — from the outside these
-    /// are the same state, and the pane says *nobody has asked* about an entry either way.
-    ///
-    /// A read that failed is an `Err`, for [`Self::merge_entries`]' reason.
-    fn merge_reviews(&self) -> Result<Vec<crate::event::MergeReview>, String> {
-        Ok(Vec::new())
+    /// The default — a source with no store — is a snapshot that SAYS it has no store, never an
+    /// empty queue that looks like one nobody used: R61 defect 12 was a failed read drawn as an
+    /// empty queue.
+    fn queues(&self) -> crate::event::QueueSnapshot {
+        crate::event::QueueSnapshot {
+            unreadable: Some("this daemon has no session store, so it has no queues".into()),
+            ..Default::default()
+        }
     }
 }
 
@@ -1393,57 +1375,15 @@ impl Registry {
             .unwrap_or_default()
     }
 
-    /// The merge queue, whole, from the source. Empty when there is no source or the queue is
-    /// empty — see [`SessionSource::merge_entries`]. The queue is daemon-level, so there is no
-    /// `session_id`.
-    pub fn merge_entries(&self) -> Result<Vec<crate::event::MergeEntry>, String> {
+    /// **The queues' snapshot, for a head's pane** — see [`SessionSource::queues`]. A registry
+    /// with no source says so in the snapshot rather than answering an empty queue.
+    pub fn queues(&self) -> crate::event::QueueSnapshot {
         self.source()
-            .map(|s| s.merge_entries())
-            .unwrap_or_else(|| Ok(Vec::new()))
-    }
-
-    /// The reviewer's verdicts, whole, from the source — see [`SessionSource::merge_reviews`].
-    /// Beside [`Self::merge_entries`] because the two answer the two halves of one question and
-    /// a pane that asked for one without the other would draw a verdict-less queue.
-    pub fn merge_reviews(&self) -> Result<Vec<crate::event::MergeReview>, String> {
-        self.source()
-            .map(|s| s.merge_reviews())
-            .unwrap_or_else(|| Ok(Vec::new()))
-    }
-
-    /// **The queue pane's bootstrap read, for the head attached to `asker`** — both halves, and a
-    /// half that could not be read is SAID on that session's hub as `merge_queue_unreadable`
-    /// rather than drawn as an empty queue (R67 item 15). The frame still goes out, with what
-    /// could be read: the pane must answer while it is open, and the sentence beside it says
-    /// which half is missing and why.
-    pub fn merge_queue_for(
-        &self,
-        asker: &str,
-    ) -> (
-        Vec<crate::event::MergeEntry>,
-        Vec<crate::event::MergeReview>,
-    ) {
-        let say = |what: &str, why: &str| {
-            if let Some(hub) = self.get(asker) {
-                hub.publish(crate::event::SessionEvent::Warning {
-                    code: "merge_queue_unreadable".into(),
-                    detail: format!(
-                        "the merge queue's {what} could not be read from the store, so the pane \
-                         is NOT showing them — an empty list here means unread, not empty: {why}"
-                    ),
-                    compaction: None,
-                });
-            }
-        };
-        let entries = self.merge_entries().unwrap_or_else(|why| {
-            say("entries", &why);
-            Vec::new()
-        });
-        let reviews = self.merge_reviews().unwrap_or_else(|why| {
-            say("verdicts", &why);
-            Vec::new()
-        });
-        (entries, reviews)
+            .map(|s| s.queues())
+            .unwrap_or_else(|| crate::event::QueueSnapshot {
+                unreadable: Some("this daemon has no session store, so it has no queues".into()),
+                ..Default::default()
+            })
     }
 
     /// **Publish one event to EVERY session's log** — the door a daemon-level fact takes, and
@@ -1928,10 +1868,11 @@ mod tests {
         for id in ["s-a", "s-b", "s-c"] {
             r.create(id, "", SessionWiring::default()).unwrap();
         }
-        let event = crate::event::SessionEvent::MergeEntryMoved {
+        let event = crate::event::SessionEvent::QueueMoved {
+            queue: "merge".into(),
             id: "m-1".into(),
-            state: crate::event::MergeState::Landed,
-            evidence: "landed at deadbeef".into(),
+            to: "landed".into(),
+            why: "landed at deadbeef".into(),
         };
         assert_eq!(r.broadcast(event.clone()), 3, "every session's log");
 
@@ -1942,7 +1883,7 @@ mod tests {
             assert!(
                 retained.iter().any(|e| matches!(
                     &e.event,
-                    crate::event::SessionEvent::MergeEntryMoved { id, .. } if id == "m-1"
+                    crate::event::SessionEvent::QueueMoved { id, .. } if id == "m-1"
                 )),
                 "{id} did not record the move: {retained:?}"
             );

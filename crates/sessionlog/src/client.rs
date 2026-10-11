@@ -331,8 +331,8 @@ impl HeadClient {
 
     /// **Ask for the merge queue, whole.** The pane's bootstrap read, exactly as
     /// [`Client::list_jobs`] is the jobs pane's: the queue is the daemon's and a head that drew
-    /// its own version would draw a stale one. From then on the `MergeEntryAdded` and
-    /// `MergeEntryMoved` events carry every change.
+    /// its own version would draw a stale one. From then on a `QueueMoved` event says when
+    /// to ask again.
     pub fn list_merge_queue(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::ListMergeQueue)?;
         Ok(())

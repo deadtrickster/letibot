@@ -320,6 +320,20 @@ pub const TABLE: &[(&str, Class)] = &[
     ("merge_not_queued", Class::Failure),
     // The merge queue serving again after `merge_queue_store_error` — see that row.
     ("merge_queue_recovered", Class::Routine),
+    // **R61: the two queues' raises.** A review or a landing that cannot run (`queue_blocked`, a
+    // reviewer that cannot start — decision 4 — a gate timed out, a push that failed), the target
+    // branch RED (`target_red`, the emergency: nothing lands but its fix), a reviewer that cannot
+    // decide (`queue_needs_human`), a `[queue]` table that does not parse
+    // (`queue_settings_unreadable`) and a daemon whose build does not match the store
+    // (`queue_wrong_build`, it serves no queue) — Failures: each is *look at this*, and nothing
+    // moves on its own while it stands. A lease that went to another daemon (`queue_lease_lost`)
+    // is Routine: the queues are still served, by the daemon that took it.
+    ("queue_blocked", Class::Failure),
+    ("target_red", Class::Failure),
+    ("queue_needs_human", Class::Failure),
+    ("queue_settings_unreadable", Class::Failure),
+    ("queue_wrong_build", Class::Failure),
+    ("queue_lease_lost", Class::Routine),
     // **A FAILURE, and the one code here that is a claim about the corpus rather than about
     // the session.** An operator's own call was admitted and the head that asked went away
     // before reporting what it did, so the record holds an `admit` whose outcome nobody
@@ -964,12 +978,15 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 104, "the table's size");
-        assert_eq!(count(Class::Routine), 34);
+        //   · **110, not 104**: R61's six — `queue_blocked`, `target_red`, `queue_needs_human`,
+        //     `queue_settings_unreadable` and `queue_wrong_build` (Failures) and `queue_lease_lost`
+        //     (Routine) — see their rows.
+        assert_eq!(TABLE.len(), 110, "the table's size");
+        assert_eq!(count(Class::Routine), 35);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 59);
+        assert_eq!(count(Class::Failure), 64);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 59 of 104 and the middle is 9**, which is why the third register is a
+        // register is 64 of 110 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

@@ -953,16 +953,10 @@ impl SessionView {
             // already keeps both — see `is_interactive` in `scrub.rs`, which strips this
             // from every stored projection for the same reason.
             SessionEvent::CompactionProgress { .. } => {}
-            // **Not carried, and the reason is the snapshot's**: the merge queue is
-            // daemon-level, and the view is per-session. A head that wants the queue asks for
-            // it with `ListMergeQueue` and gets the whole queue as of now; from then on the
-            // `MergeEntryAdded` and `MergeEntryMoved` events carry every change. The view
-            // carries no queue state, because the queue is not the session's.
-            SessionEvent::MergeEntryAdded { .. } => {}
-            SessionEvent::MergeEntryMoved { .. } => {}
-            // A removal is the same shape as the two above — a fact about the daemon-level
-            // queue, carried to heads by the events and not by the per-session view.
-            SessionEvent::MergeEntryRemoved { .. } => {}
+            // **Not carried, and the reason is the snapshot's**: the queues are daemon-level,
+            // and the view is per-session. A head that wants them asks with `ListMergeQueue` and
+            // gets the whole snapshot as of now; a move only tells it to ask again.
+            SessionEvent::QueueMoved { .. } => {}
         }
     }
 

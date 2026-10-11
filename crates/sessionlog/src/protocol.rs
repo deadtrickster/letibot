@@ -326,8 +326,8 @@ use crate::view::Snapshot;
 /// why the door was not widened instead.
 /// # 29: the merge queue, whole, and its two moves
 ///
-/// [`ClientFrame::ListMergeQueue`] and [`ServerFrame::MergeQueue`] are a new client frame and its
-/// answer, and [`crate::SessionEvent::MergeEntryAdded`] and [`crate::SessionEvent::MergeEntryMoved`]
+/// [`ClientFrame::ListMergeQueue`] and `ServerFrame::MergeQueue` (since 43, [`ServerFrame::Queues`]) are a new client frame and its
+/// answer, and `MergeEntryAdded` and `MergeEntryMoved` (since 43, [`crate::SessionEvent::QueueMoved`])
 /// are two new events, so a version-28 daemon would fail to parse the first — the version-4
 /// argument, and the same ATTACH-time refusal.
 ///
@@ -548,7 +548,7 @@ use crate::view::Snapshot;
 /// `MergeEntryRemoved` — the operator's own verbs, and the operator's own ask: *"i want to be
 /// able to approve / veto / delete"*. **No frame is added and the number still has to move**,
 /// by 36's and 37's rule one level over: the state word travels inside
-/// [`crate::SessionEvent::MergeEntryMoved`] and [`ServerFrame::MergeQueue`], and the removal is
+/// `MergeEntryMoved` and `ServerFrame::MergeQueue`, and the removal is
 /// a NEW EVENT (a head has no arm for it at all) — `serde` has no catch-all on either enum, so a
 /// version-37 head cannot DECODE `"state":"vetoed"` or a `merge_entry_removed` line, and the
 /// failure would take the whole snapshot or frame down with it, mid-session. The pane would go
@@ -650,7 +650,19 @@ use crate::view::Snapshot;
 /// the model's very next write — the words it can spell do not include that one. `TodoBoard::replace`
 /// therefore keeps a status the model cannot spell, which is what makes the operator's silence
 /// survive the plan's next revision.
-pub const PROTOCOL_VERSION: u32 = 42;
+///
+/// # 43: review and merge are two queues (R61)
+///
+/// `ServerFrame::MergeQueue`'s single-queue entries and verdicts became [`ServerFrame::Queues`]
+/// — one [`crate::event::QueueSnapshot`] of the review queue AND the merge queue, with each
+/// repository's lease (owner, build, heartbeat), the target branches' health (a red target is the
+/// emergency the pane leads with) and the last moves — and `MergeEntryAdded`/`MergeEntryMoved`/
+/// `MergeEntryRemoved` became one [`crate::SessionEvent::QueueMoved`]. **States travel as words**:
+/// the v23 queue's seventh state (`vetoed`) took every older head's whole frame down, because a
+/// closed enum cannot decode a word it does not know, and a pane that draws the word it is given
+/// cannot be broken that way again. A snapshot that could not be read says so (`unreadable`) and
+/// is never an empty queue.
+pub const PROTOCOL_VERSION: u32 = 43;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1764,13 +1776,13 @@ pub enum ClientFrame {
     /// `/job` during a long turn arrived after it finished. A pane that opens
     /// must answer now. Added at `PROTOCOL_VERSION` 21.
     ListJobs,
-    /// The merge queue, whole: every entry, every state, in the order the queue was filled.
+    /// The review queue and the merge queue, whole: every row, every state (R61; answered with
+    /// [`ServerFrame::Queues`]).
     ///
     /// Read-only and unserialised like [`ClientFrame::ListJobs`], and for the same reason: a
     /// list is a question, not an act. This is the **bootstrap** read — the snapshot carries
-    /// the whole queue, so a head attaching mid-flight sees the whole queue rather than only
-    /// later changes; from then on the `MergeEntryAdded` and `MergeEntryMoved` events carry
-    /// every change.
+    /// both queues, so a head attaching mid-flight sees all of it; a
+    /// [`crate::SessionEvent::QueueMoved`] says it is time to ask again.
     ///
     /// The queue is daemon-level, not per-session: there is one main branch and one queue, and
     /// the `session_id` on each entry is the entry's origin, not a filter. So the read is not
@@ -2382,27 +2394,12 @@ pub enum ServerFrame {
         session_id: String,
         notes: Vec<NoteEntry>,
     },
-    /// The answer to [`ClientFrame::ListMergeQueue`]: the whole queue as of now, every state.
-    ///
-    /// The snapshot half of the snapshot-plus-events pattern: a head attaching mid-flight gets
-    /// this, and from then on the [`crate::SessionEvent::MergeEntryAdded`] and
-    /// [`crate::SessionEvent::MergeEntryMoved`] events carry every change. The queue is
-    /// daemon-level, so there is no `session_id` — the `session_id` on each entry is the
-    /// entry's origin, not a filter.
-    ///
-    /// **Nothing is dropped silently**: the queue is the whole queue, and an entry the queue
-    /// cannot act on is listed with its reason — the `evidence` on the row says what it is
-    /// waiting on, why it failed, or why it is stale. A shorter list would say *"that is all
-    /// the work there is"*, which is false.
-    MergeQueue {
-        entries: Vec<crate::event::MergeEntry>,
-        /// **The verdicts, beside the entries.** `serde(default)` and additive: a head older
-        /// than the field reads past it and draws the queue without the reviews, which is what
-        /// it did before — and a daemon older than it sends none, which is not an error but
-        /// *nobody recorded one*. See [`crate::event::MergeReview`] for why it travels here
-        /// rather than inside an entry.
-        #[serde(default)]
-        reviews: Vec<crate::event::MergeReview>,
+    /// The answer to [`ClientFrame::ListMergeQueue`]: **both queues as of now, every state**,
+    /// with each repository's lease and heartbeat, the target branches' health and the last
+    /// moves (R61). A [`crate::SessionEvent::QueueMoved`] tells a head to ask again. A read that
+    /// failed is said in the snapshot's `unreadable`, never drawn as an empty queue.
+    Queues {
+        snapshot: crate::event::QueueSnapshot,
     },
     Peeked {
         session_id: String,
@@ -2756,9 +2753,7 @@ mod tests {
                 | crate::SessionEvent::HeadDetached { .. }
                 | crate::SessionEvent::JobOutput { .. }
                 | crate::SessionEvent::JobSettled { .. }
-                | crate::SessionEvent::MergeEntryAdded { .. }
-                | crate::SessionEvent::MergeEntryMoved { .. }
-                | crate::SessionEvent::MergeEntryRemoved { .. }
+                | crate::SessionEvent::QueueMoved { .. }
                 | crate::SessionEvent::OperatorCallAllowed { .. }
                 | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::CompactionProgress { .. }
@@ -2805,7 +2800,7 @@ mod tests {
                 | ServerFrame::Settings { .. }
                 | ServerFrame::Jobs { .. }
                 | ServerFrame::StandingNotes { .. }
-                | ServerFrame::MergeQueue { .. }
+                | ServerFrame::Queues { .. }
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::RowFetched { .. }
                 | ServerFrame::Diagnostic { .. }
@@ -2824,8 +2819,12 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 42,
-            "the match above was last reconciled with the frame list at 42 — `TodoBy::Queue`, a \
+            PROTOCOL_VERSION, 43,
+            "the match above was last reconciled with the frame list at 43 — R61's two queues: \
+             `ServerFrame::MergeQueue` became `ServerFrame::Queues` (a snapshot of both queues, the \
+             leases, the targets' health and the last moves, with its states as WORDS so a state a \
+             newer daemon adds never takes a frame down again), and the three `MergeEntry*` events \
+             became `SessionEvent::QueueMoved`. 42 was `TodoBy::Queue`, a \
              NEW VARIANT on an existing enum: **no frame is added and the number still has to move**, \
              because a version-41 head cannot DECODE `\"by\":\"queue\"` and the failure takes the \
              whole `TodosUpdated`/`Todos` frame down with it (the version-36 argument, at the level \

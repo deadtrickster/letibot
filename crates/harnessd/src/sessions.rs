@@ -4543,46 +4543,13 @@ impl SessionSource for StoreSessions {
             .collect()
     }
 
-    /// **The merge queue, whole, for a head's bootstrap read** — the snapshot half of the
-    /// snapshot-plus-events the wire is written as.
-    ///
-    /// Read through this source's own connection, which is the same file the merge-queue
-    /// thread writes: a `SELECT` sees what the daemon committed, and the queue is daemon-level,
-    /// so there is no `session_id` to scope it by.
-    ///
-    /// **Every state, and the evidence on each row.** A read that answered only the actionable
-    /// entries would say *"that is all the work there is"* about a queue holding a `Failed`
-    /// entry with a reason on it — the one thing the queue's own read refuses to do, and this
-    /// is that read, one hop out.
-    ///
-    /// **A read that FAILED is an `Err`, not an empty list** — the two look identical from the
-    /// outside, which is exactly the confusion the `Corrupt` variants exist to prevent. The trait
-    /// had no room for an error and this answered empty with a stderr line, so the pane drew an
-    /// empty queue over a store that could not be read (R67 item 15); now the registry says it
-    /// on the asking head's session ([`Registry::merge_queue_for`]).
-    fn merge_entries(&self) -> Result<Vec<letibot_sessionlog::event::MergeEntry>, String> {
+    /// **Both queues, whole, for a head's pane** (R61) — every row, the leases with their
+    /// heartbeats, the targets' health and the last moves, through this source's own connection
+    /// to the file the queues' threads write. A table that could not be read is SAID in the
+    /// snapshot (`unreadable`) and never answered as an empty queue (R61 defect 12, R67 item 15).
+    fn queues(&self) -> letibot_sessionlog::event::QueueSnapshot {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let rows = g.merge_entries().map_err(|e| {
-            eprintln!("  merge queue: the queue could not be read: {e}");
-            e.to_string()
-        })?;
-        Ok(crate::mergequeue::wire_queue(&rows))
-    }
-
-    /// **The reviewer's verdicts, whole, for a head's bootstrap read** — the other half of what
-    /// the queue pane draws.
-    ///
-    /// The same posture as [`SessionSource::merge_entries`], one table over: a read that FAILED
-    /// is said out loud rather than answered as empty, because a pane drawing no verdicts over a
-    /// store that could not be read is the same confusion between *nobody asked* and *nothing is
-    /// there* that the whole queue is written to avoid.
-    fn merge_reviews(&self) -> Result<Vec<letibot_sessionlog::event::MergeReview>, String> {
-        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let rows = g.reviews().map_err(|e| {
-            eprintln!("  merge queue: the verdicts could not be read: {e}");
-            e.to_string()
-        })?;
-        Ok(crate::mergequeue::wire_reviews(&rows))
+        crate::mergequeue::snapshot(&g)
     }
 
     fn list(&self) -> Vec<StoredBrief> {

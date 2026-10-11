@@ -1,0 +1,362 @@
+//! **Git, as the queues use it** — every command is one `git -C <dir> …`, its own words on
+//! failure, and nothing that touches the operator's checkout except the one step that has to
+//! (keeping a checkout of the target coherent after the ref moved — [`follow_checkouts`]).
+//!
+//! The landing happens in a DEDICATED worktree ([`landing_worktree`]) under the repository's own
+//! git directory, and the target branch moves by a compare-and-swap on its ref
+//! ([`update_ref_cas`]). The v23 queue ran `git -C <repo> merge --ff-only` in whatever the
+//! operator had checked out and recorded `rev-parse main` afterwards (R61 defect 7).
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// One git command in `dir`: stdout on success, git's own words (stderr, else stdout) on failure.
+pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let mut msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if msg.is_empty() {
+            msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        }
+        Err(format!("git {}: {msg}", args.join(" ")))
+    }
+}
+
+/// The sha a revision names, or `None` when git cannot name it.
+pub fn rev_parse(dir: &Path, rev: &str) -> Option<String> {
+    git(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
+/// The head of local branch `branch`, by its full ref so a tag of the same name cannot answer.
+pub fn branch_head(repo: &Path, branch: &str) -> Option<String> {
+    rev_parse(repo, &format!("refs/heads/{branch}"))
+}
+
+/// Whether `a` is an ancestor of (or equal to) `b`.
+pub fn is_ancestor(dir: &Path, a: &str, b: &str) -> Result<bool, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["merge-base", "--is-ancestor", a, b])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git merge-base: {e}"))?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "git merge-base --is-ancestor {a} {b}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+/// Commits in `head` that `base` does not have.
+pub fn commits_over(dir: &Path, base: &str, head: &str) -> Result<usize, String> {
+    let n = git(dir, &["rev-list", "--count", &format!("{base}..{head}")])?;
+    n.trim()
+        .parse()
+        .map_err(|e| format!("git rev-list --count answered `{}`: {e}", n.trim()))
+}
+
+/// **The change a head carries over `onto`, as one stable patch id** — what tells *the branch
+/// was rebased* from *the branch moved* (decision 6: *"a rebase onto a newer main is not a
+/// move"*). The diff is from the merge base of `onto` and `head` to `head`, so two heads carrying
+/// the same change over two different bases answer the same id.
+pub fn change_id(dir: &Path, onto: &str, head: &str) -> Option<String> {
+    let base = git(dir, &["merge-base", onto, head]).ok()?;
+    let diff = git(dir, &["diff", "--binary", base.trim(), head]).ok()?;
+    if diff.is_empty() {
+        return Some(String::new());
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take()?;
+        // `git patch-id` reads a diff with a header; a bare `git diff` has one per file.
+        let _ = stdin.write_all(b"commit 0000000000000000000000000000000000000000\n\n");
+        let _ = stdin.write_all(diff.as_bytes());
+    }
+    let out = child.wait_with_output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
+/// **The repository a worktree belongs to** — the main checkout, from the common git directory.
+pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
+    let common = git(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let common = PathBuf::from(common.trim());
+    let repo = if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent().map(Path::to_path_buf)?
+    } else {
+        common
+    };
+    Some(std::fs::canonicalize(&repo).unwrap_or(repo))
+}
+
+/// The top of the checkout `path` is in.
+pub fn repo_root(path: &Path) -> Result<PathBuf, String> {
+    let out = git(path, &["rev-parse", "--show-toplevel"])?;
+    let top = out.trim();
+    if top.is_empty() {
+        return Err(format!("{} is not inside a git repository", path.display()));
+    }
+    Ok(PathBuf::from(top))
+}
+
+/// **The repository a workspace means** — itself, a same-named child (the operator's
+/// `~/Projects/letibot/letibot`), or its only repository child. `None` when it names none or
+/// several.
+pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
+    if let Ok(top) = repo_root(workspace) {
+        return Some(top);
+    }
+    let is_repo = |d: &Path| d.join(".git").exists();
+    if let Some(name) = workspace.file_name() {
+        let same_named = workspace.join(name);
+        if is_repo(&same_named) {
+            return Some(same_named);
+        }
+    }
+    let children: Vec<PathBuf> = workspace
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| is_repo(p))
+        .collect();
+    match children.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
+/// **The queues' name for a repository** — the canonical path of its main checkout, so two
+/// daemons seated at two depths of one repository agree on one lease.
+pub fn repository_key(any_path_in_it: &Path) -> Option<String> {
+    repo_of_worktree(any_path_in_it).map(|p| p.display().to_string())
+}
+
+/// The target branch a repository lands on when the project names none (decision 12 makes it
+/// per project): `main` when it exists, else `master`, else whatever the main checkout has out.
+pub fn default_target(repo: &Path) -> Option<String> {
+    for b in ["main", "master"] {
+        if branch_head(repo, b).is_some() {
+            return Some(b.to_string());
+        }
+    }
+    git(repo, &["symbolic-ref", "--short", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// **The queue's own worktree for landing and for gating the target** — under the repository's
+/// git directory (`<repo>/.git/letibot-landing`), never the operator's checkout and never a
+/// branch's own tree. Created detached on first use and reused (its `target/` build cache with
+/// it), reset clean to `at` every time.
+pub fn landing_worktree(repo: &Path, at: &str) -> Result<PathBuf, String> {
+    let common = git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let path = PathBuf::from(common.trim()).join("letibot-landing");
+    let usable = path.join(".git").exists() && git(&path, &["rev-parse", "HEAD"]).is_ok();
+    if !usable {
+        let _ = git(repo, &["worktree", "prune"]);
+        if path.exists() {
+            let _ = std::fs::remove_dir_all(&path);
+            let _ = git(repo, &["worktree", "prune"]);
+        }
+        git(
+            repo,
+            &["worktree", "add", "--detach", &path.to_string_lossy(), at],
+        )?;
+    }
+    // A rebase a killed gate left half-done, then the tree reset to `at`. `clean -fd` and not
+    // `-fdx`: the ignored `target/` is the gate's build cache and is worth minutes.
+    let _ = git(&path, &["rebase", "--abort"]);
+    git(&path, &["checkout", "--detach", "--force", at])?;
+    git(&path, &["reset", "--hard", at])?;
+    git(&path, &["clean", "-fd"])?;
+    Ok(path)
+}
+
+/// **Rebase `head` onto `onto` in the landing worktree**, detached; the rebased sha, or the
+/// conflict in git's words (the rebase aborted).
+pub fn rebase_in(worktree: &Path, head: &str, onto: &str) -> Result<String, String> {
+    git(worktree, &["checkout", "--detach", "--force", head])?;
+    if let Err(e) = git(worktree, &["rebase", onto]) {
+        let _ = git(worktree, &["rebase", "--abort"]);
+        return Err(e);
+    }
+    rev_parse(worktree, "HEAD").ok_or_else(|| "the rebased HEAD has no sha".to_string())
+}
+
+/// **Move `refs/heads/<target>` from `expect` to `new`, or learn that it moved** — git's own
+/// compare-and-swap (`update-ref <ref> <new> <old>`).
+pub fn update_ref_cas(repo: &Path, target: &str, new: &str, expect: &str) -> Result<(), String> {
+    git(
+        repo,
+        &[
+            "update-ref",
+            "-m",
+            "letibot merge queue: land",
+            &format!("refs/heads/{target}"),
+            new,
+            expect,
+        ],
+    )
+    .map(|_| ())
+}
+
+/// The checkouts that have `refs/heads/<target>` checked out.
+pub fn checkouts_of(repo: &Path, target: &str) -> Vec<PathBuf> {
+    let Ok(list) = git(repo, &["worktree", "list", "--porcelain"]) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    for line in list.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(p));
+        } else if line == format!("branch refs/heads/{target}")
+            && let Some(p) = path.take()
+        {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// **Bring every checkout of `target` from `old` to `new` the way a fast-forward would** —
+/// `read-tree -m -u old new`, which refuses when a local change overlaps the landing, exactly
+/// as `merge --ff-only` does. Without this the ref moves under a checkout whose index still holds
+/// the old tree, and the operator's next commit would record the old tree — reverting the
+/// landing. `Err` names the checkout that could not follow; the caller undoes the landing.
+pub fn follow_checkouts(repo: &Path, target: &str, old: &str, new: &str) -> Result<(), String> {
+    for wt in checkouts_of(repo, target) {
+        git(&wt, &["read-tree", "-m", "-u", old, new]).map_err(|e| {
+            format!(
+                "the checkout of `{target}` at {} could not follow the landing: {e}",
+                wt.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// **What a push came to** — the row keeps the sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pushed {
+    /// Pushed to `origin`.
+    Yes(String),
+    /// The repository has no `origin`: nothing to push to, which is the local case.
+    NoRemote,
+    /// The push failed, in git's words.
+    Failed(String),
+}
+
+/// **Push `sha` to `origin`'s `target`** — a fast-forward or a refusal, never a force. The
+/// credential is whatever git's own helper supplies for this one invocation.
+pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
+    if git(repo, &["remote", "get-url", "origin"]).is_err() {
+        return Pushed::NoRemote;
+    }
+    match git(
+        repo,
+        &["push", "origin", &format!("{sha}:refs/heads/{target}")],
+    ) {
+        Ok(_) => Pushed::Yes(format!("pushed {sha} to origin/{target}")),
+        Err(e) => Pushed::Failed(e),
+    }
+}
+
+/// **A fresh clone of the branch for a reviewer** (decision 3) — the branch alone, at `head`,
+/// in `dir`: what a VM is booted on instead of the workspace (72.8 GiB, refused by the 8 GiB
+/// ceiling, 8 of 21 reviews on 2026-10-11). History comes with it, so `git diff base...head`
+/// works inside.
+pub fn clone_branch(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), String> {
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let out = Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            "--no-local",
+            "--single-branch",
+            "--branch",
+        ])
+        .arg(branch)
+        .arg(repo)
+        .arg(dir)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git clone: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git clone of `{branch}`: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    git(dir, &["checkout", "--quiet", "--detach", head]).map(|_| ())
+}
+
+/// Remove a branch's own worktree and the branch, after a landing — only when the tree holds
+/// nothing uncommitted. `Err` says what was kept and why.
+pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Result<(), String> {
+    if let Some(wt) = worktree {
+        let wt = Path::new(wt);
+        if wt.exists() {
+            let dirty = git(wt, &["status", "--porcelain"]).map_err(|e| e.to_string())?;
+            if !dirty.trim().is_empty() {
+                return Err(format!(
+                    "the worktree {} holds uncommitted changes, so it and `{branch}` are kept",
+                    wt.display()
+                ));
+            }
+            git(
+                repo,
+                &["worktree", "remove", "--force", &wt.to_string_lossy()],
+            )?;
+        }
+        let _ = git(repo, &["worktree", "prune"]);
+    }
+    git(repo, &["branch", "-D", branch]).map(|_| ())
+}

@@ -851,6 +851,13 @@ struct LeticodeConfigFile {
     judge_model: Option<String>,
     #[serde(default)]
     roles: BTreeMap<String, toml::Value>,
+    /// **The `[queue]` table — the review and merge queues' per-project settings (R61).** Read
+    /// by its own parser (`mergequeue::settings`), which refuses an unknown key inside it by
+    /// name; accepted here only so this reader does not refuse the file for carrying it. It sets
+    /// no model and no capability, so the wall above stands.
+    #[serde(default)]
+    #[allow(dead_code)]
+    queue: Option<toml::Value>,
 }
 
 /// A model name that is blank is no model at all: an empty string would

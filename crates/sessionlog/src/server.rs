@@ -913,17 +913,13 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::ListMergeQueue) => {
-                // The bootstrap read, the way `ListTodos` is: the snapshot carries the whole
-                // queue, every state, so a head attaching mid-flight sees the whole queue
-                // rather than only later changes. From here the `MergeEntryAdded` and
-                // `MergeEntryMoved` events carry every change.
-                //
-                // Answered here and now, off the registry, rather than queued as a command:
-                // a pane that opens must answer while it is open. The queue is daemon-level,
-                // so there is no `session_id` — the `session_id` on each entry is the entry's
-                // origin, not a filter.
-                let (entries, reviews) = registry.merge_queue_for(&seat.hub.session_id());
-                let f = ServerFrame::MergeQueue { entries, reviews };
+                // The bootstrap read, the way `ListTodos` is, answered here and now off the
+                // registry: a pane that opens must answer while it is open. Both queues, every
+                // state, with the leases, the targets' health and the last moves; a store that
+                // could not be read is said in the snapshot (R61), never sent as an empty queue.
+                let f = ServerFrame::Queues {
+                    snapshot: registry.queues(),
+                };
                 writer.lock().unwrap().write(&f)?;
             }
             Ok(ClientFrame::NewSession {

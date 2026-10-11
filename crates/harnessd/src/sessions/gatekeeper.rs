@@ -134,12 +134,12 @@
 //! It is left as it is because the slice's requirement is that the listing shows it, and because
 //! choosing between those two is the operator's call.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use letibot_tokencore::store::{MergeEntry, Store, TodoBy, TodoItem, TodoNeed, TodoStatus};
+use letibot_tokencore::store::{
+    ReviewKind, ReviewRow, ReviewState, Store, TodoBy, TodoItem, TodoNeed, TodoStatus,
+};
 use letibot_tools::builtins::task::Placement;
-
-use crate::mergequeue::{ReviewGate, is_ready, repo_of_worktree, review_gate, served_by};
 
 /// **The session id, hardcoded, and the reason it is not minted like every other one.**
 ///
@@ -431,149 +431,59 @@ pub fn prompt(placement: &ReviewerPlacement) -> String {
     format!("{PROMPT}{}", placement.said())
 }
 
-/// **The rows this daemon's queue is waiting for verdicts on** — one per entry, in the order the
-/// queue would serve them, with no child on any of them. [`waiting`] is the same set as entries,
-/// and the harness marks the ones a review child is working ([`row`], from the review desk —
-/// `Harness`'s `reviews` field).
-///
-/// A function rather than a call at the fill site because the board is filled from the daemon's
-/// clock and the review pass runs on it too: one reading of *what is waiting*, two callers.
-pub fn queue_rows(store: &Store, serving: &Path) -> Vec<TodoItem> {
-    waiting(store, serving)
-        .iter()
-        .map(|e| row(e, None))
-        .collect()
+/// **The rows on the review queue's board** — one per review this daemon's queues serve that is
+/// waiting for a reviewer or under one, in the order the queue claims them, with no child on any
+/// of them. The harness marks the ones a review child is working ([`row`]).
+pub fn queue_rows(store: &Store, me: &str) -> Vec<TodoItem> {
+    waiting(store, me).iter().map(|r| row(r, None)).collect()
 }
 
-/// **The entries this daemon's queue is waiting for a verdict on** — the set [`queue_rows`] draws,
-/// as entries rather than as rows, so a caller that has to ACT on them (the review pass,
-/// `Harness::serve_reviews`) asks the same question the board does and cannot come to a different
-/// answer about which entries are waiting for a verdict.
+/// **The reviews this daemon's queues serve that are waiting for a verdict** — rows `waiting` or
+/// `reviewing` in a repository whose LEASE this daemon holds (R61 decision 1). A board carrying
+/// another daemon's rows would nag a session about work it must not touch (R61 defect 9: every
+/// daemon served the one global review session).
 ///
-/// # Which entries, and why it is the queue's own answer rather than a second opinion
-///
-/// Two of the queue's own functions decide it, and nothing here re-derives either:
-///
-/// * [`is_ready`] — nothing the entry waits on is unlanded. An entry that is not ready is not
-///   waiting for a REVIEW, it is waiting for another entry, and asking a session to review it would
-///   be asking about a branch that is going to be rebased.
-/// * [`review_gate`] — `Awaiting` is *nobody has judged this*: no review row at all, or one whose
-///   `decision` is NULL. `Accepted` is a verdict that has landed (nothing is waiting), and
-///   `Refused` is a verdict that parked the entry (nothing is being waited FOR) — neither is a row
-///   on this board.
-///
-/// **And only this daemon's entries**, by [`served_by`] — the same rule the queue's own pass reads.
-/// A board carrying another daemon's entries would be a session nagged about work it must not touch.
-///
-/// # The order
-///
-/// The queue's serving order — priority, then age, then id — so the first entry is the next one the
-/// queue would take. `next_ready`'s own comparator, spelled here because the board has to be STABLE
-/// across passes: `set_queue` compares the rows to decide whether anything moved, and a list that
-/// reshuffled itself would be an event on every pass.
-pub fn waiting(store: &Store, serving: &Path) -> Vec<MergeEntry> {
-    // **This daemon's queue first, then the Waiting ones among them** — `MergeQueueDaemon::step`'s
-    // own order of the same two questions, so the two cannot come to different answers about which
-    // entries are waiting for a verdict. `is_ready` reads the SERVED set and not the whole table,
-    // deliberately: that is the set the queue itself resolves a need against.
-    let entries: Vec<MergeEntry> = store
-        .merge_entries()
+/// The order is the queue's own claim order — the red target first, then priority, then age — so
+/// the first row is the next one a reviewer is put on, and the board is stable across passes
+/// (`set_queue` compares the rows).
+pub fn waiting(store: &Store, me: &str) -> Vec<ReviewRow> {
+    let held: Vec<String> = store
+        .queue_leases()
         .unwrap_or_default()
         .into_iter()
-        .filter(|e| mine(store, serving, e))
+        .filter(|l| l.owner == me)
+        .map(|l| l.repository)
         .collect();
-    let reviews = store.reviews().unwrap_or_default();
-    let mut waiting: Vec<MergeEntry> = entries
-        .iter()
-        .filter(|e| {
-            e.state == letibot_tokencore::store::MergeState::Waiting
-                && is_ready(e, &entries)
-                && matches!(
-                    review_gate(e, reviews.iter().find(|r| r.entry_id == e.id)),
-                    ReviewGate::Awaiting
-                )
+    let mut rows: Vec<ReviewRow> = store
+        .review_rows(None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| {
+            held.contains(&r.repository)
+                && matches!(r.state, ReviewState::Waiting | ReviewState::Reviewing)
         })
-        .cloned()
         .collect();
-    waiting.sort_by_key(|e| (e.priority.rank(), e.created_ms, e.id.clone()));
-    waiting
+    rows.sort_by_key(|r| {
+        (
+            r.kind != ReviewKind::Target,
+            r.priority.rank(),
+            r.created_ms,
+            r.id.clone(),
+        )
+    });
+    rows
 }
 
-/// **Whether this entry is this daemon's to work** — [`served_by`], with the entry's repository read
-/// only when the fallback arm needs it.
-///
-/// `served_by` takes the repository eagerly and that is right for the queue's own daemon, which
-/// caches it per entry. This caller runs on the WORKER thread — the one that runs turns — once per
-/// pass, and `repo_of_worktree` forks a `git`; so the row is read first and the subprocess is spent
-/// only for the entry whose root session the store has forgotten, which is the one case the
-/// repository decides. The row is then read a second time inside `served_by`, which costs one
-/// indexed `SELECT` and no process.
-fn mine(store: &Store, serving: &Path, entry: &MergeEntry) -> bool {
-    let root = crate::mergequeue::root_session(store, &entry.session_id);
-    // Existence only: the workspace lookup is the cheapest read that answers it.
-    if store.session_workspace(&root).ok().flatten().is_some() {
-        return served_by(store, Some(serving), entry, serving);
-    }
-    served_by(store, Some(serving), entry, &repo_for(entry, serving))
-}
-
-/// **The repository an entry's worktree belongs to**, or the workspace itself — the fallback
-/// [`served_by`] consults when the store has no row for the session that queued the entry.
-///
-/// Read here rather than cached, unlike `MergeQueueDaemon::repo_for`: the queue is one row per
-/// branch, and the caller ([`mine`]) reaches this only for the entry whose root session the store
-/// has forgotten. A caller that read it eagerly would spend a `git rev-parse` per entry per pass.
-fn repo_for(entry: &MergeEntry, serving: &Path) -> std::path::PathBuf {
-    entry
-        .worktree
-        .as_deref()
-        .and_then(|w| repo_of_worktree(Path::new(w)))
-        .unwrap_or_else(|| serving.to_path_buf())
-}
-
-/// **One entry, as a row on the session's board** — and, when a review child is on it, the row that
-/// says so.
-///
-/// The text is the row's NAME, and the board has no id: `todo_write` addresses a row by quoting its
-/// words and the nag hands them over character for character, so this has to be STABLE across passes
-/// (the whole half is compared) and it has to say what the row is about. Three facts, in the order
-/// they read:
-///
-/// * **the branch** — what the verdict is about, and what the worktree holds;
-/// * **the entry id** — what `/queue approve|restart|rm` take, and what the review is keyed by;
-/// * **the first line of the brief** — what the review is *against*, which is the one thing a
-///   reviewer cannot get from the branch alone. Capped, because a row is a name and not a document:
-///   the whole brief is on the entry, and the session that reviews it is handed the brief itself.
-///
-/// The author is `TodoBy::Queue` and there is no condition, because the entry's own `needs` are
-/// already resolved by `is_ready` and a condition is the operator's own act (`TodoItem::when`).
-///
-/// # `child` — the row's fate, said where a session can read it
-///
-/// **A review child on the entry is a `TodoNeed::Child` edge and `InProgress`**, and that is the
-/// board's whole answer to *who is working this row*: the row names the handle `task_result`
-/// collects by, so the session that owns the child can read what it found and `task_message` it,
-/// and the idle check treats the row as blocked on that child rather than asking for a review that
-/// is already running (`unmet_needs`). A row with no child is `Pending` with no edges — ordinary
-/// work nobody has started, which is exactly what an entry waiting for a verdict is.
-///
-/// **The child is the only thing here that is not the store's**, and it is why this takes an
-/// argument rather than reading one: `MergeEntry::state` and `ReviewRecord::decision` are where an
-/// entry's state lives, and *which child this session has on this row* is a fact about THIS
-/// session's own children (`Harness`'s review desk), which no other reader of the store
-/// has.
-pub fn row(entry: &MergeEntry, child: Option<&str>) -> TodoItem {
+/// **One review, as a row on the session's board** — and, when a review child is on it, the row
+/// that says so. The words are stable across passes (the half is compared): the daemon's name for
+/// the run, the row id `/queue` takes, and the first line of the ask.
+pub fn row(r: &ReviewRow, child: Option<&str>) -> TodoItem {
     TodoItem {
-        // **The row's name is the daemon's name for the run** — `review-agent/foo (entry m-1234)`
-        // — and not a second spelling of it written here. One rule
-        // (`mergequeue::review_job_name`), because the queue's board and the queue's own words for
-        // a move have to be the same name for the same run; the entry id stays on the row because
-        // it is what `/queue approve|veto|restart` are given.
         content: format!(
             "{} (entry {}): {}",
-            crate::mergequeue::review_job_name(entry),
-            entry.id,
-            first_line(&entry.brief),
+            crate::mergequeue::review_job_name(r),
+            r.id,
+            first_line(&r.brief),
         ),
         status: match child {
             Some(_) => TodoStatus::InProgress,
@@ -608,26 +518,24 @@ fn first_line(brief: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
 
     use letibot_sessionlog::registry::Registry;
-    use letibot_tokencore::store::{MergePriority, MergeState, ReviewRecord};
+    use letibot_tokencore::store::{
+        Approval, LeaseClaim, MergePriority, Move, NewReview, ReviewKind,
+    };
     use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
 
     use crate::config::Config;
     use crate::harness::Parts;
     use crate::sessions::{Sessions, StoreSessions};
 
-    /// **A runner that records what it was asked to start and answers `Running` for ever.**
-    ///
-    /// The seam `review_pass`'s tests use, and for its reason: the child a real runner would start
-    /// needs a model, and what this slice is measured by is *whose runner was asked for what*.
-    /// `Running` for ever is the interesting answer — it keeps the child in the harness's
-    /// desk, which is the state the double-spawn test needs and the state a row is
-    /// marked `in progress` in.
+    /// **A runner that records what it was asked to start and answers `Running` for ever** — the
+    /// child a real runner would start needs a model, and what is measured here is *whose runner
+    /// was asked for what*.
     struct Recording {
         /// `(prompt, role)` per `start`, in order.
         started: Arc<Mutex<Vec<(String, String)>>>,
@@ -648,8 +556,7 @@ mod tests {
         }
     }
 
-    /// A directory that removes itself, because a test that leaks a store per run eventually fills
-    /// the disk and the run that finds out is not this one.
+    /// A directory that removes itself.
     struct TempDir {
         path: PathBuf,
     }
@@ -675,8 +582,11 @@ mod tests {
         }
     }
 
-    /// The workspace every test's daemon serves, and the store the queue lives in. The workspace is
-    /// returned CANONICAL, because that is what `served_by` compares against.
+    /// This test process's daemon identity — the owner the board is read for.
+    fn me() -> String {
+        crate::mergequeue::lease::this_daemon().owner.clone()
+    }
+
     fn store_with(tag: &str) -> (TempDir, Store, PathBuf) {
         let dir = TempDir::new(tag);
         let ws = dir.path.join("ws");
@@ -686,85 +596,98 @@ mod tests {
         (dir, store, ws)
     }
 
-    /// One queue entry, `Waiting`, from a session rooted at `ws`.
-    ///
-    /// **The entry's `session_id` is the CHILD that did the work, and the root is found by walking
-    /// up** — `HarnessTaskRunner::enqueue_entry` writes `entry_for_finished(handle, handle, …)`, so
-    /// both columns are the child (`the-review-queue-and-the-merge-queue.md`, measured by the
-    /// `queue-verbs` child). The fixture is built that way on purpose: a root row and a child under
-    /// it, so `served_by`'s walk is exercised rather than assumed — an entry written as its own root
-    /// would pass whether the walk worked or not.
-    fn entry(store: &Store, ws: &Path, id: &str, brief: &str) {
-        let now = (crate::config::now_ns() / 1_000_000) as u64;
-        let root = format!("s-root-{id}");
-        let child = format!("{root}-sub");
-        for (sid, parent) in [(&root, None), (&child, Some(root.clone()))] {
-            store
-                .put_session(&letibot_tokencore::store::SessionRecord {
-                    id: sid.clone(),
-                    title: None,
-                    model_id: "m".into(),
-                    dialect_sha: "d".into(),
-                    workspace_root: ws.display().to_string(),
-                    owner: "operator".into(),
-                    role: Some("coder".into()),
-                    approvers: Vec::new(),
-                    parent_session_id: parent,
-                })
-                .expect("the session row");
-        }
+    /// The lease on `repo`, held by `owner`.
+    fn hold(store: &Store, repo: &Path, owner: &str) {
+        let claim = LeaseClaim {
+            owner: owner.into(),
+            pid: 1,
+            host: "t".into(),
+            build: "t".into(),
+        };
         store
-            .put_merge_entry(&MergeEntry {
-                id: id.into(),
-                session_id: child,
-                branch: format!("agent/{id}"),
-                base_sha: "base".into(),
-                priority: MergePriority::Subagent,
-                needs: Vec::new(),
-                state: MergeState::Waiting,
-                brief: brief.into(),
-                evidence: String::new(),
-                created_ms: now,
-                updated_ms: now,
-                worktree: None,
-                landed_sha: None,
-                gate_steps: Vec::new(),
-            })
-            .expect("the entry row");
+            .acquire_queue_lease(
+                &repo.display().to_string(),
+                &claim,
+                (crate::config::now_ns() / 1_000_000) as u64,
+                crate::mergequeue::lease::LEASE_TTL_MS,
+            )
+            .expect("the lease");
     }
 
-    /// The review row a verdict is written onto — unanswered when `decision` is `None`.
-    fn review(store: &Store, entry_id: &str, decision: Option<&str>) {
-        let now = (crate::config::now_ns() / 1_000_000) as u64;
+    /// One review row in `repo`, waiting for a reviewer.
+    fn entry(store: &Store, repo: &Path, id: &str, brief: &str) {
+        entry_of(store, repo, id, brief, ReviewKind::Branch);
+    }
+
+    fn entry_of(store: &Store, repo: &Path, id: &str, brief: &str, kind: ReviewKind) {
         store
-            .put_review(&ReviewRecord {
-                entry_id: entry_id.into(),
-                session_id: "s-gatekeeper".into(),
-                branch: format!("agent/{entry_id}"),
-                base_sha: "base".into(),
-                asked_ms: now,
-                answered_ms: decision.map(|_| now),
-                decision: decision.map(str::to_string),
-                attempts: 0,
-                failed_ms: None,
-                failure: String::new(),
-                reasons: Vec::new(),
-                files: Vec::new(),
-                commands: Vec::new(),
-            })
+            .enqueue_review(
+                &NewReview {
+                    id: id.into(),
+                    repository: repo.display().to_string(),
+                    target: "main".into(),
+                    kind,
+                    session_id: format!("s-{id}"),
+                    branch: format!("agent/{id}"),
+                    worktree: None,
+                    base_sha: "base".into(),
+                    head_sha: format!("head-{id}"),
+                    brief: brief.into(),
+                    priority: MergePriority::Subagent,
+                    fixes: None,
+                    evidence: String::new(),
+                },
+                "test",
+                (crate::config::now_ns() / 1_000_000) as u64,
+            )
             .expect("the review row");
     }
 
-    /// **One row per entry waiting for a verdict, and the row says which entry it is.**
-    ///
-    /// The queue's own words are on it — the branch, the entry id and the first line of the brief
-    /// — because the board has no id column and the words ARE the name. And the first of those is
-    /// **the daemon's own name for the run** ([`crate::mergequeue::review_job_name`]): a review is
-    /// a piece of work the daemon starts, and the board and the queue's own words for a move have
-    /// to spell it one way rather than two.
+    /// The queue's claim, as its thread makes it: `reviewing`, owned by this daemon.
+    fn claim(store: &Store, id: &str) {
+        assert!(
+            store
+                .move_review(
+                    id,
+                    ReviewState::Waiting,
+                    ReviewState::Reviewing,
+                    &Move::new(me(), "claimed").set("owner", me()),
+                    (crate::config::now_ns() / 1_000_000) as u64,
+                )
+                .expect("the claim")
+        );
+    }
+
+    /// An approval, written the way another host writes it — straight into the store.
+    fn approve(store: &Store, id: &str) {
+        let r = store.review_row(id).unwrap().unwrap();
+        assert!(
+            store
+                .approve_review(
+                    id,
+                    &Approval {
+                        expect: r.state,
+                        expect_owner: None,
+                        reviewed_sha: r.head_sha,
+                        by: "operator:s-x".into(),
+                        reasons: vec![],
+                        files: vec![],
+                        commands: vec![],
+                        why: "approved".into(),
+                        merge_id: format!("m-{id}"),
+                    },
+                    (crate::config::now_ns() / 1_000_000) as u64,
+                )
+                .unwrap()
+        );
+    }
+
+    /// **One row per review waiting for a verdict, named by the daemon's run name, the row id and
+    /// the first line of the ask.**
     #[test]
-    fn one_row_per_entry_waiting_for_a_verdict() {
+    fn one_row_per_review_waiting_for_a_verdict() {
         let (_dir, store, ws) = store_with("rows");
+        hold(&store, &ws, &me());
         entry(
             &store,
             &ws,
@@ -772,135 +695,87 @@ mod tests {
             "make the reader keep the last record\nand then some",
         );
         entry(&store, &ws, "m-two", "the other branch");
-        // One asked for and unanswered, one nobody has asked about: both are WAITING for a verdict.
-        review(&store, "m-one", None);
-
-        let rows = queue_rows(&store, &ws);
-        assert_eq!(rows.len(), 2, "one row per entry waiting: {rows:?}");
+        let rows = queue_rows(&store, &me());
+        assert_eq!(rows.len(), 2, "{rows:?}");
         assert!(
-            rows.iter().all(|r| r.by == TodoBy::Queue),
-            "the rows are the QUEUE's — the fourth author — and not the model's plan: {rows:?}"
-        );
-        assert!(
-            rows.iter().all(|r| r.status == TodoStatus::Pending),
-            "a queue row is work not started: {rows:?}"
+            rows.iter()
+                .all(|r| r.by == TodoBy::Queue && r.status == TodoStatus::Pending)
         );
         let first = &rows[0].content;
         assert!(
             first.contains("m-one") && first.contains("agent/m-one"),
-            "the row names the entry AND the branch, which is what a verdict is about: {first}"
+            "{first}"
         );
         assert!(
             first.contains("make the reader keep the last record"),
-            "and the first line of the brief, which is what the review is AGAINST: {first}"
+            "{first}"
         );
-        assert!(
-            !first.contains("and then some"),
-            "one line only — the whole brief is on the entry, not in the row's name: {first}"
-        );
+        assert!(!first.contains("and then some"), "{first}");
         assert_eq!(
             rows[1].content,
             "review-agent/m-two (entry m-two): the other branch"
         );
     }
 
-    /// **A verdict reached elsewhere takes the row off** — the third thing this slice is for.
-    ///
-    /// Written the way another host would write it: straight into the store, with nothing in this
-    /// process involved. The row is not marked done and not left behind as a record — it is GONE,
-    /// because the board is a view of the queue and the entry is not in the queue's *waiting for a
-    /// verdict* set any more.
+    /// **A verdict reached elsewhere takes the row off** — approved and rejected rows are not
+    /// waiting for anything.
     #[test]
     fn a_verdict_reached_elsewhere_takes_the_row_off() {
         let (_dir, store, ws) = store_with("verdict");
+        hold(&store, &ws, &me());
         entry(&store, &ws, "m-one", "keep the last record");
         entry(&store, &ws, "m-two", "the other branch");
-        assert_eq!(queue_rows(&store, &ws).len(), 2, "both are waiting");
-
-        review(&store, "m-one", Some("accept"));
-        let rows = queue_rows(&store, &ws);
-        assert_eq!(
-            rows.len(),
-            1,
-            "the accepted entry is not waiting for anything and its row is off: {rows:?}"
-        );
-        assert!(
-            rows[0].content.contains("m-two"),
-            "and the one still waiting keeps its row: {:?}",
-            rows[0]
-        );
-
-        // **And a REFUSAL is not a row either**, for the other reason: the entry is parked, so
-        // nothing is being waited FOR — the verdict is in and it is the entry's state now.
-        review(&store, "m-two", Some("reject"));
-        assert!(
-            queue_rows(&store, &ws).is_empty(),
-            "a refused entry is parked, not waiting for a verdict"
-        );
-    }
-
-    /// **An entry this daemon does not serve is not on its session's board.**
-    ///
-    /// One store holds every daemon's queue and each session is served by the daemon for its
-    /// workspace — so a board carrying another workspace's entry would be a session nagged about
-    /// work it must not touch, which is `served_by`'s whole reason for being a function.
-    #[test]
-    fn another_workspaces_entry_is_not_on_this_board() {
-        let (_dir, store, ws) = store_with("served");
-        let elsewhere = ws.parent().expect("a parent").join("other");
-        std::fs::create_dir_all(&elsewhere).expect("the other workspace");
-        entry(&store, &ws, "m-mine", "mine to review");
-        entry(&store, &elsewhere, "m-theirs", "theirs to review");
-
-        let rows = queue_rows(&store, &ws);
+        assert_eq!(queue_rows(&store, &me()).len(), 2);
+        approve(&store, "m-one");
+        let rows = queue_rows(&store, &me());
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(
-            rows[0].content.contains("m-mine") && !rows[0].content.contains("m-theirs"),
-            "the board is this daemon's queue and nothing else: {:?}",
-            rows[0]
-        );
+        assert!(rows[0].content.contains("m-two"));
+        store
+            .move_review(
+                "m-two",
+                ReviewState::Waiting,
+                ReviewState::Rejected,
+                &Move::new("r", "no").set("verdict", "reject"),
+                1,
+            )
+            .unwrap();
+        assert!(queue_rows(&store, &me()).is_empty());
     }
 
-    /// **An entry that is not ready waits for another ENTRY, not for a reviewer.**
-    ///
-    /// `is_ready` is the queue's own word for it and this is the arm a second opinion would get
-    /// wrong: a `Waiting` entry whose `needs` have not landed is going to be rebased, and asking a
-    /// session to review it would be asking about a branch that is about to move.
+    /// **A repository whose lease another daemon holds is not on this board** — R61 defect 9:
+    /// every daemon served the one global review session, and two would each spawn a reviewer.
     #[test]
-    fn an_entry_waiting_on_another_entry_is_not_a_review_to_run() {
-        let (_dir, store, ws) = store_with("needs");
-        entry(&store, &ws, "m-first", "the first branch");
-        entry(&store, &ws, "m-second", "the dependent branch");
-        let mut second = store
-            .merge_entry("m-second")
-            .expect("reads")
-            .expect("the row");
-        second.needs = vec!["m-first".into()];
-        store.put_merge_entry(&second).expect("the dependent row");
-
-        let rows = queue_rows(&store, &ws);
-        assert_eq!(
-            rows.len(),
-            1,
-            "only the entry with nothing in front of it: {rows:?}"
-        );
-        assert!(rows[0].content.contains("m-first"), "{:?}", rows[0]);
+    fn another_daemons_repository_is_not_on_this_board() {
+        let (_dir, store, ws) = store_with("served");
+        let theirs = ws.parent().expect("a parent").join("other");
+        hold(&store, &ws, &me());
+        hold(&store, &theirs, "another-daemon");
+        entry(&store, &ws, "m-mine", "mine to review");
+        entry(&store, &theirs, "m-theirs", "theirs to review");
+        let rows = queue_rows(&store, &me());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].content.contains("m-mine"), "{:?}", rows[0]);
     }
 
-    /// **A daemon over a temp store**, for the three things this slice is measured by: the session
-    /// is started ONCE, its board carries the queue, and a verdict elsewhere takes a row off.
-    ///
-    /// `None` after announcing the skip when this box has no vocabulary GGUF — `Harness::open`
-    /// renders its stable prefix, which is `review_pass`'s situation answered the same way.
+    /// **The red target's review comes first on the board, as it does in the queue.**
+    #[test]
+    fn the_red_targets_review_is_first() {
+        let (_dir, store, ws) = store_with("red-first");
+        hold(&store, &ws, &me());
+        entry(&store, &ws, "m-branch", "a branch");
+        entry_of(&store, &ws, "red-main", "main is red", ReviewKind::Target);
+        let rows = waiting(&store, &me());
+        assert_eq!(rows[0].id, "red-main", "{rows:?}");
+    }
+
+    /// **A daemon over a temp store**, with the queue's session and a recording runner. `None`
+    /// after announcing the skip when this box has no vocabulary GGUF.
     struct Fixture {
-        /// Held, not read: dropping it deletes the store.
         _dir: TempDir,
         db: PathBuf,
         ws: PathBuf,
         cfg: Config,
         registry: Arc<Registry>,
-        /// **What the queue's session was asked to start**, in order — the seam the three tests
-        /// below are measured at, because the child a real runner starts needs a model.
         started: Arc<Mutex<Vec<(String, String)>>>,
     }
 
@@ -914,7 +789,6 @@ mod tests {
             let db = dir.path.join("sessions.db");
             let mut cfg = Config::for_this_box(&ws);
             cfg.vocab_gguf = Some(gguf);
-            // **A temp store, never the daemon's own**: the queue lives in `sessions.db`.
             cfg.store = Some(db.clone());
             cfg.session_id = "s-host".into();
             cfg.http_retries = 0;
@@ -922,10 +796,6 @@ mod tests {
             registry
                 .create(&cfg.session_id, "", Sessions::wiring(&cfg))
                 .expect("the daemon's own session registers");
-            // **The store as a SOURCE**, which is the half `ensure_gatekeeper` resumes through: a
-            // session that is on disk and not in this daemon is found here and brought in under its
-            // own id. Production sets this at startup (`cli::run`), and without it the resume arm
-            // would be dead code in the one test that means to exercise it.
             registry.set_source(StoreSessions::open(&cfg).expect("the store as a source"));
             Some(Self {
                 _dir: dir,
@@ -942,10 +812,6 @@ mod tests {
                 .expect("the daemon opens")
         }
 
-        /// **The daemon with the queue's session OPEN and a recording runner in it** — the state
-        /// the review pass is measured in. `Sessions::ensure_gatekeeper` is the daemon's own door,
-        /// called by its idle arm, so a test that wants the review has to open the session the way
-        /// the daemon does rather than by hand.
         fn opened<'p>(&self, parts: &'p Parts) -> Sessions<'p> {
             let mut sessions = self.sessions(parts);
             sessions
@@ -961,7 +827,6 @@ mod tests {
             sessions
         }
 
-        /// What the queue's session was asked to start, in order.
         fn asked(&self) -> Vec<(String, String)> {
             self.started
                 .lock()
@@ -969,8 +834,6 @@ mod tests {
                 .clone()
         }
 
-        /// **The prompt the queue's session opened with** — the paragraph this slice writes, read
-        /// off the harness that is holding it.
         fn prompt<'p>(&self, sessions: &'p Sessions<'_>) -> &'p str {
             &sessions
                 .open
@@ -980,23 +843,17 @@ mod tests {
                 .system
         }
 
-        /// A store connection that did not write the rows.
         fn store(&self) -> Store {
             Store::open(&self.db).expect("the store reopens")
         }
 
-        /// One queue entry, `Waiting`, queued by a session rooted at this daemon's workspace.
+        /// A review row in this daemon's repository (its workspace), lease held by this daemon.
         fn entry(&self, id: &str, brief: &str) {
-            entry(&self.store(), &self.ws, id, brief);
+            let s = self.store();
+            hold(&s, &self.ws, &me());
+            entry(&s, &self.ws, id, brief);
         }
 
-        /// The verdict on an entry, written the way another host writes it: straight into the
-        /// store, with nothing in this process involved.
-        fn verdict(&self, entry_id: &str, decision: &str) {
-            review(&self.store(), entry_id, Some(decision));
-        }
-
-        /// The rows the queue has put on the gatekeeper session's board.
         fn board(&self, sessions: &Sessions<'_>) -> Vec<TodoItem> {
             sessions
                 .open
@@ -1181,144 +1038,6 @@ mod tests {
         );
     }
 
-    /// **A review is a `task` child of THIS session** — the requirement, measured at the one seam
-    /// that can be measured without a model.
-    ///
-    /// The row names this session (`mergequeue::GatekeeperDoor` writes `SESSION`), and
-    /// `Harness::serve_reviews` spawns through `self.subagents` — the same runner the `task` tool
-    /// uses, whose `base.session_id` is the parent — so *whose runner was asked* is *whose child
-    /// this is*. The reviewer seats `gatekeeper` and is given the ENTRY's brief.
-    #[test]
-    fn a_review_is_a_task_child_of_this_session() {
-        let Some(f) = Fixture::new("child") else {
-            return;
-        };
-        let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-        f.entry("m-one", "make the reader keep the last record");
-        // The request row the queue's door writes: unanswered, naming THIS session.
-        review(&f.store(), "m-one", None);
-        let mut sessions = f.opened(&parts);
-
-        assert_eq!(
-            sessions.serve_reviews(),
-            1,
-            "the queue's session starts the review: {:?}",
-            f.asked()
-        );
-        let asked = f.asked();
-        assert_eq!(asked.len(), 1, "one row, one reviewer: {asked:?}");
-        let (prompt, role) = &asked[0];
-        assert_eq!(
-            role, "gatekeeper",
-            "the reviewer seats `gatekeeper` — read-only, with `bash` for `git diff`"
-        );
-        assert!(
-            prompt.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
-            "the prompt is the review's own, and its first line is the title the head hides by \
-             that mark: {prompt}"
-        );
-        assert!(
-            prompt.contains("make the reader keep the last record"),
-            "and it is given the ENTRY's brief, which is the only framing a reviewer gets: {prompt}"
-        );
-
-        // **And the row it is on is the one the store was told about** — the child is this
-        // session's, so the review desk (which `fill_queue_board` reads) has the entry.
-        let row = f.board(&sessions);
-        assert_eq!(row.len(), 1, "{row:?}");
-        assert_eq!(row[0].status, TodoStatus::InProgress, "{row:?}");
-    }
-
-    /// **A second review of the same entry does not double-spawn.**
-    ///
-    /// The store cannot tell the two apart — a request row and an attempt in flight are the same
-    /// row — so the guard is the session's own desk, and this is it, through the door
-    /// the daemon uses. This is also why the session's prompt tells its model NOT to start a
-    /// reviewer of its own: two children on one row would be two reviewers reading one branch.
-    #[test]
-    fn a_second_pass_does_not_spawn_a_second_child_for_one_entry() {
-        let Some(f) = Fixture::new("twice") else {
-            return;
-        };
-        let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-        f.entry("m-one", "keep the last record");
-        review(&f.store(), "m-one", None);
-        let mut sessions = f.opened(&parts);
-
-        assert_eq!(sessions.serve_reviews(), 1, "the first pass asks");
-        assert_eq!(
-            sessions.serve_reviews(),
-            0,
-            "the second pass sees the same row — the store has not changed — and starts nothing: \
-             {:?}",
-            f.asked()
-        );
-        assert_eq!(f.asked().len(), 1, "one reviewer, not two");
-
-        // **And nothing was written onto the row either.** A pass that re-stamped it would be the
-        // other way to make the second pass quiet, and it would be a lie: the attempt is in
-        // flight, not failed, and `asked_ms` is when the review was FIRST asked for.
-        let row = f
-            .store()
-            .merge_review("m-one")
-            .expect("reads")
-            .expect("the row");
-        assert_eq!(row.attempts, 0, "no attempt has failed: {row:?}");
-        assert!(row.failed_ms.is_none(), "so nothing is stamped: {row:?}");
-        assert!(row.failure.is_empty(), "and there is no failure to read");
-    }
-
-    /// **The row's fate is said on the session's board** — nobody has started it, a child is on it,
-    /// and the verdict takes it off.
-    ///
-    /// The three states are the whole of what a session can read about an entry, and the middle one
-    /// is the one this slice adds: `InProgress` with a `TodoNeed::Child` naming the handle, which is
-    /// what `task_result` collects by and what makes the idle check say *which child and how long it
-    /// has been running* instead of asking for a review that is already running.
-    #[test]
-    fn the_row_says_which_child_is_on_it() {
-        let Some(f) = Fixture::new("fate") else {
-            return;
-        };
-        let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-        f.entry("m-one", "keep the last record");
-        review(&f.store(), "m-one", None);
-        let mut sessions = f.opened(&parts);
-
-        // **Before: ordinary work nobody has started.**
-        assert_eq!(sessions.fill_gatekeeper_board(), 1);
-        let before = f.board(&sessions);
-        assert_eq!(before.len(), 1, "{before:?}");
-        assert_eq!(before[0].status, TodoStatus::Pending, "{before:?}");
-        assert!(before[0].needs.is_empty(), "nothing is in front of it yet");
-
-        // **A child is on it, and the board says so in the same pass that started it** — the
-        // pass re-fills rather than leaving the row looking unstarted until the next one.
-        assert_eq!(sessions.serve_reviews(), 1);
-        let during = f.board(&sessions);
-        assert_eq!(during.len(), 1, "{during:?}");
-        assert_eq!(
-            during[0].status,
-            TodoStatus::InProgress,
-            "the row is being worked: {during:?}"
-        );
-        assert_eq!(
-            during[0].needs,
-            vec![TodoNeed::Child { id: "sub-1".into() }],
-            "and it names the child `task_result` collects by: {during:?}"
-        );
-
-        // **And the verdict takes it off**, wherever the verdict was written from — here the way
-        // another host writes one, straight into the store with nothing in this process involved.
-        f.verdict("m-one", "accept");
-        assert_eq!(
-            sessions.fill_gatekeeper_board(),
-            0,
-            "the entry is not waiting for a verdict any more, so its row is gone: {:?}",
-            f.board(&sessions)
-        );
-    }
-
     /// **The session is started once, and a second pass or a second daemon does not make a twin.**
     ///
     /// The idle arm calls `ensure_gatekeeper` on every pass it reads the store — every thirty
@@ -1418,119 +1137,62 @@ mod tests {
         );
     }
 
-    /// **Its board carries one row per entry waiting for a verdict, and the ordinary idle nag is
-    /// what is driven by it.**
-    ///
-    /// The rows are the queue's (`TodoBy::Queue`), the clock is the one every session already has,
-    /// and the notice names the row — which is the whole of *"it is a normal auto-driving session
-    /// that treats review queue as todo list - so nags and all"*.
+    /// **A claimed review is a `task` child of THIS session, bound to the head the claim read**
+    /// (decision 6), and the row says which child is on it; a second pass starts no second child;
+    /// the verdict takes the row off.
     #[test]
-    fn its_board_carries_one_row_per_entry_waiting_for_a_verdict() {
-        let Some(f) = Fixture::new("board") else {
+    fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
+        let Some(f) = Fixture::new("child") else {
             return;
         };
         let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
         f.entry("m-one", "make the reader keep the last record");
-        f.entry("m-two", "the other branch");
-        let mut sessions = f.sessions(&parts);
-        sessions.ensure_gatekeeper().expect("the session starts");
-
-        assert_eq!(
-            sessions.fill_gatekeeper_board(),
-            2,
-            "one row per entry waiting for a verdict"
-        );
-        let rows = f.board(&sessions);
-        assert_eq!(rows.len(), 2, "the rows are on the QUEUE's half: {rows:?}");
-        assert!(
-            rows.iter().all(|r| r.status == TodoStatus::Pending),
-            "a queue row is work not started: {rows:?}"
-        );
-        let said: Vec<&str> = rows.iter().map(|r| r.content.as_str()).collect();
-        assert!(
-            said.iter().any(|r| r.contains("m-one")) && said.iter().any(|r| r.contains("m-two")),
-            "one row each, named by the entry they are about: {said:?}"
-        );
-
-        // **AND THE ORDINARY IDLE NAG IS ARMED ON THEM.** The clock is the one this session already
-        // had (`Sessions::rearm_todo_nag`, the same arm a turn end and an operator's row take), so
-        // nothing here is a second mechanism — and the notice it will send says whose row it is.
-        assert!(
-            sessions
-                .nags
-                .get(SESSION)
-                .and_then(|clock| clock.due_at())
-                .is_some(),
-            "the plan-check is armed on the rows the queue wrote"
-        );
-        let notice = sessions
-            .open
-            .get_mut(SESSION)
-            .expect("the gatekeeper session is open")
-            .nag_notice()
-            .expect("the check has something to ask about");
-        assert!(
-            notice.contains("the merge queue's"),
-            "the check says whose row it is holding the session to: {notice}"
-        );
-        assert!(
-            notice.contains("m-one") || notice.contains("m-two"),
-            "and it names the entry: {notice}"
-        );
-        assert!(
-            notice.contains("comes off when"),
-            "and it does not offer a verb that has no door: {notice}"
-        );
-    }
-
-    /// **An entry that reaches a verdict elsewhere takes its row off** — written the way another
-    /// host writes it, with nothing in this process involved.
-    ///
-    /// The row is not marked done and not kept as a record: the half is a VIEW of the queue, and the
-    /// entry is not in the queue's *waiting for a verdict* set any more. The state it reached lives
-    /// on the entry and the review in the store, which is where anything that COUNTS the queue reads
-    /// it from.
-    #[test]
-    fn a_verdict_reached_elsewhere_takes_its_row_off() {
-        let Some(f) = Fixture::new("verdict") else {
-            return;
-        };
-        let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-        f.entry("m-one", "keep the last record");
-        f.entry("m-two", "the other branch");
-        let mut sessions = f.sessions(&parts);
-        sessions.ensure_gatekeeper().expect("the session starts");
-        assert_eq!(sessions.fill_gatekeeper_board(), 2, "both are waiting");
-
-        f.verdict("m-one", "accept");
-        assert_eq!(
-            sessions.fill_gatekeeper_board(),
-            1,
-            "the accepted entry's row is off the board"
-        );
-        let rows = f.board(&sessions);
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(
-            rows[0].content.contains("m-two"),
-            "and the one still waiting keeps its row: {rows:?}"
-        );
-
-        // **And a queue standing still is not an event**: the same rows again change nothing, so the
-        // board does not publish and the store is not written on every pass.
-        let version = sessions
-            .open
-            .get(SESSION)
-            .expect("open")
-            .todo_board_version();
+        let mut sessions = f.opened(&parts);
         assert_eq!(sessions.fill_gatekeeper_board(), 1);
+        assert_eq!(f.board(&sessions)[0].status, TodoStatus::Pending);
+        assert_eq!(
+            sessions.serve_reviews(),
+            0,
+            "nothing is started for a row the queue has not claimed"
+        );
+
+        claim(&f.store(), "m-one");
+        assert_eq!(sessions.serve_reviews(), 1, "{:?}", f.asked());
+        let asked = f.asked();
+        let (prompt, role) = &asked[0];
+        assert_eq!(role, "gatekeeper");
+        assert!(
+            prompt.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("make the reader keep the last record"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("git diff base...head-m-one"),
+            "the reviewer reads the HEAD the claim bound, not the branch as it is: {prompt}"
+        );
+        let row = f.store().review_row("m-one").unwrap().unwrap();
+        assert_eq!(row.reviewer.as_deref(), Some("sub-1"), "{row:?}");
+        let during = f.board(&sessions);
+        assert_eq!(during[0].status, TodoStatus::InProgress, "{during:?}");
+        assert_eq!(
+            during[0].needs,
+            vec![TodoNeed::Child { id: "sub-1".into() }]
+        );
+
+        assert_eq!(sessions.serve_reviews(), 0, "no second child for one row");
+        assert_eq!(f.asked().len(), 1);
+
+        // **The daemon's own session serves nothing**: reviewers are the queue session's.
         assert_eq!(
             sessions
                 .open
-                .get(SESSION)
+                .get_mut(&f.cfg.session_id)
                 .expect("open")
-                .todo_board_version(),
-            version,
-            "a queue that has not moved is not a write"
+                .serve_reviews(),
+            0
         );
     }
 }

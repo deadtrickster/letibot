@@ -118,10 +118,10 @@ fn frame_kind(f: &ServerFrame) -> String {
         // The verdicts are counted too: a queue pane draws an entry's review beside it, so a
         // frame that arrived with one half of the pair and not the other is worth seeing in
         // the diagnostic rather than only in the pane.
-        ServerFrame::MergeQueue { entries, reviews } => format!(
-            "MergeQueue({} entries, {} reviews)",
-            entries.len(),
-            reviews.len()
+        ServerFrame::Queues { snapshot } => format!(
+            "Queues({} reviews, {} merges)",
+            snapshot.reviews.len(),
+            snapshot.merges.len()
         ),
         ServerFrame::Peeked {
             session_id, events, ..

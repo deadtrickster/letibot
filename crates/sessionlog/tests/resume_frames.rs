@@ -422,35 +422,32 @@ impl SessionSource for BrokenQueue {
     fn set_title(&self, _session_id: &str, _title: &str) -> Result<(), String> {
         Ok(())
     }
-    fn merge_entries(&self) -> Result<Vec<letibot_sessionlog::event::MergeEntry>, String> {
-        Err("sqlite: database is locked".into())
+    fn queues(&self) -> letibot_sessionlog::event::QueueSnapshot {
+        letibot_sessionlog::event::QueueSnapshot {
+            unreadable: Some("sqlite: database is locked".into()),
+            ..Default::default()
+        }
     }
 }
 
-/// **An unreadable queue is said on the asking head's session, not drawn as empty** — R67 item 15.
-/// The source used to print the failure to the daemon's stderr and answer an empty list, which
-/// the pane cannot tell from a queue with nothing in it.
+/// **An unreadable queue is said in the snapshot, not drawn as empty** — R67 item 15, R61
+/// defect 12. The source used to print the failure to the daemon's stderr and answer an empty
+/// list, which the pane cannot tell from a queue with nothing in it; the snapshot now carries the
+/// reason, and the frame is still sent so the pane answers while it is open.
 #[test]
 fn a_queue_that_cannot_be_read_is_said_rather_than_drawn_empty() {
     let r = Registry::new();
-    r.create("live", "", wiring("/home/dead")).unwrap();
     r.set_source(Arc::new(BrokenQueue));
-    let (entries, reviews) = r.merge_queue_for("live");
-    assert!(entries.is_empty() && reviews.is_empty());
-    let said: Vec<String> = r
-        .get("live")
-        .unwrap()
-        .retained()
-        .iter()
-        .filter_map(|e| match &e.event {
-            letibot_sessionlog::SessionEvent::Warning { code, detail, .. }
-                if code == "merge_queue_unreadable" =>
-            {
-                Some(detail.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(said.len(), 1, "one half failed, one sentence: {said:?}");
-    assert!(said[0].contains("database is locked"), "{said:?}");
+    let snapshot = r.queues();
+    assert!(snapshot.reviews.is_empty() && snapshot.merges.is_empty());
+    assert!(
+        snapshot
+            .unreadable
+            .as_deref()
+            .is_some_and(|w| w.contains("database is locked")),
+        "the failure travels with the snapshot: {snapshot:?}"
+    );
+    // A registry with no source says it has no store, rather than answering an empty queue.
+    let bare = Registry::new();
+    assert!(bare.queues().unreadable.is_some());
 }

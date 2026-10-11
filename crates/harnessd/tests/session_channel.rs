@@ -63,7 +63,7 @@ use letibot_sessionlog::hub::{Hub, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_tokencore::Vocab;
 use letibot_tokencore::store::{
-    MergeEntry, MergePriority, MergeState, ReviewRecord, SessionRecord, Store,
+    MergePriority, Move, NewReview, ReviewKind, ReviewState, SessionRecord, Store,
 };
 use letibot_tools::NullToolSink;
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
@@ -91,6 +91,47 @@ const MESSAGE: &str = "the branch is not what the brief asked for";
 const TO_THE_TASK: &str = "the work is done, waiting";
 const TO_THE_PEER: &str = "understood, I am on it";
 const REFUSAL: &str = "the change never touches the file the brief names";
+
+/// **A review row, claimed by this daemon's queue** — what the review queue's session serves: an
+/// entry `waiting` put up for review, moved to `reviewing` with this process's lease identity as
+/// its owner, the way the queue's own thread claims one (`mergequeue::serve`).
+fn a_claimed_review(store: &Store, id: &str, branch: &str, base_sha: &str, worktree: String) {
+    let me = letibot_harnessd::mergequeue::lease::this_daemon()
+        .owner
+        .clone();
+    store
+        .enqueue_review(
+            &NewReview {
+                id: id.to_string(),
+                repository: "/the/repository".into(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: id.to_string(),
+                branch: branch.to_string(),
+                worktree: Some(worktree),
+                base_sha: base_sha.to_string(),
+                head_sha: "1".repeat(40),
+                brief: "do the work the brief names".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                id,
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new(me.clone(), "claimed").set("owner", me),
+                2,
+            )
+            .expect("the claim")
+    );
+}
 
 /// How long the driver waits for something a correct build produces in milliseconds —
 /// generous on purpose, because the assertion is what happened, not how fast.
@@ -1031,7 +1072,9 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     };
     let dir = TempDir::new("harnessd-session-channel-refusal");
     let path = dir.path().join("sessions.db");
-    let main_id = "s-father-of-the-branch";
+    // The review queue's own session hosts the reviewers (`Harness::serve_reviews` serves only
+    // there), so the father of the branch here IS that session.
+    let main_id = letibot_harnessd::sessions::gatekeeper::SESSION;
 
     let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
     // Four requests, in the order they happen: the child's work, the gatekeeper's CALL, the
@@ -1065,47 +1108,11 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let child_hub = father.hub_of(&registry, &child_id);
     father.wait_until_parked(&child_id);
 
-    // **The queue's two rows**: an entry whose id IS the child, and the review row the
-    // verdict will be written onto.
+    // **The review row, claimed by this daemon's queue**: its id and its session ARE the child.
     let branch = "agent/the-work".to_string();
     let base_sha = "0".repeat(40);
     let store = Store::open(&path).expect("the store");
-    store
-        .put_merge_entry(&MergeEntry {
-            id: child_id.clone(),
-            session_id: child_id.clone(),
-            branch: branch.clone(),
-            base_sha: base_sha.clone(),
-            priority: MergePriority::Subagent,
-            needs: Vec::new(),
-            state: MergeState::Waiting,
-            brief: "do the work the brief names".into(),
-            evidence: String::new(),
-            created_ms: 1,
-            updated_ms: 1,
-            worktree: Some(dir.relative()),
-            landed_sha: None,
-            gate_steps: Vec::new(),
-        })
-        .expect("the entry");
-    store
-        .put_review(&ReviewRecord {
-            entry_id: child_id.clone(),
-            // The session that HOSTED the review, which is not the child.
-            session_id: main_id.to_string(),
-            branch: branch.clone(),
-            base_sha: base_sha.clone(),
-            asked_ms: 1,
-            answered_ms: None,
-            decision: None,
-            attempts: 0,
-            failed_ms: None,
-            failure: String::new(),
-            reasons: Vec::new(),
-            files: Vec::new(),
-            commands: Vec::new(),
-        })
-        .expect("the review row");
+    a_claimed_review(&store, &child_id, &branch, &base_sha, dir.relative());
 
     // **The daemon's own pass.** One call starts the gatekeeper; the next writes its verdict
     // and sends the complaints, so this drives it until the child has heard them.
@@ -1137,10 +1144,11 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
 
     // **And the verdict is on the row**, where the queue reads it.
     let row = store
-        .merge_review(&child_id)
+        .review_row(&child_id)
         .expect("the review row reads back")
         .expect("the review row is there");
-    assert_eq!(row.decision.as_deref(), Some("reject"), "{row:?}");
+    assert_eq!(row.state, ReviewState::Rejected, "{row:?}");
+    assert_eq!(row.verdict.as_deref(), Some("reject"), "{row:?}");
     assert!(
         row.reasons.iter().any(|r| r.contains(REFUSAL)),
         "the reviewer's reasons are on the row: {row:?}"
@@ -1179,7 +1187,7 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     };
     let dir = TempDir::new("harnessd-session-channel-refusal-gone");
     let path = dir.path().join("sessions.db");
-    let main_id = "s-father-of-the-lost-branch";
+    let main_id = letibot_harnessd::sessions::gatekeeper::SESSION;
     let peer_id = "s-the-session-that-enqueued-it";
     let lost = "s-the-child-that-left";
 
@@ -1240,42 +1248,7 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
             parent_session_id: Some(peer_id.to_string()),
         })
         .expect("the lost child's row");
-    store
-        .put_merge_entry(&MergeEntry {
-            id: lost.to_string(),
-            session_id: lost.to_string(),
-            branch: branch.clone(),
-            base_sha: base_sha.clone(),
-            priority: MergePriority::Subagent,
-            needs: Vec::new(),
-            state: MergeState::Waiting,
-            brief: "do the work the brief names".into(),
-            evidence: String::new(),
-            created_ms: 1,
-            updated_ms: 1,
-            worktree: Some(dir.relative()),
-            landed_sha: None,
-            gate_steps: Vec::new(),
-        })
-        .expect("the entry");
-    store
-        .put_review(&ReviewRecord {
-            entry_id: lost.to_string(),
-            // The session that HOSTED the review, which is neither the child nor the enqueuer.
-            session_id: main_id.to_string(),
-            branch: branch.clone(),
-            base_sha: base_sha.clone(),
-            asked_ms: 1,
-            answered_ms: None,
-            decision: None,
-            attempts: 0,
-            failed_ms: None,
-            failure: String::new(),
-            reasons: Vec::new(),
-            files: Vec::new(),
-            commands: Vec::new(),
-        })
-        .expect("the review row");
+    a_claimed_review(&store, lost, &branch, &base_sha, dir.relative());
 
     // **The daemon's own pass**, driven until the ENQUEUER has the complaints. Nobody drains the
     // peer's queue here — the message itself is the fact, and it is on the peer's own queue.
@@ -1316,10 +1289,10 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     // **And the verdict is on the row**, where the queue reads it — the door moved the verdict, and
     // the entry does not land on it.
     let row = store
-        .merge_review(lost)
+        .review_row(lost)
         .expect("the review row reads back")
         .expect("the review row is there");
-    assert_eq!(row.decision.as_deref(), Some("reject"), "{row:?}");
+    assert_eq!(row.verdict.as_deref(), Some("reject"), "{row:?}");
     assert!(
         row.reasons.iter().any(|r| r.contains(REFUSAL)),
         "the reviewer's reasons are on the row: {row:?}"

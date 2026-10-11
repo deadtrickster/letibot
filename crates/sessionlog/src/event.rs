@@ -136,7 +136,7 @@ pub enum TodoBy {
     /// **The merge queue wrote it on the gatekeeper session's board** — the fourth author, and the
     /// one that is not a session. The daemon's queue fills the board from the store every pass and
     /// replaces this half, so a row leaves when its entry's verdict arrives; the STATE of an entry
-    /// is `MergeEntry::state`/`ReviewRecord::decision` in the store and never this row.
+    /// is `ReviewRow::state`/`ReviewRow::verdict` in the store and never this row.
     ///
     /// See `letibot_tokencore::store::TodoBy::Queue` for the whole of the argument. On the wire it
     /// is the one word `queue`, and a head that predates it cannot decode it — which is why the
@@ -345,214 +345,186 @@ pub enum TodoCondition {
     Job { handle: String },
 }
 
-/// **The merge queue's priority, as the wire spells it** — a copy of
-/// `letibot_tokencore::store::MergePriority`, not a re-export, for the reason [`TodoCondition`]
-/// is already a copy: this crate is the wire, and a wire type that aliases a store type makes
-/// one crate's rename a protocol change. The conversion lives where the wire meets the store
-/// (harnessd's merge-queue daemon), and it is a `match`, so a rung added on one side fails to
-/// compile on the other rather than arriving as a priority nobody can order.
+/// **The review queue and the merge queue, as a head reads them** (R61) — one snapshot of both,
+/// with who serves each repository and how recently it said so, the target branches' health, and
+/// the last moves. The operator: *"review is review and merge is merge. separate steps. separate
+/// queues."*
 ///
-/// The tag is the contract: the snake_case names are what an older head reads past and what a
-/// newer one reads by, so a rung added here is additive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MergePriority {
-    /// The operator's entry: it jumps every subagent entry, whatever the age.
-    Urgent,
-    /// A subagent's entry: it waits behind an operator's urgent entry; inside the rung it is
-    /// oldest-first.
-    Subagent,
+/// **States travel as WORDS, not as enums**, and that is a decision about the wire rather than
+/// about taste: the v23 queue grew a state (`vetoed`) and every older head lost the WHOLE frame it
+/// arrived in, because a closed enum cannot decode a word it does not know. A head draws the word
+/// it is given; the closed sets live with the store (`letibot_tokencore::store::queues`), which is
+/// the one place a state is decided.
+///
+/// **A snapshot that could not be read says so** (`unreadable`) and is never an empty queue —
+/// R61 defect 12: `sessions.rs` returned an empty list when the read failed, and the pane drew it
+/// as *nothing queued*.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueSnapshot {
+    /// When the daemon read it, Unix ms — the clock every age in the pane is measured against.
+    pub at_ms: u64,
+    #[serde(default)]
+    pub reviews: Vec<QueueReview>,
+    #[serde(default)]
+    pub merges: Vec<QueueMerge>,
+    /// Who holds each repository's lease, and the heartbeat's time.
+    #[serde(default)]
+    pub leases: Vec<QueueLeaseView>,
+    /// The target branches' health — a `red` one is the emergency the pane leads with.
+    #[serde(default)]
+    pub targets: Vec<TargetHealthView>,
+    /// The last moves across both queues, oldest first.
+    #[serde(default)]
+    pub recent: Vec<QueueMove>,
+    /// How many rows of the pre-split (v23) queue are archived.
+    #[serde(default)]
+    pub archived: usize,
+    /// **Why the snapshot is incomplete**, when it is: the store could not be read. `None` is a
+    /// whole read.
+    #[serde(default)]
+    pub unreadable: Option<String>,
 }
 
-/// **Where a merge-queue entry is, as the wire spells it** — a copy of
-/// `letibot_tokencore::store::MergeState`, not a re-export, for the reason [`MergePriority`]
-/// is already a copy. The states are the queue's own vocabulary, and a state that is not on
-/// this list is a state the pane cannot draw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MergeState {
-    /// In the queue, not yet taken; ready once its `needs` have all `Landed`.
-    Waiting,
-    /// The daemon has it and is working — rebasing at the tip and running the gate.
-    Taken,
-    /// Merged to main; the worktree is removed and the branch deleted.
-    Landed,
-    /// The gate failed; the worktree stays, with the reason on the row.
-    Failed,
-    /// A rebase conflict; the worktree stays, with the reason on the row.
-    Conflict,
-    /// The gate job died with the daemon; it is listed with its reason, not dropped.
-    Stale,
-    /// **A PERSON rejected it** (`PROTOCOL_VERSION` 38) — the operator's verdict, and not a
-    /// gatekeeper's. A state of its own rather than a sentence on a `failed` row because a
-    /// person's rejection and a machine's must not draw the same way: the head draws `failed`,
-    /// `conflict` and `stale` as the loud, red ones, and the operator's requirement is that a
-    /// veto does not (`"a vetoed entry must not draw as red"`). It is terminal: the queue only
-    /// ever takes a `waiting` entry, so a vetoed one is never reviewed or gated again. The way
-    /// back is a person's — `approve` reverses the decision it was made by, `rm` forgets it.
-    Vetoed,
-}
-
-/// **One entry in the merge queue, on the wire** — a copy of
-/// `letibot_tokencore::store::MergeEntry`, not a re-export, for the reason [`MergeState`] is
-/// already a copy. The snapshot carries the whole queue, every state, and an entry the queue
-/// cannot act on is listed with its reason — the `evidence` on the row says what it is waiting
-/// on, why it failed, or why it is stale.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MergeEntry {
-    /// The id the enqueuer minted, and the one the queue's events name.
+/// **One review row on the wire** — see `letibot_tokencore::store::ReviewRow`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueReview {
     pub id: String,
-    /// The session that enqueued it.
+    pub repository: String,
+    pub target: String,
+    /// `branch`, or `target` — the target's own red tip.
+    pub kind: String,
     pub session_id: String,
-    /// The branch to merge, and the one checked out in the entry's worktree.
     pub branch: String,
-    /// The SHA the entry was written against — the tip of main when the branch was cut.
-    pub base_sha: String,
-    /// The queue's priority, out of [`MergePriority`]'s closed set.
-    pub priority: MergePriority,
-    /// The entries this one depends on, by id.
-    pub needs: Vec<String>,
-    /// Where the entry is, out of [`MergeState`]'s closed set.
-    pub state: MergeState,
-    /// **The ask the branch was produced under, verbatim** — the brief the child was given,
-    /// carried on the entry because the reviewer reads it.
-    ///
-    /// `serde(default)` and additive: a head older than the field reads past it, and a daemon
-    /// older than it sends none — an empty brief is *nobody recorded one*, which is a real
-    /// state and not an error. The gatekeeper's protocol is brief-first (it is given the ask
-    /// and NOT the child's report), so this is the field that makes a review possible at all
-    /// rather than a nice-to-have the pane draws.
+    /// `waiting`, `reviewing`, `approved`, `rejected`, `cannot_decide`, `blocked`, `withdrawn`,
+    /// `archived`.
+    pub state: String,
+    /// The lease holder working it, `""` when nobody is.
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    #[serde(default)]
+    pub head_sha: String,
+    #[serde(default)]
+    pub reviewed_sha: Option<String>,
+    #[serde(default)]
+    pub verdict: Option<String>,
+    #[serde(default)]
+    pub verdict_by: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub failure: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    pub evidence: String,
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
+    #[serde(default)]
+    pub fixes: Option<String>,
+    pub created_ms: u64,
+    /// When the row entered its current state.
+    pub state_ms: u64,
     #[serde(default)]
     pub brief: String,
-    /// The reason for the state, in the queue's own words.
-    pub evidence: String,
-    /// When the entry was enqueued, Unix ms.
-    pub created_ms: u64,
-    /// When the entry last moved, Unix ms.
-    pub updated_ms: u64,
-    /// Where the branch is checked out, when it is.
+}
+
+/// **One merge row on the wire** — see `letibot_tokencore::store::MergeRow`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueMerge {
+    pub id: String,
+    pub review_id: String,
+    pub repository: String,
+    pub target: String,
+    pub branch: String,
+    /// `queued`, `gating`, `landed`, `failed`, `timed_out`, `conflict`, `moved`, `blocked`,
+    /// `withdrawn`.
+    pub state: String,
     #[serde(default)]
-    pub worktree: Option<String>,
-    /// The tip the entry landed at, set when it moves to `Landed`.
+    pub owner: String,
+    pub approved_sha: String,
+    #[serde(default)]
+    pub approved_by: String,
+    #[serde(default)]
+    pub rebased_sha: Option<String>,
     #[serde(default)]
     pub landed_sha: Option<String>,
-    /// **The landing half's rows: one per gate step, in the order `main` declared them** — a
-    /// copy of `letibot_tokencore::store::MergeGateStep`, for the reason [`MergeEntry`] is a copy
-    /// of its own row.
-    ///
-    /// **`serde(default)`, so no `PROTOCOL_VERSION` bump** — this file's own test for whether a
-    /// bump is owed: an older head ignores an unknown key and draws exactly the row it drew
-    /// before, and a newer head reading an older daemon sees `[]` and draws the same row,
-    /// because *the gate has not run on this entry* is what a daemon from before this field can
-    /// honestly say. Nothing here is a word an older peer cannot DECODE, which is the one thing
-    /// the bumps in this file are for.
-    ///
-    /// **It is on the wire because the note's argument for the merge half is that a thing being
-    /// RUN can be drawn well**, and a drawing needs the steps rather than a verdict: a head
-    /// handed only `failed` can only ever draw `failed`. Empty is a fact and not a missing one —
-    /// see the store's own doc on the field — and a repository with no gate sends the one
-    /// [`MergeGateOutcome::NoGate`] row rather than nothing.
-    ///
-    /// **The live half of it does not travel.** [`SessionEvent::MergeEntryMoved`] carries a
-    /// state and an evidence sentence and not a whole entry, so a head folding a move keeps the
-    /// rows from the snapshot it last read; the rows are written by the move that ENDS a
-    /// landing, which is exactly the move a head re-reads the queue after.
+    #[serde(default)]
+    pub pushed: String,
+    pub evidence: String,
+    #[serde(default)]
+    pub gate_steps: Vec<MergeGateStep>,
+    #[serde(default)]
+    pub fixes: Option<String>,
+    pub created_ms: u64,
+    pub state_ms: u64,
+}
+
+/// **Who serves a repository's queues** — and the heartbeat a person reads liveness from.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueLeaseView {
+    pub repository: String,
+    pub owner: String,
+    pub pid: u32,
+    pub host: String,
+    pub build: String,
+    pub heartbeat_ms: u64,
+    pub acquired_ms: u64,
+}
+
+/// **A target branch's health** — `gating`, `green`, `red`, `timed_out` or `blocked`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetHealthView {
+    pub repository: String,
+    pub target: String,
+    pub sha: String,
+    pub state: String,
+    pub checked_ms: u64,
+    pub evidence: String,
     #[serde(default)]
     pub gate_steps: Vec<MergeGateStep>,
 }
 
-/// **One gate step, on the wire** — a copy of `letibot_tokencore::store::MergeGateStep`, for the
-/// reason [`MergeEntry`] is a copy of its own row: the head draws it and must not be able to
-/// write one.
+/// **One move of one row** — the transition history (R61 requirement 2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueMove {
+    /// `review`, `merge`, `target` or `lease`.
+    pub queue: String,
+    pub entry_id: String,
+    pub repository: String,
+    #[serde(default)]
+    pub from: Option<String>,
+    pub to: String,
+    pub at_ms: u64,
+    pub by: String,
+    pub why: String,
+}
+
+/// **One step of a gate, on the wire** — a copy of `letibot_tokencore::store::MergeGateStep`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeGateStep {
-    /// The command as `main`'s `AGENTS.md` spells it. Empty for exactly one row — the
-    /// [`MergeGateOutcome::NoGate`] one, where there was no command to run.
     pub command: String,
-    /// What became of it, out of [`MergeGateOutcome`]'s closed set.
     pub outcome: MergeGateOutcome,
-    /// The tail of what the step wrote, with the bytes dropped from the front counted.
     #[serde(default)]
     pub output: String,
-    /// When the step started, Unix ms. `0` on a step that never ran.
     #[serde(default)]
     pub started_ms: u64,
-    /// How long it took, ms. `0` on a step that never ran.
     #[serde(default)]
     pub elapsed_ms: u64,
 }
 
-/// **What became of one gate step**, on the wire — a copy of
-/// `letibot_tokencore::store::MergeGateOutcome`, for the reason [`MergeState`] is a copy.
-///
-/// `passed`, `failed`, `not_run` and `no_gate` are four different facts and a head must not
-/// collapse them: a step that never ran is not a step that was green, and a repository with no
-/// gate is not a gate that passed everything.
+/// **What became of one gate step** — a copy of `letibot_tokencore::store::MergeGateOutcome`.
+/// `timed_out` and `killed` are R61's: a step past the gate's deadline, and a step killed because
+/// the daemon stopped or lost its lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeGateOutcome {
-    /// It ran, and it was green.
     Passed,
-    /// It ran, and it was red; `output` is the tail that says why.
     Failed,
-    /// An earlier step was red, so the gate stopped before this one.
     NotRun,
-    /// The repository's `main` declares no gate at all.
     NoGate,
-}
-
-/// **The reviewer's verdict on one entry, on the wire** — a copy of
-/// `letibot_tokencore::store::ReviewRecord`, for the reason [`MergeEntry`] is a copy of its own
-/// row: the head draws it and must not be able to write one.
-///
-/// **It travels beside the entries rather than inside one**, and the two are the two questions
-/// a reader asks: *what is the queue* (the entries) and *what did the reviewer say about it*
-/// (this). An entry can have no review at all — nobody has asked — which is a different fact
-/// from a review with no verdict yet, and `decision: None` is what tells them apart.
-///
-/// The pane's Enter opens this: a verdict without its reasons and the evidence it was based on
-/// is an opinion, so `reasons`, `files` and `commands` travel with the word.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MergeReview {
-    /// The entry this verdict is about.
-    pub entry_id: String,
-    /// The session that reviewed it — the one a person attaches to when they want to read the
-    /// argument rather than the verdict.
-    pub session_id: String,
-    /// The branch judged.
-    pub branch: String,
-    /// The base SHA judged.
-    pub base_sha: String,
-    /// When the reviewer was asked, Unix ms.
-    pub asked_ms: u64,
-    /// When the verdict came back, Unix ms. `None` while the review is outstanding.
-    #[serde(default)]
-    pub answered_ms: Option<u64>,
-    /// `accept`, `reject` or `needs_human`, or `None` for a review that has not answered.
-    #[serde(default)]
-    pub decision: Option<String>,
-    /// **The last attempt's failure, verbatim, or empty** — an added, defaulted field, so no
-    /// `PROTOCOL_VERSION` bump: an older head reads past it and draws what it drew before.
-    ///
-    /// **It is not a `decision` and it must not be read as one.** A reviewer whose turn failed
-    /// reached no judgement, so `decision` is `None`; without this field the head had only
-    /// `decision: None` to go on and drew *the reviewer has been asked and has not answered*
-    /// over an attempt that had already died — the failure was invisible on the pane unless
-    /// somebody opened the store. The entry's own `evidence` carries the same sentence (that is
-    /// where the row a person scans reads it); this is the field that lets the head say *no
-    /// verdict* rather than *still waiting*, which is the difference the restart is a decision
-    /// about.
-    #[serde(default)]
-    pub failure: String,
-    /// The reviewer's reasons, in its own words.
-    #[serde(default)]
-    pub reasons: Vec<String>,
-    /// The files the reviewer read.
-    #[serde(default)]
-    pub files: Vec<String>,
-    /// The commands the reviewer ran.
-    #[serde(default)]
-    pub commands: Vec<String>,
+    TimedOut,
+    Killed,
 }
 
 /// Why generation stopped.
@@ -2026,48 +1998,16 @@ pub enum SessionEvent {
         /// Wall time from spawn to settlement.
         elapsed_ms: u64,
     },
-    /// **A merge-queue entry was added** — the whole entry, so a head that missed the
-    /// snapshot sees it rather than only later changes.
-    ///
-    /// The snapshot-plus-events pattern the todos and jobs use: the snapshot carries the whole
-    /// queue as of now, and from then on the events carry every change. A head attaching
-    /// mid-flight gets the snapshot, and a head that was attached gets this event, so neither
-    /// sees a shorter queue than the other.
-    MergeEntryAdded {
-        /// The entry, whole: the id, the branch, the priority, the `needs`, the state and the
-        /// evidence.
-        entry: MergeEntry,
-    },
-    /// **A merge-queue entry moved** — its new state and its evidence, so a head that was
-    /// attached sees the move rather than only the next snapshot.
-    ///
-    /// The evidence is the reason for the state, in the queue's own words: the unmet
-    /// dependencies while `Waiting` with some, the gate's failure while `Failed`, the conflict
-    /// while `Conflict`, the dead job while `Stale`, the landed tip while `Landed`. A move
-    /// without its reason is a row the pane draws and the operator cannot read.
-    MergeEntryMoved {
-        /// The id of the entry that moved.
+    /// **A row of the review queue or the merge queue moved** (R61) — the queue, the row, the
+    /// state it moved to and why. The pane re-reads the snapshot on it; the log keeps the
+    /// sentence. Broadcast to every session's log, because the queues are daemon-level and a pane
+    /// may be open on any session.
+    QueueMoved {
+        /// `review`, `merge` or `target`.
+        queue: String,
         id: String,
-        /// The state it moved to.
-        state: MergeState,
-        /// The reason for the state, in the queue's own words.
-        evidence: String,
-    },
-    /// **A merge-queue entry was REMOVED** — the operator's `rm`, and the only way a row leaves
-    /// the queue without a state.
-    ///
-    /// The queue's other events carry a MOVE; this one carries an absence, and a head that
-    /// folded [`SessionEvent::MergeEntryAdded`] needs it for the reason it needs
-    /// [`SessionEvent::MergeEntryMoved`]: without it an open pane would go on drawing a row the
-    /// queue no longer holds, which is exactly the lie the module is written to refuse and the
-    /// one an operator who has just deleted an entry would be looking straight at. The head
-    /// drops the row and its verdict; the `evidence` is here for the log, which is the durable
-    /// record of what the queue did and why, rather than for a row there is no longer.
-    MergeEntryRemoved {
-        /// The id of the entry that was removed.
-        id: String,
-        /// Why, in the queue's own words — the act's own sentence.
-        evidence: String,
+        to: String,
+        why: String,
     },
     /// **A window of one background job's output, for a pane that draws it.**
     ///
@@ -2248,9 +2188,7 @@ impl SessionEvent {
             SessionEvent::DenialRaised { .. } => "DenialRaised",
             SessionEvent::Subagent { .. } => "Subagent",
             SessionEvent::JobSettled { .. } => "JobSettled",
-            SessionEvent::MergeEntryAdded { .. } => "MergeEntryAdded",
-            SessionEvent::MergeEntryMoved { .. } => "MergeEntryMoved",
-            SessionEvent::MergeEntryRemoved { .. } => "MergeEntryRemoved",
+            SessionEvent::QueueMoved { .. } => "QueueMoved",
             SessionEvent::OperatorCallAllowed { .. } => "OperatorCallAllowed",
             SessionEvent::JobOutput { .. } => "JobOutput",
             SessionEvent::Filling { .. } => "Filling",

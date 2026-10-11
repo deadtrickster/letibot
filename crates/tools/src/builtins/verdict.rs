@@ -448,6 +448,8 @@ mod tests {
             brief: "make the reader keep the last record".into(),
             branch: "agent/reader".into(),
             base_sha: "abc123".into(),
+            head_sha: String::new(),
+            cwd: String::new(),
         }
     }
 

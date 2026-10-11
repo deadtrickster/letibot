@@ -1036,62 +1036,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
     daemon.catch_signals().map_err(|e| e.to_string())?;
 
-    // **The merge queue, before the worker loop takes this thread.** Its own thread, its own
-    // connection to the session store, and the gate CI runs as its check — see `mergequeue`'s
-    // module docs for why each of those is a thread of its own. It is inert until an entry
-    // exists, and the entry comes from `task_start`'s child finishing (see
-    // `HarnessTaskRunner::finished`); a daemon that is not in a git repo (or has no `--store`)
-    // is told it has no queue rather than pretending to serve one.
+    // **The review queue and the merge queue (R61), before the worker loop takes this thread.**
+    // Their own threads — a supervisor that claims each repository's lease and a worker per
+    // lease held — never a session's worker, with their own connections to the store. The
+    // reviewers are `task` children of the review queue's session (`Sessions::serve_reviews`);
+    // the threads ring it, and every move is announced on every hub (`Registry::broadcast`),
+    // because the queues are daemon-level and a pane may be open on any session.
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // **The door the queue reviews through: the review queue's own SESSION, which spawns the
-    // reviewer as a `task` child of itself.**
-    //
-    // A reviewer the daemon owned by itself could not be opened — the gatekeeper seats `bash`,
-    // and `Harness::open` refuses an exec seat whose adjudicator reaches nobody, which is what a
-    // headless daemon session has. A SUBAGENT's asks go up to its tree's root, so the review runs
-    // as a child of the session that reviews the branch — `gatekeeper::SESSION`, the daemon's
-    // hardcoded review queue, whose board is the queue. `GatekeeperDoor` writes the request naming
-    // that session and rings it; `Harness::serve_reviews` starts the child and writes the verdict
-    // onto the same row when it answers.
-    //
-    // **The row is what the review depends on and the ring is only the latency**: a ring is a
-    // bell and a bell is per-daemon, so a daemon serves the reviews its sessions host from the
-    // store on its own clock (`Sessions::serve_reviews`), which is also what serves an ask that
-    // arrived before the queue's session was open. With no store there is no row to write, and
-    // the door refuses by name.
-    let reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send> = match cfg.store.as_ref() {
-        None => Box::new(letibot_tools::gatekeeper::NoReviewer),
-        Some(path) => match letibot_tokencore::store::Store::open(path) {
-            Ok(store) => Box::new(crate::mergequeue::GatekeeperDoor::new(
-                store,
-                registry.bell().clone(),
-                registry.clone(),
-            )),
-            Err(e) => {
-                eprintln!(
-                    "  merge queue: the reviewer cannot write requests — {}: {e}",
-                    path.display()
-                );
-                Box::new(letibot_tools::gatekeeper::NoReviewer)
-            }
-        },
-    };
-    let merge_queue = crate::mergequeue::spawn_for(
-        &cfg,
-        merge_stop.clone(),
-        reviewer,
-        // **Where the queue's moves go: EVERY session's log.** See
-        // `letibot_sessionlog::registry::Registry::broadcast` for the decision and its cost —
-        // in short, the queue is daemon-level and any head can open the pane, so the events
-        // that keep that pane current have to reach a log wherever the head is attached.
-        Box::new({
-            let registry = registry.clone();
-            move |event| {
-                registry.broadcast(event);
-            }
-        }),
-    );
+    let merge_queue = crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), registry.clone());
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();
@@ -1788,13 +1740,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
         Outcome::HandedOn => {}
     });
-    // **The queue is told to stop, and it is deliberately NOT joined.** A gate in flight is a
-    // `cargo test --workspace`, so waiting here would hold the daemon's exit for minutes — and
-    // nothing is lost by not waiting: the row on disk says `Taken`, and the next daemon's
-    // `recover` moves it to `Stale` with its reason, which is the designed answer to a merge
-    // interrupted mid-flight. Dropping the handle detaches the thread; the process is exiting.
+    // **The queues are told to stop.**
     merge_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    drop(merge_queue);
+    // **Joined, and bounded**: a gate in flight is killed with its whole process group (SIGTERM,
+    // five seconds, SIGKILL) and its row goes back in line, and each worker releases its lease so
+    // a successor need not wait out the heartbeat. The v23 queue detached here and left the
+    // orphaned `cargo test` holding the worktree's `target` lock (R61 defect 6).
+    if let Some(h) = merge_queue {
+        let _ = h.join();
+    }
     // **Every subagent's VM comes down with the daemon.** Their backends live on threads the
     // process's exit does not unwind, so their `Drop` never ran and the VMs outlived it —
     // two of the acceptance suite's own runs, 2026-10-08. firecode's `down` delivers the work.

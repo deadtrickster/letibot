@@ -60,9 +60,17 @@ pub struct ReviewRequest {
     /// The branch the work landed on. Named in the verdict, because a verdict
     /// against a branch nobody can name is not evidence.
     pub branch: String,
-    /// The base SHA the branch was cut from. The diff is `base...branch`, and the
+    /// The base SHA the branch was cut from. The diff is `base...head`, and the
     /// verdict names it for the same reason.
     pub base_sha: String,
+    /// **The head under review** (R61 decision 6: the verdict is bound to the head it judged).
+    /// The diff the reviewer reads is `base...head_sha`, not `base...branch`, so a commit made
+    /// on the branch while the review runs is not part of what was judged — the queue lands only
+    /// this sha. Empty is *the branch as it is* (a request that predates the binding).
+    pub head_sha: String,
+    /// **Where to run the review's commands**: the repository on the host, or empty for the
+    /// reviewer's own workspace (a VM booted on a clone of the branch).
+    pub cwd: String,
 }
 
 /// The decision the gatekeeper reaches.
@@ -273,6 +281,22 @@ pub struct Submission {
 /// redirection to a shell, so a shape written that way would teach the very thing this rule
 /// forbids.
 pub fn review_prompt(req: &ReviewRequest) -> String {
+    // The revision the diffs name: the head under review when the queue bound one, else the
+    // branch (see `ReviewRequest::head_sha`).
+    let head = if req.head_sha.trim().is_empty() {
+        req.branch.clone()
+    } else {
+        req.head_sha.clone()
+    };
+    let cwd = if req.cwd.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "- where:  {} — the repository; give it to `bash` as `cwd` (and to `read`/`grep` as \
+             the path)\n",
+            req.cwd
+        )
+    };
     format!(
         "You are the gatekeeper. A subagent has finished work on a branch, and you \
          judge whether it may land. You were not given the subagent's report, and \
@@ -283,9 +307,11 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          {brief}\n\n\
          The placement:\n\
          - branch: {branch}\n\
-         - base:   {base}\n\n\
+         - head:   {head} — the commit you judge; the queue lands only this one\n\
+         - base:   {base}\n\
+         {cwd}\n\
          The rules:\n\
-         1. Read the code. `git diff {base}...{branch}` is the change; the files it \
+         1. Read the code. `git diff {base}...{head}` is the change; the files it \
          touches are the artifact. Read them, and whatever they call.\n\
          2. Do not fix it. You have no write tool and you will not ask for one. A \
          reviewer that can edit becomes a second author, and then nobody reviewed.\n\
@@ -313,9 +339,9 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          not run at all, the attempt fails, and the queue spends one of the three attempts \
          it has.\n\n\
          {shapes_head}\n\
-         git diff {base}...{branch}\n\
-         git diff --stat {base}...{branch}\n\
-         git log --oneline -5 {base}..{branch}\n\
+         git diff {base}...{head}\n\
+         git diff --stat {base}...{head}\n\
+         git log --oneline -5 {base}..{head}\n\
          git show SHA\n\
          rg PATTERN PATH\n\
          cargo test -p CRATE\n\n\
@@ -329,6 +355,8 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
         brief = req.brief,
         branch = req.branch,
         base = req.base_sha,
+        head = head,
+        cwd = cwd,
         shapes_head = ONE_COMMAND_SHAPES_HEAD,
     )
 }
@@ -535,6 +563,8 @@ mod tests {
             brief: "add a gatekeeper seat and a brief-first protocol".into(),
             branch: "agent/gatekeeper".into(),
             base_sha: "a4fbe70".into(),
+            head_sha: String::new(),
+            cwd: String::new(),
         }
     }
 
@@ -751,6 +781,8 @@ mod tests {
             brief: "  ".into(),
             branch: "agent/x".into(),
             base_sha: "abc".into(),
+            head_sha: String::new(),
+            cwd: String::new(),
         };
         let e = wake("m-2", blank, &door).unwrap_err();
         assert!(e.contains("no brief"), "{e}");
@@ -758,6 +790,8 @@ mod tests {
             brief: "do the thing".into(),
             branch: "".into(),
             base_sha: "abc".into(),
+            head_sha: String::new(),
+            cwd: String::new(),
         };
         let e = wake("m-3", nameless, &door).unwrap_err();
         assert!(e.contains("no branch"), "{e}");
