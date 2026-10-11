@@ -320,6 +320,10 @@ pub const TABLE: &[(&str, Class)] = &[
     ("merge_not_queued", Class::Failure),
     // The merge queue serving again after `merge_queue_store_error` — see that row.
     ("merge_queue_recovered", Class::Routine),
+    // **The model proposing the project's queue target** (R76 item 2's `propose_target`): the
+    // exact `[queue] target = "…"` lines for the operator to choose. A proposal, not a fault —
+    // nothing failed, and the decision it asks for is the operator's.
+    ("queue_target_proposed", Class::Routine),
     // **R61: the two queues' raises.** A review or a landing that cannot run (`queue_blocked`, a
     // reviewer that cannot start — decision 4 — a gate timed out, a push that failed), the target
     // branch RED (`target_red`, the emergency: nothing lands but its fix), a reviewer that cannot
@@ -822,14 +826,14 @@ mod the_register_census {
         "todo_move_unresolved",
     ];
 
-    /// **The census, pinned.** 104 codes, of which **11** are the reader's own input refused.
+    /// **The census, pinned.** 111 codes, of which **11** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_34_routine_11_refused_and_59_failures() {
+    fn the_table_is_36_routine_11_refused_and_64_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // **104, not 102.** Two Failures, R67 item 15: `job_not_recorded` (a background job's
         // row the store refused, which used to be a `let _`) and `merge_queue_unreadable` (a
@@ -981,12 +985,12 @@ mod the_register_census {
         //   · **110, not 104**: R61's six — `queue_blocked`, `target_red`, `queue_needs_human`,
         //     `queue_settings_unreadable` and `queue_wrong_build` (Failures) and `queue_lease_lost`
         //     (Routine) — see their rows.
-        assert_eq!(TABLE.len(), 110, "the table's size");
-        assert_eq!(count(Class::Routine), 35);
+        assert_eq!(TABLE.len(), 111, "the table's size");
+        assert_eq!(count(Class::Routine), 36);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 64);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 64 of 110 and the middle is 9**, which is why the third register is a
+        // register is 64 of 111 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }
