@@ -2197,6 +2197,38 @@ fn the_two_pickers_do_not_open_together() {
     assert!(a.pick.is_none(), "esc closes it");
 }
 
+/// **`/sessions` and `ctrl-s` open the picker the same way** (R67 item 8): both close a setting
+/// card that is up and seed the cursor on the session this head is in. `/sessions` used to set
+/// `picker` and nothing else — `/mode` then `/sessions` left both lists on the screen, with the
+/// cursor wherever an earlier list had left it.
+#[test]
+fn slash_sessions_opens_the_picker_the_way_ctrl_s_does() {
+    let sessions = || {
+        vec![
+            brief("s1", "one", false),
+            brief("s2", "two", false),
+            brief("s3", "three", false),
+        ]
+    };
+    for open in ["/sessions", "ctrl-s"] {
+        let mut a = app();
+        a.apply(hello("s2", sessions(), Hub::new("s2").snapshot()));
+        a.apply(mode_settings("read-only", MODES));
+        a.picker_sel = 2;
+        a.command("mode");
+        assert!(a.pick == Some(Pick::Mode));
+        let sent = if open == "ctrl-s" {
+            a.key(Key::CtrlS)
+        } else {
+            a.command("sessions")
+        };
+        assert_eq!(sent, Some(Action::ListSessions), "{open}");
+        assert!(a.picker, "{open}");
+        assert!(a.pick.is_none(), "{open} closes the setting card");
+        assert_eq!(a.picker_sel, 1, "{open} seeds the cursor on this session");
+    }
+}
+
 /// **A picker that opened before its own list arrived seeds when the list does** — the second
 /// cause of the operator's report, and the one leticl had already fixed on its side.
 ///

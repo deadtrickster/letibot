@@ -508,9 +508,7 @@ impl App {
             return None;
         }
         if matches!(cmd, "sessions" | "s") {
-            self.picker = true;
-            self.redraw = true;
-            return Some(Action::ListSessions);
+            return Some(self.open_session_picker());
         }
         if let Some(id) = cmd.strip_prefix("switch ") {
             return self.pick(id.trim());

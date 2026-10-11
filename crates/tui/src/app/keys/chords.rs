@@ -89,31 +89,13 @@ impl App {
                 return ControlFlow::Break(None);
             }
             Key::CtrlS => {
-                self.picker = !self.picker;
-                self.redraw = true;
-                // The two pickers are never open together: each opener closes
-                // the other, so the screen holds one list and the arrows mean
-                // one thing.
+                // A toggle: open through the one door `/sessions` uses, close by dropping it.
                 if self.picker {
-                    self.pick = None;
+                    self.picker = false;
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
                 }
-                // Opening it asks for a fresh list rather than drawing the one from
-                // the attach: sessions are a shared thing, and a picker showing what
-                // was true when this head connected is a picker that hides the
-                // session somebody else just started.
-                if self.picker {
-                    // The cursor starts where you are, so Enter on an untouched list
-                    // is a no-op and the arrows move from a row that means something.
-                    // **Through the same enumeration the arrows and Enter read.** The session this
-                    // head is in is always a row — `session_rows` shows the chain down to it
-                    // whatever is collapsed — so this position always exists.
-                    self.picker_sel = self
-                        .session_rows()
-                        .iter()
-                        .position(|r| self.sessions[r.idx].session_id == self.session_id)
-                        .unwrap_or(0);
-                }
-                return ControlFlow::Break(self.picker.then_some(Action::ListSessions));
+                return ControlFlow::Break(Some(self.open_session_picker()));
             }
             Key::CtrlT => return ControlFlow::Break(self.toggle_todos()),
             // **Hold the view (R56).** While held the head writes nothing at all, so a

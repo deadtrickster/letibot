@@ -6,6 +6,32 @@ use letibot_sessionlog::StoredEnd;
 use letibot_sessionlog::registry::short_id;
 
 impl App {
+    /// **The session picker's one door** — `ctrl-s` and `/sessions` both open it here, so the two
+    /// spellings cannot drift. They had (R67 item 8): `/sessions` set `picker` and nothing else,
+    /// so it left a setting card (`pick`) open under it — two lists on the screen, one set of
+    /// arrows — and its cursor wherever an earlier list had left it, while `ctrl-s` did both.
+    ///
+    /// * **The two pickers are never open together**: opening this one closes the setting card,
+    ///   so the screen holds one list and the arrows mean one thing.
+    /// * **The cursor starts where you are**, so Enter on an untouched list is a no-op and the
+    ///   arrows move from a row that means something — through the same enumeration the arrows
+    ///   and Enter read. The session this head is in is always a row (`session_rows` shows the
+    ///   chain down to it whatever is collapsed), so this position always exists.
+    /// * **It asks for a fresh list** rather than drawing the one from the attach: sessions are
+    ///   a shared thing, and a picker showing what was true when this head connected hides the
+    ///   session somebody else just started.
+    pub(crate) fn open_session_picker(&mut self) -> Action {
+        self.picker = true;
+        self.pick = None;
+        self.picker_sel = self
+            .session_rows()
+            .iter()
+            .position(|r| self.sessions[r.idx].session_id == self.session_id)
+            .unwrap_or(0);
+        self.redraw = true;
+        Action::ListSessions
+    }
+
     /// The same, for the subagent tree — `/subagents` and `ctrl-g`.
     ///
     /// **And the fold runs on the way in.** The pane used to be built only by the live
