@@ -27,6 +27,17 @@ impl App {
             HintMode::QuitCard
         } else if self.detached() {
             HintMode::Detached
+        } else if self.diff_popup.is_some() && !self.open.is_empty() {
+            // **A decision under the diff popup has the card's keys** (`App::key_diff_popup`
+            // yields them), so the bar says what the card's keys do; the popup's own keys are
+            // named in this head's half below.
+            HintMode::Deciding
+        } else if self.diff_popup.is_some() {
+            // **The popup is a reading screen with no mode of its own in rano**: `Reading`'s
+            // tail (`esc closes this`) is true of it, and its keys go in this head's half. It
+            // used to fall through to whatever was under it — the conversation's chords, all
+            // dead while the popup owns the keyboard.
+            HintMode::Reading
         } else if self.editor_focused() {
             HintMode::Editor
         } else if self.editor_drawn() {
@@ -81,7 +92,14 @@ impl App {
         // of the SAME row and is empty while a pane has the keyboard. They lead there on purpose:
         // the bar is over capacity at 80 columns by construction, and the renderer keeps the head,
         // so the keys this pane adds are the ones that survive the cut.
-        let editor = if self.todos_open.is_some() {
+        let editor = if self.diff_popup.is_some() && !self.open.is_empty() {
+            Line::styled("the diff: pgup/pgdn scroll · esc closes it", Role::Faint)
+        } else if self.diff_popup.is_some() {
+            Line::styled(
+                "↑↓ pgup/pgdn scroll · ctrl-] opens it in the editor",
+                Role::Faint,
+            )
+        } else if self.todos_open.is_some() {
             Line::styled(self.todos_open_hint(), Role::Faint)
         } else if self.todos_pane {
             Line::styled(self.todos_hint(), Role::Faint)

@@ -123,10 +123,34 @@ impl App {
 
     /// **The popup owns the keyboard while it is open**: the arrows and the paging keys read
     /// it, `ctrl-]` hands the same change to the editor, and Esc closes it — and nothing else.
+    ///
+    /// **Except while a decision is open** (R67 item 4). The card is drawn in the chrome under
+    /// the popup and the bar says *a row number answers*, and this handler — placed below the
+    /// cards and asks precisely so a question arriving mid-read stays answerable — returned
+    /// `Break` for every key ahead of `key_decision`: digits, ↑↓ and Enter scrolled the diff or
+    /// vanished, and the turn waited on a card nobody could answer. With a decision open the
+    /// popup keeps only what cannot be the card's — Esc and `ctrl-c` (close the popup, never
+    /// a refusal), `ctrl-]`, the wheel and the page keys — and everything else goes on to the
+    /// card and the composer, the typed answer included.
     pub(crate) fn key_diff_popup(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        let deciding = !self.open.is_empty();
         let Some(p) = self.diff_popup.as_mut() else {
             return ControlFlow::Continue(());
         };
+        if deciding
+            && !matches!(
+                k,
+                Key::Esc
+                    | Key::CtrlC
+                    | Key::CtrlBracket
+                    | Key::WheelUp
+                    | Key::WheelDown
+                    | Key::PageUp
+                    | Key::PageDown
+            )
+        {
+            return ControlFlow::Continue(());
+        }
         let len = p.laid.as_ref().map_or(0, |l| l.rows.len());
         let page = p.room.max(1);
         let max = len.saturating_sub(page);

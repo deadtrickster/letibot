@@ -260,6 +260,50 @@ fn esc_closes_the_diff_popup_onto_the_conversation() {
     );
 }
 
+/// **A permission card that arrives while the diff popup is open stays answerable** (R67 item
+/// 4). The popup's handler sits below the cards so a question arriving mid-read can be
+/// answered, and then returned `Break` for every key ahead of the decision ladder: digits,
+/// ↑↓ and Enter scrolled the diff or vanished. With a decision open the card has its keys, the
+/// popup keeps the wheel, the page keys and Esc, and the bar names both.
+#[test]
+fn a_decision_under_the_diff_popup_takes_its_keys() {
+    use letibot_sessionlog::event::OptionKind;
+    let ws = workspace("popdecide");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    assert!(a.diff_popup.is_some());
+    // A popup on its own names its keys and not the conversation's chords, dead under it.
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("ctrl-] opens it in the editor"), "{bar}");
+    assert!(!bar.contains("ctrl-s sessions"), "{bar}");
+
+    a.open.push(decision_with(&[
+        OptionKind::AllowOnce,
+        OptionKind::RejectOnce,
+    ]));
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("a row number answers"), "{bar}");
+    assert!(bar.contains("esc closes it"), "{bar}");
+    // ↓ moves the ladder, not the diff.
+    let scrolled = a.diff_popup.as_ref().unwrap().scroll;
+    a.key(Key::Down);
+    assert_eq!(a.sel, 1, "↓ moved the card's mark");
+    assert_eq!(a.diff_popup.as_ref().unwrap().scroll, scrolled);
+    // A row number answers.
+    assert_eq!(
+        a.key(Key::Char('1')),
+        Some(Action::Answer {
+            req_id: "d1".into(),
+            option_id: "allow_once".into(),
+            pattern: None,
+            note: None,
+        })
+    );
+    assert!(a.diff_popup.is_some(), "answering leaves the popup up");
+}
+
 /// **From the popup, `ctrl-]` is the editor** — on the same change, for when reading turns into
 /// changing.
 #[test]
