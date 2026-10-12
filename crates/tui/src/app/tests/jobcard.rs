@@ -500,3 +500,27 @@ fn the_rows_waiting_on_a_completion_are_kept_on_the_compact_row() {
         "{folded}"
     );
 }
+
+/// **A notice lights up whole under the pointer** — the operator: *"the card highlighted line by
+/// line on hover, yet click on each goes to the same job/agent card"*. Every row of it opens the
+/// same notice, so the pointer over any one brightens all of them, as an edit card does.
+#[test]
+fn hovering_a_notice_brightens_every_row_it_opens_from() {
+    let mut a = with_notice(MINE);
+    a.screen(100, 30);
+    let rows = a.notice_rows.clone();
+    assert!(rows.len() > 1, "the premise: several rows: {rows:?}");
+    let (last, _) = rows[rows.len() - 1];
+    a.key(Key::Hover {
+        x: 10,
+        y: last as u16,
+    });
+    let screen = a.screen(100, 30);
+    for (y, _) in &rows {
+        assert!(
+            screen[*y].contains("\x1b[22;1m"),
+            "row {y} of the notice is not lit: {:?}",
+            screen[*y]
+        );
+    }
+}
