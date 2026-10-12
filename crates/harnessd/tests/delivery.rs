@@ -410,3 +410,52 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
         ]
     );
 }
+
+/// **A wake whose turn never opened leaves its results held, not told** (R91.11).
+///
+/// `Harness::wake` used to mark what it was about to say delivered — the read record, a
+/// subagent's `delivered` in the store — and empty the held set BEFORE `submit_item`, which can
+/// fail before any round runs (here: the store refuses the notice's row). The results were then in
+/// no transcript and in no held set, and nothing would ever say them. The store is made to refuse
+/// by moving `transcript_item` away through a second connection; once it is back, the next wake
+/// says the result.
+#[test]
+fn a_wake_whose_turn_never_opened_keeps_its_results_held() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let (_dir, mut cfg, parts) = session("r91-11-wake", &[]);
+    let serv = canned::Canned::serve_replies(vec![a_plain_answer(&parts.vocab, "noted")], 1);
+    cfg.endpoint = serv.endpoint.clone();
+    let store = cfg.store.clone().expect("a store");
+    let (mut h, _registry) = adopted(&parts, &cfg);
+    let w = h.job_watchers().expect("a watcher set").clone();
+    w.hold(vec![settled(&cfg.session_id, "j41", "exited 0")]);
+    w.turn_ended();
+
+    let other = Store::open(&store).expect("a second connection");
+    other
+        .connection()
+        .execute_batch("ALTER TABLE transcript_item RENAME TO transcript_item_away")
+        .expect("the table moves away");
+    assert!(h.wake().is_err(), "the store refused the wake's row");
+    assert_eq!(
+        w.held_count(),
+        1,
+        "a result the failed wake never put in front of the model was dropped from the held set"
+    );
+    other
+        .connection()
+        .execute_batch("ALTER TABLE transcript_item_away RENAME TO transcript_item")
+        .expect("the table comes back");
+
+    assert!(h.wake().expect("the wake runs").is_some());
+    assert_eq!(w.held_count(), 0, "said now, so no longer held");
+    assert!(
+        user_rows(&h)
+            .iter()
+            .any(|(_, t)| t.contains("`j41` exited 0")),
+        "{:?}",
+        user_rows(&h)
+    );
+}

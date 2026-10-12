@@ -1467,6 +1467,20 @@ impl Deliveries {
         skip: impl Fn(&JobCompletion) -> bool,
         held_rule: crate::delivery::Rule,
     ) -> BetweenTurns {
+        let (out, told) = self.between_turns_unread(skip, held_rule);
+        self.read(&told);
+        out
+    }
+
+    /// **[`Self::between_turns`] without marking anything read** (R91.11): the sentences, and
+    /// the results they say, for a caller that has not yet put them in front of the model. It
+    /// marks them with [`Self::read`] once it has, or hands them back with [`Self::put_back`]
+    /// when the turn that was to carry them never opened.
+    pub(crate) fn between_turns_unread(
+        &self,
+        skip: impl Fn(&JobCompletion) -> bool,
+        held_rule: crate::delivery::Rule,
+    ) -> (BetweenTurns, Vec<JobCompletion>) {
         let rows = self.rows();
         let immediate = crate::delivery::sort(&self.watch, &rows, skip);
         let held = self.watch.take_held();
@@ -1483,18 +1497,34 @@ impl Deliveries {
         }
         let mut told: Vec<JobCompletion> = immediate.into_iter().map(|(c, _)| c).collect();
         told.extend(idle);
-        self.watch.read_now(&told);
+        let mut said = told.clone();
         let now = if told.is_empty() {
             Vec::new()
         } else {
             completion_notices(told, &self.me, &rows)
         };
+        said.extend(busy.iter().cloned());
         let batch = (!busy.is_empty()).then(|| {
             self.log.completions(&busy, held_rule, at);
-            self.watch.read_now(&busy);
             meanwhile_notice(busy, &self.me, held_rule, self.cap, &rows)
         });
-        BetweenTurns { now, batch }
+        (BetweenTurns { now, batch }, said)
+    }
+
+    /// **These results are in front of the model now** — the read record the plan check's grace
+    /// reads, and a subagent's `delivered` in the store.
+    pub(crate) fn read(&self, told: &[JobCompletion]) {
+        if !told.is_empty() {
+            self.watch.read_now(told);
+        }
+    }
+
+    /// **These results were never told** — the turn that was to carry them did not open — so
+    /// they are held again, for the next break to say.
+    pub(crate) fn put_back(&self, untold: Vec<JobCompletion>) {
+        if !untold.is_empty() {
+            self.watch.hold(untold);
+        }
     }
 
     pub(crate) fn log_firings(&self, fired: &[letibot_tools::exec::monitor::Firing]) {
@@ -8720,6 +8750,7 @@ impl Harness {
         // subagents back … and restart automatically"*: the model is told, in one line each,
         // which came back and which could not. Counted with the queue's notices: both are facts
         // the daemon found in the store rather than settlements that arrived.
+        let restart_taken = self.restart_notices.clone();
         notices.append(&mut self.restart_notices);
         // **And the entries the queue has handed to this session**, which is the fallback: no
         // reviewer could judge them, and the project merges such a branch through its own main
@@ -8735,6 +8766,7 @@ impl Harness {
         // queue used to say only on the hubs.
         notices.extend(self.queue_emergency_notices());
         let queue_n = notices.len();
+        let cursor_before = self.monitor_cursor.load(Ordering::SeqCst);
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();
@@ -8782,16 +8814,23 @@ impl Harness {
         // arrived while the session was idle is said here as an ordinary completion, and the batch
         // held while the last turn ran is this wake's own content — the turn-end ring
         // (`JobWatchers::turn_ended`) is what brought the worker here for it.
+        //
+        // **Not marked read yet (R91.11).** `between_turns` marked them delivered — in the store,
+        // for a subagent — and emptied the held set before `submit_item` had put a word in front
+        // of the model; a turn that then failed to open lost them. They are marked once the turn
+        // has opened, and held again if it does not.
         let between = deliveries.as_ref().map(|d| {
-            d.between_turns(
+            d.between_turns_unread(
                 |c| gatekeepers.contains(&c.job),
                 crate::delivery::Rule::TurnEnd,
             )
         });
         let mut held_batch = None;
-        if let Some(b) = between {
+        let mut said: Vec<JobCompletion> = Vec::new();
+        if let Some((b, told)) = between {
             notices.extend(b.now);
             held_batch = b.batch;
+            said = told;
         }
         // **And the rows whose condition just became met.** The same door, because a condition
         // firing is the same kind of fact as a job ending: nothing asked, and the model has to be
@@ -8841,26 +8880,48 @@ impl Harness {
         // must never be able to authorise the action it reports on.
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        self.submit_item(TranscriptItem::User {
-            // The same speaker the trail records, one line up: this is the session talking
-            // to itself, and a head must not draw it as the operator's words (R42).
-            speaker: letibot_transcript::Speaker::Agent,
-            parts: vec![UserPart::Text { text }],
-        })
-        .map(Some)
-        // ...and the condition is spent only once the model HAS been told. Consuming before the
-        // submit would let a turn that failed to start silently eat the firing, and **a firing
-        // nobody hears is the failure this whole mechanism exists to rule out**, where a firing
-        // reported twice is merely dull. So the order here is the requirement and not tidiness.
-        .map(|out| {
-            if !fired.is_empty() {
-                self.todos.consume_conditions(&fired);
-                // Unwritten, the condition is still pending in the store and fires again after
-                // a restart — which is why this is said on the hub and not only on stderr.
-                self.flush_todos_or_say("a fired condition");
+        let mut opened = false;
+        let out = self.submit_items_then(
+            vec![TranscriptItem::User {
+                // The same speaker the trail records, one line up: this is the session talking
+                // to itself, and a head must not draw it as the operator's words (R42).
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text }],
+            }],
+            |_| opened = true,
+        );
+        // **Told only once the turn has opened (R91.11).** Opened means the notice is in the
+        // transcript and in the store, so the model reads it whatever its rounds come to. A turn
+        // that never opened put nothing in front of anybody: the results go back to the held
+        // set, the restart notices back to the harness, and the monitor cursor back to where it
+        // was, so the next wake says all of it.
+        if opened {
+            if let Some(d) = &deliveries {
+                d.read(&said);
             }
-            out
-        })
+        } else {
+            if let Some(d) = &deliveries {
+                d.put_back(said);
+            }
+            let mut back = restart_taken;
+            back.append(&mut self.restart_notices);
+            self.restart_notices = back;
+            self.monitor_cursor.store(cursor_before, Ordering::SeqCst);
+        }
+        out.map(Some)
+            // ...and the condition is spent only once the model HAS been told. Consuming before the
+            // submit would let a turn that failed to start silently eat the firing, and **a firing
+            // nobody hears is the failure this whole mechanism exists to rule out**, where a firing
+            // reported twice is merely dull. So the order here is the requirement and not tidiness.
+            .map(|out| {
+                if !fired.is_empty() {
+                    self.todos.consume_conditions(&fired);
+                    // Unwritten, the condition is still pending in the store and fires again after
+                    // a restart — which is why this is said on the hub and not only on stderr.
+                    self.flush_todos_or_say("a fired condition");
+                }
+                out
+            })
     }
 
     /// **A subagent brought back after a daemon restart carries on** — the operator, 2026-10-12:
@@ -10958,10 +11019,23 @@ impl Harness {
     /// [`Harness::submit_item`] for a turn that opens with more than one row — the held batch
     /// before the words that started the turn (R79).
     fn submit_items(&mut self, items: Vec<TranscriptItem>) -> Result<Reply, HarnessError> {
+        self.submit_items_then(items, |_| {})
+    }
+
+    /// [`Harness::submit_items`], with `opened` called once the rows are in the transcript AND
+    /// the store — the point past which the model reads them whatever the rounds come to — and
+    /// not at all when the turn never got there (R91.11: `Harness::wake` marks results told
+    /// there, not before).
+    fn submit_items_then(
+        &mut self,
+        items: Vec<TranscriptItem>,
+        opened: impl FnOnce(&mut Self),
+    ) -> Result<Reply, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session.append_items(&self.engine, &items, &mut sink)?;
         self.reconcile(&mut sink, &items);
         self.persist()?;
+        opened(self);
         self.name_from_first_message();
         let out = self.run_rounds();
         self.note_turn_ended();
