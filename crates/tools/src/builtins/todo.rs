@@ -2740,6 +2740,18 @@ impl Tool for TodoWriteTool {
     }
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        // The session's job table, read once: `wait_on` checks a handle against it and a `job`
+        // need in `todos` is resolved through it (R92.14) — the same rule both ways.
+        let jobs = ctx.backend.processes().map(|host| host.jobs());
+        self.write(args, jobs.as_deref())
+    }
+}
+
+impl TodoWriteTool {
+    /// **The whole of `todo_write`, over a job table in hand** — `invoke` is this with the
+    /// session's own table. A parameter rather than a read, as [`Self::wait_on`]'s is, so the
+    /// rules that read the table are assertable without a cgroup tree.
+    pub(crate) fn write(&self, args: &Value, jobs: Option<&[crate::exec::JobView]>) -> Invocation {
         // **AN UNKNOWN TOP-LEVEL FIELD IS REFUSED BY NAME** — the same rule an entry's unknown
         // field keeps below, one level up. This call has three fields a model confuses (`todos`,
         // `update`, `operator`) and a fourth (`target`) that aims at another session's board, and a
@@ -2775,13 +2787,12 @@ impl Tool for TodoWriteTool {
                     );
                 }
             }
-            let jobs = ctx.backend.processes().map(|host| host.jobs());
-            return self.wait_on(waits, jobs.as_deref());
+            return self.wait_on(waits, jobs);
         }
         // **A MISSING `todos` IS NOT A MISSING ARGUMENT ANY MORE.** `update` and `operator` name a
         // row on their own, which is the whole point of `update`; what is refused is a call that
         // names no row by ANY of the three — see the block below the target path.
-        let rows = match args.get("todos").and_then(|v| v.as_array()) {
+        let mut rows = match args.get("todos").and_then(|v| v.as_array()) {
             Some(list) => match parse_rows(list) {
                 Ok(rows) => rows,
                 Err(inv) => return inv,
@@ -2876,6 +2887,14 @@ impl Tool for TodoWriteTool {
         // `before` is read here, above the moves, and used twice: the check reads it, and the reply
         // names the rows this call left out against it. A status moved between those two readings
         // cannot change which rows were named — `omitted` compares contents.
+        // **A `job` need is resolved here, the way `wait_on` resolves one** (R92.14): a job's
+        // NAME becomes its handle before it reaches the board. The raw name used to be stored, and
+        // every reader after that asks about a HANDLE — `job_fate` found no job called
+        // `release-build`, answered Unknown, and the row read as waiting on a job that had already
+        // ended while the job was still running.
+        if let Err(inv) = resolve_job_needs(&mut rows, jobs) {
+            return inv;
+        }
         let before = self.board.model_snapshot();
         if let Err(why) = check_titles(&before, &rows) {
             return Invocation::failed(format!("nothing was written: {why}"), title_why());
@@ -3390,6 +3409,86 @@ fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus
         out.push((content.to_string(), status));
     }
     Ok(out)
+}
+
+/// **A `job` need's name, turned into the handle every reader asks about** (R92.14).
+///
+/// `wait_on` has always resolved a job by its handle or by the name it was started under
+/// ([`crate::builtins::jobs::resolve_job_in`]); a `needs` entry in `todos` stored whatever was
+/// written. The daemon's readers — `job_fate`, `RunningJobs`, the wake on a job's ending — key on
+/// the handle, so a slug on the board was a job nobody had heard of, and that reads as ENDED: the
+/// row looked ready while the job it waited on was still running.
+///
+/// So, against this session's job table:
+/// - a name or handle the table holds becomes that job's handle — running or ended, because a
+///   need on an ended job is satisfied and that is a true reading, not a refusal;
+/// - a name that fits two jobs is refused, as `job_output` refuses it;
+/// - a name the table does not hold is kept only when it is **handle-shaped** (`j` and digits, or
+///   a subagent's `s-…` session id): such a handle may be one this session ran before the daemon
+///   restarted — the store remembers it, the live table does not — and `job_fate` answers for it.
+///   Anything else names nothing that can ever end, and is refused by name rather than written as a
+///   wait that is already over.
+///
+/// `None` is a backend with no process host: there is no table to read, and nothing is changed —
+/// the [`parse_need`] rule that this layer does not check what it cannot see.
+fn resolve_job_needs(
+    rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
+    jobs: Option<&[crate::exec::JobView]>,
+) -> Result<(), Invocation> {
+    let Some(table) = jobs else {
+        return Ok(());
+    };
+    for (content, _, needs) in rows.iter_mut() {
+        for need in needs.iter_mut() {
+            let TodoNeed::Job { handle } = need else {
+                continue;
+            };
+            if let Some(j) = table.iter().find(|j| j.id.0 == *handle) {
+                *handle = j.id.0.clone();
+                continue;
+            }
+            let named: Vec<&crate::exec::JobView> = table
+                .iter()
+                .filter(|j| j.slug.as_deref() == Some(handle.as_str()))
+                .collect();
+            match named.as_slice() {
+                [one] => *handle = one.id.0.clone(),
+                [] if job_handle_shaped(handle) => {}
+                _ => {
+                    let inv = match crate::builtins::jobs::resolve_job_in(table, handle) {
+                        Err(inv) => inv,
+                        Ok(_) => unreachable!("resolved above"),
+                    };
+                    return Err(Invocation::failed(
+                        format!(
+                            "nothing was written: the row `{content}` needs a job `{handle}`, \
+                             and {}",
+                            if named.is_empty() {
+                                "no job of this session has that name or handle".to_string()
+                            } else {
+                                format!("{} jobs have that name", named.len())
+                            }
+                        ),
+                        format!(
+                            "a `job` need names a job by the handle `bash` and `job_list` print \
+                             (`j…`), or by the name it was started under while it is in this \
+                             session's table; the handle is what goes on the row.\n\n{}",
+                            inv.payload
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a name is shaped like a handle this daemon mints: a job's `j<digits>`, or a subagent's
+/// `s-…` session id (a subagent is backgrounded through the same sink).
+fn job_handle_shaped(name: &str) -> bool {
+    name.strip_prefix('j')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        || name.starts_with("s-")
 }
 
 /// **One `needs` entry, as the tool spells it** — a plain string (the other row's own words), or the

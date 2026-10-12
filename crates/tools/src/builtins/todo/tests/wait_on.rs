@@ -477,3 +477,92 @@ fn a_finished_childs_undigested_completion_keeps_the_row_quiet() {
         None
     );
 }
+
+/// **A job's NAME in `needs` goes on the board as its handle**, the way `wait_on` puts it (R92.14).
+///
+/// Before, `todos` stored the raw name: `job_fate` asked the process table about a job called
+/// `gate`, found none, answered Unknown — and Unknown reads as ENDED, so the row was ready while
+/// the gate it waited on was still running.
+#[test]
+fn a_job_named_in_needs_is_stored_as_its_handle() {
+    let board = Arc::new(TodoBoard::new(Vec::new()));
+    let tool = TodoWriteTool::new(board.clone());
+    let r = tool.write(
+        &json!({"todos": [{"content": "push", "status": "pending",
+                           "needs": [{"kind": "job", "handle": "gate"}]}]}),
+        Some(&running_gate()),
+    );
+    assert!(ok(&r), "{}", refusal(&r));
+    assert_eq!(
+        board.snapshot()[0].needs,
+        vec![TodoNeed::Job {
+            handle: "j123".into()
+        }],
+        "the name was stored, not the handle every reader asks about"
+    );
+    let running = RunningJobs::none().running("j123");
+    assert!(
+        waits_on_a_running_job(&board.snapshot()[0], &running),
+        "the row is quiet while its job runs"
+    );
+
+    // A handle this table does not hold is kept: it may be one the daemon ran before a restart.
+    let r = tool.write(
+        &json!({"todos": [{"content": "push", "status": "pending",
+                           "needs": [{"kind": "job", "handle": "j7"}]}]}),
+        Some(&running_gate()),
+    );
+    assert!(ok(&r), "{}", refusal(&r));
+    assert_eq!(
+        board.snapshot()[0].needs,
+        vec![TodoNeed::Job {
+            handle: "j7".into()
+        }]
+    );
+}
+
+/// **A name no job has is refused, and so is one two jobs share** — a wait on a name nothing will
+/// ever end is a wait that reads as already over.
+#[test]
+fn a_job_need_naming_no_job_or_two_is_refused_and_nothing_is_written() {
+    let board = Arc::new(TodoBoard::new(vec![item("keep me", TodoStatus::Pending)]));
+    let tool = TodoWriteTool::new(board.clone());
+    let v = board.version();
+    let r = tool.write(
+        &json!({"todos": [{"content": "push", "status": "pending",
+                           "needs": [{"kind": "job", "handle": "release-build"}]}]}),
+        Some(&running_gate()),
+    );
+    assert!(!ok(&r), "a name nothing holds was written");
+    assert!(
+        refusal(&r).contains("no job of this session has that name"),
+        "{}",
+        refusal(&r)
+    );
+    assert_eq!(board.version(), v, "nothing was written");
+
+    let two = vec![
+        job("j1", Some("gate"), JobState::Running),
+        job("j2", Some("gate"), JobState::Running),
+    ];
+    let r = tool.write(
+        &json!({"todos": [{"content": "push", "status": "pending",
+                           "needs": [{"kind": "job", "handle": "gate"}]}]}),
+        Some(&two),
+    );
+    assert!(!ok(&r), "an ambiguous name was written");
+    assert!(
+        refusal(&r).contains("2 jobs have that name"),
+        "{}",
+        refusal(&r)
+    );
+    assert_eq!(board.version(), v, "nothing was written");
+
+    // With no process host there is no table, and the need is written as it was given.
+    let r = tool.write(
+        &json!({"todos": [{"content": "push", "status": "pending",
+                           "needs": [{"kind": "job", "handle": "release-build"}]}]}),
+        None,
+    );
+    assert!(ok(&r), "{}", refusal(&r));
+}
