@@ -30,6 +30,7 @@ fn user(text: &str) -> TranscriptItem {
     }
 }
 
+mod card_fixtures;
 mod children;
 mod context;
 mod delivery;

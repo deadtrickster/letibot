@@ -1,0 +1,5 @@
+[restart] the daemon was down for 4m12s (stopped at 2026-10-12 08:06:44 UTC; back at 2026-10-12 08:10:56 UTC) — under the 1h00m restore threshold, so what this session was running has been restored where it could be:
+  - subagent `s-1-sub-2` (fix the flaky test): resumed
+  - subagent `s-1-sub-3` (port the parser): resumed
+  - monitor `built`: re-armed
+  - job `j9`: reminded (not re-run), 1 waiting row(s) released

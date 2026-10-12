@@ -2341,19 +2341,24 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
         letibot_sessionlog::warning::Class::Routine,
         "the register is the whole of what a reader takes from the colour"
     );
+    // **One line now, a pointer to the reseat card** — the operator, of the wall this note
+    // used to draw: *"these gray walls are hilarious … make them the usual one liners"*
+    // (`stale_card`). The remedy is the card's (`alt-r`), and the sentence is one click away.
     let screen = a.screen(120, 40).join("\n");
     let row = screen
         .lines()
-        .find(|l| l.contains("prefix_stale"))
+        .find(|l| l.contains("prompt stale · seated 10-08 21:14"))
         .unwrap_or_else(|| panic!("the notice is not on a note row at all:\n{screen}"));
     assert!(
-        row.contains("· prefix_stale"),
-        "the housekeeping mark, in the register the table gives it: {row:?}"
+        row.contains("tool schemas changed · alt-p for the card"),
+        "what moved, and where to decide: {row:?}"
     );
+    assert!(!row.contains('!'), "never the failure mark: {row:?}");
+    let (y, _) = a.card_rows[0];
+    a.key(Key::Click { x: 10, y: y as u16 });
     assert!(
-        screen.contains("`/reseat`"),
-        "and the remedy has to be in the words on the screen, not only in the daemon's \
-         event: {screen}"
+        super::redcard::popup_text(&mut a).contains("`/reseat`"),
+        "and the remedy is in the words one click away, not only in the daemon's event"
     );
     // **A row, not a counter on the alarm.** `ALARM_ONLY` is the list of codes that belong
     // on the triangle; this one is a fact about the conversation the operator is in, and a

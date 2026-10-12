@@ -1,0 +1,6 @@
+[restart] the daemon was down for 4m12s (stopped at 2026-10-12 08:06:44 UTC; back at 2026-10-12 08:10:56 UTC) — under the 1h00m restore threshold, so what this session was running has been restored where it could be:
+[restart] subagent `s-1-sub-2` (fix the flaky test) was running when the daemon restarted and has been resumed.
+[restart] subagent `s-1-sub-3` (port the parser) was running when the daemon restarted and has been resumed.
+- monitor `built` was re-armed with the call that declared it (`monitor {"name":"built","path":"out.txt","ttl_ms":600000}`); its TTL starts again from now.
+- job `j9` (slug `build`, had run 1m35s when the daemon stopped): NOT run again — its process was the old daemon's, and a crash may have left it running (`pkill` with `action: "list"` checks, killing nothing). Its output went to `build.log`, which survives — read that. To run it again: `bash {"command":"cargo build > build.log 2>&1","background":true,"cwd":"/w","slug":"build"}`.
+  Rows that waited on it: `ship once the build is done`. Their wait is RELEASED — a job this daemon never ran reads as ended, so they are no longer blocked on it; if they still need its result, run it again and `wait_on` the new handle.

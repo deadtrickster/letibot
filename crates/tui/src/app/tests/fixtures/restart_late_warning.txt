@@ -1,0 +1,4 @@
+[restart] the daemon was down for 3h12m (stopped at 2026-10-12 04:58:56 UTC, estimated from its last heartbeat (it did not stop in an orderly way); back at 2026-10-12 08:10:56 UTC) — longer than the 1h00m restore threshold, so NOTHING was restored automatically. This is what you were running when it stopped; decide what still matters and bring back only that:
+  - subagent `s-1-sub-2` (fix the flaky test): reminded, not resumed
+  - monitor `built`: reminded, not re-armed
+  - job `j9`: reminded (not re-run)

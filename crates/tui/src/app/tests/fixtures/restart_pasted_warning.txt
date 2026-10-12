@@ -1,0 +1,2 @@
+[restart] the daemon was down for 0s (stopped at 2026-10-12 08:10:56 UTC, estimated from nothing (no record said when); back at 2026-10-12 08:10:56 UTC) — under the 1h00m restore threshold, so what this session was running has been restored where it could be:
+  - job `j46`: reminded (not re-run)

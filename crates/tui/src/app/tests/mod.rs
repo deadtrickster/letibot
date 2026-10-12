@@ -1406,6 +1406,7 @@ mod queue;
 mod redcard;
 mod render;
 mod reseatcard;
+mod restartcard;
 mod reviewcard;
 mod screen;
 mod scroll;

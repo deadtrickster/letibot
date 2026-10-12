@@ -211,7 +211,24 @@ pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
 /// shell command itself — a second spelling of exactly this function, in another language, in a
 /// process that does not own the command. The daemon knows it; the row it publishes says it.
 pub fn output_redirect_path(command: &str) -> Option<String> {
+    output_redirect_paths(command).into_iter().next()
+}
+
+/// **Every file a command sends its output to**, in the order the command names them, each
+/// once — [`output_redirect_path`]'s rule applied to every stage of a compound command, not
+/// only to the first redirect found.
+///
+/// The operator's case, 2026-10-12: a restart reminded the model of a job
+/// `cd /tmp/… && LETIDB_MODE=memory … ./run_acceptance.sh … > /tmp/acceptance-child.log 2>&1;
+/// echo "exit=$?"` and said *"it wrote to no file of its own"* — while the one thing that
+/// survived the old daemon was that log. A reader told where a lost job's output went needs
+/// all of it: `a > x && b > y` wrote two files, and naming one hides the other.
+///
+/// Each stage of the command counts — after `&&`, `||`, `;`, inside `( … )` and `{ …; }` —
+/// and only a literal path does (one built at run time is not provable from the text).
+pub fn output_redirect_paths(command: &str) -> Vec<String> {
     let n = letibot_code::shell::normalise(command);
+    let mut out: Vec<String> = Vec::new();
     for stage in &n.stages {
         for r in &stage.redirects {
             if !r.op.writes() {
@@ -223,17 +240,18 @@ pub fn output_redirect_path(command: &str) -> Option<String> {
             }
             if let letibot_code::shell::RedirectTarget::File(w) = &r.target
                 && let Some(text) = w.literal()
+                && !out.iter().any(|p| p == text)
             {
-                return Some(text.to_string());
+                out.push(text.to_string());
             }
         }
     }
-    None
+    out
 }
 
 #[cfg(test)]
 mod output_redirect_tests {
-    use super::output_redirect_path;
+    use super::{output_redirect_path, output_redirect_paths};
 
     /// **The operator's own command, and the five spellings that must not be mistaken for
     /// it** — R41 requirement one, whose whole value is that it is knowable before anything
@@ -277,6 +295,54 @@ mod output_redirect_tests {
                 output_redirect_path(command).as_deref(),
                 *want,
                 "`{command}`"
+            );
+        }
+    }
+
+    /// **Every file a compound command writes to, wherever in it the redirect sits** — the
+    /// operator's restart reminder said a job *"wrote to no file of its own"* when its command
+    /// was `cd … && … ./run_acceptance.sh … > /tmp/acceptance-child.log 2>&1; echo "exit=$?"`.
+    #[test]
+    fn every_redirect_of_a_compound_command_is_found() {
+        let cases: &[(&str, &[&str])] = &[
+            // The operator's own command, verbatim in shape.
+            (
+                "cd /tmp/letibot-scratch-1023699/harness && LETIDB_MODE=memory ./run_acceptance.sh --all > /tmp/acceptance-child.log 2>&1; echo \"exit=$?\"; tail -5 /tmp/acceptance-child.log",
+                &["/tmp/acceptance-child.log"],
+            ),
+            ("a && b > f", &["f"]),
+            ("a; b > f", &["f"]),
+            ("a || b > f", &["f"]),
+            ("a > x && b > y", &["x", "y"]),
+            // `2>&1` before the file redirect: stderr goes where stdout was; the file is still
+            // stdout's.
+            ("b 2>&1 > f", &["f"]),
+            ("b > f 2>&1", &["f"]),
+            ("cd /w && make >> build.log 2>&1", &["build.log"]),
+            ("make > \"/tmp/with space.log\"", &["/tmp/with space.log"]),
+            ("make > '/tmp/q.log'", &["/tmp/q.log"]),
+            ("(cd w && make > out.log)", &["out.log"]),
+            ("{ make > out.log; }", &["out.log"]),
+            ("make > a.log 2> b.log", &["a.log", "b.log"]),
+            // Named once however often it is written.
+            ("a > f; b >> f", &["f"]),
+            // A piped stage's stdout still reaches the next; only its file redirect counts.
+            ("make 2>&1 | tee -a x > y", &["y"]),
+            // Nothing written: a merge, a read, a variable path.
+            ("cd w && make 2>&1", &[]),
+            ("cd w && sort < in.txt", &[]),
+            ("cd w && make > \"$OUT\"", &[]),
+        ];
+        for (command, want) in cases {
+            let got = output_redirect_paths(command);
+            assert_eq!(
+                got.iter().map(String::as_str).collect::<Vec<_>>(),
+                *want,
+                "`{command}`"
+            );
+            assert_eq!(
+                output_redirect_path(command).as_deref(),
+                want.first().copied()
             );
         }
     }

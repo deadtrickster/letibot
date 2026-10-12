@@ -24,8 +24,14 @@
 //! `daemon_life` row the previous daemon kept ([`Lifeline`]): an orderly stop writes its exact
 //! time; after a crash the last heartbeat is the latest moment the daemon is KNOWN to have been
 //! alive (it beats every [`BEAT`]), so the down time is an estimate that can be up to one beat too
-//! long, and the notice says so. A record from a daemon with no life row at all (a build before
-//! this one) is dated by the record's own last write, and said to be an estimate too.
+//! long, and the notice says so.
+//!
+//! **With no life row at all the stop is UNKNOWN, and is said to be.** The operator, pasting the
+//! notice the first start on a new build wrote — *"the daemon was down for 0s (stopped at …,
+//! estimated from nothing (no record said when); back at …)"* — *"these gray walls are
+//! hilarious"*. A daemon that kept no record (a build before this one, or one that crashed before
+//! its first heartbeat) did not stop "0s ago"; nobody knows when it stopped, and the notice says
+//! exactly that ([`Stopped::Unknown`]).
 //!
 //! # Under the threshold (`Config::restore_within`, default one hour)
 //!
@@ -36,14 +42,21 @@
 //! * **jobs** are NOT re-run — a process cannot be resumed and running a command twice can do harm
 //!   — and the model is reminded of each ([`job_line`]).
 //!
-//! # Over it
+//! # Over it — or not known to be under it
 //!
-//! Nothing is restored. The model gets one reminder of everything that was running, with the one
+//! Nothing is restored. **An unknown down time counts as over the threshold**: restoring is the
+//! act that needs the stop to have been recent (a subagent resumed hours later works on a tree
+//! that moved, a monitor re-armed watches for something long past), and reminding is what is
+//! safe however long it was — the model is told what was running and the one call that brings
+//! each back. Jobs are only ever reminded, so for them it changes nothing. The model gets one reminder of everything that was running, with the one
 //! call that brings each back (`task_resume`, `monitor`, `bash`), and is told to decide what still
 //! matters.
 //!
 //! Either way the reminder is a turn (it is news the model must act on) and the operator sees a
-//! `restart_restored` / `restart_reminded` warning on the session listing what happened.
+//! warning on the session listing what happened: `restart_restored` when something WAS restored
+//! (a subagent resumed or delivered, a monitor re-armed), `restart_reminded` otherwise — a
+//! restart under the threshold whose only record was a job restored nothing, and saying
+//! *"restored where it could be"* over a list of reminders was wrong ([`Outcome`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,32 +128,116 @@ fn heartbeat(path: PathBuf, registry: Arc<Registry>) {
     }
 }
 
-/// **When the previous daemon stopped, and whether that is a fact or an estimate.**
+/// **When the previous daemon stopped**: a fact, an estimate, or not known at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stopped {
-    pub at_ms: u64,
-    /// `None` for an orderly stop's own time; otherwise what the time was estimated from.
-    pub estimated_from: Option<&'static str>,
+pub enum Stopped {
+    At {
+        at_ms: u64,
+        /// `None` for an orderly stop's own time; otherwise what the time was estimated from.
+        estimated_from: Option<&'static str>,
+    },
+    /// **No record says when** — the daemon kept no life row (a build before this one, or a
+    /// crash before its first heartbeat). `seen_ms` is the latest moment one of its records was
+    /// written (`0` for none): it was alive then, so the stop is no earlier — a lower bound, used
+    /// only to close a monitor whose TTL had run out before it, never to state a down time.
+    Unknown { seen_ms: u64 },
 }
 
-/// The stop of `instance`, read from its life row; `fallback_ms` (the latest write among its
-/// records) when it has none.
-pub fn stop_of(store: &Store, instance: &str, fallback_ms: u64) -> Stopped {
+impl Stopped {
+    /// The stop's time, when it is known (exactly or as an estimate).
+    pub fn at_ms(&self) -> Option<u64> {
+        match self {
+            Stopped::At { at_ms, .. } => Some(*at_ms),
+            Stopped::Unknown { .. } => None,
+        }
+    }
+
+    /// The latest moment the previous daemon is known to have been alive — the stop when it is
+    /// known, the last record otherwise.
+    pub fn no_earlier_than_ms(&self) -> u64 {
+        match self {
+            Stopped::At { at_ms, .. } => *at_ms,
+            Stopped::Unknown { seen_ms } => *seen_ms,
+        }
+    }
+
+    /// **Whether what it was running is restored** — under `threshold` when the down time is
+    /// known; never when it is not (see the module docs).
+    pub fn restores(&self, back_ms: u64, threshold: Duration) -> bool {
+        self.at_ms()
+            .is_some_and(|at| Duration::from_millis(back_ms.saturating_sub(at)) < threshold)
+    }
+
+    /// **The stop of the daemon that went last, among several** — the latest known stop, unless
+    /// a daemon with no record was seen alive after it (then the last stop is unknown too).
+    pub fn latest(stops: impl IntoIterator<Item = Stopped>) -> Stopped {
+        let mut known: Option<Stopped> = None;
+        let mut seen: Option<u64> = None;
+        for s in stops {
+            match s {
+                Stopped::At { at_ms, .. } => {
+                    if known
+                        .as_ref()
+                        .and_then(Stopped::at_ms)
+                        .is_none_or(|k| at_ms > k)
+                    {
+                        known = Some(s);
+                    }
+                }
+                Stopped::Unknown { seen_ms } => {
+                    seen = Some(seen.map_or(seen_ms, |m| m.max(seen_ms)))
+                }
+            }
+        }
+        match (known, seen) {
+            (Some(k), Some(seen_ms)) if seen_ms > k.no_earlier_than_ms() => {
+                Stopped::Unknown { seen_ms }
+            }
+            (Some(k), _) => k,
+            (None, seen) => Stopped::Unknown {
+                seen_ms: seen.unwrap_or(0),
+            },
+        }
+    }
+}
+
+/// The stop of `instance`, read from its life row; [`Stopped::Unknown`] when it has none,
+/// `seen_ms` being the latest write among its records.
+pub fn stop_of(store: &Store, instance: &str, seen_ms: u64) -> Stopped {
     match store.life(instance).ok().flatten() {
         Some(l) => match l.stopped_ms {
-            Some(at) => Stopped {
+            Some(at) => Stopped::At {
                 at_ms: at,
                 estimated_from: None,
             },
-            None => Stopped {
+            None => Stopped::At {
                 at_ms: l.beat_ms,
                 estimated_from: Some("its last heartbeat (it did not stop in an orderly way)"),
             },
         },
-        None => Stopped {
-            at_ms: fallback_ms,
-            estimated_from: Some("the last record it wrote (it kept no heartbeat)"),
-        },
+        None => Stopped::Unknown { seen_ms },
+    }
+}
+
+/// **What a restart did**, which decides the notice's first line and the warning's code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Under the threshold, and at least one thing was brought back.
+    Restored,
+    /// Under the threshold, but nothing could be or needed to be brought back — only jobs, which
+    /// are never re-run, or monitors that could not be re-armed.
+    NothingRestorable,
+    /// Over the threshold, or the down time is unknown: nothing was even tried.
+    Reminded,
+}
+
+impl Outcome {
+    /// The hub warning this outcome is raised as.
+    pub fn code(self) -> &'static str {
+        match self {
+            Outcome::Restored => "restart_restored",
+            Outcome::NothingRestorable | Outcome::Reminded => "restart_reminded",
+        }
     }
 }
 
@@ -156,40 +253,160 @@ pub fn span(d: Duration) -> String {
     }
 }
 
-/// **The first line of every restart notice**: how long the daemon was down, and against which
-/// threshold.
-pub fn header(stop: &Stopped, back_ms: u64, threshold: Duration, restored: bool) -> String {
-    let down = Duration::from_millis(back_ms.saturating_sub(stop.at_ms));
-    let estimate = match stop.estimated_from {
+/// **The first line of every restart notice**: how long the daemon was down (or that nobody
+/// knows), against which threshold, and what that meant.
+pub fn header(stop: &Stopped, back_ms: u64, threshold: Duration, outcome: Outcome) -> String {
+    let (at_ms, estimated_from) = match stop {
+        Stopped::At {
+            at_ms,
+            estimated_from,
+        } => (*at_ms, *estimated_from),
+        Stopped::Unknown { .. } => {
+            return format!(
+                "[restart] the daemon restarted at {}; when the previous one stopped is unknown \
+                 (it kept no record — a build before this one, or a crash before its first \
+                 heartbeat). An unknown down time counts as longer than the {} restore threshold, \
+                 so NOTHING was restored automatically. This is what you were running; decide \
+                 what still matters and bring back only that:",
+                crate::subagent_record::utc(back_ms),
+                span(threshold)
+            );
+        }
+    };
+    let down = Duration::from_millis(back_ms.saturating_sub(at_ms));
+    let estimate = match estimated_from {
         Some(from) => format!(", estimated from {from}"),
         None => String::new(),
     };
     let when = format!(
         "stopped at {}{estimate}; back at {}",
-        crate::subagent_record::utc(stop.at_ms),
+        crate::subagent_record::utc(at_ms),
         crate::subagent_record::utc(back_ms)
     );
-    if restored {
-        format!(
+    match outcome {
+        Outcome::Restored => format!(
             "[restart] the daemon was down for {} ({when}) — under the {} restore threshold, so \
              what this session was running has been restored where it could be:",
             span(down),
             span(threshold)
-        )
-    } else {
-        format!(
+        ),
+        Outcome::NothingRestorable => format!(
+            "[restart] the daemon was down for {} ({when}) — under the {} restore threshold, but \
+             nothing could be restored automatically. This is what you were running:",
+            span(down),
+            span(threshold)
+        ),
+        Outcome::Reminded => format!(
             "[restart] the daemon was down for {} ({when}) — longer than the {} restore \
              threshold, so NOTHING was restored automatically. This is what you were running \
              when it stopped; decide what still matters and bring back only that:",
             span(down),
             span(threshold)
-        )
+        ),
     }
 }
 
 /// **The call that declares a monitor again**, as the model would write it.
 pub fn monitor_call(m: &StoredMonitor) -> String {
     format!("`monitor {}`", m.args_json)
+}
+
+/// A monitor re-armed under the threshold, as the model is told.
+pub fn monitor_rearmed_line(m: &StoredMonitor) -> String {
+    format!(
+        "- monitor `{}` was re-armed with the call that declared it ({}); its TTL starts again \
+         from now.",
+        m.name,
+        monitor_call(m)
+    )
+}
+
+/// A monitor whose re-arming was refused (`why`), as the model is told.
+pub fn monitor_not_rearmed_line(m: &StoredMonitor, why: &str) -> String {
+    format!(
+        "- monitor `{}` could NOT be re-armed — {why}. It was declared with {}; what it watched \
+         may be gone.",
+        m.name,
+        monitor_call(m)
+    )
+}
+
+/// A monitor over the threshold, as the model is told.
+pub fn monitor_reminded_line(m: &StoredMonitor) -> String {
+    format!(
+        "- monitor `{}` was watching; re-arm it with {} if it still matters.",
+        m.name,
+        monitor_call(m)
+    )
+}
+
+/// **The notice the model gets**: the header, a line per thing that was running, and — when
+/// nothing was brought back — the one sentence of what to do about it.
+pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
+    let mut text = header.to_string();
+    if !lines.is_empty() {
+        text.push('\n');
+        text.push_str(&lines.join("\n"));
+    }
+    if outcome != Outcome::Restored {
+        text.push_str(
+            "\nNothing above is running now. Bring back only what still matters: \
+             `task_resume` for a subagent, `monitor` for a watch, `bash` for a job.",
+        );
+    }
+    text
+}
+
+/// **The hub warning's detail** — the notice's first line and one line per thing ([`said`]).
+/// The TUI's `restart_card` reads it as one line.
+pub fn warning_detail(notice: &str, said: &[String]) -> String {
+    format!(
+        "{}\n{}",
+        notice.lines().next().unwrap_or(""),
+        said.iter()
+            .map(|l| format!("  - {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+/// **What the operator's warning says of each thing** — one line each, the daemon's log too.
+pub mod said {
+    pub fn resumed(name: &str) -> String {
+        format!("subagent {name}: resumed")
+    }
+
+    pub fn delivering(name: &str) -> String {
+        format!("subagent {name}: had finished, its result not yet delivered — delivering it")
+    }
+
+    pub fn not_resumed(name: &str, why: &str) -> String {
+        format!("subagent {name}: NOT resumed — {why}")
+    }
+
+    pub fn subagent_reminded(name: &str) -> String {
+        format!("subagent {name}: reminded, not resumed")
+    }
+
+    pub fn rearmed(name: &str) -> String {
+        format!("monitor `{name}`: re-armed")
+    }
+
+    pub fn not_rearmed(name: &str, why: &str) -> String {
+        format!("monitor `{name}`: NOT re-armed — {why}")
+    }
+
+    pub fn monitor_reminded(name: &str) -> String {
+        format!("monitor `{name}`: reminded, not re-armed")
+    }
+
+    pub fn job(handle: &str, waiting: usize) -> String {
+        if waiting == 0 {
+            format!("job `{handle}`: reminded (not re-run)")
+        } else {
+            format!("job `{handle}`: reminded (not re-run), {waiting} waiting row(s) released")
+        }
+    }
 }
 
 /// **One background job that was running at the stop, as the model is reminded of it.**
@@ -203,38 +420,52 @@ pub fn job_line(
     ran_ms: Option<u64>,
     waiting: &[String],
 ) -> String {
-    let name = match slug {
-        Some(s) => format!("`{}` (slug `{s}`)", job.handle),
-        None => format!("`{}`", job.handle),
-    };
-    let command = if job.command.is_empty() {
-        "(its command was not recorded)".to_string()
-    } else {
-        format!("`{}`", job.command)
-    };
-    let mut line = format!("- job {name}: {command}");
-    if let Some(cwd) = cwd {
-        line.push_str(&format!(" in `{cwd}`"));
+    let mut about: Vec<String> = Vec::new();
+    if let Some(s) = slug {
+        about.push(format!("slug `{s}`"));
     }
     if let Some(ms) = ran_ms {
-        line.push_str(&format!(
-            ", had run {} when the daemon stopped",
+        about.push(format!(
+            "had run {} when the daemon stopped",
             span(Duration::from_millis(ms))
         ));
     }
-    line.push_str(
-        ". It was NOT run again: its process belonged to the old daemon — an orderly stop ends it \
-         with its session's scope, and a crash may have left it running unwatched, so check \
-         (`pkill` with `action: \"list\"` lists by command line and kills nothing) before running it twice. Its captured \
-         output was in the old daemon's memory and is gone",
-    );
-    match &job.redirect {
-        Some(file) => line.push_str(&format!(
-            "; it was also writing to `{file}`, which survives — read that"
-        )),
-        None => line.push_str(", and it wrote to no file of its own"),
+    let mut line = format!("- job `{}`", job.handle);
+    if !about.is_empty() {
+        line.push_str(&format!(" ({})", about.join(", ")));
     }
-    if !job.command.is_empty() {
+    // **One sentence of why**, and the command said once — in the call that runs it again.
+    line.push_str(
+        ": NOT run again — its process was the old daemon's, and a crash may have left it \
+         running (`pkill` with `action: \"list\"` checks, killing nothing).",
+    );
+    // **Where its output went, read out of the command** — the record's own `redirect` was
+    // never filled for a running row by the builds before this one, and the operator's job
+    // `cd … && … > /tmp/acceptance-child.log 2>&1` was reminded as having written no file.
+    let mut files: Vec<String> = job.redirect.iter().cloned().collect();
+    for f in letibot_tools::builtins::output_redirect_paths(&job.command) {
+        if !files.contains(&f) {
+            files.push(f);
+        }
+    }
+    if files.is_empty() {
+        line.push_str(" Its output was in the old daemon's memory and is gone.");
+    } else {
+        let named = files
+            .iter()
+            .map(|f| format!("`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let survives = if files.len() == 1 {
+            "survives — read that"
+        } else {
+            "survive — read those"
+        };
+        line.push_str(&format!(" Its output went to {named}, which {survives}."));
+    }
+    if job.command.is_empty() {
+        line.push_str(" Its command was not recorded.");
+    } else {
         let mut call = serde_json::json!({"command": job.command, "background": true});
         if let Some(cwd) = cwd {
             call["cwd"] = serde_json::Value::String(cwd.to_string());
@@ -242,9 +473,8 @@ pub fn job_line(
         if let Some(s) = slug {
             call["slug"] = serde_json::Value::String(s.to_string());
         }
-        line.push_str(&format!(". To run it again: `bash {call}`"));
+        line.push_str(&format!(" To run it again: `bash {call}`."));
     }
-    line.push('.');
     if !waiting.is_empty() {
         line.push_str(&format!(
             "\n  Rows that waited on it: {}. Their wait is RELEASED — a job this daemon never ran \
@@ -354,46 +584,144 @@ fn ttl_of(args: &serde_json::Value) -> u64 {
 mod tests {
     use super::*;
 
+    const AT: u64 = 1_791_806_400_000;
+
     #[test]
     fn the_header_says_how_long_and_which_side_of_the_threshold() {
-        let stop = Stopped {
-            at_ms: 1_791_806_400_000,
+        let stop = Stopped::At {
+            at_ms: AT,
             estimated_from: None,
         };
-        let back = stop.at_ms + 5 * 60_000;
-        let h = header(&stop, back, RESTORE_WITHIN, true);
+        let back = AT + 5 * 60_000;
+        assert!(stop.restores(back, RESTORE_WITHIN));
+        let h = header(&stop, back, RESTORE_WITHIN, Outcome::Restored);
         assert!(h.contains("down for 5m00s"), "{h}");
         assert!(h.contains("under the 1h00m restore threshold"), "{h}");
-        let crash = Stopped {
-            at_ms: stop.at_ms,
+        let crash = Stopped::At {
+            at_ms: AT,
             estimated_from: Some("its last heartbeat (it did not stop in an orderly way)"),
         };
-        let h = header(&crash, stop.at_ms + 2 * 3_600_000, RESTORE_WITHIN, false);
+        let late = AT + 2 * 3_600_000;
+        assert!(!crash.restores(late, RESTORE_WITHIN));
+        let h = header(&crash, late, RESTORE_WITHIN, Outcome::Reminded);
         assert!(h.contains("down for 2h00m"), "{h}");
         assert!(h.contains("estimated from its last heartbeat"), "{h}");
         assert!(h.contains("NOTHING was restored"), "{h}");
     }
 
+    /// **No record of the stop is said as no record** — the operator, of *"the daemon was down
+    /// for 0s (stopped at 2026-10-12 08:10:56 UTC, estimated from nothing (no record said
+    /// when); back at 2026-10-12 08:10:56 UTC)"*: *"these gray walls are hilarious"*. And an
+    /// unknown down time restores nothing: it counts as over the threshold.
     #[test]
-    fn a_job_reminder_names_the_rerun_call_and_where_its_output_went() {
-        let job = JobRecord {
+    fn an_unknown_stop_is_said_to_be_unknown_and_restores_nothing() {
+        let stop = Stopped::Unknown { seen_ms: 0 };
+        let back = AT;
+        assert!(!stop.restores(back, RESTORE_WITHIN));
+        assert!(!stop.restores(back, Duration::from_secs(u64::MAX / 2_000)));
+        assert_eq!(stop.at_ms(), None);
+        let h = header(&stop, back, RESTORE_WITHIN, Outcome::Reminded);
+        assert!(
+            h.starts_with("[restart] the daemon restarted at 2026-"),
+            "{h}"
+        );
+        assert!(
+            h.contains(
+                "when the previous one stopped is unknown (it kept no record — a build before \
+                 this one, or a crash before its first heartbeat)"
+            ),
+            "{h}"
+        );
+        assert!(
+            h.contains("An unknown down time counts as longer than the 1h00m restore threshold"),
+            "{h}"
+        );
+        assert!(h.contains("NOTHING was restored automatically"), "{h}");
+        for wrong in [
+            "down for",
+            "0s",
+            "estimated from nothing",
+            "no record said when",
+        ] {
+            assert!(!h.contains(wrong), "`{wrong}` in {h}");
+        }
+    }
+
+    /// **The latest stop among several daemons** — and a daemon with no record seen alive after
+    /// the latest known stop makes the stop unknown.
+    #[test]
+    fn the_latest_stop_is_known_only_when_no_unrecorded_daemon_outlived_it() {
+        let at = |ms| Stopped::At {
+            at_ms: ms,
+            estimated_from: None,
+        };
+        assert_eq!(Stopped::latest([at(5), at(9), at(7)]), at(9));
+        assert_eq!(
+            Stopped::latest([at(9), Stopped::Unknown { seen_ms: 3 }]),
+            at(9)
+        );
+        assert_eq!(
+            Stopped::latest([at(9), Stopped::Unknown { seen_ms: 12 }]),
+            Stopped::Unknown { seen_ms: 12 }
+        );
+        assert_eq!(
+            Stopped::latest(std::iter::empty()),
+            Stopped::Unknown { seen_ms: 0 }
+        );
+    }
+
+    /// **Restored is said only when something was** — a restart under the threshold whose only
+    /// record was a job was raised as `restart_restored`, *"restored where it could be"*, over a
+    /// list that restored nothing.
+    #[test]
+    fn under_the_threshold_with_nothing_restored_the_notice_says_so() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let h = header(
+            &stop,
+            AT + 4_000,
+            RESTORE_WITHIN,
+            Outcome::NothingRestorable,
+        );
+        assert!(h.contains("down for 4s"), "{h}");
+        assert!(
+            h.contains("under the 1h00m restore threshold, but nothing could be restored"),
+            "{h}"
+        );
+        assert!(!h.contains("has been restored"), "{h}");
+        assert_eq!(Outcome::NothingRestorable.code(), "restart_reminded");
+        assert_eq!(Outcome::Reminded.code(), "restart_reminded");
+        assert_eq!(Outcome::Restored.code(), "restart_restored");
+    }
+
+    fn job(command: &str, redirect: Option<&str>) -> JobRecord {
+        JobRecord {
             handle: "j7".into(),
-            command: "cargo test > /tmp/t.log".into(),
+            command: command.into(),
             how: String::new(),
             state: "running".into(),
             produced: 0,
             elapsed_ms: 0,
-            redirect: Some("/tmp/t.log".into()),
-        };
+            redirect: redirect.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_job_reminder_names_the_rerun_call_and_where_its_output_went() {
         let line = job_line(
-            &job,
+            &job("cargo test > /tmp/t.log", Some("/tmp/t.log")),
             Some("tests"),
             Some("/w"),
             Some(125_000),
             &["`ship it`".into()],
         );
         assert!(line.contains("had run 2m05s"), "{line}");
-        assert!(line.contains("`/tmp/t.log`, which survives"), "{line}");
+        assert!(
+            line.contains("Its output went to `/tmp/t.log`, which survives"),
+            "{line}"
+        );
         assert!(
             line.contains(
                 r#"`bash {"command":"cargo test > /tmp/t.log","background":true,"cwd":"/w","slug":"tests"}`"#
@@ -401,5 +729,34 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("Their wait is RELEASED"), "{line}");
+        // **Said once** — the command is in the call that runs it again, not repeated before it.
+        assert_eq!(line.matches("cargo test").count(), 1, "{line}");
+    }
+
+    /// **The operator's job, whose record had no redirect** (a running row written by a build
+    /// before this one) — reminded as having *"wrote to no file of its own"* while its log was
+    /// the one thing that survived. The reminder reads the command itself.
+    #[test]
+    fn a_job_reminder_finds_the_redirect_in_a_compound_command() {
+        let cmd = "cd /tmp/letibot-scratch-1023699/harness && LETIDB_MODE=memory ./run_acceptance.sh > /tmp/acceptance-child.log 2>&1; echo \"exit=$?\"";
+        let line = job_line(&job(cmd, None), None, None, None, &[]);
+        assert!(
+            line.contains("Its output went to `/tmp/acceptance-child.log`, which survives"),
+            "{line}"
+        );
+        assert!(!line.contains("no file"), "{line}");
+        assert!(!line.contains("is gone"), "{line}");
+
+        let two = job_line(&job("a > x.log && b >> y.log", None), None, None, None, &[]);
+        assert!(
+            two.contains("Its output went to `x.log`, `y.log`, which survive"),
+            "{two}"
+        );
+
+        let none = job_line(&job("cargo test", None), None, None, None, &[]);
+        assert!(
+            none.contains("Its output was in the old daemon's memory and is gone."),
+            "{none}"
+        );
     }
 }

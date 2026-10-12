@@ -1127,3 +1127,165 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     assert!(d.registry.get("s-restart-parent-sub-mine").is_none());
     d.stop(None);
 }
+
+/// **A stop no record dates is UNKNOWN, and an unknown down time restores nothing** — the
+/// operator, pasting the first restart onto a new build: *"the daemon was down for 0s (stopped
+/// at …, estimated from nothing (no record said when); back at …)"*, *"these gray walls are
+/// hilarious"*. The old daemon here kept no `daemon_life` row (a build before the lifeline), and
+/// its job row has no context — exactly what that daemon left.
+#[test]
+fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-unknown");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        // No `old_daemon_stopped`: the old daemon kept no life row.
+        store
+            .put_monitor(
+                PARENT,
+                "built",
+                r#"{"name":"built","path":"out.txt","ttl_ms":600000}"#,
+                OLD,
+                600_000,
+            )
+            .unwrap();
+        store
+            .put_job(
+                PARENT,
+                &JobRecord {
+                    handle: "j46".into(),
+                    command: "cd /tmp/h && ./run_acceptance.sh > /tmp/acceptance-child.log 2>&1; \
+                              echo \"exit=$?\""
+                        .into(),
+                    how: String::new(),
+                    state: "running".into(),
+                    produced: 0,
+                    elapsed_ms: 0,
+                    // What a running row looked like before this build: never filled.
+                    redirect: None,
+                },
+            )
+            .unwrap();
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d.parent.restore_after_restart().expect("a reminder");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.starts_with("[restart] the daemon restarted at "),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("when the previous one stopped is unknown"),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("An unknown down time counts as longer than the 1h00m restore threshold"),
+        "{notice}"
+    );
+    for wrong in [
+        "down for",
+        "estimated from nothing",
+        "restored where it could be",
+    ] {
+        assert!(!notice.contains(wrong), "`{wrong}`: {notice}");
+    }
+    assert!(
+        notice.contains("- monitor `built` was watching; re-arm it with"),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("Its output went to `/tmp/acceptance-child.log`, which survives"),
+        "{notice}"
+    );
+    assert!(
+        d.parent
+            .monitors()
+            .map(|m| m.live_names().is_empty())
+            .unwrap_or(true),
+        "nothing is armed when the down time is unknown"
+    );
+    assert!(warnings(&d.hub(), "restart_restored").is_empty());
+    let reminded = warnings(&d.hub(), "restart_reminded");
+    assert_eq!(reminded.len(), 1, "{reminded:?}");
+    assert!(
+        reminded[0].contains("monitor `built`: reminded, not re-armed")
+            && reminded[0].contains("job `j46`: reminded (not re-run)"),
+        "{reminded:?}"
+    );
+    d.stop(None);
+}
+
+/// **Restored is said only when something was** — under the threshold, a session whose only
+/// record is a job (which is never re-run) was raised as `restart_restored`, *"restored where
+/// it could be"*, over a list of reminders.
+#[test]
+fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-jobs-only");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        store
+            .put_job(
+                PARENT,
+                &JobRecord {
+                    handle: "j9".into(),
+                    command: "cargo build".into(),
+                    how: String::new(),
+                    state: "running".into(),
+                    produced: 0,
+                    elapsed_ms: 0,
+                    redirect: None,
+                },
+            )
+            .unwrap();
+        store
+            .put_job_context(
+                PARENT,
+                &JobContext {
+                    handle: "j9".into(),
+                    slug: None,
+                    cwd: "/somewhere".into(),
+                    instance: OLD.into(),
+                    started_ms: letibot_sessionlog::registry::now_ms() - 60_000,
+                },
+            )
+            .unwrap();
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d.parent.restore_after_restart().expect("a reminder");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.contains("under the 1h00m restore threshold, but nothing could be restored"),
+        "{notice}"
+    );
+    assert!(!notice.contains("restored where it could be"), "{notice}");
+    assert!(
+        notice.contains("Its output was in the old daemon's memory and is gone."),
+        "{notice}"
+    );
+    assert!(notice.contains("Nothing above is running now."), "{notice}");
+    assert!(warnings(&d.hub(), "restart_restored").is_empty());
+    assert_eq!(warnings(&d.hub(), "restart_reminded").len(), 1);
+    d.stop(None);
+}

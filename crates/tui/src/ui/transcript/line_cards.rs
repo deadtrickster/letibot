@@ -5,7 +5,9 @@
 //! The operator asked for it twice. First of a red `main`, drawn as two big blocks: *"please make
 //! all this: … a one-line similar to job - with a popup"* (`red_card`). Then, pasting a review
 //! that could not decide — dozens of lines of the reviewer's reasons — *"same story about reviews
-//! - … one line + popup"* (`review_card`).
+//! - … one line + popup"* (`review_card`). And, pasting a stale-prompt note, a restart note and
+//! the restart notice the model got, each a wrapped paragraph: *"these gray walls are hilarious
+//! … make them the usual one liners"* (`stale_card`, `restart_card`).
 //!
 //! # The registry
 //!
@@ -36,7 +38,7 @@ use rano::style::Role;
 use crate::app::SubagentState;
 use crate::ui::render::trim_to;
 use crate::ui::transcript::job_card::{JobTail, compact_notice};
-use crate::ui::transcript::{asked_card, red_card, review_card};
+use crate::ui::transcript::{asked_card, red_card, restart_card, review_card, stale_card};
 use crate::ui::*;
 
 /// What every card's line ends with: the row is a summary, and the popup is the text.
@@ -124,14 +126,20 @@ pub(crate) struct WarningKind {
 }
 
 /// Every session notice drawn as a card, in the order they are tried.
-pub(crate) const SESSION_KINDS: &[SessionKind] =
-    &[red_card::SESSION, review_card::SESSION, asked_card::SESSION];
+pub(crate) const SESSION_KINDS: &[SessionKind] = &[
+    red_card::SESSION,
+    review_card::SESSION,
+    asked_card::SESSION,
+    restart_card::SESSION,
+];
 
 /// Every hub warning drawn as a card.
 pub(crate) const WARNING_KINDS: &[WarningKind] = &[
     red_card::WARNING,
     red_card::UNJUDGED_WARNING,
     review_card::WARNING,
+    restart_card::WARNING,
+    stale_card::WARNING,
 ];
 
 fn kind_of(text: &str) -> Option<&'static SessionKind> {

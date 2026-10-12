@@ -2429,6 +2429,67 @@ pub fn prefix_fingerprint(seat: Seat, prefix: &StablePrefix) -> String {
 ///
 /// An unreadable or absent clock is **said** rather than rendered as the epoch: `0` is
 /// *nobody recorded when*, which is a different sentence from *seated at 01:00 on 01-01*.
+/// **What `prefix_stale` says** — the sentence a head is told when a resumed session speaks a
+/// prompt this daemon would not compose now. One function so the TUI's one-line card
+/// (`stale_card`) can be pinned against it: `the_tuis_stale_card_fixture_is_what_the_daemon_writes`.
+///
+/// `seated` is when the session was seated ([`seated_at`]); `moved` the parts that changed
+/// (`the system instructions`, `the tool schemas`, or none — then it is the seat); `added`,
+/// `gone`, `grew` the tools that arrived, left, or changed schema.
+pub fn stale_prefix_sentence(
+    session_id: &str,
+    seated: &str,
+    moved: &[&str],
+    added: &[String],
+    gone: &[String],
+    grew: &[String],
+) -> String {
+    // Neither moved and the hash still differs: the seat's own name is
+    // the third input, and it is in the address precisely so that this
+    // case has a sentence rather than an empty list. The verb travels
+    // with the noun because one of the three is singular.
+    let (what, verb) = match moved {
+        [] => ("the seat".to_string(), "has"),
+        [one] => ((*one).to_string(), "have"),
+        [a, b] => (format!("{a} and {b}"), "have"),
+        many => (many.join(", "), "have"),
+    };
+    let mut say = format!(
+        "session {} was seated {} with a prompt this daemon would not \
+         compose now: {what} {verb} changed since. This session keeps the \
+         prefix it was created with — message 0 is frozen, and rewriting it \
+         is a full cold re-prefill — so the model cannot call a tool seated \
+         since, and a schema that grew is one it has never been told about",
+        session_id, seated,
+    );
+    if !added.is_empty() {
+        say.push_str(&format!(
+            ". Seated here but not in this conversation's prompt, so the \
+             model cannot call them: {}",
+            added.join(", ")
+        ));
+    }
+    if !gone.is_empty() {
+        say.push_str(&format!(
+            ". In the prompt but not seated here, so a call to them refuses: {}",
+            gone.join(", ")
+        ));
+    }
+    if !grew.is_empty() {
+        say.push_str(&format!(
+            ". Seated on both sides with a different schema, so the model is \
+             working from the older one: {}",
+            grew.join(", ")
+        ));
+    }
+    say.push_str(
+        ". `/reseat` rebuilds the prompt from what is seated now, carrying \
+         this conversation across as it is; a new session gets the seated one \
+         from the start.",
+    );
+    say
+}
+
 fn seated_at(ms: i64) -> String {
     if ms <= 0 {
         return "an unrecorded time".into();
@@ -4342,49 +4403,13 @@ impl Harness {
                         if !added.is_empty() || !gone.is_empty() || !grew.is_empty() {
                             moved.push("the tool schemas");
                         }
-                        // Neither moved and the hash still differs: the seat's own name is
-                        // the third input, and it is in the address precisely so that this
-                        // case has a sentence rather than an empty list. The verb travels
-                        // with the noun because one of the three is singular.
-                        let (what, verb) = match moved.as_slice() {
-                            [] => ("the seat".to_string(), "has"),
-                            [one] => ((*one).to_string(), "have"),
-                            [a, b] => (format!("{a} and {b}"), "have"),
-                            many => (many.join(", "), "have"),
-                        };
-                        let mut say = format!(
-                            "session {} was seated {} with a prompt this daemon would not \
-                             compose now: {what} {verb} changed since. This session keeps the \
-                             prefix it was created with — message 0 is frozen, and rewriting it \
-                             is a full cold re-prefill — so the model cannot call a tool seated \
-                             since, and a schema that grew is one it has never been told about",
-                            cfg.session_id,
-                            seated_at(stored.as_ref().map(|r| r.created_ms).unwrap_or(0)),
-                        );
-                        if !added.is_empty() {
-                            say.push_str(&format!(
-                                ". Seated here but not in this conversation's prompt, so the \
-                                 model cannot call them: {}",
-                                added.join(", ")
-                            ));
-                        }
-                        if !gone.is_empty() {
-                            say.push_str(&format!(
-                                ". In the prompt but not seated here, so a call to them refuses: {}",
-                                gone.join(", ")
-                            ));
-                        }
-                        if !grew.is_empty() {
-                            say.push_str(&format!(
-                                ". Seated on both sides with a different schema, so the model is \
-                                 working from the older one: {}",
-                                grew.join(", ")
-                            ));
-                        }
-                        say.push_str(
-                            ". `/reseat` rebuilds the prompt from what is seated now, carrying \
-                             this conversation across as it is; a new session gets the seated one \
-                             from the start.",
+                        let say = stale_prefix_sentence(
+                            &cfg.session_id,
+                            &seated_at(stored.as_ref().map(|r| r.created_ms).unwrap_or(0)),
+                            &moved,
+                            &added,
+                            &gone,
+                            &grew,
                         );
                         // **On the session's own log, and SAID AT ATTACH — not here.**
                         //
@@ -8739,16 +8764,17 @@ impl Harness {
                 None => instances.push((inst, at)),
             }
         }
-        let stop = instances
-            .iter()
-            .map(|(i, at)| crate::restart::stop_of(&store, i, *at))
-            .max_by_key(|s| s.at_ms)
-            .unwrap_or(crate::restart::Stopped {
-                at_ms: back_ms,
-                estimated_from: Some("nothing (no record said when)"),
-            });
-        let down = std::time::Duration::from_millis(back_ms.saturating_sub(stop.at_ms));
-        let restore = down < self.cfg.restore_within;
+        // **No record at all — not "down for 0s"**: a job row with no context names no daemon,
+        // and a daemon with no life row kept no clock. Either way the stop is UNKNOWN, and an
+        // unknown down time restores nothing (`restart` module docs).
+        let stop = crate::restart::Stopped::latest(
+            instances
+                .iter()
+                .map(|(i, at)| crate::restart::stop_of(&store, i, *at)),
+        );
+        let restore = stop.restores(back_ms, self.cfg.restore_within);
+        // Whether anything WAS brought back — which decides the notice's first line and its code.
+        let mut restored_any = false;
         let mode = if restore {
             RestoreMode::Resume
         } else {
@@ -8763,25 +8789,25 @@ impl Harness {
             let name = format!("`{}` ({})", c.handle, c.title);
             match &c.fate {
                 RestartFate::Resumed => {
+                    restored_any = true;
                     if let Some(w) = &self.job_watch {
                         w.watch(c.handle.clone());
                     }
                     lines.push(crate::subagent_record::parent_resumed_line(&name));
-                    said.push(format!("subagent {name}: resumed"));
+                    said.push(crate::restart::said::resumed(&name));
                 }
                 RestartFate::Settled => {
+                    restored_any = true;
                     // The settlement itself is the notice the watcher queues; a second line about
                     // it would tell the model the same thing twice.
                     if let Some(w) = &self.job_watch {
                         w.watch(c.handle.clone());
                     }
-                    said.push(format!(
-                        "subagent {name}: had finished, its result not yet delivered — delivering it"
-                    ));
+                    said.push(crate::restart::said::delivering(&name));
                 }
                 RestartFate::NotResumed { why } => {
                     lines.push(crate::subagent_record::parent_not_resumed_line(&name, why));
-                    said.push(format!("subagent {name}: NOT resumed — {why}"));
+                    said.push(crate::restart::said::not_resumed(&name, why));
                 }
                 RestartFate::Reminded { worktree, branch } => {
                     lines.push(crate::subagent_record::parent_reminded_line(
@@ -8790,7 +8816,7 @@ impl Harness {
                         worktree.as_deref(),
                         branch.as_deref(),
                     ));
-                    said.push(format!("subagent {name}: reminded, not resumed"));
+                    said.push(crate::restart::said::subagent_reminded(&name));
                 }
             }
         }
@@ -8800,16 +8826,12 @@ impl Harness {
         let rt = self.runtime.clone();
         for m in monitors {
             let _ = store.end_monitor(&sid, &m.name);
-            if m.declared_ms.saturating_add(m.ttl_ms) <= stop.at_ms {
+            if m.declared_ms.saturating_add(m.ttl_ms) <= stop.no_earlier_than_ms() {
                 continue;
             }
             if !restore {
-                lines.push(format!(
-                    "- monitor `{}` was watching; re-arm it with {} if it still matters.",
-                    m.name,
-                    crate::restart::monitor_call(&m)
-                ));
-                said.push(format!("monitor `{}`: reminded, not re-armed", m.name));
+                lines.push(crate::restart::monitor_reminded_line(&m));
+                said.push(crate::restart::said::monitor_reminded(&m.name));
                 continue;
             }
             // **The same call, made again.** It was gated when the model first made it; this
@@ -8823,13 +8845,9 @@ impl Harness {
             };
             let r = rt.invoke_operator("restart", &call, &mut letibot_tools::NullToolSink);
             if r.outcome == letibot_transcript::ToolOutcome::Ok {
-                lines.push(format!(
-                    "- monitor `{}` was re-armed with the call that declared it ({}); its TTL \
-                     starts again from now.",
-                    m.name,
-                    crate::restart::monitor_call(&m)
-                ));
-                said.push(format!("monitor `{}`: re-armed", m.name));
+                restored_any = true;
+                lines.push(crate::restart::monitor_rearmed_line(&m));
+                said.push(crate::restart::said::rearmed(&m.name));
             } else {
                 let why = r
                     .payload
@@ -8838,13 +8856,8 @@ impl Harness {
                     .unwrap_or("")
                     .trim_end_matches('.')
                     .to_string();
-                lines.push(format!(
-                    "- monitor `{}` could NOT be re-armed — {why}. It was declared with {}; what \
-                     it watched may be gone.",
-                    m.name,
-                    crate::restart::monitor_call(&m)
-                ));
-                said.push(format!("monitor `{}`: NOT re-armed — {why}", m.name));
+                lines.push(crate::restart::monitor_not_rearmed_line(&m, &why));
+                said.push(crate::restart::said::not_rearmed(&m.name, &why));
             }
         }
 
@@ -8855,7 +8868,8 @@ impl Harness {
             let waiting = crate::restart::rows_waiting_on(&rows, &job.handle, slug.as_deref());
             let ran = ctx
                 .as_ref()
-                .map(|c| stop.at_ms.saturating_sub(c.started_ms));
+                .zip(stop.at_ms())
+                .map(|(c, at)| at.saturating_sub(c.started_ms));
             lines.push(crate::restart::job_line(
                 &job,
                 slug.as_deref(),
@@ -8863,15 +8877,7 @@ impl Harness {
                 ran,
                 &waiting,
             ));
-            said.push(format!(
-                "job `{}`: reminded (not re-run){}",
-                job.handle,
-                if waiting.is_empty() {
-                    String::new()
-                } else {
-                    format!(", {} waiting row(s) released", waiting.len())
-                }
-            ));
+            said.push(crate::restart::said::job(&job.handle, waiting.len()));
             // **Said once**: the row stops reading `running`, so the next open does not remind
             // again and the pane does not draw a job nobody runs.
             let mut lost = job.clone();
@@ -8879,35 +8885,22 @@ impl Harness {
             let _ = store.put_job(&sid, &lost);
         }
 
-        let mut text = crate::restart::header(&stop, back_ms, self.cfg.restore_within, restore);
-        if !lines.is_empty() {
-            text.push('\n');
-            text.push_str(&lines.join("\n"));
-        }
-        if !restore {
-            text.push_str(
-                "\nNothing above is running now. Bring back only what still matters: \
-                 `task_resume` for a subagent, `monitor` for a watch, `bash` for a job.",
-            );
-        }
+        let outcome = match (restore, restored_any) {
+            (true, true) => crate::restart::Outcome::Restored,
+            (true, false) => crate::restart::Outcome::NothingRestorable,
+            (false, _) => crate::restart::Outcome::Reminded,
+        };
+        let text = crate::restart::notice(
+            &crate::restart::header(&stop, back_ms, self.cfg.restore_within, outcome),
+            &lines,
+            outcome,
+        );
         for line in &said {
             eprintln!("  {sid} · restart: {line}");
         }
         self.hub.publish(SessionEvent::Warning {
-            code: if restore {
-                "restart_restored"
-            } else {
-                "restart_reminded"
-            }
-            .into(),
-            detail: format!(
-                "{}\n{}",
-                text.lines().next().unwrap_or(""),
-                said.iter()
-                    .map(|l| format!("  - {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
+            code: outcome.code().into(),
+            detail: crate::restart::warning_detail(&text, &said),
             compaction: None,
         });
         self.restart_notices.push(text.clone());

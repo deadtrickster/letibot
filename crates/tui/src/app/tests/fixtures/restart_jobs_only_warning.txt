@@ -1,0 +1,2 @@
+[restart] the daemon was down for 4s (stopped at 2026-10-12 08:10:52 UTC; back at 2026-10-12 08:10:56 UTC) — under the 1h00m restore threshold, but nothing could be restored automatically. This is what you were running:
+  - job `j46`: reminded (not re-run)
