@@ -21,7 +21,9 @@ impl Tool for Read {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "read",
-            "Return the text of a file, with line numbers. Give `path`; optionally \
+            "Return a file's text, with line numbers — or, for an image (PNG, \
+             JPEG, GIF, WebP), the image itself, attached for you to look at. Give \
+             `path`; optionally \
              `offset` (the first line, 1-based) and `limit` (how many lines), or \
              `ranges` for SEVERAL windows of one file in a single call. Without a \
              limit, at most 200 lines and a few tens of KiB are returned per call, and \
@@ -30,8 +32,8 @@ impl Tool for Read {
              directory's listing rather than an error, and a directory comes back as \
              its listing, so a wrong guess does not need a second call. Prefer this to \
              `sed -n 'A,Bp'`: the shell cites no line numbers, never says where the \
-             file continues, and prints nothing for a range that was wrong — which \
-             reads exactly like one that was right.",
+             file continues, and a wrong range prints nothing — which reads like a \
+             right one.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -396,6 +398,19 @@ mod tests {
         eprintln!("no-limit note: {n2}");
         assert!(!n2.contains("at most"), "{n2}");
         assert!(n2.contains("offset=201"), "{n2}");
+    }
+
+    #[test]
+    fn the_description_says_an_image_comes_back_as_an_image() {
+        // **Advertised, or it is never asked for** — the operator: *"looks like our read tooling
+        // doesnt advertise vision"*. The tool attached an image for any path that was one, and its
+        // description said only *"Return the text of a file"*, so a model with a screenshot to read
+        // had no reason to think `read` could show it one.
+        let d = crate::runtime::Tool::schema(&super::Read).description;
+        for needle in ["image", "PNG", "JPEG", "attached"] {
+            assert!(d.contains(needle), "{needle:?} missing from: {d}");
+        }
+        assert_eq!(crate::schema::lint_description(&d), vec![]);
     }
 
     /// **A picture comes back as a picture** — the operator's ruling, as a measurement.
