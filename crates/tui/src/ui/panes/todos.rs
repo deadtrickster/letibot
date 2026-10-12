@@ -387,6 +387,17 @@ fn status_words(s: TodoStatus) -> &'static str {
     }
 }
 
+/// **The options of an operator question, on one line** (R90.24) — read from the structured
+/// list, each quoted, so an option that holds a separator stays one option (the transcript's
+/// question row lists them one per line; this line cannot).
+fn options_words(options: &[String]) -> String {
+    options
+        .iter()
+        .map(|o| format!("\"{}\"", clean_line(o)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// One edge of `needs`, as the sentence a reader can act on.
 fn need_words(n: &TodoNeed) -> String {
     match n {
@@ -396,11 +407,7 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Operator { question, options } => format!(
             "YOU — \"{}\" ({}) — enter on the row answers it",
             clean_line(question),
-            options
-                .iter()
-                .map(|o| clean_line(o))
-                .collect::<Vec<_>>()
-                .join(" / ")
+            options_words(options)
         ),
         TodoNeed::Answered { question, reply } => format!(
             "answered — \"{}\": {}",
@@ -694,4 +701,14 @@ pub(crate) fn render_todo_md(body: &str) -> Vec<TodoRow> {
 /// reason. Nothing else is interpreted — this is a reader, not a renderer.
 pub(crate) fn strip_markup(text: &str) -> String {
     text.replace("**", "").replace('`', "")
+}
+
+#[cfg(test)]
+mod options_tests {
+    /// R90.24: an option holding a separator stays one option on the pane's line.
+    #[test]
+    fn options_are_quoted_one_by_one() {
+        let o = vec!["a / b".to_string(), "c | d".to_string()];
+        assert_eq!(super::options_words(&o), "\"a / b\", \"c | d\"");
+    }
 }

@@ -804,11 +804,20 @@ fn operator_answer_text(asked: &crate::answers::Asked) -> Option<String> {
 /// quote back as authorisation for the answer to it. This row is `Speaker::Agent` for that
 /// reason and for the other one: the question is the model's, and a head drawing it as the
 /// person's would be showing the reader the wrong half of the exchange as theirs.
+///
+/// **The options are a LIST, one per line** (R90.24): `options offered:` and then `- OPTION` for
+/// each, an option's own line breaks folded to spaces. They used to be joined with ` | ` on one
+/// line, and an option holding ` | ` came back as two. The head reads either shape
+/// (`asked_card::question_of`), so stored rows still parse.
 fn question_row_text(asked: &crate::answers::Asked) -> String {
     let q = &asked.question;
     let mut said = format!("asked: {}", q.text.trim());
     if !q.options.is_empty() {
-        said.push_str(&format!("\noptions offered: {}", q.options.join(" | ")));
+        said.push_str("\noptions offered:");
+        for o in &q.options {
+            said.push_str("\n- ");
+            said.push_str(&o.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
     }
     said
 }

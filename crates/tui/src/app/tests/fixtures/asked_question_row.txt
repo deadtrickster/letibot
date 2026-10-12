@@ -5,4 +5,8 @@ A — treat them as in scope and put a DuckDB dialect frontend in front of the e
 B — exclude the family, with the reason written down in the gate, so the number is the hand-written tests only.
 
 C — treat them as in scope with no dialect layer, and count every dialect mismatch as an engine failure; the number is honest and mostly noise.
-options offered: A — in scope, via a DuckDB dialect frontend | B — exclude it, reason written down | C — in scope, no dialect layer: count it all as engine failures | Not now — leave the row open and the directories unenumerated
+options offered:
+- A — in scope, via a DuckDB dialect frontend
+- B — exclude it, reason written down
+- C — in scope, no dialect layer: count it all as engine failures
+- Not now — leave the row open and the directories unenumerated

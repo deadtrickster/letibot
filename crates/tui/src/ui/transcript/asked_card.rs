@@ -33,15 +33,30 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, first_clause, 
 
 /// What the question row opens with.
 const ASKED: &str = "asked: ";
-/// Where its options start, when it offered any.
+/// Where its options start, when it offered any — the one-line shape of every row before
+/// R90.24, `A | B | C`.
 const OPTIONS: &str = "\noptions offered: ";
+/// …and the list shape since: `options offered:` and one `- OPTION` line each.
+const OPTIONS_LIST: &str = "\noptions offered:\n";
+/// What each option of the list shape opens with.
+const ITEM: &str = "- ";
 
 /// **A question row, read**: the question, and the options it offered.
+///
+/// The list shape is read first, and only when EVERY line after its head is an item — so an
+/// option holding ` | ` is one option (R90.24). A row from before it still splits on ` | `.
 pub(crate) fn question_of(text: &str) -> Option<(&str, Vec<&str>)> {
     let rest = text.strip_prefix(ASKED)?;
-    let (question, options) = match rest.rsplit_once(OPTIONS) {
-        Some((q, o)) if !o.contains('\n') => (q, o.split(" | ").collect()),
-        _ => (rest, Vec::new()),
+    let listed = rest.rsplit_once(OPTIONS_LIST).and_then(|(q, o)| {
+        let items: Option<Vec<&str>> = o.split('\n').map(|l| l.strip_prefix(ITEM)).collect();
+        items.filter(|i| !i.is_empty()).map(|i| (q, i))
+    });
+    let (question, options) = match listed {
+        Some(read) => read,
+        None => match rest.rsplit_once(OPTIONS) {
+            Some((q, o)) if !o.contains('\n') => (q, o.split(" | ").collect()),
+            _ => (rest, Vec::new()),
+        },
     };
     (!question.trim().is_empty()).then_some((question, options))
 }

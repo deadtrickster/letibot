@@ -12,6 +12,9 @@ use super::*;
 /// The question row as the session writes it (`Harness::question_row_text`) — pinned byte for
 /// byte by `harnessd`'s `the_tuis_asked_card_fixtures_are_what_the_session_writes`.
 const QUESTION: &str = include_str!("fixtures/asked_question_row.txt");
+/// The same row as the session wrote it before R90.24 — options on one ` | ` line, the shape
+/// every stored transcript from before it holds.
+const QUESTION_V1: &str = include_str!("fixtures/asked_question_row_v1.txt");
 /// The operator's answer row (`Harness::operator_answer_text`), pinned by the same test.
 const ANSWER: &str = include_str!("fixtures/asked_answer_row.txt");
 
@@ -384,6 +387,23 @@ fn an_abstention_says_so() {
 #[test]
 fn a_chosen_option_holding_the_separator_is_one_option() {
     let q = "asked: which pipe?\noptions offered: a | b | c | d";
+    let a = popup_for(q, Some("b | c"), 200);
+    assert_eq!(
+        options_block(&a),
+        vec!["options:", "  1. a", "✓ 2. b | c", "  3. d"]
+    );
+}
+
+/// **R90.24: the options are a list**, so an option holding ` | ` is one option — and a row
+/// written before the list shape still reads as it did.
+#[test]
+fn the_options_are_a_list_and_the_old_line_still_parses() {
+    use crate::ui::transcript::asked_card::question_of;
+    let (_, now) = question_of(QUESTION).expect("the session's row");
+    let (_, then) = question_of(QUESTION_V1).expect("a stored row");
+    assert_eq!(now.len(), 4);
+    assert_eq!(now, then);
+    let q = "asked: which pipe?\noptions offered:\n- a\n- b | c\n- d";
     let a = popup_for(q, Some("b | c"), 200);
     assert_eq!(
         options_block(&a),
