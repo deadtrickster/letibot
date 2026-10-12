@@ -166,9 +166,11 @@ impl Tool for MergeGate {
             "merge_gate",
             "The merge queue's gate for a repository: the commands it runs on a branch before \
              landing it. Reports the gate the repository's AGENTS.md has (a `Merge gate` \
-             section) and the choices its files suggest, each with why. Changes nothing: put \
-             the choices to the operator, who may also type their own command; then write the \
-             section into AGENTS.md and commit it to main, which is the copy the queue reads.",
+             section) and the choices its files suggest, each with why. Changes nothing. \
+             Exception to the queue rule: ask the operator with `ask_user_question` (options = \
+             these choices; they may type their own command), then add the section to \
+             AGENTS.md and commit it to main yourself — the queue reads main's copy and cannot \
+             gate the change that gives it a gate.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -242,10 +244,11 @@ impl Tool for MergeGate {
             ));
         }
         body.push_str(
-            "Put these to the operator as choices and let them pick or type their own; do not \
-             choose for them. Then add this section to the repository's AGENTS.md (creating the \
-             file if there is none), with the chosen commands one per line, and commit it to \
-             main:\n\n",
+            "Ask the operator with `ask_user_question` (options = these choices; they may \
+             type their own); do not choose for them. Exception to the queue rule: once they \
+             pick, add this section to the repository's AGENTS.md (creating the file if there \
+             is none), with the chosen commands one per line, and commit it to main yourself — \
+             the queue cannot gate the change that gives it a gate:\n\n",
         );
         body.push_str(&merge_gate_section(&[
             "<the chosen commands, one per line>".to_string(),
@@ -269,6 +272,15 @@ mod tests {
             .into_iter()
             .map(|c| c.steps.join(" && "))
             .collect()
+    }
+
+    /// **R93.F31: the AGENTS.md bootstrap is a named exception to the queue rule**, and the
+    /// choice goes to the operator through `ask_user_question`.
+    #[test]
+    fn the_bootstrap_is_a_named_exception_to_the_queue_rule() {
+        let d = MergeGate.schema().description;
+        assert!(d.contains("Exception to the queue rule:"), "{d}");
+        assert!(d.contains("`ask_user_question`"), "{d}");
     }
 
     #[test]

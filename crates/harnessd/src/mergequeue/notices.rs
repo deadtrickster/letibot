@@ -550,10 +550,11 @@ pub fn handed_over(r: &ReviewRow) -> String {
     format!(
         "The review queue could not review `{branch}` (row `{id}`): {failure} This project \
          merges such a branch via its main session (`[queue] merge_via_session`), so it is \
-         yours: the branch is in {wt}. Run `{target}`'s merge gate (the `Merge gate` section \
-         of its AGENTS.md) there, and land it on `{target}` yourself if it is green — the \
-         queue sees the landing and withdraws the row. Or ask the operator for `/queue \
-         approve {id}`, which lands it through the queue's own gate.",
+         yours: the branch is in {wt}. Exception to the queue rule: run `{target}`'s merge \
+         gate (the `Merge gate` section of its AGENTS.md) there, and land it on `{target}` \
+         yourself if it is green — the queue sees the landing and withdraws the row. Or ask \
+         the operator with `ask_user_question` whether to `/queue approve {id}` instead, \
+         which lands it through the queue's own gate.",
         branch = r.branch,
         id = r.id,
         failure = r.failure,
@@ -679,6 +680,15 @@ mod tests {
     /// **The review the operator pasted** — `agent/panic-groupingsets-join`, whose reviewer could
     /// not decide, parked for a person. The reasons are the reviewer's as the paste shows them
     /// (it opened with these words and was cut where the operator stopped copying), completed.
+    /// **R93.F50: landing a handed-over branch yourself is a named exception to the queue
+    /// rule**, and the choice the operator makes is asked through `ask_user_question`.
+    #[test]
+    fn a_handover_names_its_exception_to_the_queue_rule() {
+        let said = handed_over(&groupingsets());
+        assert!(said.contains("Exception to the queue rule:"), "{said}");
+        assert!(said.contains("`ask_user_question`"), "{said}");
+    }
+
     fn groupingsets() -> ReviewRow {
         ReviewRow {
             id: "s-1789919514688401228-sub-1791743034603570463".into(),

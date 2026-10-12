@@ -8360,9 +8360,10 @@ impl Harness {
                 "The merge queue cannot land anything in `{repo}`: its target `{target}` has no \
                  `Merge gate` section in AGENTS.md, so there is nothing to judge a branch by \
                  (`{branch}` is waiting there). Call `merge_gate` with repo `{repo}` to see what it \
-                 suggests, put those choices to the operator — they may type their own command — \
-                 and once they pick, add the section to that repository's AGENTS.md and commit it \
-                 to `{target}`. The queue goes on by itself when the section is there.",
+                 suggests and ask the operator with `ask_user_question` (options = those choices; \
+                 they may type their own command). Exception to the queue rule: once they pick, \
+                 add the section to that repository's AGENTS.md and commit it to `{target}` \
+                 yourself. The queue goes on by itself when the section is there.",
                 repo = h.repository,
                 target = h.target,
                 branch = r.branch,
