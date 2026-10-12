@@ -449,10 +449,11 @@ pub struct Config {
     /// The bootstrap system prompt. Part of the stable prefix; nothing volatile
     /// belongs in it (§5.2, and the operator paid for that rule).
     ///
-    /// Built as [`DEFAULT_SYSTEM`] in [`Config::for_this_box`] and **composed once,
-    /// at session open**, from [`Prompts`] (the operator's `prompts.toml`), this
-    /// session's model, and — through [`Config::compose_system_with_notes`] — the
-    /// standing-notes files on disk. After that it is message 0 and is never
+    /// Built as [`default_system`] for a seat with no tools in [`Config::for_this_box`]
+    /// and, when [`Config::seat_prompt`] is set, **composed once, at session open**
+    /// ([`Config::compose_for_seat`]), from [`Prompts`] (the operator's `prompts.toml`),
+    /// this session's model, its seated tools, and the standing-notes files on disk.
+    /// After that it is message 0 and is never
     /// rewritten **mid-session on a local model**: a session that started under
     /// one prompt keeps it until a base rebuild. The standing-notes section is
     /// the one deliberate exception to "keeps it for its whole life": every fork
@@ -461,6 +462,17 @@ pub struct Config {
     /// `prompts.toml` itself stays a fact about NEW sessions — it is parsed once
     /// and never re-read.
     pub system: String,
+    /// **Compose [`Config::system`] at open, for the tools this session seats.**
+    ///
+    /// `Some` for every session the daemon opens (`Sessions`, and a child of such a
+    /// session): `Harness::open_with_registry` replaces `system` with the composition
+    /// once the role is resolved — the seat's sections, the standing notes, then this
+    /// value's own paragraph and fabric block. `None` keeps `system` exactly as given,
+    /// which is a test's fixture or the operator's `--system`.
+    pub seat_prompt: Option<SeatPrompt>,
+    /// **What the prompt was composed from**, set at open from the seated tools —
+    /// `None` before. The fabric's later refreshes render for the same doors.
+    pub seat_facts: Option<SeatFacts>,
     /// The operator's `prompts.toml`, loaded once at startup. `Default` (no
     /// overrides) when the file is absent or was refused — which is also the
     /// byte-identical case. See [`Prompts`].
@@ -947,127 +959,338 @@ impl AdjudicatorChoice {
     }
 }
 
-/// The system prompt M1 ships.
+/// **The base system prompt, composed per seat** (R93.G1–G5).
 ///
 /// Two rules from §5.2 are visible in it, and both cost the operator real time:
 /// it says how to use the tools and never what the data contains, and it **states
 /// the answer language** — oracle's prompt did not, and a Chinese-trained model
 /// drifted into Chinese mid-sentence under Russian input.
 ///
-/// Nothing volatile: no timestamp, no cwd listing, no git branch. Adding one line
-/// to an `<env>` block once cost a full cold re-prefill of a 179k conversation.
+/// # Every sentence is true for the seat that reads it
 ///
-/// # The scratch sentence names the concept, never the path
+/// There used to be one constant for every seat, and it told a seat with `edit`
+/// and `write` *"You have read-only tools"*, told a coder child to use a scratch path
+/// only `harness status` could name (a tool the child does not have), and named
+/// `transcript` and `notes` to seats without them (R93.G2–G4). So a section is now a
+/// function of [`SeatFacts`] — the tools this session actually seats, read off the
+/// registry at open, and the scratch directory its backend actually has — and a
+/// sentence about a tool is written only when that tool is seated. A section with
+/// nothing true to say for the seat is left out.
 ///
-/// The path carries this daemon's pid, so putting it here would give every
-/// process its own stable prefix and a cold prefill with it — the exact cost the
-/// paragraph above this one is about. The prompt says the directory exists and is
-/// the model's to use; `harness status`'s `scratch` row says where. Same split as
-/// the mode: the rule is in the prompt, the value is a row.
+/// # The scratch path is in the prompt, and the fingerprint masks it
 ///
-/// # The `transcript` sentence, and why it earned its re-prefill
+/// It carries this daemon's pid. A session's prompt is frozen at open, so a new
+/// session pays nothing for it; what it must not do is make every session look
+/// re-composed after a daemon restart, and `harness::prefix_fingerprint` masks the
+/// pid for exactly that.
 ///
-/// It is one of the few additions worth that cost, because the behaviour it
-/// changes is one nothing else can reach. A tool's own description is read when
-/// the model is choosing among tools — but the moment this is about is the moment
-/// BEFORE that, when the model has decided it does not know something and is
-/// composing a question back to the operator. Nothing in a schema is consulted
-/// there.
+/// # `working` settles what the notices used to argue about
 ///
-/// The trigger is narrow on purpose. "Something you do not know" is most things,
-/// and a model that reaches for a tool about all of them is worse than one that
-/// says so. The tell is specific: the operator refers to something **as already
-/// settled**, in the tone of a thing you both know, and there is no record of it.
-/// That is what a compaction leaves behind, and it is also the one case where
-/// asking them to repeat themselves is asking for something they already said.
+/// The rules on waiting, asking, context, stopping and the queue lived only in tool
+/// descriptions and notices, with nothing above them to settle a contradiction
+/// (R93.G1). They are one short section here, worded to agree with the tools: a
+/// completion *"reaches you automatically — when your current turn ends, or at once
+/// if a todo row needs it or wake is "now""* (R79).
 ///
-/// The sentence rides the read-only-tools paragraph rather than opening its own,
-/// because it is the same rule about a different subject — *a file you have not
-/// read is a file you do not know* — and two paragraphs would read as two rules.
-pub const DEFAULT_SYSTEM: &str = "You are a careful software engineering assistant working in a \
-checked-out source tree.\n\n\
-Answer in English unless the user writes in another language, in which case answer in theirs.\n\n\
-You have read-only tools. Use them for questions about **this tree** — its files, their contents, \
-where something is defined — rather than guessing: a file you have not read is a file you do not \
-know. The same holds for **this conversation**: if the user refers to something as already settled \
-and you have no record of it, read it with `transcript` before asking them to repeat it — a \
-compaction replaces earlier turns with a summary, and the turns themselves are still in the store. \
-Do not call a tool for a question about the world, about a definition, or about arithmetic; \
-answer those directly. When a tool reports that it found nothing, say so — do not fill the gap \
-from memory.\n\n\
-Find with `grep` and read with `read`, not by piping `grep -n` into `sed`. `grep` takes a \
-`context` count and returns the region around each match, numbered — that is the find and the \
-look in one call. `read` takes a `ranges` list for several windows of one file at once. A `sed` \
-slice has no line numbers, does not say where the file continues, and prints nothing for a range \
-that is wrong, which reads exactly like a range that was right.\n\n\
-Change files with `edit` and `write`, never by piping a script into a shell. `edit` takes an \
-`edits` list: several changes to one file, applied in order and all-or-nothing, each one either \
-`old_string`+`new_string` or `insert_before`/`insert_after`+`new_string`. That is what a heredoc \
-was for, and it is one call instead of four. A shell that rewrites a file also produces no diff \
-for the operator to read and no record of what changed.\n\n\
-You have a scratch directory of your own — the `scratch` row of `harness status` names the \
-exact path. Put working files there: a generated script, a downloaded page, intermediate \
-output, anything you need on disk that the operator did not ask for. It is outside their tree, \
-so nothing you leave in it touches their work, and creating, writing and deleting inside it \
-need no permission.\n\n\
-Use that path and no other. A directory you invent under /tmp is shared temp space: deleting \
-there is a decision somebody has to make, and the name may already be another process's. Do \
-not scatter temporary files through the workspace either.\n\n\
-You can keep standing notes: markdown files the harness reads into this prompt and re-reads \
-after every compaction, so a note survives a context you cannot. Write one with the `notes` \
-tool when you find something worth keeping — interesting, remarkable or surprising, \
-something you would not want to rediscover — not as a summary of what you did. The tool \
-writes the workspace's `.letibot/notes/` only; `AGENTS.md` and the box-wide notes are the \
-operator's, and you read them rather than edit them. A note says what was true or intended \
-when it was written: verify against the tree before treating one as a fact about now, and \
-replace a note that has gone stale rather than repeat it.\n\n\
-Be direct. Prefer the shortest answer that is complete.";
-
-/// **The named sections of [`DEFAULT_SYSTEM`], in the order they appear.**
-///
-/// Joined by `\n\n` they are [`DEFAULT_SYSTEM`] byte for byte — a test asserts it.
-/// That is what makes the split owned rather than invented: an edit to a paragraph
-/// that forgets the table fails the join test, and so does a table whose boundaries
-/// moved. The names are the keys the operator uses in `prompts.toml` to replace a
-/// section in place, leaving the other sections and their order alone.
-pub const SYSTEM_SECTIONS: &[(&str, &str)] = &[
-    (
-        "identity",
-        "You are a careful software engineering assistant working in a checked-out source tree.",
-    ),
-    (
-        "language",
-        "Answer in English unless the user writes in another language, in which case answer in theirs.",
-    ),
-    (
-        "read_only_tools",
-        "You have read-only tools. Use them for questions about **this tree** — its files, their contents, where something is defined — rather than guessing: a file you have not read is a file you do not know. The same holds for **this conversation**: if the user refers to something as already settled and you have no record of it, read it with `transcript` before asking them to repeat it — a compaction replaces earlier turns with a summary, and the turns themselves are still in the store. Do not call a tool for a question about the world, about a definition, or about arithmetic; answer those directly. When a tool reports that it found nothing, say so — do not fill the gap from memory.",
-    ),
-    (
-        "find_and_read",
-        "Find with `grep` and read with `read`, not by piping `grep -n` into `sed`. `grep` takes a `context` count and returns the region around each match, numbered — that is the find and the look in one call. `read` takes a `ranges` list for several windows of one file at once. A `sed` slice has no line numbers, does not say where the file continues, and prints nothing for a range that is wrong, which reads exactly like a range that was right.",
-    ),
-    (
-        "edit_files",
-        "Change files with `edit` and `write`, never by piping a script into a shell. `edit` takes an `edits` list: several changes to one file, applied in order and all-or-nothing, each one either `old_string`+`new_string` or `insert_before`/`insert_after`+`new_string`. That is what a heredoc was for, and it is one call instead of four. A shell that rewrites a file also produces no diff for the operator to read and no record of what changed.",
-    ),
-    (
-        "scratch",
-        "You have a scratch directory of your own — the `scratch` row of `harness status` names the exact path. Put working files there: a generated script, a downloaded page, intermediate output, anything you need on disk that the operator did not ask for. It is outside their tree, so nothing you leave in it touches their work, and creating, writing and deleting inside it need no permission.",
-    ),
-    (
-        "scratch_path",
-        "Use that path and no other. A directory you invent under /tmp is shared temp space: deleting there is a decision somebody has to make, and the name may already be another process's. Do not scatter temporary files through the workspace either.",
-    ),
-    (
-        "notes",
-        "You can keep standing notes: markdown files the harness reads into this prompt and re-reads after every compaction, so a note survives a context you cannot. Write one with the `notes` tool when you find something worth keeping — interesting, remarkable or surprising, something you would not want to rediscover — not as a summary of what you did. The tool writes the workspace's `.letibot/notes/` only; `AGENTS.md` and the box-wide notes are the operator's, and you read them rather than edit them. A note says what was true or intended when it was written: verify against the tree before treating one as a fact about now, and replace a note that has gone stale rather than repeat it.",
-    ),
-    (
-        "tone",
-        "Be direct. Prefer the shortest answer that is complete.",
-    ),
+/// Nothing volatile beyond that path: no timestamp, no cwd listing, no git branch.
+/// Adding one line to an `<env>` block once cost a full cold re-prefill of a 179k
+/// conversation.
+pub const SECTION_NAMES: &[&str] = &[
+    "identity",
+    "language",
+    "tree",
+    "find_and_read",
+    "edit_files",
+    "scratch",
+    "notes",
+    "working",
+    "tone",
 ];
+
+/// **What a session's base prompt is composed from** — the facts of its seat that the
+/// prompt has sentences about. Read at open (`Harness::open_with_registry`), after the
+/// role is resolved and the downgrade applied, so `tools` is what the model is actually
+/// given and not what the role meant to give it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeatFacts {
+    /// The names of the seated tools.
+    pub tools: std::collections::BTreeSet<String>,
+    /// The scratch directory the backend reaches, when it has one.
+    pub scratch: Option<String>,
+    /// A subagent: its last reply is its parent's answer, not the operator's.
+    pub subagent: bool,
+    /// The workspace is a linked git worktree, whose branch the merge queue lands.
+    pub worktree: bool,
+}
+
+impl SeatFacts {
+    /// Facts naming these tools and nothing else.
+    pub fn with_tools<I, S>(tools: I) -> SeatFacts
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        SeatFacts {
+            tools: tools.into_iter().map(Into::into).collect(),
+            ..SeatFacts::default()
+        }
+    }
+
+    /// Whether `tool` is seated.
+    pub fn has(&self, tool: &str) -> bool {
+        self.tools.contains(tool)
+    }
+
+    /// The doors the fabric block may name for this seat.
+    pub fn fabric_reach(&self) -> letibot_flowy::FabricReach {
+        letibot_flowy::FabricReach {
+            skill: self.has("skill"),
+            bash: self.has("bash"),
+        }
+    }
+}
+
+/// `a`, `a or b`, `a, b or c` — the seated subset of a list, spelled for a sentence.
+fn either(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [init @ .., last] => format!("{} or {last}", init.join(", ")),
+    }
+}
+
+/// **The built-in text of one section for one seat**, or `None` when the section has
+/// nothing true to say there. See [`SECTION_NAMES`].
+pub fn default_section(name: &str, f: &SeatFacts) -> Option<String> {
+    let any_tool = !f.tools.is_empty();
+    match name {
+        "identity" => Some(
+            "You are a careful software engineering assistant working in a checked-out source \
+             tree."
+                .into(),
+        ),
+        "language" => Some(
+            "Answer in English unless the user writes in another language, in which case answer \
+             in theirs."
+                .into(),
+        ),
+        "tree" => {
+            let mut s = String::new();
+            if f.has("read") || f.has("grep") || f.has("glob") {
+                s.push_str(
+                    "Use your tools for questions about **this tree** — its files, their \
+                     contents, where something is defined — rather than guessing: a file you \
+                     have not read is a file you do not know. ",
+                );
+            }
+            if f.has("transcript") {
+                s.push_str(
+                    "If the user refers to something as already settled and you have no record \
+                     of it, read it with `transcript` before asking them to repeat it: a \
+                     compaction replaced those turns with a summary, and the turns are still in \
+                     the store. ",
+                );
+            }
+            let web: Vec<&str> = ["`web_search`", "`web_fetch`"]
+                .into_iter()
+                .filter(|t| f.has(t.trim_matches('`')))
+                .collect();
+            if web.is_empty() {
+                s.push_str(
+                    "Answer questions about the world, definitions and arithmetic directly, \
+                     without a tool.",
+                );
+            } else {
+                s.push_str(&format!(
+                    "Answer questions about the world, definitions and arithmetic directly; use \
+                     {} when the answer depends on current facts.",
+                    either(&web)
+                ));
+            }
+            if any_tool {
+                s.push_str(" When a tool finds nothing, say so; do not fill the gap from memory.");
+            }
+            Some(s)
+        }
+        "find_and_read" => (f.has("grep") && f.has("read")).then(|| {
+            format!(
+                "Find with `grep` and read with `read`{}. `grep` takes a `context` count and \
+                 returns the numbered region around each match; `read` takes a `ranges` list for \
+                 several windows of one file.",
+                if f.has("bash") {
+                    ", not by piping `grep -n` into `sed`"
+                } else {
+                    ""
+                }
+            )
+        }),
+        "edit_files" => f.has("edit").then(|| {
+            format!(
+                "Change files with `edit`{}{}. `edit` takes an `edits` list: several changes to \
+                 one file, applied in order, all or nothing.",
+                if f.has("write") { " and `write`" } else { "" },
+                if f.has("bash") {
+                    ", never with a script piped into a shell, which leaves the operator no diff"
+                } else {
+                    ""
+                }
+            )
+        }),
+        "scratch" => match &f.scratch {
+            Some(path) if f.has("write") => Some(format!(
+                "Your scratch directory is `{path}`. Put working files there — a generated \
+                 script, a fetched page, intermediate output — rather than in the workspace or a \
+                 directory you make under /tmp. Creating, writing and deleting inside it need no \
+                 permission."
+            )),
+            _ => None,
+        },
+        "notes" => f.has("notes").then(|| {
+            "Keep standing notes with the `notes` tool: markdown in `.letibot/notes/` that the \
+             harness reads into this prompt, so a note outlives a compaction. Write one for \
+             something interesting, remarkable or surprising that you would not want to \
+             rediscover — not as a summary of what you did. `AGENTS.md` and the box-wide notes \
+             are the operator's: read them, do not edit them. A note says what was true or \
+             intended when it was written: check it against the tree before taking it as a fact \
+             about now, and replace one that has gone stale."
+                .to_string()
+        }),
+        "working" => Some(working(f)),
+        "tone" => Some("Be direct. Prefer the shortest answer that is complete.".into()),
+        _ => None,
+    }
+}
+
+/// The `working` section: how results arrive, asking, context, stopping, the queue.
+fn working(f: &SeatFacts) -> String {
+    let mut rules: Vec<String> = Vec::new();
+    // A background job is a thing the seat can follow only with the job verbs: `bash`
+    // without `job_output` (a coder child, the gatekeeper) has nothing to wait for.
+    let jobs = f.has("bash") && f.has("job_output");
+    let children = f.has("task") || f.has("task_start");
+    if jobs || children {
+        let what = match (jobs, children) {
+            (true, true) => "A background job's or a subagent's",
+            (true, false) => "A background job's",
+            _ => "A subagent's",
+        };
+        let at_once = if f.has("todo_write") {
+            "if a todo row needs it or wake is \"now\""
+        } else {
+            "if wake is \"now\""
+        };
+        rules.push(format!(
+            "{what} completion reaches you automatically — when your current turn ends, or at \
+             once {at_once}. Do not poll or sleep waiting for it."
+        ));
+    }
+    match (f.has("ask_user_question"), f.has("todo_write")) {
+        (true, true) => rules.push(
+            "`ask_user_question` blocks until the operator answers: use it when nothing else can \
+             go on without them. When only one step waits on their decision, put a `wait_on` \
+             with an `operator` question on that `todo_write` row and carry on with the rest of \
+             the plan."
+                .into(),
+        ),
+        (true, false) => rules.push(
+            "`ask_user_question` blocks until the operator answers: use it when you cannot go on \
+             without their decision."
+                .into(),
+        ),
+        (false, true) => rules.push(
+            "When a step waits on a decision only the operator can make, put a `wait_on` with an \
+             `operator` question on that `todo_write` row and carry on with the rest of the plan."
+                .into(),
+        ),
+        (false, false) => {}
+    }
+    rules.push(
+        "The harness manages your context and compacts it when it must. Do not size, split or \
+         stop work by how much context you think is left."
+            .into(),
+    );
+    if f.subagent {
+        rules.push(
+            "You are a subagent: your last reply is the answer the session that started you \
+             receives. Keep working until the task is done or you are blocked, then reply with \
+             what you did and found, or what blocks you."
+                .into(),
+        );
+    } else {
+        let mut waits: Vec<&str> = Vec::new();
+        if jobs {
+            waits.push("a job");
+        }
+        if children {
+            waits.push("a subagent");
+        }
+        waits.push("the operator");
+        rules.push(format!(
+            "Keep working while there is something you can do. When everything left waits on {}, \
+             end your turn and say in one line what it waits on. Do not restate status in place \
+             of acting.",
+            either(&waits)
+        ));
+    }
+    if f.worktree {
+        rules.push(
+            "You work on a worktree branch: commit your work there. The merge queue lands it; \
+             never push or merge it yourself."
+                .into(),
+        );
+    } else if f.has("task_start") {
+        rules.push(
+            "A worktree branch is landed by the merge queue; never push or merge one yourself."
+                .into(),
+        );
+    }
+    let mut s = String::from("How work runs here:");
+    for r in rules {
+        s.push_str("\n- ");
+        s.push_str(&r);
+    }
+    s
+}
+
+/// **The built-in prompt for one seat**, with no `prompts.toml`. What
+/// [`Prompts::compose`] returns when nothing overrides anything.
+pub fn default_system(f: &SeatFacts) -> String {
+    Prompts::default().compose("", f)
+}
+
+/// **What only some sessions are told, composed at open with the rest** — see
+/// [`Config::seat_prompt`].
+#[derive(Debug, Clone, Default)]
+pub struct SeatPrompt {
+    /// The paragraph only this session is given (the review queue's), appended after
+    /// the standing notes. `None` for every session the operator started.
+    pub own: Option<String>,
+    /// The fabric block, for a root session holding a seat — rendered at open, when
+    /// the session's tools are known, so it names only the doors it has.
+    pub fabric: Option<FabricPart>,
+}
+
+/// The fabric as it was read for a session, before it is rendered for the session's tools.
+#[derive(Debug, Clone)]
+pub enum FabricPart {
+    /// Read from the node, or from the cached copy — `source` says which.
+    Read {
+        ctx: letibot_flowy::FabricContext,
+        source: letibot_flowy::FabricSource,
+    },
+    /// No node and no copy: the block that says so, which names no door.
+    Unreachable(String),
+}
+
+impl FabricPart {
+    /// The block, naming only the doors in `reach`.
+    pub fn render(&self, reach: letibot_flowy::FabricReach) -> String {
+        match self {
+            FabricPart::Read { ctx, source } => ctx.render(source, reach),
+            FabricPart::Unreachable(block) => block.clone(),
+        }
+    }
+}
 
 /// **The per-model system-prompt overrides, from `prompts.toml`.**
 ///
@@ -1087,12 +1310,13 @@ pub const SYSTEM_SECTIONS: &[(&str, &str)] = &[
 ///
 /// # The keys, and why they are these
 ///
-/// The keys inside a layer are the **section names** of [`SYSTEM_SECTIONS`] —
-/// `identity`, `language`, `read_only_tools`, `find_and_read`, `edit_files`,
-/// `scratch`, `scratch_path`, `notes`, `tone`. A section key replaces that one section in
-/// place, leaving the other sections and their order alone. That is the whole
-/// feature: the operator can override one section for one model without rewriting
-/// the prompt.
+/// The keys inside a layer are the **section names** of [`SECTION_NAMES`] —
+/// `identity`, `language`, `tree`, `find_and_read`, `edit_files`, `scratch`, `notes`,
+/// `working`, `tone`. A section key replaces that one section in place, leaving the
+/// other sections and their order alone. That is the whole feature: the operator can
+/// override one section for one model without rewriting the prompt. **A section the
+/// seat has nothing true to say in is left out, overridden or not** — an override of
+/// `edit_files` does not give a read-only seat a sentence about `edit`.
 ///
 /// * `[base] <section> = "…"` — a change for every model. The section is replaced
 ///   for every session, and a model's own section still overrides it.
@@ -1108,7 +1332,7 @@ pub const SYSTEM_SECTIONS: &[(&str, &str)] = &[
 /// There is no `[base] system` any more. The wholesale replacement it was is the
 /// shape that could not override one section for one model, and the sections are
 /// the unit now: a prompt the operator wants changed in one place is changed in one
-/// place, and the rest of [`DEFAULT_SYSTEM`] — and its order — is left alone. A
+/// place, and the rest of the built-in prompt — and its order — is left alone. A
 /// section name this daemon does not know is refused by name, with the file's path,
 /// and the session runs on the un-overridden composition.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1141,7 +1365,7 @@ struct ModelOverrides {
 /// report for a section this daemon does not know: a `[foo]` is a parse error
 /// carrying the parser's own message, not a silently ignored line. The keys INSIDE
 /// `[base]` and `[model."NAME"]` are section names, captured by `flatten` and
-/// checked against [`SYSTEM_SECTIONS`] in [`Prompts::load`] — a name the daemon
+/// checked against [`SECTION_NAMES`] in [`Prompts::load`] — a name the daemon
 /// does not know is refused there, by name, with the path.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1250,15 +1474,15 @@ impl Prompts {
         })
     }
 
-    /// The composed system prompt for one model: the sections of [`DEFAULT_SYSTEM`]
-    /// in their order, each replaced in place by the model's override, else the
+    /// The composed system prompt for one model on one seat: the sections of
+    /// [`SECTION_NAMES`] in their order that have something true to say for `seat`
+    /// ([`default_section`]), each replaced in place by the model's override, else the
     /// provider glob's, else `[base]`'s, else the default — plus the `system_extra`
     /// (the base's, then the model's), appended last, when there is one.
     ///
     /// **The safety property:** with no file, or a file that overrides nothing, this
-    /// returns [`DEFAULT_SYSTEM`] byte for byte. That is what makes the feature safe
-    /// to land — the default is unchanged, and a test asserts it.
-    pub fn compose(&self, model_name: &str) -> String {
+    /// returns [`default_system`] for the seat byte for byte, and a test asserts it.
+    pub fn compose(&self, model_name: &str, seat: &SeatFacts) -> String {
         // The exact block and the provider-glob block, if present. The exact name
         // is a more specific instruction than a provider-wide one, so it wins per
         // section; the glob is the fallback for a section the exact block did not
@@ -1270,15 +1494,18 @@ impl Prompts {
             .map(|(provider, _)| format!("{provider}/*"))
             .and_then(|g| self.models.get(&g));
 
-        let sections: Vec<&str> = SYSTEM_SECTIONS
+        let sections: Vec<String> = SECTION_NAMES
             .iter()
-            .map(|(name, default)| {
-                exact
-                    .and_then(|m| m.sections.get(*name))
-                    .or_else(|| glob.and_then(|m| m.sections.get(*name)))
-                    .or_else(|| self.base.get(*name))
-                    .map(|s| s.as_str())
-                    .unwrap_or(*default)
+            .filter_map(|name| {
+                let default = default_section(name, seat)?;
+                Some(
+                    exact
+                        .and_then(|m| m.sections.get(*name))
+                        .or_else(|| glob.and_then(|m| m.sections.get(*name)))
+                        .or_else(|| self.base.get(*name))
+                        .cloned()
+                        .unwrap_or(default),
+                )
             })
             .collect();
         let mut result = sections.join("\n\n");
@@ -1302,9 +1529,9 @@ impl Prompts {
     }
 }
 
-/// Whether `name` is a section of [`DEFAULT_SYSTEM`], per [`SYSTEM_SECTIONS`].
+/// Whether `name` is a section of the base prompt, per [`SECTION_NAMES`].
 fn is_known_section(name: &str) -> bool {
-    SYSTEM_SECTIONS.iter().any(|(n, _)| *n == name)
+    SECTION_NAMES.contains(&name)
 }
 
 /// A sixteenth of `w`, floored at 2k and capped at a quarter — see
@@ -1678,7 +1905,11 @@ impl Config {
             unconfined: false,
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
-            system: DEFAULT_SYSTEM.into(),
+            // A seat with no tools: nothing in it claims a tool. Every session the daemon
+            // opens is composed for its seat at open instead (`seat_prompt`).
+            system: default_system(&SeatFacts::default()),
+            seat_prompt: None,
+            seat_facts: None,
             // No fallback until `run` reads `[fallback]` out of `providers.toml`. An
             // empty list is the old behaviour exactly — a model that is out fails the
             // turn — so a test that wants the fallback path sets this field by hand,
@@ -1686,7 +1917,7 @@ impl Config {
             fallback: Vec::new(),
             // No overrides until `run` loads the operator's `prompts.toml`. `Default`
             // is the byte-identical case: a daemon that never reads the file composes
-            // `DEFAULT_SYSTEM` for every session.
+            // the built-in prompt for every seat.
             prompts: Prompts::default(),
             // No project models until `run` discovers and loads the project's
             // `leticode.toml`. `Default` is the byte-identical case: a daemon with
@@ -1813,41 +2044,30 @@ impl Config {
         }
     }
 
-    /// **Compose `system` from `prompts.toml` and this session's model. Once, at
-    /// session open.**
+    /// **Compose `system` for this session's seat. Once, at session open.**
     ///
-    /// This is the only place the prompt is built from the file, and it runs before
-    /// the system message is written into the transcript. After it, `system` is
-    /// message 0 and is never rewritten: a session that started under one prompt
-    /// keeps it for its whole life, even if the model is switched or the file is
-    /// edited. That is the rule the operator asked for, and it is what makes an
-    /// edit to `prompts.toml` a fact about NEW sessions rather than a rewrite of
-    /// old ones.
-    pub fn compose_system(&mut self) {
+    /// The sections from `prompts.toml` and this session's model, for the tools in
+    /// `seat`; then the standing notes (`notes`, read off disk by the caller); then the
+    /// session's own paragraph and its fabric block, from `prompt`. This is the only
+    /// place the prompt is built from the file, and it runs before the system message
+    /// is written into the transcript. After it, `system` is message 0 and is never
+    /// rewritten: a session that started under one prompt keeps it for its whole life,
+    /// even if the model is switched or the file is edited — an edit to `prompts.toml`
+    /// is a fact about NEW sessions, and `/reseat` is the remedy for an old one.
+    pub fn compose_for_seat(&mut self, seat: &SeatFacts, prompt: &SeatPrompt, notes: Option<&str>) {
         let name = self.prompt_model_name();
-        self.system = self.prompts.compose(&name);
-    }
-
-    /// [`Config::compose_system`], then the standing notes read off disk.
-    ///
-    /// The one input to the prompt that is NOT session-frozen: `AGENTS.md` and the
-    /// notes directories are read here, every time this runs, and the assembled
-    /// section (verbatim under a token budget, a digest with line references over
-    /// it — see [`crate::standing_notes`]) is appended after `system_extra`, so it
-    /// is the newest thing the model reads before the conversation. Called at
-    /// session open with the vocabulary the session will count with; every base
-    /// rebuild re-reads through `Harness::reseat_target` rather than here.
-    ///
-    /// Takes the [`Vocab`] rather than holding one: `Config` is built before any
-    /// engine exists, and the encoder is the session's, not the daemon's.
-    pub fn compose_system_with_notes(&mut self, vocab: &letibot_tokencore::Vocab) {
-        self.compose_system();
-        let section = crate::standing_notes::section(
-            &self.workspace,
-            &crate::standing_notes::global_dir(),
-            vocab,
-        );
-        self.system = crate::standing_notes::replace(&self.system, section.as_deref());
+        let mut system = crate::standing_notes::replace(&self.prompts.compose(&name, seat), notes);
+        if let Some(own) = &prompt.own {
+            system.push_str(own);
+        }
+        if let Some(fabric) = &prompt.fabric {
+            system = format!(
+                "{}\n\n{}",
+                system.trim_end(),
+                fabric.render(seat.fabric_reach())
+            );
+        }
+        self.system = system;
     }
 
     /// The things that are off, and why.
@@ -2111,11 +2331,9 @@ impl Config {
             "",
             "",
         ));
-        // **Where the model may work without asking.** The path cannot go in the
-        // system prompt — it carries this daemon's pid, and a prompt that differs
-        // per process gives every process its own stable prefix and a cold
-        // prefill with it. So the prompt names the concept and this row names the
-        // place, which is the same split `/mode` uses for the mode.
+        // **Where the model may work without asking.** The base prompt names it too,
+        // for a seat that can write a file there (`default_section`'s `scratch`); this
+        // row is the operator's copy, for the config pane.
         out.push(row(
             "scratch",
             crate::harness::scratch_dir().display().to_string(),

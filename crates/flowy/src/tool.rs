@@ -377,7 +377,7 @@ impl Tool for Flowy {
              `dm` (`to`, `body`); `read` (the `last` N messages of `room`, for the \
              antecedents of a mention); `replay` (the `last` N spooled deliveries, \
              for what arrived while you could not read). Chat is caveman: a \
-             measurement and a decision, three lines. Reasoning goes in a row.",
+             measurement and a decision, three lines.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

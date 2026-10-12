@@ -47,8 +47,8 @@ impl Drop for TempDir {
 }
 
 /// A session over a workspace with a nonce in its `AGENTS.md`, composed the
-/// way `Sessions` composes one: the prompt is built before the harness opens,
-/// notes included.
+/// way `Sessions` composes one: `seat_prompt` set, so the harness composes the
+/// prompt at open for its seated tools, notes included.
 fn opened(workspace: &std::path::Path, nonce: &str) -> Harness {
     let dir = TempDir::new("store");
     let mut cfg = Config::for_this_box(workspace);
@@ -63,7 +63,7 @@ fn opened(workspace: &std::path::Path, nonce: &str) -> Harness {
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     std::fs::write(workspace.join("AGENTS.md"), format!("note-{nonce}-one\n"))
         .expect("fixture AGENTS.md");
-    cfg.compose_system_with_notes(&parts.vocab);
+    cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
     let hub = Hub::new(&cfg.session_id);
     Harness::open(&parts, cfg, hub).expect("the session must open")
 }
@@ -108,7 +108,7 @@ fn an_edited_agents_md_lands_in_the_next_base() {
     );
     // **And nothing else moved.** Strip the section from both and the prompts
     // are byte-identical: the sections, `system_extra`, the budget arithmetic —
-    // the whole frozen-input rule `compose_system` set keeps its side of the
+    // the whole frozen-input rule `compose_for_seat` set keeps its side of the
     // bargain and only the notes moved.
     assert_eq!(
         standing_notes::replace(&next.system, None),
@@ -145,7 +145,7 @@ fn an_edited_agents_md_lands_in_the_next_base() {
 /// prevent: the model would be told it kept something, and the next session
 /// would never see it. So this drives the REAL tool over a real workspace and
 /// reads the result back through [`standing_notes::section`] — the same
-/// function `compose_system_with_notes` and `reseat_target` call.
+/// function `Harness::open_with_registry` and `reseat_target` call.
 ///
 /// No vocabulary GGUF needed: the byte vocabulary counts exactly, and the
 /// fixture is small.

@@ -1470,7 +1470,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // Read at startup rather than per session because the report belongs at startup:
     // a file that does not parse, or that names a section this daemon does not know,
     // is said once, with the parser's own message and the path, and the daemon runs
-    // on `DEFAULT_SYSTEM` for every session. Silently ignoring an unreadable prompt
+    // on the built-in prompt for every session. Silently ignoring an unreadable prompt
     // file is the failure this feature exists to forbid — somebody edits a prompt,
     // sees no change, and cannot tell whether they were ignored.
     {

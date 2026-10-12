@@ -397,6 +397,200 @@ use super::*;
 
 // --- prompts.toml: per-model system-prompt composition -------------------
 
+/// **The full seat**: leticode's tools with `bash`, the room and the web, and a scratch
+/// directory — every section of the base prompt has something to say for it.
+fn seat() -> SeatFacts {
+    let mut f = SeatFacts::with_tools(letibot_tools::runtime::roles::leticode().tools);
+    for t in ["flowy", "web_search", "web_fetch"] {
+        f.tools.insert(t.into());
+    }
+    f.scratch = Some("/run/user/1000/letibot/scratch-4242".into());
+    f
+}
+
+/// Every tool name this build seats anywhere, for the "names no tool it lacks" check.
+fn every_tool() -> std::collections::BTreeSet<String> {
+    use letibot_tools::runtime::roles;
+    let mut all = std::collections::BTreeSet::new();
+    for r in [
+        roles::orchestrator(),
+        roles::coder(),
+        roles::leticode(),
+        roles::m1_orchestrator(),
+        roles::m3_researcher(),
+        roles::planner(),
+        roles::m2_coder(),
+        roles::m2_runner(),
+        roles::gatekeeper(),
+        roles::notes_keeper(),
+    ] {
+        all.extend(r.tools);
+    }
+    // Registered beside a role by the daemon, not named in one.
+    for t in [
+        "flowy",
+        "web_search",
+        "web_fetch",
+        "review_verdict",
+        "digest",
+        "decisions",
+    ] {
+        all.insert(t.into());
+    }
+    all
+}
+
+/// The backticked tool names `text` mentions that `seat` does not hold.
+fn names_it_lacks(text: &str, seat: &SeatFacts) -> Vec<String> {
+    let all = every_tool();
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(|w| w.split_whitespace().next().unwrap_or("").to_string())
+        .filter(|w| all.contains(w) && !seat.has(w))
+        .collect()
+}
+
+/// **The prompt names no tool the seat lacks** (R93.G2–G5) — for every seat the daemon
+/// opens, with and without `--bash`, as a root and as a child.
+///
+/// The tool lists are the roles' own (`letibot_tools::runtime::roles`), filtered the way
+/// `harness::base_role_for_seat` filters them, with the room on a root. The integration
+/// half — the facts read off a real seated registry — is `seat_facts_are_the_seated_tools`
+/// in `tests/wired.rs`.
+#[test]
+fn the_prompt_names_no_tool_the_seat_lacks() {
+    use letibot_tools::runtime::roles;
+    let exec = [
+        "bash",
+        "job_list",
+        "job_output",
+        "job_wait",
+        "job_kill",
+        "monitor",
+        "pkill",
+        "ps",
+    ];
+    let seats = [
+        ("leticode", roles::leticode().tools, true),
+        ("orchestrator", roles::m1_orchestrator().tools, true),
+        ("researcher", roles::m3_researcher().tools, true),
+        ("planner", roles::planner().tools, true),
+        ("coder", roles::m2_coder().tools, true),
+        ("runner", roles::m2_runner().tools, false),
+        ("gatekeeper", roles::gatekeeper().tools, false),
+        ("notes_keeper", roles::notes_keeper().tools, false),
+    ];
+    for (name, tools, room) in seats {
+        for bash in [true, false] {
+            for subagent in [false, true] {
+                let mut f = SeatFacts::with_tools(
+                    tools
+                        .iter()
+                        .filter(|t| bash || !exec.contains(&t.as_str()))
+                        .cloned(),
+                );
+                if room && !subagent {
+                    f.tools.insert("flowy".into());
+                }
+                f.subagent = subagent;
+                f.scratch = Some("/run/user/1000/letibot/scratch-1".into());
+                let system = default_system(&f);
+                let lacks = names_it_lacks(&system, &f);
+                assert!(
+                    lacks.is_empty(),
+                    "{name} (bash {bash}, subagent {subagent}) is told about {lacks:?}:\n{system}"
+                );
+                // And the read-only claim is never made to a seat that can write.
+                assert!(!system.contains("read-only tools"), "{name}: {system}");
+            }
+        }
+    }
+}
+
+/// **What a seat has decides what it is told** — the specific sentences R93 found false.
+#[test]
+fn a_seat_is_told_only_what_is_true_for_it() {
+    // A seat with `edit` and `write` is told to change files with them; one without is not.
+    assert!(default_system(&seat()).contains("Change files with `edit` and `write`"));
+    let reader = SeatFacts::with_tools(["read", "grep", "glob"]);
+    assert!(!default_system(&reader).contains("`edit`"));
+    // The scratch path is the real one, and only for a seat that can put a file there.
+    assert!(default_system(&seat()).contains("`/run/user/1000/letibot/scratch-4242`"));
+    assert!(
+        !default_system(&SeatFacts {
+            scratch: Some("/s/scratch-1".into()),
+            ..reader.clone()
+        })
+        .contains("scratch")
+    );
+    // A shell without the job verbs is not told about background jobs.
+    let gate = SeatFacts {
+        subagent: true,
+        ..SeatFacts::with_tools(["read", "grep", "glob", "bash", "review_verdict"])
+    };
+    assert!(!default_system(&gate).contains("background job"));
+    // The web is for current facts when it is seated, and not reached for otherwise.
+    assert!(default_system(&seat()).contains("use `web_search` or `web_fetch` when"));
+    assert!(default_system(&reader).contains("directly, without a tool"));
+    // A child is told whose answer its last reply is; a root is told when to end its turn.
+    let child = SeatFacts {
+        subagent: true,
+        ..seat()
+    };
+    assert!(default_system(&child).contains("You are a subagent"));
+    assert!(!default_system(&seat()).contains("You are a subagent"));
+    assert!(default_system(&seat()).contains("end your turn and say in one line what it waits on"));
+    // The R79 sentence, as the tools say it.
+    assert!(default_system(&seat()).contains(
+        "completion reaches you automatically — when your current turn ends, or at once if a \
+         todo row needs it or wake is \"now\"."
+    ));
+    // The queue rule: a worktree child commits and never pushes; a seat that starts
+    // worktree children is told who lands them.
+    let in_worktree = SeatFacts {
+        worktree: true,
+        ..child
+    };
+    assert!(default_system(&in_worktree).contains("commit your work there"));
+    assert!(default_system(&seat()).contains("landed by the merge queue"));
+    // No number about the context, ever.
+    for f in [seat(), reader] {
+        let system = default_system(&f);
+        assert!(system.contains("The harness manages your context"));
+        assert!(
+            !system.contains('%') && !system.contains("tokens"),
+            "{system}"
+        );
+    }
+}
+
+/// **The base prompt for the main seats, printed** — `cargo test -p letibot-harnessd
+/// print_the_main_prompts -- --ignored --nocapture` to read what a seat is told.
+#[test]
+#[ignore]
+fn print_the_main_prompts() {
+    use letibot_tools::runtime::roles;
+    let mut root = SeatFacts::with_tools(roles::leticode().tools);
+    root.tools.insert("flowy".into());
+    root.scratch = Some("/run/user/1000/letibot/scratch-4242".into());
+    let mut child = SeatFacts::with_tools(roles::m2_coder().tools);
+    child.subagent = true;
+    child.worktree = true;
+    child.scratch = root.scratch.clone();
+    let mut gate = SeatFacts::with_tools(roles::gatekeeper().tools);
+    gate.tools.insert("review_verdict".into());
+    gate.subagent = true;
+    gate.scratch = root.scratch.clone();
+    for (name, f) in [
+        ("leticode root", root),
+        ("coder child", child),
+        ("gatekeeper", gate),
+    ] {
+        println!("===== {name}\n{}\n", default_system(&f));
+    }
+}
+
 /// A temp dir for a `prompts.toml` fixture, unique per test so parallel tests
 /// do not share a file. The caller removes it.
 fn prompts_dir(test: &str) -> PathBuf {
@@ -406,7 +600,7 @@ fn prompts_dir(test: &str) -> PathBuf {
     dir
 }
 
-/// (a) **No file: the composed prompt is `DEFAULT_SYSTEM` byte for byte.**
+/// (a) **No file: the composed prompt is the built-in one byte for byte.**
 ///
 /// The safety property that makes the feature safe to land: a daemon with no
 /// `prompts.toml` composes the built-in prompt, unchanged, for every model.
@@ -415,12 +609,18 @@ fn no_prompts_file_composes_the_default_byte_for_byte() {
     let dir = prompts_dir("no_file");
     let path = dir.join("prompts.toml");
     let prompts = Prompts::load(&path).expect("a missing file is Ok, not an error");
-    assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
-    assert_eq!(prompts.compose("qwen-3.8-flash-next"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("deepseek/deepseek-flash", &seat()),
+        default_system(&seat())
+    );
+    assert_eq!(
+        prompts.compose("qwen-3.8-flash-next", &seat()),
+        default_system(&seat())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// (b) **An empty file: the composed prompt is `DEFAULT_SYSTEM` byte for byte.**
+/// (b) **An empty file: the composed prompt is the built-in one byte for byte.**
 ///
 /// A file that overrides nothing is the same as no file: the default is
 /// unchanged.
@@ -430,7 +630,10 @@ fn an_empty_prompts_file_composes_the_default_byte_for_byte() {
     let path = dir.join("prompts.toml");
     std::fs::write(&path, "").expect("fixture");
     let prompts = Prompts::load(&path).expect("an empty file is Ok");
-    assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("deepseek/deepseek-flash", &seat()),
+        default_system(&seat())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -454,13 +657,22 @@ system_extra = "You are a deepseek specialist."
     let prompts = Prompts::load(&path).expect("parse");
     // The named model gets the extra, appended to the base.
     assert_eq!(
-        prompts.compose("deepseek/deepseek-flash"),
-        format!("{DEFAULT_SYSTEM}\n\nYou are a deepseek specialist.")
+        prompts.compose("deepseek/deepseek-flash", &seat()),
+        format!(
+            "{}\n\nYou are a deepseek specialist.",
+            default_system(&seat())
+        )
     );
     // Another model under the same provider does not.
-    assert_eq!(prompts.compose("deepseek/deepseek-chat"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("deepseek/deepseek-chat", &seat()),
+        default_system(&seat())
+    );
     // A model under a different provider does not.
-    assert_eq!(prompts.compose("glm-coding/glm-5.3"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("glm-coding/glm-5.3", &seat()),
+        default_system(&seat())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -488,16 +700,19 @@ system_extra = "Flash is special."
     let prompts = Prompts::load(&path).expect("parse");
     // The exact name wins for the model it names.
     assert_eq!(
-        prompts.compose("deepseek/deepseek-flash"),
-        format!("{DEFAULT_SYSTEM}\n\nFlash is special.")
+        prompts.compose("deepseek/deepseek-flash", &seat()),
+        format!("{}\n\nFlash is special.", default_system(&seat()))
     );
     // The glob covers the rest of the provider's models.
     assert_eq!(
-        prompts.compose("deepseek/deepseek-chat"),
-        format!("{DEFAULT_SYSTEM}\n\nDeepSeek house style.")
+        prompts.compose("deepseek/deepseek-chat", &seat()),
+        format!("{}\n\nDeepSeek house style.", default_system(&seat()))
     );
     // Another provider is untouched.
-    assert_eq!(prompts.compose("glm-coding/glm-5.3"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("glm-coding/glm-5.3", &seat()),
+        default_system(&seat())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -524,25 +739,25 @@ system_extra = "And a model extra on top."
     .expect("fixture");
     let prompts = Prompts::load(&path).expect("parse");
     // The base tone replaces the default tone for a model with no override.
-    let composed = prompts.compose("glm-coding/glm-5.3");
+    let composed = prompts.compose("glm-coding/glm-5.3", &seat());
     assert!(composed.contains("A wholly different tone."));
     assert!(!composed.contains("Be direct. Prefer the shortest answer that is complete."));
     // The other sections are still the default.
     assert!(composed.contains("You are a careful software engineering assistant"));
     // A model extra appends to the composed base.
-    let composed = prompts.compose("deepseek/deepseek-flash");
+    let composed = prompts.compose("deepseek/deepseek-flash", &seat());
     assert!(composed.contains("A wholly different tone."));
     assert!(composed.ends_with("And a model extra on top."));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// (e) **A malformed file is reported with the path and the parser's message,
-/// and the session still runs on `DEFAULT_SYSTEM`.**
+/// and the session still runs on the built-in prompt.**
 ///
 /// The report is the parser's own message, prefixed with the path, so the
 /// operator can see which file said what. The "session still runs" half is the
 /// `Err` case in `run`: a refused file leaves `Config.prompts` at `Default`,
-/// which composes `DEFAULT_SYSTEM` — asserted here directly.
+/// which composes the built-in prompt — asserted here directly.
 #[test]
 fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
     let dir = prompts_dir("malformed");
@@ -558,11 +773,11 @@ fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
         "the parser's message is in the report: {err}"
     );
     // The session still runs: a refused file leaves the prompts at `Default`,
-    // which composes `DEFAULT_SYSTEM` byte for byte.
+    // which composes the built-in prompt byte for byte.
     let cfg = Config::for_this_box("/tmp");
     assert_eq!(
-        cfg.prompts.compose("deepseek/deepseek-flash"),
-        DEFAULT_SYSTEM
+        cfg.prompts.compose("deepseek/deepseek-flash", &seat()),
+        default_system(&seat())
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -586,20 +801,22 @@ fn an_unknown_section_is_refused_not_ignored() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`SYSTEM_SECTIONS` joins to `DEFAULT_SYSTEM` byte for byte.**
-///
-/// The test that makes the split owned rather than invented: the table is not
-/// "a concatenation nobody owns", it is the constant, checked. An edit to a
-/// paragraph that forgets the table fails here, and so does a table whose
-/// boundaries moved.
+/// **With no overrides, the composition is the seat's sections joined, in order** —
+/// every section of [`SECTION_NAMES`] that has something to say for the seat, and
+/// nothing else.
 #[test]
-fn the_system_sections_join_to_the_default_byte_for_byte() {
-    let joined = SYSTEM_SECTIONS
+fn the_default_is_the_seats_sections_joined_in_order() {
+    let f = seat();
+    let joined = SECTION_NAMES
         .iter()
-        .map(|(_, text)| *text)
+        .filter_map(|n| default_section(n, &f))
         .collect::<Vec<_>>()
         .join("\n\n");
-    assert_eq!(joined, DEFAULT_SYSTEM);
+    assert_eq!(joined, default_system(&f));
+    // The full seat has every section.
+    for name in SECTION_NAMES {
+        assert!(default_section(name, &f).is_some(), "{name}");
+    }
 }
 
 /// **The notes convention is instruction in the base, not data in a block.**
@@ -608,17 +825,14 @@ fn the_system_sections_join_to_the_default_byte_for_byte() {
 /// right now — and its envelope frames what the block is. The convention —
 /// that notes exist, what belongs in one, where it lands, and that a note
 /// is not ground truth — is INSTRUCTION, and instruction belongs in
-/// [`DEFAULT_SYSTEM`] so it holds even for a session whose notes are empty.
+/// the base prompt so it holds even for a session whose notes are empty.
 /// The two must not restate each other: a duplicated sentence is one that
 /// drifts, so this also asserts the paragraph does not carry the
 /// envelope's own framing sentence.
 #[test]
 fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
-    let (name, paragraph) = SYSTEM_SECTIONS
-        .iter()
-        .find(|(n, _)| *n == "notes")
-        .expect("a `notes` section");
-    assert_eq!(*name, "notes");
+    let paragraph = default_section("notes", &seat()).expect("a `notes` section");
+    let paragraph = paragraph.as_str();
     // It exists, it is read into the prompt, it comes back after a
     // compaction.
     assert!(paragraph.contains("reads into this prompt"));
@@ -642,9 +856,8 @@ fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
 /// **A section replaced by `[model."NAME"]` changes only that section and keeps
 /// the order.**
 ///
-/// The named model's `read_only_tools` is the operator's text, not the built-in;
-/// every other section is the default, in the order it appears in
-/// [`DEFAULT_SYSTEM`].
+/// The named model's `tree` is the operator's text, not the built-in; every other
+/// section is the default, in the order of [`SECTION_NAMES`].
 #[test]
 fn a_model_section_replaces_only_that_section_and_keeps_the_order() {
     let dir = prompts_dir("model_section");
@@ -653,39 +866,41 @@ fn a_model_section_replaces_only_that_section_and_keeps_the_order() {
         &path,
         r#"
 [model."qwen-3.8-27b"]
-read_only_tools = "You have read-only tools, and you use them."
+tree = "Use your tools, and you use them."
 "#,
     )
     .expect("fixture");
     let prompts = Prompts::load(&path).expect("parse");
-    let composed = prompts.compose("qwen-3.8-27b");
+    let f = seat();
+    let composed = prompts.compose("qwen-3.8-27b", &f);
     // The replaced section is the operator's text, not the default.
-    assert!(composed.contains("You have read-only tools, and you use them."));
-    assert!(!composed.contains("Do not call a tool for a question about the world"));
+    assert!(composed.contains("Use your tools, and you use them."));
+    assert!(!composed.contains("Answer questions about the world"));
     // Every other section is the default, in the order it appears.
-    let identity = SYSTEM_SECTIONS[0].1;
-    let language = SYSTEM_SECTIONS[1].1;
-    let find_and_read = SYSTEM_SECTIONS[3].1;
-    let edit_files = SYSTEM_SECTIONS[4].1;
-    let scratch = SYSTEM_SECTIONS[5].1;
-    let scratch_path = SYSTEM_SECTIONS[6].1;
-    let notes = SYSTEM_SECTIONS[7].1;
-    let tone = SYSTEM_SECTIONS[8].1;
-    let expected = [
-        identity,
-        language,
-        "You have read-only tools, and you use them.",
-        find_and_read,
-        edit_files,
-        scratch,
-        scratch_path,
-        notes,
-        tone,
-    ]
-    .join("\n\n");
+    let expected = SECTION_NAMES
+        .iter()
+        .map(|n| {
+            if *n == "tree" {
+                "Use your tools, and you use them.".to_string()
+            } else {
+                default_section(n, &f).expect("the full seat has every section")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     assert_eq!(composed, expected);
     // Another model is untouched.
-    assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("deepseek/deepseek-flash", &f),
+        default_system(&f)
+    );
+    // **A section the seat has nothing true to say in stays out, overridden or not**: an
+    // `edit_files` override does not give a read-only seat a sentence about `edit`.
+    std::fs::write(&path, "[base]\nedit_files = \"Edit with edit.\"\n").expect("fixture");
+    let prompts = Prompts::load(&path).expect("parse");
+    let reader = SeatFacts::with_tools(["read", "grep", "glob"]);
+    assert!(!prompts.compose("m", &reader).contains("Edit with edit."));
+    assert!(prompts.compose("m", &f).contains("Edit with edit."));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -711,11 +926,11 @@ tone = "Flash has its own tone."
     .expect("fixture");
     let prompts = Prompts::load(&path).expect("parse");
     // The named model gets its own tone, not the base one.
-    let composed = prompts.compose("deepseek/deepseek-flash");
+    let composed = prompts.compose("deepseek/deepseek-flash", &seat());
     assert!(composed.contains("Flash has its own tone."));
     assert!(!composed.contains("House tone, for every model."));
     // Another model gets the base tone.
-    let composed = prompts.compose("deepseek/deepseek-chat");
+    let composed = prompts.compose("deepseek/deepseek-chat", &seat());
     assert!(composed.contains("House tone, for every model."));
     assert!(!composed.contains("Flash has its own tone."));
     let _ = std::fs::remove_dir_all(&dir);
@@ -739,14 +954,20 @@ system_extra = "One short tool call beats a long plan."
     .expect("fixture");
     let prompts = Prompts::load(&path).expect("parse");
     // Set: appended after every section.
-    let composed = prompts.compose("deepseek/deepseek-flash");
+    let composed = prompts.compose("deepseek/deepseek-flash", &seat());
     assert!(composed.ends_with("One short tool call beats a long plan."));
     assert_eq!(
         composed,
-        format!("{DEFAULT_SYSTEM}\n\nOne short tool call beats a long plan.")
+        format!(
+            "{}\n\nOne short tool call beats a long plan.",
+            default_system(&seat())
+        )
     );
     // Unset for another model: nothing appended, the default byte for byte.
-    assert_eq!(prompts.compose("deepseek/deepseek-chat"), DEFAULT_SYSTEM);
+    assert_eq!(
+        prompts.compose("deepseek/deepseek-chat", &seat()),
+        default_system(&seat())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -755,7 +976,7 @@ system_extra = "One short tool call beats a long plan."
 /// A section name the daemon does not know is a load error naming the key and
 /// the file's path, in `[base]` and in `[model."NAME"]` alike. The session runs
 /// on the un-overridden composition: a refused file leaves the prompts at
-/// `Default`, which composes `DEFAULT_SYSTEM`.
+/// `Default`, which composes the built-in prompt.
 #[test]
 fn an_unknown_section_key_is_refused_by_name_in_each_layer() {
     // In `[base]`.
@@ -788,25 +1009,24 @@ fn an_unknown_section_key_is_refused_by_name_in_each_layer() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // The session still runs: a refused file leaves the prompts at `Default`,
-    // which composes `DEFAULT_SYSTEM` byte for byte.
+    // which composes the built-in prompt byte for byte.
     let cfg = Config::for_this_box("/tmp");
     assert_eq!(
-        cfg.prompts.compose("deepseek/deepseek-flash"),
-        DEFAULT_SYSTEM
+        cfg.prompts.compose("deepseek/deepseek-flash", &seat()),
+        default_system(&seat())
     );
 }
 
 /// **The operator's excerpt, end to end.**
 ///
-/// A small utility model seated with `web_search` is told, by the default
-/// `read_only_tools`, not to call a tool for a question about the world — so a
-/// model whose whole job is to look things up is discouraged from looking them
-/// up. The operator's fix: replace `read_only_tools` for that one model, in
-/// place, and append a `system_extra`. The composed prompt for that model has
-/// the new `read_only_tools` and not the default one; a session on another model
-/// has the default one.
+/// A small utility model seated with `web_search` was told, by the default
+/// section, not to call a tool for a question about the world — so a model whose
+/// whole job is to look things up was discouraged from looking them up. The
+/// operator's fix: replace `tree` for that one model, in place, and append a
+/// `system_extra`. The composed prompt for that model has the new `tree` and not
+/// the default one; a session on another model has the default one.
 #[test]
-fn the_operators_excerpt_composes_the_new_read_only_tools_for_that_model() {
+fn the_operators_excerpt_composes_the_new_tree_section_for_that_model() {
     let dir = prompts_dir("operator_excerpt");
     let path = dir.join("prompts.toml");
     std::fs::write(
@@ -816,17 +1036,17 @@ fn the_operators_excerpt_composes_the_new_read_only_tools_for_that_model() {
 tone = "Short. Direct. No preamble."
 
 [model."qwen-3.8-27b"]
-read_only_tools = "You have read-only tools, and a web_search. For a fact about the world — a version, a date, a definition, something that changed last week — call `web_search` first and answer from what comes back. Do not answer from memory, and do not guess."
+tree = "You have read-only tools, and a web_search. For a fact about the world — a version, a date, a definition, something that changed last week — call `web_search` first and answer from what comes back. Do not answer from memory, and do not guess."
 system_extra = "One short tool call beats a long plan."
 "#,
     )
     .expect("fixture");
     let prompts = Prompts::load(&path).expect("parse");
 
-    // The named model: the new read_only_tools, not the default one.
-    let composed = prompts.compose("qwen-3.8-27b");
+    // The named model: the new `tree`, not the default one.
+    let composed = prompts.compose("qwen-3.8-27b", &seat());
     assert!(composed.contains("call `web_search` first and answer from what comes back"));
-    assert!(!composed.contains("Do not call a tool for a question about the world"));
+    assert!(!composed.contains("Answer questions about the world"));
     // The base tone is in place, and the model extra is appended last.
     assert!(composed.contains("Short. Direct. No preamble."));
     assert!(composed.ends_with("One short tool call beats a long plan."));
@@ -834,29 +1054,29 @@ system_extra = "One short tool call beats a long plan."
     assert!(composed.contains("You are a careful software engineering assistant"));
     assert!(composed.contains("Find with `grep` and read with `read`"));
 
-    // A session on another model: the default read_only_tools, the base tone,
+    // A session on another model: the default `tree`, the base tone,
     // and no model extra.
-    let composed = prompts.compose("deepseek/deepseek-flash");
-    assert!(composed.contains("Do not call a tool for a question about the world"));
+    let composed = prompts.compose("deepseek/deepseek-flash", &seat());
+    assert!(composed.contains("Answer questions about the world"));
     assert!(!composed.contains("call `web_search` first and answer from what comes back"));
     assert!(composed.contains("Short. Direct. No preamble."));
     assert!(!composed.ends_with("One short tool call beats a long plan."));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`Config::compose_system` composes from the file and the session's model,
+/// **`Config::compose_for_seat` composes from the file and the session's model,
 /// and `prompt_model_name` names the model the way the operator sees it.**
 ///
 /// This is the wiring: the composition runs on the session's config, using the
 /// model name the operator would write in `prompts.toml`.
 #[test]
-fn compose_system_uses_the_session_model_name() {
+fn compose_for_seat_uses_the_session_model_name() {
     // A local session: the model name is the bare alias.
     let mut cfg = Config::for_this_box("/tmp");
     cfg.model = "qwen-3.8-flash-next".into();
     assert_eq!(cfg.prompt_model_name(), "qwen-3.8-flash-next");
-    cfg.compose_system();
-    assert_eq!(cfg.system, DEFAULT_SYSTEM);
+    cfg.compose_for_seat(&seat(), &SeatPrompt::default(), None);
+    assert_eq!(cfg.system, default_system(&seat()));
 
     // A metered session: the model name is `provider/model`.
     let mut cfg = Config::for_this_box("/tmp");
@@ -866,8 +1086,23 @@ fn compose_system_uses_the_session_model_name() {
         ..Default::default()
     });
     assert_eq!(cfg.prompt_model_name(), "deepseek/deepseek-flash");
-    cfg.compose_system();
-    assert_eq!(cfg.system, DEFAULT_SYSTEM);
+    cfg.prompts = Prompts {
+        models: [(
+            "deepseek/deepseek-flash".to_string(),
+            ModelOverrides {
+                sections: Default::default(),
+                system_extra: Some("for flash".into()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Prompts::default()
+    };
+    cfg.compose_for_seat(&seat(), &SeatPrompt::default(), None);
+    assert_eq!(
+        cfg.system,
+        format!("{}\n\nfor flash", default_system(&seat()))
+    );
 }
 
 /// **The model row names the provider when there is one.**
@@ -923,57 +1158,34 @@ fn the_model_row_names_the_provider_when_one_is_configured() {
     assert_eq!(row.source, "", "{}", row.source);
 }
 
-/// **`compose_system_with_notes` puts the standing notes after
-/// `system_extra`, and only there.**
+/// **`compose_for_seat` puts the standing notes after `system_extra`, and the
+/// session's own paragraph and fabric block after the notes.**
 ///
-/// The brief's placement rule: the newest thing the model reads before the
-/// conversation. Asserted by position against a `system_extra` the
-/// fixture sets, and the section is read back with `carried` — the same
-/// extraction a base rebuild uses — so the test also pins that what is
-/// appended is what is swapped later. Assertions are made against the
-/// workspace's file with a nonce, so a box whose global notes directory
-/// has files of its own still passes: those belong in the section too.
+/// The brief's placement rule: the notes are read before the conversation, after
+/// everything `prompts.toml` says. Asserted by position, and the section is read back
+/// with `carried` — the same extraction a base rebuild uses — so the test also pins
+/// that what is appended is what is swapped later.
 #[test]
-fn compose_system_with_notes_appends_the_section_after_system_extra() {
-    let ws = std::env::temp_dir().join(format!("letibot-notes-order-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&ws);
-    std::fs::create_dir_all(&ws).expect("temp dir");
-    std::fs::write(ws.join("AGENTS.md"), "nonce-notes-order\n").expect("fixture");
-    let mut cfg = Config::for_this_box(&ws);
+fn compose_for_seat_puts_the_notes_after_system_extra_and_before_the_own_paragraph() {
+    let mut cfg = Config::for_this_box("/tmp");
     cfg.prompts = Prompts {
         base_extra: Some("extra goes before the notes".into()),
         ..Prompts::default()
     };
-    cfg.compose_system_with_notes(&letibot_tokencore::Vocab::bytes([], []));
-    assert!(cfg.system.contains("nonce-notes-order"), "{}", cfg.system);
-    let extra = cfg
-        .system
-        .find("extra goes before the notes")
-        .expect("extra");
-    let notes = cfg
-        .system
-        .find("[standing-notes-begin]")
-        .expect("the section is in the composed prompt");
-    assert!(
-        extra < notes,
-        "`system_extra` first, the notes after it: {}",
+    let notes = "[standing-notes-begin]\nnonce-notes-order\n[standing-notes-end]";
+    let prompt = SeatPrompt {
+        own: Some("\nOWN PARAGRAPH".into()),
+        fabric: Some(FabricPart::Unreachable("FABRIC BLOCK".into())),
+    };
+    cfg.compose_for_seat(&seat(), &prompt, Some(notes));
+    let at = |what: &str| {
         cfg.system
-    );
-    // What was appended is what a rebuild would swap out — same envelope,
-    // markers included.
-    let carried = crate::standing_notes::carried(&cfg.system).expect("carried");
-    assert!(carried.contains("nonce-notes-order"), "{carried}");
-    // And the composition without notes is untouched: `compose_system`'s
-    // own byte-for-byte test still rules that half.
-    let mut bare = Config::for_this_box(&ws);
-    bare.prompts = cfg.prompts.clone();
-    bare.compose_system();
-    assert_eq!(
-        crate::standing_notes::replace(&cfg.system, None),
-        bare.system,
-        "stripping the section gives back the plain composition"
-    );
-    let _ = std::fs::remove_dir_all(&ws);
+            .find(what)
+            .unwrap_or_else(|| panic!("{what}: {}", cfg.system))
+    };
+    assert!(at("extra goes before the notes") < at("nonce-notes-order"));
+    assert!(at("nonce-notes-order") < at("OWN PARAGRAPH"));
+    assert!(at("OWN PARAGRAPH") < at("FABRIC BLOCK"));
 }
 
 /// The pane's contract: the two rows that change now come first and name
@@ -1658,14 +1870,24 @@ fn every_thing_that_is_off_is_disclosed() {
 #[test]
 fn the_system_prompt_carries_nothing_volatile() {
     // §5.2 rule 1, as a test rather than as a habit.
-    for volatile in ["/home/", "20", "branch", "commit"] {
+    // `branch` and `commit` are words of the queue rule now (`working`), not values; the
+    // values are what this guards — a home path, a date — and the scratch path, the one
+    // value the prompt does carry, is masked out of the fingerprint
+    // (`harness::instructions_of`).
+    let f = SeatFacts {
+        scratch: None,
+        ..seat()
+    };
+    for system in [default_system(&f), default_system(&SeatFacts::default())] {
+        for volatile in ["/home/", "20"] {
+            assert!(
+                !system.contains(volatile),
+                "the stable prefix contains {volatile:?}, which will change and re-prefill"
+            );
+        }
         assert!(
-            !DEFAULT_SYSTEM.contains(volatile),
-            "the stable prefix contains {volatile:?}, which will change and re-prefill"
+            system.contains("Answer in English"),
+            "§5.2: state the language"
         );
     }
-    assert!(
-        DEFAULT_SYSTEM.contains("Answer in English"),
-        "§5.2: state the language"
-    );
 }

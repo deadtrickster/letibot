@@ -5,7 +5,9 @@
 //! Given by the operator 2026-09-14: *"skills are summaries of full pages,
 //! memories are titles."* A skill's summary is its first paragraph; a memory
 //! is its title and id. Both are cheap in tokens and both are pointers — the
-//! `skill` tool and `flowy get` are the doors to the rest.
+//! `skill` tool loads a skill, and the `flowy` CLI (`flowy get`, through `bash`)
+//! reads a memory. The block names a door only when the session has it: see
+//! [`Reach`].
 //!
 //! # Offline is a state, not an empty block
 //!
@@ -62,6 +64,21 @@ pub struct FabricContext {
     pub memories: Vec<MemoryLine>,
 }
 
+/// **Which doors to the rest the session reading the block actually has.**
+///
+/// The block is a list of pointers, and a pointer is only worth printing with the
+/// way to follow it — but only when that way is seated. A seat without `skill` told
+/// to `skill load` something, or one without `bash` told to run `flowy get`, is a
+/// prompt naming a tool the model does not have (R93.G4, G7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// The `skill` tool is seated: a shelf skill loads by id or title.
+    pub skill: bool,
+    /// `bash` is seated: a memory's body is the `flowy` CLI's `get` away. No tool
+    /// action reads one.
+    pub bash: bool,
+}
+
 /// Where a block came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -108,8 +125,8 @@ impl FabricContext {
         })
     }
 
-    /// The block, as the model reads it.
-    pub fn render(&self, source: &Source) -> String {
+    /// The block, as the model reads it — naming only the doors in `reach`.
+    pub fn render(&self, source: &Source, reach: Reach) -> String {
         let mut s = String::new();
         s.push_str(&format!(
             "## The fabric — seat `{}`, project {}\n",
@@ -123,8 +140,13 @@ impl FabricContext {
             )),
             Source::Unreachable { .. } => {}
         }
+        let load = if reach.skill {
+            " — `skill` with `action` \"load\" and `name` (an id or title) reads one in full"
+        } else {
+            ""
+        };
         s.push_str(&format!(
-            "\nSkills on the shelf ({}) — `skill load <id or title>` reads one in full:\n",
+            "\nSkills on the shelf ({}){load}:\n",
             self.skills.len()
         ));
         for k in &self.skills {
@@ -134,8 +156,13 @@ impl FabricContext {
             }
             s.push('\n');
         }
+        let read = if reach.bash {
+            "; read one with the `flowy` CLI through `bash`: `flowy get /api/artifact/<id> --jq .body`"
+        } else {
+            ""
+        };
         s.push_str(&format!(
-            "\nMemories ({}) — titles only; `flowy get /api/artifact/<id> --jq .body` for one:\n",
+            "\nMemories ({}) — titles only{read}:\n",
             self.memories.len()
         ));
         for m in &self.memories {
@@ -322,15 +349,31 @@ mod tests {
                 visibility: "project".into(),
             }],
         };
-        let live = ctx.render(&Source::Live);
+        let both = Reach {
+            skill: true,
+            bash: true,
+        };
+        let live = ctx.render(&Source::Live, both);
         assert!(live.contains("Read from the node at 2026-09-14T11:00:00Z"));
         assert!(live.contains("- 01S [shared] cookbook — what to type"));
         assert!(live.contains("- 01M [project] r10 data is invalid"));
-        assert!(live.contains("`skill load <id or title>`"));
-        let cached = ctx.render(&Source::Cached {
-            read_at: "2026-09-13T00:00:00Z".into(),
-            why: "node unreachable: refused".into(),
-        });
+        assert!(live.contains("`skill` with `action` \"load\""));
+        assert!(live.contains("`flowy` CLI through `bash`"));
+        // **A door the seat lacks is not named** (R93.G4, G7): no `skill`, no `bash`.
+        let bare = ctx.render(&Source::Live, Reach::default());
+        assert!(!bare.contains("`skill`"), "{bare}");
+        assert!(
+            !bare.contains("bash") && !bare.contains("flowy get"),
+            "{bare}"
+        );
+        assert!(bare.contains("- 01M [project] r10 data is invalid"));
+        let cached = ctx.render(
+            &Source::Cached {
+                read_at: "2026-09-13T00:00:00Z".into(),
+                why: "node unreachable: refused".into(),
+            },
+            both,
+        );
         assert!(cached.contains("UNREACHABLE (node unreachable: refused); this is the copy cached at 2026-09-13T00:00:00Z"));
         assert!(FabricContext::render_unreachable("seat", "down").contains("no cached copy"));
     }

@@ -352,17 +352,18 @@ fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
         "note-one: the first generation\n",
     )
     .expect("fixture AGENTS.md");
+    // Composed at open, for the seated tools, the way `Sessions` opens every session.
     let mut first = base.clone();
-    first.compose_system_with_notes(&parts.vocab);
-    let was_system = first.system.clone();
-    {
+    first.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+    let was_system = {
         let (mut h, _registry) = opened(&first, &parts);
         assert!(
             h.config().system.contains("note-one"),
             "the fixture must actually carry the note it wrote"
         );
         seed(&mut h);
-    }
+        h.config().system.clone()
+    };
 
     // The edit. A nonce, so the two generations cannot be confused by shared words.
     std::fs::write(
@@ -371,13 +372,14 @@ fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
     )
     .expect("edited AGENTS.md");
     let mut second = base.clone();
-    second.compose_system_with_notes(&parts.vocab);
-    assert_ne!(
-        was_system, second.system,
-        "the two opens must compose DIFFERENT prompts, or the silence below proves nothing"
-    );
+    second.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
 
     let (h, registry) = opened(&second, &parts);
+    assert_ne!(
+        was_system,
+        h.config().system,
+        "the two opens must compose DIFFERENT prompts, or the silence below proves nothing"
+    );
     assert!(h.resumed().is_some(), "the second open resumes");
     assert!(
         h.config().system.contains("note-two"),

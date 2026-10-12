@@ -2397,6 +2397,32 @@ fn tool_schemas(tools_json: &[String]) -> std::collections::BTreeMap<String, Str
         .collect()
 }
 
+/// **The instructions a prompt carries, as a stale check compares them**: without the
+/// standing notes (re-read at every fork, so never a reason to call a session stale) and
+/// with the scratch directory's pid masked.
+///
+/// The base prompt names the session's scratch path (R93.G4), and that path carries the
+/// daemon's pid ([`scratch_dir`]). Unmasked, every daemon restart would read as a changed
+/// prompt for every session on the box, and the stale notice would be said about all of
+/// them for a fact that is not a change of instructions.
+pub fn instructions_of(system: &str) -> String {
+    let text = crate::standing_notes::replace(system, None);
+    const AT: &str = "/scratch-";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find(AT) {
+        let (head, tail) = rest.split_at(i + AT.len());
+        out.push_str(head);
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 {
+            out.push('N');
+        }
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// **The fingerprint of a session's FROZEN prefix — one function, and this is the only
 /// place either side of the comparison computes it.**
 ///
@@ -2437,7 +2463,7 @@ pub fn prefix_fingerprint(seat: Seat, prefix: &StablePrefix) -> String {
     let mut h = Sha256::new();
     h.update(seat.as_str().as_bytes());
     h.update([0]);
-    h.update(crate::standing_notes::replace(&prefix.system, None).as_bytes());
+    h.update(instructions_of(&prefix.system).as_bytes());
     h.update([0]);
     for tool in &prefix.tools_json {
         h.update(tool.as_bytes());
@@ -3539,6 +3565,17 @@ impl Harness {
             .without_access(&cfg.downgrade.deny);
         let schemas = registry.schemas();
         let seated: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
+        // **What the prompt is composed from** (R93.G2–G5): the tools actually seated —
+        // after the role and the downgrade — and the scratch directory the backend
+        // actually reaches. Read here, where both are facts, and not off the role's
+        // intention before open.
+        let seat_facts = crate::config::SeatFacts {
+            tools: seated.iter().cloned().collect(),
+            scratch: backend.scratch_dir(),
+            subagent: cfg.parent_session_id.is_some(),
+            // A linked worktree's `.git` is a file naming the main repository's gitdir.
+            worktree: cfg.workspace.join(".git").is_file(),
+        };
 
         use letibot_tools::schema::Access;
         let has_write_tools = schemas.iter().any(|s| s.access == Access::Write);
@@ -4157,7 +4194,15 @@ impl Harness {
             &crate::standing_notes::global_dir(),
             parts.vocab.as_ref(),
         );
-        cfg.system = crate::standing_notes::replace(&cfg.system, standing.as_deref());
+        // **And the base prompt is composed HERE when the session asked for it**
+        // (`Config::seat_prompt`): for the tools just seated, with the notes, the
+        // session's own paragraph and its fabric block in that order. A config without
+        // it keeps the `system` it was given — a test's fixture, `--system`.
+        match cfg.seat_prompt.clone() {
+            Some(prompt) => cfg.compose_for_seat(&seat_facts, &prompt, standing.as_deref()),
+            None => cfg.system = crate::standing_notes::replace(&cfg.system, standing.as_deref()),
+        }
+        cfg.seat_facts = Some(seat_facts);
         let prefix = StablePrefix {
             system: cfg.system.clone(),
             tools_json: parts.wiring.tools_json(&schemas),
@@ -4450,8 +4495,8 @@ impl Harness {
                                 gone.push(name.clone());
                             }
                         }
-                        let instructions = crate::standing_notes::replace(&own_prefix.system, None)
-                            != crate::standing_notes::replace(&prefix.system, None);
+                        let instructions =
+                            instructions_of(&own_prefix.system) != instructions_of(&prefix.system);
                         let mut moved: Vec<&str> = Vec::new();
                         if instructions {
                             moved.push("the system instructions");
@@ -9639,7 +9684,7 @@ impl Harness {
         // section is swapped inside the composed prompt by marker, so `prompts.toml`
         // overrides and a fabric block appended after it are carried through
         // untouched — the frozen-input rule this field's own history set
-        // (`compose_system`) loses nothing, and only the notes move.
+        // (`compose_for_seat`) loses nothing, and only the notes move.
         //
         // A compaction is a cold prefill by construction (the fork replaces the
         // history), so moving the head here costs nothing extra; and when the files
@@ -17848,6 +17893,16 @@ impl HarnessTaskRunner {
             provider: sub_provider,
             ..self.base.clone()
         };
+        // **The child's prompt is composed for ITS seat, at its open** (R93.G5) — not the
+        // parent's finished prompt, which carried the parent's own-session paragraph (a
+        // reviewer under the queue session was told "You are the review queue") and the
+        // fabric block naming `flowy` and `skill` doors a child does not hold. A parent
+        // running on a prompt it was GIVEN (`seat_prompt: None`: a test's fixture,
+        // `--system`) hands that prompt down as before.
+        if sub_cfg.seat_prompt.is_some() {
+            sub_cfg.seat_prompt = Some(crate::config::SeatPrompt::default());
+        }
+        sub_cfg.seat_facts = None;
         // **The worktree `task_start` arranged is the child's workspace**, not the
         // parent's tree. The placement rides the spec (see `TaskSpec::worktree`), and
         // a child whose workspace is not the worktree the tool just reported is the

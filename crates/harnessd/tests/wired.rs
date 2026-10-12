@@ -1013,3 +1013,54 @@ fn reingest_writes_no_summary_and_says_so_in_the_note() {
     assert!(err.to_string().contains("already carries"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// The base prompt is composed for the tools the seat actually holds (R93.G2–G5)
+// ---------------------------------------------------------------------------
+
+/// **The facts the prompt is composed from are the seated registry's, and the prompt
+/// names no tool outside them** — for each seat, with and without `--bash`. The unit half,
+/// over the roles' own lists, is `config::tests::the_prompt_names_no_tool_the_seat_lacks`.
+#[test]
+fn seat_facts_are_the_seated_tools() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Every name any seat can hold, to tell a tool name from an ordinary backticked word.
+    let mut every: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for seat in [
+        Seat::Leticode,
+        Seat::Coder,
+        Seat::Gatekeeper,
+        Seat::NotesKeeper,
+        Seat::Orchestrator,
+    ] {
+        for bash in [true, false] {
+            let mut cfg = config(seat);
+            cfg.allow_bash = bash;
+            cfg.session_id = format!("seat-facts-{}-{bash}", seat.as_str());
+            cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+            let p = parts(&cfg);
+            let hub = Hub::new(&cfg.session_id);
+            let h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)
+                .unwrap_or_else(|e| panic!("{} opens: {e}", seat.as_str()));
+            let facts = h.config().seat_facts.clone().expect("set at open");
+            assert!(facts.has("read"), "{facts:?}");
+            every.extend(facts.tools.iter().cloned());
+            // The standing notes are the operator's material, not the prompt's claims.
+            let system = letibot_harnessd::standing_notes::replace(&h.config().system, None);
+            let lacks: Vec<&str> = system
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|w| every.contains(*w) && !facts.has(w))
+                .collect();
+            assert!(
+                lacks.is_empty(),
+                "{} (bash {bash}) is told about {lacks:?}:\n{system}",
+                seat.as_str()
+            );
+            assert!(!system.contains("read-only tools"), "{system}");
+        }
+    }
+}

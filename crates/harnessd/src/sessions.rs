@@ -793,9 +793,10 @@ pub struct Sessions<'a> {
     /// Each root session's condition on the seat, so a title change can rename
     /// the session's address (`@seat/title`).
     seated: HashMap<String, Arc<letibot_flowy::InboxCondition>>,
-    /// The fabric block each root session last saw, so a refresh after a
-    /// compaction is a system update only when something changed.
-    fabric_seen: HashMap<String, String>,
+    /// The fabric block each root session last saw, and the doors its seat has — so a
+    /// refresh after a compaction is a system update only when something changed, and
+    /// is rendered for the same tools the session's prompt was.
+    fabric_seen: HashMap<String, (letibot_flowy::FabricReach, String)>,
     /// **Each session's idle plan-check clock** — the deadline when one is armed,
     /// absent for a session with nothing to check. See [`Sessions::rearm_todo_nag`]
     /// and [`TodoNagClock`] (the one clock, shared with the thread that serves a
@@ -848,9 +849,8 @@ struct OwnSession {
     /// [`crate::sessions::gatekeeper::PROMPT`] for the constant paragraph, and
     /// [`crate::sessions::gatekeeper::prompt`] for why this is a `String` and not a `&'static str`:
     /// half of that paragraph is the placement its reviewers have, which is this BOX's answer
-    /// (`firecode` or not) and cannot be a constant. `Config::compose_system_with_notes` is what it
-    /// is appended TO: the sections from `prompts.toml`, the `system_extra`, then the standing notes,
-    /// then this.
+    /// (`firecode` or not) and cannot be a constant. `Config::compose_for_seat` is what appends it:
+    /// the sections from `prompts.toml`, the `system_extra`, then the standing notes, then this.
     ///
     /// **It is frozen with the rest of the prefix**, which is the rule every session's prompt
     /// keeps: a session already open keeps the prompt it opened with, and `ReseatSession` is the
@@ -1001,15 +1001,15 @@ impl<'a> Sessions<'a> {
             gatekeeper_said: None,
         };
         let (tool, cond) = sessions.seat_tool(&id);
-        // Compose the system prompt from `prompts.toml` and the standing notes,
-        // once, at open. Message 0 is written from this and never rewritten
-        // after — see `Config::compose_system_with_notes` for which input is
-        // frozen and which is re-read at every base rebuild.
+        // The system prompt is composed at open, for the tools the seat actually holds,
+        // from `prompts.toml`, the standing notes and the fabric. Message 0 is written
+        // from it and never rewritten after — see `Config::compose_for_seat`.
         let mut cfg = cfg;
-        cfg.compose_system_with_notes(&parts.vocab);
-        let cfg = sessions.with_fabric(&id, cfg, cond.is_some());
+        cfg.seat_prompt = Some(crate::config::SeatPrompt::default());
+        let cfg = sessions.with_fabric(cfg, cond.is_some());
         let mut harness =
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
+        sessions.fabric_opened(&id, &harness);
         // **A `--continue` resumes the session on the model it was switched to.** The
         // first session is the common resume: without this call the row this change
         // writes would only be read on the lazy path a head's switch reaches, and the
@@ -1502,41 +1502,59 @@ impl<'a> Sessions<'a> {
         Some(seat.name().to_string())
     }
 
-    /// The fabric block into a root session's system prompt, and its provenance
-    /// into the disclosure. A session that is not seated gets neither, and the
-    /// disclosure says `fabric: OFF` when a seat exists.
+    /// The fabric for a root session's system prompt, and its provenance into the
+    /// disclosure. A session that is not seated gets neither, and the disclosure says
+    /// `fabric: OFF` when a seat exists. The block itself is rendered at open
+    /// (`Config::compose_for_seat`), for the doors the seated tools give it.
     ///
     /// Message 0 is never rewritten, so a resumed session keeps the block it
     /// was opened with; `refresh_fabric` appends a system update when a fresh
     /// reading differs — that is the path after a compaction too.
-    fn with_fabric(&mut self, session_id: &str, mut cfg: Config, seated: bool) -> Config {
+    fn with_fabric(&mut self, mut cfg: Config, seated: bool) -> Config {
         let Some(seat) = &self.seat else {
             return cfg;
         };
         if !seated {
             return cfg;
         }
-        let (block, line) = self.fabric_block(seat);
-        cfg.system = format!("{}\n\n{block}", cfg.system.trim_end());
+        let (part, line) = self.fabric_block(seat);
+        cfg.seat_prompt.get_or_insert_with(Default::default).fabric = Some(part);
         cfg.fabric = Some(line);
-        self.fabric_seen.insert(session_id.to_string(), block);
         cfg
     }
 
-    /// The block and its one-line provenance.
-    fn fabric_block(&self, seat: &letibot_flowy::Seat) -> (String, String) {
+    /// **What the session was given of the fabric, recorded once it is open** — the block
+    /// as its prompt rendered it, and the doors its seat has, which every refresh renders
+    /// for again.
+    fn fabric_opened(&mut self, session_id: &str, h: &Harness) {
+        let cfg = h.config();
+        let (Some(prompt), Some(facts)) = (&cfg.seat_prompt, &cfg.seat_facts) else {
+            return;
+        };
+        let Some(part) = &prompt.fabric else {
+            return;
+        };
+        let reach = facts.fabric_reach();
+        self.fabric_seen
+            .insert(session_id.to_string(), (reach, part.render(reach)));
+    }
+
+    /// The fabric as read now and its one-line provenance.
+    fn fabric_block(&self, seat: &letibot_flowy::Seat) -> (crate::config::FabricPart, String) {
+        use crate::config::FabricPart;
         use letibot_flowy::FabricSource;
         let (ctx, source) = seat.fabric();
         match (ctx, source) {
             (Some(ctx), src @ FabricSource::Live) => {
                 let line = format!(
                     "{} skill summaries and {} memory titles from the node, read at {}; the \
-                     model loads a body through `skill` or `flowy get` when it needs one",
+                     model loads a skill through `skill` and reads a memory with the `flowy` \
+                     CLI, when its seat has those",
                     ctx.skills.len(),
                     ctx.memories.len(),
                     ctx.read_at
                 );
-                (ctx.render(&src), line)
+                (FabricPart::Read { ctx, source: src }, line)
             }
             (Some(ctx), src @ FabricSource::Cached { .. }) => {
                 let line = format!(
@@ -1546,14 +1564,20 @@ impl<'a> Sessions<'a> {
                     ctx.memories.len(),
                     ctx.read_at
                 );
-                (ctx.render(&src), line)
+                (FabricPart::Read { ctx, source: src }, line)
             }
             (_, FabricSource::Unreachable { why }) => (
-                letibot_flowy::FabricContext::render_unreachable(seat.name(), &why),
+                FabricPart::Unreachable(letibot_flowy::FabricContext::render_unreachable(
+                    seat.name(),
+                    &why,
+                )),
                 format!("UNREACHABLE — {why}; no cached copy, and the prompt says so"),
             ),
             (None, src) => (
-                letibot_flowy::FabricContext::render_unreachable(seat.name(), &format!("{src:?}")),
+                FabricPart::Unreachable(letibot_flowy::FabricContext::render_unreachable(
+                    seat.name(),
+                    &format!("{src:?}"),
+                )),
                 "UNREACHABLE".into(),
             ),
         }
@@ -1568,19 +1592,29 @@ impl<'a> Sessions<'a> {
         };
         let h = self.harness(session_id)?;
         h.system_update(&block)?;
-        self.fabric_seen.insert(session_id.to_string(), block);
+        self.fabric_saw(session_id, block);
         Ok(true)
     }
 
     /// The fabric block a seated root should be told after a compaction, or `None` when it is not
-    /// seated or the block has not changed since it last saw it.
+    /// seated or the block has not changed since it last saw it. Rendered for the doors the
+    /// session's seat has, the same as the block its prompt opened with.
     fn fabric_due(&self, session_id: &str) -> Option<String> {
         let seat = self.seat.as_ref()?;
         if !self.seated.contains_key(session_id) {
             return None;
         }
-        let (block, _line) = self.fabric_block(seat);
-        (self.fabric_seen.get(session_id) != Some(&block)).then_some(block)
+        let (reach, seen) = self.fabric_seen.get(session_id)?;
+        let (part, _line) = self.fabric_block(seat);
+        let block = part.render(*reach);
+        (seen != &block).then_some(block)
+    }
+
+    /// Record that the session was told `block`.
+    fn fabric_saw(&mut self, session_id: &str, block: String) {
+        if let Some((_, seen)) = self.fabric_seen.get_mut(session_id) {
+            *seen = block;
+        }
     }
 
     /// Declare the session's `flowy` monitor — continuous, owned by the session
@@ -1866,18 +1900,16 @@ impl<'a> Sessions<'a> {
                 prompt = own.prompt;
             }
             let (tool, cond) = self.seat_tool(session_id);
-            // Compose the system prompt from `prompts.toml` and the standing
-            // notes, once, at open — the same rule as the first session:
-            // message 0 is written from this and never rewritten after.
-            cfg.compose_system_with_notes(&self.parts.vocab);
-            // **And the paragraph only THIS session is given**, after the notes and before message 0
-            // is written: it is part of the same frozen prefix, and a session with none of its own
-            // (`None`, which is every session the operator started) is the composed prompt byte for
-            // byte.
-            if let Some(extra) = prompt {
-                cfg.system.push_str(&extra);
-            }
-            let cfg = self.with_fabric(session_id, cfg, cond.is_some());
+            // The system prompt is composed at open, for the tools the seat actually holds —
+            // the same rule as the first session: message 0 is written from it and never
+            // rewritten after. **And the paragraph only THIS session is given** goes after the
+            // notes, part of the same frozen prefix; a session with none of its own (`None`,
+            // which is every session the operator started) is the composed prompt byte for byte.
+            cfg.seat_prompt = Some(crate::config::SeatPrompt {
+                own: prompt,
+                fabric: None,
+            });
+            let cfg = self.with_fabric(cfg, cond.is_some());
             let mut h = match Harness::open_with_registry(
                 self.parts,
                 cfg,
@@ -1898,6 +1930,7 @@ impl<'a> Sessions<'a> {
                     return Err(e);
                 }
             };
+            self.fabric_opened(session_id, &h);
             // **The lazy open is the resume a head reaches** — `/resume`, a switch
             // from the picker, a subagent's parent coming back. The row the switch
             // wrote is read here, so a session this daemon did not start running
@@ -4216,11 +4249,7 @@ impl TurnOwner for DaemonTurn<'_, '_, '_> {
             return;
         };
         match h.system_update(&block) {
-            Ok(_) => {
-                self.sessions
-                    .fabric_seen
-                    .insert(self.session_id.to_string(), block);
-            }
+            Ok(_) => self.sessions.fabric_saw(self.session_id, block),
             Err(e) => self
                 .sessions
                 .warn(self.session_id, "fabric_refresh_failed", e.to_string()),

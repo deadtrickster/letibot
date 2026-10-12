@@ -75,7 +75,7 @@ pub mod waiter;
 
 pub use attention::{Attention, Level};
 pub use client::{Event, Node, NodeError};
-pub use context::{FabricContext, Source as FabricSource};
+pub use context::{FabricContext, Reach as FabricReach, Source as FabricSource};
 pub use creds::{Credentials, Onboarding, Source};
 pub use inbox::InboxCondition;
 pub use seat::{Seat, SeatState};

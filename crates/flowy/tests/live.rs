@@ -151,7 +151,7 @@ fn the_fabric_block_reads_live_then_serves_the_cache_labelled_stale() {
         ctx.skills.iter().any(|s| s.title.starts_with("cookbook")),
         "the cookbook is on the shelf"
     );
-    let block = ctx.render(&src);
+    let block = ctx.render(&src, letibot_flowy::FabricReach::default());
     eprintln!("{}", block.lines().take(6).collect::<Vec<_>>().join("\n"));
     assert!(block.contains("Skills on the shelf"));
 
@@ -164,7 +164,7 @@ fn the_fabric_block_reads_live_then_serves_the_cache_labelled_stale() {
     let (ctx2, src2) = FabricContext::read(&away, &creds.agent, "Lab", Some(&cache));
     assert!(matches!(src2, FabricSource::Cached { .. }), "{src2:?}");
     assert_eq!(ctx2.unwrap().skills.len(), ctx.skills.len());
-    let stale = ctx.render(&src2);
+    let stale = ctx.render(&src2, letibot_flowy::FabricReach::default());
     assert!(stale.contains("THE NODE IS UNREACHABLE"), "{stale}");
     // No cache at all: unreachable, said so.
     let (none, src3) = FabricContext::read(&away, "other-seat", "Lab", Some(&cache));
