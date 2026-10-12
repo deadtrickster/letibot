@@ -67,6 +67,9 @@ impl App {
     /// Replace all state from a snapshot. This is the late-join path and the
     /// resync path; they are the same path, which is why resync is not special.
     pub(crate) fn load(&mut self, s: Snapshot) {
+        // **The held counts are not in a snapshot** (R91.12): the daemon says them again right
+        // after one, so whatever this head last read is dropped rather than carried over.
+        self.held = None;
         // **The same conversation, or a different one**, read once and at the top: the
         // session id is assigned a few lines down, and three things here ask the
         // question — what is carried over, and (R19) which of this head's own notes keep

@@ -517,6 +517,12 @@ struct Inner {
     /// daemon's worker.** See [`Hub::wake_its_own_reader`] for who sends one and why the
     /// bell cannot be used for it. Taken once, by [`Hub::take_own_work`].
     own_wake: bool,
+    /// **The last [`SessionEvent::HeldResults`] this hub published** (R91.12) — republished to a
+    /// head when it attaches or takes a resync, because the event is ephemeral (scrubbed from
+    /// every replay, in no snapshot) and the daemon says it only when the counts CHANGE. Without
+    /// this a head that attached mid-turn showed nothing held while results were, and one that
+    /// reconnected after missing the zero kept a stale count for good.
+    held_now: Option<SessionEvent>,
     closed: bool,
     /// Rung when this hub takes a command, so **one** worker can wait on many
     /// sessions without a timer. See [`crate::registry`].
@@ -663,6 +669,7 @@ impl Hub {
                 next_head: 0,
                 commands: VecDeque::new(),
                 own_wake: false,
+                held_now: None,
                 closed: false,
                 bell: None,
                 answers: None,
@@ -1039,6 +1046,12 @@ impl Hub {
                 },
             });
 
+            // 4. **The held counts, said again** (R91.12), after the snapshot or the gap, so the
+            //    new head's first event after either is the count as it stands now.
+            if let Some(held) = g.held_now.clone() {
+                g.append_and_fan(held);
+            }
+
             Attached {
                 head_id,
                 dropped,
@@ -1069,6 +1082,11 @@ impl Hub {
                 g.heads[idx].queue.clear();
                 g.heads[idx].side.clear();
                 g.heads[idx].mark.seq = at;
+                // The held counts again, after the snapshot (R91.12): the queue that may have
+                // carried the last change was just thrown away.
+                if let Some(held) = g.held_now.clone() {
+                    g.append_and_fan(held);
+                }
                 return Delivery::Resync {
                     reason,
                     dropped,
@@ -2141,6 +2159,9 @@ impl Hub {
 impl Inner {
     /// Append, fold into the view, and push to every head. The whole of fan-out.
     fn append_and_fan(&mut self, event: SessionEvent) -> Envelope {
+        if matches!(event, SessionEvent::HeldResults { .. }) {
+            self.held_now = Some(event.clone());
+        }
         self.tap.observe(self.log.session_id(), &event);
         let env = self.log.append(event);
         self.view.apply(&env);
@@ -2180,6 +2201,87 @@ mod tests {
             },
             0,
         )
+    }
+
+    /// **A head that attaches, reconnects or resyncs is told the held counts as they stand**
+    /// (R91.12). `HeldResults` is ephemeral and said only when the counts change, so before this a
+    /// head attached mid-turn read nothing held, and a reconnect whose replay scrubbed the zero
+    /// kept a stale count.
+    #[test]
+    fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
+        let held = |b: &crate::cursor::Batch| -> Vec<(u64, u64, u64)> {
+            b.events()
+                .iter()
+                .filter_map(|e| match e.event {
+                    SessionEvent::HeldResults {
+                        jobs,
+                        subagents,
+                        failed,
+                    } => Some((jobs, subagents, failed)),
+                    _ => None,
+                })
+                .collect()
+        };
+        // A marker after each attach, so a head with nothing else queued is not left blocked
+        // in `next_batch` — the missing count reads as an assertion, not a hang.
+        let mark = |hub: &Hub| {
+            hub.publish(SessionEvent::Warning {
+                code: "marker".into(),
+                detail: String::new(),
+                compaction: None,
+            });
+        };
+        let hub = Hub::new("s-held");
+        hub.publish(SessionEvent::HeldResults {
+            jobs: 2,
+            subagents: 1,
+            failed: 0,
+        });
+
+        // A head that attaches after the count was said.
+        let late = attach(&hub, 64);
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&late.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(held(&b), vec![(2, 1, 0)], "the late head was not told");
+
+        // The count goes to zero while a head is away; it reconnects with a replay, which
+        // scrubs the ephemeral zero, and must still be told it.
+        let since = hub.snapshot().seq;
+        hub.detach(&late.head_id);
+        hub.publish(SessionEvent::HeldResults {
+            jobs: 0,
+            subagents: 0,
+            failed: 0,
+        });
+        let back = hub.attach("tui", "dead@lab2x1", Caps::default(), since);
+        assert!(
+            back.backlog
+                .iter()
+                .all(|e| !matches!(e.event, SessionEvent::HeldResults { .. })),
+            "the premise: the replay scrubs the held counts"
+        );
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&back.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(
+            held(&b),
+            vec![(0, 0, 0)],
+            "the reconnected head was not told"
+        );
+
+        // And a head that takes a resync.
+        hub.request_resync(&back.head_id, "test");
+        let Delivery::Resync { .. } = hub.next_batch(&back.head_id, 64) else {
+            panic!("expected a resync");
+        };
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&back.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(held(&b), vec![(0, 0, 0)], "the resynced head was not told");
     }
 
     #[test]

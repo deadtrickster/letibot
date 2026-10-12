@@ -184,6 +184,10 @@ impl App {
                     // state that is already here is this session's.
                     None => self.session_id = session_id,
                 }
+                // **A reconnect's replay scrubs the held counts** (R91.12), so a count this head
+                // read before the gap may be one whose zero it never saw; the daemon says the
+                // count again after every attach.
+                self.held = None;
                 // **Now it can be said.** A note rather than a `say`: this is a fact about
                 // the connection that outlives the next keystroke, and it belongs in the
                 // conversation with everything else that happened — anchored at the end of

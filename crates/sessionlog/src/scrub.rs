@@ -268,6 +268,11 @@ impl StoredProjection {
                 self.report.job_output += 1;
                 None
             }
+            // The held counts are true NOW, and the hub says the current ones to every head that
+            // attaches, reconnects or resyncs (`Inner::held_now`, R91.12) — a replayed one is a
+            // count from before the gap, and it reached this arm unhandled (a debug-build panic
+            // on every reconnect after a hold). Not counted: the report's fields are on the wire.
+            SessionEvent::HeldResults { .. } => None,
             // An unsettled request survives the scrub. It is still owed an answer
             // and the reattaching head is who owes it.
             _ => {

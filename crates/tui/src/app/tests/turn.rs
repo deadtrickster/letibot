@@ -1832,3 +1832,41 @@ fn the_held_counter_rides_the_responding_row_while_something_is_held() {
     let row = a.turn_status(160);
     assert!(row.contains("Responding") && !row.contains("held"), "{row}");
 }
+
+/// **A snapshot drops the held counter this head last read** (R91.12): the counts are in no
+/// snapshot and the daemon says them again right after one, so a count carried across a resync
+/// or a reconnect is one whose zero this head may never have seen.
+#[test]
+fn a_snapshot_drops_the_held_counter_the_daemon_will_say_again() {
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_000,
+        testing::turn_started("t1"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::HeldResults {
+            jobs: 2,
+            subagents: 0,
+            failed: 0,
+        },
+    )));
+    assert!(a.turn_status(160).contains("held: 2 jobs"));
+
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t2"));
+    a.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert_eq!(a.held, None, "a stale count survived the snapshot");
+    assert!(
+        !a.turn_status(160).contains("held"),
+        "{}",
+        a.turn_status(160)
+    );
+}
