@@ -186,6 +186,27 @@ pub struct Board {
     pub blocked: usize,
 }
 
+impl Board {
+    /// **A `todo_write` board, counted the way this ledger counts its own** (R93.F30) — for the
+    /// seat whose plan lives there. A struck-off row is not on the plan; a postponed one is still
+    /// pending. Nothing is `claimed` or `unverifiable`: those are this ledger's own judgements
+    /// about a `todo` item, and a `todo_write` row carries neither.
+    pub fn of_plan(rows: &[letibot_tokencore::store::TodoItem]) -> Board {
+        use letibot_tokencore::store::TodoStatus as S;
+        let mut b = Board::default();
+        for row in rows {
+            match row.status {
+                S::Cancelled => continue,
+                S::Completed => b.done += 1,
+                S::InProgress => b.in_progress += 1,
+                S::Pending | S::Postponed => b.pending += 1,
+            }
+            b.total += 1;
+        }
+        b
+    }
+}
+
 impl std::fmt::Display for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.total == 0 {
@@ -298,6 +319,15 @@ impl Reconciliation {
     /// `None` is the common case and matters: a mechanism that speaks every turn
     /// is a mechanism that gets ignored by the fourth turn.
     pub fn steering(&self) -> Option<String> {
+        self.steering_over(None)
+    }
+
+    /// **R93.F30 — the same steering, for a seat whose plan tool is `todo_write`.** One plan tool
+    /// per seat: where `todo_write` is seated `todo` is not, so this ledger's own board is empty
+    /// there and its "0 items — nothing has been declared" would contradict the plan the model
+    /// holds. `plan` is that seat's `todo_write` board ([`Board::of_plan`]); the board line reads
+    /// it, and the overflow line names no tool, because `todo` is not there to list the rest.
+    pub fn steering_over(&self, plan: Option<Board>) -> Option<String> {
         if self.findings.is_empty() {
             return None;
         }
@@ -313,12 +343,13 @@ impl Reconciliation {
             out.push('\n');
         }
         if self.findings.len() > MAX_FINDINGS {
-            out.push_str(&format!(
-                "  … and {} more; call `todo` with `op: \"list\"` for the rest\n",
-                self.findings.len() - MAX_FINDINGS
-            ));
+            let more = self.findings.len() - MAX_FINDINGS;
+            out.push_str(&match plan {
+                None => format!("  … and {more} more; call `todo` with `op: \"list\"` for the rest\n"),
+                Some(_) => format!("  … and {more} more\n"),
+            });
         }
-        out.push_str(&format!("board: {}\n", self.board));
+        out.push_str(&format!("board: {}\n", plan.unwrap_or(self.board)));
         Some(out)
     }
 }
@@ -1041,6 +1072,32 @@ mod tests {
         assert_eq!((b.done, b.claimed, b.unverifiable), (0, 0, 1));
         let r = l.reconcile("turn_1", "");
         assert_eq!(r.findings.first(), Some(&Finding::NoEncoder));
+    }
+
+    /// **R93.F30: on a `todo_write` seat the check reads that board**, not the ledger's empty
+    /// one, and names no `todo` call.
+    #[test]
+    fn a_todo_write_seat_is_told_its_own_board() {
+        use letibot_tokencore::store::{TodoItem, TodoStatus};
+        let l = IntentLedger::new();
+        let r = l.reconcile("turn_1", "");
+        let row = |status| TodoItem {
+            content: "x".into(),
+            status,
+            by: Default::default(),
+            when: None,
+            needs: Vec::new(),
+        };
+        let plan = Board::of_plan(&[
+            row(TodoStatus::Completed),
+            row(TodoStatus::InProgress),
+            row(TodoStatus::Pending),
+            row(TodoStatus::Cancelled),
+        ]);
+        let said = r.steering_over(Some(plan)).expect("no encoder is a finding");
+        assert!(said.contains("board: 1 of 3 complete — 1 in progress, 1 pending"), "{said}");
+        assert!(!said.contains("nothing has been declared"), "{said}");
+        assert!(!said.contains("`todo`"), "{said}");
     }
 
     #[test]

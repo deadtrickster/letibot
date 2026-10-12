@@ -109,6 +109,25 @@ pub fn close_the_turn(
     ledger.reconcile(turn_id, &said).steering()
 }
 
+/// [`close_the_turn`] for a seat whose plan tool is `todo_write` — the board line reads `plan`
+/// (R93.F30; see [`ledger::Reconciliation::steering_over`]).
+pub fn close_the_turn_over(
+    ledger: &IntentLedger,
+    turn_id: &str,
+    items: &[letibot_transcript::TranscriptItem],
+    plan: Option<ledger::Board>,
+) -> Option<String> {
+    let said: String = items
+        .iter()
+        .filter_map(|i| match i {
+            letibot_transcript::TranscriptItem::Assistant { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ledger.reconcile(turn_id, &said).steering_over(plan)
+}
+
 /// Everything this module needs from the session it is registered into.
 ///
 /// A struct rather than five arguments because two of the five are mounts whose

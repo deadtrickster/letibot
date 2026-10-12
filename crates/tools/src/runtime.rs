@@ -1679,6 +1679,22 @@ impl Registry {
     }
 
     pub fn resolve_role(self, role: &Role) -> Result<Registry, RoleError> {
+        // **R93.F30 — one plan tool per seat.** `todo` (the intent ledger's list) and
+        // `todo_write` (the board the nag, the pane and `wait_on` read) are two lists with two
+        // models; a seat holding both is told about one and nagged about the other. Where
+        // `todo_write` is seated, `todo` is not.
+        let one_plan;
+        let role = if role.tools.iter().any(|t| t == "todo_write")
+            && role.tools.iter().any(|t| t == "todo")
+        {
+            one_plan = Role {
+                tools: role.tools.iter().filter(|t| *t != "todo").cloned().collect(),
+                ..role.clone()
+            };
+            &one_plan
+        } else {
+            role
+        };
         let have = self.names();
         let missing: Vec<String> = role
             .tools
@@ -2727,6 +2743,25 @@ mod tests {
             seat.tools.len(),
             seat.max_tools
         );
+    }
+
+    /// **R93.F30: one plan tool per seat** — a role naming both `todo` and `todo_write` resolves
+    /// to `todo_write` alone.
+    #[test]
+    fn a_seat_with_todo_write_does_not_also_get_todo() {
+        let mut reg = Registry::new();
+        let board = std::sync::Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new()));
+        reg.register(Box::new(crate::builtins::todo::TodoWriteTool::new(board)))
+            .unwrap();
+        crate::builtins::intent::register_into(
+            &mut reg,
+            &crate::builtins::intent::Wiring::standalone(),
+        )
+        .unwrap();
+        let both = Role::new("both", &["todo", "todo_write"]);
+        let seated = reg.resolve_role(&both).unwrap().names();
+        assert!(seated.contains(&"todo_write".to_string()), "{seated:?}");
+        assert!(!seated.contains(&"todo".to_string()), "{seated:?}");
     }
 
     /// **`task_start` is seated wherever `task` is.**

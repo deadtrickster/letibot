@@ -12682,7 +12682,13 @@ impl Harness {
     /// todo check happens will not find it at this layer at all: it is `Harness::nag_turn`, on the
     /// idle clock.
     fn close_the_turn_with(&self, turn_id: &str, items: &[TranscriptItem]) -> Option<String> {
-        steer_for_turn(&self.intent, self.cfg.intent_prose, turn_id, items)
+        // R93.F30: one plan tool per seat. Where it is `todo_write`, the intent ledger's own
+        // board is empty and the check reads the `todo_write` board instead.
+        let seated = tool_names(&self.prefix.tools_json);
+        let plan = (seated.contains("todo_write") && !seated.contains("todo")).then(|| {
+            intent_tools::ledger::Board::of_plan(&self.todos.snapshot())
+        });
+        steer_for_turn_over(&self.intent, self.cfg.intent_prose, turn_id, items, plan)
     }
 
     /// **One round's context claim, judged, logged and — for the operator — warned
@@ -18805,16 +18811,29 @@ fn run_place(run: &letibot_tokencore::store::SubagentRun) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn steer_for_turn(
     ledger: &IntentLedger,
     prose: bool,
     turn_id: &str,
     items: &[TranscriptItem],
 ) -> Option<String> {
+    steer_for_turn_over(ledger, prose, turn_id, items, None)
+}
+
+/// [`steer_for_turn`] with the seat's `todo_write` board when that is its plan tool (R93.F30):
+/// one plan tool per seat, so the check reads the board the model actually holds.
+fn steer_for_turn_over(
+    ledger: &IntentLedger,
+    prose: bool,
+    turn_id: &str,
+    items: &[TranscriptItem],
+    plan: Option<intent_tools::ledger::Board>,
+) -> Option<String> {
     if prose {
-        intent_tools::close_the_turn(ledger, turn_id, items)
+        intent_tools::close_the_turn_over(ledger, turn_id, items, plan)
     } else {
-        ledger.reconcile(turn_id, "").steering()
+        ledger.reconcile(turn_id, "").steering_over(plan)
     }
 }
 
