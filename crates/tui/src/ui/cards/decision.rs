@@ -15,6 +15,29 @@ use rano::agent::decision as card;
 /// it, one spelling for both. Esc puts the card away and answers nothing; alt-a brings it back.
 pub(crate) const PUT_AWAY_HINT: &str = "esc puts it away — alt-a brings it back";
 
+/// **How a ladder says its keys** (R90.2): a row number or ↑↓ marks a row, Enter answers it —
+/// on the card and on the bar, one spelling.
+pub(crate) const LADDER_HINT: &str = "↑↓ or a row number marks · enter answers";
+
+/// The head of rano's ladder hint, which [`LADDER_HINT`] replaces.
+const RANO_LADDER_HINT: &str = "  ↑↓ to choose · Enter to answer";
+
+/// **A ladder row with its number** (R90.2): the digit that marks it is drawn on it, `1`–`9`;
+/// a row past the ninth has no digit and is padded to line up. An empty choice reads as one
+/// rather than as a blank highlighted row (R90.23).
+pub(crate) fn numbered(i: usize, body: &str) -> String {
+    let body = if body.trim().is_empty() {
+        "(an empty answer)"
+    } else {
+        body
+    };
+    if i < 9 {
+        format!("{}  {body}", i + 1)
+    } else {
+        format!("   {body}")
+    }
+}
+
 impl App {
     /// **The card, split where R20 says the split is.**
     ///
@@ -41,6 +64,27 @@ impl App {
     pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
         let (content, mut choices) = self.decision_view(d).split(w);
         let p = self.cfg.palette();
+        // **The ladder's hint, in this head's words** (R90.2, R90.23, R90.32). rano's says
+        // *"↑↓ to choose · Enter to answer"*: a row number now marks a row (the numbers are drawn,
+        // see `decision_view`) and Enter answers it, and a question with nothing to choose from
+        // has no ladder for the arrows to walk — its line is typed. One casing with the bar.
+        let question = d.kind == "question";
+        let rows = decision_rows(d);
+        for l in choices.iter_mut() {
+            let plain = l.plain();
+            let Some(rest) = plain.strip_prefix(RANO_LADDER_HINT) else {
+                continue;
+            };
+            let said = if question && rows == 0 {
+                "  type your answer · enter sends it".to_string()
+            } else {
+                format!("  {LADDER_HINT}{rest}")
+            };
+            *l = rano::render::Line::styled(
+                rano::agent::text::trim_to(&said, w),
+                rano::style::Role::Pending,
+            );
+        }
         // **A question's two spellings the model cannot offer.** rano draws the hint for
         // a question (*"↑↓ to choose · Enter to answer · or type your own answer"*), and
         // rano is pinned, so the other two shapes — a note on a choice, and an abstention
@@ -96,8 +140,9 @@ impl App {
             options: d
                 .options
                 .iter()
-                .map(|o| card::DecisionOption {
-                    label: o.label.clone(),
+                .enumerate()
+                .map(|(i, o)| card::DecisionOption {
+                    label: numbered(i, &o.label),
                     option_id: o.option_id.clone(),
                     kind: match o.kind {
                         K::AllowOnce => card::OptionKind::AllowOnce,
@@ -108,7 +153,12 @@ impl App {
                     },
                 })
                 .collect(),
-            choices: d.choices.clone(),
+            choices: d
+                .choices
+                .iter()
+                .enumerate()
+                .map(|(i, c)| numbered(i, c))
+                .collect(),
             selected: self.sel,
             deadline_ms: d.deadline,
             now_ms: self.now_ms,

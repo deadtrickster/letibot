@@ -60,6 +60,21 @@ impl App {
             .join(" · ")
     }
 
+    /// **The open decision's half of the bar** (R90.2) — this head's, not rano's `Deciding`
+    /// tail, which says *"a row number answers"*: a row number marks the row, and Enter answers.
+    pub(crate) fn deciding_tail(&self) -> String {
+        use crate::ui::cards::decision::{LADDER_HINT, PUT_AWAY_HINT};
+        match self.open.first() {
+            Some(d) if d.kind == "question" && decision_rows(d) == 0 => {
+                format!("type your answer · enter sends it · {PUT_AWAY_HINT}")
+            }
+            Some(d) if d.kind == "question" => {
+                format!("{LADDER_HINT} · or type your own · {PUT_AWAY_HINT}")
+            }
+            _ => format!("{LADDER_HINT} · or type an option · /help"),
+        }
+    }
+
     /// The bottom bar: what the keys do, right now.
     ///
     /// The composer owns the first half and changes it after the first Esc or
@@ -91,7 +106,7 @@ impl App {
             return crate::ui::render::row(
                 &centred(
                     Some(&Line::styled(own, Role::Faint)),
-                    HintMode::Deciding.tail(),
+                    &self.deciding_tail(),
                     w,
                 ),
                 p,
@@ -124,13 +139,9 @@ impl App {
         } else if self.open.first().is_some_and(|d| d.kind == "question") {
             // **A question card's bar names the way to step away from it** — rano's `Deciding`
             // tail is a permission's, and pinned, so the question's is written here.
-            let tail = format!(
-                "↑↓ choose · enter answers · or type your own · {}",
-                crate::ui::cards::decision::PUT_AWAY_HINT
-            );
-            return crate::ui::render::row(&centred(Some(&editor), &tail, w), p);
+            return crate::ui::render::row(&centred(Some(&editor), &self.deciding_tail(), w), p);
         } else if !self.open.is_empty() {
-            Some(HintMode::Deciding)
+            return crate::ui::render::row(&centred(Some(&editor), &self.deciding_tail(), w), p);
         } else {
             None
         };

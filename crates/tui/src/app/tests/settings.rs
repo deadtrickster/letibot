@@ -259,15 +259,19 @@ fn the_git_format_cycles_three_stops_and_re_renders_without_a_new_reading() {
 }
 
 #[test]
-fn a_row_number_answers_the_ask_the_mode_card_and_the_quit_card() {
+fn a_row_number_marks_the_ask_and_answers_the_mode_card_and_the_quit_card() {
     // The permission ask.
     let mut a = app();
     a.apply(ServerFrame::Event(env(
         1,
         testing::requested("r1", "`bash` wants exec access"),
     )));
+    // **R90.2: on a decision the row number MARKS the row** — the numbers are drawn — and
+    // Enter answers it; the reseat and quit cards keep answering on the digit.
+    assert_eq!(a.key(Key::Char('2')), None, "the digit is a move");
+    assert_eq!(a.sel, 1);
     assert_eq!(
-        a.key(Key::Char('2')),
+        a.key(Key::Enter),
         Some(Action::Answer {
             req_id: "r1".into(),
             option_id: "deny".into(),

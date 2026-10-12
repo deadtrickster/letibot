@@ -121,3 +121,72 @@ fn a_question_brought_back_over_typed_words_holds_them() {
     b.key(Key::AltA);
     assert_eq!(b.input(), "rel", "the card's own draft comes back with it");
 }
+
+// ──────────────── R90.2 / R90.23: a row number marks a numbered row ────────────────
+
+/// `16` typed as a free answer to "how many workers?" answered choice 1 at the `1`. A digit now
+/// marks the row it names — and the numbers are drawn — and only Enter answers.
+#[test]
+fn a_digit_on_a_question_marks_its_numbered_row_and_enter_answers() {
+    let mut a = app();
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "how many workers?", &["2", "4", "8"], ""),
+    );
+    let card = a.decision_lines(&a.open[0].clone(), 80).join("\n");
+    assert!(card.contains("▸ 1  2"), "{card}");
+    assert!(card.contains("  3  8"), "{card}");
+    assert!(card.contains("a row number marks"), "{card}");
+    assert_eq!(a.key(Key::Char('3')), None, "a digit answers nothing");
+    assert_eq!(a.sel, 2);
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::AnswerQuestion {
+            req_id: "q1".into(),
+            answer: QuestionAnswer::choosing(2),
+        })
+    );
+    // On a permission the same: the bar says so, and the rows carry their numbers.
+    let mut b = app();
+    ask(&mut b, 1, testing::requested("r1", "rm"));
+    let card = b.decision_lines(&b.open[0].clone(), 80).join("\n");
+    assert!(
+        card.contains("▸ 1  Allow once") && card.contains("2  Deny"),
+        "{card}"
+    );
+    assert!(b.hint_bar(200).contains("a row number marks"));
+    assert_eq!(b.key(Key::Char('2')), None);
+    assert_eq!(b.key(Key::Enter), answer("r1", "deny"));
+}
+
+/// A question with no choices has no ladder to walk; an empty choice is not a blank row.
+#[test]
+fn a_question_without_choices_offers_no_arrows_and_an_empty_choice_is_named() {
+    let mut a = app();
+    ask(
+        &mut a,
+        1,
+        testing::asked("q1", "what is it called?", &[], ""),
+    );
+    let card = a.decision_lines(&a.open[0].clone(), 80).join("\n");
+    assert!(!card.contains("↑↓"), "{card}");
+    assert!(card.contains("type your answer"), "{card}");
+    assert!(!a.hint_bar(200).contains("↑↓"), "{}", a.hint_bar(200));
+    typed(&mut a, "an old prompt");
+    a.key(Key::CtrlC);
+    assert_eq!(a.key(Key::Up), None);
+    assert_eq!(a.input(), "", "↑ does not recall history into the answer");
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("type your answer")
+    );
+
+    let mut b = app();
+    ask(&mut b, 1, testing::asked("q1", "suffix?", &["", "-v2"], ""));
+    let card = b.decision_lines(&b.open[0].clone(), 80).join("\n");
+    assert!(card.contains("▸ 1  (an empty answer)"), "{card}");
+}

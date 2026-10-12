@@ -411,10 +411,22 @@ impl App {
                 Key::Enter if n > 0 && !typing => {
                     return ControlFlow::Break(self.answer_marked());
                 }
-                // A row number is the row, and answering it — see `digit_row`.
+                // **A card with no ladder** (R90.23): ↑↓ have nothing to walk and must not pull
+                // history into the answer field, and an empty Enter says what it wants.
+                Key::Up | Key::Down if n == 0 => return ControlFlow::Break(None),
+                Key::Enter if n == 0 && !typing => {
+                    self.say("type your answer — enter sends it");
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
+                // **A row number MARKS the row; Enter answers it** (R90.2). It answered at once,
+                // on rows that drew no numbers: `16` typed as a free answer to "how many
+                // workers?" answered choice 1. The numbers are drawn now (`numbered`), and a
+                // digit is a move like ↑↓ — the answer is still one deliberate Enter.
                 _ if !typing && digit_row(&k, n).is_some() => {
                     self.sel = digit_row(&k, n).unwrap();
-                    return ControlFlow::Break(self.answer_marked());
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
                 }
                 _ => {}
             }

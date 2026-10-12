@@ -293,16 +293,17 @@ fn a_decision_under_the_diff_popup_takes_its_keys() {
         OptionKind::RejectOnce,
     ]));
     let bar = a.hint_bar(200);
-    assert!(bar.contains("a row number answers"), "{bar}");
+    assert!(bar.contains("a row number marks"), "{bar}");
     assert!(bar.contains("esc closes it"), "{bar}");
     // ↓ moves the ladder, not the diff.
     let scrolled = a.diff_popup.as_ref().unwrap().scroll;
     a.key(Key::Down);
     assert_eq!(a.sel, 1, "↓ moved the card's mark");
     assert_eq!(a.diff_popup.as_ref().unwrap().scroll, scrolled);
-    // A row number answers.
+    // A row number marks the row, and Enter answers it (R90.2).
+    assert_eq!(a.key(Key::Char('1')), None);
     assert_eq!(
-        a.key(Key::Char('1')),
+        a.key(Key::Enter),
         Some(Action::Answer {
             req_id: "d1".into(),
             option_id: "allow_once".into(),

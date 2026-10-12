@@ -1043,7 +1043,7 @@ fn the_ladder_survives_a_card_whose_content_is_taller_than_the_screen() {
         assert!(screen.contains(opt), "`{opt}` was trimmed away:\n{screen}");
     }
     assert!(
-        screen.contains("↑↓ to choose · Enter to answer"),
+        screen.contains(crate::ui::cards::decision::LADDER_HINT),
         "the hint is the fourth thing the loop used to eat:\n{screen}"
     );
     // **And the wall is where it belongs: above, with a seam.** The count is the
