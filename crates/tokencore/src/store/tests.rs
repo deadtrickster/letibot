@@ -2080,15 +2080,21 @@ fn a_run_of_rows_lands_whole_or_not_at_all() {
 /// minutes, and a run per transaction is not.**
 ///
 /// The rano session's `/reseat`, 2026-10-12: 971 rows written from 01:17:48 to 01:24:07, one
-/// autocommit `INSERT` each, on a store a dozen daemons write to. Every row was its own trip
-/// for the file's single write lock, and while another connection holds it each trip pays the
-/// busy handler's back-off. This reproduces the shape with one competitor that holds the lock
-/// most of the time, writes the same 200 rows both ways, and requires the run form to be much
-/// faster. Both numbers are printed, because they are the measurement.
+/// autocommit `INSERT` each, on a store a dozen daemons write to. Every row was its own trip for
+/// the file's single write lock, and while another connection holds it each trip pays the busy
+/// handler's back-off.
+///
+/// **What is asserted is the number of trips, not the time they took.** This test used to run a
+/// competitor holding the lock and require the run form to be five times faster by the wall clock;
+/// that held alone and failed under the whole workspace's tests, and the same 200 rows one by one
+/// took anywhere from 0.3 to 30 seconds — a ratio of two durations under contention measures the
+/// box as much as the code. The property the fix is made of is that a run takes the lock once per
+/// [`Store::APPEND_CHUNK`] rows where rows one by one take it once each, and a commit hook counts
+/// exactly that, with no competitor and no clock.
 #[test]
-fn under_a_competing_writer_a_run_is_written_far_faster_than_rows_one_by_one() {
+fn a_run_takes_the_write_lock_once_per_chunk_not_once_per_row() {
     let path = std::env::temp_dir().join(format!(
-        "letibot-append-contention-{}-{}.db",
+        "letibot-append-commits-{}-{}.db",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2107,42 +2113,29 @@ fn under_a_competing_writer_a_run_is_written_far_faster_than_rows_one_by_one() {
     let s = Store::open(&path).unwrap();
     let (tr, prefix_id) = seeded(&s);
     s.put_transcript("tr-2", "sess-1", &prefix_id).unwrap();
-
-    // The other daemons: a connection that takes the write lock, holds it a few
-    // milliseconds, lets go for a moment, and takes it again.
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let competitor = {
-        let stop = stop.clone();
-        let path = path.clone();
-        std::thread::spawn(move || {
-            let c = rusqlite::Connection::open(&path).unwrap();
-            c.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
-            c.execute_batch("CREATE TABLE IF NOT EXISTS competitor (x INTEGER)")
-                .unwrap();
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                c.execute_batch("BEGIN IMMEDIATE").unwrap();
-                c.execute("INSERT INTO competitor (x) VALUES (1)", [])
-                    .unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(4));
-                c.execute_batch("COMMIT").unwrap();
-                std::thread::sleep(std::time::Duration::from_micros(200));
-            }
-        })
-    };
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Every commit on this connection, counted: each is one trip for the write lock.
+    let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let commits = commits.clone();
+        s.connection().commit_hook(Some(move || {
+            commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            false
+        }));
+    }
+    let count = || commits.load(std::sync::atomic::Ordering::Relaxed);
 
     const N: usize = 200;
     let mut one = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
     let rows = rows_for(&mut one, 0, N);
-    let began = std::time::Instant::now();
+    let before = count();
     for (i, (item, row, toks)) in rows.iter().enumerate() {
         s.append_item(&tr, i as u32, item, row, toks).unwrap();
     }
-    let one_by_one = began.elapsed();
+    let one_by_one = count() - before;
 
     let mut run = TokenLedger::new("tr-2", &[1, 2, 3, 4]).unwrap();
     let rows = rows_for(&mut run, 0, N);
-    let began = std::time::Instant::now();
+    let before = count();
     for (k, chunk) in borrowed(&rows).chunks(Store::APPEND_CHUNK).enumerate() {
         s.append_items(
             "tr-2",
@@ -2151,15 +2144,17 @@ fn under_a_competing_writer_a_run_is_written_far_faster_than_rows_one_by_one() {
         )
         .unwrap();
     }
-    let in_runs = began.elapsed();
+    let in_runs = count() - before;
 
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    competitor.join().unwrap();
-    eprintln!("{N} rows under a competing writer: one by one {one_by_one:?}, in runs {in_runs:?}");
     assert_eq!(s.item_count(&tr).unwrap(), N as u32);
     assert_eq!(s.item_count("tr-2").unwrap(), N as u32);
     assert!(
-        in_runs * 5 < one_by_one,
-        "the run form must not pay the lock per row: one by one {one_by_one:?}, in runs {in_runs:?}"
+        one_by_one >= N,
+        "the premise: a row per transaction ({one_by_one} commits for {N} rows)"
+    );
+    assert_eq!(
+        in_runs,
+        N.div_ceil(Store::APPEND_CHUNK),
+        "the run form must not pay the lock per row: {in_runs} commits for {N} rows"
     );
 }

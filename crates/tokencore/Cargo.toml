@@ -15,3 +15,8 @@ libc = "0.2"
 sha2 = "0.10"
 rusqlite = "0.40"
 
+
+[dev-dependencies]
+# `hooks` for the commit hook the contention test counts transactions with — a count, where a
+# wall-clock ratio was a flake under a loaded box.
+rusqlite = { version = "0.40", features = ["hooks"] }
