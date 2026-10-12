@@ -4125,17 +4125,20 @@ impl Harness {
                     // Written before the head attaches, so a daemon that dies now
                     // leaves a fork that resumes rather than one that has to be
                     // rebuilt again.
+                    // Through `append_items`, a chunk per `BEGIN IMMEDIATE` transaction: one
+                    // autocommit per row is what held every daemon's write lock for six and a
+                    // half minutes on 2026-10-12 (see `Store::append_items`).
                     let rows = rebuilt.ledger.rows();
-                    for i in 0..rows.len() {
+                    let mut run = Vec::with_capacity(rows.len());
+                    for (i, row) in rows.iter().enumerate() {
                         let tokens = rebuilt.ledger.item_tokens(i).ok_or_else(|| {
                             HarnessError::Store(format!("no tokens for re-rendered row {i}"))
                         })?;
-                        store
-                            .append_item(&new_id, i as u32, &rebuilt.items[i], &rows[i], tokens)
-                            .map_err(|e| {
-                                HarnessError::Store(format!("re-rendered row {i}: {e}"))
-                            })?;
+                        run.push((&rebuilt.items[i], row, tokens));
                     }
+                    store
+                        .append_items(&new_id, 0, run)
+                        .map_err(|e| HarnessError::Store(format!("re-rendered rows: {e}")))?;
 
                     let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
                     let recorded_under = if vocab_moved {
