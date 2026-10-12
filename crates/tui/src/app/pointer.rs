@@ -245,6 +245,12 @@ impl App {
             )),
             // An edit or a write in the conversation opens its change — every row of it, the
             // whole card; anything else in the conversation is text, selected and not clicked.
+            // A run marker's clause lights alone: each opens its own kind.
+            Target::Conversation if self.marker_at(x, y).is_some() => {
+                let m = self.marker_at(x, y)?.clone();
+                let (row, from, to) = self.marker_screen(&m)?;
+                Some(Hovered::one(row, Some((from, to))))
+            }
             Target::Conversation => {
                 let top = hit.rect.y;
                 let r = row.checked_sub(top)?;

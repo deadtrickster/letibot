@@ -700,6 +700,8 @@ impl App {
         self.notice_rows = self.notice_rows_in(start, end);
         // **And which are a red target's warning, drawn as one line** (`red_card`).
         self.card_rows = self.card_rows_in(start, end);
+        // **And the clauses of the run markers**, for a click to open that kind (`runclick`).
+        self.marker_rows = self.marker_rows_in(start, end);
         // **The disclosure is about the HOLD, not about a number** (R36). It used to be
         // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
         // anchored row happens to sit near the END of a shortened transcript has
@@ -718,6 +720,7 @@ impl App {
             self.file_rows.retain(|(r, _)| *r != 0);
             self.notice_rows.retain(|(r, _)| *r != 0);
             self.card_rows.retain(|(r, _)| *r != 0);
+            self.marker_rows.retain(|m| m.y != 0);
         }
         if !self.following() {
             let behind = total - end;
@@ -729,6 +732,7 @@ impl App {
             self.file_rows.retain(|(r, _)| *r != last);
             self.notice_rows.retain(|(r, _)| *r != last);
             self.card_rows.retain(|(r, _)| *r != last);
+            self.marker_rows.retain(|m| m.y != last);
         }
         out
     }
@@ -875,6 +879,7 @@ impl App {
             spans,
             note_cards,
             visibility,
+            run_show,
             dismissed,
             ..
         } = self;
@@ -1095,11 +1100,20 @@ impl App {
                         }
                     }
                     Some(_) => (RowClass::Other, Vec::new()),
+                    None if open_run
+                        && crate::app::runclick::run_skips(*run_show, &items[*hist_upto]) =>
+                    {
+                        (RowClass::Other, Vec::new())
+                    }
                     None => item_lines(
                         &items[*hist_upto],
                         &ItemCtx {
                             cfg: &row_cfg,
-                            think,
+                            think: if open_run {
+                                crate::app::runclick::run_think(*run_show, think)
+                            } else {
+                                think
+                            },
                             tools: tool,
                             raw,
                             targets: call_targets,

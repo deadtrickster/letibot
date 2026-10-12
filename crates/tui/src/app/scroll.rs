@@ -450,11 +450,20 @@ impl App {
                     ],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
+                None if open_run
+                    && crate::app::runclick::run_skips(self.run_show, &self.items[k]) =>
+                {
+                    (RowClass::Other, Vec::new())
+                }
                 None => item_lines(
                     &self.items[k],
                     &ItemCtx {
                         cfg: &row_cfg,
-                        think,
+                        think: if open_run {
+                            crate::app::runclick::run_think(self.run_show, think)
+                        } else {
+                            think
+                        },
                         tools: tool,
                         raw,
                         targets: &targets,

@@ -62,6 +62,7 @@ impl App {
                 if self.payload_sel.is_some() {
                     self.payload_sel = None;
                     self.payload_page = 0;
+                    self.run_show = None;
                     // **And an open run closes.** It was opened by this key, so this key is
                     // what closes it — the same bargain every other window in this file
                     // makes, and without it the second press would open a payload window
@@ -69,6 +70,7 @@ impl App {
                     self.invalidate_history();
                 } else if let Some(id) = self.newest_openable() {
                     self.payload_sel = Some(id);
+                    self.run_show = None;
                     self.payload_page = 0;
                     self.payload_max.set(usize::MAX);
                 }
