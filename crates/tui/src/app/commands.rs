@@ -673,7 +673,26 @@ impl App {
             "jobs" => self.toggle_surface(Surface::Jobs),
             // **The merge queue**, and it is not this session's: there is one `main` and one
             // queue, so the pane asks for the whole thing and the daemon answers with it.
-            "queue" => self.toggle_surface(Surface::Queue),
+            //
+            // **Scoped to this session's repository** (R92 item 5): a bare `/queue` that opens
+            // the pane opens it on this session's repository; `/queue all` and `/queue /PATH`
+            // name another scope. Any other `/queue …` is a daemon verb.
+            "queue" => {
+                if !self.is_open(Surface::Queue) && self.queue_scope != QueueScope::Here {
+                    self.queue_scope = QueueScope::Here;
+                    self.rescope_queues();
+                }
+                self.toggle_surface(Surface::Queue)
+            }
+            _ if verb_arg(cmd, "queue") == Some("all") => {
+                return self.queue_in(QueueScope::All);
+            }
+            _ if verb_arg(cmd, "queue")
+                .is_some_and(|a| a.starts_with('/') && !a.contains(char::is_whitespace)) =>
+            {
+                let p = verb_arg(cmd, "queue").unwrap_or_default().to_string();
+                return self.queue_in(QueueScope::Path(p));
+            }
             // **`/standing` — the standing notes, and it is not `/notes`.**
             //
             // The word is the module's own: `standing_notes` is what the harness reads into

@@ -37,9 +37,12 @@ impl App {
             SessionEvent::QueueMoved { .. } => {
                 // **A move is a reason to read again, not a row to fold** (R61): the snapshot is
                 // the daemon's, and a head that patched its own copy from the events would draw a
-                // stale queue after any event it missed. While the pane is open, one re-read is
-                // queued (a burst of moves is one read).
-                if self.is_open(Surface::Queue) && !self.queued.contains(&Action::ListMergeQueue) {
+                // stale queue after any event it missed. One re-read is queued (a burst of
+                // moves is one read) **whether or not the pane is open** (R92 item 5): the
+                // composer's edge draws this session's repository's standing from the same
+                // snapshot, and a head that re-read only with the pane open kept `‼ 1 red
+                // target(s)` on its edge long after `main` was green.
+                if !self.skew_locked() && !self.queued.contains(&Action::ListMergeQueue) {
                     self.queued.push(Action::ListMergeQueue);
                     self.queues_asked_ms = self.now_ms;
                 }

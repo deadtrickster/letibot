@@ -112,31 +112,13 @@ impl App {
         }
     }
 
-    /// **The queues' standings** for the edge: in review, being merged, parked (what a person
-    /// has to act on), and whether a target is red.
+    /// **The edge's standings: this session's repository only** (R92 item 5) — whatever scope
+    /// the pane is showing, the composer's edge is about the project this session works in. A
+    /// session of no repository has none; a daemon too old to say which repository the session
+    /// is in gets every repository's, as before.
     pub(crate) fn queue_standings(&self) -> Standings {
-        let mut s = Standings::default();
-        for r in &self.queues.reviews {
-            match r.state.as_str() {
-                "waiting" | "reviewing" => s.review += 1,
-                "blocked" | "rejected" | "cannot_decide" => s.parked += 1,
-                _ => {}
-            }
-        }
-        for m in &self.queues.merges {
-            match m.state.as_str() {
-                "queued" | "gating" => s.merging += 1,
-                "blocked" | "failed" | "timed_out" | "conflict" => s.parked += 1,
-                _ => {}
-            }
-        }
-        s.red = self
-            .queues
-            .targets
-            .iter()
-            .filter(|t| t.state == "red")
-            .count();
-        s
+        let f = self.queue_filter(&QueueScope::Here);
+        standings_where(&self.queues_all, |r| f.keeps(r))
     }
 
     /// **The pane** — see the module docs. Takes `&mut self` to record where each row was drawn
@@ -158,6 +140,50 @@ impl App {
             self.queue_tabs = None;
             return row_strings(&out.lines, self.cfg.palette());
         }
+        // ---- Whose queues these are (R92 item 5): this session's repository unless the
+        // operator named another scope, and said either way.
+        match self.queue_filter(&self.queue_scope) {
+            Filter::Nowhere(ws) => {
+                out.push(note_line(
+                    "◆",
+                    Role::Attention,
+                    &format!(
+                        "this session's workspace {ws} is in no repository, so it has no queue of \
+                         its own — `/queue all` shows every repository's queues"
+                    ),
+                    w,
+                ));
+                self.queue_stop_rows = Vec::new();
+                self.queue_tabs = None;
+                return row_strings(&out.lines, self.cfg.palette());
+            }
+            Filter::Repo(r) => out.push(pane::faint(&trim_to(
+                &format!(
+                    "    {} — this session's repository · `/queue all` shows every repository",
+                    repo_name(&r)
+                ),
+                w,
+            ))),
+            Filter::Path(p) => out.push(pane::faint(&trim_to(
+                &format!(
+                    "    {} — named · `/queue` alone is this session's repository",
+                    p.display()
+                ),
+                w,
+            ))),
+            Filter::Every if self.queue_scope == QueueScope::All => {
+                out.push(pane::faint(&trim_to(
+                    "    every repository · `/queue` alone is this session's repository",
+                    w,
+                )))
+            }
+            Filter::Every => out.push(pane::faint(&trim_to(
+                "    every repository — this daemon does not say which repository this session \
+                 is in",
+                w,
+            ))),
+        }
+        out.blank();
 
         // ---- Emergencies and failures to read, first.
         if let Some(why) = &self.queues.unreadable {
@@ -267,7 +293,7 @@ impl App {
         out.blank();
 
         // ---- The strip.
-        let (strip, at) = tab_row(self.queue_view, &self.queue_standings());
+        let (strip, at) = tab_row(self.queue_view, &standings_where(&self.queues, |_| true));
         let tabs = QueueTabs {
             row: out.lines.len(),
             ..at
@@ -643,16 +669,22 @@ pub(crate) struct Standings {
     pub(crate) parked: usize,
     /// Target branches that are red — the emergency.
     pub(crate) red: usize,
+    /// **Target branches nobody could judge** — timed out or blocked (R92 item 5). Nothing lands
+    /// on them either, so they are an alarm too, not a quiet edge.
+    pub(crate) unjudged: usize,
 }
 
 impl Standings {
     pub(crate) fn words(&self) -> Option<String> {
-        let standing = self.review + self.merging + self.parked + self.red;
+        let standing = self.review + self.merging + self.parked + self.red + self.unjudged;
         (standing > 0).then(|| {
             let mut s = format!(
                 "{} in review · {} being merged · {} parked",
                 self.review, self.merging, self.parked
             );
+            if self.unjudged > 0 {
+                s = format!("⚠ {} target(s) unjudged · {s}", self.unjudged);
+            }
             if self.red > 0 {
                 s = format!("‼ {} red target(s) · {s}", self.red);
             }
@@ -663,10 +695,178 @@ impl Standings {
     pub(crate) fn role(&self) -> Role {
         if self.red > 0 {
             Role::Failure
-        } else if self.parked > 0 {
+        } else if self.unjudged > 0 || self.parked > 0 {
             Role::Attention
         } else {
             Role::Pending
+        }
+    }
+}
+
+/// **The standings of the rows `keep` admits by repository.** A target's own red-tip review is
+/// not counted once that target is green again — the alarm clears with the target, not with
+/// whoever withdraws the row.
+pub(crate) fn standings_where(q: &QueueSnapshot, keep: impl Fn(&str) -> bool) -> Standings {
+    let green = |repo: &str, target: &str| {
+        q.targets
+            .iter()
+            .any(|t| t.repository == repo && t.target == target && t.state == "green")
+    };
+    let mut s = Standings::default();
+    for r in q.reviews.iter().filter(|r| keep(&r.repository)) {
+        if r.kind == "target" && green(&r.repository, &r.target) {
+            continue;
+        }
+        match r.state.as_str() {
+            "waiting" | "reviewing" => s.review += 1,
+            "blocked" | "rejected" | "cannot_decide" => s.parked += 1,
+            _ => {}
+        }
+    }
+    for m in q.merges.iter().filter(|m| keep(&m.repository)) {
+        match m.state.as_str() {
+            "queued" | "gating" => s.merging += 1,
+            "blocked" | "failed" | "timed_out" | "conflict" => s.parked += 1,
+            _ => {}
+        }
+    }
+    for t in q.targets.iter().filter(|t| keep(&t.repository)) {
+        match t.state.as_str() {
+            "red" => s.red += 1,
+            "timed_out" | "blocked" => s.unjudged += 1,
+            _ => {}
+        }
+    }
+    s
+}
+
+/// **Whose queues the pane shows** (R92 item 5) — the operator: *"the /queue is still not
+/// project scoped"*. `/queue` is this session's repository; `/queue all` every repository's;
+/// `/queue /PATH` the one at that path.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum QueueScope {
+    #[default]
+    Here,
+    All,
+    Path(String),
+}
+
+impl QueueScope {
+    /// The words a `/queue` verb line carries so the daemon acts in the scope the pane shows.
+    pub(crate) fn prefix(&self) -> String {
+        match self {
+            QueueScope::Here => String::new(),
+            QueueScope::All => "all ".into(),
+            QueueScope::Path(p) => format!("{p} "),
+        }
+    }
+}
+
+/// **A scope, resolved against what the daemon said about this session.**
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Filter {
+    /// Every repository — asked for, or a daemon too old to say which is this session's.
+    Every,
+    /// The queues' key of this session's repository.
+    Repo(String),
+    /// A path the operator named: a row's repository is it, or holds it.
+    Path(std::path::PathBuf),
+    /// This session's workspace is in no repository.
+    Nowhere(String),
+}
+
+impl Filter {
+    pub(crate) fn keeps(&self, repository: &str) -> bool {
+        match self {
+            Filter::Every => true,
+            Filter::Repo(r) => r == repository,
+            Filter::Path(p) => !repository.is_empty() && p.starts_with(repository),
+            Filter::Nowhere(_) => false,
+        }
+    }
+}
+
+/// **The snapshot cut to the repositories `f` keeps** — every list, so the pane, its rows, its
+/// verbs and the overlay all read one scoped copy.
+pub(crate) fn scoped(q: &QueueSnapshot, f: &Filter) -> QueueSnapshot {
+    if *f == Filter::Every {
+        return q.clone();
+    }
+    QueueSnapshot {
+        at_ms: q.at_ms,
+        reviews: q
+            .reviews
+            .iter()
+            .filter(|r| f.keeps(&r.repository))
+            .cloned()
+            .collect(),
+        merges: q
+            .merges
+            .iter()
+            .filter(|m| f.keeps(&m.repository))
+            .cloned()
+            .collect(),
+        leases: q
+            .leases
+            .iter()
+            .filter(|l| f.keeps(&l.repository))
+            .cloned()
+            .collect(),
+        targets: q
+            .targets
+            .iter()
+            .filter(|t| f.keeps(&t.repository))
+            .cloned()
+            .collect(),
+        recent: q
+            .recent
+            .iter()
+            .filter(|m| f.keeps(&m.repository))
+            .cloned()
+            .collect(),
+        archived: q.archived,
+        unreadable: q.unreadable.clone(),
+        here: q.here.clone(),
+    }
+}
+
+impl App {
+    /// **`scope`, resolved** against the snapshot's word about this session's repository.
+    pub(crate) fn queue_filter(&self, scope: &QueueScope) -> Filter {
+        match scope {
+            QueueScope::All => Filter::Every,
+            QueueScope::Path(p) => Filter::Path(
+                std::fs::canonicalize(p).unwrap_or_else(|_| std::path::PathBuf::from(p)),
+            ),
+            QueueScope::Here => match &self.queues_all.here {
+                None => Filter::Every,
+                Some(h) => match &h.repository {
+                    Some(r) => Filter::Repo(r.clone()),
+                    None => Filter::Nowhere(h.workspace.clone()),
+                },
+            },
+        }
+    }
+
+    /// **The pane's copy, cut again** — after a snapshot lands or the scope changes.
+    pub(crate) fn rescope_queues(&mut self) {
+        let f = self.queue_filter(&self.queue_scope);
+        self.queues = scoped(&self.queues_all, &f);
+        let n = self.queue_rows().len();
+        self.queue_sel = self.queue_sel.min(n.saturating_sub(1));
+    }
+
+    /// **`/queue all` and `/queue /PATH`** — the pane, on that scope. Opening it asks for a
+    /// fresh snapshot; switching an open pane's scope only re-cuts the one it has.
+    pub(crate) fn queue_in(&mut self, scope: QueueScope) -> Option<Action> {
+        self.queue_scope = scope;
+        self.queue_sel = 0;
+        self.rescope_queues();
+        self.redraw = true;
+        if self.is_open(Surface::Queue) {
+            None
+        } else {
+            self.open_surface(Surface::Queue)
         }
     }
 }

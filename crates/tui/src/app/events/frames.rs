@@ -79,13 +79,13 @@ impl App {
                 }
                 Disposition::Control
             }
-            // **Both queues, whole** (R61) — the daemon's one snapshot, kept as it came. The
-            // queues are daemon-level, so the same frame reaches a head attached to any session.
+            // **Both queues, whole** (R61) — the daemon's one snapshot, kept as it came, and
+            // cut to the pane's scope (R92 item 5): the daemon names the asking session's
+            // repository, and the pane and the edge are about that one unless told otherwise.
             ServerFrame::Queues { snapshot } => {
-                self.queues = snapshot;
+                self.queues_all = snapshot;
                 self.queues_got_ms = self.now_ms.max(1);
-                let n = self.queue_rows().len();
-                self.queue_sel = self.queue_sel.min(n.saturating_sub(1));
+                self.rescope_queues();
                 self.redraw = true;
                 Disposition::Control
             }

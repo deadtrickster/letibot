@@ -297,10 +297,12 @@ fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would(
     assert_eq!(a.editor.text(), "pd");
 }
 
-/// **A queue move asks for the snapshot again while the pane is open** — and not while it is
-/// closed.
+/// **A queue move asks for the snapshot again, open pane or not** (R92 item 5) — the edge draws
+/// this session's repository's standing from the same snapshot, and a head that re-read only with
+/// the pane open kept `‼ 1 red target(s)` on its edge after `main` went green. A burst of moves
+/// is one read. FAILS before R92.5: a closed pane asked nothing.
 #[test]
-fn a_queue_move_asks_for_the_snapshot_again_while_the_pane_is_open() {
+fn a_queue_move_asks_for_the_snapshot_again_whether_or_not_the_pane_is_open() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(queue_frame(queues(Vec::new(), Vec::new())));
@@ -316,7 +318,12 @@ fn a_queue_move_asks_for_the_snapshot_again_while_the_pane_is_open() {
         ))
     };
     a.apply(moved());
-    assert!(a.take_actions().is_empty(), "closed: nothing asked");
+    a.apply(moved());
+    assert_eq!(
+        a.take_actions(),
+        vec![Action::ListMergeQueue],
+        "closed: one read for a burst of moves"
+    );
     a.command("queue");
     let _ = a.take_actions();
     a.apply(moved());
@@ -324,7 +331,203 @@ fn a_queue_move_asks_for_the_snapshot_again_while_the_pane_is_open() {
     assert_eq!(
         a.take_actions(),
         vec![Action::ListMergeQueue],
-        "one read for a burst of moves"
+        "open: one read for a burst of moves"
+    );
+}
+
+/// **The head asks for the queues when it is seated, not when the pane first opens** (R92 item
+/// 5) — the root of *"not all heads still show the queue"*: the only ask for the snapshot was
+/// opening `/queue`, so a head that never opened it never drew a standing on its edge. FAILS
+/// before R92.5.
+#[test]
+fn an_attach_asks_for_the_queues_so_the_edge_has_a_standing() {
+    let mut a = app();
+    a.apply(hello("s", Vec::new(), Hub::new("s").snapshot()));
+    assert!(
+        a.take_actions().contains(&Action::ListMergeQueue),
+        "the attach asks for the queues"
+    );
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(120, 24).join("\n");
+    assert!(
+        screen.contains("1 in review"),
+        "the edge, without the pane ever opened: {screen}"
+    );
+}
+
+const LETIBOT: &str = "/home/dead/Projects/letibot/letibot";
+const OTHER: &str = "/home/dead/Projects/pg-noop";
+
+fn here_in(repo: &str) -> letibot_sessionlog::event::QueueHere {
+    letibot_sessionlog::event::QueueHere {
+        workspace: repo.into(),
+        repository: Some(repo.into()),
+    }
+}
+
+fn in_repo<T>(mut row: T, repo: &str, set: impl Fn(&mut T, String)) -> T {
+    set(&mut row, repo.into());
+    row
+}
+
+fn target(repo: &str, state: &str) -> letibot_sessionlog::event::TargetHealthView {
+    letibot_sessionlog::event::TargetHealthView {
+        repository: repo.into(),
+        target: "main".into(),
+        sha: "abc1234567890".into(),
+        state: state.into(),
+        checked_ms: 61_000,
+        evidence: format!("main is {state}"),
+        gate_steps: Vec::new(),
+    }
+}
+
+/// Two repositories' rows, and the daemon saying this session is in letibot.
+fn two_repositories() -> letibot_sessionlog::event::QueueSnapshot {
+    let mut snap = queues(
+        vec![
+            queue_review_row("mine", "waiting"),
+            in_repo(queue_review_row("theirs", "blocked"), OTHER, |r, v| {
+                r.repository = v
+            }),
+        ],
+        vec![in_repo(
+            queue_merge_row("m-theirs", "gating"),
+            OTHER,
+            |m, v| m.repository = v,
+        )],
+    );
+    snap.targets.push(target(OTHER, "red"));
+    snap.here = Some(here_in(LETIBOT));
+    snap
+}
+
+/// **`/queue` is this session's repository; `/queue all` is every one** (R92 item 5) — the
+/// operator's *"the /queue is still not project scoped"*. The pane, its rows, the edge and the
+/// verbs' lines all follow the scope. FAILS before R92.5: every repository was drawn and
+/// counted.
+#[test]
+fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(two_repositories()));
+    let screen = a.screen(160, 40).join("\n");
+    assert!(screen.contains("agent/mine"), "{screen}");
+    assert!(!screen.contains("agent/theirs"), "{screen}");
+    assert!(
+        !screen.contains("EMERGENCY"),
+        "another repository's red target is not this pane's emergency: {screen}"
+    );
+    assert!(screen.contains("this session's repository"), "{screen}");
+    assert!(
+        screen.contains("1 in review · 0 being merged · 0 parked")
+            && !screen.contains("red target"),
+        "the edge counts this repository only: {screen}"
+    );
+
+    // **Explicitly every repository** — and a verb sent from it carries the scope.
+    assert_eq!(a.command("queue all"), None, "the open pane is re-cut");
+    let screen = a.screen(160, 40).join("\n");
+    assert!(screen.contains("agent/theirs"), "{screen}");
+    assert!(screen.contains("EMERGENCY"), "{screen}");
+    assert!(screen.contains("every repository"), "{screen}");
+    assert!(
+        screen.contains("1 in review · 0 being merged · 0 parked")
+            && !screen.contains("red target(s)"),
+        "the EDGE stays this session's repository's whatever the pane shows: {screen}"
+    );
+    let theirs = a
+        .queue_rows()
+        .iter()
+        .position(|r| a.queue_row_id(*r) == "theirs")
+        .expect("the other repository's row");
+    a.queue_sel = theirs;
+    assert_eq!(
+        a.key(Key::Char('d')),
+        Some(Action::Slash {
+            line: "queue all rm theirs".into()
+        }),
+        "the daemon is told the scope the row was drawn in"
+    );
+
+    // **A bare `/queue` closes, and reopens on this session's repository.**
+    a.command("queue");
+    assert!(!a.is_open(Surface::Queue));
+    a.command("queue");
+    let screen = a.screen(160, 40).join("\n");
+    assert!(!screen.contains("agent/theirs"), "{screen}");
+}
+
+/// **A session of no repository is told so and offered `/queue all`** — and its edge draws no
+/// other project's standing.
+#[test]
+fn a_session_outside_every_repository_is_told_and_offered_all() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut snap = two_repositories();
+    snap.here = Some(letibot_sessionlog::event::QueueHere {
+        workspace: "/home/dead".into(),
+        repository: None,
+    });
+    a.apply(queue_frame(snap));
+    let screen = a.screen(160, 40).join("\n");
+    assert!(
+        screen.contains("/home/dead is in no repository") && screen.contains("`/queue all`"),
+        "{screen}"
+    );
+    assert!(!screen.contains("agent/"), "{screen}");
+    assert!(
+        !screen.contains("in review ·"),
+        "no edge standing for a session of no repository: {screen}"
+    );
+    a.command("queue all");
+    let screen = a.screen(160, 40).join("\n");
+    assert!(screen.contains("agent/theirs"), "{screen}");
+}
+
+/// **An unjudged target is an alarm on the edge, and a green one clears it** (R92 item 5) —
+/// blocked and timed-out targets land nothing either, and the target's own red-tip review stops
+/// counting once the target is green. FAILS before R92.5: only `red` was counted.
+#[test]
+fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    for state in ["timed_out", "blocked"] {
+        let mut snap = queues(Vec::new(), Vec::new());
+        snap.targets.push(target(LETIBOT, state));
+        snap.here = Some(here_in(LETIBOT));
+        a.apply(queue_frame(snap));
+        let screen = a.screen(160, 24).join("\n");
+        assert!(
+            screen.contains("⚠ 1 target(s) unjudged"),
+            "{state}: {screen}"
+        );
+    }
+    let mut snap = queues(
+        vec![QueueReviewExt::target(queue_review_row(
+            "red-main-abc",
+            "waiting",
+        ))],
+        Vec::new(),
+    );
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap.clone()));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains("‼ 1 red target(s) · 1 in review"),
+        "{screen}"
+    );
+    snap.targets[0].state = "green".into();
+    a.apply(queue_frame(snap));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        !screen.contains("red target") && !screen.contains("in review ·"),
+        "green clears the alarm and the moot red-tip review: {screen}"
     );
 }
 

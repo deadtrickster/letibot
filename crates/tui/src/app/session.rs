@@ -986,6 +986,14 @@ impl App {
         self.queued.push(Action::Settings);
         self.queued.push(Action::ListJobs);
         self.queued.push(Action::ListSessions);
+        // **The queues, for the edge** (R92 item 5). The composer's bottom edge draws this
+        // session's repository's standing, and before this the only ask for the snapshot was
+        // OPENING THE PANE: a head that never opened `/queue` drew no standing at all — the
+        // operator's *"not all heads still show the queue"*. The answer also names this
+        // session's repository, which a switch changes.
+        if !self.queued.contains(&Action::ListMergeQueue) {
+            self.queued.push(Action::ListMergeQueue);
+        }
     }
 
     /// **The session that spawned this one, or `None` when this head is not in a subagent.**

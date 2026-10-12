@@ -33,7 +33,7 @@ use letibot_sessionlog::view::{OpenDecision, SnapshotItem};
 use letibot_ui::editor::Editor;
 use rano::agent::card;
 
-use crate::ui::panes::queue::{QueueTabs, QueueView};
+use crate::ui::panes::queue::{QueueScope, QueueTabs, QueueView};
 use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 
@@ -869,7 +869,17 @@ pub struct App {
     /// the merge queue, who serves each repository and how recently it said so, the targets'
     /// health and the last moves: the daemon's own snapshot, never a reconstruction. A
     /// `QueueMoved` event asks for it again; a read that failed is in its `unreadable`.
+    ///
+    /// **Cut to the pane's scope** (R92 item 5) — this session's repository unless `/queue all`
+    /// or `/queue /PATH` named another — from [`App::queues_all`], so every reader of it (rows,
+    /// verbs, the overlay) reads one scoped copy.
     pub(crate) queues: letibot_sessionlog::event::QueueSnapshot,
+    /// **The daemon's snapshot whole**, every repository's rows, with the daemon's word about
+    /// which repository this session is in (`here`). The edge's standings read this, scoped to
+    /// this session's repository whatever the pane shows.
+    pub(crate) queues_all: letibot_sessionlog::event::QueueSnapshot,
+    /// **Whose queues the pane shows** — see [`QueueScope`].
+    pub(crate) queue_scope: QueueScope,
     /// **When this head received `queues`**, by its own clock — an age the pane draws is the
     /// snapshot's own (`at_ms` minus the row's stamp) plus how long ago the snapshot arrived.
     /// `0` until one has arrived, which the pane says rather than drawing an empty queue.
@@ -1726,6 +1736,8 @@ impl App {
             standing_stop_rows: Vec::new(),
             standing_corpus: None,
             queues: Default::default(),
+            queues_all: Default::default(),
+            queue_scope: QueueScope::default(),
             queues_got_ms: 0,
             queues_asked_ms: 0,
             queue_sel: 0,

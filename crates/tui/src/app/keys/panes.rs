@@ -492,7 +492,15 @@ impl App {
             };
             format!("queue regate {repo} {target}").trim().to_string()
         } else {
-            format!("queue {} {}", verb.word(), self.queue_row_id(row))
+            // **In the scope the pane shows** (R92 item 5): the daemon acts in this session's
+            // repository unless the line names another, so a row the pane drew under `/queue
+            // all` is sent under `all`.
+            format!(
+                "queue {}{} {}",
+                self.queue_scope.prefix(),
+                verb.word(),
+                self.queue_row_id(row)
+            )
         };
         ControlFlow::Break(Some(Action::Slash { line }))
     }
