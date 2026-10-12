@@ -2209,14 +2209,16 @@ impl ToolRuntime {
             },
         );
 
-        // R93.F56: an ENVELOPE repair (a fence, a leaked tag, prose around the JSON — the model's
-        // habit, not this call's mistake) is said to the model once per session per kind.
+        // R93.F56: a repair is said to the model once per session per KIND — every kind, not only
+        // the envelope's (a fence, a leaked tag): "`id` was given as a number" recurred 132× in
+        // one session, and a model that keeps a habit is not helped by hearing of it every call.
+        // `repairs` still carries every one, for the head and the metrics.
         let repairs_told = {
             let mut told = self.repairs_told.lock().unwrap_or_else(|e| e.into_inner());
             repairs
                 .iter()
                 .map(|r| r.code)
-                .filter(|c| c.starts_with("envelope.") && !told.insert(*c))
+                .filter(|c| !told.insert(*c))
                 .collect()
         };
         let result = ToolResult {
@@ -2510,6 +2512,21 @@ mod tests {
             "the head and the metrics still see it: {:?}",
             second.repairs
         );
+    }
+
+    /// **R93.F56, every kind**: a repair that is not the envelope's — a renamed key here — is
+    /// said once per session too, and still counted.
+    #[test]
+    fn every_repair_kind_is_said_once_and_still_counted() {
+        let rt = runtime(Access::Read);
+        let mut sink = RecordingToolSink::default();
+        let renamed = "{\"file_path\": \"a\"}";
+        let first = rt.invoke("t1", &call("probe", renamed), &mut sink);
+        let second = rt.invoke("t1", &call("probe", renamed), &mut sink);
+        assert!(first.repairs.iter().any(|r| r.code == "key.renamed"), "{:?}", first.repairs);
+        assert!(first.render().contains("[repaired]"), "{}", first.render());
+        assert!(!second.render().contains("[repaired]"), "{}", second.render());
+        assert!(second.repairs.iter().any(|r| r.code == "key.renamed"));
     }
 
     fn call(name: &str, args: &str) -> ToolCall {
