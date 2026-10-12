@@ -405,6 +405,11 @@ pub const TABLE: &[(&str, Class)] = &[
     // `Harness::open` through `prefix_fingerprint`, which is the one place the two sides
     // of the comparison are computed.
     ("prefix_stale", Class::Routine),
+    // **And the end of it**: the session has been moved onto the prompt this daemon seats (a
+    // re-seat, or any fork onto it), so the notice above has stopped being true. Routine — the
+    // operator's own act, or the session doing what it should. A head drawing the reseat card
+    // takes this code as the signal to take the card down (`Registry::set_stale_prefix`).
+    ("prefix_current", Class::Routine),
     // **This head's own**: it got its connection back. Filed at a real seam as it
     // happens, so it is news rather than history.
     ("reattached", Class::Routine),
@@ -1068,8 +1073,10 @@ mod the_register_census {
         //     store instead of dying of it; see its row.
         //   · **125, not 123**: `restart_restored` and `restart_reminded` (Routine) — what a
         //     daemon restart brought back or only reminded the model of (TODO R85).
-        assert_eq!(TABLE.len(), 125, "the table's size");
-        assert_eq!(count(Class::Routine), 45);
+        //   · **126, not 125**: `prefix_current` (Routine) — a stale prompt that has been
+        //     re-seated, said so a head's reseat card can come down.
+        assert_eq!(TABLE.len(), 126, "the table's size");
+        assert_eq!(count(Class::Routine), 46);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

@@ -199,6 +199,13 @@ impl App {
                     card_target = Some(Target::SettingCard);
                     (rows, Vec::new())
                 }
+                // **The reseat card comes last**: it is not a question with a deadline, and
+                // anything else that wants the slot is more urgent. While one does, the card is
+                // drawn as its pinned strip, so a stale prompt is never off the screen.
+                (None, None, None) if self.reseat_card_up() => {
+                    card_target = Some(Target::ReseatCard);
+                    self.reseat_card_lines(w)
+                }
                 (None, None, None) => (Vec::new(), Vec::new()),
             };
         let dec_full = dec.len();
@@ -241,6 +248,10 @@ impl App {
         // **A board waiting on the operator rides the same slot** — see [`App::waiting_line`]: a
         // state, never given up by the fit ladder while a person is being waited on.
         let waiting = self.waiting_line(w);
+        // **A stale prompt the operator said `not now` to rides the same slot** — the reseat
+        // card pinned (`app::reseat`): a state, never given up by the fit ladder while it is
+        // true, so it keeps staring while the operator keeps working.
+        let reseat_strip = self.reseat_strip(w);
         // **A stop the operator ordered is the loudest thing on the screen while it
         // lasts** (R30), and it goes above the link line because the two are the same
         // slot and only one of them can be true — `link_down` refuses to run while a stop
@@ -330,7 +341,12 @@ impl App {
             pane: pane.is_some(),
             // The completions live in the box's edge now; they never take a row.
             completion_slot: false,
-            link: link.len() + lock.len() + compact_off.len() + nag_pause.len() + waiting.len(),
+            link: link.len()
+                + lock.len()
+                + compact_off.len()
+                + nag_pause.len()
+                + waiting.len()
+                + reseat_strip.len(),
             stopping: stopping.len(),
             alarmed: self.alarmed(),
         });
@@ -347,6 +363,7 @@ impl App {
         chrome.extend(compact_off);
         chrome.extend(nag_pause);
         chrome.extend(waiting);
+        chrome.extend(reseat_strip);
         // **The `allow-all` confirmation sits at the front of the chrome**, above
         // the decision card and the composer, because while it is up every key
         // belongs to it (see `key`) and a question that owns the keyboard has to be
@@ -504,6 +521,8 @@ impl App {
                         .collect()
                 }
                 Target::SettingCard => self.mode_hits.clone(),
+                // The two rows are the first two of the answer half, which the fit never trims.
+                Target::ReseatCard => vec![(top + card_rows_len, 0), (top + card_rows_len + 1, 1)],
                 _ => Vec::new(),
             };
             let rect = Rect {

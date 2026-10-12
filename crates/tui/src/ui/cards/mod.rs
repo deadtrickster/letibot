@@ -4,4 +4,5 @@ pub mod asks;
 pub mod decision;
 pub mod mode;
 pub mod quit;
+pub mod reseat;
 pub mod todo;

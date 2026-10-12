@@ -45,6 +45,28 @@ impl App {
                 if code == "auto_compact_failed" {
                     self.compacting = None;
                 }
+                // **The reseat card** (`app::reseat`) — the operator: *"when on abstain keep
+                // reseat select open. this way i keep reseat in mind because it stares at me yet
+                // can continue at my risk"*. `prefix_stale` raises it (and is still filed as the
+                // note row it always was, for `/notes` and the record); `prefix_current` and
+                // `reseated` take it down — every head hears those, so a reseat chosen on one
+                // head clears the card on all of them; `reseat_refused` lets alt-r send again.
+                if code == "prefix_stale" {
+                    self.prefix_stale(detail.clone());
+                }
+                if code == "reseated" {
+                    self.prefix_current();
+                }
+                if code == "reseat_refused" {
+                    self.reseat_refused();
+                }
+                // The clear is the card's signal and nothing else: the `reseated` row (or the
+                // `compacted` one) already says in the record what moved the session, so a
+                // second row saying the notice no longer applies is the same fact twice.
+                if code == "prefix_current" {
+                    self.prefix_current();
+                    return Disposition::Filtered;
+                }
                 // **The guard's finding becomes a state this head holds.** The
                 // warning is the live half of the channel — this head was
                 // attached to see the guard fire — and `auto_compact_off` is

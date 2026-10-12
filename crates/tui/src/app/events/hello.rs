@@ -29,6 +29,12 @@ impl App {
                 ..
             } => {
                 let moved = !self.session_id.is_empty() && self.session_id != session_id;
+                // **The reseat card is the daemon's to raise, on every attach** (`seat_in` says
+                // `prefix_stale` right after this `Hello` while it is still true), so a seating
+                // forgets it: a switch to another session, a reattach after a restart that found
+                // the prompt current, and a reattach that will hear the sentence again a frame
+                // from now all start from the daemon's word rather than this head's memory.
+                self.reseat = None;
                 // The daemon has answered, so whatever the head drew while it was
                 // asking is about to be replaced by the truth. See `attaching`.
                 //

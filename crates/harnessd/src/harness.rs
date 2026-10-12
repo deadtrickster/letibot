@@ -1884,6 +1884,18 @@ pub struct Harness {
     /// whatever happens to head the queue now. See `unfinished_plan_for`: the choice is sticky, and
     /// this is the one field that remembers it.
     nag_choice: Option<String>,
+    /// **The stale-prompt sentence the model has already been told**, so it is told ONCE.
+    ///
+    /// The operator, on the reseat card: *"regarding reseat - since it is important id suggest
+    /// to show me "select" with one option - reseat and abstain and then when on abstain keep
+    /// reseat select open. this way i keep reseat in mind because it stares at me yet can
+    /// continue at my risk"*. The decision is the person's and it stares at them from their
+    /// head, so the model is not the one to keep it in mind — the plan-check used to append the
+    /// sentence to every check and tell the model to keep asking, which the operator had called
+    /// nagging. Compared by text, so a DIFFERENT stale sentence (the build moved again) is told
+    /// once more; cleared by the fork that re-seats. Held in memory: a daemon restart may tell
+    /// the model once more, which is one line per restart and not one per nag window.
+    stale_told: Option<String>,
     /// **This turn's metrics, as it runs** (TODO R81) — begun and closed by the turn tail, fed
     /// by the round loop. See `crate::instruments`.
     pub(crate) meter: crate::instruments::TurnMeter,
@@ -2177,6 +2189,25 @@ fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
         .filter(|(name, schema)| was.get(*name).is_some_and(|old| old != *schema))
         .map(|(name, _)| name.clone())
         .collect()
+}
+
+/// **What the MODEL is told about a stale prompt — once, as information.**
+///
+/// The operator: *"regarding reseat - since it is important id suggest to show me "select" with
+/// one option - reseat and abstain and then when on abstain keep reseat select open. this way i
+/// keep reseat in mind because it stares at me yet can continue at my risk"*. The person now
+/// owns the decision through a card on their head that stays up until the prompt is current,
+/// so the model's copy no longer ends with *say this to the person and keep saying it until
+/// they act* — which made every plan-check a reminder the model passed on, the nagging the
+/// operator reported. It ends with whose decision it is and that the model is not to press it.
+/// Delivered once per sentence (`Harness::stale_told`), in the plan-check's turn.
+pub fn stale_notice_for_the_model(said: &str) -> String {
+    format!(
+        "{said} For your information, said once: the person sees this on their screen as a \
+         card offering `/reseat`, and whether to re-seat is their decision. Do not ask them to \
+         re-seat and do not repeat this; carry on with the work, and if a tool you need is \
+         missing from your prompt, say that plainly when it matters."
+    )
 }
 
 /// **What the MODEL is told after the person re-seats its conversation** — the closing half
@@ -4683,6 +4714,7 @@ impl Harness {
             todos_version: 0,
             asks_said: Vec::new(),
             nag_choice: None,
+            stale_told: None,
             meter: Default::default(),
             intent,
             injected,
@@ -7845,16 +7877,13 @@ impl Harness {
         // Nothing clears this but a re-seat, and that is deliberate: `set_stale_prefix(…, None)`
         // is written by the fork onto a new prompt, so the reminder stops being true exactly
         // when the person acts — the loop closes without anybody having to remember to close it.
+        //
+        // **Told ONCE, and as information** (see `stale_told`): the person has the choice on their
+        // screen as a card that stays until the prompt is current, so the model is told the fact
+        // and that the decision is not its to press — and is not told it again.
         let stale = self
-            .session_registry
-            .stale_prefix(&self.cfg.session_id)
-            .map(|said| {
-                format!(
-                    "{said} Say this to the person in your reply, and keep saying it until they \
-                     act: nothing else clears it, and a new session seats the current prompt \
-                     without the question arising."
-                )
-            });
+            .stale_untold()
+            .map(|said| stale_notice_for_the_model(&said));
         let text = match (plan, stale) {
             (None, None) => None,
             (Some(plan), None) => Some(plan),
@@ -7862,6 +7891,14 @@ impl Harness {
             (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
         };
         text.map(|text| (text, named))
+    }
+
+    /// **The stale-prompt sentence, when the model has not been told it yet** — `None` when the
+    /// prompt is current or the model already heard this very sentence (see `stale_told`).
+    fn stale_untold(&self) -> Option<String> {
+        self.session_registry
+            .stale_prefix(&self.cfg.session_id)
+            .filter(|said| self.stale_told.as_deref() != Some(said.as_str()))
     }
 
     /// **The plan's nudge as a turn of its own, when nothing else is happening.**
@@ -7899,6 +7936,10 @@ impl Harness {
         // why reading the notice must not.
         if let Some(named) = named {
             self.nag_choice = Some(named);
+        }
+        // **And the stale prompt counts as told** — once, so the next check does not repeat it.
+        if let Some(said) = self.stale_untold() {
+            self.stale_told = Some(said);
         }
         // **The wall is checked BEFORE the send — `submit_as_a_normal_session`'s
         // pre-flight, from the same function.** Insurance, not the load-bearing
@@ -10385,6 +10426,8 @@ impl Harness {
         // a session that has just been re-seated onto it.
         self.session_registry
             .set_stale_prefix(&self.cfg.session_id, None);
+        // And the model may be told about a LATER staleness, once, as it was about this one.
+        self.stale_told = None;
         let mut next = self
             .engine
             .open(&new_id, &onto)

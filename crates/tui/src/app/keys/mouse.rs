@@ -32,6 +32,7 @@ impl App {
             }
             Target::Decision => !self.open.is_empty(),
             Target::QuitCard => self.quit_card,
+            Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
             Target::CountLabel(_) => true,
         }
@@ -129,6 +130,11 @@ impl App {
             },
             (Target::Decision, Some(k)) => self.sel = k,
             (Target::QuitCard, Some(k)) => self.quit_sel = k,
+            (Target::ReseatCard, Some(k)) => {
+                if let Some(c) = self.reseat.as_mut() {
+                    c.sel = k;
+                }
+            }
             (Target::SettingCard, Some(k)) => {
                 self.mode_sel = k;
                 // The reader has taken the cursor, so a settings answer landing from here on must
@@ -176,7 +182,8 @@ impl App {
             Target::Decision => {
                 self.scroll_card(up, NOTCH);
             }
-            Target::QuitCard | Target::SettingCard | Target::CountLabel(_) => {}
+            Target::QuitCard | Target::ReseatCard | Target::SettingCard | Target::CountLabel(_) => {
+            }
         }
         ControlFlow::Break(None)
     }

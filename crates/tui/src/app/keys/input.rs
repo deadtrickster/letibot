@@ -57,6 +57,9 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::Char('g') if m == Mods::ALT => Key::AltG,
         // alt-a: answer the question a todo row is waiting on you for (`app/todos.rs`).
         KeyCode::Char('a') if m == Mods::ALT => Key::AltA,
+        // alt-r / alt-p: reseat now, and show the reseat card (`app/reseat.rs`).
+        KeyCode::Char('r') if m == Mods::ALT => Key::AltR,
+        KeyCode::Char('p') if m == Mods::ALT => Key::AltP,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.
@@ -378,6 +381,9 @@ mod tests {
             (b"\x1b[1;5D", Key::WordLeft),
             (b"\x1b\r", Key::SoftEnter),
             (b"\x1bb", Key::AltB),
+            // The reseat card's two (`app/reseat.rs`): reseat now, show the card.
+            (b"\x1br", Key::AltR),
+            (b"\x1bp", Key::AltP),
             (b"\x01", Key::Home),
             (b"\x09", Key::Tab),
             // Its own key now: end-of-line in the composer, the editor on an empty prompt. The

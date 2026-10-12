@@ -895,6 +895,13 @@ pub type PaneBoundary =
 /// warning a stop that arrived between turns publishes, and the sentence
 /// `crate::server`'s `Stop` frame prints to every head — and three copies of it would be
 /// three answers to *why did my turn end*.
+/// **What `prefix_current` says** — the sentence a head is told when a session that was
+/// speaking a stale prompt is moved onto the one this daemon seats (see
+/// [`Registry::set_stale_prefix`]). A head that draws the reseat card takes the CODE as the
+/// signal and the sentence is for the one that does not.
+pub const PREFIX_CURRENT: &str = "this session now speaks the prompt this daemon seats; the \
+                                  stale-prompt notice no longer applies";
+
 pub const STOPPING_TURN_REASON: &str = "the daemon is stopping";
 
 /// **A session's standing notes, as rows — computed where the vocabulary is.**
@@ -1573,25 +1580,50 @@ impl Registry {
     /// twice, which is a repeated true sentence in a window of microseconds; the order —
     /// store, then count the heads — is what makes the other interleaving (heard never)
     /// impossible, because `seat_in` attaches before it reads.
+    ///
+    /// **And a head is told when it STOPS being true** — `prefix_current`, published when a
+    /// sentence that was stored is cleared (a re-seat, or any fork onto the seated prompt).
+    /// The operator, asking for the reseat card: *"when on abstain keep reseat select open.
+    /// this way i keep reseat in mind because it stares at me yet can continue at my risk"*.
+    /// A card that stares until the prompt is current needs to hear when it is; before this,
+    /// nothing told a head the state had cleared, and a head could only have guessed from the
+    /// `reseated` row (which a `/compact` onto the seated prompt never says). Said only on the
+    /// transition from stale to current, so the ordinary open — nothing stored, nothing
+    /// cleared — says nothing, and only to a session with a head on it, for the reason the
+    /// stale sentence is: a head that attaches later is told by `seat_in`'s silence.
+    ///
+    /// **No protocol bump**: a warning's code is open vocabulary on a frame every version
+    /// parses, so an older head files `prefix_current` as one more note row.
     pub fn set_stale_prefix(&self, session_id: &str, said: Option<String>) {
-        let hub = {
+        let (hub, was) = {
             let mut g = self.lock();
             match g.entry_mut(session_id) {
                 Some(e) => {
-                    e.stale_prefix = said.clone();
-                    e.hub.clone()
+                    let was = std::mem::replace(&mut e.stale_prefix, said.clone());
+                    (e.hub.clone(), was)
                 }
                 None => return,
             }
         };
-        if let Some(said) = said
-            && hub.attached_heads() > 0
-        {
-            hub.publish(crate::SessionEvent::Warning {
-                code: "prefix_stale".into(),
-                detail: said,
-                compaction: None,
-            });
+        if hub.attached_heads() == 0 {
+            return;
+        }
+        match (said, was) {
+            (Some(said), _) => {
+                hub.publish(crate::SessionEvent::Warning {
+                    code: "prefix_stale".into(),
+                    detail: said,
+                    compaction: None,
+                });
+            }
+            (None, Some(_)) => {
+                hub.publish(crate::SessionEvent::Warning {
+                    code: "prefix_current".into(),
+                    detail: PREFIX_CURRENT.into(),
+                    compaction: None,
+                });
+            }
+            (None, None) => {}
         }
     }
 

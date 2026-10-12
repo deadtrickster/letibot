@@ -803,6 +803,9 @@ pub struct App {
     /// Which row of the quit card the cursor is on. Seeded to 0 — leave the
     /// head — so Enter on an untouched card does the smaller thing.
     pub(crate) quit_sel: usize,
+    /// **The reseat card**, `Some` exactly while the daemon says this session's prompt is stale
+    /// — open in the ask slot, or pinned above the composer after *not now*. See `app::reseat`.
+    pub(crate) reseat: Option<reseat::ReseatCard>,
     /// Which mode row the cursor is on. Seeded to the mode the session is
     /// already under, so Enter on an untouched list is a no-op rather than a
     /// surprise — the same rule the session picker's cursor follows.
@@ -1698,6 +1701,7 @@ impl App {
             todo_seed_pending: false,
             quit_card: false,
             quit_sel: 0,
+            reseat: None,
             mode_sel: 0,
             pick_unseeded: false,
             mode_hits: Vec::new(),
@@ -2000,6 +2004,7 @@ mod panes;
 mod pick;
 mod pointer;
 mod prefs;
+pub(crate) mod reseat;
 mod scroll;
 mod session;
 pub(crate) mod standing;

@@ -64,6 +64,8 @@ pub(crate) enum Target {
     Decision,
     /// The quit card; its stops are its two choices.
     QuitCard,
+    /// The reseat card, open (`app::reseat`); its stops are its two choices.
+    ReseatCard,
     /// The setting card (`/mode`, `/verbosity`, `/diff`, `/models`); its stops are its values.
     SettingCard,
     /// A count label on the composer's top edge.

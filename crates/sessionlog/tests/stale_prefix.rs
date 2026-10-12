@@ -225,3 +225,62 @@ fn a_head_already_watching_when_the_sentence_is_stored_is_told_then() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// **A head is told when the stale prompt is gone** — `prefix_current`, once, on the transition.
+///
+/// The operator, asking for the reseat card: *"when on abstain keep reseat select open. this
+/// way i keep reseat in mind because it stares at me yet can continue at my risk"*. A card
+/// that stares until the prompt is current has to hear that it is: the re-seat (any fork onto
+/// the seated prompt) clears the sentence, and every head watching is told — so a reseat
+/// chosen on one head takes the card down on all of them.
+#[test]
+fn a_head_watching_is_told_when_the_stale_prompt_is_cleared() {
+    let (registry, hub, _server, path) = up("cleared");
+    registry.set_stale_prefix("s", Some(SAID.to_string()));
+
+    let (_client, _hello, mut reader) =
+        HeadClient::attach(&path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
+    let (_client2, _hello2, mut reader2) =
+        HeadClient::attach(&path, "s", 0, "tui", "operator", Caps::default()).expect("attach");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while hub.attached_heads() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the heads never registered"
+        );
+        std::thread::yield_now();
+    }
+
+    // The re-seat's fork, and then a second clear that has nothing to clear.
+    registry.set_stale_prefix("s", None);
+    registry.set_stale_prefix("s", None);
+    hub.publish(letibot_sessionlog::testing::warn("marker"));
+
+    for reader in [&mut reader, &mut reader2] {
+        let mut current = 0usize;
+        let mut seen = 0usize;
+        loop {
+            let frame: ServerFrame = reader.read().expect("the marker");
+            let ServerFrame::Event(env) = frame else {
+                continue;
+            };
+            if let SessionEvent::Warning { ref code, .. } = env.event {
+                if code == "prefix_current" {
+                    current += 1;
+                }
+                if code == "test" && env.event == letibot_sessionlog::testing::warn("marker") {
+                    break;
+                }
+            }
+            seen += 1;
+            assert!(seen < 1_000, "the marker never arrived");
+        }
+        assert_eq!(
+            current, 1,
+            "every head watching hears the clear exactly once — a clear of nothing says nothing"
+        );
+    }
+    assert_eq!(registry.stale_prefix("s"), None);
+
+    let _ = std::fs::remove_file(&path);
+}

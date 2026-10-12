@@ -161,6 +161,15 @@ impl App {
                 self.bring_back_question();
                 return None;
             }
+            // **alt-r reseats, alt-p shows the reseat card** — wherever the keyboard is, because
+            // the strip that names them is drawn on every frame while the prompt is stale (see
+            // `app::reseat`). Both ctrl letters are taken and alt-a/b/f/g/z are spoken for; r and
+            // p are the words the strip says.
+            Key::AltR => return self.reseat_now(),
+            Key::AltP => {
+                self.reseat_expand();
+                return None;
+            }
             k => k,
         };
         // **A wheel notch goes to the surface under the pointer** — see [`App::wheel_at`]. One
@@ -219,6 +228,11 @@ impl App {
             return r;
         }
         if let ControlFlow::Break(r) = self.key_pick(&k) {
+            return r;
+        }
+        // **The reseat card, behind every card above** — it is drawn only while none of them
+        // holds the slot (`App::reseat_card_up`), and typing past it pins it.
+        if let ControlFlow::Break(r) = self.key_reseat_card(&k) {
             return r;
         }
         // **The surface in front, and nothing behind it** — see [`App::key_surface`].
@@ -1133,6 +1147,11 @@ pub enum Key {
     /// **alt-b: mark the current turn bad** — on an empty composer; readline's word-left
     /// everywhere else, which is what alt-b always was (`app/feedback.rs`).
     AltB,
+    /// **alt-r: reseat now** — the reseat card's first row from anywhere, while the session's
+    /// prompt is stale (`app::reseat`).
+    AltR,
+    /// **alt-p: show the reseat card** — open the card the strip is the pinned form of.
+    AltP,
     Backspace,
     Delete,
     Left,
@@ -1326,6 +1345,8 @@ impl Key {
             | Key::AltG
             | Key::AltB
             | Key::AltA
+            | Key::AltR
+            | Key::AltP
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
