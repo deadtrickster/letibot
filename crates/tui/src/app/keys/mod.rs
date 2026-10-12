@@ -106,6 +106,20 @@ impl App {
                 self.drop_selection();
                 return None;
             }
+            // **A held view moves for the reader's own keys** — the operator: *"i think held
+            // counter might also be off, at least never decremented?"*. The hold is against the
+            // STREAM moving the view (`App::toggle_hold`); a frozen frame also froze the
+            // reader's wheel and the scrollback count with it. So a key draws the held view once
+            // more and it is held again. A hold a selection took was the selection's, and the
+            // reader acting elsewhere ends both. Ctrl-p is the hold's own key.
+            Key::CtrlP => {}
+            _ if self.hold => {
+                if self.selection_held {
+                    self.drop_selection();
+                } else {
+                    self.hold_frame = None;
+                }
+            }
             _ => {}
         }
         // **The session's prompts, before a recall starts** — see `refresh_prompt_history`.

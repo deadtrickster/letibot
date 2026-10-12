@@ -1413,6 +1413,7 @@ mod feedback;
 mod hits;
 mod jobcard;
 mod jobs;
+mod markerclick;
 mod misc;
 mod notes;
 mod oneliners;

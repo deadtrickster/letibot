@@ -223,6 +223,26 @@ pub const EXEMPLARS: &[&str] = &[
     "The nag, and my context is at 73%, plenty.",
 ];
 
+/// **The other claim about the speaker's own context: that it HOLDS something** — the nearest
+/// sense to an excuse and its opposite. *"I have it in context."* is first person, about the
+/// context and short, which is nearly every term `"I have very little context left"` has, and
+/// it scored 0.530 (the operator: *"interesting - "I have it in context." triggered context
+/// nag"*). A window is a claim only when it is nearer an [`EXEMPLARS`] sentence than all of
+/// these: the excuse says something is short, these say something is there. Worded apart from
+/// the tests' sentences, so the tests measure the contrast and not a copy.
+///
+/// MEASURED 2026-10-12 against this box's store (629 assistant and reasoning rows mentioning
+/// `context` or `room`, read-only): 14 sentences over the floor before, 6 after, and the 8 it
+/// stopped are all *"I have it in context."* and *"Let me do it — I have it in context."*.
+pub const HOLDING: &[&str] = &[
+    "I have that in my context already.",
+    "I have the file in context, no need to read it again.",
+    "That output is in my context from the last call.",
+    "I have the earlier diff in context.",
+    "Since I have the whole module in context, I can edit it directly.",
+    "I already have the context for this.",
+];
+
 /// **The background** — in the corpus for its document frequencies, never matched
 /// against. Reports of a wall that did happen, `context` in its other senses, and a
 /// coding agent's ordinary sentences. See the module doc.
@@ -287,6 +307,8 @@ pub fn words(text: &str) -> Vec<String> {
 
 /// The corpus and the exemplars' weights, built once: the corpus is constants.
 struct Detector {
+    /// [`HOLDING`], weighed — what a window must be further from than from an excuse.
+    holding: Vec<Weights>,
     corpus: Corpus,
     exemplars: Vec<Weights>,
 }
@@ -306,12 +328,26 @@ fn detector() -> &'static Detector {
                 .enumerate()
                 .map(|(i, b)| (label("background", i), words(b).join(" "))),
         );
+        docs.extend(
+            HOLDING
+                .iter()
+                .enumerate()
+                .map(|(i, h)| (label("holding", i), words(h).join(" "))),
+        );
         let corpus = Corpus::of_texts(&docs);
         let exemplars = docs[..EXEMPLARS.len()]
             .iter()
             .map(|(_, text)| corpus.weigh(text))
             .collect();
-        Detector { corpus, exemplars }
+        let holding = HOLDING
+            .iter()
+            .map(|h| corpus.weigh(&words(h).join(" ")))
+            .collect();
+        Detector {
+            holding,
+            corpus,
+            exemplars,
+        }
     })
 }
 
@@ -331,8 +367,19 @@ pub fn score(sentence: &str) -> f64 {
             continue;
         }
         let q = d.corpus.weigh(&window.join(" "));
-        for e in &d.exemplars {
-            best = best.max(similarity::similarity(&q, e));
+        let excuse = d
+            .exemplars
+            .iter()
+            .map(|e| similarity::similarity(&q, e))
+            .fold(0.0f64, f64::max);
+        let holds = d
+            .holding
+            .iter()
+            .map(|h| similarity::similarity(&q, h))
+            .fold(0.0f64, f64::max);
+        // A window nearer "it is in my context" than any excuse says something is THERE.
+        if excuse > holds {
+            best = best.max(excuse);
         }
     }
     best
@@ -745,6 +792,25 @@ mod tests {
             "Let me read the surrounding lines for context.",
             "Now let me make `StoredSession` carry the context.",
             "The layout leaves room for the marker at the end of the row.",
+        ] {
+            let got = score(s);
+            assert!(got < FLOOR, "{got:.3} for {s:?}");
+        }
+    }
+
+    /// **Having something in context is not a claim about running out of it** — the operator:
+    /// *"interesting - "I have it in context." triggered context nag"*, and the letim log's own
+    /// *"hmm, the task is intricate and I have the context."*, scored 0.313 and slapped at 888,887
+    /// of 1,000,000. Both are short, first person and about the context, which is nearly every
+    /// term `"I have very little context left"` has; neither says anything is short.
+    #[test]
+    fn having_it_in_context_is_not_a_claim() {
+        for s in [
+            "I have it in context.",
+            "hmm, the task is intricate and I have the context.",
+            "I already have that file in my context, so there is no need to read it again.",
+            "It's in my context from the earlier read.",
+            "I have the whole diff in context now.",
         ] {
             let got = score(s);
             assert!(got < FLOOR, "{got:.3} for {s:?}");

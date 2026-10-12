@@ -142,6 +142,13 @@ pub struct App {
     /// **Which screen rows of the last frame are one of those lines**: `(row, index into
     /// [`App::note_cards`])`, rebuilt with [`App::notice_rows`]. A click opens the detail whole.
     pub(crate) card_rows: Vec<(usize, usize)>,
+    /// **The clauses of the run markers on the last frame** — `[7 tool calls, 11 thinking
+    /// lines]`'s two halves, each a click that opens its run's rows of that kind. See
+    /// `app::runclick`.
+    pub(crate) marker_rows: Vec<runclick::MarkerHit>,
+    /// **Which kind the open run lifts** — `None` is the whole run (`ctrl-t`), `Some` the kind a
+    /// click on one of its marker's clauses asked for.
+    pub(crate) run_show: Option<visibility::Show>,
     /// **What this head holds of each ended job's output**, by handle — the second line of a
     /// completion notice and the tail its popup shows. Filled by a `ReadJobOutput` the window
     /// sends for a notice on the screen (once per job; see `App::ask_notice_tails`) and by any
@@ -1062,7 +1069,11 @@ pub struct App {
     pub(crate) hint_rows: Vec<keyhints::HintRow>,
     /// **Keys a click typed**, for the head's next read to take before the terminal's.
     pub(crate) injected: Vec<u8>,
-    /// **What the pointer is over, if a click there would act** — underlined on the frame.
+    /// **Where the pointer is** — the one fact the hover keeps. What it lights is worked out from
+    /// it against the frame being drawn ([`App::relight`]), never kept from an earlier one.
+    pub(crate) pointer_at: Option<(u16, u16)>,
+    /// **What the pointer is over on THIS frame, if a click there would act** — derived from
+    /// `pointer_at` by [`App::relight`] on every draw, and brightened on the frame.
     pub(crate) hovered: Option<pointer::Hovered>,
     /// The left button's run since its press.
     pub(crate) drag: pointer::Drag,
@@ -1624,6 +1635,8 @@ impl App {
             notice_rows: Vec::new(),
             note_cards: Vec::new(),
             card_rows: Vec::new(),
+            marker_rows: Vec::new(),
+            run_show: None,
             job_tails: Default::default(),
             term_fact: PaneFact::Unasked,
             term_ask: None,
@@ -1777,6 +1790,7 @@ impl App {
             hits: Vec::new(),
             hint_rows: Vec::new(),
             injected: Vec::new(),
+            pointer_at: None,
             hovered: None,
             drag: Default::default(),
             selection: None,
@@ -2040,6 +2054,7 @@ mod pick;
 mod pointer;
 mod prefs;
 pub(crate) mod reseat;
+pub(crate) mod runclick;
 mod scroll;
 mod session;
 pub(crate) mod standing;
