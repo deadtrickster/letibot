@@ -134,6 +134,7 @@ fn a_question() -> Question {
         text: "which database should the migration target?".into(),
         options: vec!["postgres".into(), "sqlite".into()],
         because: "the two need different migration files".into(),
+        ..Default::default()
     }
 }
 
@@ -448,7 +449,7 @@ fn a_question_nobody_answers_is_unanswered_and_the_card_comes_down() {
     // Short, because the point is the ending rather than the patience.
     let asker = HeadQuestioner::new(hub.clone(), answers).with_budget(Duration::from_millis(60));
     let err = asker.ask(&a_question()).expect_err("nobody answered");
-    assert!(matches!(err, AskError::Unanswered(_)), "{err:?}");
+    assert!(matches!(err, AskError::Expired(_)), "{err:?}");
     assert!(err.to_string().contains("still open"), "{err}");
     assert!(
         open_of(&hub).is_empty(),
@@ -1013,4 +1014,149 @@ fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
         Waited::TimedOut => panic!("the answer was overwritten and the wait timed out"),
         Waited::Cancelled { why } => panic!("cancelled instead of answered: {why}"),
     }
+}
+
+// ---- a question's default, taken at the deadline and written down ---------------------
+
+/// A directory of its own per call, removed when the test ends.
+struct Dir(std::path::PathBuf);
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn dir(tag: &str) -> Dir {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-auto-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    Dir(d)
+}
+
+fn git_in(d: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(d)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+fn with_default() -> Question {
+    Question {
+        default: Some(1),
+        timeout: Some(Duration::from_millis(60)),
+        ..a_question()
+    }
+}
+
+/// **In a repository the default is logged in `AUTO-DECISIONS.md`** — the operator: *"stating
+/// repo commit, select options and default answer"* — and the sentence names the file too.
+#[test]
+fn a_default_taken_in_a_repository_is_logged_with_its_commit() {
+    let d = dir("repo");
+    git_in(&d.0, &["init", "-q"]);
+    git_in(&d.0, &["config", "user.email", "t@t"]);
+    git_in(&d.0, &["config", "user.name", "t"]);
+    git_in(&d.0, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&d.0)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .unwrap();
+    let commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let said = auto_decision(&d.0, "s-1", &with_default(), Duration::from_secs(300), 0);
+    let file = std::fs::read_to_string(d.0.join("AUTO-DECISIONS.md")).expect("the log");
+    for needle in [
+        commit.as_str(),
+        "which database should the migration target?",
+        "  - postgres\n",
+        "  - sqlite ← taken",
+        "default taken: sqlite",
+        "s-1",
+    ] {
+        assert!(file.contains(needle), "{needle:?} missing from:\n{file}");
+    }
+    assert!(said.contains("AUTO-DECISIONS.md"), "{said}");
+    assert!(said.contains(&commit), "{said}");
+    // Never committed: the repository's `.gitignore` names it, so git sees only that line.
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&d.0)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "?? .gitignore\n",
+        "the log is ignored"
+    );
+
+    // A second one appends, under the one heading.
+    auto_decision(&d.0, "s-1", &with_default(), Duration::from_secs(300), 1);
+    let file = std::fs::read_to_string(d.0.join("AUTO-DECISIONS.md")).unwrap();
+    assert_eq!(file.matches("# Auto-decisions").count(), 1, "{file}");
+    assert_eq!(file.matches("default taken:").count(), 2, "{file}");
+    let ignore = std::fs::read_to_string(d.0.join(".gitignore")).unwrap();
+    assert_eq!(ignore, "/AUTO-DECISIONS.md\n", "added once");
+}
+
+/// **Outside a repository there is no file** — the session above several repositories — and
+/// the sentence is the record.
+#[test]
+fn a_default_taken_outside_a_repository_is_a_note_and_no_file() {
+    let d = dir("norepo");
+    let said = auto_decision(&d.0, "s-1", &with_default(), Duration::from_secs(300), 0);
+    assert!(!d.0.join("AUTO-DECISIONS.md").exists());
+    assert!(said.contains("\"sqlite\" was taken"), "{said}");
+    assert!(said.contains("not a repository"), "{said}");
+}
+
+/// **End to end at the daemon**: the card shows the default, the deadline passes, the
+/// questioner says it expired (not cancelled), and taking the default publishes the note.
+#[test]
+fn a_question_with_a_default_expires_and_its_default_is_noted() {
+    let d = dir("e2e");
+    let hub = Hub::new("s");
+    let answers = Arc::new(Answers::new());
+    hub.set_answer_sink(answers.clone());
+    let _head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+    let asker = HeadQuestioner::new(hub.clone(), answers).with_workspace(d.0.clone());
+    let q = with_default();
+    let err = asker.ask(&q).expect_err("nobody answered");
+    assert!(matches!(err, AskError::Expired(_)), "{err:?}");
+    let said = asker
+        .defaulted(&q, Duration::from_secs(60))
+        .expect("a workspace to log in");
+    assert!(said.contains("sqlite"), "{said}");
+    let w = hub.snapshot().warnings;
+    assert!(
+        w.iter()
+            .any(|w| w.code == "auto_decision" && w.detail == said),
+        "{w:?}"
+    );
+}
+
+/// The card says which choice is the default and what the deadline does.
+#[test]
+fn a_question_card_names_its_default() {
+    let e = pose_question("q1", &with_default(), 0);
+    let SessionEvent::DecisionRequested {
+        choices, because, ..
+    } = e
+    else {
+        panic!("{e:?}")
+    };
+    assert_eq!(
+        choices,
+        vec!["postgres".to_string(), "sqlite (default)".into()]
+    );
+    assert!(because.contains("the default is taken"), "{because}");
 }

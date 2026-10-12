@@ -185,6 +185,23 @@ pub(crate) fn edit_diff(
     }
 }
 
+/// **The tool a row is drawn as**: `notes` drawn as the `edit` (or `write`) it is when it hands
+/// back a change of its own. `rano` reads the verb from the tool's name, so a `notes replace`
+/// was a `Ran`-shaped row: the target, the tool's `replaced …` sentence and the diff's path line
+/// named the file three times, and the panel closed on *"detected afterwards — not made by
+/// `edit`"*, which is false when the tool itself wrote it. The operator: *"what i want is it to
+/// behave like a regular diff card - clickable/enterable to diff popup"*.
+pub(crate) fn drawn_as<'a>(
+    name: &'a str,
+    edit: Option<&letibot_transcript::ToolEditExcerpt>,
+) -> &'a str {
+    match edit {
+        Some(e) if name == "notes" && e.created => "write",
+        Some(_) if name == "notes" => "edit",
+        _ => name,
+    }
+}
+
 /// **The rows a change DETECTED after a command draws** — the panel a real edit gets, for the
 /// verb `rano::agent` will not draw one for.
 ///
@@ -355,11 +372,16 @@ pub(crate) fn call_card(
     // §4.1: `ToolCallProposed` carries a bounded display target beside the digest — the
     // path, the pattern, the command line — so a call that is still running says `Running
     // "cargo test --workspace"` rather than `Running bash`. Empty is rendered as nothing.
-    let verb = rano::agent::card::Verb::of(&c.name);
+    let name = drawn_as(&c.name, edit);
+    let verb = rano::agent::card::Verb::of(name);
     let call = ToolCall {
-        name: c.name.clone(),
+        name: name.to_string(),
         call_id: c.call_id.clone(),
-        target: c.target.clone(),
+        // An edit card names its file, and a note's target is its stem and its text.
+        target: match edit {
+            Some(e) if name != c.name => e.path.clone(),
+            _ => c.target.clone(),
+        },
         state,
         // The before/after view, only for the verbs that draw one: the card indents its
         // body by two and the turn block steps the card in by the activity indent after

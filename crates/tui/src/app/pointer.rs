@@ -258,6 +258,23 @@ impl App {
                         .collect(),
                 })
             }
+            // A notice and a note card are one hit a row, and every row of one opens it: the
+            // block is every row recorded for the same one.
+            Target::Notice | Target::NoteCard => {
+                let k = hit.stop_at(row)?;
+                let of = if hit.target == Target::Notice {
+                    &self.notice_rows
+                } else {
+                    &self.card_rows
+                };
+                Some(Hovered {
+                    rows: of
+                        .iter()
+                        .filter(|(_, kk)| *kk == k)
+                        .map(|(y, _)| (*y, None))
+                        .collect(),
+                })
+            }
             _ => self.stop_block(hit, row).map(|(_, rows)| Hovered {
                 rows: rows.into_iter().map(|r| (r, None)).collect(),
             }),

@@ -31,6 +31,16 @@
 //! opencode style free user reply input, not claude code 'chat later'"*, with the
 //! unanswered case staying `not_run` and never becoming a default.
 //!
+//! # The one default there is: the model's own, named and logged
+//!
+//! The operator, 2026-10-12: *"for select tool allow model to give default and timeout so if im
+//! away it can proceed"* and *"such default proceeds must be logged"*. A question may carry a
+//! `default` (one of its options) and a `timeout_s`. When the deadline passes
+//! ([`AskError::Expired`], not an interrupt) or nobody is attached, the default is taken — as
+//! the MODEL's choice, said to be one and attributed to nobody — and only once the questioner
+//! has written it down ([`Questioner::defaulted`]: `AUTO-DECISIONS.md` in the repository, and a
+//! note on the session). With nowhere to write it, it is not taken and the rule above holds.
+//!
 //! # Eight ways this refuses, and all eight are `not_run`
 //!
 //! | | what happened | why not something else |
@@ -114,7 +124,7 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
 /// What is being asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Question {
     pub text: String,
     /// The answers offered, if any. An empty list is an open question.
@@ -122,6 +132,14 @@ pub struct Question {
     /// Why the model is stuck, in one line. Shown to the person; never used to
     /// derive an answer.
     pub because: String,
+    /// **The option the MODEL would take if nobody answers in time** — an index
+    /// into `options`. The operator's own ask: *"for select tool allow model to give
+    /// default and timeout so if im away it can proceed"*. It is the model's choice
+    /// and never the person's: a default taken is said to be one, and logged
+    /// ([`Questioner::defaulted`]) — with nowhere to log it, it is not taken.
+    pub default: Option<usize>,
+    /// How long to wait before the default is taken. Only with a `default`.
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// **What a person said** — D10's shape, and the type that goes on the wire.
@@ -264,6 +282,10 @@ pub enum AskError {
     NoHead(String),
     /// It was posted and nobody answered.
     Unanswered(String),
+    /// It was posted and the deadline passed with no answer — the one silence a
+    /// question's `default` may be taken on. An interrupt is [`Self::Unanswered`]: the
+    /// operator was there.
+    Expired(String),
     /// An answer chose an option index the question never offered.
     Nonconforming { chose: usize, offered: usize },
     /// An answer arrived with nothing in it.
@@ -301,7 +323,7 @@ impl std::fmt::Display for AskError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AskError::NoHead(w) => write!(f, "{w}"),
-            AskError::Unanswered(w) => write!(f, "{w}"),
+            AskError::Unanswered(w) | AskError::Expired(w) => write!(f, "{w}"),
             AskError::Nonconforming { chose, offered } => write!(
                 f,
                 "an answer chose option {chose} and only {offered} option(s) were offered, \
@@ -366,7 +388,21 @@ pub trait Questioner: Send + Sync {
 
     /// For `EXPLAIN`: who could actually be asked in this session.
     fn describe(&self) -> String;
+
+    /// **The model's default was taken** because nobody answered `q` in time: write it
+    /// down where the operator will find it, and say where. `None` — the default for a
+    /// questioner that has nowhere to write — and the default is NOT taken: an
+    /// unlogged auto-decision is a decision nobody can review.
+    fn defaulted(&self, _q: &Question, _waited: std::time::Duration) -> Option<String> {
+        None
+    }
 }
+
+/// How long a `default` waits when the model gives no `timeout_s`, and the bounds a
+/// given one is held to.
+pub const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const MIN_TIMEOUT_S: u64 = 30;
+const MAX_TIMEOUT_S: u64 = 3600;
 
 /// **The default, and it refuses.**
 ///
@@ -410,16 +446,15 @@ impl Tool for AskUserQuestion {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "ask_user_question",
-            "Ask the person driving this session a question, and wait for their answer. \
-             Give `question`; optionally `options`, a short list of answers to choose \
-             between, and `because`, one line saying what you are stuck on. They answer \
-             in one of four ways, and the result says which: a choice, a choice with \
-             their own note on it, words of their own, or an abstention. An abstention \
-             is an ANSWER and not permission to proceed on an assumption. The answer is \
-             attributed to the person by name, and a note belongs to the choice it came \
-             with. If nobody is attached, or nobody answers in time, it returns no \
-             result and says which — never a default answer, never permission to \
-             proceed.",
+            "Ask the person driving this session a question and wait for the answer. \
+             Give `question`; optionally `options` to choose between and `because`, one \
+             line on what you are stuck on. They answer with a choice, a choice with \
+             their note, words of their own, or an abstention — an abstention is an \
+             ANSWER and not permission to proceed on an assumption. If nobody is \
+             attached or nobody answers in time, it returns no result — never a default \
+             you did not give. Give `default` (one of `options`) and `timeout_s` \
+             (30..3600, 300 if omitted) and your default is taken at the deadline, said \
+             to be yours and logged for review; only for a choice safe without them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -429,7 +464,9 @@ impl Tool for AskUserQuestion {
                         "items": {"type": "string"},
                         "description": "Answers to choose between. Omit for an open question. An answer naming none of these is not accepted — a person may still answer in their own words, or abstain."
                     },
-                    "because": {"type": "string", "description": "One line: what you are stuck on and why the answer changes what you do."}
+                    "because": {"type": "string", "description": "One line: what you are stuck on and why the answer changes what you do."},
+                    "default": {"type": "string", "description": "One of `options`, exactly: the one you would take if nobody answers in time. Omit to wait for a person, however long."},
+                    "timeout_s": {"type": "integer", "description": "Seconds to wait before `default` is taken (30..3600, default 300). Only with `default`."}
                 },
                 "required": ["question"]
             }),
@@ -465,6 +502,27 @@ impl Tool for AskUserQuestion {
             options.truncate(MAX_OPTIONS);
         }
 
+        let default = match args.get("default").and_then(|v| v.as_str()) {
+            None => None,
+            Some(d) => match options.iter().position(|o| o.trim() == d.trim()) {
+                Some(i) => Some(i),
+                None => {
+                    return Invocation::failed(
+                        format!("the default {d:?} is not one of the options offered"),
+                        "call `ask_user_question` again with `default` set to one of \
+                         `options`, word for word, or without `default`.",
+                    );
+                }
+            },
+        };
+        let timeout = args.get("timeout_s").and_then(|v| v.as_u64());
+        if timeout.is_some() && default.is_none() {
+            return Invocation::failed(
+                "`timeout_s` was given without a `default`",
+                "a timeout is how long to wait before the default is taken; give \
+                 `default` too, or drop `timeout_s` to wait for a person.",
+            );
+        }
         let q = Question {
             text: text.to_string(),
             options: options.clone(),
@@ -473,10 +531,22 @@ impl Tool for AskUserQuestion {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string(),
+            default,
+            timeout: default.map(|_| {
+                timeout.map_or(DEFAULT_TIMEOUT, |t| {
+                    std::time::Duration::from_secs(t.clamp(MIN_TIMEOUT_S, MAX_TIMEOUT_S))
+                })
+            }),
         };
         ctx.progress("waiting for a person to answer");
 
         let mut inv = match self.questioner.ask(&q) {
+            Err(e @ (AskError::Expired(_) | AskError::NoHead(_)))
+                if let (Some(d), Some(waited)) = (q.default, q.timeout)
+                    && let Some(logged) = self.questioner.defaulted(&q, waited) =>
+            {
+                defaulted(&q, d, &e, &logged)
+            }
             Err(e) => {
                 let mut body = format!("question: {}\n", q.text);
                 if !q.options.is_empty() {
@@ -502,6 +572,28 @@ impl Tool for AskUserQuestion {
         }
         inv
     }
+}
+
+/// **The model's own default, taken** — said to be the model's, never the person's.
+fn defaulted(q: &Question, d: usize, why: &AskError, logged: &str) -> Invocation {
+    let chosen = &q.options[d];
+    let when = match why {
+        AskError::NoHead(_) => "nobody is attached to answer".to_string(),
+        _ => format!(
+            "nobody answered within {}s",
+            q.timeout.unwrap_or_default().as_secs()
+        ),
+    };
+    Invocation::ok(format!(
+        "question: {}\n{when}, so YOUR default was taken: \"{chosen}\". This is not the \
+         operator's answer — nobody gave one. Proceed on it, and keep it easy to undo: \
+         the operator reviews it later.\nlogged: {logged}",
+        q.text
+    ))
+    .with_note(
+        "the default is the model's own choice, attributed to no person: do not report it \
+         as something the operator decided.",
+    )
 }
 
 /// Turn an answer into a result, refusing every shape that would attribute
@@ -635,7 +727,7 @@ mod scripted {
         }
 
         pub fn silent() -> Self {
-            ScriptedQuestioner(Err(AskError::Unanswered(
+            ScriptedQuestioner(Err(AskError::Expired(
                 "the question was posted to the attached head and nobody answered before \
                  the deadline, so NOBODY has answered it. A deadline passing is not a \
                  decision, not a declining, and not a `chat later`: the question is still \
@@ -671,6 +763,113 @@ mod tests {
     }
 
     const Q: &str = r#"{"question":"which approach?","options":["a","b"]}"#;
+
+    /// A silence whose default has somewhere to be logged.
+    struct Logged(ScriptedQuestioner);
+
+    impl Questioner for Logged {
+        fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError> {
+            self.0.ask(q)
+        }
+        fn describe(&self) -> String {
+            "logged".into()
+        }
+        fn defaulted(&self, q: &Question, waited: std::time::Duration) -> Option<String> {
+            Some(format!(
+                "LOGGED {} after {}s",
+                q.options[q.default?],
+                waited.as_secs()
+            ))
+        }
+    }
+
+    const QD: &str =
+        r#"{"question":"which approach?","options":["a","b"],"default":"b","timeout_s":45}"#;
+
+    /// **A default is taken on silence, and said to be the model's** — the operator: *"for
+    /// select tool allow model to give default and timeout so if im away it can proceed"*.
+    #[test]
+    fn a_default_is_taken_on_silence_and_is_nobodys_answer() {
+        let r = ask(Arc::new(Logged(ScriptedQuestioner::silent())), QD);
+        assert!(matches!(r.outcome, ToolOutcome::Ok), "{}", r.render());
+        let text = r.render();
+        assert!(text.contains("YOUR default was taken: \"b\""), "{text}");
+        assert!(text.contains("not the operator's answer"), "{text}");
+        assert!(
+            text.contains("LOGGED b after 45s"),
+            "where it was logged: {text}"
+        );
+    }
+
+    /// With no head attached at all, the same: nobody can answer, so the default is taken.
+    #[test]
+    fn a_default_is_taken_when_nobody_is_attached() {
+        let r = ask(
+            Arc::new(Logged(ScriptedQuestioner(Err(AskError::NoHead(
+                "none".into(),
+            ))))),
+            QD,
+        );
+        assert!(matches!(r.outcome, ToolOutcome::Ok), "{}", r.render());
+        assert!(r.render().contains("nobody is attached"), "{}", r.render());
+    }
+
+    /// **Unlogged, it is not taken**: a decision nobody can review is not one to make.
+    #[test]
+    fn a_default_with_nowhere_to_be_logged_is_not_taken() {
+        let r = ask(Arc::new(ScriptedQuestioner::silent()), QD);
+        assert!(
+            matches!(r.outcome, ToolOutcome::NotRun { .. }),
+            "{}",
+            r.render()
+        );
+    }
+
+    /// An interrupt is not silence: the operator was there, so the default is not taken.
+    #[test]
+    fn an_interrupt_does_not_take_the_default() {
+        let r = ask(
+            Arc::new(Logged(ScriptedQuestioner(Err(AskError::Unanswered(
+                "cancelled".into(),
+            ))))),
+            QD,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::NotRun { .. }),
+            "{}",
+            r.render()
+        );
+    }
+
+    /// The default must be one of the options, and a timeout needs a default.
+    #[test]
+    fn a_default_must_be_offered_and_a_timeout_needs_one() {
+        let q = Arc::new(Logged(ScriptedQuestioner::silent()));
+        let r = ask(
+            q.clone(),
+            r#"{"question":"q?","options":["a","b"],"default":"c"}"#,
+        );
+        assert!(
+            r.render().contains("not one of the options"),
+            "{}",
+            r.render()
+        );
+        let r = ask(q, r#"{"question":"q?","options":["a","b"],"timeout_s":40}"#);
+        assert!(r.render().contains("without a `default`"), "{}", r.render());
+    }
+
+    /// The timeout is held to its bounds, and is 300s when not given.
+    #[test]
+    fn the_timeout_is_bounded_and_has_its_own_default() {
+        let q = Arc::new(Logged(ScriptedQuestioner::silent()));
+        let r = ask(
+            q.clone(),
+            r#"{"question":"q?","options":["a","b"],"default":"a","timeout_s":1}"#,
+        );
+        assert!(r.render().contains("after 30s"), "{}", r.render());
+        let r = ask(q, r#"{"question":"q?","options":["a","b"],"default":"a"}"#);
+        assert!(r.render().contains("after 300s"), "{}", r.render());
+    }
 
     #[test]
     fn no_head_is_not_run_and_never_a_default() {
@@ -1027,7 +1226,7 @@ mod tests {
         let d = &s.description;
         for (what, needle) in [
             ("a choice", "a choice"),
-            ("a note on that choice", "a choice with"),
+            ("a note on that choice", "a choice with their note"),
             ("their own words", "words of their own"),
             ("an abstention", "abstention"),
         ] {

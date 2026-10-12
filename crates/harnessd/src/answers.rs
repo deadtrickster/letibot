@@ -320,7 +320,7 @@ impl Answers {
     /// |---|---|
     /// | a head answered | the answer, and who gave it |
     /// | **no head can answer** | [`AskError::NoHead`], *before* any wait |
-    /// | the deadline passed | [`AskError::Unanswered`] — *nobody answered* |
+    /// | the deadline passed | [`AskError::Expired`] — *nobody answered*, and the one a `default` is taken on |
     /// | the operator interrupted, or the session closed | [`AskError::Unanswered`] |
     ///
     /// **An abstention is not one of those.** It comes back through the first row like
@@ -432,7 +432,7 @@ impl Answers {
                         who.join(",")
                     ),
                 );
-                Err(AskError::Unanswered(
+                Err(AskError::Expired(
                     "the question was posted to the attached head and nobody answered before the \
                  deadline, so NOBODY has answered it. A deadline passing is not a decision, \
                  not a declining, and not a `chat later`: the question is still open."
@@ -505,8 +505,30 @@ fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
         target: String::new(),
         detail: String::new(),
         options: Vec::new(),
-        choices: q.options.clone(),
-        because: q.because.clone(),
+        // **The model's default is on the card**, so the person who comes back to it knows
+        // what happens at the deadline: that choice is taken, not nothing.
+        choices: q
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                if q.default == Some(i) {
+                    format!("{o} (default)")
+                } else {
+                    o.clone()
+                }
+            })
+            .collect(),
+        because: match q.default {
+            Some(_) if q.because.is_empty() => {
+                "if nobody answers by the deadline, the default is taken".into()
+            }
+            Some(_) => format!(
+                "{} · if nobody answers by the deadline, the default is taken",
+                q.because
+            ),
+            None => q.because.clone(),
+        },
         advice: None,
         subagent: None,
         deadline: Some(deadline_ms),
@@ -599,6 +621,9 @@ pub struct HeadQuestioner {
     answers: Arc<Answers>,
     budget: Duration,
     asked: Option<AskLog>,
+    /// Where a taken default is written down: `AUTO-DECISIONS.md` at the top of the
+    /// repository this is in, when it is in one. See [`auto_decision`].
+    workspace: Option<std::path::PathBuf>,
 }
 
 impl HeadQuestioner {
@@ -608,7 +633,14 @@ impl HeadQuestioner {
             answers,
             budget: ANSWER_BUDGET,
             asked: None,
+            workspace: None,
         }
+    }
+
+    /// The session's workspace, where a taken default is logged.
+    pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
     }
 
     pub fn with_budget(mut self, budget: Duration) -> Self {
@@ -626,7 +658,9 @@ impl HeadQuestioner {
 
 impl Questioner for HeadQuestioner {
     fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError> {
-        let got = self.answers.ask_question(&self.hub, q, self.budget)?;
+        let got = self
+            .answers
+            .ask_question(&self.hub, q, q.timeout.unwrap_or(self.budget))?;
         // **Recorded on the way past, and only an ANSWER.** Every `Err` arm of
         // `ask_question` is *nobody answered* — no head, a deadline, an interrupt — and a
         // refusal is not a person's utterance, so nothing is written down for one.
@@ -662,6 +696,129 @@ impl Questioner for HeadQuestioner {
             self.budget.as_secs()
         )
     }
+
+    fn defaulted(&self, q: &Question, waited: Duration) -> Option<String> {
+        let ws = self.workspace.as_deref()?;
+        let said = auto_decision(ws, &self.hub.session_id(), q, waited, unix_millis());
+        self.hub.publish(SessionEvent::Warning {
+            code: "auto_decision".into(),
+            detail: said.clone(),
+            compaction: None,
+        });
+        Some(said)
+    }
+}
+
+/// **The log is never committed** — the operator: *"it should be gitignored"*, and then *"no,
+/// .gitignore"*: a line in the repository's own `.gitignore`, added once, so every clone and
+/// worktree of it ignores the file.
+fn ignore_locally(top: &std::path::Path) {
+    let ignore = top.join(".gitignore");
+    let had = std::fs::read_to_string(&ignore).unwrap_or_default();
+    if had
+        .lines()
+        .any(|l| matches!(l.trim(), "AUTO-DECISIONS.md" | "/AUTO-DECISIONS.md"))
+    {
+        return;
+    }
+    let sep = if had.is_empty() || had.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let _ = std::fs::write(&ignore, format!("{had}{sep}/AUTO-DECISIONS.md\n"));
+}
+
+/// **A default taken, written down** — the operator: *"such default proceeds must be logged
+/// tho, in the project file called AUTO-DECISIONS.md stating repo commit, select options and
+/// default answer. If there is no repo - just a note … if it is a repo - show that too"*.
+///
+/// In a repository: an entry appended to `AUTO-DECISIONS.md` at its top, naming the commit,
+/// the question, every option and the one taken. Outside one (a session above several
+/// repositories) there is no file; the sentence returned — which the session's note carries
+/// either way — is the record.
+pub fn auto_decision(
+    workspace: &std::path::Path,
+    session: &str,
+    q: &Question,
+    waited: Duration,
+    at_ms: u64,
+) -> String {
+    let Some(d) = q.default.and_then(|d| q.options.get(d)) else {
+        return String::new();
+    };
+    let options = q
+        .options
+        .iter()
+        .map(|o| format!("\"{o}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let summary = format!(
+        "nobody answered \"{}\" within {}s, so the model's default \"{d}\" was taken (options: \
+         {options})",
+        q.text,
+        waited.as_secs()
+    );
+    let git = crate::mergequeue::git::git;
+    let Ok(top) = crate::mergequeue::git::repo_root(workspace) else {
+        return format!("{summary} — not a repository here, so this note is the only record");
+    };
+    let commit = git(&top, &["rev-parse", "--short", "HEAD"])
+        .map(|c| c.trim().to_string())
+        .unwrap_or_else(|_| "no commit".into());
+    let branch = git(&top, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|b| b.trim().to_string())
+        .unwrap_or_default();
+    let repo = top
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| top.display().to_string());
+    let file = top.join("AUTO-DECISIONS.md");
+    ignore_locally(&top);
+    let mut entry = String::new();
+    if !file.exists() {
+        entry.push_str(
+            "# Auto-decisions\n\nQuestions nobody answered in time, and the default the model \
+             took. Review them.\n",
+        );
+    }
+    entry.push_str(&format!(
+        "\n## {} · {session}\n\n- repo: {repo} @ {commit} ({branch})\n- question: {}\n",
+        crate::subagent_record::utc(at_ms),
+        q.text
+    ));
+    if !q.because.is_empty() {
+        entry.push_str(&format!("- because: {}\n", q.because));
+    }
+    entry.push_str("- options:\n");
+    for (i, o) in q.options.iter().enumerate() {
+        let mark = if q.default == Some(i) {
+            " ← taken"
+        } else {
+            ""
+        };
+        entry.push_str(&format!("  - {o}{mark}\n"));
+    }
+    entry.push_str(&format!(
+        "- default taken: {d} — nobody answered within {}s\n",
+        waited.as_secs()
+    ));
+    use std::io::Write as _;
+    let wrote = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| f.write_all(entry.as_bytes()));
+    match wrote {
+        Ok(()) => format!(
+            "{summary} — logged in {} at {repo} @ {commit}",
+            file.display()
+        ),
+        Err(e) => format!(
+            "{summary} — at {repo} @ {commit}; {} could not be written ({e})",
+            file.display()
+        ),
+    }
 }
 
 /// **The questioner the intent wiring is given, whose head arrives with the gate.**
@@ -684,6 +841,11 @@ impl Questioner for SlotQuestioner {
             Some(h) => h.ask(q),
             None => Headless.ask(q),
         }
+    }
+
+    fn defaulted(&self, q: &Question, waited: Duration) -> Option<String> {
+        let head = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        head.and_then(|h| h.defaulted(q, waited))
     }
 
     fn describe(&self) -> String {

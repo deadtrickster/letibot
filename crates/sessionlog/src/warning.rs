@@ -410,6 +410,11 @@ pub const TABLE: &[(&str, Class)] = &[
     // operator's own act, or the session doing what it should. A head drawing the reseat card
     // takes this code as the signal to take the card down (`Registry::set_stale_prefix`).
     ("prefix_current", Class::Routine),
+    // **A question nobody answered in time, and the model's own default taken** — logged in
+    // `AUTO-DECISIONS.md` when the session is in a repository, and said here either way. A
+    // fact for the operator to review later, in `prefix_stale`'s register: nothing is broken,
+    // the session went on, and the sentence names the choice so it can be undone.
+    ("auto_decision", Class::Routine),
     // **This head's own**: it got its connection back. Filed at a real seam as it
     // happens, so it is news rather than history.
     ("reattached", Class::Routine),
@@ -1075,8 +1080,10 @@ mod the_register_census {
         //     daemon restart brought back or only reminded the model of (TODO R85).
         //   · **126, not 125**: `prefix_current` (Routine) — a stale prompt that has been
         //     re-seated, said so a head's reseat card can come down.
-        assert_eq!(TABLE.len(), 126, "the table's size");
-        assert_eq!(count(Class::Routine), 46);
+        //   · **127, not 126**: `auto_decision` (Routine) — a question's default taken when
+        //     nobody answered in time.
+        assert_eq!(TABLE.len(), 127, "the table's size");
+        assert_eq!(count(Class::Routine), 47);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

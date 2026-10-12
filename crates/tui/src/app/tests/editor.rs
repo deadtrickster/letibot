@@ -1303,7 +1303,10 @@ fn hovering_an_edit_card_brightens_all_of_its_rows() {
     let mut a = edited(&ws);
     a.screen(100, 40);
     let rows: Vec<usize> = a.file_rows.iter().map(|(r, _)| *r).collect();
-    assert!(rows.len() > 1, "the premise: the card is several rows: {rows:?}");
+    assert!(
+        rows.len() > 1,
+        "the premise: the card is several rows: {rows:?}"
+    );
     let top = a
         .hits
         .iter()
@@ -1324,4 +1327,42 @@ fn hovering_an_edit_card_brightens_all_of_its_rows() {
             screen[top + r]
         );
     }
+}
+
+/// **A note the `notes` tool rewrote is an edit card** — the operator, of a `notes replace` row
+/// that named its file three times (the target, the tool's `replaced …` sentence, the diff's own
+/// path line) and closed on *"detected afterwards — not made by `edit`"*, which was false: the
+/// tool made it. *"what i want is it to behave like a regular diff card - clickable/enterable to
+/// diff popup"*. So: one header naming the file once, the diff, no prose, and a click opens it.
+#[test]
+fn a_note_the_notes_tool_rewrote_is_drawn_and_clicked_as_an_edit() {
+    let ws = workspace("notes");
+    let hub = Hub::new("s");
+    let (id, mut item) = row("s.1", "c1", "notes", Some(change()));
+    if let TranscriptItem::ToolResult { payload, .. } = &mut item {
+        *payload = format!("replaced `{FILE}` — was 2.0 KB, 30 line(s)\nsecond\nthird\nfourth");
+    }
+    hub.publish(testing::appended(&id, "tool_result"));
+    hub.record_item(&id, item);
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a.wiring.workspace = ws.0.display().to_string();
+    let screen = a.screen(100, 40);
+    let all = screen.join("\n");
+    assert!(all.contains("old 11"), "the diff is drawn: {all}");
+    assert!(!all.contains("replaced `"), "no tool prose: {all}");
+    assert!(!all.contains("ctrl-v opens it"), "no payload fold: {all}");
+    assert!(
+        !all.contains("detected afterwards"),
+        "the tool made it: {all}"
+    );
+    assert_eq!(
+        screen.iter().filter(|l| l.contains(FILE)).count(),
+        1,
+        "the file is named once: {all}"
+    );
+    assert!(!a.file_rows.is_empty(), "the card is a place: {all}");
+    let (y, _) = a.file_rows[0].clone();
+    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
+    assert!(a.diff_popup.is_some(), "a click opens the popup");
 }

@@ -344,7 +344,7 @@ impl App {
         let live = self.turn.as_ref().and_then(|t| {
             t.calls.iter().rev().find_map(|c| match &c.state {
                 letibot_sessionlog::view::CallState::Finished { edit: Some(e), .. }
-                    if card::Verb::of(&c.name).is_an_edit() =>
+                    if card::Verb::of(crate::ui::drawn_as(&c.name, Some(e))).is_an_edit() =>
                 {
                     Some(FileRef::of(e))
                 }
@@ -366,13 +366,11 @@ impl App {
         else {
             return None;
         };
-        if !card::Verb::of(name).is_an_edit() {
+        let edit = self.call_edits.get(&it.item_id).or(edit.as_ref());
+        if !card::Verb::of(crate::ui::drawn_as(name, edit)).is_an_edit() {
             return None;
         }
-        self.call_edits
-            .get(&it.item_id)
-            .or(edit.as_ref())
-            .map(FileRef::of)
+        edit.map(FileRef::of)
     }
 
     /// **How long the head's loop may wait for input** before rano wants another tick — `None`
