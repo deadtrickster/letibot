@@ -516,7 +516,12 @@ impl App {
             && d.kind == "question"
             && !d.req_id.starts_with(TODO_ASK)
         {
-            self.say("this question is the open card — answer it, or esc puts it away");
+            // About THIS card, and what alt-a will do once it is out of the way (R90.26) — the
+            // operator pressing alt-a wanted the other question.
+            self.say(
+                "a question is the open card — answer it, or esc puts it away; then alt-a opens \
+                 what else waits on you",
+            );
             self.redraw = true;
             return;
         }

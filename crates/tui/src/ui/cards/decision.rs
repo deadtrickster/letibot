@@ -101,6 +101,20 @@ impl App {
                 w,
             )));
         }
+        // **What waits behind this card** (R90.9): only the front card is drawn, so a model's
+        // question with a deadline behind a todo card could time out unseen.
+        let behind = self.open.iter().skip(1).count();
+        if behind > 0 && self.open.first().is_some_and(|f| f.req_id == d.req_id) {
+            let clock = if self.open.iter().skip(1).any(|o| o.deadline.is_some()) {
+                " — one has a deadline"
+            } else {
+                ""
+            };
+            choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
+                &format!("  +{behind} more waiting behind this card{clock}"),
+                w,
+            )));
+        }
         // **And the way to step away from it without answering** — the operator: *"i want to
         // be able to escape the selection card. sometimes i need time to think and just let the
         // card stay"*. Its own row so a narrow card trims the line above, not this. On every

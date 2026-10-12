@@ -29,7 +29,21 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "ctrl-c",
-            "clear what you typed; twice on an empty prompt, within a second, quits",
+            "clear what you typed; twice on an empty prompt, within a second, asks whether to \
+             leave (the quit card: detach, or stop the daemon too)",
+        ),
+        (
+            "a card",
+            "a question or permission card: ↑↓ or its row number marks a row, enter answers, \
+             or type your own answer (an option id on a permission). esc puts any card away \
+             unanswered — it keeps waiting, a line above the prompt says so — and alt-a brings \
+             it back; alt-a also opens a todo row's question waiting on you",
+        ),
+        (
+            "alt-r alt-p",
+            "a stale prompt (the PROMPT IS STALE strip): alt-r reseats now — `/reseat` typed is \
+             the same — and alt-p shows the reseat card again. In the editor alt-p is the \
+             editor's own: it shows the change again",
         ),
         (
             "↑ ↓",

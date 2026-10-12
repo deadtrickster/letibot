@@ -172,13 +172,33 @@ impl App {
                 ),
                 None => String::new(),
             };
-            let more = match asks.len() {
-                0 => String::new(),
-                1 => " (+1 todo question)".to_string(),
-                n => format!(" (+{n} todo questions)"),
+            // **Every other card put away here is counted too** (R90.26) — the line named one
+            // and counted only the todo questions.
+            let others = self
+                .away
+                .iter()
+                .filter(|o| !o.is_todo() && o.session_id == self.session_id)
+                .count()
+                - 1;
+            let mut more: Vec<String> = Vec::new();
+            match others {
+                0 => {}
+                1 => more.push("+1 more put away".into()),
+                n => more.push(format!("+{n} more put away")),
+            }
+            match asks.len() {
+                0 => {}
+                1 => more.push("+1 todo question".into()),
+                n => more.push(format!("+{n} todo questions")),
+            }
+            let more = if more.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", more.join(", "))
             };
+            // `·` before the key, so the key hint is its own segment and a button (R90.33).
             let said = format!(
-                "{} PUT AWAY: \"{}\"{clock}{more} — alt-a brings it back",
+                "{} PUT AWAY: \"{}\"{clock}{more} · alt-a brings it back",
                 if question { "QUESTION" } else { "PERMISSION" },
                 d.summary.trim()
             );
@@ -191,19 +211,34 @@ impl App {
         } else {
             None
         };
+        // **The row whose card is on the screen is not waiting to be opened** (R90.26): the line
+        // said "alt-a to answer" about the card already up, and alt-a then did nothing.
+        let front = self
+            .open
+            .first()
+            .and_then(|d| d.req_id.strip_prefix(TODO_ASK))
+            .map(str::to_string);
+        let asks: Vec<_> = asks
+            .into_iter()
+            .filter(|a| front.as_deref() != Some(a.content.as_str()))
+            .collect();
+        if front.is_some() && asks.is_empty() {
+            return Vec::new();
+        }
         let said = match (asks.first(), setting) {
             (Some(first), _) => {
                 let more = match asks.len() {
                     1 => String::new(),
                     n => format!(" (+{} more)", n - 1),
                 };
+                // `·` before the key, so the key hint is its own segment and a button (R90.33).
                 format!(
-                    "WAITING ON YOU: \"{}\" on `{}`{more} — alt-a to answer",
+                    "WAITING ON YOU: \"{}\" on `{}`{more} · alt-a to answer",
                     first.question.trim(),
                     letibot_sessionlog::event::todo_title(&first.content)
                 )
             }
-            (None, Some(setting)) => format!("WAITING ON YOU: {setting} — alt-a to answer"),
+            (None, Some(setting)) => format!("WAITING ON YOU: {setting} · alt-a to answer"),
             (None, None) => return Vec::new(),
         };
         row_strings(&facts::warning(&said, w), self.cfg.palette())

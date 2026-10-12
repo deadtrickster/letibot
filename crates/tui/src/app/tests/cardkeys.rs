@@ -563,3 +563,62 @@ fn the_popup_fits_a_narrow_screen() {
         }
     }
 }
+
+// ──────────── R90.9 / R90.20 / R90.26 / R90.33: what waits, said and clickable ────────────
+
+/// The card says how many more wait behind it, and whether one has a deadline.
+#[test]
+fn the_front_card_counts_what_waits_behind_it() {
+    let mut a = app();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    let mut q = testing::asked("q2", "which?", &["x"], "");
+    if let SessionEvent::DecisionRequested { deadline, .. } = &mut q {
+        *deadline = Some(u64::MAX / 2);
+    }
+    ask(&mut a, 2, q);
+    let card = a.decision_lines(&a.open[0].clone(), 120).join("\n");
+    assert!(
+        card.contains("+1 more waiting behind this card — one has a deadline"),
+        "{card}"
+    );
+}
+
+/// The waiting line does not offer alt-a for the card already open, counts every card put away,
+/// and its key hint is a button.
+#[test]
+fn the_waiting_line_is_about_what_is_not_on_the_screen() {
+    let mut a = app();
+    waiting_board(&mut a);
+    assert!(a.waiting_line(200).join("").contains("alt-a to answer"));
+    a.key(Key::AltA);
+    assert!(a.waiting_line(200).is_empty(), "{:?}", a.waiting_line(200));
+
+    let mut b = app();
+    b.session_id = "s".into();
+    ask(&mut b, 1, testing::asked("q1", "one?", &["x"], ""));
+    b.key(Key::Esc);
+    ask(&mut b, 2, testing::asked("q2", "two?", &["x"], ""));
+    b.key(Key::Esc);
+    let l = b.waiting_line(200).join("");
+    assert!(l.contains("+1 more put away"), "{l}");
+    let cs: Vec<char> = without_control_lines(&l).chars().collect();
+    let keys = crate::app::keyhints::scan_row(0, &cs);
+    assert!(
+        keys.iter().any(|k| k.bytes == b"\x1ba".to_vec()),
+        "alt-a is a button on the line: {l}"
+    );
+}
+
+/// /help names the card keys, alt-r/alt-p, and that ctrl-c twice asks rather than quits.
+#[test]
+fn the_help_names_the_card_keys() {
+    let help = help_lines(&app().cfg, 200).join("\n");
+    for words in [
+        "alt-a brings",
+        "alt-r reseats",
+        "row number marks",
+        "asks whether to",
+    ] {
+        assert!(help.contains(words), "{words}: {help}");
+    }
+}

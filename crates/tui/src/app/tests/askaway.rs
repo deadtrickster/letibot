@@ -107,8 +107,9 @@ fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
     );
     assert_eq!(notice(&a), "answered — 2 more waiting on you");
     let l = line(&a);
+    // The row whose card is up is not "waiting to be opened" (R90.26): the line names the next.
     assert!(
-        l.contains("\"call it staging?\"") && l.contains("(+1 more)"),
+        l.contains("\"ship on friday?\"") && !l.contains("call it staging?"),
         "the resident line moved with the answer: {l}"
     );
 
@@ -301,7 +302,7 @@ fn the_put_away_esc_does_not_arm_the_interrupt() {
         "and esc-esc after it still interrupts — the premise: the turn is busy"
     );
     assert!(
-        line(&a).contains("QUESTION PUT AWAY: \"which branch should I base this on?\" — alt-a"),
+        line(&a).contains("QUESTION PUT AWAY: \"which branch should I base this on?\" · alt-a"),
         "no deadline, no clock: {}",
         line(&a)
     );

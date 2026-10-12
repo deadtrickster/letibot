@@ -328,8 +328,8 @@ impl App {
         if self.prompt.is_some() {
             self.set_composer(&text);
             self.say(
-                "your own command is waiting on a line — `!send LINE` answers it, and this \
-                 message goes to the model when the run ends",
+                "your own command is waiting on a line — `!send LINE` answers it; this message \
+                 is held here, and enter sends it to the model once the run ends",
             );
             self.redraw = true;
             return None;
