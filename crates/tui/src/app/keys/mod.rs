@@ -58,6 +58,11 @@ impl App {
         // [`App::sync_front`].
         self.sync_front();
         let r = self.key_dispatch(k);
+        // R90.29: an answer that leaves closes its card at once.
+        if let Some(Action::Answer { req_id, .. } | Action::AnswerQuestion { req_id, .. }) = &r {
+            let req_id = req_id.clone();
+            self.answer_leaving(&req_id);
+        }
         self.sync_front();
         r
     }

@@ -804,18 +804,20 @@ impl Link {
                         pattern,
                         note,
                     } => {
-                        self.client.answer_with(
+                        let request = self.client.answer_with(
                             &req_id,
                             &option_id,
                             pattern.as_deref(),
                             note.as_deref(),
                         )?;
+                        app.answer_sent(&req_id, request);
                     }
                     // **The frame this head had no way to send** (§1.7). `Answer`
                     // above grants a permission; this answers a question, and the
                     // client method has existed since protocol 5 with no caller.
                     Action::AnswerQuestion { req_id, answer } => {
-                        self.client.answer_question(&req_id, answer)?;
+                        let request = self.client.answer_question(&req_id, answer)?;
+                        app.answer_sent(&req_id, request);
                     }
                     Action::AnswerTodo {
                         content,

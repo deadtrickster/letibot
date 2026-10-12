@@ -38,6 +38,16 @@ pub(crate) struct AwayCard {
     pub(crate) sel: usize,
 }
 
+/// **A card whose answer has left and is not settled yet** (R90.29) — see [`App::answering`].
+#[derive(Debug, Clone)]
+pub(crate) struct Answering {
+    pub(crate) decision: letibot_sessionlog::view::OpenDecision,
+    /// The row that was marked, so a refused answer puts the card back as it was.
+    pub(crate) sel: usize,
+    /// The frame's `client_request_id`, once the driver has sent it — what a `Rejected` names.
+    pub(crate) request: Option<String>,
+}
+
 impl AwayCard {
     /// Whether this is a todo row's card rather than the model's question.
     pub(crate) fn is_todo(&self) -> bool {
@@ -413,6 +423,53 @@ impl App {
     /// The openers that seed a card themselves (alt-a's [`App::bring_back_question`] and
     /// [`App::open_operator_ask`]) hold the line and claim `sel_for` before they put the card's
     /// own draft into the composer, so the draft is not mistaken for the operator's line here.
+    /// **An answer to the model's question or a permission is leaving: its card closes now**
+    /// (R90.29). It used to stay up until `DecisionAnswered` came back, and a second Enter in
+    /// that gap sent the same answer again; a todo row's card already closed at once. The card
+    /// is kept in [`App::answering`] so a refusal can put it back.
+    pub(crate) fn answer_leaving(&mut self, req_id: &str) {
+        let Some(i) = self.open.iter().position(|d| d.req_id == req_id) else {
+            return;
+        };
+        let decision = self.open.remove(i);
+        let sel = if i == 0 { self.sel } else { 0 };
+        self.answering.retain(|a| a.decision.req_id != req_id);
+        self.answering.push(Answering {
+            decision,
+            sel,
+            request: None,
+        });
+        self.redraw = true;
+    }
+
+    /// **The driver sent it**, under this `client_request_id` — what a refusal will name.
+    pub fn answer_sent(&mut self, req_id: &str, request: String) {
+        if let Some(a) = self.answering.iter_mut().find(|a| a.decision.req_id == req_id) {
+            a.request = Some(request);
+        }
+    }
+
+    /// **The daemon refused an answer this head sent** — its card goes back in front, the
+    /// marked row as it was. `false` when `request` was not an answer of ours. A refusal that
+    /// says the decision is no longer open puts nothing back: it was settled elsewhere.
+    pub(crate) fn answer_refused(&mut self, request: &str, reason: &str) -> bool {
+        let Some(i) = self
+            .answering
+            .iter()
+            .position(|a| a.request.as_deref() == Some(request))
+        else {
+            return false;
+        };
+        let a = self.answering.remove(i);
+        if reason != letibot_sessionlog::protocol::REJECT_UNKNOWN_DECISION {
+            self.open.insert(0, a.decision.clone());
+            self.sel_for = a.decision.req_id.clone();
+            self.sel = a.sel;
+        }
+        self.redraw = true;
+        true
+    }
+
     pub(crate) fn sync_front(&mut self) {
         let front = self
             .open

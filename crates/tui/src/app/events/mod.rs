@@ -344,6 +344,9 @@ impl App {
         // head's own and survives for its session. A switch to another session takes away
         // nothing — each card keeps the session it was asked in.
         let mut open = s.open_decisions;
+        // R90.29: the snapshot is the truth about what is still open — a card whose answer was
+        // in flight comes back if the daemon still holds its question, and goes if it does not.
+        self.answering.clear();
         let sid = self.session_id.clone();
         self.away.retain(|a| {
             a.session_id != sid || a.is_todo() || open.iter().any(|d| d.req_id == a.decision.req_id)

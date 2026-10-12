@@ -365,11 +365,14 @@ impl App {
                 Disposition::Control
             }
             ServerFrame::Rejected {
+                client_request_id,
                 reason,
                 expected_seq,
                 actual_seq,
-                ..
             } => {
+                // **A refused answer puts its card back** (R90.29): it was closed when the
+                // answer left.
+                self.answer_refused(&client_request_id, &reason);
                 // Both numbers, so the operator can see what they were looking at.
                 // A peek answered with one of these also ends its waiting.
                 self.sub_out_pending = None;

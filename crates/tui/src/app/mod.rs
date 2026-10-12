@@ -1551,6 +1551,11 @@ pub struct App {
     /// be able to escape the selection card. sometimes i need time to think and just let the card
     /// stay"*.
     pub(crate) away: Vec<AwayCard>,
+    /// **Question and permission cards answered from this head and not yet settled** (R90.29) —
+    /// closed the moment the answer left, so a second Enter cannot send it again, and kept here
+    /// until the daemon settles them (`DecisionAnswered`) or refuses the answer (`Rejected`, which
+    /// puts the card back in front). See [`App::answer_leaving`].
+    pub(crate) answering: Vec<crate::app::todos::Answering>,
     /// **Todo questions this head has answered and whose board has not come back yet**, as
     /// `(row, question)`. [`App::operator_asks`] leaves them out, so the card can move on to the
     /// next row and the resident line can count what is really left the moment the answer goes;
@@ -1823,6 +1828,7 @@ impl App {
             nags_paused: None,
             asks_setting: None,
             away: Vec::new(),
+            answering: Vec::new(),
             todo_answered: Vec::new(),
             bye: None,
             daemon_pid: None,

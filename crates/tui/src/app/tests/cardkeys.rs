@@ -645,3 +645,41 @@ fn a_late_peek_reply_after_its_pane_closed_is_not_opened() {
     );
     assert!(a.sub_out.is_none());
 }
+
+// ──────────── R90.29: an answered card closes at once, and comes back if refused ────────────
+
+/// Enter closes the permission card the moment the answer leaves, so a second Enter sends
+/// nothing; a refusal of that answer puts the card back with its marked row; the daemon's
+/// settlement of it settles the card this head closed.
+#[test]
+fn an_answered_card_closes_at_once_and_a_refusal_reopens_it() {
+    let mut a = app();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    a.key(Key::Down);
+    assert_eq!(a.key(Key::Enter), answer("r1", "deny"));
+    assert!(a.open.is_empty(), "the card closed when the answer left");
+    assert_eq!(a.key(Key::Enter), None, "a second Enter cannot resend");
+    a.answer_sent("r1", "c7".into());
+    a.apply(ServerFrame::Rejected {
+        client_request_id: "c7".into(),
+        reason: "the answer was malformed".into(),
+        expected_seq: 1,
+        actual_seq: 1,
+    });
+    assert_eq!(a.open.first().map(|d| d.req_id.as_str()), Some("r1"), "refused: back");
+    assert_eq!(a.key(Key::Enter), answer("r1", "deny"), "with the row it had");
+    a.answer_sent("r1", "c8".into());
+    ask(&mut a, 2, testing::answered("r1", "deny"));
+    assert!(a.open.is_empty() && a.answering.is_empty(), "settled");
+    // A refusal that says the decision is gone puts nothing back.
+    ask(&mut a, 3, testing::requested("r2", "rm"));
+    a.key(Key::Enter);
+    a.answer_sent("r2", "c9".into());
+    a.apply(ServerFrame::Rejected {
+        client_request_id: "c9".into(),
+        reason: letibot_sessionlog::protocol::REJECT_UNKNOWN_DECISION.into(),
+        expected_seq: 3,
+        actual_seq: 3,
+    });
+    assert!(a.open.is_empty(), "settled elsewhere: not reopened");
+}
