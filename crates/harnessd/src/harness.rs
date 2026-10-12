@@ -3600,7 +3600,8 @@ impl Harness {
                         // refuses either vocabulary for the other's request.
                         *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
                             crate::answers::HeadQuestioner::new(hub.clone(), answers.clone())
-                                .with_ask_log(asked.clone()),
+                                .with_ask_log(asked.clone())
+                                .with_workspace(cfg.workspace.clone()),
                         ));
                         Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
                     }
@@ -3629,7 +3630,8 @@ impl Harness {
                         // head, and the model decides nothing about it.
                         *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
                             crate::answers::HeadQuestioner::new(hub.clone(), answers.clone())
-                                .with_ask_log(asked.clone()),
+                                .with_ask_log(asked.clone())
+                                .with_workspace(cfg.workspace.clone()),
                         ));
                         Box::new(crate::answers::EscalateOnTimeout::new(
                             std::sync::Arc::from(model),

@@ -214,6 +214,7 @@ fn the_tuis_asked_card_fixtures_are_what_the_session_writes() {
             because: "Row 4 cannot be resolved by me without over-committing the project to \
                       1.17 million failures or excluding them on my own judgement"
                 .into(),
+            ..Default::default()
         },
         answer: QuestionAnswer::choosing(0),
         by: "dead".into(),

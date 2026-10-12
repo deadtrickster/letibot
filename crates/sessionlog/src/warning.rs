@@ -405,6 +405,11 @@ pub const TABLE: &[(&str, Class)] = &[
     // `Harness::open` through `prefix_fingerprint`, which is the one place the two sides
     // of the comparison are computed.
     ("prefix_stale", Class::Routine),
+    // **A question nobody answered in time, and the model's own default taken** — logged in
+    // `AUTO-DECISIONS.md` when the session is in a repository, and said here either way. A
+    // fact for the operator to review later, in `prefix_stale`'s register: nothing is broken,
+    // the session went on, and the sentence names the choice so it can be undone.
+    ("auto_decision", Class::Routine),
     // **This head's own**: it got its connection back. Filed at a real seam as it
     // happens, so it is news rather than history.
     ("reattached", Class::Routine),
@@ -1068,8 +1073,10 @@ mod the_register_census {
         //     store instead of dying of it; see its row.
         //   · **125, not 123**: `restart_restored` and `restart_reminded` (Routine) — what a
         //     daemon restart brought back or only reminded the model of (TODO R85).
-        assert_eq!(TABLE.len(), 125, "the table's size");
-        assert_eq!(count(Class::Routine), 45);
+        //   · **126, not 125**: `auto_decision` (Routine) — a question's default taken when
+        //     nobody answered in time.
+        assert_eq!(TABLE.len(), 126, "the table's size");
+        assert_eq!(count(Class::Routine), 46);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

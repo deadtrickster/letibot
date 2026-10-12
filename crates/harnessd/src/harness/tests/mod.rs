@@ -8,6 +8,7 @@ fn a_question() -> Question {
         text: "which database should the migration target?".into(),
         options: vec!["postgres".into(), "sqlite".into()],
         because: "the two need different migration files".into(),
+        ..Default::default()
     }
 }
 
