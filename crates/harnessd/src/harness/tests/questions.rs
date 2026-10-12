@@ -74,7 +74,7 @@ fn the_question_row_is_the_sessions_and_the_answer_row_is_the_operators() {
     let asked_text = text(&question);
     assert!(
         asked_text.contains("which database should the migration target?")
-            && asked_text.contains("postgres | sqlite"),
+            && asked_text.contains("options offered:\n- postgres\n- sqlite"),
         "the question row must name the question and the options it offered: {asked_text}"
     );
     assert!(
