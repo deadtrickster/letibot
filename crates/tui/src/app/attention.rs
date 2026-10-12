@@ -21,7 +21,8 @@ impl App {
     /// that is merely busy.
     pub fn progress(&self) -> rano::term::Progress {
         use rano::term::Progress;
-        if !self.open.is_empty() || self.secret.is_some() {
+        // A question card put away is still a question waiting on the person.
+        if !self.open.is_empty() || !self.away.is_empty() || self.secret.is_some() {
             return Progress::Waiting;
         }
         if self.turn_busy() {
@@ -38,7 +39,14 @@ impl App {
     pub(crate) fn attention_now(&self) -> Attention {
         Attention {
             busy: self.turn_busy(),
-            asks: self.open.iter().map(|d| d.req_id.clone()).collect(),
+            // Put away is still asking: counted here, so bringing a card back is not a new ask
+            // and does not notify a second time.
+            asks: self
+                .open
+                .iter()
+                .map(|d| d.req_id.clone())
+                .chain(self.away.iter().map(|a| a.decision.req_id.clone()))
+                .collect(),
             secret: self.secret.as_ref().map(|s| s.req_id.clone()),
             answered: self
                 .subagents

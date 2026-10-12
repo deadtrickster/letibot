@@ -114,6 +114,9 @@ impl App {
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
+                    // The board is the truth once it arrives: a row answered from here is either
+                    // off it or — the answer refused — still asking, and asked again.
+                    self.todo_answered.clear();
                     // **A waiting seed runs here too** — this is the REPLY to the `ListTodos` the
                     // attach queues when a seed is due, and it reads the board as whole as the
                     // event does. One seed, two arrivals, because the wire has two: the reply and

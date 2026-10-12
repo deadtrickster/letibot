@@ -121,6 +121,14 @@ impl App {
             // **The cards in the chrome are in front of the surface** — they take their keys
             // first in `App::key` — so the bar describes the card while one is up.
             Some(HintMode::Pick)
+        } else if self.open.first().is_some_and(|d| d.kind == "question") {
+            // **A question card's bar names the way to step away from it** — rano's `Deciding`
+            // tail is a permission's, and pinned, so the question's is written here.
+            let tail = format!(
+                "↑↓ choose · enter answers · or type your own · {}",
+                crate::ui::cards::decision::PUT_AWAY_HINT
+            );
+            return crate::ui::render::row(&centred(Some(&editor), &tail, w), p);
         } else if !self.open.is_empty() {
             Some(HintMode::Deciding)
         } else {

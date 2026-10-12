@@ -382,6 +382,22 @@ impl App {
             let n = decision_rows(&self.open[0]);
             let typing = !self.editor.text().is_empty();
             match k {
+                // **Esc puts a QUESTION card away and answers nothing** — see
+                // [`App::put_question_away`]. The operator: *"i want to be able to escape the
+                // selection card. sometimes i need time to think and just let the card stay"*.
+                //
+                // The rule, typed words or not: Esc had no meaning inside the card before this
+                // (ctrl-c is what clears a typed line; Esc only reached the editor as the first
+                // half of the esc-esc interrupt), so there is nothing to keep for the typed case
+                // — the words leave WITH the card and alt-a brings both back. **And this press
+                // is not handed to the editor**: a second Esc must not interrupt the turn the
+                // operator only meant to step away from — the trap a subagent's Esc already fell
+                // into (*"pressed esc and it didnt work, pressed second time - subagent stopped
+                // lol"*). A permission card is not a question and keeps its keys as they were.
+                Key::Esc if self.open[0].kind == "question" => {
+                    self.put_question_away();
+                    return ControlFlow::Break(None);
+                }
                 Key::Up if n > 0 => {
                     self.sel = if self.sel == 0 { n - 1 } else { self.sel - 1 };
                     self.redraw = true;

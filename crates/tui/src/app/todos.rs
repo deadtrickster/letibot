@@ -16,6 +16,35 @@ pub(crate) struct OperatorAsk {
     pub(crate) options: Vec<String>,
 }
 
+/// **A question card the operator put away with Esc** — still pending, nothing sent.
+///
+/// The operator, 2026-10-12: *"i want to be able to escape the selection card. sometimes i need
+/// time to think and just let the card stay"*. So Esc is not an answer of any kind — not an
+/// abstention, not a denial, nothing on the wire — it takes the card off the screen and keeps
+/// everything that was on it: the decision itself (`decision`), the words typed under it
+/// (`draft`, the composer's text, which is the card's field while the card is up) and the row the
+/// highlight was on (`sel`). alt-a puts it back exactly so ([`App::bring_back_question`]).
+///
+/// One shape for both kinds of question card. A model's `ask_user_question` card is the daemon's
+/// open decision and keeps waiting under its own deadline — the resident line counts it down
+/// ([`App::waiting_line`]); a todo row's card (`req_id` starting [`TODO_ASK`]) is this head's own
+/// and has no clock. `session_id` is the session it was asked in, so a switch never brings a
+/// card back over the wrong conversation.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AwayCard {
+    pub(crate) session_id: String,
+    pub(crate) decision: letibot_sessionlog::view::OpenDecision,
+    pub(crate) draft: String,
+    pub(crate) sel: usize,
+}
+
+impl AwayCard {
+    /// Whether this is a todo row's card rather than the model's question.
+    pub(crate) fn is_todo(&self) -> bool {
+        self.decision.req_id.starts_with(TODO_ASK)
+    }
+}
+
 impl App {
     /// **The operator's rows, out of the union the daemon serves.** The head keeps no second
     /// list: the daemon persists them, every head sees them, and this is the one place that says
@@ -41,6 +70,14 @@ impl App {
             }
             for n in &t.needs {
                 if let TodoNeed::Operator { question, options } = n {
+                    if self
+                        .todo_answered
+                        .iter()
+                        .any(|(c, q)| c == &t.content && q == question)
+                    {
+                        // Answered from here; the board saying so is on its way.
+                        continue;
+                    }
                     out.push(OperatorAsk {
                         content: t.content.clone(),
                         question: question.clone(),
@@ -89,8 +126,48 @@ impl App {
             self.redraw = true;
             return;
         }
-        self.open.retain(|d| !d.req_id.starts_with(TODO_ASK));
-        self.sel = 0;
+        if self.open.first().is_some_and(|d| d.req_id == req_id) {
+            // Already the card on the screen: nothing to open, and its draft is the composer.
+            self.redraw = true;
+            return;
+        }
+        // **What was put away for this row comes back with it** — the words and the highlight —
+        // provided it is still the same question (a row that asks something new starts clean).
+        let kept = self.away.iter().position(|a| {
+            a.decision.req_id == req_id
+                && a.decision.summary == ask.question
+                && a.session_id == self.session_id
+        });
+        if let Some(i) = kept
+            && !self.away[i].draft.is_empty()
+            && !self.editor.text().is_empty()
+        {
+            self.say(
+                "the composer has words in it — send or clear them (ctrl-c), then alt-a brings \
+                 the question back with what you typed on it",
+            );
+            self.redraw = true;
+            return;
+        }
+        // Another row's card on the screen is put away, not thrown away: its words go with it.
+        if self
+            .open
+            .first()
+            .is_some_and(|d| d.req_id.starts_with(TODO_ASK))
+        {
+            self.stash_front_card();
+        }
+        let (draft, sel) = match kept {
+            Some(i) => {
+                let a = self.away.remove(i);
+                (a.draft, a.sel)
+            }
+            None => (String::new(), 0),
+        };
+        if !draft.is_empty() {
+            self.set_composer(&draft);
+        }
+        self.sel = sel.min(ask.options.len().saturating_sub(1));
         self.open.insert(
             0,
             letibot_sessionlog::view::OpenDecision {
@@ -131,8 +208,12 @@ impl App {
                 .map(|d| d.summary.clone())
                 .unwrap_or_default();
             self.open.retain(|d| d.req_id != req_id);
+            self.away.retain(|a| a.decision.req_id != req_id);
             self.sel = 0;
             self.redraw = true;
+            self.todo_answered
+                .push((content.to_string(), question.clone()));
+            self.advance_operator_asks();
             return Action::AnswerTodo {
                 content: content.to_string(),
                 question,
@@ -140,6 +221,148 @@ impl App {
             };
         }
         Action::AnswerQuestion { req_id, answer }
+    }
+
+    /// **After a todo answer, the next question — or the word that there is none.**
+    ///
+    /// The operator answered one of three waiting rows and the resident line simply moved to the
+    /// next question: *"i answered what was asked by the todo, and it didnt hide"*. Two fixes in
+    /// one place. The card goes straight on to the NEXT row still waiting on the operator in this
+    /// session — the answered one is left out at once ([`App::todo_answered`]), not when the
+    /// board comes back — and closes when none remain; and a short line says which of the two
+    /// happened, so moving on never reads as the answer being ignored:
+    ///
+    /// ```text
+    /// answered — 2 more waiting on you
+    /// answered — nothing else is waiting on you
+    /// ```
+    ///
+    /// Another card on the screen (the model's question, a permission) is left alone: the next
+    /// row waits for alt-a rather than jumping in front of it.
+    fn advance_operator_asks(&mut self) {
+        let left = self.operator_asks();
+        let Some(next) = left.first() else {
+            // The `asks` settings row said so before the answer; it is stale now, and the
+            // resident line must not fall back to it.
+            self.asks_setting = None;
+            self.say("answered — nothing else is waiting on you");
+            return;
+        };
+        let n = left.len();
+        if self.open.is_empty() {
+            let content = next.content.clone();
+            self.open_operator_ask(Some(&content));
+            self.say(&format!("answered — {n} more waiting on you"));
+        } else {
+            self.say(&format!(
+                "answered — {n} more waiting on you; alt-a opens the next once this card is done"
+            ));
+        }
+    }
+
+    /// **Esc on a question card: put it away, answer nothing.**
+    ///
+    /// The operator: *"i want to be able to escape the selection card. sometimes i need time to
+    /// think and just let the card stay"*. The card leaves the screen and the question stays
+    /// PENDING — nothing is sent: not an abstention (that is the typed `abstain`, a choice), not
+    /// a denial. The model's call keeps waiting under its own deadline, a todo row keeps waiting
+    /// with no clock, and the resident line says so with the key that brings it back.
+    ///
+    /// **The words go with the card.** While a question is up the composer is its field, so
+    /// what is typed there is the card's draft: it is taken off the composer (which would
+    /// otherwise send it to the model as a prompt) and put back by alt-a with the highlight.
+    pub(crate) fn put_question_away(&mut self) {
+        if !self.open.first().is_some_and(|d| d.kind == "question") {
+            return;
+        }
+        self.stash_front_card();
+        self.say("put away — nothing was sent, it is still waiting on you · alt-a brings it back");
+        self.redraw = true;
+    }
+
+    /// Move the card on top of the open list to [`App::away`] with the composer's words and the
+    /// highlight, and empty the composer.
+    fn stash_front_card(&mut self) {
+        if self.open.is_empty() {
+            return;
+        }
+        let decision = self.open.remove(0);
+        let draft = self.editor.expanded();
+        if !self.editor.text().is_empty() {
+            // ctrl-c on a non-empty composer is the editor's own "clear what I typed", and an
+            // undo away; Home + kill-to-end would clear one line of several.
+            self.editor.key(letibot_ui::editor::Key::CtrlC, self.now_ms);
+        }
+        self.away.retain(|a| a.decision.req_id != decision.req_id);
+        self.away.push(AwayCard {
+            session_id: self.session_id.clone(),
+            decision,
+            draft,
+            sel: self.sel,
+        });
+        self.sel = 0;
+        self.redraw = true;
+    }
+
+    /// **alt-a: bring back the oldest pending question of either kind.**
+    ///
+    /// One key for both kinds because the resident line names one key, and the operator should
+    /// not have to know whose question it is to get it back. *Oldest* is read as the order the
+    /// two can actually be compared in: a model's question put away comes first — it is the one
+    /// with a clock, holding a running call — oldest put away first; then a todo row whose card
+    /// was put away (its draft comes back with it); then the first row waiting on the operator,
+    /// in board order, which is what alt-a always opened. Todo rows carry no time of asking, so
+    /// board order is the only order they have.
+    pub(crate) fn bring_back_question(&mut self) {
+        if let Some(d) = self.open.first()
+            && d.kind == "question"
+            && !d.req_id.starts_with(TODO_ASK)
+        {
+            self.say("this question is the open card — answer it, or esc puts it away");
+            self.redraw = true;
+            return;
+        }
+        let sid = self.session_id.clone();
+        if let Some(i) = self
+            .away
+            .iter()
+            .position(|a| !a.is_todo() && a.session_id == sid)
+        {
+            if !self.open.is_empty() && !self.open[0].req_id.starts_with(TODO_ASK) {
+                self.say("answer the open card first — then alt-a brings the question back");
+                self.redraw = true;
+                return;
+            }
+            if !self.away[i].draft.is_empty() && !self.editor.text().is_empty() {
+                self.say(
+                    "the composer has words in it — send or clear them (ctrl-c), then alt-a \
+                     brings the question back with what you typed on it",
+                );
+                self.redraw = true;
+                return;
+            }
+            if !self.open.is_empty() {
+                self.stash_front_card();
+            }
+            let a = self.away.remove(i);
+            if !a.draft.is_empty() {
+                self.set_composer(&a.draft);
+            }
+            self.sel = a.sel.min(decision_rows(&a.decision).saturating_sub(1));
+            self.open.insert(0, a.decision);
+            self.redraw = true;
+            return;
+        }
+        let asks = self.operator_asks();
+        let kept = self.away.iter().find_map(|a| {
+            let content = a.decision.req_id.strip_prefix(TODO_ASK)?;
+            (a.session_id == sid
+                && asks
+                    .iter()
+                    .any(|x| x.content == content && x.question == a.decision.summary))
+            .then(|| content.to_string())
+        });
+        self.open_operator_ask(kept.as_deref());
     }
 
     /// **Open the new-todo card**, and put the composer where the card expects it.

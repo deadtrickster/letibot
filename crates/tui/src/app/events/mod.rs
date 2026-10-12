@@ -324,7 +324,23 @@ impl App {
             }
         }
         self.invalidate_history();
-        self.open = s.open_decisions;
+        // **The cards the operator put away stay away** across a snapshot (a resync, a re-attach):
+        // a model's question still open on the daemon is refreshed and kept off the screen, one
+        // the snapshot no longer holds was settled meanwhile and goes; a todo row's card is this
+        // head's own and survives for its session. A switch to another session takes away
+        // nothing — each card keeps the session it was asked in.
+        let mut open = s.open_decisions;
+        let sid = self.session_id.clone();
+        self.away.retain(|a| {
+            a.session_id != sid || a.is_todo() || open.iter().any(|d| d.req_id == a.decision.req_id)
+        });
+        for a in self.away.iter_mut().filter(|a| a.session_id == sid) {
+            if let Some(d) = open.iter().find(|d| d.req_id == a.decision.req_id) {
+                a.decision = d.clone();
+            }
+        }
+        open.retain(|d| !self.away.iter().any(|a| a.decision.req_id == d.req_id));
+        self.open = open;
         // A snapshot can replace the open set wholesale; keep the highlight in range.
         self.sel = 0;
         // A permission settles on the call it gated, so it rides the call's card

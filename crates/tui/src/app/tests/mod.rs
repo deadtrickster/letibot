@@ -1385,6 +1385,7 @@ fn queue_frame(snapshot: letibot_sessionlog::event::QueueSnapshot) -> ServerFram
     ServerFrame::Queues { snapshot }
 }
 
+mod askaway;
 mod askedcard;
 mod asks;
 mod attention;

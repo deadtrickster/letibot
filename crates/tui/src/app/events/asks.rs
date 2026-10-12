@@ -28,6 +28,30 @@ impl App {
                 subagent,
                 ..
             } => {
+                // **A card the operator put away stays away** when its question is said again
+                // (a replay, a second head's resync): refreshed in place, still not on screen.
+                if let Some(a) = self.away.iter_mut().find(|a| a.decision.req_id == req_id) {
+                    a.decision = OpenDecision {
+                        req_id,
+                        write_targets,
+                        kind,
+                        call_id,
+                        access,
+                        summary,
+                        target,
+                        detail,
+                        options,
+                        choices,
+                        because,
+                        advice,
+                        deadline,
+                        on_timeout,
+                        subagent,
+                        asked_ts: a.decision.asked_ts,
+                    };
+                    self.redraw = true;
+                    return Disposition::Rendered;
+                }
                 self.open.retain(|d| d.req_id != req_id);
                 // A fresh question starts at the top of its ladder rather than
                 // wherever the last one was left: the highlight must never be
@@ -63,6 +87,14 @@ impl App {
                 basis,
                 late,
             } => {
+                // **A question put away and settled while away** — its deadline lapsed, another
+                // head answered it — settles exactly as an open one does, and its kept draft
+                // goes with it: there is nothing left to answer.
+                if let Some(i) = self.away.iter().position(|a| a.decision.req_id == req_id) {
+                    let a = self.away.remove(i);
+                    self.open.push(a.decision);
+                    self.redraw = true;
+                }
                 // Three things are read off the open decision **before** it is
                 // removed, because the answer event carries only the `req_id`: the
                 // summary, the call to put the outcome on, and the oracle's advice.

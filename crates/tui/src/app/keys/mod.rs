@@ -155,9 +155,10 @@ impl App {
             Key::AltG => return self.feedback_key(true),
             Key::AltB => return self.feedback_key(false),
             // **alt-a opens the question a row is waiting on you for** — wherever the keyboard is,
-            // because the line that names it is drawn on every frame.
+            // because the line that names it is drawn on every frame — and brings back a question
+            // card Esc put away, of either kind (see [`App::bring_back_question`]).
             Key::AltA => {
-                self.open_operator_ask(None);
+                self.bring_back_question();
                 return None;
             }
             k => k,
@@ -1125,9 +1126,9 @@ pub enum Key {
     SoftEnter,
     /// **alt-g: mark the current turn good** (TODO R81, `app/feedback.rs`).
     AltG,
-    /// **alt-a: answer the operator's question** — open the card for the first todo row that is
-    /// waiting on the operator (`app/todos.rs`'s `open_operator_ask`). The resident `waiting on
-    /// you` line names it.
+    /// **alt-a: answer the operator's question** — bring back a question card Esc put away, or
+    /// open the card for the first todo row that is waiting on the operator (`app/todos.rs`'s
+    /// `bring_back_question`). The resident `waiting on you` line names it.
     AltA,
     /// **alt-b: mark the current turn bad** — on an empty composer; readline's word-left
     /// everywhere else, which is what alt-b always was (`app/feedback.rs`).

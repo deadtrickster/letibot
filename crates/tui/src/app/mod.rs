@@ -1513,6 +1513,18 @@ pub struct App {
     /// `waiting on you` line ([`App::waiting_line`]) for a head that has not read the board yet;
     /// once it has, the line is drawn from the board itself (`App::operator_asks`).
     pub(crate) asks_setting: Option<String>,
+    /// **Question cards the operator put away with Esc**, oldest first — the model's
+    /// `ask_user_question` cards and the todo rows' cards alike, each with the words and the row
+    /// that were on it. See [`AwayCard`] and [`App::put_question_away`]. The operator: *"i want to
+    /// be able to escape the selection card. sometimes i need time to think and just let the card
+    /// stay"*.
+    pub(crate) away: Vec<AwayCard>,
+    /// **Todo questions this head has answered and whose board has not come back yet**, as
+    /// `(row, question)`. [`App::operator_asks`] leaves them out, so the card can move on to the
+    /// next row and the resident line can count what is really left the moment the answer goes;
+    /// any fresh board clears the list, because the board is the truth once it arrives (a
+    /// refused answer comes back still waiting, and is asked again).
+    pub(crate) todo_answered: Vec<(String, String)>,
 }
 
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
@@ -1771,6 +1783,8 @@ impl App {
             auto_compact_off: None,
             nags_paused: None,
             asks_setting: None,
+            away: Vec::new(),
+            todo_answered: Vec::new(),
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),

@@ -129,9 +129,52 @@ impl App {
     /// question and the row, counts the rest, and names the key that opens the card (alt-a; Enter
     /// on the row in the todo pane does the same). Drawn from the board when this head has read
     /// it, and from the daemon's `asks` settings row until it has.
+    ///
+    /// **A question card put away with Esc is said first** (see [`App::put_question_away`]) — the
+    /// model's question, which holds a running call and lapses at its deadline, so the line
+    /// counts that down and says what the lapse costs: *"sometimes i need time to think and just
+    /// let the card stay"*, and the time to think is not unlimited. A todo row's card put away
+    /// needs no line of its own: the row is still on the board, and the line below names it.
     pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
         let asks = self.operator_asks();
-        let said = match (asks.first(), &self.asks_setting) {
+        if let Some(a) = self
+            .away
+            .iter()
+            .find(|a| !a.is_todo() && a.session_id == self.session_id)
+        {
+            use letibot_sessionlog::event::OnTimeout;
+            let d = &a.decision;
+            let clock = match d.deadline {
+                Some(at) => format!(
+                    " — {} left, then {}",
+                    time_left(at.saturating_sub(self.now_ms)),
+                    match d.on_timeout {
+                        OnTimeout::Deny => "the model goes on without your answer",
+                        OnTimeout::Allow => "it runs anyway",
+                        OnTimeout::Ask => "the guard model decides",
+                    }
+                ),
+                None => String::new(),
+            };
+            let more = match asks.len() {
+                0 => String::new(),
+                1 => " (+1 todo question)".to_string(),
+                n => format!(" (+{n} todo questions)"),
+            };
+            let said = format!(
+                "QUESTION PUT AWAY: \"{}\"{clock}{more} — alt-a brings it back",
+                d.summary.trim()
+            );
+            return row_strings(&facts::warning(&said, w), self.cfg.palette());
+        }
+        // A board read and answered from here is the truth over the `asks` settings row, which
+        // was written before the answer.
+        let setting = if self.todo_answered.is_empty() {
+            self.asks_setting.as_ref()
+        } else {
+            None
+        };
+        let said = match (asks.first(), setting) {
             (Some(first), _) => {
                 let more = match asks.len() {
                     1 => String::new(),
@@ -554,5 +597,17 @@ impl App {
             footer: "/status or esc closes this".into(),
         };
         row_strings(&pane.lines(w), self.cfg.palette())
+    }
+}
+
+/// **Time left on a question's clock, in whole seconds** — `45s`, `4m12s`, `1h05m`. Whole seconds
+/// rather than [`dur_human`]'s tenths, because this is a countdown a person reads at a glance and
+/// a figure that changes ten times a second is one nobody can read.
+pub(crate) fn time_left(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
     }
 }

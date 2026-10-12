@@ -11,6 +11,10 @@ use letibot_sessionlog::view::OpenDecision;
 use letibot_sessionlog::view::SettledDecision;
 use rano::agent::decision as card;
 
+/// **How a question card says Esc and alt-a** — on the card's last row and on the hint bar under
+/// it, one spelling for both. Esc puts the card away and answers nothing; alt-a brings it back.
+pub(crate) const PUT_AWAY_HINT: &str = "esc puts it away — alt-a brings it back";
+
 impl App {
     /// **The card, split where R20 says the split is.**
     ///
@@ -50,6 +54,13 @@ impl App {
                 &format!(
                     "  type `{ABSTAIN}` to answer nothing · `<choice> {NOTE_SEP} <note>` puts your note on that choice"
                 ),
+                w,
+            )));
+            // **And the way to step away from it without answering** — the operator: *"i want
+            // to be able to escape the selection card. sometimes i need time to think and just
+            // let the card stay"*. Its own row so a narrow card trims the line above, not this.
+            choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
+                &format!("  {PUT_AWAY_HINT}"),
                 w,
             )));
         }

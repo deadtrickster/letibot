@@ -2720,6 +2720,9 @@ fn the_pane_marks_the_row_and_enter_opens_its_question_card() {
         ),
         ("abstain", QuestionAnswer::abstaining()),
     ] {
+        // The board says the row still waits (as it would after a refused answer): an answer
+        // from this head leaves its row out until the board comes back.
+        waiting_board(&mut a);
         a.key(Key::AltA);
         assert!(!a.open.is_empty(), "alt-a opens the card");
         typed(&mut a, typed_line);
