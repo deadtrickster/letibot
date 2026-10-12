@@ -1413,3 +1413,49 @@ fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
     assert!(n > 9000, "{next} was minted over a store that holds j9000");
     d.stop(None);
 }
+
+/// **A job still running when a VM child's backend is closed is named, and its row settled**
+/// (TODO.md R92.1, second half). A VM child's backend is closed after its first turn and its
+/// background jobs die with the guest; the watcher is stopped first, so nothing ever said so and
+/// the row read `running` for ever. Driven on a host backend, which is the same `processes()` read.
+#[test]
+fn the_jobs_a_closing_backend_takes_with_it_are_named_and_their_rows_settled() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("vm-lost-jobs");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    let d = a_daemon(&parts, &cfg);
+    let r = d.call(
+        "bash",
+        serde_json::json!({"command": "sleep 60", "background": true, "slug": "long-sleep"}),
+    );
+    assert!(
+        r.payload.contains("long-sleep"),
+        "the job did not start: {}",
+        r.payload
+    );
+    let lost = d.parent.jobs_lost_with_the_vm();
+    assert_eq!(lost.len(), 1, "{lost:?}");
+    let handle = lost[0].id.0.clone();
+    let _ = d.parent.close_backend();
+    let store = Store::open(&dir.store()).unwrap();
+    let row = store
+        .jobs(PARENT)
+        .unwrap()
+        .into_iter()
+        .find(|j| j.handle == handle)
+        .expect("the job's row");
+    assert_eq!(row.state, "lost with its VM");
+    assert!(
+        store.undelivered_jobs(PARENT).unwrap().is_empty(),
+        "the loss is said in the answer, not again at a restart"
+    );
+    d.stop(None);
+}

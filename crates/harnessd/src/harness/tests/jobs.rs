@@ -1195,3 +1195,43 @@ fn a_fleet_url_is_read_the_way_the_operator_writes_it() {
         "box.lan:443"
     );
 }
+
+/// **The parent is told which jobs died with a VM child** (TODO.md R92.1, second half) — by
+/// label and command — and nothing is said when none did.
+#[test]
+fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
+    use letibot_tools::exec::{JobId, JobState, JobView, ScopeId, ScopeKind};
+    let scope = || ScopeId {
+        kind: ScopeKind::Session,
+        name: "s".into(),
+        path: std::path::PathBuf::from("/sys/fs/cgroup/x"),
+    };
+    let job = JobView {
+        id: JobId("j41".into()),
+        command: "cargo test --release\necho done".into(),
+        slug: Some("tests".into()),
+        scope: scope(),
+        owner: scope(),
+        cwd: "/".into(),
+        pid: 1,
+        background: Some(letibot_transcript::Backgrounding::Asked),
+        state: JobState::Running,
+        elapsed: std::time::Duration::from_secs(5),
+        ran_for: None,
+        produced: 0,
+        since_last_output: None,
+        memory_cap: letibot_tools::exec::MemoryCap::NotAsked,
+        memory: None,
+    };
+    assert_eq!(vm_jobs_lost_line(&[]), None);
+    let said = vm_jobs_lost_line(&[job]).expect("a line");
+    assert!(
+        said.starts_with("[subagent jobs] 1 background job(s)"),
+        "{said}"
+    );
+    assert!(
+        said.contains("`tests · j41` (`cargo test --release`)"),
+        "{said}"
+    );
+    assert!(said.contains("died with it"), "{said}");
+}

@@ -7715,6 +7715,45 @@ impl Harness {
         self.runtime.backend.close()
     }
 
+    /// **The jobs still running in this session's VM as it is closed** — which die with it,
+    /// unannounced until this (TODO.md R92.1, second half). A VM child's backend is closed right
+    /// after its first turn (`HarnessTaskRunner::run`); a job it backgrounded and did not wait on
+    /// was killed with the guest, its watcher stopped first, so no settlement ever came and its
+    /// row read `running` for ever.
+    ///
+    /// Called just before [`Harness::close_backend`]: returns the jobs, and writes each one's row
+    /// as `lost with its VM` (and delivered — the parent is told, in the answer) so the store does
+    /// not remind anyone of it after a restart. Empty when the backend runs no processes.
+    pub fn jobs_lost_with_the_vm(&self) -> Vec<letibot_tools::exec::JobView> {
+        let Some(host) = self.runtime.backend.processes() else {
+            return Vec::new();
+        };
+        let lost: Vec<_> = host
+            .jobs()
+            .into_iter()
+            .filter(|j| j.state.is_running())
+            .collect();
+        if lost.is_empty() {
+            return lost;
+        }
+        if let Some(store) = self.cfg.store.as_ref().and_then(|p| Store::open(p).ok()) {
+            for j in &lost {
+                let row = JobRecord {
+                    handle: j.id.0.clone(),
+                    command: j.command.clone(),
+                    how: String::new(),
+                    state: VM_LOST.to_string(),
+                    produced: j.produced,
+                    elapsed_ms: j.elapsed.as_millis() as u64,
+                    redirect: None,
+                };
+                let _ = store.put_job(&self.cfg.session_id, &row);
+                let _ = store.deliver_job(&self.cfg.session_id, &row.handle);
+            }
+        }
+        lost
+    }
+
     /// The session's own scope, for a monitor the daemon declares on the session's
     /// behalf — the flowy listener. `None` when the backend cannot start processes,
     /// which is also when there are no monitors to declare it in.
@@ -18284,11 +18323,17 @@ impl HarnessTaskRunner {
         // task and no more: its substrate cannot be held open for a later question, and that is
         // stated here rather than discovered as silence.
         if placement != letibot_tools::builtins::task::Placement::Host {
+            // Read before the close: the close is what kills them (R92.1).
+            let lost = sub.jobs_lost_with_the_vm();
             let landed = sub.close_backend();
-            let said = match landed {
+            let mut said = match landed {
                 Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
                 None => reply.text,
             };
+            if let Some(line) = vm_jobs_lost_line(&lost) {
+                said.push_str("\n\n");
+                said.push_str(&line);
+            }
             answer.say(letibot_tools::builtins::task::TaskStatus::Done {
                 answer: said.clone(),
                 // **No reading for a VM child**: its substrate is closed with its turn, so the
@@ -18334,6 +18379,38 @@ impl HarnessTaskRunner {
             None => reply.text,
         })
     }
+}
+
+/// What a job killed with its subagent's VM reads as, on its row.
+const VM_LOST: &str = "lost with its VM";
+
+/// **The background jobs a VM child left running, as its parent is told they died** (TODO.md
+/// R92.1) — `None` when there were none. Pure, so the wording is asserted without a VM.
+pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option<String> {
+    if lost.is_empty() {
+        return None;
+    }
+    let jobs = lost
+        .iter()
+        .map(|j| {
+            let cmd: String = j
+                .command
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect();
+            format!("`{}` (`{cmd}`)", j.label())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "[subagent jobs] {} background job(s) were still running in the subagent's VM when it \
+         was closed after its turn, and died with it: {jobs}. Nothing reported their ending and \
+         their output is gone — if the work matters, run it again yourself.",
+        lost.len()
+    ))
 }
 
 /// **The intent diff at a turn boundary**, or `None` when there is nothing to say
