@@ -1207,6 +1207,15 @@ mod tests {
     /// whatever the box had: one job under a 64 MiB cap, the cores under a cap no box has, and
     /// under `uncapped` nothing at all (so a cargo step falls back to its own default; this very
     /// test, run inside the gate's own step, inherits the gate's value there).
+    ///
+    /// **The step wraps its answer in `jobs=<…>`, and that is not decoration.** A row's output is
+    /// the step's own output and THEN the memory evidence line, so a step that prints nothing
+    /// leaves the evidence line as the row's FIRST line — and [`step_said`], which reads the first
+    /// line, answers with the evidence instead of with the step. MEASURED 2026-10-12, run by hand
+    /// (no `CARGO_BUILD_JOBS` in the environment, so the step's own answer is the empty string):
+    /// the `uncapped` case below compared the evidence line against `""` and failed, while the
+    /// same test inside the gate's own step passed — there the variable is set, so the answer is
+    /// not empty and the row's first line is the step's after all.
     #[test]
     fn a_step_is_told_how_many_jobs_its_cap_pays_for() {
         let wt = std::env::temp_dir().join(format!("letibot-gate-jobs-{}", std::process::id()));
@@ -1221,22 +1230,29 @@ mod tests {
         let said = |ask: Ask| {
             let run = run_with_memory(
                 &wt,
-                &["printf '%s' \"$CARGO_BUILD_JOBS\"".to_string()],
+                &["printf 'jobs=<%s>' \"$CARGO_BUILD_JOBS\"".to_string()],
                 &ctl,
                 ask,
             );
             assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
             step_said(&run)
         };
-        assert_eq!(said(Ask::Amount(Amount::Bytes(64 << 20))), "1");
+        assert_eq!(said(Ask::Amount(Amount::Bytes(64 << 20))), "jobs=<1>");
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        assert_eq!(said(Ask::Amount(Amount::Bytes(1 << 40))), cores.to_string());
+        assert_eq!(
+            said(Ask::Amount(Amount::Bytes(1 << 40))),
+            format!("jobs=<{cores}>")
+        );
         assert_eq!(
             said(Ask::Uncapped),
-            std::env::var(GATE_BUILD_JOBS).unwrap_or_default(),
-            "uncapped is no number: the gate does not set the variable at all"
+            format!(
+                "jobs=<{}>",
+                std::env::var(GATE_BUILD_JOBS).unwrap_or_default()
+            ),
+            "uncapped is no number: the gate sets nothing, so the step sees whatever its caller \
+             had — an empty answer when the box had nothing"
         );
         let _ = std::fs::remove_dir_all(&wt);
     }
