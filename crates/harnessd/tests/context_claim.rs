@@ -285,7 +285,8 @@ fn no_check_when_auto_compaction_is_off() {
         .expect("the turn runs");
     assert_eq!(reply.rounds, 1, "nothing continued the turn: {reply:?}");
     assert!(context_checks(&h).is_empty(), "no line to the model");
-    let log = std::fs::read_to_string(dir.path.join(LOG)).expect("the claim is logged");
+    let log =
+        std::fs::read_to_string(dir.path.join(".letibot").join(LOG)).expect("the claim is logged");
     let row: serde_json::Value =
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["slapped"], false, "{row}");
