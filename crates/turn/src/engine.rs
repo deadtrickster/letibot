@@ -1244,6 +1244,13 @@ impl TurnEngine {
                 return Err(e.into());
             }
         }
+        // **And on success too (R91.14).** The `absorb` above may have taken an urgent
+        // and held it; `pending` is this round's and does not outlive the return, so an
+        // interrupt pressed between the last streamed piece and here was DROPPED — its
+        // children already stopped (the hub runs `stop_children_first` when it hands the
+        // interrupt over) while the parent carried on. Back to the source it goes, where
+        // the next round's greedy poll finds it and the stream stops at its first piece.
+        pending.give_back(steering);
 
         Ok(TurnOk::new(
             turn_id,
@@ -1629,6 +1636,13 @@ impl TurnEngine {
                 return Err(e.into());
             }
         }
+        // **And on success too (R91.14).** The `absorb` above may have taken an urgent
+        // and held it; `pending` is this round's and does not outlive the return, so an
+        // interrupt pressed between the last streamed piece and here was DROPPED — its
+        // children already stopped (the hub runs `stop_children_first` when it hands the
+        // interrupt over) while the parent carried on. Back to the source it goes, where
+        // the next round's greedy poll finds it and the stream stops at its first piece.
+        pending.give_back(steering);
         Ok(TurnOk::new(
             turn_id,
             produced,

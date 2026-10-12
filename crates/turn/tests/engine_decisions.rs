@@ -1814,3 +1814,95 @@ fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
         other => panic!("a provider failure must arrive as TurnFailure::Http, got {other:?}"),
     }
 }
+
+// --------------------------------------------------------------------------
+// R91.14 — an interrupt taken at the end of a successful round
+// --------------------------------------------------------------------------
+
+/// A provider that speaks one line and finishes cleanly.
+struct SaysOneThing;
+
+impl letibot_backend::MessagesBackend for SaysOneThing {
+    fn caps(&self) -> BackendCaps {
+        BackendCaps::METERED_API
+    }
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+    fn model(&self) -> &str {
+        "deepseek-flash"
+    }
+    fn authority(&self) -> String {
+        "api.deepseek.com".into()
+    }
+    fn complete(
+        &self,
+        _req: &letibot_backend::TurnRequest<'_>,
+        on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
+    ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
+        let _ = on_delta(&letibot_backend::Delta::Text("done.".into()));
+        Ok(letibot_backend::Completion {
+            text: "done.".into(),
+            reasoning: String::new(),
+            tool_calls: Vec::new(),
+            finish: letibot_backend::Finish::Stop,
+            cost: letibot_backend::TurnCost {
+                meter: letibot_backend::Meter::Metered,
+                prompt_tokens: 10,
+                cached_tokens: 0,
+                generated_tokens: 1,
+                wall_ms: 1,
+                micros_usd: None,
+            },
+            raw_usage: None,
+        })
+    }
+}
+
+/// **An interrupt that arrives between the last streamed piece and the end of a round that
+/// SUCCEEDED is handed back to the source, not dropped with the round's `Pending`** (R91.14).
+///
+/// The end-of-round `absorb` takes the urgent out of the source and holds it; before the fix
+/// the `Ok` return dropped the `Pending` it was held in, so the stop reached the children
+/// (`stop_children_first` runs when the hub hands the interrupt over) and the parent carried
+/// on into its next round as if nothing had been pressed.
+#[test]
+fn an_interrupt_taken_at_the_end_of_a_successful_round_goes_back_to_the_source() {
+    let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let idle = Canned::serve(Vec::new(), 0);
+    let mut engine = engine(idle.endpoint.clone());
+    let mut session = session(&engine, "urgent-at-the-end");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("hello")], &mut sink)
+        .unwrap();
+
+    // Silent for the greedy pre-poll and the one delta's poll; the end-of-round poll takes
+    // the interrupt.
+    let mut steering = After {
+        left: 2,
+        msgs: vec![SteeringMessage::urgent("ABORT")],
+    };
+    let ok = engine
+        .run_turn_messages(
+            &mut session,
+            &mut sink,
+            &mut steering,
+            &SaysOneThing,
+            "be terse",
+            &[],
+            None,
+        )
+        .expect("the round itself succeeded");
+    assert!(ok.steering_applied.is_empty(), "{:?}", ok.steering_applied);
+
+    let back = steering
+        .try_next()
+        .expect("the interrupt taken at the end of the round is back in the source");
+    assert!(back.urgent, "it came back as something else: {back:?}");
+    assert_eq!(back.text, "ABORT");
+}
