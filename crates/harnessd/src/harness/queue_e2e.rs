@@ -327,7 +327,7 @@ fn accept(fx: &Fixture, id: &str) -> String {
 fn passes(q: &RepoQueue, n: usize) {
     let stop = std::sync::atomic::AtomicBool::new(false);
     for _ in 0..n {
-        assert_ne!(q.pass(&stop).expect("a pass"), Pass::LostLease);
+        assert_ne!(q.settle(&stop).expect("a pass"), Pass::LostLease);
     }
 }
 

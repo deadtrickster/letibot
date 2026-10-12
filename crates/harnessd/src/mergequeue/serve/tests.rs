@@ -298,7 +298,7 @@ impl World {
 fn run(q: &RepoQueue, passes: usize) {
     let stop = AtomicBool::new(false);
     for _ in 0..passes {
-        assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+        assert_ne!(q.settle(&stop).unwrap(), Pass::LostLease);
     }
 }
 
@@ -423,17 +423,25 @@ fn a_target_that_moves_during_the_gate_is_rebased_onto_and_gated_again() {
     run(&q, 1);
     let m = w.accept("x", "test/a");
     run(&q, 1);
-    let row = w.store().merge_row(&m).unwrap().unwrap();
+    // The gates run on their own thread, so the pass that applies the moved target's verdict
+    // goes straight on to gate the new tip and land again: the move back in line is read off
+    // the history.
+    let back: Vec<_> = w
+        .store()
+        .transitions("merge", &m)
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.from_state.as_deref() == Some("gating") && t.to_state != "gating")
+        .collect();
     assert_eq!(
-        row.state,
-        MergeState::Queued,
-        "back in line, not failed: {}",
-        row.evidence
+        back.first().map(|t| t.to_state.as_str()),
+        Some("queued"),
+        "back in line, not failed: {back:?}"
     );
     assert!(
-        row.evidence.contains("moved during the gate"),
+        back[0].why.contains("moved during the gate"),
         "{}",
-        row.evidence
+        back[0].why
     );
     run(&q, 3);
     let row = w.store().merge_row(&m).unwrap().unwrap();
@@ -565,7 +573,7 @@ fn a_stopping_daemon_kills_the_gate_and_the_row_goes_back_in_line() {
         s2.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     let started = std::time::Instant::now();
-    q.pass(&stop).unwrap();
+    q.settle(&stop).unwrap();
     assert!(started.elapsed() < Duration::from_secs(20));
     let row = w.store().merge_row(&m).unwrap().unwrap();
     assert_eq!(row.state, MergeState::Queued, "{row:?}");
@@ -1582,4 +1590,277 @@ fn a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_sessi
         "the home session hears nothing of letibot's main"
     );
     assert!(heard(1) && heard(2) && heard(3));
+}
+
+// ===== A gate does not stop the review queue (R92 item 8) =====
+
+/// **A gate held shut until the test opens it** — a thirty-minute gate in miniature. It counts
+/// its runs and, like every real runner, ends `stopped` when the daemon stops.
+#[derive(Default)]
+struct Held {
+    open: AtomicBool,
+    runs: Mutex<usize>,
+}
+
+impl Held {
+    fn open(&self) {
+        self.open.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn runs(&self) -> usize {
+        *self.runs.lock().unwrap()
+    }
+}
+
+impl GateRunner for Held {
+    fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        *self.runs.lock().unwrap() += 1;
+        while !self.open.load(std::sync::atomic::Ordering::Relaxed) {
+            if ctl.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return GateRun {
+                    steps: vec![],
+                    verdict: gate::GateVerdict::Stopped("the daemon is stopping".into()),
+                };
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        GreenGate.run(wt, steps, ctl)
+    }
+}
+
+/// Run passes until `done` holds (or fail after ten seconds).
+fn pass_until(q: &RepoQueue, done: impl Fn() -> bool) {
+    let stop = AtomicBool::new(false);
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < until, "never happened");
+        assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// **The R92 freeze**: while the target's gate runs — here, for as long as the test keeps it
+/// shut — a pass still returns at once, claims a review, and enforces a reviewer's deadline; and
+/// what the landings wait for is said: `gate running on <sha> for Nm`.
+#[test]
+fn a_running_gate_does_not_stop_claims_or_deadlines() {
+    let w = World::new("gate-freeze");
+    let held = Arc::new(Held::default());
+    let q = w.worker(held.clone(), "a");
+    let stop = AtomicBool::new(false);
+
+    let started = std::time::Instant::now();
+    q.pass(&stop).unwrap();
+    assert!(q.gate_in_flight(), "the target's tip is being gated");
+    let tip = w.tip();
+    let said = q.gate_running().expect("the reason the landings wait");
+    assert!(
+        said.starts_with(&format!("gate running on {}", &tip[..10])) && said.ends_with("for 0m"),
+        "{said}"
+    );
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Gating);
+
+    // A review enqueued mid-gate is claimed mid-gate.
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    q.pass(&stop).unwrap();
+    let r = w.store().review_row("one").unwrap().unwrap();
+    assert_eq!(
+        r.state,
+        ReviewState::Reviewing,
+        "claimed while the gate runs: {r:?}"
+    );
+    assert!(*w.door.rung.lock().unwrap() >= 1, "and the reviewers rung");
+
+    // Its reviewer started and ran past its deadline: enforced mid-gate.
+    assert!(
+        w.store()
+            .move_review(
+                "one",
+                ReviewState::Reviewing,
+                ReviewState::Reviewing,
+                &Move::new("test", "the reviewer started")
+                    .set("reviewer", "sub-1")
+                    .set("deadline_ms", 1u64),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+    q.pass(&stop).unwrap();
+    let late: Vec<_> = w
+        .store()
+        .transitions("review", "one")
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.to_state == "waiting" && t.why.contains("deadline"))
+        .collect();
+    assert_eq!(late.len(), 1, "the late reviewer was stopped mid-gate");
+    assert_eq!(w.store().review_row("one").unwrap().unwrap().attempts, 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "no pass waited for the gate"
+    );
+    assert!(q.gate_in_flight(), "and the gate is still running");
+    assert_eq!(
+        w.store()
+            .target_health(&w.key(), "main")
+            .unwrap()
+            .unwrap()
+            .state,
+        HealthState::Gating
+    );
+
+    held.open();
+    pass_until(&q, || !q.gate_in_flight());
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Green, "{h:?}");
+    assert_eq!(held.runs(), 1, "one gate of the tip, not one per pass");
+    assert!(q.gate_running().is_none());
+}
+
+/// **A gate's verdict is applied exactly once** — however many passes look at it while it runs
+/// and after it ended — and a landing's gate is never started twice.
+#[test]
+fn a_gate_verdict_is_applied_exactly_once() {
+    let w = World::new("gate-once");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    let q0 = w.worker(Arc::new(GreenGate), "a");
+    run(&q0, 1);
+    let m = w.accept("one", "test/a");
+    drop(q0);
+
+    let held = Arc::new(Held::default());
+    let q = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(held.clone(), w.door.clone(), "a"),
+    );
+    let stop = AtomicBool::new(false);
+    for _ in 0..5 {
+        q.pass(&stop).unwrap();
+    }
+    assert_eq!(held.runs(), 1, "one landing gate");
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Gating);
+    let said = q.gate_running().unwrap();
+    assert!(
+        said.starts_with(&format!(
+            "gate running on {}",
+            &row.rebased_sha.as_deref().unwrap()[..10]
+        )),
+        "{said}"
+    );
+
+    held.open();
+    pass_until(&q, || {
+        w.store().merge_row(&m).unwrap().unwrap().state == MergeState::Landed
+    });
+    for _ in 0..3 {
+        q.pass(&stop).unwrap();
+    }
+    let history: Vec<String> = w
+        .store()
+        .transitions("merge", &m)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.to_state)
+        .collect();
+    assert_eq!(history, vec!["queued", "gating", "gating", "landed"]);
+    assert_eq!(held.runs(), 1);
+    let greens = w
+        .store()
+        .transitions("target", "main")
+        .unwrap()
+        .into_iter()
+        .filter(|t| t.to_state == "green")
+        .count();
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.sha, w.tip(), "green at the landed tree: {h:?}");
+    assert!(greens >= 1);
+}
+
+/// **A worker that ends mid-gate leaves nothing `gating`**: the gate is killed, its row goes back
+/// in line, and the next worker gates it again and lands it once.
+#[test]
+fn a_worker_stopped_mid_gate_puts_the_row_back_and_the_next_one_lands_it() {
+    let w = World::new("gate-restart");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    let q0 = w.worker(Arc::new(GreenGate), "a");
+    run(&q0, 1);
+    let m = w.accept("one", "test/a");
+    drop(q0);
+
+    let held = Arc::new(Held::default());
+    let q1 = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(held.clone(), w.door.clone(), "a"),
+    );
+    q1.pass(&AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Gating
+    );
+    let started = std::time::Instant::now();
+    drop(q1);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Queued, "{row:?}");
+    assert_eq!(row.owner, "");
+    assert_eq!(w.tip(), base, "nothing landed");
+
+    held.open();
+    let q2 = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(held.clone(), w.door.clone(), "a"),
+    );
+    run(&q2, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert_eq!(held.runs(), 2, "gated again, once");
+}
+
+/// **A worker that died mid-gate without winding down** (a panic, an abort) leaves a `gating`
+/// row and a `gating` tip under its own name. The next worker adopts neither as running: the row
+/// goes back in line and the tip is gated again.
+#[test]
+fn a_gate_nobody_runs_any_more_is_run_again() {
+    let w = World::new("gate-orphan");
+    let (wt, base, head) = branch(&w.repo, "one", "one.txt");
+    w.enqueue("one", &wt, &base, &head);
+    let q0 = w.worker(Arc::new(GreenGate), "a");
+    run(&q0, 1);
+    let m = w.accept("one", "test/a");
+    drop(q0);
+
+    let held = Arc::new(Held::default());
+    let q1 = RepoQueue::new(
+        w.store(),
+        w.repo.clone(),
+        env(held.clone(), w.door.clone(), "a"),
+    );
+    q1.pass(&AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Gating
+    );
+    // Gone without a word: its gate thread ends, and nobody applies the verdict.
+    std::mem::forget(q1);
+    held.open();
+
+    let q2 = w.worker(Arc::new(GreenGate), "a");
+    run(&q2, 2);
+    let history = w.store().transitions("merge", &m).unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|t| t.to_state == "queued" && t.why.contains("restarted mid-gate")),
+        "{history:?}"
+    );
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert_eq!(history.iter().filter(|t| t.to_state == "landed").count(), 1);
 }

@@ -1429,14 +1429,37 @@ fn a_two_line_entry_is_one_block_under_the_pointer_and_the_click() {
         .position(|l| l.contains("second task"))
         .expect("the second entry");
     let facts = task + 1;
-    assert!(!screen[facts].trim().is_empty(), "the premise: a facts line under it");
-    a.key(Key::Hover { x: 8, y: facts as u16 });
+    assert!(
+        !screen[facts].trim().is_empty(),
+        "the premise: a facts line under it"
+    );
+    a.key(Key::Hover {
+        x: 8,
+        y: facts as u16,
+    });
     let lit = a.screen(120, 30);
-    assert!(lit[task].contains("\x1b[22;1m"), "the task line is not lit: {:?}", lit[task]);
-    assert!(lit[facts].contains("\x1b[22;1m"), "the facts line is not lit");
+    assert!(
+        lit[task].contains("\x1b[22;1m"),
+        "the task line is not lit: {:?}",
+        lit[task]
+    );
+    assert!(
+        lit[facts].contains("\x1b[22;1m"),
+        "the facts line is not lit"
+    );
     let before = a.subagents_sel;
-    a.key(Key::Click { x: 8, y: facts as u16 });
-    assert_ne!(a.subagents_sel, before, "a click on the facts line selected nothing");
+    a.key(Key::Click {
+        x: 8,
+        y: facts as u16,
+    });
+    assert_ne!(
+        a.subagents_sel, before,
+        "a click on the facts line selected nothing"
+    );
     let picked = a.screen(120, 30);
-    assert!(picked[task].contains('▸'), "the second entry is not the selected one: {:?}", picked[task]);
+    assert!(
+        picked[task].contains('▸'),
+        "the second entry is not the selected one: {:?}",
+        picked[task]
+    );
 }

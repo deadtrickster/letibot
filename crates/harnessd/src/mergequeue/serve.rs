@@ -29,7 +29,7 @@ use letibot_tokencore::store::{
 };
 
 use super::carry;
-use super::gate::{self, GateControl, GateRunner, GateVerdict};
+use super::gate::{self, GateControl, GateRun, GateRunner, GateVerdict};
 use super::git;
 use super::lease::{HEARTBEAT_EVERY, LEASE_TTL_MS};
 use super::settings::{self, QueueSettings};
@@ -143,6 +143,91 @@ pub struct RepoQueue {
     /// that could not judge, a row parked for a person — so each is rung once per worker, not
     /// every two seconds.
     rung: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// **The one gate this repository is running, if any** (R92 item 8). A gate runs on a thread
+    /// of its own and the pass only looks at it — so a thirty-minute gate does not stop the review
+    /// queue: claims, reviewer deadlines and capacity holds go on while it runs. One at a time,
+    /// so landings stay serialized; taken out of the slot exactly once, so a verdict is applied
+    /// exactly once. What a restart needs is in the store already (the `gating` health row and
+    /// merge row): a worker that holds no gate for such a row runs it again.
+    gate: std::sync::Mutex<Option<InFlight>>,
+    /// **Whether the last heartbeat found the lease still this daemon's** — what a running gate's
+    /// `alive` reads, since the gate's thread has no store of its own. The pass beats; a lost
+    /// lease kills the gate within its next poll, as when the gate beat for itself.
+    lease_ok: Arc<AtomicBool>,
+}
+
+/// **A gate in flight** — what it is for, so its verdict can be applied when it ends, and the
+/// thread running it.
+struct InFlight {
+    what: GateFor,
+    /// The commit under the gate: the target's tip, or the rebased branch.
+    sha: String,
+    started: Instant,
+    /// Set to kill the gate — the daemon is stopping.
+    cancel: Arc<AtomicBool>,
+    run: Running,
+}
+
+enum Running {
+    Thread(JoinHandle<GateRun>),
+    /// The thread could not be started: its verdict, at once.
+    Done(GateRun),
+}
+
+impl Running {
+    fn finished(&self) -> bool {
+        match self {
+            Running::Thread(h) => h.is_finished(),
+            Running::Done(_) => true,
+        }
+    }
+
+    fn wait(self) -> GateRun {
+        match self {
+            Running::Thread(h) => h.join().unwrap_or_else(|_| GateRun {
+                steps: vec![],
+                verdict: GateVerdict::Infra("the gate's thread panicked".into()),
+            }),
+            Running::Done(run) => run,
+        }
+    }
+}
+
+/// What a running gate judges — and so how its verdict is applied.
+enum GateFor {
+    /// The target's tip (decision 10): its health.
+    Target {
+        health: TargetHealth,
+        wt: PathBuf,
+        carried: Vec<String>,
+    },
+    /// A branch rebased onto the target, before the compare-and-swap.
+    Land(Box<Landing>),
+    /// The install steps, after the landing was pushed (decision 7).
+    Install {
+        landing: Box<Landing>,
+        gate: GateRun,
+        pushed: String,
+    },
+}
+
+/// **One landing between its rebase and its end** — what `land` knew when it started the gate.
+struct Landing {
+    row: MergeRow,
+    tip: String,
+    head: String,
+    rebased: String,
+    wt: PathBuf,
+    carried: Vec<String>,
+    install: Vec<String>,
+}
+
+/// What [`RepoQueue::health`] found.
+enum Health {
+    /// The target's health now, and whether it was written in this pass.
+    Known(TargetHealth, bool),
+    /// A gate of the tip was started; its verdict is applied by a later pass.
+    Started,
 }
 
 impl RepoQueue {
@@ -154,7 +239,44 @@ impl RepoQueue {
             key,
             env,
             rung: Default::default(),
+            gate: Default::default(),
+            lease_ok: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<InFlight>> {
+        self.gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether a gate of this repository is running (or ended and not yet applied).
+    pub fn gate_in_flight(&self) -> bool {
+        self.slot().is_some()
+    }
+
+    /// Whether the running gate has ended, so the next pass has a verdict to apply.
+    pub fn gate_finished(&self) -> bool {
+        self.slot().as_ref().is_some_and(|g| g.run.finished())
+    }
+
+    /// **A pass, and the passes that apply every gate it started** — what one pass was before
+    /// gates ran on their own thread. For the tests that are about what a gate's verdict does,
+    /// not about the pass going on meanwhile.
+    #[cfg(test)]
+    pub(crate) fn settle(&self, stop: &AtomicBool) -> Result<Pass, StoreError> {
+        loop {
+            let p = self.pass(stop)?;
+            if p == Pass::LostLease || !self.gate_in_flight() {
+                return Ok(p);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// **Why the landings wait** — `gate running on <sha> for Nm`, while a gate runs.
+    pub fn gate_running(&self) -> Option<String> {
+        self.slot()
+            .as_ref()
+            .map(|g| gate_running_words(&g.sha, g.started.elapsed().as_millis() as u64))
     }
 
     pub fn repository(&self) -> &str {
@@ -219,12 +341,21 @@ impl RepoQueue {
     /// **Am I still the owner?** `false` ends the worker. A store error is not an answer either
     /// way: the caller retries the pass.
     pub fn beat(&self) -> Result<bool, StoreError> {
-        self.store
-            .heartbeat_queue_lease(&self.key, self.me(), gate::now_ms())
+        let ours = self
+            .store
+            .heartbeat_queue_lease(&self.key, self.me(), gate::now_ms())?;
+        if !ours {
+            self.lease_ok.store(false, Ordering::Relaxed);
+        }
+        Ok(ours)
     }
 
-    /// **One pass.**
+    /// **One pass.** It never waits for a gate: it starts one, or applies the verdict of one that
+    /// ended, and goes on with the review queue either way.
     pub fn pass(&self, stop: &AtomicBool) -> Result<Pass, StoreError> {
+        if stop.load(Ordering::Relaxed) {
+            self.cancel_gate();
+        }
         if !self.beat()? {
             return Ok(Pass::LostLease);
         }
@@ -243,7 +374,18 @@ impl RepoQueue {
                 QueueSettings::default()
             }
         };
-        let mut worked = self.review_upkeep(&settings)?;
+        // The verdict of a gate that ended, applied once — before the upkeep, so the review of a
+        // tip that just went red is claimed in this pass (*"taken first, as soon as a reviewer is
+        // free"*).
+        let mut worked = self.reap_gate()?;
+        worked |= self.adopt_orphans()?;
+        worked |= self.review_upkeep(&settings)?;
+        if self.gate_in_flight() {
+            // One gate per repository: the health of every target and the next landing wait for
+            // it; the review queue above did not.
+            self.ring_the_projects()?;
+            return Ok(if worked { Pass::Worked } else { Pass::Idle });
+        }
         let mut targets: Vec<String> = self
             .store
             .merge_rows(Some(&self.key))?
@@ -260,18 +402,22 @@ impl RepoQueue {
             if stop.load(Ordering::Relaxed) {
                 return Ok(Pass::Worked);
             }
-            let (health, gated) = self.health(&target, stop)?;
-            worked |= gated;
+            let h = match self.health(&target)? {
+                Health::Started => {
+                    worked = true;
+                    break;
+                }
+                Health::Known(h, written) => {
+                    worked |= written;
+                    h
+                }
+            };
             if stop.load(Ordering::Relaxed) {
                 return Ok(Pass::Worked);
             }
-            if let Some(h) = health {
-                if gated && h.state == HealthState::Red {
-                    // The red tip was just put up for review: claim it in this pass, not the
-                    // next — *"taken first, as soon as a reviewer is free"*.
-                    self.review_upkeep(&settings)?;
-                }
-                worked |= self.land_next(&target, &h, stop)?;
+            worked |= self.land_next(&target, &h)?;
+            if self.gate_in_flight() {
+                break;
             }
         }
         self.ring_the_projects()?;
@@ -328,6 +474,149 @@ impl RepoQueue {
             }
         }
         Ok(())
+    }
+
+    // ===== The gate in flight =====
+
+    /// **Start a gate on its own thread** — under the same controls as ever: the deadline from
+    /// now, the daemon's stop (through `cancel`), and the lease (through [`Self::lease_ok`]).
+    fn start_gate(&self, what: GateFor, wt: PathBuf, steps: Vec<String>, sha: &str) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let lease = self.lease_ok.clone();
+        let runner = self.env.gate.clone();
+        let deadline = Instant::now() + self.env.gate_deadline;
+        let stop = cancel.clone();
+        let short: String = sha.chars().take(8).collect();
+        let run = std::thread::Builder::new()
+            .name(format!("gate-{short}"))
+            .spawn(move || {
+                let alive = move || lease.load(Ordering::Relaxed);
+                let ctl = GateControl {
+                    deadline,
+                    stop: &stop,
+                    alive: &alive,
+                };
+                runner.run(&wt, &steps, &ctl)
+            });
+        let run = match run {
+            Ok(h) => Running::Thread(h),
+            Err(e) => Running::Done(GateRun {
+                steps: vec![],
+                verdict: GateVerdict::Infra(format!("the gate's thread could not start: {e}")),
+            }),
+        };
+        let mut slot = self.slot();
+        if let Some(old) = slot.take() {
+            // Never two at once; a second start is a bug, and the first must not run unwatched.
+            old.cancel.store(true, Ordering::Relaxed);
+            eprintln!(
+                "  merge queue: {}: a gate was started while one ran on {}; that one was stopped",
+                self.key, old.sha
+            );
+        }
+        *slot = Some(InFlight {
+            what,
+            sha: sha.to_string(),
+            started: Instant::now(),
+            cancel,
+            run,
+        });
+    }
+
+    /// Kill the running gate (the daemon is stopping); its verdict, `stopped`, is still applied.
+    fn cancel_gate(&self) {
+        if let Some(g) = self.slot().as_ref() {
+            g.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// **Apply the verdict of a gate that ended** — taken out of the slot first, so it is applied
+    /// once whatever the application does (including start the install's gate). Returns whether
+    /// there was one.
+    fn reap_gate(&self) -> Result<bool, StoreError> {
+        let done = {
+            let mut slot = self.slot();
+            if slot.as_ref().is_some_and(|g| g.run.finished()) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        let Some(g) = done else {
+            return Ok(false);
+        };
+        let run = g.run.wait();
+        self.apply_gate(g.what, run)?;
+        Ok(true)
+    }
+
+    fn apply_gate(&self, what: GateFor, run: GateRun) -> Result<(), StoreError> {
+        match what {
+            GateFor::Target {
+                health,
+                wt,
+                carried,
+            } => self.finish_health(health, &wt, &carried, run),
+            GateFor::Land(landing) => self.finish_land(landing, run),
+            GateFor::Install {
+                landing,
+                gate,
+                pushed,
+            } => self.finish_install(landing, gate, pushed, run),
+        }
+    }
+
+    /// **A `gating` landing this worker runs no gate for** — its worker ended mid-gate (or a store
+    /// error cut the application short), so it goes back in line and is gated again, as
+    /// `recover_queue` does for another daemon's. Never while a gate is in flight: that row is
+    /// the gate's.
+    fn adopt_orphans(&self) -> Result<bool, StoreError> {
+        if self.gate_in_flight() {
+            return Ok(false);
+        }
+        let me = self.me().to_string();
+        let mut moved = false;
+        for m in self.store.merge_rows(Some(&self.key))? {
+            if m.state == MergeState::Gating && m.owner == me {
+                moved |= self.gating_to(
+                    &m,
+                    MergeState::Queued,
+                    Move::new(
+                        &me,
+                        "its gate is not running here any more (the queue's worker restarted \
+                         mid-gate), so it goes back in line and is rebased and gated again",
+                    ),
+                )?;
+            }
+        }
+        Ok(moved)
+    }
+
+    /// **The worker is ending** — the running gate is killed, waited for, and its verdict
+    /// applied (a stopped gate puts its row back in line), so nothing is left `gating` behind.
+    pub fn wind_down(&self) {
+        self.cancel_gate();
+        let g = self.slot().take();
+        if let Some(g) = g {
+            let run = g.run.wait();
+            if let Err(e) = self.apply_gate(g.what, run) {
+                eprintln!(
+                    "  merge queue: {}: the stopped gate's verdict was not written: {e}",
+                    self.key
+                );
+            }
+            // An install started by that verdict is stopped too.
+            if let Some(next) = self.slot().take() {
+                next.cancel.store(true, Ordering::Relaxed);
+                let run = next.run.wait();
+                if let Err(e) = self.apply_gate(next.what, run) {
+                    eprintln!(
+                        "  merge queue: {}: the stopped install's verdict was not written: {e}",
+                        self.key
+                    );
+                }
+            }
+        }
     }
 
     // ===== The review queue's upkeep =====
@@ -646,13 +935,9 @@ impl RepoQueue {
     // ===== The target's health =====
 
     /// **Gate the target's tip if it changed** (decision 10) — coalesced: whatever the tip is
-    /// NOW is what is gated, so a burst of commits is one run. Returns the health and whether a
-    /// gate ran.
-    fn health(
-        &self,
-        target: &str,
-        stop: &AtomicBool,
-    ) -> Result<(Option<TargetHealth>, bool), StoreError> {
+    /// NOW is what is gated, so a burst of commits is one run. Returns the health, or that a gate
+    /// of the tip was started (its verdict is [`Self::finish_health`]'s).
+    fn health(&self, target: &str) -> Result<Health, StoreError> {
         let me = self.me().to_string();
         let now = gate::now_ms();
         let Some(tip) = git::branch_head(&self.repo, target) else {
@@ -672,13 +957,13 @@ impl RepoQueue {
             if changed {
                 self.store.set_target_health(&h, &me)?;
             }
-            return Ok((Some(h), false));
+            return Ok(Health::Known(h, false));
         };
         if let Some(h) = self.store.target_health(&self.key, target)?
             && h.sha == tip
             && h.state != HealthState::Gating
         {
-            return Ok((Some(h), false));
+            return Ok(Health::Known(h, false));
         }
         let mut h = TargetHealth {
             repository: self.key.clone(),
@@ -715,72 +1000,100 @@ impl RepoQueue {
                     vec![],
                 ),
                 Ok((wt, carried)) => {
-                    let alive = || self.beat().unwrap_or(true);
-                    let ctl = GateControl {
-                        deadline: Instant::now() + self.env.gate_deadline,
-                        stop,
-                        alive: &alive,
-                    };
-                    let run = self.env.gate.run(&wt, &steps, &ctl);
-                    match run.verdict {
-                        GateVerdict::Passed => (
-                            HealthState::Green,
-                            format!(
-                                "`{target}` is green at {tip} ({} gate)",
-                                self.env.gate.name()
-                            ),
-                            run.steps,
-                        ),
-                        // **R76 item 5**: a gate that failed AFTER its build and tests passed
-                        // could not judge the code — its own setup failed. The tip stays
-                        // unjudged (`blocked`: nothing lands), and nobody is sent to find what
-                        // in the code broke it.
-                        GateVerdict::Failed(w) => {
-                            let w = self.with_carry_hint(w, &wt, &carried);
-                            match super::setup::setup_failure(&run.steps) {
-                                Some(setup) => {
-                                    (HealthState::Blocked, format!("{setup}\n\n{w}"), run.steps)
-                                }
-                                None => (HealthState::Red, w, run.steps),
-                            }
-                        }
-                        GateVerdict::TimedOut(w) => (HealthState::TimedOut, w, run.steps),
-                        GateVerdict::Infra(w) => (HealthState::Blocked, w, run.steps),
-                        GateVerdict::Stopped(_) => {
-                            // Judged nothing: the next pass (here or in the next lease holder)
-                            // gates it again.
-                            return Ok((None, true));
-                        }
-                    }
+                    self.start_gate(
+                        GateFor::Target {
+                            health: h,
+                            wt: wt.clone(),
+                            carried,
+                        },
+                        wt,
+                        steps,
+                        &tip,
+                    );
+                    return Ok(Health::Started);
                 }
             },
         };
+        self.judged(&mut h, state, evidence, steps)?;
+        Ok(Health::Known(h, true))
+    }
+
+    /// **The verdict of the target's gate.**
+    fn finish_health(
+        &self,
+        mut h: TargetHealth,
+        wt: &Path,
+        carried: &[String],
+        run: GateRun,
+    ) -> Result<(), StoreError> {
+        let target = h.target.clone();
+        let tip = h.sha.clone();
+        let (state, evidence, steps) = match run.verdict {
+            GateVerdict::Passed => (
+                HealthState::Green,
+                format!(
+                    "`{target}` is green at {tip} ({} gate)",
+                    self.env.gate.name()
+                ),
+                run.steps,
+            ),
+            // **R76 item 5**: a gate that failed AFTER its build and tests passed could not judge
+            // the code — its own setup failed. The tip stays unjudged (`blocked`: nothing lands),
+            // and nobody is sent to find what in the code broke it.
+            GateVerdict::Failed(w) => {
+                let w = self.with_carry_hint(w, wt, carried);
+                match super::setup::setup_failure(&run.steps) {
+                    Some(setup) => (HealthState::Blocked, format!("{setup}\n\n{w}"), run.steps),
+                    None => (HealthState::Red, w, run.steps),
+                }
+            }
+            GateVerdict::TimedOut(w) => (HealthState::TimedOut, w, run.steps),
+            GateVerdict::Infra(w) => (HealthState::Blocked, w, run.steps),
+            GateVerdict::Stopped(_) => {
+                // Judged nothing: the row stays `gating`, and the next pass (here or in the next
+                // lease holder) gates it again.
+                return Ok(());
+            }
+        };
+        self.judged(&mut h, state, evidence, steps)
+    }
+
+    /// **Write a target's verdict** and say what it means.
+    fn judged(
+        &self,
+        h: &mut TargetHealth,
+        state: HealthState,
+        evidence: String,
+        steps: Vec<letibot_tokencore::store::MergeGateStep>,
+    ) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        let target = h.target.clone();
         h.state = state;
         h.evidence = evidence;
         h.gate_steps = steps;
         h.checked_ms = gate::now_ms();
-        self.store.set_target_health(&h, &me)?;
-        self.announce_move("target", target, state.as_str(), &h.evidence);
+        self.store.set_target_health(h, &me)?;
+        self.announce_move("target", &target, state.as_str(), &h.evidence);
         match state {
-            HealthState::Red => self.target_went_red(&h)?,
-            HealthState::Green => self.target_is_green(&h)?,
+            HealthState::Red => self.target_went_red(h)?,
+            HealthState::Green => self.target_is_green(h)?,
             HealthState::Blocked if h.evidence.starts_with(super::setup::GATE_SETUP_FAILED) => {
                 // High, not emergency: the code was never judged red. Nothing lands until the
                 // gate can judge it, which is said in the same breath.
                 self.raise(
                     "gate_setup_failed",
-                    super::notices::gate_setup_failed(&h, &self.key),
+                    super::notices::gate_setup_failed(h, &self.key),
                 );
             }
             HealthState::Blocked if h.evidence.starts_with(gate::GATE_KILLED) => {
                 // High, not emergency, for the same reason: the step was killed before it
                 // judged the code — at the gate's memory cap, or by a signal — and the words
                 // say which and how to give it room.
-                self.raise("gate_killed", super::notices::gate_killed(&h, &self.key));
+                self.raise("gate_killed", super::notices::gate_killed(h, &self.key));
             }
             _ => {}
         }
-        Ok((Some(h), true))
+        Ok(())
     }
 
     /// **The landing worktree at `at`, with the project's `gate_carry` copied in** — the tree and
@@ -898,12 +1211,7 @@ impl RepoQueue {
 
     /// **Take the next approved branch for `target` and land it** — only while the target is
     /// green at its current tip, or, while it is red, only a branch opened to fix it.
-    fn land_next(
-        &self,
-        target: &str,
-        h: &TargetHealth,
-        stop: &AtomicBool,
-    ) -> Result<bool, StoreError> {
+    fn land_next(&self, target: &str, h: &TargetHealth) -> Result<bool, StoreError> {
         let mut queued: Vec<MergeRow> = self
             .store
             .merge_rows(Some(&self.key))?
@@ -942,7 +1250,7 @@ impl RepoQueue {
             return Ok(false);
         }
         let row = self.store.merge_row(&row.id)?.unwrap_or(row);
-        self.land(&row, stop)?;
+        self.land(&row)?;
         Ok(true)
     }
 
@@ -957,7 +1265,7 @@ impl RepoQueue {
     }
 
     /// **The landing, in the dedicated worktree, with a compare-and-swap on the target.**
-    fn land(&self, row: &MergeRow, stop: &AtomicBool) -> Result<(), StoreError> {
+    fn land(&self, row: &MergeRow) -> Result<(), StoreError> {
         let me = self.me().to_string();
         let repo = self.repo.clone();
         let target = row.target.clone();
@@ -1113,17 +1421,40 @@ impl RepoQueue {
             self.gating_to(row, MergeState::Blocked, Move::new(&me, e))?;
             return Ok(());
         }
-        let alive = || self.beat().unwrap_or(true);
-        let ctl = GateControl {
-            deadline: Instant::now() + self.env.gate_deadline,
-            stop,
-            alive: &alive,
-        };
-        let run = self.env.gate.run(&wt, &steps, &ctl);
+        self.start_gate(
+            GateFor::Land(Box::new(Landing {
+                row: row.clone(),
+                tip: tip.clone(),
+                head,
+                rebased: rebased.clone(),
+                wt: wt.clone(),
+                carried,
+                install,
+            })),
+            wt,
+            steps,
+            &rebased,
+        );
+        Ok(())
+    }
+
+    /// **The verdict of a landing's gate** — and, when it passed, the compare-and-swap, the push
+    /// and the install.
+    fn finish_land(&self, landing: Box<Landing>, run: GateRun) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        let repo = self.repo.clone();
+        let row = &landing.row;
+        let target = row.target.clone();
+        let (tip, rebased, wt, carried) = (
+            landing.tip.clone(),
+            landing.rebased.clone(),
+            landing.wt.clone(),
+            landing.carried.clone(),
+        );
         let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
             serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
         };
-        match run.verdict {
+        match run.verdict.clone() {
             GateVerdict::Passed => {}
             GateVerdict::Failed(w) if super::setup::setup_failure(&run.steps).is_some() => {
                 // The branch was never judged: its gate's own setup failed after the build and
@@ -1185,6 +1516,22 @@ impl RepoQueue {
                 return Ok(());
             }
         }
+        // The gate ran on its own thread while the pass went on: the lease is asked again
+        // before anything is written into the repository — a daemon that no longer holds it must
+        // not land into it.
+        if !self.beat().unwrap_or(true) {
+            self.gating_to(
+                row,
+                MergeState::Queued,
+                Move::new(
+                    &me,
+                    "this daemon lost the repository's lease, so it may not land; it goes back in \
+                     line and is gated again",
+                )
+                .set("gate_steps_json", rows_json(&run.steps)),
+            )?;
+            return Ok(());
+        }
         // **The compare-and-swap.** The target moved during the gate → rebase and gate again,
         // not fail (requirement 3).
         if let Err(e) = git::update_ref_cas(&repo, &target, &rebased, &tip) {
@@ -1230,29 +1577,21 @@ impl RepoQueue {
             git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
             git::Pushed::Failed(e) => (format!("the push FAILED: {e}"), false),
         };
-        let mut all_steps = run.steps.clone();
         let mut install_note = String::new();
-        if !install.is_empty() {
+        if !landing.install.is_empty() {
             if may_install {
-                let alive = || self.beat().unwrap_or(true);
-                let ctl = GateControl {
-                    deadline: Instant::now() + self.env.gate_deadline,
-                    stop,
-                    alive: &alive,
-                };
-                let inst = self.env.gate.run(&wt, &install, &ctl);
-                all_steps.extend(inst.steps);
-                install_note = match inst.verdict {
-                    GateVerdict::Passed => " Installed after the push.".into(),
-                    other => {
-                        let w = format!("{other:?}");
-                        self.raise(
-                            "queue_blocked",
-                            format!("`{}` landed but its install did not: {w}", row.branch),
-                        );
-                        format!(" The install did not complete: {w}")
-                    }
-                };
+                let install = landing.install.clone();
+                self.start_gate(
+                    GateFor::Install {
+                        landing,
+                        gate: run,
+                        pushed: pushed_text,
+                    },
+                    wt,
+                    install,
+                    &rebased,
+                );
+                return Ok(());
             } else {
                 install_note = " Not installed: the push failed, and nothing is installed that is \
                                 not where it was pushed (decision 7)."
@@ -1266,6 +1605,54 @@ impl RepoQueue {
                 );
             }
         }
+        let steps = run.steps.clone();
+        self.landed(&landing, run, steps, pushed_text, install_note)
+    }
+
+    /// **The verdict of the install** that followed a pushed landing (decision 7).
+    fn finish_install(
+        &self,
+        landing: Box<Landing>,
+        gate: GateRun,
+        pushed: String,
+        inst: GateRun,
+    ) -> Result<(), StoreError> {
+        let mut all_steps = gate.steps.clone();
+        all_steps.extend(inst.steps);
+        let install_note = match inst.verdict {
+            GateVerdict::Passed => " Installed after the push.".into(),
+            other => {
+                let w = format!("{other:?}");
+                self.raise(
+                    "queue_blocked",
+                    format!(
+                        "`{}` landed but its install did not: {w}",
+                        landing.row.branch
+                    ),
+                );
+                format!(" The install did not complete: {w}")
+            }
+        };
+        self.landed(&landing, gate, all_steps, pushed, install_note)
+    }
+
+    /// **Landed** — the row, the target's health at the landed tree, the branch retired.
+    fn landed(
+        &self,
+        landing: &Landing,
+        run: GateRun,
+        all_steps: Vec<letibot_tokencore::store::MergeGateStep>,
+        pushed_text: String,
+        install_note: String,
+    ) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        let repo = &self.repo;
+        let row = &landing.row;
+        let target = row.target.clone();
+        let (tip, head, rebased) = (&landing.tip, &landing.head, &landing.rebased);
+        let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
+            serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
+        };
         let why =
             format!("landed on `{target}` at {rebased} (onto {tip}); {pushed_text}.{install_note}");
         self.gating_to(
@@ -1299,6 +1686,19 @@ impl RepoQueue {
         }
         Ok(())
     }
+}
+
+impl Drop for RepoQueue {
+    /// A worker dropped mid-gate does not leave its gate running unwatched.
+    fn drop(&mut self) {
+        self.wind_down();
+    }
+}
+
+/// **Why a repository's landings wait while its gate runs** — `gate running on <sha> for Nm`.
+pub fn gate_running_words(sha: &str, for_ms: u64) -> String {
+    let short: String = sha.chars().take(10).collect();
+    format!("gate running on {short} for {}m", for_ms / 60_000)
 }
 
 /// **A target's health a project has to hear about** (R76 item 1): red, timed out, or unjudged
@@ -1568,6 +1968,10 @@ fn work(store_path: PathBuf, repo: PathBuf, env: Arc<QueueEnv>, stop: &AtomicBoo
                 let until = Instant::now() + env.idle;
                 while Instant::now() < until && !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(100));
+                    if q.gate_finished() {
+                        // A verdict to apply: the next pass, now.
+                        break;
+                    }
                     if last_beat.elapsed() >= HEARTBEAT_EVERY {
                         last_beat = Instant::now();
                         if let Ok(false) = q.beat() {
@@ -1582,6 +1986,8 @@ fn work(store_path: PathBuf, repo: PathBuf, env: Arc<QueueEnv>, stop: &AtomicBoo
             }
         }
     }
+    // The running gate is killed and its verdict applied while the lease is still held.
+    q.wind_down();
     let _ = q
         .store
         .release_queue_lease(&key, &env.me.owner, gate::now_ms());

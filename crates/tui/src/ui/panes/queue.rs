@@ -24,7 +24,7 @@
 use crate::app::*;
 use crate::ui::render::{dur_human, row_strings, trim_to, wrap};
 use letibot_sessionlog::event::{
-    MergeGateOutcome, MergeGateStep, QueueMerge, QueueMove, QueueReview,
+    MergeGateOutcome, MergeGateStep, QueueMerge, QueueMove, QueueReview, QueueSnapshot,
 };
 use rano::agent::pane::{self, PaneLines};
 use rano::agent::text::{clean_line, one};
@@ -201,7 +201,11 @@ impl App {
                 "gating" => out.push(note_line(
                     "…",
                     Role::Pending,
-                    &format!("`{}` in {repo} is being gated at {short}", t.target),
+                    &format!(
+                        "`{}` in {repo}: {}",
+                        t.target,
+                        gate_running_words(&t.sha, now.saturating_sub(t.checked_ms))
+                    ),
                     w,
                 )),
                 _ => out.push(note_line(
@@ -210,6 +214,23 @@ impl App {
                     &format!("`{}` in {repo} is green at {short}", t.target),
                     w,
                 )),
+            }
+        }
+        // ---- A landing's gate: what every other landing of that repository waits for.
+        for m in self.queues.merges.iter().filter(|m| m.state == "gating") {
+            if let Some(sha) = m.rebased_sha.as_deref() {
+                out.push(note_line(
+                    "…",
+                    Role::Pending,
+                    &format!(
+                        "landing `{}` onto `{}` in {}: {}",
+                        clean_line(&m.branch),
+                        m.target,
+                        repo_name(&m.repository),
+                        gate_running_words(sha, now.saturating_sub(m.state_ms))
+                    ),
+                    w,
+                ));
             }
         }
         // ---- Who serves each repository, and how alive it is.
@@ -268,13 +289,21 @@ impl App {
                 }
             }));
         }
+        let running = gates_running(&self.queues, now);
         let mut stops = Vec::with_capacity(rows.len());
         for (k, row) in rows.iter().enumerate() {
             let picked = k == cursor;
             stops.push(out.lines.len());
             let (head, under) = match *row {
                 QRow::Review(i) => review_row(&self.queues.reviews[i], now, w),
-                QRow::Merge(i) => merge_row(&self.queues.merges[i], now, w),
+                QRow::Merge(i) => {
+                    let m = &self.queues.merges[i];
+                    let waits = (m.state == "queued")
+                        .then(|| running.get(m.repository.as_str()))
+                        .flatten()
+                        .map(String::as_str);
+                    merge_row(m, now, waits, w)
+                }
             };
             out.push_stop(Line::new(
                 std::iter::once(Span::raw(format!("{} ", pane::mark(picked))))
@@ -516,7 +545,35 @@ fn review_row(r: &QueueReview, now: u64, w: usize) -> (Line, Line) {
     (head, pane::faint(trim_to(&format!("         {why}"), w)))
 }
 
-fn merge_row(m: &QueueMerge, now: u64, w: usize) -> (Line, Line) {
+/// **`gate running on <sha> for Nm`** — the words for a gate in flight, from when it started.
+pub(crate) fn gate_running_words(sha: &str, for_ms: u64) -> String {
+    let short: String = sha.chars().take(10).collect();
+    format!("gate running on {short} for {}m", for_ms / 60_000)
+}
+
+/// **The gate each repository is running** (one at a time: R92 item 8) — what its queued
+/// landings wait for. The store has it: a `gating` target since its `checked_ms`, or a `gating`
+/// landing since its `state_ms`, rebased.
+fn gates_running(q: &QueueSnapshot, now: u64) -> std::collections::HashMap<&str, String> {
+    let mut out = std::collections::HashMap::new();
+    for t in q.targets.iter().filter(|t| t.state == "gating") {
+        out.insert(
+            t.repository.as_str(),
+            gate_running_words(&t.sha, now.saturating_sub(t.checked_ms)),
+        );
+    }
+    for m in q.merges.iter().filter(|m| m.state == "gating") {
+        if let Some(sha) = m.rebased_sha.as_deref() {
+            out.insert(
+                m.repository.as_str(),
+                gate_running_words(sha, now.saturating_sub(m.state_ms)),
+            );
+        }
+    }
+    out
+}
+
+fn merge_row(m: &QueueMerge, now: u64, waits: Option<&str>, w: usize) -> (Line, Line) {
     let (mark, role) = mark_of(&m.state);
     let mut tail = format!(
         "· {} · {} in state · onto `{}` in {}",
@@ -538,6 +595,9 @@ fn merge_row(m: &QueueMerge, now: u64, w: usize) -> (Line, Line) {
     ]);
     let short: String = m.approved_sha.chars().take(10).collect();
     let mut why = format!("{} · approved {short}", m.id);
+    if let Some(gate) = waits {
+        why.push_str(&format!(" · waits: {gate}"));
+    }
     if !m.evidence.is_empty() {
         why.push_str(&format!(" — {}", first_line(&m.evidence)));
     }

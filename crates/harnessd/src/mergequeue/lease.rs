@@ -16,8 +16,9 @@ use letibot_tokencore::store::{LeaseClaim, SCHEMA_VERSION};
 /// dead one, and a dead one is replaced within a minute and a half.
 pub const LEASE_TTL_MS: u64 = 90_000;
 
-/// How often a lease holder says it is alive — between passes, and between polls of a running
-/// gate (the gate's own loop beats, so a thirty-minute gate does not lose its lease).
+/// How often a lease holder says it is alive — between passes. A gate runs on its own thread
+/// while the passes go on (R92 item 8), so a thirty-minute gate does not lose its lease; the
+/// gate's polls read what the last beat found.
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
 /// **This daemon's identity on the queues** — host, pid and start time, so a pid the kernel

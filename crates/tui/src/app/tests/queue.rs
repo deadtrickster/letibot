@@ -419,3 +419,30 @@ fn the_hint_line_names_the_person_verbs() {
         assert!(bar.contains(want), "the bar names `{want}`: {bar}");
     }
 }
+
+/// **A queued landing says what it waits for** (R92 item 8) — the repository's gate, by sha and
+/// how long it has run, rather than sitting `queued` with no reason.
+#[test]
+fn a_running_gate_is_said_and_the_queued_landings_wait_for_it() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut gating = queue_merge_row("m-one", "gating");
+    gating.rebased_sha = Some("fedcba9876543210".into());
+    a.apply(queue_frame(queues(
+        vec![],
+        vec![gating, queue_merge_row("m-two", "queued")],
+    )));
+    assert_eq!(a.key(Key::Tab), None);
+    let screen = a.screen(200, 50).join("\n");
+    assert!(
+        screen.contains(
+            "landing `agent/one` onto `main` in letibot: gate running on fedcba9876 for 1m"
+        ),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("waits: gate running on fedcba9876 for 1m"),
+        "the queued row says why: {screen}"
+    );
+}

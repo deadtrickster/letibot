@@ -186,7 +186,7 @@ impl World {
     /// One pass of the queue's own thread: deadlines, claims.
     fn queue_pass(&self) {
         let stop = AtomicBool::new(false);
-        assert_ne!(self.queue.pass(&stop).unwrap(), Pass::LostLease);
+        assert_ne!(self.queue.settle(&stop).unwrap(), Pass::LostLease);
     }
     /// One pass of the reviewers' host.
     fn serve(&self) {
