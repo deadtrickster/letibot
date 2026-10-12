@@ -753,9 +753,10 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     assert!(text.starts_with("[job]"), "labelled like a monitor: {text}");
     assert!(text.contains("`j7`"), "{text}");
     assert!(text.contains("exited 0"), "{text}");
-    assert!(text.contains("cargo build --release"), "{text}");
     assert!(text.contains("4.4s"), "how long it ran: {text}");
-    assert!(text.contains("4096"), "how much it wrote: {text}");
+    // R93.C3: no byte count, and the model's own command is not echoed back.
+    assert!(!text.contains("cargo build --release"), "{text}");
+    assert!(!text.contains("4096"), "{text}");
     // R93.C1: the closing names the door with the real handle — not `job_wait`, not `job="…"`.
     assert!(text.ends_with("Output: `job_output` job=\"j7\"."), "{text}");
     assert!(!text.contains("job_wait") && !text.contains('…'), "{text}");

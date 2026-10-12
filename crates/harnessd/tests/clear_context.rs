@@ -402,7 +402,8 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
         // SETTLEMENT — the job's output and the child's answer, which nothing before the clear
         // could have known.
         let later = || texts.iter().skip(1);
-        let job_in = later().any(|t| t.contains(&job) && t.contains("JOB-FINISHED"));
+        // R93.C3: the completion names the job and how it ended; its own command is not echoed.
+        let job_in = later().any(|t| t.contains(&format!("`{job}` exited 0")));
         let child_in =
             later().any(|t| t.contains(&child) && t.contains("the child's audit is done"));
         if job_in && child_in {

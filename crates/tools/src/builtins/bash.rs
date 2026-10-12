@@ -231,8 +231,15 @@ impl Bash {
 /// `background: true`, while the slow-run note on the same tool says raising
 /// `timeout_ms` only makes the wait longer: two answers to one question. The
 /// command is not echoed — the model wrote it one round ago.
-fn deadline_killed(body: &str, secs: f32) -> String {
-    format!("{body}\n\nKilled at its {secs:.0}s deadline. Re-run it with `background: true`.")
+fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
+    let deadline = if secs < 1.0 {
+        format!("{:.0}ms", secs * 1000.0)
+    } else {
+        format!("{secs:.0}s")
+    };
+    format!(
+        "{body}\n\n[`{label}`] Killed at its {deadline} deadline. Re-run it with `background: true`."
+    )
 }
 
 /// **What deadline this call gets — the one place the choice is made.**
@@ -933,6 +940,7 @@ impl Tool for Bash {
                 let reaped = host.kill_job(&id);
                 let mut inv = Invocation::timed_out(deadline_killed(
                     &body,
+                    &label,
                     timeout.map(|t| t.as_secs_f32()).unwrap_or(0.0),
                 ));
                 if let Err(e) = &reaped {
@@ -944,7 +952,7 @@ impl Tool for Bash {
                 Some(timeout) => {
                     let reaped = host.kill_job(&id);
                     let mut inv =
-                        Invocation::timed_out(deadline_killed(&body, timeout.as_secs_f32()));
+                        Invocation::timed_out(deadline_killed(&body, &label, timeout.as_secs_f32()));
                     if let Err(e) = &reaped {
                         inv = inv.with_note(format!("the kill did not complete: {e}"));
                     }
@@ -1592,8 +1600,9 @@ mod tests {
     fn a_deadline_kill_names_one_way_out() {
         // R93.F15: the kill says background, and never "a larger timeout_ms",
         // which the slow-run note on the same tool calls a longer wait.
-        let text = deadline_killed("out", 120.0);
-        assert!(text.ends_with("Killed at its 120s deadline. Re-run it with `background: true`."));
+        let text = deadline_killed("out", "j3", 120.0);
+        assert!(text.ends_with("[`j3`] Killed at its 120s deadline. Re-run it with `background: true`."));
+        assert!(deadline_killed("out", "j3", 0.3).contains("its 300ms deadline"));
         assert!(!text.contains("timeout_ms"), "{text}");
     }
 

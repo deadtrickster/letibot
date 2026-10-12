@@ -73,7 +73,8 @@ fn a_command_that_outlives_its_deadline_is_killed() {
 }
 
 /// The deadline is its own outcome, not a failure and not a backgrounding, and it
-/// hands over both ways to run the command longer.
+/// names ONE way to run the command longer (R93.F15): `background: true` — a larger
+/// `timeout_ms` is the longer wait the slow-run note warns against.
 #[test]
 fn a_deadline_is_its_own_outcome_and_says_how_to_run_longer() {
     let mut h = runner!("timeout_outcome");
@@ -83,10 +84,10 @@ fn a_deadline_is_its_own_outcome_and_says_how_to_run_longer() {
     );
     assert_eq!(r.outcome, ToolOutcome::Timeout, "{}", r.render());
     let rendered = r.render();
-    assert!(rendered.contains("killed"), "{rendered}");
+    assert!(rendered.contains("Killed"), "{rendered}");
     assert!(
-        rendered.contains("timeout_ms") && rendered.contains("background"),
-        "the timeout must name both ways out: {rendered}"
+        rendered.contains("background: true") && !rendered.contains("larger"),
+        "the timeout names background as the way out: {rendered}"
     );
 }
 
