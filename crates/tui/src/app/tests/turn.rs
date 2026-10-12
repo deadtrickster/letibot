@@ -694,11 +694,14 @@ fn the_session_header_degrades_by_deletion_and_never_wraps() {
     for w in [40usize, 60, 80, 110, 200] {
         let l = a.header_line(w);
         assert!(line_width(&l) <= w, "w={w}: {} cols: {l}", line_width(&l));
-        // The session index is the field that survives longest: with several
-        // sessions, "which one is this" is the question the header exists for.
-        assert!(l.contains("1/2"), "w={w}: {l}");
-        if w >= 80 {
-            assert!(l.contains("41.2k ctx"), "w={w}: {l}");
+        // **The operator's drop order, 2026-10-13**: the out count, then the position counter,
+        // then `% cached`, the model, the duration, tok/s, the spend, and `ctx` last — so the
+        // counter going while `ctx` stays is the order, and `ctx` going first would break it.
+        if l.contains("1/2") {
+            assert!(l.contains("41.2k ctx"), "w={w}: the counter outlived ctx: {l}");
+        }
+        if w >= 200 {
+            assert!(l.contains("1/2") && l.contains("41.2k ctx"), "w={w}: {l}");
         }
     }
 }
