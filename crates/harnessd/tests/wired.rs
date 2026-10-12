@@ -992,8 +992,12 @@ fn reingest_writes_no_summary_and_says_so_in_the_note() {
     // cannot see.
     match h.items().first().expect("the new base has an item") {
         letibot_transcript::TranscriptItem::System { text, .. } => {
-            assert!(text.contains("re-seated onto a new prompt"), "{text}");
+            assert!(text.contains("System prompt and tools updated"), "{text}");
             assert!(text.contains("Nothing was summarised"), "{text}");
+            assert!(
+                !text.contains("transcript"),
+                "no transcript id (R93.E7): {text}"
+            );
             assert!(
                 !text.contains("replaced by the summary"),
                 "it claims a compaction: {text}"

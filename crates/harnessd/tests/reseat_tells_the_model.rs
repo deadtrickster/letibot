@@ -215,9 +215,13 @@ fn a_reseat_tells_the_model_and_starts_its_turn() {
             _ => None,
         })
         .expect("the row has text");
+    // R93.E8: it says the prompt was updated and to carry on — and does not name `/reseat`,
+    // which only planted the request it meant to stop.
     assert!(
-        text.contains("stop asking for `/reseat`"),
-        "the notice it was sent told it to keep asking; this one has to tell it to stop: {text}"
+        text.starts_with("[reseat] Your system prompt and tools were updated")
+            && text.ends_with("Carry on.")
+            && !text.contains("/reseat"),
+        "{text}"
     );
     assert!(
         items[told + 1..]

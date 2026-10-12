@@ -2257,40 +2257,28 @@ pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
     }
 }
 
+///
+/// **R93.E8**: no token count, no request to restate the re-seat in a line (a restatement is not
+/// work), and no *"stop asking for `/reseat`"*, which planted the word it forbade.
 pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
-    let how = if summarise {
-        format!(
-            "with `/reseat summarise`: the {} tokens of history before this point are replaced \
-             by the summary at the top of the conversation",
-            r.fork.was_tokens
-        )
-    } else {
-        "with `/reseat`: the conversation was carried across as it was, nothing summarised \
-         and nothing dropped"
-            .to_string()
-    };
-    let mut said = format!(
-        "[reseat] The person re-seated this conversation {how}. Message zero is now the prompt \
-         this daemon seats — the system instructions and tool schemas you are reading are the \
-         current ones"
-    );
+    let mut said = String::from("[reseat] Your system prompt and tools were updated");
+    if summarise {
+        said.push_str("; earlier history is summarised above");
+    }
+    said.push('.');
     if !r.gained.is_empty() {
-        said.push_str(&format!(". You can now call: {}", r.gained.join(", ")));
+        said.push_str(&format!(" New: {}.", r.gained.join(", ")));
     }
     if !r.lost.is_empty() {
-        said.push_str(&format!(". No longer seated: {}", r.lost.join(", ")));
+        said.push_str(&format!(" Removed: {}.", r.lost.join(", ")));
     }
     if !r.grew.is_empty() {
         said.push_str(&format!(
-            ". Schemas that changed — read them again before calling: {}",
+            " Changed (read before calling): {}.",
             r.grew.join(", ")
         ));
     }
-    said.push_str(
-        ". The notice that this conversation speaks a stale prompt no longer applies: stop \
-         asking for `/reseat`. Say in one line that the re-seat landed and what it changes for \
-         you, then carry on with what you were doing.",
-    );
+    said.push_str(" Carry on.");
     said
 }
 
@@ -9171,11 +9159,11 @@ impl Harness {
     }
 
     pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
-        let mut text = "Your previous turn was stopped at the context wall and the conversation \
-                    was then compacted: the summary above stands in for everything said \
-                    before it. Continue the work you were doing, picking up from the \
-                    summary rather than repeating what it already records."
-            .to_string();
+        // R93.E1: no "context wall" (the context check tells the model not to size by it), and
+        // the compaction note right above already says what the summary is. Sent only after a
+        // real compaction (`turn_tail::run_turn`).
+        let mut text =
+            "Continue from the summary above; don't redo what it records as done.".to_string();
         // R79: a continuation is a turn the model takes anyway — the held batch rides in.
         if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
             text.push_str("\n\n");
@@ -10715,12 +10703,12 @@ impl Harness {
             Some(item) => item,
             None => TranscriptItem::System {
                 text: if outcome.summary.is_empty() {
-                    format!(
-                        "This conversation was re-seated onto a new prompt: message zero now \
-                     announces the tools this daemon seats, and everything said before \
-                     this point follows unchanged from transcript {old_id}. Nothing was \
-                     summarised and nothing was dropped."
-                    )
+                    // R93.E7: one line, no transcript id — the `[reseat]` notice is the one
+                    // that says what changed, and a carried conversation keeps every
+                    // earlier re-seat's note, so these stacked two and three deep.
+                    "System prompt and tools updated; the conversation continues unchanged. \
+                     Nothing was summarised."
+                        .to_string()
                 } else {
                     format!(
                         "This conversation was compacted: what was said before this point is \

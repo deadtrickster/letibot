@@ -160,14 +160,18 @@ pub fn run_turn(
             return None;
         }
     };
+    let before = h.transcript_id().to_string();
     let mut out = settle(h, owner, out);
+    // R93.E1: a continuation says "continue from the summary above", so it follows only a turn
+    // whose wall was actually compacted — a fork, a new transcript.
+    let mut compacted = h.transcript_id() != before;
     // **A wall that compacted is not the end of the prompt.** The continuation is
     // `Harness::continue_after_wall`'s user item, and each one is a whole turn with this same
     // settle. Room is MEASURED, not read off a flag (the no-progress guard turns `auto_compact`
     // off without freeing anything), and `WALL_CONTINUES` caps the cycles the room check
     // cannot see. When either gate closes, the last wall error is the answer.
     let mut walls = 0;
-    while is_wall(&out) && walls < crate::sessions::WALL_CONTINUES {
+    while is_wall(&out) && compacted && walls < crate::sessions::WALL_CONTINUES {
         h.measure_resident();
         // **Not closed on an estimate.** A metered base the provider has not counted is the
         // fork's estimate, and the continuation's first round is what measures it — the
@@ -179,7 +183,9 @@ pub fn run_turn(
         }
         walls += 1;
         let next = h.continue_after_wall();
+        let before = h.transcript_id().to_string();
         out = settle(h, owner, next);
+        compacted = h.transcript_id() != before;
     }
     crate::instruments::turn_ends(h, Some(&out), walls);
     // A start that outlived its turn would be inherited by the next prompt's first round.

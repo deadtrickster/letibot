@@ -441,7 +441,8 @@ pub fn job_line(
     // **One sentence of why**, and the command said once — in the call that runs it again.
     line.push_str(
         ": NOT run again — its process was the old daemon's, and a crash may have left it \
-         running (`pkill` with `action: \"list\"` checks, killing nothing).",
+         running (check with `pkill` pattern=\"<a fragment of its command>\" action=\"list\", \
+         which kills nothing).",
     );
     // **Where its output went, read out of the command** — the record's own `redirect` was
     // never filled for a running row by the builds before this one, and the operator's job
@@ -483,7 +484,7 @@ pub fn job_line(
         line.push_str(&format!(
             "\n  Rows that waited on it: {}. Their wait is RELEASED — a job this daemon never ran \
              reads as ended, so they are no longer blocked on it; if they still need its result, \
-             run it again and `wait_on` the new handle.",
+             run it again and set `wait_on` on the row to the new handle with `todo_write`.",
             waiting.join("; ")
         ));
     }

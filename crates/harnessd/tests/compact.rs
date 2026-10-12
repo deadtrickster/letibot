@@ -269,21 +269,20 @@ fn the_continuation_after_a_wall_is_the_harnesss_own_words() {
     let letibot_transcript::UserPart::Text { text } = &user_parts[0] else {
         panic!("the continuation is text, got {:?}", user_parts[0]);
     };
+    // R93.E1: it asks for the work back from the summary, and does not name the "context wall"
+    // the context check tells the model not to size by.
     assert!(
-        text.contains("context wall") && text.contains("compacted"),
-        "the continuation says what happened: {text}"
-    );
-    assert!(
-        text.contains("Continue the work"),
+        text.starts_with("Continue from the summary above"),
         "the continuation asks for the work back: {text}"
     );
+    assert!(!text.contains("context wall"), "{text}");
 
     // And the trail says who spoke: the harness, never the operator.
     let t = h.trail();
     let said = t
         .utterances
         .iter()
-        .find(|u| u.text.contains("context wall"))
+        .find(|u| u.text.contains("Continue from the summary above"))
         .expect("the continuation is in the trail");
     assert_eq!(
         said.speaker,
