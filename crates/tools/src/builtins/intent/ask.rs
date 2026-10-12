@@ -1235,8 +1235,10 @@ mod tests {
         // R93.B11: the one rule for an abstention, the same one `todo_write`'s operator
         // wait states — an answer that unblocks, with the assumption said.
         assert!(
-            d.contains("abstention is an answer: they will not decide, so proceed and state the \
-                        assumption you proceed on"),
+            d.contains(
+                "abstention is an answer: they will not decide, so proceed and state the \
+                        assumption you proceed on"
+            ),
             "{d}"
         );
         // The two absences stay named too, because they are what a model will see

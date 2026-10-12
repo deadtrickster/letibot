@@ -350,6 +350,9 @@ fn a_restart_warning_and_its_notice_are_one_line() {
         let (y, _) = a.card_rows[0];
         a.key(Key::Click { x: 10, y: y as u16 });
         let whole = popup_text(&mut a);
-        assert!(holds(&whole, "To run it again: `bash {"), "the notice is in the popup: {whole}");
+        assert!(
+            holds(&whole, "To run it again: `bash {"),
+            "the notice is in the popup: {whole}"
+        );
     }
 }

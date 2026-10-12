@@ -666,8 +666,16 @@ fn an_answered_card_closes_at_once_and_a_refusal_reopens_it() {
         expected_seq: 1,
         actual_seq: 1,
     });
-    assert_eq!(a.open.first().map(|d| d.req_id.as_str()), Some("r1"), "refused: back");
-    assert_eq!(a.key(Key::Enter), answer("r1", "deny"), "with the row it had");
+    assert_eq!(
+        a.open.first().map(|d| d.req_id.as_str()),
+        Some("r1"),
+        "refused: back"
+    );
+    assert_eq!(
+        a.key(Key::Enter),
+        answer("r1", "deny"),
+        "with the row it had"
+    );
     a.answer_sent("r1", "c8".into());
     ask(&mut a, 2, testing::answered("r1", "deny"));
     assert!(a.open.is_empty() && a.answering.is_empty(), "settled");

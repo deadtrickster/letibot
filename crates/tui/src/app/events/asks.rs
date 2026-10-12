@@ -97,7 +97,11 @@ impl App {
                 }
                 // …and one this head answered (R90.29), closed when the answer left: it settles
                 // here like an open one, read off the same card.
-                if let Some(i) = self.answering.iter().position(|a| a.decision.req_id == req_id) {
+                if let Some(i) = self
+                    .answering
+                    .iter()
+                    .position(|a| a.decision.req_id == req_id)
+                {
                     let a = self.answering.remove(i);
                     self.open.push(a.decision);
                 }

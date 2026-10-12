@@ -78,9 +78,7 @@ pub fn answer_line(row: &str, question: &str, reply: &str, abstained: bool) -> S
         reply
     );
     if abstained {
-        line.push_str(
-            " They will not decide, so proceed and state the assumption you proceed on.",
-        );
+        line.push_str(" They will not decide, so proceed and state the assumption you proceed on.");
     }
     line
 }

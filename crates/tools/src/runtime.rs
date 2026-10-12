@@ -1688,7 +1688,12 @@ impl Registry {
             && role.tools.iter().any(|t| t == "todo")
         {
             one_plan = Role {
-                tools: role.tools.iter().filter(|t| *t != "todo").cloned().collect(),
+                tools: role
+                    .tools
+                    .iter()
+                    .filter(|t| *t != "todo")
+                    .cloned()
+                    .collect(),
                 ..role.clone()
             };
             &one_plan
@@ -2523,9 +2528,17 @@ mod tests {
         let renamed = "{\"file_path\": \"a\"}";
         let first = rt.invoke("t1", &call("probe", renamed), &mut sink);
         let second = rt.invoke("t1", &call("probe", renamed), &mut sink);
-        assert!(first.repairs.iter().any(|r| r.code == "key.renamed"), "{:?}", first.repairs);
+        assert!(
+            first.repairs.iter().any(|r| r.code == "key.renamed"),
+            "{:?}",
+            first.repairs
+        );
         assert!(first.render().contains("[repaired]"), "{}", first.render());
-        assert!(!second.render().contains("[repaired]"), "{}", second.render());
+        assert!(
+            !second.render().contains("[repaired]"),
+            "{}",
+            second.render()
+        );
         assert!(second.repairs.iter().any(|r| r.code == "key.renamed"));
     }
 

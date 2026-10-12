@@ -111,9 +111,15 @@ fn a_queue_row_is_quiet_while_its_review_is_in_flight() {
     );
     let wedged = ChildSessions::none().running("s-rev", child(3 * 3600, Some(31 * 60), true));
     assert!(!queue_review_in_flight(&reviewing, &wedged));
-    assert!(!queue_review_in_flight(&reviewing, &ChildSessions::none()), "finished");
+    assert!(
+        !queue_review_in_flight(&reviewing, &ChildSessions::none()),
+        "finished"
+    );
     // The model's own row is never this predicate's business.
-    let mine = TodoItem { by: TodoBy::Model, ..queued };
+    let mine = TodoItem {
+        by: TodoBy::Model,
+        ..queued
+    };
     assert!(!queue_review_in_flight(&mine, &ChildSessions::none()));
 }
 
@@ -124,10 +130,9 @@ fn a_queue_row_is_quiet_while_its_review_is_in_flight() {
 fn an_abstention_means_the_same_in_ask_and_in_a_todo_wait() {
     let rule = "proceed and state the assumption you proceed on";
     let todo = TodoWriteTool::new(Arc::new(TodoBoard::new(Vec::new()))).schema();
-    let ask = crate::builtins::intent::AskUserQuestion::new(Arc::new(
-        crate::builtins::intent::Headless,
-    ))
-    .schema();
+    let ask =
+        crate::builtins::intent::AskUserQuestion::new(Arc::new(crate::builtins::intent::Headless))
+            .schema();
     for d in [&todo.description, &ask.description] {
         assert!(d.contains(rule), "{d}");
         assert!(!d.contains("not permission to proceed"), "{d}");

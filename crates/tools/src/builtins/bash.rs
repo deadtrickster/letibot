@@ -951,8 +951,11 @@ impl Tool for Bash {
             JobState::Running => match timeout {
                 Some(timeout) => {
                     let reaped = host.kill_job(&id);
-                    let mut inv =
-                        Invocation::timed_out(deadline_killed(&body, &label, timeout.as_secs_f32()));
+                    let mut inv = Invocation::timed_out(deadline_killed(
+                        &body,
+                        &label,
+                        timeout.as_secs_f32(),
+                    ));
                     if let Err(e) = &reaped {
                         inv = inv.with_note(format!("the kill did not complete: {e}"));
                     }
@@ -1601,7 +1604,11 @@ mod tests {
         // R93.F15: the kill says background, and never "a larger timeout_ms",
         // which the slow-run note on the same tool calls a longer wait.
         let text = deadline_killed("out", "j3", 120.0);
-        assert!(text.ends_with("[`j3`] Killed at its 120s deadline. Re-run it with `background: true`."));
+        assert!(
+            text.ends_with(
+                "[`j3`] Killed at its 120s deadline. Re-run it with `background: true`."
+            )
+        );
         assert!(deadline_killed("out", "j3", 0.3).contains("its 300ms deadline"));
         assert!(!text.contains("timeout_ms"), "{text}");
     }

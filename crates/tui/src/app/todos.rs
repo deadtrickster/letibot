@@ -444,7 +444,11 @@ impl App {
 
     /// **The driver sent it**, under this `client_request_id` — what a refusal will name.
     pub fn answer_sent(&mut self, req_id: &str, request: String) {
-        if let Some(a) = self.answering.iter_mut().find(|a| a.decision.req_id == req_id) {
+        if let Some(a) = self
+            .answering
+            .iter_mut()
+            .find(|a| a.decision.req_id == req_id)
+        {
             a.request = Some(request);
         }
     }

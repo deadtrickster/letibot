@@ -8973,7 +8973,10 @@ impl Harness {
             return Ok(None);
         }
         if !self.cfg.workspace.is_dir() {
-            notices.insert(0, format!("[workspace] {}.", workspace_gone(&self.cfg.workspace)));
+            notices.insert(
+                0,
+                format!("[workspace] {}.", workspace_gone(&self.cfg.workspace)),
+            );
         }
         let text = notices.join("\n\n");
         // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the
@@ -12753,9 +12756,8 @@ impl Harness {
         // R93.F30: one plan tool per seat. Where it is `todo_write`, the intent ledger's own
         // board is empty and the check reads the `todo_write` board instead.
         let seated = tool_names(&self.prefix.tools_json);
-        let plan = (seated.contains("todo_write") && !seated.contains("todo")).then(|| {
-            intent_tools::ledger::Board::of_plan(&self.todos.snapshot())
-        });
+        let plan = (seated.contains("todo_write") && !seated.contains("todo"))
+            .then(|| intent_tools::ledger::Board::of_plan(&self.todos.snapshot()));
         steer_for_turn_over(&self.intent, self.cfg.intent_prose, turn_id, items, plan)
     }
 

@@ -73,19 +73,34 @@ fn the_notice_parser_reads_the_notice_without_bytes_or_own_command() {
     assert_eq!(jobs.len(), 2);
     assert_eq!(jobs[0].id, "j1042");
     assert_eq!(jobs[0].slug.as_deref(), Some("build-and-test-null"));
-    assert_eq!((jobs[0].state.as_str(), jobs[0].after.as_str()), ("exited 0", "2m54s"));
+    assert_eq!(
+        (jobs[0].state.as_str(), jobs[0].after.as_str()),
+        ("exited 0", "2m54s")
+    );
     assert_eq!(jobs[0].produced, None);
     assert_eq!(jobs[0].command, "");
-    assert_eq!(jobs[0].memory.as_deref(), Some("peak 245 MiB of a 8 GiB cap"));
-    assert_eq!((jobs[1].id.as_str(), jobs[1].after.as_str()), ("j1043", "4.4s"));
+    assert_eq!(
+        jobs[0].memory.as_deref(),
+        Some("peak 245 MiB of a 8 GiB cap")
+    );
+    assert_eq!(
+        (jobs[1].id.as_str(), jobs[1].after.as_str()),
+        ("j1043", "4.4s")
+    );
     let (mine, jobs) = ended_jobs(THEIRS_NOW).expect("the handed-up notice parses");
     assert!(!mine);
     assert_eq!(jobs[0].command, "sleep 3; echo done");
     assert_eq!(jobs[0].owner.as_deref(), Some("s-child"));
     assert_eq!(jobs[0].after, "3.0s");
     let [first, second] = crate::ui::transcript::job_card::job_lines(&jobs[0], false, None);
-    assert!(first.ends_with("· started by s-child · sleep 3; echo done"), "{first}");
-    assert!(second.contains("ended · output not readable here"), "{second}");
+    assert!(
+        first.ends_with("· started by s-child · sleep 3; echo done"),
+        "{first}"
+    );
+    assert!(
+        second.contains("ended · output not readable here"),
+        "{second}"
+    );
 }
 
 /// **The parser reads what the daemon writes** — the fixtures ARE `completion_notice`'s output,

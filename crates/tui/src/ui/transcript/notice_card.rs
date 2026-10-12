@@ -631,7 +631,8 @@ mod tests {
     /// R93.C8: the one-line-per-watch shape draws one card, the first watch named.
     #[test]
     fn a_monitor_line_per_watch_is_one_card() {
-        let text = "[monitor] `ci` fired: the run exited 0.\n[monitor] `log` expired without firing.";
+        let text =
+            "[monitor] `ci` fired: the run exited 0.\n[monitor] `log` expired without firing.";
         let c = monitor(text).expect("the new shape is a card");
         assert_eq!(c.title, "monitor · ci");
         let line = &c.line;

@@ -541,9 +541,7 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
 
     let named = completion_notice(&[settled("j65", Some("release-build"))], true);
     assert!(
-        named.contains(
-            "  - `release-build · j65` exited 0 after 54.9s\n"
-        ),
+        named.contains("  - `release-build · j65` exited 0 after 54.9s\n"),
         "the settlement must name the job the way the bash result did: {named}"
     );
 
@@ -551,7 +549,8 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     // same sentence under the other heading — and the owner is still named beside it.
     let handed = completion_notice(&[settled("j65", Some("release-build"))], false);
     assert!(
-        handed.contains("`release-build · j65` exited 0 after 54.9s: cargo test (started by `s-me`)"),
+        handed
+            .contains("`release-build · j65` exited 0 after 54.9s: cargo test (started by `s-me`)"),
         "{handed}"
     );
 

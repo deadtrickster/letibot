@@ -464,5 +464,8 @@ fn a_monitor_notice_says_which_of_the_four_endings_it_was() {
             after,
         },
     )]);
-    assert_eq!(released.as_deref(), Some("[monitor] `flowy` was retired: the seat was released."));
+    assert_eq!(
+        released.as_deref(),
+        Some("[monitor] `flowy` was retired: the seat was released.")
+    );
 }

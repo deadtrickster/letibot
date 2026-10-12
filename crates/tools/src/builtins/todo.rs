@@ -1502,9 +1502,9 @@ pub fn queue_review_in_flight(row: &TodoItem, children: &ChildSessions) -> bool 
     });
     match reviewers.next() {
         None => row.status == TodoStatus::Pending,
-        Some(id) => children.child(id).is_some_and(|child| {
-            child.quiet_for.unwrap_or(child.age) < REVIEWER_QUIET_CAP
-        }),
+        Some(id) => children
+            .child(id)
+            .is_some_and(|child| child.quiet_for.unwrap_or(child.age) < REVIEWER_QUIET_CAP),
     }
 }
 

@@ -345,7 +345,9 @@ impl Reconciliation {
         if self.findings.len() > MAX_FINDINGS {
             let more = self.findings.len() - MAX_FINDINGS;
             out.push_str(&match plan {
-                None => format!("  … and {more} more; call `todo` with `op: \"list\"` for the rest\n"),
+                None => {
+                    format!("  … and {more} more; call `todo` with `op: \"list\"` for the rest\n")
+                }
                 Some(_) => format!("  … and {more} more\n"),
             });
         }
@@ -1094,8 +1096,13 @@ mod tests {
             row(TodoStatus::Pending),
             row(TodoStatus::Cancelled),
         ]);
-        let said = r.steering_over(Some(plan)).expect("no encoder is a finding");
-        assert!(said.contains("board: 1 of 3 complete — 1 in progress, 1 pending"), "{said}");
+        let said = r
+            .steering_over(Some(plan))
+            .expect("no encoder is a finding");
+        assert!(
+            said.contains("board: 1 of 3 complete — 1 in progress, 1 pending"),
+            "{said}"
+        );
         assert!(!said.contains("nothing has been declared"), "{said}");
         assert!(!said.contains("`todo`"), "{said}");
     }
