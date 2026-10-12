@@ -345,6 +345,14 @@ pub const TABLE: &[(&str, Class)] = &[
     ("queue_settings_unreadable", Class::Failure),
     ("queue_wrong_build", Class::Failure),
     ("queue_lease_lost", Class::Routine),
+    // **A target the gate could not judge** — its own setup failed (`gate_setup_failed`), or its
+    // step was killed before it judged the code, at the gate's memory cap or by a signal
+    // (`gate_killed`, TODO R87). Failures: nothing lands on the target until it is gated again,
+    // and the sentence is *look at this* — though never `target_red`, because the code was not
+    // judged red. Raised by the queue under a variable code, so the tree guard does not see them;
+    // they are named here so the register is a decision rather than the default.
+    ("gate_setup_failed", Class::Failure),
+    ("gate_killed", Class::Failure),
     // **A review waiting for a free VM slot** (TODO R86): firecode had no free tap for its
     // reviewer, so the row went back to `waiting` with no attempt counted and is asked again in
     // 1, 2, 5 and then every 5 minutes. Routine: the queue handling a hiccup, said ONCE per wait
@@ -1041,10 +1049,13 @@ mod the_register_census {
         //     `operator_question_settled` (Routine) — a todo row that waits on the operator.
         //   · **120, not 118**: `queue_waiting_for_vm` (Routine) and `queue_vm_slots_exhausted`
         //     (Failure) — a review waiting for a free VM slot, and that wait gone long (R86).
-        assert_eq!(TABLE.len(), 120, "the table's size");
+        //   · **122, not 120**: `gate_setup_failed` and `gate_killed` (Failures) — a target the
+        //     gate could not judge; raised before under a variable code and Failures by default,
+        //     now named (R87).
+        assert_eq!(TABLE.len(), 122, "the table's size");
         assert_eq!(count(Class::Routine), 42);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 67);
+        assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 64 of 114 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the

@@ -1,0 +1,10 @@
+The merge queue CANNOT JUDGE `main` at 9562d70c4be1 in /home/dead/Projects/letibot/letibot: the gate's step was killed before it could judge the code: `sh scripts/gate.sh` was KILLED at the gate's memory cap (peak 24.1 GiB of a 24.9 GiB cap) — it died with its peak within 5% of the cap. 128 process(es) were still running in it when it ended. It ran out of the memory the gate gives a step, which says nothing about the code: the tip is UNJUDGED, not red. The cap is `[memory] gate` in providers.toml (unset, it is half of what is free when the gate starts); raise it — a size such as `gate = "40G"`, or a larger fraction of what is free — and gate it again.
+
+The failing step is 1 of 1, `sh scripts/gate.sh`. The end of its output:
+
+```
+warning: `letibot-tui` (lib test) generated 17 warnings
+[gate memory: peak 24.1 GiB of a 24.9 GiB cap]
+```
+
+This is not the code being red — the gate's step was killed before it judged anything — but nothing lands on `main` until it is gated again. If it was the memory cap, that is the operator's `[memory] gate` in providers.toml; once there is room, gate the tip again. With the `queue` tool you can read both queues and the gate's evidence (`action: "status"`), gate the tip again once the cause is gone — a flake, the machine, a gate fixed outside the target (`"regate"`), withdraw a row that no longer means anything (`"withdraw"`), and restart a parked one (`"restart"`). If the gate is wrong for this branch — it names another branch's artifact, or the project lands on another branch — say so: `"propose_target"` puts the `[queue] target` line of the project's `leticode.toml` to the operator, whose decision it is.

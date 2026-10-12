@@ -5,7 +5,7 @@
 //! with a popup"*. See `ui::transcript::red_card`.
 
 use super::*;
-use crate::ui::transcript::red_card::{Trouble, notice_tip, warning_tip};
+use crate::ui::transcript::red_card::{Trouble, notice_tip, unjudged_warning_tip, warning_tip};
 
 /// The session notice, as `mergequeue::notices::health` writes it for the operator's red
 /// `main` — pinned byte for byte by `harnessd`'s
@@ -14,6 +14,12 @@ const NOTICE: &str = include_str!("fixtures/red_main_notice.txt");
 /// The `target_red` warning `RepoQueue::target_went_red` raises for the same tip, pinned by the
 /// same test.
 const WARNING: &str = include_str!("fixtures/red_main_warning.txt");
+
+/// The session notice for a `main` whose gate step was killed at the gate's memory cap, as
+/// `mergequeue::notices::health` writes it — pinned by the same test.
+const KILLED_NOTICE: &str = include_str!("fixtures/unjudged_main_killed_notice.txt");
+/// The `gate_killed` hub warning for the same tip (`mergequeue::notices::gate_killed`).
+const KILLED_WARNING: &str = include_str!("fixtures/unjudged_main_killed_warning.txt");
 
 /// The paragraph to the model, which the line does not draw.
 const TO_THE_MODEL: &str = "With the `queue` tool you can read both queues";
@@ -418,4 +424,46 @@ fn a_shape_the_parser_does_not_know_falls_back() {
     let joined = a.screen(200, 60).join("\n");
     assert!(joined.contains("queue_blocked"), "{joined}");
     assert!(a.card_rows.is_empty());
+}
+
+/// **A gate killed at its memory cap is UNJUDGED, not red — one line, from the session notice
+/// and from the `gate_killed` warning alike**, and the whole text one click away.
+#[test]
+fn a_gate_killed_at_its_cap_is_one_unjudged_line() {
+    let line = "‼ main UNJUDGED at 9562d70c · letibot · gate killed at its memory cap · click for \
+                details";
+    let n = notice_tip(KILLED_NOTICE).expect("the killed notice parses");
+    assert_eq!(n.trouble, Trouble::Killed);
+    assert_eq!(n.line(), line);
+    let w = unjudged_warning_tip(KILLED_WARNING).expect("the gate_killed warning parses");
+    assert_eq!(w.trouble, Trouble::Killed);
+    assert_eq!(w.line(), line);
+
+    let mut a = with_notice(KILLED_NOTICE);
+    let screen = a.screen(200, 40);
+    assert_eq!(rows_with(&screen, line).len(), 1, "{}", screen.join("\n"));
+    assert!(!screen.join("\n").contains("RED at"), "never drawn as red");
+
+    let mut a = with_warning("gate_killed", KILLED_WARNING);
+    let screen = a.screen(200, 40);
+    assert_eq!(rows_with(&screen, line).len(), 1, "{}", screen.join("\n"));
+    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
+    let (y, _) = a.card_rows[0];
+    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
+    let whole = popup_text(&mut a);
+    for needle in [
+        "peak 24.1 GiB of a 24.9 GiB cap",
+        "`[memory] gate` in providers.toml",
+    ] {
+        assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
+    }
+}
+
+/// **A `gate_killed` warning in a shape this head does not know is drawn as it always was.**
+#[test]
+fn an_unknown_gate_killed_warning_falls_back() {
+    let mut a = with_warning("gate_killed", "the gate was killed, somehow");
+    let screen = a.screen(200, 30);
+    assert!(a.card_rows.is_empty(), "{:?}", a.card_rows);
+    assert_eq!(rows_with(&screen, "the gate was killed, somehow").len(), 1);
 }

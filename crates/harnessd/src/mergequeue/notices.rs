@@ -54,6 +54,45 @@ const TOOL_WAYS: &str = "With the `queue` tool you can read both queues and the 
      so: `\"propose_target\"` puts the `[queue] target` line of the project's `leticode.toml` to \
      the operator, whose decision it is.";
 
+/// **The hub warning for a tip the gate's own setup kept it from judging** (`gate_setup_failed`),
+/// raised by `RepoQueue` beside the session notice [`health`] writes. `key` is the repository's
+/// queue key. The TUI's red card reads it as one line; its shape is pinned by the fixture test
+/// below.
+pub fn gate_setup_failed(h: &TargetHealth, key: &str) -> String {
+    format!(
+        "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing lands on it until its gate can judge \
+         it — fix the gate (or the project's `[queue] target`), then `/queue regate {}`.",
+        h.target,
+        h.sha,
+        key,
+        h.evidence
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('.'),
+        h.target
+    )
+}
+
+/// **The hub warning for a tip whose gate step was killed before it judged the code**
+/// (`gate_killed`) — at the gate's memory cap, or by a signal. The same shape as
+/// [`gate_setup_failed`], the evidence's first line saying which.
+pub fn gate_killed(h: &TargetHealth, key: &str) -> String {
+    format!(
+        "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing lands on it until its gate can judge \
+         it — then `/queue regate {}`.",
+        h.target,
+        h.sha,
+        key,
+        h.evidence
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('.'),
+        h.target
+    )
+}
+
 /// **The target's own trouble** — red, timed out, or unjudged because the gate's setup failed.
 pub fn health(h: &TargetHealth) -> String {
     use letibot_tokencore::store::HealthState as H;
@@ -477,6 +516,33 @@ mod tests {
         }
     }
 
+    /// **A `main` whose gate step was killed at the gate's memory cap** — the tip UNJUDGED, not
+    /// red (`gate::killed_at_cap_words`), as letibot's own gate was killed building its tests.
+    fn letibot_main_killed() -> TargetHealth {
+        let output = "warning: `letibot-tui` (lib test) generated 17 warnings\n[gate memory: peak \
+                      24.1 GiB of a 24.9 GiB cap]";
+        TargetHealth {
+            repository: "/home/dead/Projects/letibot/letibot".into(),
+            target: "main".into(),
+            sha: "9562d70c4be1c07d9a2e5f3b8c6d1e0f7a9b2c4d".into(),
+            state: HealthState::Blocked,
+            checked_ms: 1,
+            evidence: super::super::gate::killed_at_cap_words(
+                "sh scripts/gate.sh",
+                "peak 24.1 GiB of a 24.9 GiB cap",
+                "it died with its peak within 5% of the cap",
+                128,
+            ),
+            gate_steps: vec![MergeGateStep {
+                command: "sh scripts/gate.sh".into(),
+                outcome: MergeGateOutcome::Killed,
+                output: output.into(),
+                started_ms: 1,
+                elapsed_ms: 74_332,
+            }],
+        }
+    }
+
     /// **The TUI's red-card fixtures are what the daemon writes** — the session notice
     /// [`health`] says, and the `target_red` warning `RepoQueue::target_went_red` raises (its
     /// sentence spelled here as `serve.rs` spells it). `red_card` in the TUI parses these to draw
@@ -495,9 +561,14 @@ mod tests {
         );
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/src/app/tests/fixtures");
+        let killed = letibot_main_killed();
+        let killed_notice = health(&killed);
+        let killed_warning = gate_killed(&killed, &killed.repository);
         for (name, text) in [
             ("red_main_notice.txt", &notice),
             ("red_main_warning.txt", &warning),
+            ("unjudged_main_killed_notice.txt", &killed_notice),
+            ("unjudged_main_killed_warning.txt", &killed_warning),
         ] {
             let path = dir.join(name);
             if std::env::var_os("LETIBOT_BLESS_RED_CARD").is_some() {

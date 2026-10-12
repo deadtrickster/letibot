@@ -769,34 +769,14 @@ impl RepoQueue {
                 // gate can judge it, which is said in the same breath.
                 self.raise(
                     "gate_setup_failed",
-                    format!(
-                        "`{}` at {} in {} is UNJUDGED, not red: {} Nothing lands on it until its \
-                         gate can judge it — fix the gate (or the project's `[queue] target`), then \
-                         `/queue regate {}`.",
-                        h.target,
-                        h.sha,
-                        self.key,
-                        h.evidence.lines().next().unwrap_or_default(),
-                        h.target
-                    ),
+                    super::notices::gate_setup_failed(&h, &self.key),
                 );
             }
             HealthState::Blocked if h.evidence.starts_with(gate::GATE_KILLED) => {
                 // High, not emergency, for the same reason: the step was killed before it
                 // judged the code — at the gate's memory cap, or by a signal — and the words
                 // say which and how to give it room.
-                self.raise(
-                    "gate_killed",
-                    format!(
-                        "`{}` at {} in {} is UNJUDGED, not red: {} Nothing lands on it until its \
-                         gate can judge it — then `/queue regate {}`.",
-                        h.target,
-                        h.sha,
-                        self.key,
-                        h.evidence.lines().next().unwrap_or_default(),
-                        h.target
-                    ),
-                );
+                self.raise("gate_killed", super::notices::gate_killed(&h, &self.key));
             }
             _ => {}
         }

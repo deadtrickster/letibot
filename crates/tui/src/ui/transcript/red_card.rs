@@ -20,7 +20,16 @@
 //! The two siblings of the session notice — the gate TIMED OUT, and the gate CANNOT JUDGE the tip
 //! because its own setup failed — get the same line with their own word, and so do the
 //! `target_red` warnings the red tip's reviewer raises (`finds `main` broken at …`, with or
-//! without a fix branch). The daemon raises nothing when the target turns green again (it only
+//! without a fix branch). A gate whose step was KILLED before it judged the code — at the gate's
+//! memory cap, or by a signal — is unjudged, not red, and gets its own line, from the session
+//! notice and from the `gate_killed` hub warning alike (`gate_setup_failed`'s warning is read the
+//! same way):
+//!
+//! ```text
+//! ‼ main UNJUDGED at 9562d70c · letibot · gate killed at its memory cap · click for details
+//! ```
+//!
+//! The daemon raises nothing when the target turns green again (it only
 //! withdraws the stale reviews), so there is no recovery line to pair with these.
 //!
 //! # Only what this head can read is folded
@@ -58,6 +67,22 @@ pub(crate) enum Trouble {
     TimedOut,
     /// The gate's own setup failed, so it never judged the tip.
     Unjudged,
+    /// The gate's step was killed before it judged the code — at the gate's memory cap, or by a
+    /// signal — so the tip is unjudged (`mergequeue::gate::GATE_KILLED`).
+    Killed,
+}
+
+/// **The words a killed gate's evidence opens with** — `mergequeue::gate::GATE_KILLED`.
+const GATE_KILLED: &str = "the gate's step was killed before it could judge the code";
+
+/// **What killed the gate, as the line says it** — read from the evidence's first sentence:
+/// the gate's memory cap (`killed_at_cap_words`), or anything else (a signal from outside).
+fn killed_by(evidence: &str) -> String {
+    if evidence.contains("KILLED at the gate's memory cap") {
+        "gate killed at its memory cap".into()
+    } else {
+        "gate killed before it judged".into()
+    }
 }
 
 /// **One red (or unjudged) target, as the daemon's text says it.**
@@ -112,6 +137,7 @@ impl RedTip {
             Trouble::Red => "RED",
             Trouble::TimedOut => "gate TIMED OUT",
             Trouble::Unjudged => "CANNOT BE JUDGED",
+            Trouble::Killed => "UNJUDGED",
         };
         format!("{ALARM} {} {word} at {short}", self.target)
     }
@@ -126,10 +152,16 @@ impl RedTip {
         if let Some(by) = &self.by {
             parts.push(format!("{by} finds it broken"));
         }
-        if let Some(s) = &self.step {
+        // A killed step did not fail: what killed it is the line's word, and the step is in
+        // the popup.
+        if let Some(s) = self
+            .step
+            .as_ref()
+            .filter(|_| self.trouble != Trouble::Killed)
+        {
             let word = match self.trouble {
                 Trouble::TimedOut => "timed out",
-                Trouble::Red | Trouble::Unjudged => "failed",
+                Trouble::Red | Trouble::Unjudged | Trouble::Killed => "failed",
             };
             let mut p = format!("{} {word}", flat(s));
             if let Some((n, of)) = self.of {
@@ -246,14 +278,42 @@ fn session_head(text: &str) -> Option<RedTip> {
     let end = match trouble {
         Trouble::Red => " is RED: ",
         Trouble::TimedOut => " TIMED OUT, ",
-        Trouble::Unjudged => ": ",
+        Trouble::Unjudged | Trouble::Killed => ": ",
     };
-    let (repo, _) = r.split_once(end)?;
+    let (repo, why) = r.split_once(end)?;
     if repo.is_empty() || repo.contains('\n') {
         return None;
     }
+    let (trouble, outcome) = match trouble {
+        Trouble::Unjudged if why.starts_with(GATE_KILLED) => {
+            (Trouble::Killed, Some(killed_by(why)))
+        }
+        t => (t, None),
+    };
     let mut tip = RedTip::new(trouble, target, sha)?;
     tip.repo = Some(repo.to_string());
+    tip.outcome = outcome;
+    Some(tip)
+}
+
+/// **An unjudged target's hub warning, read** — `gate_killed` and `gate_setup_failed`, both
+/// `mergequeue::notices`' shape: `` `main` at SHA in REPO is UNJUDGED, not red: EVIDENCE. ``
+pub(crate) fn unjudged_warning_tip(detail: &str) -> Option<RedTip> {
+    let r = detail.strip_prefix('`')?;
+    let (target, r) = r.split_once("` at ")?;
+    let (sha, r) = r.split_once(" in ")?;
+    let (repo, why) = r.split_once(" is UNJUDGED, not red: ")?;
+    if repo.is_empty() || repo.contains('\n') {
+        return None;
+    }
+    let (trouble, outcome) = if why.starts_with(GATE_KILLED) {
+        (Trouble::Killed, Some(killed_by(why)))
+    } else {
+        (Trouble::Unjudged, None)
+    };
+    let mut tip = RedTip::new(trouble, target, sha)?;
+    tip.repo = Some(repo.to_string());
+    tip.outcome = outcome;
     Some(tip)
 }
 
@@ -301,6 +361,12 @@ pub(crate) const WARNING: WarningKind = WarningKind {
     read: warning_card,
 };
 
+/// **An unjudged target's hub warnings**, `gate_killed` and `gate_setup_failed`.
+pub(crate) const UNJUDGED_WARNING: WarningKind = WarningKind {
+    codes: &["gate_killed", "gate_setup_failed"],
+    read: unjudged_warning_card,
+};
+
 fn opens_notice(text: &str) -> bool {
     session_head(text).is_some()
 }
@@ -311,4 +377,8 @@ fn notice_card(text: &str) -> Option<Card> {
 
 fn warning_card(detail: &str) -> Option<Card> {
     warning_tip(detail).map(|t| t.card())
+}
+
+fn unjudged_warning_card(detail: &str) -> Option<Card> {
+    unjudged_warning_tip(detail).map(|t| t.card())
 }

@@ -128,7 +128,11 @@ pub(crate) const SESSION_KINDS: &[SessionKind] =
     &[red_card::SESSION, review_card::SESSION, asked_card::SESSION];
 
 /// Every hub warning drawn as a card.
-pub(crate) const WARNING_KINDS: &[WarningKind] = &[red_card::WARNING, review_card::WARNING];
+pub(crate) const WARNING_KINDS: &[WarningKind] = &[
+    red_card::WARNING,
+    red_card::UNJUDGED_WARNING,
+    review_card::WARNING,
+];
 
 fn kind_of(text: &str) -> Option<&'static SessionKind> {
     SESSION_KINDS.iter().find(|k| (k.opens)(text))
