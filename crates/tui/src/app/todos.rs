@@ -1051,7 +1051,7 @@ impl App {
                     self.say("that subagent is still opening — nothing to read yet");
                     return None;
                 }
-                self.sub_out_pending = Some(id.clone());
+                self.ask_peek(&id);
                 Some(Action::Peek(id.clone()))
             }
         }

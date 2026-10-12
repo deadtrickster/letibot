@@ -710,7 +710,7 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
-                self.sub_out_pending = Some(id.clone());
+                self.ask_peek(&id);
                 Some(Action::Peek(id))
             }
             // **`/resume ID` brings a session that is on disk but not in this daemon

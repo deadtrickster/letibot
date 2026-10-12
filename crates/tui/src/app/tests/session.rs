@@ -1145,6 +1145,8 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
             }),
         },
     ];
+    // The head asks before the daemon answers (a reply nobody asked for is dropped).
+    a.ask_peek("s-sub-1");
     a.apply(ServerFrame::Peeked {
         session_id: "s-sub-1".into(),
         dropped: 0,

@@ -936,6 +936,10 @@ pub struct App {
     pub(crate) sub_out: Option<SubOut>,
     /// The subagent whose output was asked for and not yet answered. Esc cancels.
     pub(crate) sub_out_pending: Option<String>,
+    /// **The surface that asked for it** (R90.17) — the top of the stack when the read was sent,
+    /// `None` for a `/peek` typed over the conversation. Closing that surface cancels the read,
+    /// so a late `Peeked` does not open the output over whatever the operator went on to.
+    pub(crate) sub_out_from: Option<Surface>,
     /// **The child this head climbed UP out of** — the session id it left when Esc sent it
     /// back to the parent, read once by [`App::fold_subagents`] so the cursor lands on the
     /// row that child owns instead of on row zero.
@@ -1737,6 +1741,7 @@ impl App {
             subagents_stop_rows: Vec::new(),
             sub_out: None,
             sub_out_pending: None,
+            sub_out_from: None,
             up_from: None,
             diff_popup: None,
             job_out: None,

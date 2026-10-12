@@ -122,7 +122,7 @@ impl App {
             Act::Reread => match self.sub_out.as_ref() {
                 Some(v) => {
                     let id = v.session_id.clone();
-                    self.sub_out_pending = Some(id.clone());
+                    self.ask_peek(&id);
                     ControlFlow::Break(Some(Action::Peek(id)))
                 }
                 None => ControlFlow::Continue(()),
@@ -353,7 +353,7 @@ impl App {
             return ControlFlow::Break(None);
         }
         let id = row.session_id.clone();
-        self.sub_out_pending = Some(id.clone());
+        self.ask_peek(&id);
         ControlFlow::Break(Some(Action::Peek(id)))
     }
 

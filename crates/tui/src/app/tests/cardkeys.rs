@@ -622,3 +622,25 @@ fn the_help_names_the_card_keys() {
         assert!(help.contains(words), "{words}: {help}");
     }
 }
+
+/// A late `Peeked` after the pane that asked was closed does not open over what came next.
+#[test]
+fn a_late_peek_reply_after_its_pane_closed_is_not_opened() {
+    let mut a = app();
+    a.push_surface(Surface::Todos);
+    a.ask_peek("s-sub-1");
+    a.key(Key::Esc);
+    assert_eq!(a.top_surface(), None);
+    a.apply(ServerFrame::Peeked {
+        session_id: "s-sub-1".into(),
+        dropped: 0,
+        events: vec![],
+        snapshot: None,
+    });
+    assert_eq!(
+        a.top_surface(),
+        None,
+        "nothing opened over the conversation"
+    );
+    assert!(a.sub_out.is_none());
+}

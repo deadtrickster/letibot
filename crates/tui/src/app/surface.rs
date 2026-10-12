@@ -242,8 +242,17 @@ impl App {
         while self.pop_surface().is_some() {}
     }
 
+    /// **Ask for a subagent's output**, remembering which surface asked (R90.17).
+    pub(crate) fn ask_peek(&mut self, id: &str) {
+        self.sub_out_pending = Some(id.to_string());
+        self.sub_out_from = self.focused_surface();
+    }
+
     /// The data a closed surface leaves behind, dropped with it.
     fn forget_surface(&mut self, s: Surface) {
+        if self.sub_out_from == Some(s) {
+            self.sub_out_pending = None;
+        }
         match s {
             Surface::TodoRow => self.todos_open = None,
             Surface::QueueEntry => self.queue_open = None,

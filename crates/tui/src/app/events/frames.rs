@@ -269,7 +269,12 @@ impl App {
                 events,
                 snapshot,
             } => {
-                self.sub_out_pending = None;
+                // **A read nobody is waiting for any more is not opened** (R90.17): the surface
+                // that asked was closed meanwhile (`App::forget_surface`), and the output would
+                // land over whatever the operator went on to.
+                if self.sub_out_pending.take().is_none() {
+                    return Disposition::Control;
+                }
                 // **The session's rows, when the daemon sent them** — and the whole point of the
                 // field is that this is the ORDINARY path now. A child is a session (the operator,
                 // 2026-10-03: *"yes subagents are not even scratch session they are session, just

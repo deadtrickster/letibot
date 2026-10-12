@@ -504,6 +504,8 @@ fn the_arrows_scroll_the_subagent_cursor_into_view() {
 fn arrows_walk_the_subagent_output_back_to_its_beginning() {
     let mut a = app();
     let payload: String = (0..50).map(|i| format!("line {i}\n")).collect();
+    // The head asks before the daemon answers (a reply nobody asked for is dropped).
+    a.ask_peek("s-sub-1");
     a.apply(ServerFrame::Peeked {
         session_id: "s-sub-1".into(),
         dropped: 0,
