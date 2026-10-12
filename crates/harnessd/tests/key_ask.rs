@@ -189,6 +189,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
         // The landing root, never the box's real `~/.local/share/letibot` (an inherited
         // `XDG_DATA_HOME` would reach it past the `HOME` above).
         .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+        .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env_remove("DEEPSEEK_API_KEY")
         .stdin(std::process::Stdio::null())
@@ -310,6 +311,7 @@ fn with_no_head_to_ask_the_refusal_names_where_a_key_goes() {
         // The landing root, never the box's real `~/.local/share/letibot` (an inherited
         // `XDG_DATA_HOME` would reach it past the `HOME` above).
         .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+        .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env_remove("DEEPSEEK_API_KEY")
         .stdin(std::process::Stdio::null())

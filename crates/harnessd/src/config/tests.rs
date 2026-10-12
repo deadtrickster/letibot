@@ -1891,3 +1891,16 @@ fn the_system_prompt_carries_nothing_volatile() {
         );
     }
 }
+
+/// **The daemon's own logs are not in the workspace** (TODO R92.4): a child's workspace is its
+/// worktree, and `.letibot/*.jsonl` there made every finished child's tree look dirty. With a
+/// logs root they go under it, one directory per session; a fixture without one keeps the old
+/// place, so no test writes into the box's real data directory.
+#[test]
+fn the_daemons_logs_go_under_the_logs_root_one_directory_per_session() {
+    let mut cfg = Config::for_this_box("/tmp/ws");
+    cfg.session_id = "s-7".into();
+    assert_eq!(cfg.daemon_logs(), PathBuf::from("/tmp/ws/.letibot"));
+    cfg.logs_root = Some(PathBuf::from("/data/letibot/logs"));
+    assert_eq!(cfg.daemon_logs(), PathBuf::from("/data/letibot/logs/s-7"));
+}

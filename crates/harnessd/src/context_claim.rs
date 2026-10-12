@@ -168,7 +168,7 @@ pub const SELF: &str = "myself";
 pub const OWNERS: &[&str] = &[SELF, "remaining", "fresh"];
 
 /// The file each claim is appended to, under the workspace.
-pub const LOG: &str = ".letibot/context-claims.jsonl";
+pub const LOG: &str = "context-claims.jsonl";
 
 /// The hub warning for a model that repeats the claim after being told its fill.
 pub const REPEATED: &str = "context_claim_repeated";
@@ -546,7 +546,9 @@ impl Finding {
     /// **One line to [`LOG`]**: the sentence, its score, the fill and window, and
     /// whether the model was told. Best-effort, like the offers' log — a check that
     /// fails to write a line about itself is still a check.
-    pub fn log(&self, workspace: &Path, session: &str) {
+    /// `logs` is the session's logs directory (`Config::daemon_logs`), never the workspace
+    /// (TODO R92.4).
+    pub fn log(&self, logs: &Path, session: &str) {
         let line = serde_json::json!({
             "at": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -562,7 +564,7 @@ impl Finding {
             "slapped": matches!(self.verdict, Verdict::Slap(_)),
             "repeated": matches!(self.verdict, Verdict::Repeated(_)),
         });
-        let log = workspace.join(LOG);
+        let log = logs.join(LOG);
         if let Some(dir) = log.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

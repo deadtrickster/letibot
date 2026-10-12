@@ -161,11 +161,15 @@ fn user_rows(h: &Harness) -> Vec<(Speaker, String)> {
 }
 
 fn records(dir: &TempDir) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(dir.path.join(letibot_harnessd::delivery::LOG))
-        .unwrap_or_default()
-        .lines()
-        .map(|l| serde_json::from_str(l).expect("a record line is JSON"))
-        .collect()
+    std::fs::read_to_string(
+        dir.path
+            .join(".letibot")
+            .join(letibot_harnessd::delivery::LOG),
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(|l| serde_json::from_str(l).expect("a record line is JSON"))
+    .collect()
 }
 
 /// **The session's hub adopted into a registry, the way the daemon's are** — so the bell the

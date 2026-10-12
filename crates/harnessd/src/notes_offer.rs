@@ -71,7 +71,7 @@
 //!
 //! So every offer that reaches a request is settled once the round's tool calls
 //! are known, and one line per offer lands in
-//! `<workspace>/.letibot/notes-offers.jsonl`: the path, the score, whether it was
+//! `<data dir>/logs/<session>/notes-offers.jsonl`: the path, the score, whether it was
 //! taken, and what took it. The log is best-effort — a hint that fails to write a
 //! line about itself is still a hint, and a notes feature that breaks a turn
 //! because a file could not be appended to would be worse than no notes.
@@ -97,7 +97,7 @@ use letibot_tools::similarity::Corpus;
 ///
 /// **It is a starting point, not a finding**, and the design says so itself:
 /// *"tune the floor from that ratio"* — the take-up log
-/// (`<workspace>/.letibot/notes-offers.jsonl`) is the measurement that moves it.
+/// (`<data dir>/logs/<session>/notes-offers.jsonl`) is the measurement that moves it.
 ///
 /// **Moved to 0.18 on that measurement, 2026-10-10.** The fixtures had the honest
 /// positives at 0.366–0.419; live offers land far lower, and the log of **121 offers
@@ -122,8 +122,10 @@ pub const OFFER_FLOOR: f64 = 0.18;
 /// is the most recent text, which is the text a hint should fire on.
 pub const SUBJECT_CHARS: usize = 8_000;
 
-/// The file the take-up log is appended to, under the workspace.
-pub const LOG: &str = ".letibot/notes-offers.jsonl";
+/// The file the take-up log is appended to, in the session's logs directory
+/// (`Config::daemon_logs`; it was `<workspace>/.letibot/`, which made every child's worktree look
+/// dirty — TODO R92.4).
+pub const LOG: &str = "notes-offers.jsonl";
 
 /// One note, offered, with the score that earned it.
 #[derive(Debug, Clone, PartialEq)]
@@ -193,8 +195,8 @@ impl Offers {
     /// the fact survives a daemon restart, and there is no second copy of it to
     /// disagree with the file. A line that cannot be parsed is skipped: this is the
     /// notes path, where a hint that fails is still a hint.
-    pub fn recall(&mut self, workspace: &Path, session: &str) {
-        let Ok(text) = std::fs::read_to_string(workspace.join(LOG)) else {
+    pub fn recall(&mut self, logs: &Path, session: &str) {
+        let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {
             return;
         };
         for line in text.lines() {
@@ -306,12 +308,7 @@ impl Offers {
     /// Logged whichever way it went, because the ratio is the whole point: a note
     /// offered and never taken is a note to rewrite, retire, or stop offering,
     /// and a note offered and taken is evidence the floor is not too high.
-    pub fn settle(
-        &mut self,
-        workspace: &Path,
-        session: &str,
-        calls: &[ToolCall],
-    ) -> Option<&Offer> {
+    pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Option<&Offer> {
         let offer = self.open.take()?;
         let taken = calls.iter().any(|c| {
             read_of(c)
@@ -326,7 +323,7 @@ impl Offers {
             json(&offer.path.display().to_string()),
             offer.score
         );
-        let log = workspace.join(LOG);
+        let log = logs.join(LOG);
         if let Some(dir) = log.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

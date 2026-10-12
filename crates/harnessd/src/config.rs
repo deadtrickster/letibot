@@ -669,6 +669,13 @@ pub struct Config {
     /// `~/.local/share/letibot`. A confined session binds its repository's landing tree under
     /// this root read-only (`harness::confined_grants`), and the queue lands under it.
     pub landing_root: Option<std::path::PathBuf>,
+    /// **Where the daemon's own logs live** — `<data dir>/logs`, one directory per session under
+    /// it (`delivery-log.jsonl`, `context-claims.jsonl`, `notes-offers.jsonl`; see
+    /// [`Config::daemon_logs`]). Set by [`Config::for_the_daemon`]; `None` in every fixture, which
+    /// then writes beside the workspace as before so no test reaches the box's real data
+    /// directory. They were in `<workspace>/.letibot/`, and a child's workspace is its worktree:
+    /// every finished child's tree looked dirty and none was ever retired (TODO R92.4).
+    pub logs_root: Option<std::path::PathBuf>,
     /// **Which role this session seats.** [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -1943,6 +1950,7 @@ impl Config {
             seat: Seat::default(),
             grants_ro: Vec::new(),
             landing_root: None,
+            logs_root: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
@@ -2002,7 +2010,22 @@ impl Config {
         let mut cfg = Config::for_this_box(workspace);
         cfg.allow_vm_reviewers();
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
+        // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
+        // `$LETIBOT_LANDING_ROOT`, so it never writes into the box's real data directory.
+        cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| crate::mergequeue::git::letibot_data_dir().map(|d| d.join("logs")));
         cfg
+    }
+
+    /// **This session's logs directory**: `<logs_root>/<session id>/`, or — with no logs root, as
+    /// in a fixture — `<workspace>/.letibot/`, where they were before.
+    pub fn daemon_logs(&self) -> PathBuf {
+        match &self.logs_root {
+            Some(root) => root.join(&self.session_id),
+            None => self.workspace.join(".letibot"),
+        }
     }
 
     /// **Arm this session's review-queue reviewers for a VM** — the one named way the value behind

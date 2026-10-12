@@ -328,6 +328,67 @@ pub fn slug_from_prompt(prompt: &str) -> String {
     }
 }
 
+/// **Why a slug the caller named cannot name a worktree and a branch** (TODO R92.17), or
+/// `None`. The slug becomes a directory (`agent-<slug>`) and a branch (`agent/<slug>`), and it was
+/// only trimmed: `/` nested directories and could clash with a ref, `..` escaped
+/// `.claude/worktrees`, a space made a branch git refuses after the directory was already made.
+pub fn slug_refusal(slug: &str) -> Option<String> {
+    let why = if slug.contains("..") {
+        "it contains `..`, which would leave `.claude/worktrees`"
+    } else if slug.contains('/') {
+        "it contains `/`, which would nest the worktree's directory and the branch's ref"
+    } else if slug.chars().any(char::is_whitespace) {
+        "it contains whitespace, which no branch name may"
+    } else if slug.starts_with('-') || slug.starts_with('.') || slug.ends_with('.') {
+        "it starts with `-` or `.`, or ends with `.`, which a branch name may not"
+    } else if slug.ends_with(".lock") {
+        "it ends with `.lock`, which a branch name may not"
+    } else if slug
+        .chars()
+        .any(|c| c.is_control() || "~^:?*[\\@{".contains(c))
+    {
+        "it contains a character a branch name may not (`~ ^ : ? * [ \\ @ {` or a control)"
+    } else {
+        return None;
+    };
+    Some(format!(
+        "the slug `{slug}` cannot name a worktree and a branch: {why}. Use letters, digits and \
+         `-`, e.g. `{}`.",
+        slug_from_prompt(slug)
+    ))
+}
+
+/// **The first free slug from `base`** — `base`, then `base-2`, `base-3`, … — where `taken` says
+/// whether one is already used (its worktree's path exists, or its branch does). A slug derived
+/// from the prompt collides whenever two briefs begin alike (the `-2` trees on disk were made by
+/// hand); a derived one is the default, not a name anybody chose, so the next free one is taken
+/// instead of refusing the spawn (TODO R92.17).
+pub fn unique_slug(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..1000)
+        .map(|n| format!("{base}-{n}"))
+        .find(|s| !taken(s))
+        .unwrap_or_else(|| format!("{base}-{}", std::process::id()))
+}
+
+/// Whether `agent/<slug>`'s worktree path or branch exists in the repository at `under`.
+fn slug_taken(under: &str, slug: &str) -> bool {
+    if std::fs::symlink_metadata(worktree_path(under, slug)).is_ok() {
+        return true;
+    }
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(under)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{}", worktree_branch(slug)))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// **The path a `task_start` worktree is created at**, from the repo's workspace and
 /// the slug.
 ///
@@ -1128,8 +1189,18 @@ impl Tool for TaskStartTool {
 
         // **The slug, derived from the prompt when the caller did not name one.** The
         // derivation is the default, not a lock: a caller that wants a different name
-        // for the same work names it with `slug`.
-        let slug = slug_arg.unwrap_or_else(|| slug_from_prompt(prompt));
+        // for the same work names it with `slug`. A named one is checked before anything is
+        // made (R92.17).
+        if let Some(s) = &slug_arg
+            && let Some(why) = slug_refusal(s)
+        {
+            return Invocation::failed(
+                format!("the slug `{s}` is not a name"),
+                format!("{why} Nothing was arranged and nothing was spawned."),
+            );
+        }
+        let named = slug_arg.is_some();
+        let mut slug = slug_arg.unwrap_or_else(|| slug_from_prompt(prompt));
 
         // **The workspace, or the refusal that names its absence.** A `task_start`
         // with no workspace to arrange a worktree in is a call that cannot be done,
@@ -1154,6 +1225,10 @@ impl Tool for TaskStartTool {
                 Some(r) => format!("{workspace}/{r}"),
                 None => workspace.clone(),
             };
+            // A derived slug that is taken becomes the next free one (`-2`, `-3`, …).
+            if !named {
+                slug = unique_slug(&slug, |s| slug_taken(&under, s));
+            }
             let path = worktree_path(&under, &slug);
             if std::fs::symlink_metadata(&path).is_ok() {
                 return Invocation::failed(

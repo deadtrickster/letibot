@@ -68,7 +68,7 @@
 //!
 //! Every delivery — immediate, batched, delivered at a turn's end, idle, or released by the cap,
 //! and every monitor firing — is one
-//! JSON line in [`LOG`] (`<workspace>/.letibot/delivery-log.jsonl`, the `notes-offers.jsonl`
+//! JSON line in [`LOG`] (`<data dir>/logs/<session>/delivery-log.jsonl`, the `notes-offers.jsonl`
 //! shape): session, handle, kind, when it arrived, when it was delivered, the rule, and how many
 //! were delivered together. Deliberately small and self-contained, so a general metrics store can
 //! fold it in by reading the lines; see [`DeliveryLog`].
@@ -87,8 +87,10 @@ use crate::jobwatch::{BackgroundKind, JobCompletion, JobWatchers};
 /// harness reads.
 pub const HELD_RESULTS_CAP: Duration = Duration::from_secs(10 * 60);
 
-/// Where the delivery record is appended, under the session's workspace.
-pub const LOG: &str = ".letibot/delivery-log.jsonl";
+/// The delivery record's file, in the session's logs directory (`Config::daemon_logs`:
+/// `<data dir>/logs/<session>/` for a daemon — never the workspace, whose `.letibot/` made every
+/// child's worktree look dirty, TODO R92.4).
+pub const LOG: &str = "delivery-log.jsonl";
 
 /// What finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -375,10 +377,10 @@ fn ms(t: SystemTime) -> u128 {
 }
 
 impl DeliveryLog {
-    /// The record for one session, under its workspace.
-    pub fn under(workspace: &Path, session: &str) -> DeliveryLog {
+    /// The record for one session, in its logs directory (`Config::daemon_logs`).
+    pub fn under(logs: &Path, session: &str) -> DeliveryLog {
         DeliveryLog {
-            path: Some(workspace.join(LOG)),
+            path: Some(logs.join(LOG)),
             session: session.to_string(),
         }
     }

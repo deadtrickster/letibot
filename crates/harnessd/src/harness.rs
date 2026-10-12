@@ -6471,7 +6471,7 @@ impl Harness {
         Some(Deliveries::new(
             watch,
             Some(self.todos.clone()),
-            crate::delivery::DeliveryLog::under(&self.cfg.workspace, &self.cfg.session_id),
+            crate::delivery::DeliveryLog::under(&self.cfg.daemon_logs(), &self.cfg.session_id),
             self.cfg.held_results_cap,
             &self.hub.session_id(),
         ))
@@ -11329,7 +11329,7 @@ impl Harness {
         // assembly below, never in the transcript — *a row cannot be un-said; an
         // assembly can be recomposed*.
         let mut offers = crate::notes_offer::Offers::new();
-        offers.recall(&self.cfg.workspace, &self.cfg.session_id);
+        offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // Consecutive HTTP failures on the round being attempted. Not per turn:
         // the thing being waited out is the endpoint, and it is as likely to go
         // down on round nine as on round one.
@@ -11971,7 +11971,7 @@ impl Harness {
             // next round touch that path? Log offers and take-ups; tune the floor
             // from that ratio."* A round that ends the turn with no calls settles
             // with an empty list, which is an untaken offer and is recorded as one.
-            offers.settle(&self.cfg.workspace, &self.cfg.session_id, &calls);
+            offers.settle(&self.cfg.daemon_logs(), &self.cfg.session_id, &calls);
             // **What the agent says it is doing, recorded before its calls are
             // adjudicated.** A model's prose for a round is the sentence in front of
             // its tool calls — "the queued-prompt rendering lives in app.rs; I am
@@ -12710,7 +12710,7 @@ impl Harness {
         if !self.cfg.auto_compact {
             finding.verdict = Verdict::Quiet;
         }
-        finding.log(&self.cfg.workspace, &self.cfg.session_id);
+        finding.log(&self.cfg.daemon_logs(), &self.cfg.session_id);
         crate::instruments::context_claim(&self.cfg.session_id, &finding);
         match finding.verdict {
             Verdict::Slap(line) => Some(line),
@@ -17238,7 +17238,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 format!(
                     "the worktree could not be created at `{path}`: {e}. Nothing was \
                      spawned. The base was `{base}` and the branch would have been \
-                     `{branch}`."
+                     `{branch}`.{}",
+                    leftover_hint(&workspace, &branch, &e)
                 )
             })?;
             // **No file is written into the tree.** The build cache is shared through the
@@ -19150,6 +19151,37 @@ fn vocab_differs(stored: &str, current: &str) -> bool {
         (true, true) => stored != current,
         _ => true,
     }
+}
+
+/// **What is left over when `git worktree add -b <branch>` fails** (TODO R92.17) — a branch an
+/// earlier child left behind, or a registration whose directory is gone (locked, or not yet
+/// pruned). Said with the commands that clear it; empty when neither is the cause.
+fn leftover_hint(workspace: &str, branch: &str, err: &str) -> String {
+    let mut hint = String::new();
+    let branch_left = git_in(
+        workspace,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok();
+    if branch_left {
+        hint.push_str(&format!(
+            " The branch `{branch}` already exists — left by an earlier child. If it is landed \
+             or abandoned, `git branch -D {branch}` (after `git worktree prune`) frees the name; \
+             otherwise use another `slug`."
+        ));
+    }
+    if err.contains("already registered") || err.contains("locked") || err.contains("missing") {
+        hint.push_str(
+            " A worktree registration whose directory is gone is in the way: `git worktree \
+             prune` clears it (`git worktree unlock <path>` first if it is locked).",
+        );
+    }
+    hint
 }
 
 /// **Tell `key` to session `me` once** — once per daemon in `told` (the session's own memory),

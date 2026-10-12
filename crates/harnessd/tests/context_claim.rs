@@ -191,7 +191,8 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
     );
     assert!(warnings_of(&hub, REPEATED).is_empty());
 
-    let log = std::fs::read_to_string(dir.path.join(LOG)).expect("the claim is logged");
+    let log =
+        std::fs::read_to_string(dir.path.join(".letibot").join(LOG)).expect("the claim is logged");
     let row: serde_json::Value =
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["slapped"], true, "{row}");
@@ -247,7 +248,8 @@ fn the_same_excuse_at_the_wall_is_left_alone() {
         context_checks(&h).is_empty(),
         "a true claim is not corrected"
     );
-    let log = std::fs::read_to_string(dir.path.join(LOG)).expect("the claim is logged");
+    let log =
+        std::fs::read_to_string(dir.path.join(".letibot").join(LOG)).expect("the claim is logged");
     let row: serde_json::Value =
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["at_wall"], true, "{row}");

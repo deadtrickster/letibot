@@ -148,7 +148,8 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         .arg("127.0.0.1:1")
         // The landing root, never the box's real `~/.local/share/letibot` (an inherited
         // `XDG_DATA_HOME` would reach it past the `HOME` above).
-        .env("LETIBOT_LANDING_ROOT", home.join("landing"));
+        .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+        .env("LETIBOT_LOGS_ROOT", home.join("logs"));
     // **A real daemon must be handed a vocabulary, and `--vocab` is how.** The comment that
     // used to stand here said the session's vocabulary was "read from the box's default path"
     // — true when `harnessd` carried one, and no longer true since the vocabulary became

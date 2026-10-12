@@ -1167,3 +1167,36 @@ fn task_and_task_start_schemas_name_model_and_wake() {
         );
     }
 }
+
+/// **A named slug that cannot name a directory and a branch is refused** (TODO R92.17): `/`,
+/// `..` and whitespace were only trimmed.
+#[test]
+fn a_slug_with_a_slash_dots_or_spaces_is_refused() {
+    for bad in [
+        "a/b",
+        "../escape",
+        "has space",
+        "-x",
+        "x.lock",
+        "a~b",
+        "tab\there",
+    ] {
+        assert!(slug_refusal(bad).is_some(), "{bad:?} should be refused");
+    }
+    for good in ["fix-the-gate", "r92", "agent-refresh-2"] {
+        assert_eq!(slug_refusal(good), None, "{good:?}");
+    }
+    let why = slug_refusal("../x").unwrap();
+    assert!(why.contains("`..`"), "{why}");
+}
+
+/// **A derived slug that is taken becomes the next free one** (TODO R92.17) — `-2`, `-3`.
+#[test]
+fn a_taken_derived_slug_gets_the_next_free_suffix() {
+    let taken = ["fix-the-gate", "fix-the-gate-2"];
+    assert_eq!(
+        unique_slug("fix-the-gate", |s| taken.contains(&s)),
+        "fix-the-gate-3"
+    );
+    assert_eq!(unique_slug("free", |_| false), "free");
+}

@@ -94,6 +94,7 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         // The landing root, never the box's real `~/.local/share/letibot` (an inherited
         // `XDG_DATA_HOME` would reach it past the `HOME` above).
         .env("LETIBOT_LANDING_ROOT", home.join("landing"))
+        .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_RUNTIME_DIR", dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
