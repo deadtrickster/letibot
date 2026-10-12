@@ -384,6 +384,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("queue_install_failed", Class::Failure),
     ("target_green", Class::Routine),
     ("queue_branch_kept", Class::Routine),
+    // **A session's workspace is gone** (R92.24) — said when it opens or wakes on a directory
+    // that no longer exists. A Failure: nothing the session runs can work until somebody acts.
+    ("workspace_gone", Class::Failure),
     // **The daemon's boot** (R92.2, R92.3; `cli::Boot`): each step from the socket's bind to the
     // worker's start (`daemon_starting`) and the start itself (`daemon_started`) are Routine — a
     // head draws them as the tail's line and a queued prompt's label, not as rows. A boot that
@@ -1149,10 +1152,11 @@ mod the_register_census {
         //     (Failures) and `target_green`, `queue_branch_kept` (Routine); see their rows.
         //   · **144, not 141**: the daemon's boot — `daemon_starting`, `daemon_started`
         //     (Routine) and `daemon_start_failed` (Failure).
-        assert_eq!(TABLE.len(), 144, "the table's size");
+        //   · **145, not 144**: `workspace_gone` (Failure, R92.24).
+        assert_eq!(TABLE.len(), 145, "the table's size");
         assert_eq!(count(Class::Routine), 52);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 81);
+        assert_eq!(count(Class::Failure), 82);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

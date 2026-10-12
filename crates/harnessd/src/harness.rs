@@ -1004,6 +1004,19 @@ impl HubSteering {
     }
 }
 
+/// The warning code for a session whose workspace no longer exists (R92.24).
+const WORKSPACE_GONE: &str = "workspace_gone";
+
+/// **"workspace gone", in one sentence** — said when a session opens or wakes on a workspace that
+/// no longer exists (R92.24).
+fn workspace_gone(workspace: &std::path::Path) -> String {
+    format!(
+        "workspace gone: `{}` no longer exists (a retired worktree, or a checkout moved or \
+         removed), so nothing this session runs can work there",
+        workspace.display()
+    )
+}
+
 /// A monitor firing, as the sentence the model is given — or `None` when nothing in `fired` is
 /// news to it.
 ///
@@ -2052,6 +2065,9 @@ pub struct Harness {
     /// Filled by [`Harness::restore_after_restart`] when the session is opened, and said by the next
     /// turn the session takes ([`Harness::wake`], or a restarted child's own continuation).
     restart_notices: Vec<String>,
+    /// Whether this harness has said its workspace is gone (R92.24) — once, at the first wake
+    /// that found it so.
+    workspace_gone_said: bool,
     /// The monitor names live at the last [`Harness::sync_monitor_records`], sorted.
     monitors_seen_live: Vec<String>,
     /// **The queue entries this session's model has been told about** — that its repository needs a
@@ -2972,6 +2988,20 @@ impl Harness {
         let in_vm = cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
         if in_vm {
             cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
+        }
+        // **R92.24: a session opening on a workspace that is gone says so, by that name.** A
+        // retired worktree, a moved checkout: every backend below roots itself at the workspace
+        // and failed with a bare ENOENT (or, for a confined seat, a paragraph blaming the cgroup
+        // and bwrap first). Said on the session's hub as `workspace_gone` and returned as the
+        // open's error.
+        if !cfg.workspace.is_dir() {
+            let said = workspace_gone(&cfg.workspace);
+            hub.publish(SessionEvent::Warning {
+                code: WORKSPACE_GONE.into(),
+                detail: said.clone(),
+                compaction: None,
+            });
+            return Err(HarnessError::Setup(said));
         }
         let (backend, backend_confined): (HostBackend, bool) = if in_vm {
             // A placeholder the VM arm below replaces; the host tree is not touched
@@ -4948,6 +4978,7 @@ impl Harness {
             reviews: parts.reviews.clone(),
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
+            workspace_gone_said: false,
             monitors_seen_live: Vec::new(),
             gate_told: Default::default(),
             provider,
@@ -8796,6 +8827,19 @@ impl Harness {
         // one any more: a session inside a turn is served at its round boundary, and a session
         // this daemon holds is served by the daemon's own clock whatever its turn state.
         let _ = self.serve_reviews();
+        // **R92.24: a wake on a workspace that has gone** — a worktree retired under a live
+        // session. Said on the hub once per harness, and to the model when this wake has
+        // something to say anyway (a wake for this alone would be a turn whose every tool call
+        // fails).
+        let gone = !self.cfg.workspace.is_dir();
+        if gone && !self.workspace_gone_said {
+            self.workspace_gone_said = true;
+            self.hub.publish(SessionEvent::Warning {
+                code: WORKSPACE_GONE.into(),
+                detail: workspace_gone(&self.cfg.workspace),
+                compaction: None,
+            });
+        }
         // **Two kinds of thing arrive between turns, and they share one turn.**
         //
         // A monitor that fired, and a background job that ended. Both are the machine's
@@ -8927,6 +8971,9 @@ impl Harness {
         self.meter_wake(causes, !notices.is_empty());
         if notices.is_empty() {
             return Ok(None);
+        }
+        if !self.cfg.workspace.is_dir() {
+            notices.insert(0, format!("[workspace] {}.", workspace_gone(&self.cfg.workspace)));
         }
         let text = notices.join("\n\n");
         // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the
