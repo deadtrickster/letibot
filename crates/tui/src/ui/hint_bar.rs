@@ -208,6 +208,8 @@ impl App {
             Some(s) => self.surface_hint(s),
             // **The ctrl-v window** (R67 item 9): the arrows and the page keys page it and Esc
             // closes it (`key_payload_window`); the composer stays live under it.
+            // An open run is the conversation's rows, scrolled as they are; Esc folds it.
+            None if self.run_is_open() => "esc folds the run back".to_string(),
             None if self.payload_sel.is_some() => {
                 "↑↓ pgup/pgdn page the result · home/end its ends · enter still sends · esc closes it"
                     .to_string()

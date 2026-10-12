@@ -653,6 +653,48 @@ impl App {
         self.newest_payload_row()
     }
 
+    /// **Is what `payload_sel` names an open RUN** rather than a ctrl-v window on one result?
+    ///
+    /// One field names both — a run is opened (by `ctrl-t` or a click on its marker) by naming
+    /// its first row there — and the two want opposite things from the scroll keys. A window
+    /// pages its own text and hands the rest of a scroll on; a run has no text of its own, it is
+    /// the conversation's rows drawn lifted, so the keys must move the conversation. Every scroll
+    /// key asked only `payload_sel.is_some()`, so an open run's wheel and page keys paged a window
+    /// nobody draws: up chained through to the conversation, down moved `payload_page` — and
+    /// threw the history away — every notch, and the view stood still. The operator: *"when i
+    /// click on thinking in the [tools, thinking lines] block, the scroll is stuck and broken"*.
+    ///
+    /// Asked of the same [`run_open_at`] the two walks draw by, so the keys and the screen
+    /// cannot disagree about which of the two is open.
+    pub(crate) fn run_is_open(&self) -> bool {
+        let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        // The live tail's sentinel names no row, and `run_open_at` answers it without one.
+        let row = if id == LIVE_RUN {
+            0
+        } else {
+            match self.items.iter().position(|it| it.item_id == id) {
+                Some(row) => row,
+                None => return false,
+            }
+        };
+        run_open_at(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            self.live_work_now(),
+            Some(id),
+            row,
+        )
+    }
+
+    /// **A ctrl-v window is open** — `payload_sel` names a result, not a run (see
+    /// [`App::run_is_open`]). What the scroll keys ask before they page a window.
+    pub(crate) fn payload_window_open(&self) -> bool {
+        self.payload_sel.is_some() && !self.run_is_open()
+    }
+
     /// The turn's in-flight work, as this head currently knows it — one function, so the
     /// walk, the chord and the pane cannot disagree about what is running.
     pub(crate) fn live_work_now(&self) -> LiveWork {

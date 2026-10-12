@@ -176,7 +176,7 @@ impl App {
             // transcript underneath it instead — which, at the bottom already, looked like
             // nothing happening at all.
             Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown
-                if self.payload_sel.is_some() && self.drawn() == Drawn::Conversation =>
+                if self.payload_window_open() && self.drawn() == Drawn::Conversation =>
             {
                 let by = match k {
                     Key::WheelUp | Key::WheelDown => 3,

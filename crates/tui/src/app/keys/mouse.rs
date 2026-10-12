@@ -185,8 +185,10 @@ impl App {
             Target::Surface(_) | Target::QueueTab(_) | Target::TodoWait => {
                 self.scroll_pane(up, NOTCH)
             }
+            // A window, not an open run — a run is the conversation's own rows and the
+            // conversation scrolls under it (see [`App::run_is_open`]).
             Target::Conversation | Target::Notice | Target::NoteCard
-                if self.payload_sel.is_some() =>
+                if self.payload_window_open() =>
             {
                 self.page_payload(up, NOTCH)
             }

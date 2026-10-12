@@ -36,6 +36,21 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
+                // **An open run has no window to page** (see [`App::run_is_open`]): Esc above
+                // folds it, and the arrows move the conversation it is drawn in by the same
+                // step — what they did at a window's edge — while the page keys and the wheel
+                // go on to the conversation's own scroll.
+                Key::Up if self.run_is_open() => {
+                    self.scroll_up(BY);
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
+                Key::Down if self.run_is_open() => {
+                    self.hold(BY as isize);
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
+                _ if self.run_is_open() => {}
                 Key::Up | Key::PageUp => {
                     self.page_payload(true, BY);
                     return ControlFlow::Break(None);

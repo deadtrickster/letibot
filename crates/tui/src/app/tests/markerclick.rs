@@ -7,6 +7,14 @@ use super::*;
 /// The shape of `a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence`: prose ending in
 /// a colon, one reasoning row, four tool results — at the conversation rung, one marker.
 fn a_run() -> App {
+    a_run_of(
+        "let me check the file\nand then the other one\nand then the tests",
+        0,
+    )
+}
+
+/// The same run, its reasoning `think` and every result `extra` lines longer.
+fn a_run_of(think: &str, extra: usize) -> App {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -67,7 +75,7 @@ fn a_run() -> App {
         SessionEvent::TranscriptContent {
             item_id: "s.1".into(),
             item: Box::new(TranscriptItem::Reasoning {
-                text: "let me check the file\nand then the other one\nand then the tests".into(),
+                text: think.into(),
                 field: letibot_transcript::ReasoningField::ReasoningContent,
                 truncated: false,
             }),
@@ -87,7 +95,10 @@ fn a_run() -> App {
                     call_id: (*call).into(),
                     name: (*name).into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
-                    payload: format!("CONTENTS-{i}"),
+                    payload: std::iter::once(format!("CONTENTS-{i}"))
+                        .chain((0..extra).map(|j| format!("LINE-{i}-{j}")))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     edit: None,
                     origin: None,
                     media: None,
@@ -193,4 +204,103 @@ fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
             "row {i} is lit after the click: {l:?}"
         );
     }
+}
+
+/// **A run opened by a click still scrolls, both ways and to both ends** — the operator: *"when i
+/// click on thinking in the [tools, thinking lines] block, the scroll is stuck and broken"*.
+///
+/// The click opens the run by naming it in `payload_sel`, which is also what an open ctrl-v
+/// window is named by — and every scroll key asked only `payload_sel.is_some()`, so the run's
+/// wheel and page keys went to a window that is not there: down moved a page offset nobody draws
+/// (and threw the history away each notch), and the view stood still.
+fn opened_run_scrolls(clause: &str, shown: &str) {
+    let think: Vec<String> = (0..132).map(|i| format!("THINK-{i:03}")).collect();
+    let mut a = a_run_of(&think.join("\n\n"), 3);
+    let (w, h) = (100usize, 16usize);
+    let screen = a.screen(w, h);
+    let (x, y) = find(&screen, clause);
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(w, h).join("\n");
+    assert!(open.contains(shown), "the run is open:\n{open}");
+    // And the bar does not offer a window's keys for a run that has no window.
+    assert!(
+        !open.contains("page the result") && open.contains("esc folds the run back"),
+        "{open}"
+    );
+    let (wx, wy) = find(&a.screen(w, h), shown);
+    let top = "here is what I am about to do";
+    let bottom = if shown.starts_with("THINK") {
+        "THINK-131"
+    } else {
+        "CONTENTS-3"
+    };
+    let mut keys: Vec<(&str, Box<dyn Fn() -> Key>, Box<dyn Fn() -> Key>)> = vec![
+        (
+            "the wheel",
+            Box::new(move || Key::Wheel {
+                up: true,
+                x: wx,
+                y: wy,
+            }),
+            Box::new(move || Key::Wheel {
+                up: false,
+                x: wx,
+                y: wy,
+            }),
+        ),
+        (
+            "the wheel keys",
+            Box::new(|| Key::WheelUp),
+            Box::new(|| Key::WheelDown),
+        ),
+        (
+            "the page keys",
+            Box::new(|| Key::PageUp),
+            Box::new(|| Key::PageDown),
+        ),
+        ("the arrows", Box::new(|| Key::Up), Box::new(|| Key::Down)),
+    ];
+    for (name, up, down) in keys.drain(..) {
+        let start = a.screen(w, h).join("\n");
+        assert!(
+            !start.contains(top),
+            "{name} starts at the bottom:\n{start}"
+        );
+        for _ in 0..200 {
+            a.key(up());
+            if a.screen(w, h).join("\n").contains(top) {
+                break;
+            }
+        }
+        let at_top = a.screen(w, h).join("\n");
+        assert!(at_top.contains(top), "{name} reaches the top:\n{at_top}");
+        let mut moved = false;
+        for _ in 0..200 {
+            let before = a.screen(w, h).join("\n");
+            a.key(down());
+            let s = a.screen(w, h).join("\n");
+            moved |= s != before;
+            if s.contains(bottom) && s == before {
+                break;
+            }
+        }
+        let at_bottom = a.screen(w, h).join("\n");
+        assert!(moved, "{name} moved the view down");
+        assert!(
+            at_bottom.contains(bottom) && !at_bottom.contains(top),
+            "{name} reaches the bottom:\n{at_bottom}"
+        );
+        assert!(a.following(), "{name} at the bottom follows again");
+        assert!(a.run_is_open(), "{name} leaves the run open");
+    }
+}
+
+#[test]
+fn a_run_opened_on_its_thinking_scrolls_to_both_ends() {
+    opened_run_scrolls("thinking lines", "THINK-131");
+}
+
+#[test]
+fn a_run_opened_on_its_tool_calls_scrolls_to_both_ends() {
+    opened_run_scrolls("tool calls", "CONTENTS-3");
 }
