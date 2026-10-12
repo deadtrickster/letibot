@@ -456,6 +456,15 @@ mod tests {
                 ("/help".into(), b"/help\r".to_vec()),
             ]
         );
+        // The diff popup's edge, in the bar's casing (R90.28): every key still its own button.
+        let keys: Vec<Vec<u8>> =
+            hints("  ╰─ esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it ─╯")
+                .into_iter()
+                .map(|(_, b)| b)
+                .collect();
+        for k in [&b"\x1b[5~"[..], b"\x1b[6~", b"\x1b[H", b"\x1b[F", b"\x1b[A"] {
+            assert!(keys.iter().any(|b| b == k), "{k:?} not a button: {keys:?}");
+        }
         // Through the escapes a frame row carries.
         assert_eq!(
             hints("\x1b[2m  esc\x1b[0m closes \x1b[38;5;8m·\x1b[0m p reads its output"),

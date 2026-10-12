@@ -76,15 +76,11 @@ impl App {
         } else {
             RESEAT_NOW
         };
-        for (i, name) in [first, NOT_NOW].iter().enumerate() {
+        for (i, rows) in self.reseat_choice_lines(w).into_iter().enumerate() {
             let picked = i == c.sel.min(1);
-            choices.push(one(
-                trim_to(
-                    &format!("{} {:>2}  {name}", if picked { "▸" } else { " " }, i + 1),
-                    w,
-                ),
-                if picked { Role::Strong } else { Role::Plain },
-            ));
+            for l in rows {
+                choices.push(one(l, if picked { Role::Strong } else { Role::Plain }));
+            }
         }
         let more = if c.whole {
             " · tab shows less".to_string()
@@ -101,6 +97,41 @@ impl App {
             row_strings(&content, self.cfg.palette()),
             row_strings(&choices, self.cfg.palette()),
         )
+    }
+
+    /// **The card's two rows, wrapped** (R90.31) — they were trimmed, and the 79-character
+    /// summarise row lost its reason on an ordinary terminal while a question's rows wrap. The
+    /// continuation lines sit under the row's words. The screen's click stops read the same
+    /// lines, so a wrapped row is one button.
+    pub(crate) fn reseat_choice_lines(&self, w: usize) -> [Vec<String>; 2] {
+        let Some(c) = self.reseat.as_ref() else {
+            return [Vec::new(), Vec::new()];
+        };
+        let first = if c.summarise {
+            RESEAT_SUMMARISE
+        } else {
+            RESEAT_NOW
+        };
+        let row = |i: usize, name: &str| {
+            let picked = i == c.sel.min(1);
+            let lead = format!("{} {:>2}  ", if picked { "▸" } else { " " }, i + 1);
+            let mut out = Vec::new();
+            for (k, l) in wrap(name, w.saturating_sub(6).max(1))
+                .into_iter()
+                .enumerate()
+            {
+                out.push(trim_to(
+                    &if k == 0 {
+                        format!("{lead}{l}")
+                    } else {
+                        format!("      {l}")
+                    },
+                    w,
+                ));
+            }
+            out
+        };
+        [row(0, first), row(1, NOT_NOW)]
     }
 
     /// **The pinned strip**: the card, abstained from, still on the screen. Drawn while the

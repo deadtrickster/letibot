@@ -526,8 +526,16 @@ impl App {
                         .collect()
                 }
                 Target::SettingCard => self.mode_hits.clone(),
-                // The two rows are the first two of the answer half, which the fit never trims.
-                Target::ReseatCard => vec![(top + card_rows_len, 0), (top + card_rows_len + 1, 1)],
+                // The two rows open the answer half, which the fit never trims — each as many
+                // lines as it wrapped to.
+                Target::ReseatCard => {
+                    let [one, two] = self.reseat_choice_lines(w).map(|r| r.len());
+                    let at = top + card_rows_len;
+                    (at..at + one)
+                        .map(|r| (r, 0))
+                        .chain((at + one..at + one + two).map(|r| (r, 1)))
+                        .collect()
+                }
                 _ => Vec::new(),
             };
             let rect = Rect {

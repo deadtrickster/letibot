@@ -521,3 +521,45 @@ fn a_notification_names_the_kind_of_card() {
     let n = a.take_notification().expect("notified");
     assert!(n.contains("question for you"), "{n}");
 }
+
+// ─────────────────────── R90.28 / R90.31: the popup and narrow widths ───────────────────────
+
+fn notice_popup(a: &mut App) {
+    a.diff_popup = Some(crate::app::diff_popup::DiffPopup {
+        body: crate::app::diff_popup::PopupBody::Notice {
+            text: "a long notice line that has to wrap somewhere inside the box".into(),
+            jobs: Vec::new(),
+            answer: None,
+        },
+        scroll: 0,
+        placed: false,
+        laid: None,
+        room: 0,
+    });
+}
+
+/// With a decision open, the popup's edge offers only the keys that still scroll it.
+#[test]
+fn the_popup_edge_drops_the_keys_a_decision_takes() {
+    let mut a = app();
+    notice_popup(&mut a);
+    let edge = a.diff_popup_rows(80, 12).join("\n");
+    assert!(edge.contains("↑↓ pgup/pgdn home/end"), "{edge}");
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    let edge = a.diff_popup_rows(80, 12).join("\n");
+    assert!(!edge.contains("↑↓") && edge.contains("pgup/pgdn"), "{edge}");
+    assert!(a.hint_bar(200).contains("the popup: pgup/pgdn"));
+}
+
+/// Below ~24 columns the popup's rows overflowed the box; none is wider than the screen now.
+#[test]
+fn the_popup_fits_a_narrow_screen() {
+    let mut a = app();
+    notice_popup(&mut a);
+    for w in [12usize, 18, 22] {
+        for r in a.diff_popup_rows(w, 10) {
+            let plain = without_control_lines(&r);
+            assert!(rano::width::text::width(&plain) <= w, "{w}: {plain:?}");
+        }
+    }
+}

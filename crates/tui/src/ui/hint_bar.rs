@@ -152,7 +152,9 @@ impl App {
         let rano_mode = if drawn == Drawn::DiffPopup && !self.open.is_empty() {
             // **A decision under the diff popup has the card's keys** (`App::key_diff_popup`
             // yields them); the popup's own keys lead.
-            let own = "the diff: pgup/pgdn scroll · esc closes it";
+            // **"pgup/pgdn", the popup edge's spelling too** (R90.28), and "the popup" — a notice
+            // has no diff.
+            let own = "the popup: pgup/pgdn scroll · esc closes it";
             return crate::ui::render::row(
                 &centred(
                     Some(&Line::styled(own, Role::Faint)),

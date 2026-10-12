@@ -402,3 +402,18 @@ fn the_page_keys_scroll_the_reseat_card_that_says_they_do() {
     assert!(a.dec_scroll > 0, "the card's window moved");
     assert!(after.contains("pgup"), "{after}");
 }
+
+/// **R90.31: the reseat rows wrap rather than being cut** — the 79-character summarise row lost
+/// its reason on an ordinary terminal; a click on its second line still chooses it.
+#[test]
+fn the_reseat_rows_wrap_on_a_narrow_screen() {
+    let (mut a, _hub) = stale();
+    a.reseat_refused("does not fit — `/reseat summarise` carries a summary instead");
+    let card = a.reseat_choice_lines(50);
+    assert!(card[0].len() > 1, "{card:?}");
+    let joined = card[0].join(" ");
+    assert!(joined.contains("verbatim"), "{joined}");
+    for l in card.iter().flatten() {
+        assert!(rano::width::text::width(l) <= 50, "{l}");
+    }
+}

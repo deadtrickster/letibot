@@ -16,8 +16,12 @@ impl App {
             return Vec::new();
         };
         let split = self.diff_split;
-        // The body is two columns in from each side, so the rows read as inside the box.
-        let inner = w.saturating_sub(4).max(20);
+        // The body is two columns in from each side, so the rows read as inside the box. No
+        // floor wider than the box (R90.31): `max(20)` overflowed every row below ~24 columns.
+        let inner = w.saturating_sub(4).max(1);
+        // **With a decision open the card has ↑↓ and Home/End** (`key_diff_popup` yields them),
+        // so the edge offers only the keys that still scroll the popup (R90.28).
+        let deciding = !self.open.is_empty();
         let stale = self
             .diff_popup
             .as_ref()
@@ -61,7 +65,11 @@ impl App {
                     ),
                     Span::raw(format!(" · the change at line {}", file.line)),
                 ]),
-                "esc closes · ↑↓ PgUp PgDn Home End · ctrl-] edits it",
+                if deciding {
+                    "esc closes · pgup/pgdn · ctrl-] edits it"
+                } else {
+                    "esc closes · ↑↓ pgup/pgdn home/end · ctrl-] edits it"
+                },
             ),
             // **The notice names its jobs on the edge**, the way the change names its file.
             // **A card names what it is about** — a red target's the target and the tip, in the
@@ -72,7 +80,11 @@ impl App {
                     .unwrap_or_else(|| ("notice".to_string(), Role::Failure));
                 (
                     Line::new(vec![Span::styled(title, Style::of(role))]),
-                    "esc closes · ↑↓ PgUp PgDn Home End",
+                    if deciding {
+                        "esc closes · pgup/pgdn"
+                    } else {
+                        "esc closes · ↑↓ pgup/pgdn home/end"
+                    },
                 )
             }
             PopupBody::Notice { jobs, .. } => (
@@ -90,7 +102,11 @@ impl App {
                         " · jobs ended"
                     }),
                 ]),
-                "esc closes · ↑↓ PgUp PgDn Home End",
+                if deciding {
+                    "esc closes · pgup/pgdn"
+                } else {
+                    "esc closes · ↑↓ pgup/pgdn home/end"
+                },
             ),
         };
         let keys = Line::new(vec![Span::raw(keys)]);
