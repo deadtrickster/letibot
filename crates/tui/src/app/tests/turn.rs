@@ -743,28 +743,15 @@ fn the_turns_numbers_live_in_the_header_and_an_ordinary_ending_has_no_footer() {
     );
 }
 
-/// **While a turn runs, the header's duration IS the turn's — the two clocks are one number.**
+/// **While a turn runs, the header shows no duration — the composer row is the one clock.**
 ///
-/// MEASURED on the other head's live screen, and this head had the identical pair: the composer
-/// row showed `Responding · 151s` (the turn, from `TurnStarted.began_ms`) while the header showed
-/// `· 4.5s ·` — `last_timings.wall_ms`, which is measured when a ROUND ends. A round ends at every
-/// tool call and every job, so the header's number restarted three times in one turn, and it is
-/// the number sitting next to the word *Responding*, where a bare duration reads as a clock.
-/// The operator read it that way: *"its responding timer resets not at the turn end but on jobs
-/// and tool calls."*
-///
-/// **The ruling is the operator's**: running → the turn's elapsed; idle → the last turn's
-/// wall-ms. The alternative was proposed and refused twice in other shapes, so it is recorded
-/// rather than re-derived.
-///
-/// # The assertion is the AGREEMENT, not a value
-///
-/// Both timers derive from the turn's start while a turn runs, so what has to hold is that they
-/// are **equal**. The disagreement is what the operator saw — 151s beside 4.5s — so equality is
-/// the fix stated as a property rather than as a number somebody has to keep in step. A test
-/// asserting `4.0s` would pass while the two drifted apart on any other clock.
+/// MEASURED: the composer row showed `Responding · 151s` while the header showed `· 4.5s ·`, a
+/// round's wall-ms that restarted at every tool call. The first fix made the header repeat the
+/// turn's elapsed; the operator, 2026-10-13: *"the top line has the same responding timer, i
+/// think it is redundant - i never look at it"*. Running → no duration in the header; idle → the
+/// last turn's wall-ms.
 #[test]
-fn while_a_turn_runs_the_header_and_the_turn_row_show_the_same_clock() {
+fn while_a_turn_runs_the_header_shows_no_clock() {
     let mut a = app();
     a.clock(1_000);
     a.apply(ServerFrame::Event(env_at(
@@ -810,19 +797,16 @@ fn while_a_turn_runs_the_header_and_the_turn_row_show_the_same_clock() {
     let row = a.turn_status(200);
     let header = a.header_line(200);
 
-    // **The row says the turn's elapsed**, and it is the number the header must agree with.
-    // 151204 - 1000 = 150204 ms, and both renderers spell that `2m30s`.
+    // **The row says the turn's elapsed**, and it is the only clock on screen.
+    // 151204 - 1000 = 150204 ms, spelled `2m30s`.
     assert!(row.contains("2m30s"), "the row's clock: {row}");
-    // The header used to say the round's `4.5s` here. It must agree with the row instead — and
-    // the assertion that matters is the AGREEMENT, so the string is taken from the row rather
-    // than typed twice: two literals that happen to match today are two literals to keep in step.
     assert!(
         !header.contains("4.5s"),
-        "the header still shows the last ROUND's wall-ms beside a running turn: {header}"
+        "the header shows the last ROUND's wall-ms beside a running turn: {header}"
     );
     assert!(
-        header.contains("2m30s"),
-        "the header does not show the turn's elapsed: {header}"
+        !header.contains("2m30s"),
+        "the header repeats the composer row's clock: {header}"
     );
 
     // **And the rate and the count did NOT move with it.** `last_timings` is what they are for,

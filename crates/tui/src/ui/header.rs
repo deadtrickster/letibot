@@ -160,40 +160,20 @@ impl App {
             if tm.predicted_ms > 0.0 {
                 tok_per_s = Some(u.predicted_tokens as f64 * 1000.0 / tm.predicted_ms);
             }
-            // **WHILE A TURN RUNS THE DURATION IS THE TURN'S, and only the duration.**
+            // **WHILE A TURN RUNS THE HEADER SHOWS NO DURATION.**
             //
-            // `last_timings` is measured when a round ENDS, and a round ends at every tool call and
-            // every job — so this number restarted three times in a turn the operator watched, while
-            // the row above the composer counted the turn. MEASURED on the other head's live screen,
-            // the same pair side by side: `Responding · 151s` on the composer edge and `· 4.5s ·`
-            // here, 151204 ms against 4474 ms. Two clocks for one turn, and the smaller one is the
-            // one next to the word *Responding*, which reads as a clock.
+            // `last_timings` is measured when a ROUND ends, and a round ends at every tool call
+            // and every job — so a round's wall-ms beside a running turn restarted three times in
+            // one turn (`Responding · 151s` on the composer edge, `· 4.5s ·` here). The first fix
+            // made the header show the turn's elapsed, which was the same clock twice; the
+            // operator, 2026-10-13: *"the top line has the same responding timer, i think it is
+            // redundant - i never look at it"*. So while a turn runs the composer row is the one
+            // clock, and the header says nothing; idle, it shows the last turn's wall-ms, which is
+            // what this field is for.
             //
-            // **The ruling is the operator's**: while a turn runs the duration shown is the TURN's
-            // elapsed; when idle it falls back to the last turn's wall-ms, which is what this field
-            // is for and what an idle header has always shown.
-            //
-            // **`tok/s` and the out-count are NOT moved with it.** They stay on the last round's
-            // basis, because that is what `last_timings` is FOR — the operator's own earlier
-            // complaint about them was *"the rate comes and goes"*, so a rate from the round that
-            // just ended is the useful number and a duration from it is the false one. One field of
-            // the trio, not the trio.
-            //
-            // **This DEPARTS from the reference deliberately.** The comment above records this line
-            // as parity with the reference's `app.rs`, and after this change neither head matches
-            // it. Recorded here rather than left to look like a defect: an operator reading a bare
-            // duration beside a running state reads it as a clock, and they did.
-            let running_since = self
-                .turn
-                .as_ref()
-                .filter(|_| self.turn_busy())
-                .map(|t| t.started_ms)
-                .filter(|started| *started > 0);
-            duration_ms = match running_since {
-                Some(started) => Some(self.now_ms.saturating_sub(started)),
-                None if tm.wall_ms > 0 => Some(tm.wall_ms),
-                None => None,
-            };
+            // **`tok/s` and the out-count stay** on the last round's basis — the operator's
+            // earlier complaint about them was *"the rate comes and goes"*.
+            duration_ms = (!self.turn_busy() && tm.wall_ms > 0).then_some(tm.wall_ms);
             // And how much the answer was — the last of the turn's numbers, and
             // the reason an ordinary ending leaves the body with no footer line
             // at all.
