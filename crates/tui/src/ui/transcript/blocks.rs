@@ -190,6 +190,8 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
         // used to be a paragraph promising "you do not need to wait for it").
         "Output: `job_output` ",
         "Full answer: `task_result` ",
+        // The closing before R93.C1/C2, still in every stored transcript from before it.
+        "you do not need to wait for it",
         // The plan's nudge, whose two closings are the operator's row and the model's own
         // (`unfinished_plan`): the first is *do it, or mark it done with `todo_write`'s `operator`
         // field*, the second is *do this one, or mark it done with `todo_write`'s `update` field*.

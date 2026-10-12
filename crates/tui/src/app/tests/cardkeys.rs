@@ -530,6 +530,7 @@ fn notice_popup(a: &mut App) {
             text: "a long notice line that has to wrap somewhere inside the box".into(),
             jobs: Vec::new(),
             answer: None,
+            title: None,
         },
         scroll: 0,
         placed: false,

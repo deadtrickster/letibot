@@ -51,6 +51,8 @@ use crate::ui::*;
 const CLOSINGS: &[&str] = &[
     // `harnessd`'s `JOB_CLOSING` (R93.C1: the old closing was a paragraph about not waiting).
     "Output: `job_output` ",
+    // The closing before R93.C1, which every stored transcript from before it still carries.
+    "This is the completion arriving on its own — you do not need to wait for it, and `job_wait`",
     "This session is told because the one that started it cannot be:",
 ];
 
@@ -127,7 +129,8 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
     };
     // Which closing goes with which heading is the daemon's rule, and a mismatch is a shape this
     // head does not know.
-    if closing.starts_with(CLOSINGS[0]) != mine {
+    // Every closing but the last is a job of this session's own; the last is one handed up.
+    if !closing.starts_with(CLOSINGS[CLOSINGS.len() - 1]) != mine {
         return None;
     }
     let mut jobs: Vec<EndedJob> = Vec::new();
