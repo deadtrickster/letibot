@@ -8854,7 +8854,23 @@ impl Harness {
             }
             jobs.push((job, ctx));
         }
-        if runs.is_empty() && monitors.is_empty() && jobs.is_empty() {
+        // **Jobs that ENDED and were never delivered** (TODO.md R91.5): a result held under R79,
+        // or queued, when the daemon stopped. Only a gone daemon's — one this daemon holds is
+        // still in its own queue — and only with a context, which is what names the daemon.
+        let mut settled = Vec::new();
+        for job in store.undelivered_jobs(&sid).unwrap_or_default() {
+            if store.subagent_run(&job.handle).ok().flatten().is_some() {
+                continue;
+            }
+            let Some(ctx) = store.job_context(&sid, &job.handle).ok().flatten() else {
+                continue;
+            };
+            if ctx.instance == me {
+                continue;
+            }
+            settled.push((job, ctx));
+        }
+        if runs.is_empty() && monitors.is_empty() && jobs.is_empty() && settled.is_empty() {
             return None;
         }
 
@@ -8868,6 +8884,11 @@ impl Harness {
             .chain(
                 jobs.iter()
                     .filter_map(|(_, c)| c.as_ref().map(|c| (c.instance.clone(), c.started_ms))),
+            )
+            .chain(
+                settled
+                    .iter()
+                    .map(|(_, c)| (c.instance.clone(), c.started_ms)),
             )
         {
             match instances.iter_mut().find(|(i, _)| *i == inst) {
@@ -8994,6 +9015,19 @@ impl Harness {
             let mut lost = job.clone();
             lost.state = "lost at restart".into();
             let _ = store.put_job(&sid, &lost);
+            // And said: a `lost at restart` row is an ending, and an undelivered ending is what
+            // the next open would announce again.
+            let _ = store.deliver_job(&sid, &job.handle);
+        }
+
+        // **Jobs that ended untold: their ending, said now** — whatever the down time, the way a
+        // settled child's result is delivered past the threshold too: a result is not work to
+        // redo, and nothing is re-run. Marked delivered once said, so it is said once.
+        for (job, ctx) in settled {
+            restored_any |= restore;
+            lines.push(crate::restart::settled_job_line(&job, ctx.slug.as_deref()));
+            said.push(crate::restart::said::job_settled(&job.handle));
+            let _ = store.deliver_job(&sid, &job.handle);
         }
 
         let outcome = match (restore, restored_any) {

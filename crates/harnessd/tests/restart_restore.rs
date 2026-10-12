@@ -1287,6 +1287,12 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
     assert!(notice.contains("Nothing above is running now."), "{notice}");
     assert!(warnings(&d.hub(), "restart_restored").is_empty());
     assert_eq!(warnings(&d.hub(), "restart_reminded").len(), 1);
+    // **Said once**: the row now reads `lost at restart`, an ending, and it was said — so the next
+    // open does not announce it again as an ending nobody was told about (R91.5).
+    assert!(
+        d.parent.restore_after_restart().is_none(),
+        "the lost job was announced a second time"
+    );
     d.stop(None);
 }
 
@@ -1300,6 +1306,81 @@ fn a_job(handle: &str, state: &str, command: &str) -> JobRecord {
         elapsed_ms: 90_000,
         redirect: None,
     }
+}
+
+fn the_old_daemons(store: &Store, handle: &str) {
+    store
+        .put_job_context(
+            PARENT,
+            &JobContext {
+                handle: handle.into(),
+                slug: None,
+                cwd: "/somewhere".into(),
+                instance: OLD.into(),
+                started_ms: letibot_sessionlog::registry::now_ms() - 120_000,
+            },
+        )
+        .unwrap();
+}
+
+/// **A job whose ending was held when the daemon stopped is said by the next one, once** (TODO.md
+/// R91.5). Restore used to collect only `running` rows: a job that settled during a long turn and
+/// was HELD (R79) had a row reading `exited 0`, the daemon stopped, and the model never heard its
+/// result. One that WAS delivered is not said again, and neither is the held one on a second open.
+#[test]
+fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-held-job");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        for (h, cmd) in [
+            ("j21", "cargo test --release > /tmp/held-tests.log 2>&1"),
+            ("j22", "cargo build"),
+        ] {
+            store.put_job(PARENT, &a_job(h, "running", "")).unwrap();
+            the_old_daemons(&store, h);
+            store.put_job(PARENT, &a_job(h, "exited 0", cmd)).unwrap();
+        }
+        // j22's ending reached the model before the stop; j21's was held.
+        store.deliver_job(PARENT, "j22").unwrap();
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d
+        .parent
+        .restore_after_restart()
+        .expect("the held ending is said");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.contains(
+            "- job `j21` had ENDED before the stop — exited 0, 512 byte(s) of output, after 1m30s \
+             — and its result never reached you."
+        ),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("Its output went to `/tmp/held-tests.log` — read that."),
+        "{notice}"
+    );
+    assert!(
+        !notice.contains("j22"),
+        "a delivered ending was said again: {notice}"
+    );
+    assert!(
+        d.parent.restore_after_restart().is_none(),
+        "the held ending was said twice"
+    );
+    d.stop(None);
 }
 
 /// **A job handle minted after a restart is above every one the store holds** (TODO.md R91.3).

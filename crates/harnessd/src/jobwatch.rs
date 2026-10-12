@@ -659,10 +659,16 @@ impl JobWatchers {
         // one place *the model has been told* is true. A daemon that goes down between a child
         // settling and its parent being told brings that settlement back on the parent's next
         // open (`crate::subagent_record`) — and a delivered one must not come back a second time.
+        // **A job's too** (TODO.md R91.5): `job.delivered`, so a result held when the daemon
+        // stopped is said by the next one (`Harness::restore_after_restart`) and one already told
+        // is not said twice.
         let recorder = self.recorder.lock().expect("job recorder").clone();
         if let Some(rec) = recorder {
-            for c in done.iter().filter(|c| c.kind == BackgroundKind::Subagent) {
-                rec.subagent_delivered(&c.job);
+            for c in done {
+                match c.kind {
+                    BackgroundKind::Subagent => rec.subagent_delivered(&c.job),
+                    BackgroundKind::Job => rec.job_delivered(&c.job),
+                }
             }
         }
     }
@@ -1180,6 +1186,16 @@ impl JobRecorder {
         self.with_store(handle, "its delivery", |store| {
             store
                 .deliver_subagent_run(handle)
+                .map_err(|e| e.to_string())
+        });
+    }
+
+    /// **A job's ending has reached the model** — `Store::deliver_job`. See
+    /// [`JobWatchers::read_now`].
+    fn job_delivered(&self, handle: &str) {
+        self.with_store(handle, "its delivery", |store| {
+            store
+                .deliver_job(&self.session_id, handle)
                 .map_err(|e| e.to_string())
         });
     }

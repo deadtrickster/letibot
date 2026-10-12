@@ -400,6 +400,10 @@ pub mod said {
         format!("monitor `{name}`: reminded, not re-armed")
     }
 
+    pub fn job_settled(handle: &str) -> String {
+        format!("job `{handle}`: had ended, its result not yet delivered — said now")
+    }
+
     pub fn job(handle: &str, waiting: usize) -> String {
         if waiting == 0 {
             format!("job `{handle}`: reminded (not re-run)")
@@ -482,6 +486,43 @@ pub fn job_line(
              run it again and `wait_on` the new handle.",
             waiting.join("; ")
         ));
+    }
+    line
+}
+
+/// **One background job that had ENDED at the stop and whose ending never reached the model**
+/// (TODO.md R91.5) — held under R79 while a turn ran, or queued, when the daemon went down. The
+/// row's own record is all that is left: its state, its size, where its output went if anywhere.
+pub fn settled_job_line(job: &JobRecord, slug: Option<&str>) -> String {
+    let mut line = format!("- job `{}`", job.handle);
+    if let Some(s) = slug {
+        line.push_str(&format!(" (slug `{s}`)"));
+    }
+    line.push_str(&format!(
+        " had ENDED before the stop — {}, {} byte(s) of output, after {} — and its result never \
+         reached you.",
+        job.state,
+        job.produced,
+        span(Duration::from_millis(job.elapsed_ms))
+    ));
+    let mut files: Vec<String> = job.redirect.iter().cloned().collect();
+    for f in letibot_tools::builtins::output_redirect_paths(&job.command) {
+        if !files.contains(&f) {
+            files.push(f);
+        }
+    }
+    if files.is_empty() {
+        line.push_str(" Its output was in the old daemon's memory and is gone.");
+    } else {
+        let named = files
+            .iter()
+            .map(|f| format!("`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        line.push_str(&format!(" Its output went to {named} — read that."));
+    }
+    if !job.command.is_empty() {
+        line.push_str(&format!(" It ran: `{}`.", job.command));
     }
     line
 }

@@ -357,7 +357,14 @@ pub struct ShapelessAdmit {
 /// `session_mode`, new tables, additive, described at [`modes`]. They were `modes.tsv`, a file
 /// each daemon rewrote whole from the copy it read at start, so one daemon's write undid
 /// another's: *"and again peerdb allow-all lost after restart/reseat"*.
-pub const SCHEMA_VERSION: i64 = 27;
+///
+/// **28** since a background job's row says **whether its ending reached the model** —
+/// `job.delivered`, additive, described at its migration arm below and at
+/// [`Store::deliver_job`]. A job that settled and was HELD (R79) when the daemon stopped had
+/// a row saying `exited 0` and nothing saying the model never heard it, so the next daemon
+/// passed it over as finished business and the result was never delivered (TODO.md R91.5).
+/// `subagent_run.delivered` (v26) is the same fact for a child.
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -497,6 +504,7 @@ CREATE TABLE IF NOT EXISTS job (
     elapsed_ms  INTEGER NOT NULL,
     redirect    TEXT,
     updated_ms  INTEGER NOT NULL,
+    delivered   INTEGER NOT NULL DEFAULT 0,  -- v28; 1 once its ending reached the model
     PRIMARY KEY (session_id, handle)
 );
 
@@ -2454,6 +2462,28 @@ impl Store {
             // are imported by the daemon (`harnessd::modes`), which is the one that knows the file.
             self.conn.execute_batch(modes::MODES_SQL)?;
         }
+        if from < 28 {
+            // v28: **whether a job's ending reached the model** — `job.delivered`, see
+            // [`Store::deliver_job`]. Every EXISTING row is stamped delivered (`DEFAULT 1`), and
+            // that is the conservative reading: this build cannot know which of them were told,
+            // and a restart that re-announced every job a store ever ran would bury the one that
+            // matters. Rows written from here on are inserted undelivered by `put_job`. Guarded on
+            // the column rather than the number, for the reason v25 gives — and on the table: a
+            // fixture that is only a `session` table has no `job` to add it to.
+            let has = |sql: &str| -> bool {
+                self.conn
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            let table = has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job'");
+            let column = has("SELECT 1 FROM pragma_table_info('job') WHERE name = 'delivered'");
+            if table && !column {
+                self.conn.execute_batch(
+                    "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 1",
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -3307,10 +3337,15 @@ impl Store {
     /// an order that changes between calls: a listing that reorders itself costs the model its
     /// prefix cache, which is the same reason the monitor registry orders by name.
     pub fn jobs(&self, session_id: &str) -> Result<Vec<JobRecord>> {
-        let mut st = self.conn.prepare(
+        self.jobs_where(session_id, "")
+    }
+
+    /// [`Store::jobs`], narrowed by a fixed SQL condition (never a caller's text).
+    fn jobs_where(&self, session_id: &str, and: &str) -> Result<Vec<JobRecord>> {
+        let mut st = self.conn.prepare(&format!(
             "SELECT handle, command, how, state, produced, elapsed_ms, redirect
-               FROM job WHERE session_id = ?1 ORDER BY updated_ms, handle",
-        )?;
+               FROM job WHERE session_id = ?1 {and} ORDER BY updated_ms, handle"
+        ))?;
         let rows = st.query_map(params![session_id], |r| {
             Ok(JobRecord {
                 handle: r.get(0)?,
@@ -3352,8 +3387,9 @@ impl Store {
     pub fn put_job(&self, session_id: &str, job: &JobRecord) -> Result<()> {
         self.exec(
             "INSERT INTO job
-               (session_id, handle, command, how, state, produced, elapsed_ms, redirect, updated_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               (session_id, handle, command, how, state, produced, elapsed_ms, redirect, updated_ms,
+                delivered)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)
              ON CONFLICT(session_id, handle) DO UPDATE SET
                command = CASE WHEN ?3 = '' THEN command ELSE ?3 END,
                how = CASE WHEN ?4 = '' THEN how ELSE ?4 END,
@@ -3372,6 +3408,26 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// **This job's ending has reached the model** (v28) — set where that is true
+    /// (`JobWatchers::read_now`, beside `deliver_subagent_run`), and by a restart that said it.
+    /// `put_job` never touches the flag after the insert, so a settlement written after the
+    /// delivery does not undo it. A handle with no row writes nothing.
+    pub fn deliver_job(&self, session_id: &str, handle: &str) -> Result<()> {
+        self.exec(
+            "UPDATE job SET delivered = 1 WHERE session_id = ?1 AND handle = ?2",
+            params![session_id, handle],
+        )?;
+        Ok(())
+    }
+
+    /// **The jobs of this session that ENDED and were never delivered** — what a daemon that
+    /// stopped while holding a result (R79) left for the next one to say (TODO.md R91.5). A
+    /// `running` row is not here: that is a job the daemon was watching when it died, which
+    /// `jobs` already answers.
+    pub fn undelivered_jobs(&self, session_id: &str) -> Result<Vec<JobRecord>> {
+        self.jobs_where(session_id, "AND state <> 'running' AND delivered = 0")
     }
 
     /// **The highest `jN` handle any job in this store was given**, across every session — what a

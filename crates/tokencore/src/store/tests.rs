@@ -2206,6 +2206,30 @@ fn job_row(handle: &str, state: &str) -> JobRecord {
     }
 }
 
+/// **A job that ended and was never delivered is found again by the next daemon** (R91.5) — and
+/// one that was delivered, or is still `running`, is not. A settlement written AFTER the delivery
+/// (the watcher and the reader race) does not take the delivery back.
+#[test]
+fn a_settled_job_nobody_was_told_about_is_found_and_a_delivered_one_is_not() {
+    let (dir, s) = job_store("undelivered");
+    s.put_job("s-a", &job_row("j1", "running")).unwrap();
+    s.put_job("s-a", &job_row("j2", "running")).unwrap();
+    s.put_job("s-a", &job_row("j3", "running")).unwrap();
+    s.put_job("s-a", &job_row("j1", "exited 0")).unwrap();
+    s.put_job("s-a", &job_row("j2", "exited 1")).unwrap();
+    s.deliver_job("s-a", "j2").unwrap();
+    s.put_job("s-a", &job_row("j2", "exited 1")).unwrap();
+    let left: Vec<String> = s
+        .undelivered_jobs("s-a")
+        .unwrap()
+        .into_iter()
+        .map(|j| j.handle)
+        .collect();
+    assert_eq!(left, vec!["j1".to_string()], "only j1 ended untold");
+    assert!(s.undelivered_jobs("s-b").unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **The highest `jN` across every session** is what a daemon seeds its counter above (R91.3), so
 /// a handle minted after a restart cannot be one a session already has.
 #[test]
@@ -2219,5 +2243,36 @@ fn the_highest_job_number_is_read_across_sessions() {
     s.put_job("s-b", &job_row("s-1-sub", "exited 0")).unwrap();
     s.put_job("s-b", &job_row("jx", "exited 0")).unwrap();
     assert_eq!(s.max_job_number().unwrap(), 100);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A v27 store gains `job.delivered`, and its existing rows read as delivered** — this build
+/// cannot know which endings those daemons told, and re-announcing all of them would bury the one
+/// that matters. A row written after the migration starts undelivered.
+#[test]
+fn a_v27_store_is_migrated_and_its_old_jobs_count_as_delivered() {
+    let (dir, s) = job_store("v27");
+    let path = dir.join("sessions.db");
+    s.put_job("s-a", &job_row("j1", "exited 0")).unwrap();
+    drop(s);
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute("ALTER TABLE job DROP COLUMN delivered", [])
+            .unwrap();
+        c.execute("UPDATE schema_version SET version = 27", [])
+            .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let v: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+    assert!(
+        s.undelivered_jobs("s-a").unwrap().is_empty(),
+        "a job from before the column was re-announced"
+    );
+    s.put_job("s-a", &job_row("j2", "exited 0")).unwrap();
+    assert_eq!(s.undelivered_jobs("s-a").unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
