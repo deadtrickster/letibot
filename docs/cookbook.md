@@ -248,9 +248,12 @@ letibot --daemons            every folder's daemon on this box
 letibot --stop [--all]       this folder's daemon, by pid — never every harnessd on the box
 ```
 
-The mode is a property of the project, not of the flag: a row in
-`~/.config/letibot/modes.tsv` wins over `--mode`, and the banner says so
-(`mode is X for DIR (from the project store), not the daemon default Y`).
+The mode is a property of the project and of the session, not of the flag: a
+session's own `/mode` comes back with it after a restart or a reseat, a project's
+row (both in the session store, `sessions.db`) wins over `--mode` for a new
+session, and the banner says which (`mode is X for DIR (from the project store),
+not the daemon default Y`). A `~/.config/letibot/modes.tsv` from before is
+imported once and then not read.
 `allow-all` on a bare host is refused by its confinement prerequisite either
 way — it is the point a VM runs at.
 

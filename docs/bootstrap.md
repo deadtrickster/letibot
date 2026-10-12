@@ -97,8 +97,9 @@ right default but is nowhere said in one place:
   `crates/harnessd/src/cli.rs:711-727`).
 - `~/.config/letibot/prompts.toml` — per-model system prompts, beside `providers.toml`
   (`crates/harnessd/src/config.rs:882-887`, read at `cli.rs:919-936`).
-- `~/.config/letibot/modes.tsv` — the per-project mode record
-  (`crates/harnessd/src/modes.rs:55-66`).
+- the per-project and per-session modes — tables in `sessions.db`
+  (`crates/harnessd/src/modes.rs`, `crates/tokencore/src/store/modes.rs`); a legacy
+  `~/.config/letibot/modes.tsv` is imported once.
 - `~/.config/letibot/skills/*/SKILL.md` and `~/.claude/skills/*/SKILL.md`
   (`crates/tools/src/builtins/skill.rs:114-126`).
 - `~/.local/share/opencode/auth.json` — opencode's key store, the third place a key is

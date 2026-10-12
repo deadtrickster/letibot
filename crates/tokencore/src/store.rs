@@ -84,6 +84,8 @@ mod busy;
 mod queues;
 pub use busy::{BUSY_RETRY_TOTAL, is_busy_sql};
 pub use queues::*;
+mod modes;
+pub use modes::ProjectMode;
 mod subagents;
 pub use subagents::*;
 
@@ -350,7 +352,12 @@ pub struct ShapelessAdmit {
 /// should bring subagents back - i cant afford to wait till they finish. we should record them
 /// (session persist anyway) and restart automatically"*. A child's session was always here; what
 /// was not was the fact that it was mid-task, what it had been asked and how it was spawned.
-pub const SCHEMA_VERSION: i64 = 26;
+///
+/// **27** since the permission modes are **rows of their own** — `project_mode` and
+/// `session_mode`, new tables, additive, described at [`modes`]. They were `modes.tsv`, a file
+/// each daemon rewrote whole from the copy it read at start, so one daemon's write undid
+/// another's: *"and again peerdb allow-all lost after restart/reseat"*.
+pub const SCHEMA_VERSION: i64 = 27;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -1751,6 +1758,7 @@ impl Store {
         self.conn.execute_batch(SCHEMA_SQL)?;
         self.conn.execute_batch(queues::QUEUES_SQL)?;
         self.conn.execute_batch(subagents::SUBAGENTS_SQL)?;
+        self.conn.execute_batch(modes::MODES_SQL)?;
         self.conn.execute("DELETE FROM schema_version", [])?;
         self.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2439,6 +2447,12 @@ impl Store {
             // no record of its children, and its running children are not resumed — there is
             // nothing to resume them FROM.
             self.conn.execute_batch(subagents::SUBAGENTS_SQL)?;
+        }
+        if from < 27 {
+            // v27: **the permission modes, as rows** — see [`modes`]. Two new tables, both
+            // `IF NOT EXISTS`; nothing existing is read or rewritten. The rows `modes.tsv` held
+            // are imported by the daemon (`harnessd::modes`), which is the one that knows the file.
+            self.conn.execute_batch(modes::MODES_SQL)?;
         }
         Ok(())
     }
