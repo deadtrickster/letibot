@@ -2899,12 +2899,12 @@ impl Gate for AdjudicatedGate {
             scripts: Vec::new(),
             boundary_facts: vec![
                 format!(
-                    "the command saw `{}` as absent — that was the boundary, not an                      answer about whether anything is there",
+                    "the command saw `{}` as absent — that was the boundary, not an answer about whether anything is there",
                     path.display()
                 ),
-                "granting it binds the real host path into this session's mount                  namespace for the rest of the session, and a readable path is                  readable INTO THE TRANSCRIPT"
+                "granting it binds the real host path into this session's mount namespace for the rest of the session, and a readable path is readable INTO THE TRANSCRIPT"
                     .to_string(),
-                "the command that hit this has already run; granting does not re-run                  it".to_string(),
+                "the command that hit this has already run; granting does not re-run it".to_string(),
             ],
             kind: RequestKind::Permission,
             options: view_grant_options(),
@@ -3837,7 +3837,7 @@ pub fn startup_disclosure_for(
         startup_disclosure_inner(adjudicator, backend_writable, classes);
     if !classes.is_empty() && !denials_surfaced {
         detail.push_str(
-            " DENIALS ARE NOT SURFACED: no denial sink is attached, so a refusal reaches the model and stops there. The operator will see a task that stopped rather than the decision that stopped it, which is the failure mode that makes a model try a variant instead of asking. Attach one with              `AdjudicatedGate::with_denial_sink`.",
+            " DENIALS ARE NOT SURFACED: no denial sink is attached, so a refusal reaches the model and stops there. The operator will see a task that stopped rather than the decision that stopped it, which is the failure mode that makes a model try a variant instead of asking. Attach one with `AdjudicatedGate::with_denial_sink`.",
         );
         return (state, detail, false);
     }

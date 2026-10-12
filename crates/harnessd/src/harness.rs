@@ -3945,13 +3945,13 @@ impl Harness {
                             let n = g.seed_shapes(rows);
                             if n > 0 {
                                 notes.push(format!(
-                                    "{n} command shape{} you approved in this project                                      before are remembered — they will not be asked again",
+                                    "{n} command shape{} you approved in this project before are remembered — they will not be asked again",
                                     if n == 1 { "" } else { "s" }
                                 ));
                             }
                         }
                         Err(e) => notes.push(format!(
-                            "the shape cache could not be warmed ({e}), so shapes you                              approved before will be asked again"
+                            "the shape cache could not be warmed ({e}), so shapes you approved before will be asked again"
                         )),
                     }
                 }
@@ -10068,7 +10068,7 @@ impl Harness {
             )?;
             if outcome.tool_calls > 0 {
                 return Err(HarnessError::Setup(format!(
-                    "the summary turn proposed {} tool call(s); a summary is a record, not                      an action, so nothing was re-seated.",
+                    "the summary turn proposed {} tool call(s); a summary is a record, not an action, so nothing was re-seated.",
                     outcome.tool_calls
                 )));
             }
@@ -10645,7 +10645,8 @@ impl Harness {
         // all. The sentence goes FIRST, before the summary, because a reader who
         // stops early is exactly the reader who needs it.
         let cut = if outcome.truncated {
-            " It was CUT OFF at the model's length limit before it finished: what              follows is incomplete, it stops mid-sentence, and anything the              conversation established after the point it reaches is not in it.              Treat a gap as unknown rather than as settled, and re-read the earlier              transcript if something is missing."
+            " The summary is incomplete (cut off); treat anything missing as unknown and check \
+             with `transcript`."
         } else {
             ""
         };
@@ -12100,7 +12101,7 @@ impl Harness {
                 self.import_note(
                     "transcript_store",
                     format!(
-                        "`{who}` ran `{name}` from their own console and the transcript could                          not be written: {e}. The call ran; what is missing is the record of                          it, which is what the next turn would have read."
+                        "`{who}` ran `{name}` from their own console and the transcript could not be written: {e}. The call ran; what is missing is the record of it, which is what the next turn would have read."
                     ),
                 );
             }
@@ -13133,7 +13134,7 @@ impl Harness {
         self.cfg.nags_paused = Some(p);
         let stored = self.store_nag_pause(Some(p));
         let mut detail = format!(
-            "nags PAUSED by the operator {}: this session's plan-check is not armed or sent              while it holds",
+            "nags PAUSED by the operator {}: this session's plan-check is not armed or sent while it holds",
             crate::nag_pause::until_words(p, now)
         );
         if let Err(why) = &stored {
@@ -13179,7 +13180,7 @@ impl Harness {
             .set_nags_paused_until(&self.cfg.session_id, p.map(|p| p.to_stored()))
             .map_err(|e| {
                 format!(
-                    "Writing it to the session row FAILED ({e}), so it holds only until this                      daemon stops"
+                    "Writing it to the session row FAILED ({e}), so it holds only until this daemon stops"
                 )
             })
     }

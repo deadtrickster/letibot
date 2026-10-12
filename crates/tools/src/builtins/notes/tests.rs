@@ -356,6 +356,19 @@ fn the_gate_floor_sits_between_the_measured_shapes() {
     assert!(score < DUPLICATE_FLOOR, "{score:.3}");
 }
 
+/// **A name too long for a file says how long it was, not a literal `{raw}`** (R93.F42).
+#[test]
+fn a_name_too_long_says_its_length() {
+    let mut h = writable_harness();
+    let name = "n".repeat(120);
+    let args = format!(r#"{{"action":"add","name":"{name}","text":"no"}}"#);
+    let r = h.call("notes", args.as_str());
+    assert!(!r.is_grounded(), "a 120-character name must be refused");
+    let said = r.render();
+    assert!(said.contains("that name is 120 characters long"), "{said}");
+    assert!(!said.contains("{raw}"), "{said}");
+}
+
 /// **There is no spelling of a write that leaves the project notes
 /// directory.**
 #[test]

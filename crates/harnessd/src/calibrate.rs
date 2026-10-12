@@ -399,7 +399,7 @@ pub fn replay_rows(
         // came FROM, which did spawn through `HostProcesses` — every one of these
         // commands actually ran there.
         let sur = letibot_tools::Surroundings::from_env(workspace.clone()).with_pinned_shell(
-            "replaying a command that already ran in a session whose exec backend              spawns /bin/sh -c with the environment cleared and PATH fixed at seat              time",
+            "replaying a command that already ran in a session whose exec backend spawns /bin/sh -c with the environment cleared and PATH fixed at seat time",
         );
         let mut gate = AdjudicatedGate::closed()
             .with_mode(mode)

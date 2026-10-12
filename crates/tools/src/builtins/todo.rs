@@ -351,12 +351,12 @@ impl TodoBoard {
                     };
                     if elsewhere(&self.parent) {
                         return Err(format!(
-                            "`{want}` is a row your PARENT wrote, and its edges are the parent's:                              it restates them on its next write, so a wait put on it here would                              vanish under you. Say in your reply what it is waiting on."
+                            "`{want}` is a row your PARENT wrote, and its edges are the parent's: it restates them on its next write, so a wait put on it here would vanish under you. Say in your reply what it is waiting on."
                         ));
                     }
                     if elsewhere(&self.queue) {
                         return Err(format!(
-                            "`{want}` is the merge queue's row, written from the store on every                              pass — nothing on this board can make it wait."
+                            "`{want}` is the merge queue's row, written from the store on every pass — nothing on this board can make it wait."
                         ));
                     }
                     let have: Vec<String> = model
@@ -377,7 +377,7 @@ impl TodoBoard {
                 }
                 _ => {
                     return Err(format!(
-                        "`{want}` is {} rows — {} of yours and {} of the operator's — so which one                          waits is not something this can know. Quote the one you mean exactly.",
+                        "`{want}` is {} rows — {} of yours and {} of the operator's — so which one waits is not something this can know. Quote the one you mean exactly.",
                         mine.len() + theirs.len(),
                         mine.len(),
                         theirs.len()

@@ -1225,7 +1225,7 @@ const FLAG_RULES: &[FlagRule] = &[
         unless: &[],
         flags: &["of="],
         intent: Intent::Destroy,
-        why: "`of=` overwrites its target in place, with no prompt and nothing kept;               onto a device node it destroys the filesystem on it",
+        why: "`of=` overwrites its target in place, with no prompt and nothing kept; onto a device node it destroys the filesystem on it",
         provenance: Provenance::HandWritten,
     },
     FlagRule {
@@ -4516,7 +4516,7 @@ impl Baseline {
                             store: store.clone(),
                             program: program.to_string(),
                             why: format!(
-                                "`{path}` is in the {store} store and the script `{program}`                                  opens it for writing"
+                                "`{path}` is in the {store} store and the script `{program}` opens it for writing"
                             ),
                         });
                     }

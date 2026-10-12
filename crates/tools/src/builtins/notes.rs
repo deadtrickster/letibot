@@ -371,7 +371,11 @@ fn note_stem(raw: &str) -> Result<String, String> {
         return Err(format!("`{raw}` has a control character in it."));
     }
     if s.chars().count() > 100 {
-        return Err("`{raw}` is too long for a filename (over 100 characters).".into());
+        // R93.F42: this was a plain literal, so `{raw}` reached the model as written.
+        return Err(format!(
+            "that name is {} characters long; a note name is at most 100. Give a shorter one.",
+            s.chars().count()
+        ));
     }
     Ok(s.to_string())
 }

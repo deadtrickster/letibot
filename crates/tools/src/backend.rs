@@ -576,7 +576,7 @@ impl HostBackend {
         };
         let Some(view) = host.current_view() else {
             return Err(BackendError::Io(
-                "this session has no project-scoped view, so there is nothing to widen:                  what a command here can reach is already what this user can reach"
+                "this session has no project-scoped view, so there is nothing to widen: what a command here can reach is already what this user can reach"
                     .into(),
             ));
         };

@@ -993,7 +993,7 @@ impl OracleScope {
             max_scope,
             declared: true,
             tools,
-            evidence: "declared by the operator in providers.toml under                        `[gatekeeper]` — this is a grant, not a calibration: no                        corpus was replayed to arrive at it"
+            evidence: "declared by the operator in providers.toml under `[gatekeeper]` — this is a grant, not a calibration: no corpus was replayed to arrive at it"
                 .into(),
         })
     }
@@ -1062,7 +1062,7 @@ impl OracleScope {
     ) -> Result<(), String> {
         if scope > self.max_scope {
             return Err(format!(
-                "the effect lands `{}` and this oracle's earned scope reaches only                  `{}`",
+                "the effect lands `{}` and this oracle's earned scope reaches only `{}`",
                 scope.as_str(),
                 self.max_scope.as_str()
             ));
@@ -2437,7 +2437,7 @@ impl Adjudicator for ModelAdjudicator {
                 // says why this call is in front of a person, and the one command
                 // that changes it.
                 basis: format!(
-                    "{outside}. `harnessd --calibrate` measures the guard against                      the calls you have answered and can widen this."
+                    "{outside}. `harnessd --calibrate` measures the guard against the calls you have answered and can widen this."
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
             }, false, "ask", Vec::new());

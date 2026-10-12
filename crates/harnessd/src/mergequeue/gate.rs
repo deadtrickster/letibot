@@ -214,9 +214,10 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
             ));
         }
         StepMemory::Used(u) if !code_failed && u.near_cap() => {
+            // R93.F10: no percent and no gaps — the words are what reaches a reviewer.
             return RedCause::KilledAtCap(format!(
-                "it died with its peak within {}% of the cap ({}) and no failing code in its                  output — the kernel counted no OOM kill in its cgroup, so what ended it is the                  memory it was out of, not a verdict",
-                100 - NEAR_CAP_PERCENT,
+                "it died near its memory cap ({}) with no failing code in its output — out of \
+                 memory, not a verdict",
                 exit.clause()
             ));
         }
@@ -805,7 +806,10 @@ mod tests {
                 panic!("{exit:?}: {cause:?}");
             };
             assert!(
-                how.contains("within 5% of the cap") && how.contains("no OOM kill"),
+                how.contains("near its memory cap")
+                    && how.contains("out of memory, not a verdict")
+                    && !how.contains('%')
+                    && !how.contains("  "),
                 "{how}"
             );
         }

@@ -33,8 +33,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::exec::monitor::{
-    CommandCondition, CustomWatch, DEFAULT_TTL, MAX_TTL, MonitorError, PortState, TimerCondition,
-    Watch,
+    CommandCondition, CustomWatch, DEFAULT_TTL, Fired, MAX_TTL, MonitorError, PortState,
+    TimerCondition, Watch,
 };
 use crate::exec::{JobId, ProcessHost, ScopeId, ScopeKind};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
@@ -61,24 +61,23 @@ impl Tool for Monitor {
             "monitor",
             "Watch one condition ACROSS turns and be told when it fires — unlike \
              `job_wait`, which blocks inside this turn. Give `name` (yours, and only \
-             one monitor may hold a name at a time) and exactly one of `job` (a job \
+             one monitor may hold a name at a time) and exactly one of: `job` (a job \
              leaving the running state), `scope` (a cgroup emptying), `path` (a file \
              or directory appearing, vanishing, or changing size or modification \
-             time) or `port` (a loopback TCP port becoming listenable, or with \
-             `port_state: \"closed\"`, stopping), `pid` (a process, by pid — resolved \
-             to its start time now, so a reused pid is not it) or `process` (every \
-             process of this user whose command line contains the string, found ONCE \
-             now — this daemon, its ancestors and its protected processes are removed \
-             before matching, so it cannot find itself — and then watched by pid and \
-             start time until all are gone; `pkill` lists the same set). Optionally `owner` to say which \
-             scope reaps it (`turn`, `session` — the default — or a named scope that \
-             already exists) and `ttl_ms`, which is capped; `action: \"renew\"` \
-             extends it and `action: \"retire\"` ends it. `job_list` shows every \
-             monitor, who declared it, how long it has left, and for the ones that \
-             ended, which of the four endings it was and why. There is deliberately \
-             no way to watch a shell command or a process name: such a condition \
-             matches the shell evaluating it, which has killed a running command on \
-             this box, and a job id or a cgroup cannot.",
+             time), `port` (a loopback TCP port becoming listenable, or with \
+             `port_state: \"closed\"`, stopping), `timer_ms` (a timer), `command` (a \
+             command exiting — a health check, not a place to run work), `pid` (a \
+             process, by pid — resolved to its start time now, so a reused pid is not \
+             it) or `process` (every process of this user whose command line contains \
+             the string, found ONCE now — this daemon, its ancestors and its protected \
+             processes are removed before matching, so it cannot find itself — and \
+             then watched by pid and start time until all are gone; `pkill` lists the \
+             same set). Optionally `owner` to say which scope reaps it (`turn`, \
+             `session` — the default — or a named scope that already exists), \
+             `ttl_ms`, which is capped, and `repeat`; `action: \"renew\"` extends it \
+             and `action: \"retire\"` ends it. `job_list` shows every monitor, who \
+             declared it, how long it has left, and for the ones that ended, which of \
+             the four endings it was and why.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -140,15 +139,13 @@ impl Tool for Monitor {
                 let Some(f) = monitors.retire(name, "the model") else {
                     return unknown_monitor(host, name);
                 };
-                return Invocation::ok(format!(
-                    "retired `{name}`, which was watching {}.\n  declared by: {}\n  \
-                     it had {} left\n\nIt never fired: retiring is not the condition \
-                     happening, and nothing above is evidence about {}.",
-                    f.watch,
-                    f.declared_by,
-                    f.fired.word(),
-                    f.watch,
-                ));
+                // R93.F29: this rendered "it had retired by the model after 30s left",
+                // and "It never fired" was false of a repeat monitor that had.
+                let age = match &f.fired {
+                    Fired::Cancelled { after, .. } => format!(" after {:.0}s", after.as_secs_f32()),
+                    _ => String::new(),
+                };
+                return Invocation::ok(format!("retired `{name}` (watching {}){age}.", f.watch));
             }
             "renew" => {
                 let ttl = match ttl_of(args) {
@@ -596,6 +593,24 @@ mod tests {
         // which is what keeps a cgroup watch from being network-gated.
         assert_ne!(s.access, Access::Network);
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
+    }
+
+    /// **The description names every condition the schema takes** (R93.F28): it listed
+    /// six, and said there was "deliberately no way to watch a shell command" beside a
+    /// `command` property.
+    #[test]
+    fn the_description_names_every_condition_in_the_schema() {
+        let s = Monitor.schema();
+        for k in [
+            "job", "scope", "path", "port", "timer_ms", "command", "pid", "process",
+        ] {
+            assert!(s.param_names().contains(&k), "schema lacks `{k}`");
+            assert!(
+                s.description.contains(&format!("`{k}`")),
+                "description does not name `{k}`"
+            );
+        }
+        assert!(!s.description.contains("no way to watch a shell command"));
     }
 
     #[test]

@@ -5218,7 +5218,7 @@ mod a_childs_state_is_read_from_the_right_facts {
         assert!(!reading.working, "no turn is in flight: {reading:?}");
         assert!(
             reading.quiet_for.is_some(),
-            "and something HAS been published in it, which is what tells a parked child from one              that has not started: {reading:?}"
+            "and something HAS been published in it, which is what tells a parked child from one that has not started: {reading:?}"
         );
         assert_eq!(
             child_doing(&reading),
@@ -5320,7 +5320,7 @@ mod a_childs_state_is_read_from_the_right_facts {
 
         assert!(
             children.child("s-1-sub-6").is_none(),
-            "a child the journal says `done` is not in the snapshot, which is how a row that              waits on it is released"
+            "a child the journal says `done` is not in the snapshot, which is how a row that waits on it is released"
         );
     }
 }

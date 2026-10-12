@@ -431,10 +431,8 @@ fn operand(rest: &[String]) -> (Option<String>, bool) {
 pub fn refusal(command: &str, hazards: &[Hazard]) -> String {
     let mut s = String::new();
     s.push_str(
-        "This command was NOT run. Its process predicate matches the process \
-         evaluating it, or a process this harness manages — which is the failure \
-         `TODO.md` T21 is about, and it was measured on this box five times in one \
-         session with the lesson already in memory.\n\n",
+        "This command was NOT run: its process pattern matches the shell that runs it, \
+         or a process this harness manages.\n\n",
     );
     for h in hazards {
         s.push_str(&format!(
@@ -502,16 +500,21 @@ pub fn annotation(hazards: &[Hazard]) -> String {
         "this predicate also matches the process asking, so the count it returns is \
          inflated by at least one and is not a measurement of what you meant: ",
     );
-    let mut parts = Vec::new();
+    // R93.F27: several predicates in one command each name the evaluating shell, and the
+    // note said "the evaluating shell (…), the evaluating shell (…)". Each witness once.
+    let mut parts: Vec<String> = Vec::new();
     for h in hazards {
         for w in &h.witnesses {
-            parts.push(format!(
+            let part = format!(
                 "{} ({})",
                 w.pid
                     .map(|p| format!("pid {p}"))
                     .unwrap_or("the evaluating shell".into()),
                 w.what
-            ));
+            );
+            if !parts.contains(&part) {
+                parts.push(part);
+            }
         }
     }
     s.push_str(&parts.join(", "));
@@ -623,6 +626,18 @@ mod tests {
         let note = annotation(h);
         assert!(note.contains("inflated by at least one"), "{note}");
         assert!(note.contains("job_list"), "{note}");
+    }
+
+    /// **Two probes in one command name the evaluating shell once** (R93.F27).
+    #[test]
+    fn two_probes_name_the_shell_once() {
+        let v = examine("pgrep -f cargo | wc -l; pgrep -f rustc | wc -l", &[]);
+        let Verdict::Annotate(h) = &v else {
+            panic!("a probe is not refused: {v:?}")
+        };
+        assert!(h.len() >= 2, "both probes are hazards: {h:?}");
+        let note = annotation(h);
+        assert_eq!(note.matches("the evaluating shell").count(), 1, "{note}");
     }
 
     #[test]

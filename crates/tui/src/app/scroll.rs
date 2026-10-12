@@ -1212,7 +1212,7 @@ impl App {
                     into: 0,
                 });
                 self.say(&format!(
-                    "the row you were reading is one this rung hides — the view is holding the                      nearest row that still shows. `/verbosity` brings the working back, and                      `esc` follows the stream again"
+                    "the row you were reading is one this rung hides — the view is holding the nearest row that still shows. `/verbosity` brings the working back, and `esc` follows the stream again"
                 ));
             }
             None => {

@@ -964,7 +964,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 declared.intents.union(&earned.intents).copied().collect(),
                 declared.max_scope.max(earned.max_scope),
                 format!(
-                    "{} — combined with what the operator declared in providers.toml,                      which a measurement adds to and never shrinks",
+                    "{} — combined with what the operator declared in providers.toml, which a measurement adds to and never shrinks",
                     earned.evidence
                 ),
             ),

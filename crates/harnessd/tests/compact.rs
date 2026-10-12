@@ -1016,6 +1016,38 @@ fn the_compaction_note_says_why_it_has_no_tail() {
 /// Both directions, and the second had a live defect behind it: the per-round setter was
 /// guarded on `self.provider.is_some()`, so a LOCAL round never refreshed the ratio and a
 /// provider → local switch kept the provider's scale for the rest of the session.
+/// **A summary cut off at the length limit says so in one plain sentence** (R93.E2): the
+/// sentence used to carry runs of fourteen literal spaces, from line breaks without a `\`.
+#[test]
+fn a_cut_off_summary_says_so_without_whitespace_gaps() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-compact-cut");
+    let path = dir.path().join("sessions.db");
+    let cfg = config(&path, "compact-cut-test");
+    let parts = load_parts(&cfg);
+    let mut h = opened(&cfg, &parts);
+    let mut cut = outcome("## Objective\n- half a summ");
+    cut.truncated = true;
+    let report = h
+        .fork_to_summary(&cut, None, None, ForkTail::NONE)
+        .expect("the fork lands");
+    let store = Store::open(&path).expect("reopening");
+    let words = store
+        .load_transcript(&report.transcript_id)
+        .expect("reading the fork")
+        .items;
+    let letibot_transcript::TranscriptItem::System { text, .. } = &words[0].0 else {
+        panic!("the base's first item is the note");
+    };
+    assert!(
+        text.contains("The summary is incomplete (cut off)"),
+        "the cut is stated: {text}"
+    );
+    assert!(!text.contains("  "), "no whitespace gaps: {text:?}");
+}
+
 #[test]
 fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
