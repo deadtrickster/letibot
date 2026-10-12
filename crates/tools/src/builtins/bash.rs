@@ -226,6 +226,15 @@ impl Bash {
     }
 }
 
+/// **R93.F15 — what a foreground command killed at its deadline says.** One
+/// sentence, one way out. The old text offered "a larger `timeout_ms`" beside
+/// `background: true`, while the slow-run note on the same tool says raising
+/// `timeout_ms` only makes the wait longer: two answers to one question. The
+/// command is not echoed — the model wrote it one round ago.
+fn deadline_killed(body: &str, secs: f32) -> String {
+    format!("{body}\n\nKilled at its {secs:.0}s deadline. Re-run it with `background: true`.")
+}
+
 /// **What deadline this call gets — the one place the choice is made.**
 ///
 /// Pure, and on purpose: which run may be killed by a clock is a fact about
@@ -922,12 +931,9 @@ impl Tool for Bash {
                 // when [`deadline_for`] said `None` — the `unwrap_or` is for
                 // the type, not a case.
                 let reaped = host.kill_job(&id);
-                let mut inv = Invocation::timed_out(format!(
-                    "{body}\n\n[the command `{label}` was killed after {:.0}s — it outlived \
-                     its deadline]\n  command: {command}\n\nIt did not fail; it was \
-                     stopped. To run it longer, call `bash` again with a larger \
-                     `timeout_ms`, or `background: true` to run it with no deadline.",
-                    timeout.map(|t| t.as_secs_f32()).unwrap_or(0.0)
+                let mut inv = Invocation::timed_out(deadline_killed(
+                    &body,
+                    timeout.map(|t| t.as_secs_f32()).unwrap_or(0.0),
                 ));
                 if let Err(e) = &reaped {
                     inv = inv.with_note(format!("the kill did not complete: {e}"));
@@ -937,13 +943,8 @@ impl Tool for Bash {
             JobState::Running => match timeout {
                 Some(timeout) => {
                     let reaped = host.kill_job(&id);
-                    let mut inv = Invocation::timed_out(format!(
-                        "{body}\n\n[the command `{label}` was killed after {:.0}s — it outlived \
-                         its deadline]\n  command: {command}\n\nIt did not fail; it was \
-                         stopped. To run it longer, call `bash` again with a larger \
-                         `timeout_ms`, or `background: true` to run it with no deadline.",
-                        timeout.as_secs_f32()
-                    ));
+                    let mut inv =
+                        Invocation::timed_out(deadline_killed(&body, timeout.as_secs_f32()));
                     if let Err(e) = &reaped {
                         inv = inv.with_note(format!("the kill did not complete: {e}"));
                     }
@@ -1049,7 +1050,7 @@ impl Tool for Bash {
         // was a `timeout_ms` of 600000 for a build that belonged in the background.
         //
         // Skipped for the two deadline arms, whose payloads already end with
-        // *"call `bash` again with a larger `timeout_ms`, or `background: true`"* —
+        // *"Re-run it with `background: true`"* —
         // a second note would give the same advice twice on one card. And for a
         // promotion, whose body already says the command was moved because the
         // model did not ask for it.
@@ -1585,6 +1586,15 @@ mod tests {
                 "{bad} was not refused"
             );
         }
+    }
+
+    #[test]
+    fn a_deadline_kill_names_one_way_out() {
+        // R93.F15: the kill says background, and never "a larger timeout_ms",
+        // which the slow-run note on the same tool calls a longer wait.
+        let text = deadline_killed("out", 120.0);
+        assert!(text.ends_with("Killed at its 120s deadline. Re-run it with `background: true`."));
+        assert!(!text.contains("timeout_ms"), "{text}");
     }
 
     #[test]
