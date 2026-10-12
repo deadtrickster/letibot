@@ -179,11 +179,10 @@ impl App {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }
-            Target::Decision => {
+            Target::Decision | Target::QuitCard | Target::ReseatCard => {
                 self.scroll_card(up, NOTCH);
             }
-            Target::QuitCard | Target::ReseatCard | Target::SettingCard | Target::CountLabel(_) => {
-            }
+            Target::SettingCard | Target::CountLabel(_) => {}
         }
         ControlFlow::Break(None)
     }

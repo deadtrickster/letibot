@@ -215,11 +215,15 @@ impl App {
         // — the same arrangement `pane_len`/`pane_room` make for the panes. The scroll
         // itself is reset in one place, here, so a second card cannot inherit the first
         // one's offset however it arrived.
-        let card_here = self
-            .open
-            .first()
-            .map(|d| d.req_id.clone())
-            .unwrap_or_default();
+        // **Which card, not only which decision** (R90.22): the slot's other cards scroll now
+        // too, and one must not inherit another's offset.
+        let card_here = format!(
+            "{card_target:?}:{}",
+            self.open
+                .first()
+                .map(|d| d.req_id.as_str())
+                .unwrap_or_default()
+        );
         if card_here != self.dec_scroll_for {
             self.dec_scroll_for = card_here;
             self.dec_scroll = 0;

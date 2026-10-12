@@ -388,3 +388,17 @@ fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
         Some(Action::Reseat { .. })
     ));
 }
+
+/// **R90.22: the card that says "pgdn scrolls" scrolls on PgDn** — `scroll_card` asked for an open
+/// decision, so the page keys scrolled the transcript under the reseat card instead.
+#[test]
+fn the_page_keys_scroll_the_reseat_card_that_says_they_do() {
+    let (mut a, _hub) = stale();
+    a.key(Key::Tab);
+    let before = a.screen(50, 14).join("\n");
+    assert!(before.contains("pgdn scrolls"), "{before}");
+    a.key(Key::PageDown);
+    let after = a.screen(50, 14).join("\n");
+    assert!(a.dec_scroll > 0, "the card's window moved");
+    assert!(after.contains("pgup"), "{after}");
+}

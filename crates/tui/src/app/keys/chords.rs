@@ -259,8 +259,13 @@ impl App {
     /// past. When the content fits, nothing moves and the caller does what it always did — a card
     /// being up must not cost the transcript its scroll. The two numbers are the last frame's,
     /// because whether anything is out of view is a fact about the width (`App::card_window`).
+    ///
+    /// **Whatever card holds the slot** (R90.22): the reseat, quit and todo cards draw the same
+    /// "… N line(s) out of view · pgdn scrolls" seam through `card_window`, and this asked for an
+    /// open decision, so PgDn scrolled the transcript under the card that said it scrolls. The
+    /// last frame's numbers are the slot's, whichever card drew them (zero with no card).
     pub(crate) fn scroll_card(&mut self, up: bool, by: usize) -> bool {
-        if self.open.is_empty() || self.dec_content_len <= self.dec_content_room {
+        if self.dec_content_len <= self.dec_content_room {
             return false;
         }
         let max = self.dec_content_len - self.dec_content_room;
