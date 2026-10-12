@@ -404,19 +404,65 @@ fn reading_the_same_turn_twice_says_the_same_thing() {
 
 /// A monitor that expired is **not** a monitor that fired, and the sentence the
 /// model gets has to keep them apart — reporting a deadline as a completion is
-/// F5 one primitive over.
+/// F5 one primitive over. And (R93.C8) the model's own `retire` and an owner
+/// ending are not announced as anything.
 #[test]
 fn a_monitor_notice_says_which_of_the_four_endings_it_was() {
-    let monitors = Monitors::new();
-    assert_eq!(monitors.settled_count(), 0);
-    // Nothing declared, so nothing settles: the notice builder is exercised
-    // through the empty case here and through the real one in `background.rs`,
-    // which owns the four endings. What matters at this layer is that the
-    // sentence carries `word()` rather than a boolean.
-    let text = monitor_notice(&[]);
-    assert!(text.contains("FIRED"), "{text}");
-    assert!(
-        text.contains("expiry") || text.contains("stopped existing"),
-        "the notice must distinguish a firing from a watch that merely ended: {text}"
+    use letibot_tools::exec::monitor::{Fired, Firing};
+    use std::time::{Duration, SystemTime};
+    let firing = |name: &str, fired: Fired| Firing {
+        name: name.into(),
+        watch: "job j1".into(),
+        declared_by: "t-1".into(),
+        fired,
+        at: SystemTime::UNIX_EPOCH,
+    };
+    let after = Duration::from_secs(3);
+    assert_eq!(monitor_notice(&[]), None);
+    let text = monitor_notice(&[
+        firing(
+            "build",
+            Fired::Fired {
+                why: "j1 exited 0".into(),
+                at: SystemTime::UNIX_EPOCH,
+                after,
+            },
+        ),
+        firing(
+            "log",
+            Fired::Expired {
+                after,
+                last_seen: "no match".into(),
+            },
+        ),
+        firing(
+            "mine",
+            Fired::Cancelled {
+                by: "the model".into(),
+                after,
+            },
+        ),
+    ])
+    .expect("a firing and an expiry are news");
+    assert_eq!(
+        text,
+        "[monitor] `build` fired: j1 exited 0.\n[monitor] `log` expired without firing."
     );
+    assert!(!text.contains("t-1"), "no turn id: {text}");
+    let own = monitor_notice(&[firing(
+        "mine",
+        Fired::Cancelled {
+            by: "the model".into(),
+            after,
+        },
+    )]);
+    assert_eq!(own, None, "the model's own retire is not news to it");
+    let released = monitor_notice(&[firing(
+        "flowy",
+        Fired::Cancelled {
+            by: "the seat was released".into(),
+            after,
+        },
+    )]);
+    assert_eq!(released.as_deref(), Some("[monitor] `flowy` was retired: the seat was released."));
 }

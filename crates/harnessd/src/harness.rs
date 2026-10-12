@@ -995,29 +995,38 @@ impl HubSteering {
     }
 }
 
-/// A monitor firing, as the sentence the model is given.
+/// A monitor firing, as the sentence the model is given — or `None` when nothing in `fired` is
+/// news to it.
 ///
-/// It reports **why it fired**, not that it did — T24 requirement 3 — because
-/// `Fired::word` distinguishes a firing from an expiry, and a monitor that expired
-/// learned nothing about the world.
-fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> String {
-    let mut s = String::from("[monitor] ");
-    s.push_str(&format!("{} watch(es) fired:\n", fired.len()));
-    for f in fired {
-        s.push_str(&format!(
-            "  - `{}` ({}), declared by {}: {}\n",
-            f.name,
-            f.watch,
-            f.declared_by,
-            f.fired.word(),
-        ));
-    }
-    s.push_str(
-        "Only a FIRED watch is an answer about the world; an expiry, a cancellation \
-         and an owner ending are three ways a watch stopped existing.",
-    );
-    s
+/// It reports **why it fired**, not that it did — T24 requirement 3 — and (R93.C8) one line per
+/// watch in its own words: `[monitor] \`name\` fired: why.` or `[monitor] \`name\` expired
+/// without firing.` The model's OWN `retire` and an owner ending are not announced at all: the
+/// first is the model's act one call ago (and a wake spent telling it so was a turn for nothing),
+/// the second is the scope it declared the watch under going away. Both are still recorded
+/// (`Deliveries::log_firings`); only the sentence is spared. The old head ("N watch(es) fired")
+/// called an expiry a firing, leaked the declaring turn id, and closed with the same aphorism on
+/// every notice.
+fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<String> {
+    use letibot_tools::exec::monitor::Fired;
+    let lines: Vec<String> = fired
+        .iter()
+        .filter_map(|f| match &f.fired {
+            Fired::Fired { why, .. } => Some(format!("[monitor] `{}` fired: {why}.", f.name)),
+            Fired::Expired { .. } => {
+                Some(format!("[monitor] `{}` expired without firing.", f.name))
+            }
+            Fired::Cancelled { by, .. } if by != MODEL_RETIRE => {
+                Some(format!("[monitor] `{}` was retired: {by}.", f.name))
+            }
+            Fired::Cancelled { .. } | Fired::OwnerEnded { .. } => None,
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
+
+/// Who `monitor`'s own `retire` op says retired a watch (`builtins::monitor`) — the model's act,
+/// which [`monitor_notice`] does not announce back to it.
+const MODEL_RETIRE: &str = "the model";
 
 /// **The completion of a background job, as the sentence the model is handed (R7).**
 ///
@@ -1707,11 +1716,12 @@ impl SteeringSource for HubSteering {
         if fired.is_empty() {
             return None;
         }
-        let text = monitor_notice(&fired);
-        // A firing is immediate by R79's rules and recorded as one.
+        // A firing is immediate by R79's rules and recorded as one — every one, even those
+        // the sentence leaves out (R93.C8).
         if let Some(d) = &self.deliveries {
             d.log_firings(&fired);
         }
+        let text = monitor_notice(&fired)?;
         if let Some(t) = &self.trail {
             t.say(Speaker::Agent, &text, Some(Instant::now()));
         }
@@ -8822,7 +8832,7 @@ impl Harness {
                     if let Some(d) = self.deliveries() {
                         d.log_firings(&fired);
                     }
-                    notices.push(monitor_notice(&fired));
+                    notices.extend(monitor_notice(&fired));
                 }
             }
         }

@@ -378,14 +378,26 @@ pub(crate) fn monitor_said(bullet: &str) -> Option<(String, String)> {
     Some((name.to_string(), said.trim().to_string()))
 }
 
-/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it.
+/// `[monitor] N watch(es) fired:` and its bullets, when the fold did not take it — or, since
+/// R93.C8, one `[monitor] \`name\` fired: why.` / `… expired without firing.` line per watch.
 fn monitor(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[monitor] ")?;
-    let bullets: Vec<(String, String)> = rest
+    let mut bullets: Vec<(String, String)> = rest
         .lines()
         .filter_map(|l| l.strip_prefix("  - "))
         .filter_map(monitor_said)
         .collect();
+    if bullets.is_empty() {
+        bullets = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("[monitor] `"))
+            .filter_map(|l| {
+                let (name, said) = l.split_once("` ")?;
+                let said = said.strip_prefix("fired: ").unwrap_or(said);
+                Some((name.to_string(), said.trim_end_matches('.').to_string()))
+            })
+            .collect();
+    }
     let (name, said) = bullets.first()?;
     let mut parts = vec![format!("{name} {}", short(&first_clause(said), PART))];
     if bullets.len() > 1 {
@@ -614,6 +626,17 @@ mod tests {
             "{}",
             session_notice(nothing).line
         );
+    }
+
+    /// R93.C8: the one-line-per-watch shape draws one card, the first watch named.
+    #[test]
+    fn a_monitor_line_per_watch_is_one_card() {
+        let text = "[monitor] `ci` fired: the run exited 0.\n[monitor] `log` expired without firing.";
+        let c = monitor(text).expect("the new shape is a card");
+        assert_eq!(c.title, "monitor · ci");
+        let line = &c.line;
+        assert!(line.contains("ci the run exited 0"), "{line}");
+        assert!(line.contains("1 more"), "{line}");
     }
 
     #[test]
