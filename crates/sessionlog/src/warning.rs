@@ -204,6 +204,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // what is missing, and a fired condition left unwritten fires again after a restart.
     ("calls_abandoned", Class::Failure),
     ("todos_not_stored", Class::Failure),
+    // **R91.** Three ways something did not land where it was meant to: words that reached a turn
+    // and were not read by the model before it ended (`steering_carried`, they ride the next turn),
+    // a round's context measurement the store refused (`context_not_stored`), and a fork that
+    // moved the session but whose rows are not all stored, so a restart would resume the parent
+    // (`fork_unstored`). Each is a fact about the session, not about a line.
+    ("steering_carried", Class::Failure),
+    ("context_not_stored", Class::Failure),
+    ("fork_unstored", Class::Failure),
     // **A background job's row did not land** (`JobRecorder`, R67 item 15) — the job is fine and
     // its history is not, and a `when: job` todo row may not be released after a restart. And
     // **the merge queue could not be read for a pane** — an empty pane that means *unread*.
@@ -1087,10 +1095,12 @@ mod the_register_census {
         //     nobody answered in time.
         //   · **128, not 127**: `reseat_tight` (Routine) — a verbatim reseat under the window
         //     and short of a turn's room, which goes ahead now.
-        assert_eq!(TABLE.len(), 128, "the table's size");
+        //   · **131, not 128**: `steering_carried`, `context_not_stored` and `fork_unstored`
+        //     (Failure) — TODO R91.
+        assert_eq!(TABLE.len(), 131, "the table's size");
         assert_eq!(count(Class::Routine), 48);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 69);
+        assert_eq!(count(Class::Failure), 72);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 64 of 114 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the

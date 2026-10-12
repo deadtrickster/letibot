@@ -2226,7 +2226,7 @@ mod tests {
         // in `next_batch` — the missing count reads as an assertion, not a hang.
         let mark = |hub: &Hub| {
             hub.publish(SessionEvent::Warning {
-                code: "marker".into(),
+                code: "interrupt_idle".into(),
                 detail: String::new(),
                 compaction: None,
             });
