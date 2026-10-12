@@ -1064,23 +1064,24 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         )),
     }
     for c in done {
-        let command = if c.command.is_empty() {
-            "command not recorded".to_string()
-        } else {
-            c.command.clone()
-        };
+        // R93.C3: no byte count (a number with nothing to do), and the command only for a job
+        // ANOTHER session started — the model wrote its own one call ago, and echoing it back in
+        // full was most of the notice.
         let whose = if mine {
             String::new()
         } else {
-            format!(" (started by `{}`)", c.owner)
+            let command = if c.command.is_empty() {
+                "command not recorded"
+            } else {
+                c.command.as_str()
+            };
+            format!(": {command} (started by `{}`)", c.owner)
         };
         s.push_str(&format!(
-            "  - `{}` {} after {}, wrote {} bytes: {}{}\n",
+            "  - `{}` {} after {}{}\n",
             letibot_tools::exec::job_label(c.slug.as_deref(), &c.job),
             c.state,
             human_secs(c.elapsed_ms),
-            c.produced,
-            command,
             whose,
         ));
         if let Some(m) = &c.memory {

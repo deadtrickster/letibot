@@ -1,0 +1,8 @@
+[job] 2 jobs you backgrounded have ended:
+  - `build-and-test-null · j1042` exited 0 after 2m54s, wrote 1008 bytes: bash -c 'cd /home/dead/Projects/dbtest/pg-noop; echo "=== building release"
+  cargo build --release 2>&1 | tail -3
+
+  echo "=== testing"; cargo test 2>&1 | tail -5'
+    memory: peak 245 MiB of a 8 GiB cap
+  - `j1043` exited 101 after 4.4s, wrote 0 bytes: cargo test -p letibot-tui
+Output: `job_output` job="j1042", job="j1043".

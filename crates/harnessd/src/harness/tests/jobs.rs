@@ -542,7 +542,7 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     let named = completion_notice(&[settled("j65", Some("release-build"))], true);
     assert!(
         named.contains(
-            "  - `release-build · j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test\n"
+            "  - `release-build · j65` exited 0 after 54.9s\n"
         ),
         "the settlement must name the job the way the bash result did: {named}"
     );
@@ -551,13 +551,13 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     // same sentence under the other heading — and the owner is still named beside it.
     let handed = completion_notice(&[settled("j65", Some("release-build"))], false);
     assert!(
-        handed.contains("`release-build · j65` exited 0") && handed.contains("started by `s-me`"),
+        handed.contains("`release-build · j65` exited 0 after 54.9s: cargo test (started by `s-me`)"),
         "{handed}"
     );
 
     let bare = completion_notice(&[settled("j65", None)], true);
     assert!(
-        bare.contains("  - `j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test\n"),
+        bare.contains("  - `j65` exited 0 after 54.9s\n") && !bare.contains("cargo test"),
         "{bare}"
     );
     // **The name is the only difference.** Strip it from the named notice and what is left
@@ -686,7 +686,9 @@ fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
             detail: String::new(),
             memory: None,
         }],
-        true,
+        // R93.C3: the command is echoed only for a job another session started, so that is
+        // where a missing one is said.
+        false,
     );
     assert!(text.contains("command not recorded"), "{text}");
     assert!(!text.contains("``"), "an empty pair of backticks: {text}");

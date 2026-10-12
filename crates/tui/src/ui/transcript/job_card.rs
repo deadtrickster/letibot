@@ -82,8 +82,9 @@ pub(crate) struct EndedJob {
     pub(crate) state: String,
     /// How long it ran, in the daemon's spelling (`2m54s`, `4.4s`).
     pub(crate) after: String,
-    /// Bytes it wrote, all streams.
-    pub(crate) produced: u64,
+    /// Bytes it wrote, all streams — `None` for a notice from after R93.C3, which dropped the
+    /// count from the model's sentence.
+    pub(crate) produced: Option<u64>,
     /// The command, verbatim — several lines when it was written over several.
     pub(crate) command: String,
     /// `memory: …`'s clause, when the notice carried one.
@@ -197,14 +198,28 @@ pub(crate) fn folded_waiting(line: &str) -> String {
     }
 }
 
-/// The first line of a bullet, after `  - `` ` ``: `LABEL` STATE after DUR, wrote N bytes: CMD.
+/// The first line of a bullet, after `  - `` ` ``. Two shapes:
+///
+/// * `LABEL` STATE after DUR, wrote N bytes: CMD — every notice before R93.C3, still in stored
+///   transcripts;
+/// * `LABEL` STATE after DUR — this session's own job since R93.C3, and `LABEL` STATE after DUR:
+///   CMD (started by `S`) for one handed up. A duration never holds `: `, so the first `: ` after
+///   the last ` after ` before it is where the command starts.
 fn bullet_of(bullet: &str) -> Option<EndedJob> {
     let (label, said) = bullet.split_once('`')?;
     let said = said.strip_prefix(' ')?;
-    let (ended, wrote) = said.split_once(", wrote ")?;
-    let (state, after) = ended.rsplit_once(" after ")?;
-    let (bytes, command) = wrote.split_once(" bytes: ")?;
-    let produced = bytes.parse::<u64>().ok()?;
+    let (state, after, produced, command) = match said.split_once(", wrote ") {
+        Some((ended, wrote)) => {
+            let (state, after) = ended.rsplit_once(" after ")?;
+            let (bytes, command) = wrote.split_once(" bytes: ")?;
+            (state, after, Some(bytes.parse::<u64>().ok()?), command)
+        }
+        None => {
+            let (ended, command) = said.split_once(": ").unwrap_or((said, ""));
+            let (state, after) = ended.rsplit_once(" after ")?;
+            (state, after, None, command)
+        }
+    };
     // **The label is `job_label`'s**: `slug · j65`, or the bare id when nobody named the job.
     let (slug, id) = match label.rsplit_once(" · ") {
         Some((slug, id)) if is_job_id(id) => (Some(slug.to_string()), id.to_string()),
@@ -339,8 +354,10 @@ pub(crate) fn job_lines(j: &EndedJob, mine: bool, tail: Option<&JobTail>) -> [St
     if let Some(o) = &j.owner {
         first.push_str(&format!(" · started by {o}"));
     }
-    first.push_str(" · ");
-    first.push_str(&flat(&j.command));
+    if !j.command.is_empty() {
+        first.push_str(" · ");
+        first.push_str(&flat(&j.command));
+    }
     let said = match tail {
         Some(JobTail::Lines(lines)) => lines
             .iter()
@@ -352,10 +369,11 @@ pub(crate) fn job_lines(j: &EndedJob, mine: bool, tail: Option<&JobTail>) -> [St
     let second = match said {
         Some(l) => l,
         None => {
-            let mut facts = if j.produced == 0 {
-                "wrote nothing".to_string()
-            } else {
-                format!("wrote {} bytes", j.produced)
+            let mut facts = match j.produced {
+                Some(0) => "wrote nothing".to_string(),
+                Some(n) => format!("wrote {n} bytes"),
+                // R93.C3: the notice no longer counts; the tail, when fetched, replaces this.
+                None => "ended".to_string(),
             };
             if let Some(m) = &j.memory {
                 facts.push_str(&format!(" · memory: {m}"));

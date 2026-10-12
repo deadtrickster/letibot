@@ -120,7 +120,7 @@ impl App {
             return;
         };
         let jobs = notice_jobs(&text).unwrap_or_default();
-        let asks: Vec<(String, u64)> = jobs
+        let asks: Vec<(String, Option<u64>)> = jobs
             .iter()
             .filter(|(mine, _)| *mine)
             .map(|(_, j)| (j.id.clone(), j.produced))
@@ -211,7 +211,7 @@ impl App {
     /// **The tail, not the head.** The offset is [`TAIL_BYTES`] before the end, because a
     /// build or a test run says how it went in its last lines; the first line of such a window
     /// may be cut, which is why only its LAST line is drawn on the row.
-    pub(crate) fn ask_tails(&mut self, asks: Vec<(String, u64)>) {
+    pub(crate) fn ask_tails(&mut self, asks: Vec<(String, Option<u64>)>) {
         if self.session_id.is_empty() {
             return;
         }
@@ -219,14 +219,16 @@ impl App {
             if self.job_tails.contains_key(&job) {
                 continue;
             }
-            if produced == 0 {
+            if produced == Some(0) {
                 self.job_tails.insert(job, JobTail::Lines(Vec::new()));
                 continue;
             }
             self.job_tails.insert(job.clone(), JobTail::Asked);
+            // A notice from after R93.C3 carries no byte count: offset 0 is the daemon's
+            // "the tail" (`job_window_for`), which is what this read wants anyway.
             self.queued.push(Action::ReadJobOutput {
                 job,
-                offset: produced.saturating_sub(TAIL_BYTES),
+                offset: produced.map_or(0, |n| n.saturating_sub(TAIL_BYTES)),
             });
         }
     }
@@ -260,7 +262,7 @@ impl App {
     pub(crate) fn notice_rows_in(&mut self, start: usize, end: usize) -> Vec<(usize, usize)> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();
-        let mut asks: Vec<(String, u64)> = Vec::new();
+        let mut asks: Vec<(String, Option<u64>)> = Vec::new();
         let mut last: Option<(usize, bool)> = None;
         for line in start..end {
             let i = self.spans.partition_point(|sp| sp.at <= line);
@@ -365,7 +367,7 @@ impl App {
                     "not readable from this session: the session that started it has stopped",
                     Some(Role::Pending),
                 ),
-                None if j.produced == 0 => {
+                None if j.produced == Some(0) => {
                     push_wrapped(&mut rows, "it wrote nothing", Some(Role::Pending))
                 }
                 None => push_wrapped(&mut rows, "not read", Some(Role::Pending)),

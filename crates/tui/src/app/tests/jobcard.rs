@@ -7,10 +7,14 @@
 use super::*;
 use crate::ui::transcript::job_card::{JobTail, ended_jobs, notice_jobs};
 
-/// The daemon's own notices, written by `completion_notice` and compared byte for byte by
+/// The daemon's notices before R93.C3 (a byte count and the command on every bullet) — the shape
+/// every stored transcript from before it holds, so the head must keep reading it.
+const MINE: &str = include_str!("fixtures/job_notice_mine_v1.txt");
+const THEIRS: &str = include_str!("fixtures/job_notice_theirs_v1.txt");
+/// The daemon's own notices now, written by `completion_notice` and compared byte for byte by
 /// `harnessd`'s `the_tuis_job_notice_fixtures_are_what_completion_notice_writes`.
-const MINE: &str = include_str!("fixtures/job_notice_mine.txt");
-const THEIRS: &str = include_str!("fixtures/job_notice_theirs.txt");
+const MINE_NOW: &str = include_str!("fixtures/job_notice_mine.txt");
+const THEIRS_NOW: &str = include_str!("fixtures/job_notice_theirs.txt");
 /// R79's held batch: a `[meanwhile]` line over an ordinary `[job]` group, pinned by `harnessd`'s
 /// `the_meanwhile_notice_is_the_heads_fixture`.
 const MEANWHILE: &str = include_str!("fixtures/job_notice_meanwhile.txt");
@@ -60,6 +64,30 @@ fn rows_with<'a>(screen: &'a [String], needle: &str) -> Vec<&'a String> {
     screen.iter().filter(|l| l.contains(needle)).collect()
 }
 
+/// **R93.C3: the notice as the daemon writes it now** — no byte count, and the command only on a
+/// job another session started — parses, and the card draws no empty command.
+#[test]
+fn the_notice_parser_reads_the_notice_without_bytes_or_own_command() {
+    let (mine, jobs) = ended_jobs(MINE_NOW).expect("the owner's notice parses");
+    assert!(mine);
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs[0].id, "j1042");
+    assert_eq!(jobs[0].slug.as_deref(), Some("build-and-test-null"));
+    assert_eq!((jobs[0].state.as_str(), jobs[0].after.as_str()), ("exited 0", "2m54s"));
+    assert_eq!(jobs[0].produced, None);
+    assert_eq!(jobs[0].command, "");
+    assert_eq!(jobs[0].memory.as_deref(), Some("peak 245 MiB of a 8 GiB cap"));
+    assert_eq!((jobs[1].id.as_str(), jobs[1].after.as_str()), ("j1043", "4.4s"));
+    let (mine, jobs) = ended_jobs(THEIRS_NOW).expect("the handed-up notice parses");
+    assert!(!mine);
+    assert_eq!(jobs[0].command, "sleep 3; echo done");
+    assert_eq!(jobs[0].owner.as_deref(), Some("s-child"));
+    assert_eq!(jobs[0].after, "3.0s");
+    let [first, second] = crate::ui::transcript::job_card::job_lines(&jobs[0], false, None);
+    assert!(first.ends_with("· started by s-child · sleep 3; echo done"), "{first}");
+    assert!(second.contains("ended · output not readable here"), "{second}");
+}
+
 /// **The parser reads what the daemon writes** — the fixtures ARE `completion_notice`'s output,
 /// so this is the half of the pin that says the TUI still understands it.
 #[test]
@@ -72,7 +100,7 @@ fn the_notice_parser_reads_the_daemons_own_notices() {
     assert_eq!(j.slug.as_deref(), Some("build-and-test-null"));
     assert_eq!(j.state, "exited 0");
     assert_eq!(j.after, "2m54s");
-    assert_eq!(j.produced, 1008);
+    assert_eq!(j.produced, Some(1008));
     assert_eq!(j.memory.as_deref(), Some("peak 245 MiB of a 8 GiB cap"));
     assert!(
         j.command

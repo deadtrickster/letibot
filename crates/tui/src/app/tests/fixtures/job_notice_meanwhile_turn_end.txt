@@ -1,6 +1,6 @@
 [meanwhile] Finished while you were working:
 
 [job] 2 jobs you backgrounded have ended:
-  - `release-build · j1042` exited 0 after 2m54s, wrote 1008 bytes: cargo build --release
-  - `j1043` exited 101 after 4.4s, wrote 0 bytes: cargo test -p letibot-tui
+  - `release-build · j1042` exited 0 after 2m54s
+  - `j1043` exited 101 after 4.4s
 Output: `job_output` job="j1042", job="j1043".

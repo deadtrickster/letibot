@@ -1,3 +1,3 @@
 [job] a job a session below this one started has ended:
-  - `release-build · j7` killed by job_kill after 3.0s, wrote 13 bytes: sleep 3; echo done (started by `s-child`)
+  - `release-build · j7` killed by job_kill after 3.0s: sleep 3; echo done (started by `s-child`)
 This session is told because the one that started it cannot be: it has stopped and will not run again, and the job's output went with it. There is nothing to collect and nothing to wait for — this is the fact of the ending and no more.
