@@ -394,7 +394,7 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Child { id } => format!("child {}", clean_line(id)),
         TodoNeed::Job { handle } => format!("job {}", clean_line(handle)),
         TodoNeed::Operator { question, options } => format!(
-            "YOU — \"{}\" ({}) — enter on the row, or alt-a, answers it",
+            "YOU — \"{}\" ({}) — enter on the row answers it",
             clean_line(question),
             options
                 .iter()

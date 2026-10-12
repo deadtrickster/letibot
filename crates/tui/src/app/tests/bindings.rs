@@ -102,7 +102,7 @@ fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
             }
         }
         assert!(
-            bar.contains(s.esc_says()),
+            bar.contains(&a.esc_hint(s)),
             "{s:?}: the way out is not named: {bar}"
         );
     }

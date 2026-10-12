@@ -68,7 +68,15 @@ impl App {
                 self.pop_surface();
                 ControlFlow::Break(None)
             }
-            Key::Enter if s.owns_enter() => ControlFlow::Break(None),
+            // **Swallowed, and said** (R90.11): with a line typed, Enter over a reading pane
+            // did nothing at all.
+            Key::Enter if s.owns_enter() => {
+                if !self.editor.text().is_empty() {
+                    self.say("this pane takes enter — your line is held; esc closes the pane, then enter sends it");
+                    self.redraw = true;
+                }
+                ControlFlow::Break(None)
+            }
             _ => ControlFlow::Continue(()),
         }
     }

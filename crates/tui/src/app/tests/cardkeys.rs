@@ -341,3 +341,90 @@ fn a_card_that_owns_the_keyboard_has_its_own_bar() {
     assert!(bar.contains("type the password"), "{bar}");
     assert!(!bar.contains("ctrl-s"), "{bar}");
 }
+
+// ──────────────────── R90.8 / R90.10 / R90.11 / R90.17: the panes' bars ────────────────────
+
+fn waiting_board(a: &mut App) {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+    a.session_id = "s".into();
+    a.apply(ServerFrame::Todos {
+        session_id: "s".into(),
+        todos: vec![TodoEntry {
+            content: "pick the db".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Model,
+            when: None,
+            needs: vec![TodoNeed::Operator {
+                question: "postgres or sqlite?".into(),
+                options: vec!["postgres".into(), "sqlite".into()],
+            }],
+        }],
+    });
+}
+
+/// Enter on a row waiting on you opens its question; the bar says so instead of "reads it whole".
+#[test]
+fn the_todos_bar_says_enter_answers_a_waiting_rows_question() {
+    let mut a = app();
+    waiting_board(&mut a);
+    a.key(Key::CtrlT);
+    // Walk to the waiting row, wherever the pane puts it.
+    for _ in 0..8 {
+        if a.hint_bar(300).contains("answers its question") {
+            break;
+        }
+        a.key(Key::Down);
+    }
+    let bar = a.hint_bar(300);
+    assert!(bar.contains("enter answers its question"), "{bar}");
+    a.key(Key::Enter);
+    assert_eq!(a.open[0].summary, "postgres or sqlite?");
+    let pane = a.screen(160, 40).join("\n");
+    assert!(!pane.contains("or alt-a, answers it"), "{pane}");
+}
+
+/// ↑↓ scroll /help instead of recalling history into the composer.
+#[test]
+fn the_arrows_scroll_a_reading_surface() {
+    let a = app();
+    for s in [Surface::Help, Surface::Stats] {
+        let b = a.binding_for(s, &Key::Up).expect("↑ is bound");
+        assert_eq!(b.act, crate::app::keys::bindings::Act::Scroll, "{s:?}");
+    }
+    let mut a = app();
+    a.push_surface(Surface::Help);
+    assert_eq!(a.key(Key::Up), None);
+    assert_eq!(a.input(), "");
+    assert!(a.hint_bar(300).contains("↑↓"), "{}", a.hint_bar(300));
+}
+
+/// Enter over a reading pane with a line typed is swallowed — and now said.
+#[test]
+fn a_swallowed_enter_over_a_reading_pane_is_said() {
+    let mut a = app();
+    a.push_surface(Surface::Help);
+    typed(&mut a, "hello");
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("this pane takes enter"),
+        "{:?}",
+        a.notice
+    );
+    assert_eq!(a.input(), "hello");
+}
+
+/// `/peek ID` with no pane open: Esc goes to the conversation and the bar says so.
+#[test]
+fn a_peek_over_no_pane_names_the_conversation_as_where_esc_goes() {
+    let mut a = app();
+    a.push_surface(Surface::SubOut);
+    let bar = a.hint_bar(400);
+    assert!(bar.contains("esc back to the conversation"), "{bar}");
+    let mut b = app();
+    b.push_surface(Surface::Jobs);
+    b.push_surface(Surface::SubOut);
+    assert!(b.hint_bar(400).contains("esc back to the jobs"));
+}

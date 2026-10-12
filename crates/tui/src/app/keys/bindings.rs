@@ -154,7 +154,9 @@ const PAGE: Binding = b(&[On::Page], Always, Act::Scroll, Text("scroll"));
 const WHEEL: Binding = b(&[On::Wheel], Always, Act::Scroll, Nothing);
 const LIST: Binding = b(UPDOWN, Always, Act::Cursor, Text("moves"));
 
-const READING: &[Binding] = &[PAGE, WHEEL];
+// **↑↓ scroll a reading surface** (R90.10), as they do on every other one: they fell through to
+// the composer and recalled history under /help, and the Enter that followed was swallowed.
+const READING: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
 const PICKER: &[Binding] = &[
     LIST,
     b(
@@ -301,6 +303,26 @@ impl Surface {
         }
     }
 
+    /// **The surface as the bar names it after "esc back to the"** (R90.17).
+    pub(crate) fn short_name(self) -> &'static str {
+        match self {
+            Surface::Help => "help",
+            Surface::Stats => "status",
+            Surface::Picker => "sessions",
+            Surface::Config => "settings",
+            Surface::Todos => "todos",
+            Surface::TodoRow => "todo row",
+            Surface::Queue => "queue",
+            Surface::QueueEntry => "queue entry",
+            Surface::Standing => "standing notes",
+            Surface::Subagents => "subagents",
+            Surface::SubOut => "subagent's output",
+            Surface::Jobs => "jobs",
+            Surface::JobOut => "job's output",
+            Surface::Listing => "listing",
+        }
+    }
+
     /// **What a surface takes that is not a key**: the typed path a list advertises.
     pub(crate) fn typed_says(self) -> Option<&'static str> {
         match self {
@@ -406,9 +428,18 @@ impl App {
             (Surface::Todos, act) => {
                 let stops = self.todos_stops();
                 let at = self.todos_sel.min(stops.len().saturating_sub(1));
+                let waits_on_you =
+                    |c: &String| self.operator_asks().iter().any(|a| &a.content == c);
                 Some(
                     match (stops.get(at), act) {
                         (Some(TodoStop::Add), _) => "opens the card",
+                        // **A row waiting on you opens its question** (`todos_read`), and the bar
+                        // says so (R90.8) — it said "reads it whole".
+                        (Some(TodoStop::Mine(c) | TodoStop::Theirs(c)), Act::Open)
+                            if waits_on_you(c) =>
+                        {
+                            "answers its question"
+                        }
                         (_, Act::Open) => "reads it whole",
                         (Some(TodoStop::Mine(_)), _) => "toggles it done",
                         (Some(TodoStop::Repo(_)), _) => "unfolds the item",
@@ -469,14 +500,23 @@ impl App {
         // **Esc goes back to whatever is under this surface**, and a job's output or a child's
         // read can be opened from the todos pane's `waits on` link as well as from its own list —
         // so when the surface below is the todos pane, the bar says so instead of the fixed words.
+        out.push(self.esc_hint(s));
+        out.join(" · ")
+    }
+
+    /// **What Esc does on surface `s`, as the bar says it.** A job's output or a child's read
+    /// can be opened from the todos pane's `waits on` link, and `/peek ID` opens a child's
+    /// output over whatever is drawn — no pane at all, or the jobs pane (R90.17) — so those two
+    /// name the surface actually below them instead of the fixed words.
+    pub(crate) fn esc_hint(&self, s: Surface) -> String {
         let below = self.surfaces.iter().rev().nth(1).map(|o| o.surface);
         match (s, below) {
-            (Surface::JobOut | Surface::SubOut, Some(Surface::Todos)) => {
-                out.push("esc back to the todos".to_string())
+            (Surface::JobOut | Surface::SubOut, None) => "esc back to the conversation".to_string(),
+            (Surface::JobOut | Surface::SubOut, Some(b)) => {
+                format!("esc back to the {}", b.short_name())
             }
-            _ => out.push(s.esc_says().to_string()),
+            _ => s.esc_says().to_string(),
         }
-        out.join(" · ")
     }
 
     /// **The help's row for surface `s`**: how it is opened, and what it is and its keys —
