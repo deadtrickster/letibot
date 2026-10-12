@@ -2645,6 +2645,52 @@ impl Store {
         )
     }
 
+    /// **A fork that is not the session's conversation until it is sealed** (R91.2).
+    ///
+    /// [`Store::put_fork`] made the new transcript the session's newest — the one a resume
+    /// opens ([`Store::current_transcript_id`], `created_at DESC, rowid DESC`) — before a single
+    /// row of it was written, so a daemon that died during a long carry (a `/reseat` of 971 rows,
+    /// or a wait on a busy store) came back onto a truncated or empty conversation. This writes the
+    /// row with `created_at = 0`, which no live transcript has, so every "newest" query keeps
+    /// answering with the parent until [`Store::seal_transcript`] stamps it once its rows are all
+    /// stored. A fork that is never sealed is a dead branch, never the conversation.
+    pub fn put_fork_unsealed(
+        &self,
+        transcript_id: &str,
+        session_id: &str,
+        stable_prefix_id: &str,
+        parent_transcript_id: &str,
+        forked_at_seq: u32,
+    ) -> Result<()> {
+        self.exec(
+            "INSERT INTO transcript
+               (id, session_id, parent_transcript_id, forked_at_seq, stable_prefix_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![
+                transcript_id,
+                session_id,
+                parent_transcript_id,
+                forked_at_seq as i64,
+                stable_prefix_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// **The fork's rows are all stored: it is the session's conversation from now on.** See
+    /// [`Store::put_fork_unsealed`]. One statement, so a resume sees the parent or the whole
+    /// fork and never a part of one.
+    pub fn seal_transcript(&self, transcript_id: &str) -> Result<()> {
+        let n = self.exec(
+            "UPDATE transcript SET created_at = ?2 WHERE id = ?1",
+            params![transcript_id, now_ms()],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("transcript {transcript_id}")));
+        }
+        Ok(())
+    }
+
     fn insert_transcript(
         &self,
         transcript_id: &str,

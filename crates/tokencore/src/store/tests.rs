@@ -2276,3 +2276,31 @@ fn a_v27_store_is_migrated_and_its_old_jobs_count_as_delivered() {
     assert_eq!(s.undelivered_jobs("s-a").unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **An unsealed fork is not the session's conversation; a sealed one is** (R91.2). A daemon that
+/// dies while a fork's rows are being written resumes onto the parent, whole, rather than onto the
+/// part of the fork that had been written.
+#[test]
+fn an_unsealed_fork_is_not_current_until_it_is_sealed() {
+    let s = store();
+    let (tr, prefix_id) = seeded(&s);
+    s.put_fork_unsealed("tr-2", "sess-1", &prefix_id, &tr, 1)
+        .unwrap();
+    assert_eq!(
+        s.current_transcript_id("sess-1").unwrap().as_deref(),
+        Some(tr.as_str()),
+        "a fork whose rows are not all stored must not be what a resume opens"
+    );
+    assert_eq!(
+        s.session("sess-1").unwrap().unwrap().id,
+        "sess-1",
+        "the session row still reads"
+    );
+    s.seal_transcript("tr-2").unwrap();
+    assert_eq!(
+        s.current_transcript_id("sess-1").unwrap().as_deref(),
+        Some("tr-2"),
+        "sealed, the fork is the conversation"
+    );
+    assert!(s.seal_transcript("nope").is_err());
+}
