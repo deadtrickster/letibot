@@ -328,6 +328,7 @@ impl App {
     /// writes exactly that row.
     pub(crate) fn hover_at(&mut self, x: u16, y: u16) {
         let over = self.clickable_at(x, y);
+        self.hovered_on = over.as_ref().map(|_| self.drawn());
         if over != self.hovered {
             if over.is_some() != self.hovered.is_some() {
                 self.pointer_hand = Some(over.is_some());
@@ -471,6 +472,18 @@ impl App {
 
     /// **The hover mark and the selection, painted onto the finished frame** — the last thing a
     /// frame does, so no renderer has to know about the pointer.
+    /// **A light left on another screen goes** — the operator: *"when i hover over diff card it
+    /// highlights, then i click and the popup text on that position is highlighted too"*. The
+    /// rows it named are the popup's now; the pointer's shape goes back with it, and the next
+    /// motion lights whatever is under it on this screen.
+    pub(crate) fn settle_hover(&mut self) {
+        if self.hovered.is_some() && self.hovered_on != Some(self.drawn()) {
+            self.hovered = None;
+            self.hovered_on = None;
+            self.pointer_hand = Some(false);
+        }
+    }
+
     pub(crate) fn paint_pointer(&self, frame: &mut [String]) {
         if let Some(((x0, y0), (x1, y1))) = self.selection_span() {
             let gutter = Self::gutter(self.term_cols);

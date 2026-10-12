@@ -1366,3 +1366,38 @@ fn a_note_the_notes_tool_rewrote_is_drawn_and_clicked_as_an_edit() {
     assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
     assert!(a.diff_popup.is_some(), "a click opens the popup");
 }
+
+/// **The pointer's light belongs to the screen it was taken on** — the operator: *"when i hover
+/// over diff card it highlights, then i click and the popup text on that position is highlighted
+/// too"*. The popup is drawn over the rows the card lit, and the light stayed on them; the popup is
+/// not scrolled to the pointer, and could not always be (a change at the file's start or end), so
+/// what it lit there was nothing in particular.
+#[test]
+fn a_click_that_opens_the_popup_leaves_no_light_on_it() {
+    let ws = workspace("stale-hover");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    let top = a
+        .hits
+        .iter()
+        .find(|h| h.target == crate::app::Target::Conversation)
+        .unwrap()
+        .rect
+        .y;
+    let y = (top + y) as u16;
+    a.key(Key::Hover { x: 10, y });
+    assert!(
+        a.screen(100, 40)[y as usize].contains("\x1b[22;1m"),
+        "the premise: the card is lit"
+    );
+    assert_eq!(a.key(Key::Click { x: 10, y }), None);
+    assert!(a.diff_popup.is_some());
+    let popup = a.screen(100, 40);
+    for (i, l) in popup.iter().enumerate() {
+        assert!(
+            !l.contains("\x1b[22;1m"),
+            "row {i} of the popup is lit: {l:?}"
+        );
+    }
+}
