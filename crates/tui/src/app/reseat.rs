@@ -108,8 +108,14 @@ impl App {
     /// **Something else holds the ask slot** — a decision, a prompt, a password, a picker, the
     /// quit card. The reseat card waits behind every one of them and is drawn as the strip
     /// meanwhile, so it is never off the screen.
+    ///
+    /// **And an open surface takes it too** (R90.1): a pane's keys are the pane's. With the card
+    /// up over the todos pane, Enter on a row sent `/reseat` and `1` in the session picker
+    /// reseated, while the bar named the pane's keys. While a pane has the keyboard the card is
+    /// the strip, and it comes back when the pane closes.
     pub(crate) fn slot_taken(&self) -> bool {
-        self.secret.is_some()
+        self.focused_surface().is_some()
+            || self.secret.is_some()
             || self.term_ask.is_some()
             || (self.prompt.is_some() && !self.prompt_away)
             || !self.open.is_empty()
@@ -165,8 +171,17 @@ impl App {
     }
 
     /// **Open the card again** (`alt-p`, or a click on the strip's hint).
+    ///
+    /// **While something else holds the slot nothing would visibly happen** (R90.21) — the card
+    /// would pop up later, maybe in front of an Enter meant for something else — so it says so
+    /// and stays pinned.
     pub(crate) fn reseat_expand(&mut self) {
+        let taken = self.slot_taken();
         match self.reseat.as_mut() {
+            Some(_) if taken => self.say(
+                "the reseat card waits behind what is open now — close it, then alt-p shows the \
+                 card (alt-r reseats from anywhere)",
+            ),
             Some(c) => {
                 c.open = true;
                 self.redraw = true;

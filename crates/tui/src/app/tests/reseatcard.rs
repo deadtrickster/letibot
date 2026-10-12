@@ -343,3 +343,48 @@ fn a_reseat_too_big_to_carry_verbatim_offers_one_with_a_summary() {
     assert!(s.contains("alt-r reseats with a summary"), "{s}");
     assert_eq!(a.key(Key::AltR), Some(Action::Reseat { summarise: true }));
 }
+
+/// **R90.1: a pane's keys are the pane's.** With the card up, ctrl-t then Enter on a row, `1` in
+/// the session picker, Tab and Esc in todos all acted on the card — Enter and `1` sent `/reseat`.
+/// While a pane has the keyboard the card is the strip, and it is back when the pane closes.
+#[test]
+fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
+    let (mut a, _hub) = stale();
+    assert!(a.reseat_card_up());
+    a.key(Key::CtrlT);
+    assert_eq!(a.top_surface(), Some(Surface::Todos));
+    assert!(!a.reseat_card_up(), "the pane holds the slot");
+    assert!(screen(&mut a).contains("alt-p shows the card"), "the strip");
+    for k in [Key::Down, Key::Enter, Key::Char('1'), Key::Tab] {
+        let r = a.key(k.clone());
+        assert!(
+            !matches!(r, Some(Action::Reseat { .. })),
+            "{k:?} in the todos pane reseated"
+        );
+    }
+    let whole = a.reseat.as_ref().is_some_and(|c| c.whole);
+    assert!(!whole, "Tab was the pane's, not the card's");
+    // alt-p over the pane says why nothing opens rather than popping the card later.
+    a.key(Key::AltP);
+    assert!(
+        a.notice.as_deref().unwrap_or("").contains("waits behind"),
+        "{:?}",
+        a.notice
+    );
+    while a.top_surface().is_some() {
+        a.key(Key::Esc);
+    }
+    assert!(
+        a.reseat.is_some(),
+        "Esc closed the pane, it did not touch the card"
+    );
+
+    // The session picker: `1` is the first session, never the card's first row.
+    let (mut a, _hub) = stale();
+    a.key(Key::CtrlS);
+    assert_eq!(a.top_surface(), Some(Surface::Picker));
+    assert!(!matches!(
+        a.key(Key::Char('1')),
+        Some(Action::Reseat { .. })
+    ));
+}
