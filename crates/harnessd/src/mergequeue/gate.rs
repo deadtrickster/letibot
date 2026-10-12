@@ -20,6 +20,12 @@
 //! not as red code. A daemon with no delegated scope (an old-style start) runs the step as
 //! before and the evidence says *uncapped*.
 //!
+//! **And the step is told what it may use** (2026-10-12): `TMPDIR` is a directory inside the
+//! landing tree rather than the `/tmp` the daemon's environment would hand it, and
+//! `CARGO_BUILD_JOBS` is derived from the step's own cap rather than from the core count. Those
+//! were the two numbers that let the gate kill itself twice in one night — see [`GATE_TMPDIR`] and
+//! [`build_jobs`], which carry the measurements.
+//!
 //! **The runner is an interface** ([`GateRunner`]) with one implementation here
 //! ([`LocalGate`]). R62 runs the gate on the fleet (lubuntu1/2 over `ssh -i`); that is a second
 //! implementation of the same trait, and nothing else in the queue has to change for it.
@@ -42,6 +48,54 @@ pub const GATE_DEADLINE: Duration = Duration::from_secs(30 * 60);
 /// The environment variable the gate's builds are pointed with — `<worktree>/target`, so a branch
 /// is never judged with another tree's artifacts.
 pub const GATE_TARGET_DIR: &str = "CARGO_TARGET_DIR";
+
+/// **The environment variable a step's scratch space is pointed with** — a directory inside the
+/// landing tree, not the `TMPDIR` the daemon's environment would give the step.
+///
+/// **Why, measured.** `/tmp` on this box is a **93 GB tmpfs** (`df -h /tmp` → `tmpfs 93G … on
+/// /tmp`), and a tmpfs write is **shmem**: charged to the step's own cgroup, and not reclaimable
+/// the way a dirty page on a real disk is. On the night of 2026-10-11/12 `/tmp` held 89 GB (96%)
+/// of other sessions' scratch, and `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace` died at
+/// the step's own cap **twice**:
+///
+/// * `79c32c1d210f` — `[gate memory: peak 24.1 GiB of a 24.9 GiB cap]`, 128 processes of the step
+///   reaped, killed while compiling.
+/// * `9562d70f0c62` — `[gate memory: peak 25.5 GiB of a 25.5 GiB cap]`, cargo's own verdict
+///   `error: 1 target failed: -p letibot-turn --test restore`, killed during the test run.
+///
+/// Red 2's target is the one that explains itself: `crates/turn/tests/restore.rs`'s
+/// `real_store_copy()` copies the operator's live store — **4.0 GB and growing** — into
+/// `std::env::temp_dir()`, and three tests call it (`restore.rs:197`, `:239`, `:274`) and run in
+/// parallel inside one test binary: **12 GB of tmpfs charged to the step**, most of a cap that was
+/// already only half of what was free.
+///
+/// With `TMPDIR` inside the tree, those bytes are dirty pages on the same disk the build already
+/// writes its `target/` to — the kernel writes them back and reclaims them under pressure instead
+/// of killing the step for them.
+///
+/// **A repository whose gate is not cargo is unaffected**: a variable no program reads is inert,
+/// and a step that does not use `TMPDIR` is unaffected by it being set.
+pub const GATE_TMPDIR: &str = "TMPDIR";
+
+/// **The directory inside the landing tree that every step's `TMPDIR` is.** The gate makes it
+/// before the first step; it is removed with the tree, and
+/// [`super::git::landing_worktree_in`]'s `git clean -fd` — untracked, not ignored — sweeps it at
+/// the next landing of that tree. Not under `target/`, which is cargo's and which `cargo clean`
+/// would take a step's scratch with.
+pub const GATE_TMP_SUBDIR: &str = ".gate-tmp";
+
+/// **The environment variable that bounds a step's build** — how many jobs the gate's cap pays
+/// for. Same kind of decision as [`GATE_TARGET_DIR`]: the gate knows what it is allowed to use and
+/// says so in the environment, rather than letting cargo guess from the core count. See
+/// [`build_jobs`].
+pub const GATE_BUILD_JOBS: &str = "CARGO_BUILD_JOBS";
+
+/// **One rustc job per this much of the step's cap** — the gate's rule for how many compilers fit
+/// in the memory it was given. A rustc job's peak is not a fixed number, but on this tree a
+/// workspace build has been measured at roughly 0.7–0.8 GiB per job (24.1 GiB over 32 jobs at red
+/// 1); 2 GiB is the round number above that, so the build fits with room for the linker and for
+/// the test run that follows it in the same step.
+pub const GATE_JOB_MEMORY: u64 = 2 << 30;
 
 /// How much of a step's output the row keeps — the end, which is where a failure says why.
 pub const EVIDENCE_BYTES: usize = 4_096;
@@ -103,21 +157,97 @@ enum Placement {
     Unscoped(String),
 }
 
-fn placement(ask: Ask) -> Placement {
+/// `cap` is [`intended_cap`] of the same `ask`, resolved once by the caller: the cgroup and the
+/// step's build are bounded by one number.
+fn placement(ask: Ask, cap: Option<u64>) -> Placement {
     if let Err(why) = letibot_tools::exec::delegate_memory() {
         return Placement::Unscoped(why.clone());
     }
+    if ask == Ask::Uncapped {
+        return Placement::Scoped(None);
+    }
+    match cap {
+        Some(bytes) => Placement::Scoped(Some(bytes)),
+        None => Placement::Unscoped(
+            "`/proc/meminfo` could not be read, so a fraction of what is free means nothing".into(),
+        ),
+    }
+}
+
+/// **The memory the gate means to give a step, in bytes** — the `Ask` resolved without needing a
+/// cgroup, so that the same number caps the step and bounds its build ([`StepEnv`]). `uncapped` is
+/// `None`; so is a fraction of what is free when `/proc/meminfo` cannot be read — no number, no
+/// bound (and [`placement`] then says why the step runs in the daemon's own cgroup).
+fn intended_cap(ask: Ask) -> Option<u64> {
     let amount = match ask {
-        Ask::Uncapped => return Placement::Scoped(None),
+        Ask::Uncapped => return None,
         Ask::Default => GATE_MEMORY_DEFAULT,
         Ask::Amount(a) => a,
     };
-    match (amount, Meminfo::read()) {
-        (Amount::Bytes(b), _) => Placement::Scoped(Some(b)),
-        (a, Some(m)) => Placement::Scoped(Some(a.resolve(m.available))),
-        (_, None) => Placement::Unscoped(
-            "`/proc/meminfo` could not be read, so a fraction of what is free means nothing".into(),
-        ),
+    match amount {
+        Amount::Bytes(b) => Some(b),
+        a => Meminfo::read().map(|m| a.resolve(m.available)),
+    }
+}
+
+/// **How many rustc jobs the cap pays for**: one per [`GATE_JOB_MEMORY`] (2 GiB), never fewer than
+/// one and never more than the cores this process may use (`nproc`). `None` — the gate is
+/// `uncapped` — is `None`: there is no number to bound with, and cargo's own default stands.
+///
+/// **The numbers, on this box (`nproc` 32).** A **25 GiB** cap — what `[memory] gate`'s default
+/// (half of what is free) gave on the night of 2026-10-12, since 89 GB of other sessions' tmpfs
+/// left ~51 GiB available — pays for **12** jobs, not 32. A **50 GiB** cap pays for **25**. A cap
+/// under 4 GiB pays for **1**.
+///
+/// MEASURED, red 1 — `79c32c1d210f` under a 24.9 GiB cap: `[gate memory: peak 24.1 GiB of a 24.9
+/// GiB cap]` and **128 processes of the step reaped** — the kernel killing the rustc jobs and
+/// their children while they compiled. A `cargo test --workspace` at `nproc` jobs does not fit in
+/// 25 GiB, and nothing had told cargo so: the step took its parallelism from the core count and
+/// its memory from the gate, two numbers that knew nothing about each other.
+///
+/// **A repository whose gate is not cargo is unaffected**: the variable is read by cargo and by
+/// nothing else.
+pub fn build_jobs(cap: Option<u64>) -> Option<usize> {
+    let cap = cap?;
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let by_memory = (cap / GATE_JOB_MEMORY).max(1);
+    Some(by_memory.min(cores as u64) as usize)
+}
+
+/// **What the gate tells a step about itself** — the environment a run decides rather than
+/// inherits: the tree's `target/`, a scratch directory inside the tree, and the build's
+/// parallelism from the cap. One struct because the three are one decision — what memory and what
+/// disk this step may use — and a step must be given them together.
+struct StepEnv {
+    target: PathBuf,
+    tmp: PathBuf,
+    /// `None` when the gate is `uncapped`: no number to give, so cargo's own default stands.
+    jobs: Option<usize>,
+}
+
+impl StepEnv {
+    /// Decide a run's environment and make the scratch directory. `Err` is the gate not being
+    /// able to run at all — the step's row is `Infra` for it, never `failed`.
+    fn for_run(worktree: &Path, cap: Option<u64>) -> Result<StepEnv, String> {
+        let tmp = gate_tmp_dir(worktree);
+        std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        Ok(StepEnv {
+            target: gate_target_dir(worktree),
+            tmp,
+            jobs: build_jobs(cap),
+        })
+    }
+
+    /// Point a step's command at the tree's `target/`, at its own scratch, and at the parallelism
+    /// its cap pays for.
+    fn apply(&self, cmd: &mut Command) {
+        cmd.env(GATE_TARGET_DIR, &self.target);
+        cmd.env(GATE_TMPDIR, &self.tmp);
+        if let Some(jobs) = self.jobs {
+            cmd.env(GATE_BUILD_JOBS, jobs.to_string());
+        }
     }
 }
 
@@ -354,12 +484,15 @@ pub fn run_with_memory(
     ctl: &GateControl,
     memory: Ask,
 ) -> GateRun {
-    let target = gate_target_dir(worktree);
-    let place = placement(memory);
+    // **The cap is resolved once and used twice**: the cgroup the step joins is capped with it,
+    // and the build's parallelism is bounded by it ([`StepEnv`]). A step judged by two different
+    // numbers is the bug this closes.
+    let cap = intended_cap(memory);
+    let place = placement(memory, cap);
     let mut rows: Vec<MergeGateStep> = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
-        let (outcome, mem, leftover) = run_step(worktree, step, &target, ctl, &place);
+        let (outcome, mem, leftover) = run_step(worktree, step, cap, ctl, &place);
         let elapsed = now_ms().saturating_sub(started);
         let exit = match &outcome {
             StepEnd::Red(_, e) => Some(*e),
@@ -472,11 +605,15 @@ enum StepEnd {
 fn run_step(
     worktree: &Path,
     step: &str,
-    target: &Path,
+    cap: Option<u64>,
     ctl: &GateControl,
     place: &Placement,
 ) -> (StepEnd, StepMemory, usize) {
     use std::os::unix::process::CommandExt;
+    let env = match StepEnv::for_run(worktree, cap) {
+        Ok(env) => env,
+        Err(why) => return (StepEnd::Infra(why), StepMemory::Unknown, 0),
+    };
     let log = match tempfile_in(worktree) {
         Ok(l) => l,
         Err(e) => return (StepEnd::Infra(e), StepMemory::Unknown, 0),
@@ -518,9 +655,9 @@ fn run_step(
             .args(["sh", "-c", step]),
         None => cmd.arg("-c").arg(step),
     };
+    env.apply(&mut cmd);
     let child = cmd
         .current_dir(worktree)
-        .env(GATE_TARGET_DIR, target)
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err)
@@ -670,6 +807,14 @@ pub fn gate_target_dir(worktree: &Path) -> PathBuf {
         .join("target")
 }
 
+/// `<worktree>/.gate-tmp`, absolute — the scratch directory every step is given as `TMPDIR`
+/// ([`GATE_TMPDIR`]), derived from the tree and never from the box's temp directory.
+pub fn gate_tmp_dir(worktree: &Path) -> PathBuf {
+    std::path::absolute(worktree)
+        .unwrap_or_else(|_| worktree.to_path_buf())
+        .join(GATE_TMP_SUBDIR)
+}
+
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -742,6 +887,18 @@ impl GateRunner for GreenGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The step's own output** — a row's output is the step's output and then the memory evidence
+    /// line (`with_memory`, R76 item 6), so the step's answer is the first line of it.
+    fn step_said(run: &GateRun) -> String {
+        run.steps[0]
+            .output
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
 
     /// **Every step's row ends with what its memory did** (R76 item 6). A test binary is not
     /// started in a delegated scope of its own, so this one takes the old-style path: the step
@@ -961,6 +1118,125 @@ mod tests {
         assert!(
             matches!(&run.verdict, GateVerdict::Failed(w) if w.contains("[step: exit code 3]")),
             "{run:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    /// **A step's scratch is a directory inside the landing tree, not the `/tmp` it used to
+    /// inherit** ([`GATE_TMPDIR`]). MEASURED 2026-10-12: `/tmp` is a 93 GB tmpfs here, and
+    /// `crates/turn/tests/restore.rs` puts three parallel copies of the operator's 4.0 GB store
+    /// into it — 12 GB of shmem charged to the step's own cgroup, which is most of red 2
+    /// (`9562d70f0c62`: peak 25.5 GiB of a 25.5 GiB cap, `-p letibot-turn --test restore`).
+    ///
+    /// The worktree below is the test's own scratch (under `env::temp_dir()`, as every test's is);
+    /// what is asserted is that the gate does not CONSULT that directory — it derives the step's
+    /// scratch from the tree it was handed.
+    #[test]
+    fn a_steps_scratch_is_a_directory_in_the_landing_tree_not_the_boxes_temp_dir() {
+        // The decision, as a decision — no process needed: the tree's own subdirectory, whoever's
+        // tree it is.
+        assert_eq!(
+            gate_tmp_dir(Path::new("/landing/letibot-a156c9c34c8e")),
+            Path::new("/landing/letibot-a156c9c34c8e").join(GATE_TMP_SUBDIR)
+        );
+        let wt = std::env::temp_dir().join(format!("letibot-gate-scratch-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let stop = AtomicBool::new(false);
+        let alive = || true;
+        let ctl = GateControl {
+            deadline: Instant::now() + Duration::from_secs(60),
+            stop: &stop,
+            alive: &alive,
+        };
+        let run = run_with_memory(
+            &wt,
+            &["printf '%s' \"$TMPDIR\"".to_string()],
+            &ctl,
+            Ask::Default,
+        );
+        assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+        let expected = gate_tmp_dir(&wt);
+        assert_eq!(
+            Path::new(&step_said(&run)),
+            expected.as_path(),
+            "the step's TMPDIR"
+        );
+        assert!(
+            expected.is_dir(),
+            "the gate makes it before the step runs: {}",
+            expected.display()
+        );
+        assert!(expected.starts_with(&wt), "inside the landing tree");
+        assert_ne!(
+            expected.as_path(),
+            std::env::temp_dir().as_path(),
+            "the step used to inherit the box's temp directory"
+        );
+        let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    /// **The build's parallelism comes from the cap, not from the core count** — one job per
+    /// [`GATE_JOB_MEMORY`] (2 GiB), at least one, never more than `nproc`. MEASURED, red 1
+    /// (`79c32c1d210f`): 24.1 GiB of a 24.9 GiB cap with 128 of the step's processes reaped while
+    /// compiling, because 32 rustc jobs (this box's `nproc`) were started against a cap that pays
+    /// for 12.
+    #[test]
+    fn the_builds_jobs_come_from_the_cap_and_never_exceed_the_cores() {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        // The two numbers the comment states, and both clamps.
+        assert_eq!(build_jobs(Some(25 << 30)), Some(12.min(cores)));
+        assert_eq!(build_jobs(Some(50 << 30)), Some(25.min(cores)));
+        assert_eq!(build_jobs(Some(4 << 30)), Some(2.min(cores)));
+        assert_eq!(
+            build_jobs(Some(1 << 40)),
+            Some(cores),
+            "a cap no box has is the cores, not 512"
+        );
+        assert_eq!(build_jobs(Some(64 << 20)), Some(1), "never zero");
+        assert_eq!(build_jobs(Some(1)), Some(1));
+        assert_eq!(
+            build_jobs(None),
+            None,
+            "uncapped: no number, cargo's default"
+        );
+    }
+
+    /// **And the step is actually told** — the value reaches the step's environment, overriding
+    /// whatever the box had: one job under a 64 MiB cap, the cores under a cap no box has, and
+    /// under `uncapped` nothing at all (so a cargo step falls back to its own default; this very
+    /// test, run inside the gate's own step, inherits the gate's value there).
+    #[test]
+    fn a_step_is_told_how_many_jobs_its_cap_pays_for() {
+        let wt = std::env::temp_dir().join(format!("letibot-gate-jobs-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let stop = AtomicBool::new(false);
+        let alive = || true;
+        let ctl = GateControl {
+            deadline: Instant::now() + Duration::from_secs(60),
+            stop: &stop,
+            alive: &alive,
+        };
+        let said = |ask: Ask| {
+            let run = run_with_memory(
+                &wt,
+                &["printf '%s' \"$CARGO_BUILD_JOBS\"".to_string()],
+                &ctl,
+                ask,
+            );
+            assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+            step_said(&run)
+        };
+        assert_eq!(said(Ask::Amount(Amount::Bytes(64 << 20))), "1");
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        assert_eq!(said(Ask::Amount(Amount::Bytes(1 << 40))), cores.to_string());
+        assert_eq!(
+            said(Ask::Uncapped),
+            std::env::var(GATE_BUILD_JOBS).unwrap_or_default(),
+            "uncapped is no number: the gate does not set the variable at all"
         );
         let _ = std::fs::remove_dir_all(&wt);
     }
