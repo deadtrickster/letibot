@@ -3663,3 +3663,84 @@ fn a_fork_stated_before_its_rows_waits_rather_than_calling_the_row_gone() {
         a.notice
     );
 }
+
+/// Eighty rows, then `n` more from `from`.
+fn rows(a: &mut App, from: u64, n: u64) {
+    for i in from..from + n {
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 1,
+            testing::appended(&format!("s.{i}"), "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            i * 2 + 2,
+            testing::content(&format!("s.{i}"), &format!("row {i} says a thing")),
+        )));
+    }
+}
+
+/// The scrollback banner's count, as drawn.
+fn below(a: &mut App) -> Option<String> {
+    a.screen(100, 30)
+        .iter()
+        .find(|l| l.contains("holding your place"))
+        .and_then(|l| l.split("· ").nth(1))
+        .map(|s| s.split(' ').next().unwrap_or("").to_string())
+}
+
+/// **A held view still moves for the reader's own keys** — the operator: *"i think held counter
+/// might also be off, at least never decremented?"*. Under ctrl-p's hold the frame was frozen
+/// whole, so the wheel moved the view and nothing on the screen did: the scrollback count stayed
+/// where the hold began, up or down. The hold is against the STREAM moving the view; the reader's
+/// key draws the view once, held again.
+#[test]
+fn a_held_view_moves_for_the_readers_keys_and_not_for_the_stream() {
+    let mut a = app();
+    rows(&mut a, 0, 80);
+    a.screen(100, 30);
+    a.key(Key::WheelUp);
+    assert_eq!(below(&mut a).as_deref(), Some("3"));
+    a.key(Key::CtrlP);
+    assert!(a.hold, "the premise: held");
+    a.key(Key::WheelUp);
+    assert_eq!(
+        below(&mut a).as_deref(),
+        Some("6"),
+        "the wheel moved the held view"
+    );
+    a.key(Key::WheelDown);
+    assert_eq!(
+        below(&mut a).as_deref(),
+        Some("3"),
+        "and back down, counted down"
+    );
+    // The stream does not move it.
+    let before = a.screen(100, 30);
+    rows(&mut a, 80, 5);
+    assert_eq!(
+        a.screen(100, 30),
+        before,
+        "rows arriving left the held frame as it was"
+    );
+}
+
+/// **A hold a selection took ends when the reader acts elsewhere** — it was the selection's, so
+/// that the text under it stayed put while it was made; a wheel afterwards is the reader moving
+/// on, and leaves the view moving and following as it did before the drag.
+#[test]
+fn a_selections_hold_ends_with_the_next_key() {
+    let mut a = app();
+    rows(&mut a, 0, 80);
+    a.screen(100, 30);
+    a.key(Key::Press { x: 4, y: 5 });
+    a.key(Key::Drag { x: 12, y: 6 });
+    a.key(Key::Release { x: 12, y: 6 });
+    assert!(a.hold, "the premise: the drag held the view");
+    a.key(Key::WheelUp);
+    assert!(!a.hold, "the wheel ended the selection's hold");
+    assert!(a.selection.is_none(), "and the selection with it");
+    assert_eq!(
+        below(&mut a).as_deref(),
+        Some("3"),
+        "and the wheel moved the view"
+    );
+}
