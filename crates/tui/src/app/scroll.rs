@@ -450,12 +450,13 @@ impl App {
                     ],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
-                None if crate::app::one_event::is_absorbed(
+                None if (crate::app::one_event::is_absorbed(
                     &self.absorbed,
                     &self.notes,
                     &self.dismissed,
                     k,
-                ) =>
+                )) || (open_run
+                    && crate::app::runclick::run_skips(self.run_show, &self.items[k])) =>
                 {
                     (RowClass::Other, Vec::new())
                 }
@@ -463,7 +464,11 @@ impl App {
                     &self.items[k],
                     &ItemCtx {
                         cfg: &row_cfg,
-                        think,
+                        think: if open_run {
+                            crate::app::runclick::run_think(self.run_show, think)
+                        } else {
+                            think
+                        },
                         tools: tool,
                         raw,
                         targets: &targets,

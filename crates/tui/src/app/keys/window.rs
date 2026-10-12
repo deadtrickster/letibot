@@ -29,6 +29,10 @@ impl App {
                 Key::Esc => {
                     self.payload_sel = None;
                     self.payload_page = 0;
+                    self.run_show = None;
+                    // An open run's rows are in the history cache, so it is rebuilt — as
+                    // ctrl-t's close does.
+                    self.invalidate_history();
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }

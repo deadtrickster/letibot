@@ -69,6 +69,13 @@ impl App {
         if !self.still_drawn(target) {
             return ControlFlow::Break(None);
         }
+        // **A run marker's clause opens its run, that kind only** (`app::runclick`).
+        if target == Target::Conversation
+            && let Some(m) = self.marker_at(x, y).cloned()
+        {
+            self.open_marker(m);
+            return ControlFlow::Break(None);
+        }
         self.click_on(target, stop)
     }
 

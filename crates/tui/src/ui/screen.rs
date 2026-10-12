@@ -33,6 +33,7 @@ impl App {
             // The held frame, with the pointer's marks on it — a selection made on a held view
             // (and a drag holds the view, `app::pointer`) changes only the rows it marks.
             let mut out = frame.clone();
+            self.relight();
             self.paint_pointer(&mut out);
             return out;
         }
@@ -74,6 +75,7 @@ impl App {
         // **The pointer's marks, last** — the hover and the selection — and after the held frame
         // is kept, so what is kept is the frame itself and the marks are painted on every serve.
         // See `app::pointer`.
+        self.relight();
         self.paint_pointer(&mut out);
         out
     }
