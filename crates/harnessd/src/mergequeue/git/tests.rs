@@ -106,3 +106,41 @@ fn a_test_never_reaches_the_real_landing_root() {
     assert!(caught.is_err(), "the guard fails a test that reaches it");
     guard_not_real(std::path::Path::new("/tmp/elsewhere"));
 }
+
+/// **The daemon's own leftover logs do not keep a landed branch's tree** (R92.4): `.letibot/*.jsonl`
+/// that older builds wrote into the workspace are not the child's work; a note it wrote is.
+#[test]
+fn a_tree_holding_only_the_daemons_logs_is_retired_and_one_with_work_is_kept() {
+    let dir = TempDir::new("retire-leftovers");
+    let repo = repo(&dir.0);
+    let (wt, _, _) = branch(&repo, "logs", "l.txt");
+    std::fs::create_dir_all(wt.join(".letibot")).unwrap();
+    for f in [
+        "delivery-log.jsonl",
+        "context-claims.jsonl",
+        "notes-offers.jsonl",
+    ] {
+        std::fs::write(wt.join(".letibot").join(f), "{}\n").unwrap();
+    }
+    assert!(uncommitted_work(&wt).unwrap().is_empty());
+    retire_branch(&repo, "agent/logs", Some(&wt.to_string_lossy())).unwrap();
+    assert!(!wt.exists());
+
+    let (wt, _, _) = branch(&repo, "notes", "n.txt");
+    std::fs::create_dir_all(wt.join(".letibot/notes")).unwrap();
+    std::fs::write(wt.join(".letibot/notes/a.md"), "mine\n").unwrap();
+    std::fs::write(wt.join(".letibot/delivery-log.jsonl"), "{}\n").unwrap();
+    let kept = retire_branch(&repo, "agent/notes", Some(&wt.to_string_lossy())).unwrap_err();
+    assert!(kept.contains(".letibot/notes/a.md"), "{kept}");
+    assert!(!kept.contains("delivery-log"), "{kept}");
+    assert!(wt.exists());
+}
+
+#[test]
+fn only_jsonl_directly_under_letibot_is_a_daemon_leftover() {
+    assert!(daemon_leftover(".letibot/delivery-log.jsonl"));
+    assert!(daemon_leftover("\".letibot/x.jsonl\""));
+    assert!(!daemon_leftover(".letibot/notes/a.jsonl"));
+    assert!(!daemon_leftover(".letibot/notes/a.md"));
+    assert!(!daemon_leftover("src/x.jsonl"));
+}

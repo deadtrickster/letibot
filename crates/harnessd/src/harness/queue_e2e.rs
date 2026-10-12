@@ -732,6 +732,21 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
         "{blocked}"
     );
     assert!(project.queue_emergency_notices().is_empty(), "told ONCE");
+    // **A restart forgets nothing it said** (R92.7): the daemon's memory gone, the store's
+    // `queue_told` rows are what keep it once.
+    project.gate_told.clear();
+    assert!(
+        project.queue_emergency_notices().is_empty(),
+        "told once across a restart too"
+    );
+    // **Green again is said once** (R92.6), and only to a session that was told it was red.
+    let mut green = s.target_health(&repository, "main").unwrap().unwrap();
+    green.state = HealthState::Green;
+    s.set_target_health(&green, "test").unwrap();
+    let said = project.queue_emergency_notices();
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(said[0].contains("green again"), "{}", said[0]);
+    assert!(project.queue_emergency_notices().is_empty(), "once");
     // **And the daemon's door rings exactly the repository's root** — `s-elsewhere` is held by
     // the same registry and is no session of this repository.
     let door = crate::mergequeue::RegistryDoor {

@@ -8398,9 +8398,13 @@ impl Harness {
         if crate::mergequeue::root_session(store, &me) != me {
             return Vec::new();
         }
-        let healths: Vec<_> = store
-            .target_healths()
-            .unwrap_or_default()
+        let all_healths = store.target_healths().unwrap_or_default();
+        let greens: Vec<_> = all_healths
+            .iter()
+            .filter(|h| h.state == letibot_tokencore::store::HealthState::Green)
+            .cloned()
+            .collect();
+        let healths: Vec<_> = all_healths
             .into_iter()
             .filter(crate::mergequeue::serve::emergency_health)
             .collect();
@@ -8416,23 +8420,44 @@ impl Harness {
                 ) && !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
             })
             .collect();
-        if healths.is_empty() && parked.is_empty() {
-            return Vec::new();
-        }
         // The repository this session is the project of — read only when there is news.
         let mine = crate::mergequeue::repo_of_workspace(&self.cfg.workspace)
             .and_then(|r| crate::mergequeue::repo_of_worktree(&r))
             .map(|r| r.display().to_string());
         let mut out = Vec::new();
+        // **Green again** (R92.6): an emergency this session was told about is over — said once,
+        // and forgotten, so the next red of the same tip is news again (R92.31).
+        for h in &greens {
+            if mine.as_deref() != Some(h.repository.as_str()) {
+                continue;
+            }
+            let prefix = format!("emergency:{}:{}:", h.repository, h.target);
+            let held = self.gate_told.iter().any(|k| k.starts_with(&prefix));
+            self.gate_told.retain(|k| !k.starts_with(&prefix));
+            let stored = store
+                .untell_prefix(&format!("told:{me}:{prefix}"))
+                .unwrap_or(0);
+            if held || stored > 0 {
+                out.push(crate::mergequeue::notices::green_again(h, &h.repository));
+            }
+        }
+        if healths.is_empty() && parked.is_empty() {
+            return out;
+        }
         for h in healths {
             if mine.as_deref() != Some(h.repository.as_str())
-                || !self.gate_told.insert(format!(
-                    "emergency:{}:{}:{}:{}",
-                    h.repository,
-                    h.target,
-                    h.sha,
-                    h.state.as_str()
-                ))
+                || !told_once(
+                    &mut self.gate_told,
+                    store,
+                    &me,
+                    format!(
+                        "emergency:{}:{}:{}:{}",
+                        h.repository,
+                        h.target,
+                        h.sha,
+                        h.state.as_str()
+                    ),
+                )
             {
                 continue;
             }
@@ -8449,12 +8474,12 @@ impl Harness {
                 }
             };
             if !ours
-                || !self.gate_told.insert(format!(
-                    "parked:{}:{}:{}",
-                    r.id,
-                    r.state.as_str(),
-                    r.state_ms
-                ))
+                || !told_once(
+                    &mut self.gate_told,
+                    store,
+                    &me,
+                    format!("parked:{}:{}:{}", r.id, r.state.as_str(), r.state_ms),
+                )
             {
                 continue;
             }
@@ -8476,7 +8501,7 @@ impl Harness {
             if r.state != letibot_tokencore::store::ReviewState::Blocked
                 || !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
                 || crate::mergequeue::root_session(store, &r.session_id) != me
-                || !self.gate_told.insert(format!("handed:{}", r.id))
+                || !told_once(&mut self.gate_told, store, &me, format!("handed:{}", r.id))
             {
                 continue;
             }
@@ -19125,6 +19150,27 @@ fn vocab_differs(stored: &str, current: &str) -> bool {
         (true, true) => stored != current,
         _ => true,
     }
+}
+
+/// **Tell `key` to session `me` once** — once per daemon in `told` (the session's own memory),
+/// and once across restarts in the store's `queue_told` (`told:<session>:<key>`, R92.7): a
+/// restarted daemon that re-reads a red tip or a parked row does not tell it again, and so a ring
+/// about it wakes nobody to nothing. A store that cannot answer is not a reason to stay silent.
+fn told_once(
+    told: &mut std::collections::HashSet<String>,
+    store: &letibot_tokencore::store::Store,
+    me: &str,
+    key: String,
+) -> bool {
+    if !told.insert(key.clone()) {
+        return false;
+    }
+    store
+        .tell_once(
+            &format!("told:{me}:{key}"),
+            crate::mergequeue::gate::now_ms(),
+        )
+        .unwrap_or(true)
 }
 
 #[cfg(test)]

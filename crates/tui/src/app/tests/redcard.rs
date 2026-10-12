@@ -206,7 +206,7 @@ fn the_target_red_warning_draws_as_one_line_and_opens_whole() {
     for needle in [
         "EMERGENCY: `main` is RED at 60bf819c33425f282d547ffa2df5e2d840a75bef in \
          /home/dead/Projects/firecode.",
-        "enqueueing and other reviews go on.",
+        "approved branches go back to review; enqueueing goes on.",
         "… [12500 byte(s) dropped from the front]",
         "test scene::tests::case_000 ... ok",
         "[gate memory: peak 1.6 GiB of a 40.9 GiB cap]",

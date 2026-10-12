@@ -9,7 +9,7 @@
 //! the project's `leticode.toml`), which the tool may only propose.
 
 use letibot_tokencore::store::{
-    MergeGateOutcome, MergeGateStep, ReviewKind, ReviewRow, ReviewState, TargetHealth,
+    MergeGateOutcome, MergeGateStep, MergeRow, ReviewKind, ReviewRow, ReviewState, TargetHealth,
 };
 
 use super::setup::GATE_SETUP_FAILED;
@@ -97,6 +97,97 @@ pub fn gate_killed(h: &TargetHealth, key: &str) -> String {
     )
 }
 
+/// **`target_red`** (`RepoQueue::target_went_red`): the emergency, on the repository's hubs.
+/// `again` when the same tip was green in between (R92.31). A red target halts both queues
+/// (R92.18), and the sentence says so.
+pub fn target_red_warning(h: &TargetHealth, key: &str, again: bool) -> String {
+    format!(
+        "EMERGENCY: `{}` is RED{} at {} in {}. The merge queue lands nothing until it is green \
+         again (a fix branch excepted); the red tip is first in review; no other review of it \
+         starts and approved branches go back to review; enqueueing goes on. {}",
+        h.target,
+        if again { " again" } else { "" },
+        h.sha,
+        key,
+        h.evidence
+    )
+}
+
+/// **`target_green`** (`RepoQueue::target_is_green`): an alarm about the target stood, and it is
+/// over — said once per red→green, where the alarm was (R92.6).
+pub fn green_again(h: &TargetHealth, key: &str) -> String {
+    format!(
+        "`{}` is green again at {} in {}: the merge queue lands again, and the reviews it held \
+         go on.",
+        h.target, h.sha, key
+    )
+}
+
+/// **`target_timed_out`** (R92.27): the target's gate ran past its deadline.
+pub fn target_timed_out(h: &TargetHealth, key: &str) -> String {
+    format!(
+        "`{}` at {} in {} is UNJUDGED: its gate TIMED OUT ({}). Nothing lands on it until it is \
+         gated again — `/queue regate {}`.",
+        h.target,
+        h.sha,
+        key,
+        first_line(&h.evidence),
+        h.target
+    )
+}
+
+/// **`target_unjudged`** (R92.27): the gate could not be read, the landing tree could not be
+/// made ready, or a step could not run — nothing about the code was judged.
+pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
+    format!(
+        "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing lands on it until it is gated again — \
+         once the cause is gone, `/queue regate {}`.",
+        h.target,
+        h.sha,
+        key,
+        first_line(&h.evidence),
+        h.target
+    )
+}
+
+/// **`merge_conflict`** (R92.28): an approved branch does not rebase onto the target.
+pub fn merge_conflict(m: &MergeRow, why: &str) -> String {
+    format!(
+        "{why}. Nothing lands it: rebase `{}` onto `{}` (or resolve it on the branch) and commit; \
+         the new head goes back to review. `/queue rm {}` withdraws it.",
+        m.branch, m.target, m.id
+    )
+}
+
+/// **`merge_failed`** (R92.28): an approved branch's landing gate failed — the branch is bad on
+/// the target's tip.
+pub fn merge_failed(m: &MergeRow, words: &str) -> String {
+    format!(
+        "the landing gate of `{}` (`{}`) FAILED on `{}`, so it did not land: {}. Fix the branch \
+         and commit; the new head goes back to review.",
+        m.branch,
+        m.id,
+        m.target,
+        first_line(words)
+    )
+}
+
+/// **A branch row's landing gate killed at its memory cap** (R92.25) — it ran and was killed; the
+/// verb that gates a branch row again is `restart`.
+pub fn merge_gate_killed(m: &MergeRow, words: &str) -> String {
+    format!(
+        "the landing gate of `{}` was KILLED at its memory cap, so it is unjudged and parked: {}. \
+         Raise `[memory] gate` in providers.toml, then `/queue restart {}` gates it again.",
+        m.branch,
+        first_line(words),
+        m.id
+    )
+}
+
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or_default().trim_end_matches('.')
+}
+
 /// **The target's own trouble** — red, timed out, or unjudged because the gate's setup failed.
 pub fn health(h: &TargetHealth) -> String {
     use letibot_tokencore::store::HealthState as H;
@@ -155,7 +246,8 @@ pub fn health(h: &TargetHealth) -> String {
             format!(
                 "EMERGENCY — {at} is RED: its own merge gate fails there.\n\n{first}\n\nNothing \
                  lands on `{target}` until it is green again (only a branch opened to fix it \
-                 does). The red tip is first in the review queue{review}; a reviewer looks for \
+                 does), no other review of it starts, and branches already approved go back to \
+                 review. The red tip is first in the review queue{review}; a reviewer looks for \
                  what in `{target}`'s history broke it. {TOOL_WAYS}",
                 target = h.target,
             )
@@ -557,12 +649,7 @@ mod tests {
     fn the_tuis_red_card_fixtures_are_what_the_queue_writes() {
         let h = firecode_red();
         let notice = health(&h);
-        let warning = format!(
-            "EMERGENCY: `{}` is RED at {} in {}. The merge queue lands nothing until it is \
-             green again (a fix branch excepted); the red tip is first in review; \
-             enqueueing and other reviews go on. {}",
-            h.target, h.sha, h.repository, h.evidence
-        );
+        let warning = target_red_warning(&h, &h.repository, false);
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tui/src/app/tests/fixtures");
         let killed = letibot_main_killed();

@@ -391,6 +391,10 @@ impl serve::QueueDoor for RegistryDoor {
         Ok(format!("the project session `{host}` was rung"))
     }
 
+    fn session_live(&self, session_id: &str) -> bool {
+        self.registry.get(session_id).is_some()
+    }
+
     fn ring_repository(&self, repository: &str) -> Result<String, String> {
         let store = Store::open(&self.store_path).map_err(|e| e.to_string())?;
         if self.registry.bell().is_closed() {

@@ -367,6 +367,31 @@ pub const TABLE: &[(&str, Class)] = &[
     // they are named here so the register is a decision rather than the default.
     ("gate_setup_failed", Class::Failure),
     ("gate_killed", Class::Failure),
+    // **R92: what the queues used to leave unsaid.** A target gate that timed out
+    // (`target_timed_out`) or could not judge for another cause — the gate unreadable, the
+    // landing tree not ready, a step that could not spawn (`target_unjudged`); an approved branch
+    // that does not rebase (`merge_conflict`) or whose landing gate failed (`merge_failed`); a
+    // push that failed (`queue_push_failed`) and an install that failed after a good landing
+    // (`queue_install_failed`, which blocks nothing and so is no longer `queue_blocked`) —
+    // Failures: each is *look at this*, and nothing moves on its own while it stands. The target
+    // green again after an alarm (`target_green`) and a landed branch's worktree kept because it
+    // is dirty or its session still lives (`queue_branch_kept`) are Routine: reports, not faults.
+    ("target_timed_out", Class::Failure),
+    ("target_unjudged", Class::Failure),
+    ("merge_conflict", Class::Failure),
+    ("merge_failed", Class::Failure),
+    ("queue_push_failed", Class::Failure),
+    ("queue_install_failed", Class::Failure),
+    ("target_green", Class::Routine),
+    ("queue_branch_kept", Class::Routine),
+    // **The daemon's boot** (R92.2, R92.3; `cli::Boot`): each step from the socket's bind to the
+    // worker's start (`daemon_starting`) and the start itself (`daemon_started`) are Routine — a
+    // head draws them as the tail's line and a queued prompt's label, not as rows. A boot that
+    // failed after the socket was bound (`daemon_start_failed`) is a Failure: the session will
+    // not run, and the sentence is the only place the head learns why.
+    ("daemon_starting", Class::Routine),
+    ("daemon_started", Class::Routine),
+    ("daemon_start_failed", Class::Failure),
     // **A review waiting for a free VM slot** (TODO R86): firecode had no free tap for its
     // reviewer, so the row went back to `waiting` with no attempt counted and is asked again in
     // 1, 2, 5 and then every 5 minutes. Routine: the queue handling a hiccup, said ONCE per wait
@@ -1119,10 +1144,15 @@ mod the_register_census {
         //   · **133, not 131**: `memory_high` and `denied` (`denied:<id>`, read by its family)
         //     (Failures) — both were Failures by DEFAULT, missing from this table; now by the
         //     rule (R89).
-        assert_eq!(TABLE.len(), 133, "the table's size");
-        assert_eq!(count(Class::Routine), 48);
+        //   · **141, not 133**: R92's eight — `target_timed_out`, `target_unjudged`,
+        //     `merge_conflict`, `merge_failed`, `queue_push_failed`, `queue_install_failed`
+        //     (Failures) and `target_green`, `queue_branch_kept` (Routine); see their rows.
+        //   · **144, not 141**: the daemon's boot — `daemon_starting`, `daemon_started`
+        //     (Routine) and `daemon_start_failed` (Failure).
+        assert_eq!(TABLE.len(), 144, "the table's size");
+        assert_eq!(count(Class::Routine), 52);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 74);
+        assert_eq!(count(Class::Failure), 81);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

@@ -580,6 +580,15 @@ pub fn regate(
     })
 }
 
+/// How long a tip whose gate was killed at its cap `kills` times waits before a daemon taking the
+/// queue gates it again: 15 minutes, doubled per kill, at most 8 hours.
+pub fn killed_backoff_ms(kills: u32) -> u64 {
+    const BASE: u64 = 15 * 60 * 1000;
+    const CAP: u64 = 8 * 60 * 60 * 1000;
+    BASE.saturating_mul(1u64 << kills.saturating_sub(1).min(16))
+        .min(CAP)
+}
+
 /// **What a daemon re-gates when it takes a repository's lease** (R76 item 3) — every target
 /// whose last verdict was `red`, `blocked` or `timed_out`. A restart was the one way out of a
 /// timed-out or blocked target before `/queue regate`, and it did not even do that: the health
@@ -593,6 +602,18 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
                 h.state,
                 HealthState::Red | HealthState::Blocked | HealthState::TimedOut
             )
+        {
+            continue;
+        }
+        // **A gate killed at its memory cap is retried less often each time** (R92.25): with the
+        // same cap it dies the same way, and every lease take re-ran it at once. The wait doubles
+        // per kill of this tip — 15 min, 30, 60, … up to 8 h — counted in the store, so a restart
+        // loop is not a retry loop. `/queue regate` is the operator's way past it.
+        if h.state == HealthState::Blocked
+            && h.evidence.starts_with(super::gate::GATE_KILLED)
+            && let Ok(Some(t)) =
+                store.told(&super::serve::killed_key(repository, &h.target, &h.sha))
+            && now_ms().saturating_sub(t.at_ms) < killed_backoff_ms(t.count)
         {
             continue;
         }

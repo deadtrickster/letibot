@@ -88,6 +88,8 @@ mod modes;
 pub use modes::ProjectMode;
 mod subagents;
 pub use subagents::*;
+mod told;
+pub use told::Told;
 
 /// Why `session.role` is nullable, and why the comment is here and not in the DDL.
 ///
@@ -364,7 +366,11 @@ pub struct ShapelessAdmit {
 /// a row saying `exited 0` and nothing saying the model never heard it, so the next daemon
 /// passed it over as finished business and the result was never delivered (TODO.md R91.5).
 /// `subagent_run.delivered` (v26) is the same fact for a child.
-pub const SCHEMA_VERSION: i64 = 28;
+///
+/// **29** since what the queues have SAID is a row — `queue_told`, a new table, additive,
+/// described at [`told`]. The rings and the notices were deduped in the daemon's memory, so every
+/// restart re-rang the same red tip and resumed dormant sessions to re-tell it (TODO R92.7).
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -1767,6 +1773,7 @@ impl Store {
         self.conn.execute_batch(queues::QUEUES_SQL)?;
         self.conn.execute_batch(subagents::SUBAGENTS_SQL)?;
         self.conn.execute_batch(modes::MODES_SQL)?;
+        self.conn.execute_batch(told::TOLD_SQL)?;
         self.conn.execute("DELETE FROM schema_version", [])?;
         self.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2483,6 +2490,13 @@ impl Store {
                     "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 1",
                 )?;
             }
+        }
+        if from < 29 {
+            // v29: **what the queues have said, as rows** — see [`told`]. One new table,
+            // `IF NOT EXISTS`; nothing existing is read or rewritten. A store from before it has
+            // no record of what was rung, so the first daemon on this build may say each
+            // standing alert once more — and then never again across a restart.
+            self.conn.execute_batch(told::TOLD_SQL)?;
         }
         Ok(())
     }

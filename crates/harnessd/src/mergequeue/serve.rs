@@ -74,6 +74,12 @@ pub trait QueueDoor: Send + Sync {
             "this door rings no project session of {repository}"
         ))
     }
+    /// **Whether `session_id` is live in this daemon now** — a branch's tree is not removed from
+    /// under a session still working in it (R92.24).
+    fn session_live(&self, session_id: &str) -> bool {
+        let _ = session_id;
+        false
+    }
 }
 
 /// How a project's `[queue]` settings are read — the project's `leticode.toml` in production.
@@ -141,8 +147,13 @@ pub struct RepoQueue {
     env: Arc<QueueEnv>,
     /// **What this worker has already rung a project about** (R76 item 1) — a red tip, a gate
     /// that could not judge, a row parked for a person — so each is rung once per worker, not
-    /// every two seconds.
+    /// every two seconds. A cache of the store's `queue_told` rows (`rung:<repository>:<key>`),
+    /// which are what keep it once per tip across a restart (R92.7): a restarted daemon that
+    /// re-gates the same red tip neither rings nor resumes anybody about it again.
     rung: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// **The `[queue]` error last said** (R92.19) — `queue_settings_unreadable` is raised when
+    /// the error is new or changed, not every pass (it was every two seconds, on every hub).
+    settings_said: std::sync::Mutex<Option<String>>,
     /// **The one gate this repository is running, if any** (R92 item 8). A gate runs on a thread
     /// of its own and the pass only looks at it — so a thirty-minute gate does not stop the review
     /// queue: claims, reviewer deadlines and capacity holds go on while it runs. One at a time,
@@ -239,6 +250,7 @@ impl RepoQueue {
             key,
             env,
             rung: Default::default(),
+            settings_said: Default::default(),
             gate: Default::default(),
             lease_ok: Arc::new(AtomicBool::new(true)),
         }
@@ -360,17 +372,26 @@ impl RepoQueue {
             return Ok(Pass::LostLease);
         }
         let settings = match (self.env.settings)(&self.repo) {
-            Ok(s) => s,
+            Ok(s) => {
+                *self.settings_said.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                s
+            }
             Err(why) => {
-                // A `[queue]` that does not parse is said, and the queue runs on the defaults
-                // rather than on a guess at what the file meant.
-                self.raise(
-                    "queue_settings_unreadable",
-                    format!(
-                        "the queue settings for {} could not be read: {why}",
-                        self.key
-                    ),
-                );
+                // A `[queue]` that does not parse is said — once per error, not once per pass —
+                // and the queue runs on the defaults rather than on a guess at what the file
+                // meant.
+                let mut said = self.settings_said.lock().unwrap_or_else(|e| e.into_inner());
+                if said.as_deref() != Some(why.as_str()) {
+                    *said = Some(why.clone());
+                    drop(said);
+                    self.raise(
+                        "queue_settings_unreadable",
+                        format!(
+                            "the queue settings for {} could not be read: {why}",
+                            self.key
+                        ),
+                    );
+                }
                 QueueSettings::default()
             }
         };
@@ -457,12 +478,7 @@ impl RepoQueue {
             ));
         }
         for (key, session) in due {
-            if !self
-                .rung
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(key.clone())
-            {
+            if !self.first_time(&format!("rung:{}:{key}", self.key))? {
                 continue;
             }
             let rang = match &session {
@@ -474,6 +490,54 @@ impl RepoQueue {
             }
         }
         Ok(())
+    }
+
+    /// **Said before?** `true` the first time `key` is asked about — by this worker or any
+    /// daemon's before it (the store's `queue_told`, R92.7) — and records it.
+    fn first_time(&self, key: &str) -> Result<bool, StoreError> {
+        if !self
+            .rung
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_string())
+        {
+            return Ok(false);
+        }
+        self.store.tell_once(key, gate::now_ms())
+    }
+
+    /// **Forget what was said under `prefix`** — the state it was about is over. Answers how many
+    /// keys the store held: more than none means it had been said.
+    fn forget(&self, prefix: &str) -> Result<usize, StoreError> {
+        self.rung
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|k| !k.starts_with(prefix));
+        self.store.untell_prefix(prefix)
+    }
+
+    /// **A target alarm, raised once per tip and cause** — not again when a restarted daemon
+    /// re-gates the same tip to the same verdict (R92.7), and again once the target has been
+    /// green in between (R92.31: [`Self::target_is_green`] forgets them).
+    fn alarm(&self, h: &TargetHealth, code: &str, detail: String) -> Result<bool, StoreError> {
+        let key = format!("alarm:{}:{}:{}:{code}", self.key, h.target, h.sha);
+        if self.first_time(&key)? {
+            self.raise(code, detail);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// **The targets of this repository that are RED now** — the ones whose queues are halted
+    /// (R92.18).
+    fn red_targets(&self) -> Result<std::collections::HashSet<String>, StoreError> {
+        Ok(self
+            .store
+            .target_healths()?
+            .into_iter()
+            .filter(|h| h.repository == self.key && h.state == HealthState::Red)
+            .map(|h| h.target)
+            .collect())
     }
 
     // ===== The gate in flight =====
@@ -751,8 +815,43 @@ impl RepoQueue {
         }
 
         // **The claims** — the target's red tip first (*"main itself goes to review … taken
-        // first, as soon as a reviewer is free"*), then priority, then age. Other reviews go on
-        // while the target is red (the relaxed rule).
+        // first, as soon as a reviewer is free"*), then priority, then age. **A red target halts
+        // its review queue** (the operator, R92.18): while it is red only its red tip and a
+        // branch opened to fix it are claimed; every other branch for it waits, and one claimed
+        // but not yet started goes back to waiting.
+        let red = self.red_targets()?;
+        let target_of = |r: &ReviewRow| {
+            if r.target.is_empty() {
+                target_default.clone().unwrap_or_default()
+            } else {
+                r.target.clone()
+            }
+        };
+        let halted = |r: &ReviewRow| {
+            r.kind == ReviewKind::Branch && r.fixes.is_none() && red.contains(&target_of(r))
+        };
+        for r in self.store.review_rows(Some(&self.key))? {
+            if r.state == ReviewState::Reviewing
+                && r.owner == me
+                && r.reviewer.is_none()
+                && halted(&r)
+            {
+                let why = format!(
+                    "held: `{}` is RED, and a red target halts its review queue — `{}` is \
+                     reviewed once it is green again",
+                    target_of(&r),
+                    r.branch
+                );
+                moved |= self.review_to(
+                    &r,
+                    ReviewState::Waiting,
+                    Move::new(&me, why)
+                        .owned_by(&me)
+                        .set("owner", "")
+                        .clear("deadline_ms"),
+                )?;
+            }
+        }
         let rows = self.store.review_rows(Some(&self.key))?;
         let busy = rows
             .iter()
@@ -764,6 +863,7 @@ impl RepoQueue {
             .iter()
             .filter(|r| r.state == ReviewState::Waiting)
             .filter(|r| !super::capacity::held_until(&r.failure, r.deadline_ms, now))
+            .filter(|r| !halted(r))
             .collect();
         waiting.sort_by_key(|r| {
             (
@@ -782,11 +882,7 @@ impl RepoQueue {
             let Some(head) = head else {
                 continue;
             };
-            let target = if r.target.is_empty() {
-                target_default.clone().unwrap_or_default()
-            } else {
-                r.target.clone()
-            };
+            let target = target_of(r);
             let why = format!("claimed for review at {head} by {me}");
             if self.review_to(
                 r,
@@ -1080,16 +1176,38 @@ impl RepoQueue {
             HealthState::Blocked if h.evidence.starts_with(super::setup::GATE_SETUP_FAILED) => {
                 // High, not emergency: the code was never judged red. Nothing lands until the
                 // gate can judge it, which is said in the same breath.
-                self.raise(
+                self.alarm(
+                    h,
                     "gate_setup_failed",
                     super::notices::gate_setup_failed(h, &self.key),
-                );
+                )?;
             }
             HealthState::Blocked if h.evidence.starts_with(gate::GATE_KILLED) => {
                 // High, not emergency, for the same reason: the step was killed before it
                 // judged the code — at the gate's memory cap, or by a signal — and the words
-                // say which and how to give it room.
-                self.raise("gate_killed", super::notices::gate_killed(h, &self.key));
+                // say which and how to give it room. Counted, so a daemon taking the queue
+                // retries it less often each time (`verbs::regate_at_start`, R92.25).
+                self.store
+                    .tell_again(&killed_key(&self.key, &h.target, &h.sha), gate::now_ms())?;
+                self.alarm(h, "gate_killed", super::notices::gate_killed(h, &self.key))?;
+            }
+            HealthState::TimedOut => {
+                // R92.27: nothing lands until it is gated again, so it is said.
+                self.alarm(
+                    h,
+                    "target_timed_out",
+                    super::notices::target_timed_out(h, &self.key),
+                )?;
+            }
+            HealthState::Blocked if !h.evidence.starts_with(super::WAITING_FOR_GATE) => {
+                // R92.27: the gate could not be read, the landing tree could not be made ready,
+                // a step could not be spawned — the tip is unjudged and nothing lands. (A target
+                // with no declared gate has its own notice, `Harness::queue_notices`.)
+                self.alarm(
+                    h,
+                    "target_unjudged",
+                    super::notices::target_unjudged(h, &self.key),
+                )?;
             }
             _ => {}
         }
@@ -1179,29 +1297,125 @@ impl RepoQueue {
                 "waiting",
                 "the red target goes to review first",
             );
+        }
+        let news = self.first_time(&format!(
+            "alarm:{}:{}:{}:target_red",
+            self.key, h.target, h.sha
+        ))?;
+        if news && !fresh {
+            // **The same sha red a second time** (R92.31) — it was green in between (a gate that
+            // reads the machine, a re-gate): its review row was withdrawn then, and the
+            // `INSERT OR IGNORE` above left it so. It goes back to review, and it is said.
+            if let Some(r) = self.store.review_row(&id)?
+                && r.state == ReviewState::Withdrawn
+            {
+                self.review_to(
+                    &r,
+                    ReviewState::Waiting,
+                    Move::new(
+                        self.me(),
+                        format!(
+                            "`{}` is RED again at {} (it was green in between): the red tip is \
+                             reviewed first again",
+                            h.target, h.sha
+                        ),
+                    )
+                    .set("owner", "")
+                    .clear("reviewer")
+                    .clear("deadline_ms")
+                    .clear("verdict")
+                    .clear("verdict_by")
+                    .clear("reviewed_sha")
+                    .set("attempts", 0u32)
+                    .set("failure", ""),
+                )?;
+            }
+        }
+        if news {
             self.raise(
                 "target_red",
-                format!(
-                    "EMERGENCY: `{}` is RED at {} in {}. The merge queue lands nothing until it is \
-                     green again (a fix branch excepted); the red tip is first in review; \
-                     enqueueing and other reviews go on. {}",
-                    h.target, h.sha, self.key, h.evidence
-                ),
+                super::notices::target_red_warning(h, &self.key, !fresh),
             );
         }
+        // **A red target halts BOTH queues** (R92.18): what was approved and waits to land goes
+        // back to review now, not when it would have landed.
+        self.halt_landings(&h.target)?;
         Ok(())
     }
 
-    /// Green again: the open reviews of earlier red tips are withdrawn.
+    /// **Every branch approved for `target` and waiting to land goes back to review** — its
+    /// approval was of a change onto a tip that is now red, so it is spent (the operator, R92.18:
+    /// *red main halts both queues*). A branch opened to fix the red tip keeps its place: it is
+    /// the one thing that may move.
+    fn halt_landings(&self, target: &str) -> Result<bool, StoreError> {
+        let me = self.me().to_string();
+        let mut moved = false;
+        for m in self.store.merge_rows(Some(&self.key))? {
+            if m.state != MergeState::Queued || m.target != target || m.fixes.is_some() {
+                continue;
+            }
+            let why = format!(
+                "`{target}` is RED, and a red target halts both queues: `{}`'s approval is spent \
+                 and it goes back to review, to be reviewed again against the tip once `{target}` \
+                 is green",
+                m.branch
+            );
+            if !self.merge_to(
+                &m,
+                MergeState::Queued,
+                MergeState::Gating,
+                Move::new(&me, why.clone()).set("owner", &me),
+            )? {
+                continue;
+            }
+            let head =
+                git::branch_head(&self.repo, &m.branch).unwrap_or_else(|| m.approved_sha.clone());
+            if self
+                .store
+                .send_back_to_review(&m.id, &me, &head, &me, &why, gate::now_ms())?
+            {
+                self.announce_move("merge", &m.id, "moved", &why);
+                self.announce_move("review", &m.review_id, "waiting", &why);
+                moved = true;
+            } else {
+                // The review row was not `approved` (a person moved it): the row keeps its place.
+                let m = self.store.merge_row(&m.id)?.unwrap_or(m);
+                self.gating_to(
+                    &m,
+                    MergeState::Queued,
+                    Move::new(&me, "back in line: its review could not be reopened"),
+                )?;
+            }
+        }
+        Ok(moved)
+    }
+
+    /// **Green again**: the reviews of earlier red tips are withdrawn — open ones, and the ones
+    /// parked as `cannot_decide` or ended `rejected`, which a later verdict could otherwise turn
+    /// into an EMERGENCY on a green target (R92.29) — and, when an alarm about the target had been
+    /// raised, that it is over is said once, where the alarm was (R92.6).
     fn target_is_green(&self, h: &TargetHealth) -> Result<(), StoreError> {
         for r in self.store.review_rows(Some(&self.key))? {
-            if r.kind == ReviewKind::Target && r.target == h.target && r.state.is_open() {
+            if r.kind == ReviewKind::Target
+                && r.target == h.target
+                && (r.state.is_open()
+                    || matches!(r.state, ReviewState::CannotDecide | ReviewState::Rejected))
+            {
                 let why = format!("`{}` is green again at {}", h.target, h.sha);
                 let mut mv = Move::new(self.me(), why);
                 if r.state == ReviewState::Reviewing {
                     mv = mv.owned_by(r.owner.clone()).set("owner", "");
                 }
                 self.review_to(&r, ReviewState::Withdrawn, mv)?;
+            }
+        }
+        let alarms = self.forget(&format!("alarm:{}:{}:", self.key, h.target))?;
+        self.forget(&format!("rung:{}:health:{}:", self.key, h.target))?;
+        self.forget(&killed_key(&self.key, &h.target, ""))?;
+        if alarms > 0 {
+            self.raise("target_green", super::notices::green_again(h, &self.key));
+            if let Err(why) = self.env.door.ring_repository(&self.key) {
+                eprintln!("  merge queue: green again: no project session was rung: {why}");
             }
         }
         Ok(())
@@ -1220,6 +1434,10 @@ impl RepoQueue {
             .collect();
         if queued.is_empty() {
             return Ok(false);
+        }
+        if h.state == HealthState::Red && self.halt_landings(target)? {
+            // Approved while red (a reviewer that was already running): back to review.
+            return Ok(true);
         }
         let tip_now = git::branch_head(&self.repo, target);
         let current = tip_now.as_deref() == Some(h.sha.as_str());
@@ -1357,17 +1575,17 @@ impl RepoQueue {
         let rebased = match git::rebase_in(&wt, &head, &tip) {
             Ok(sha) => sha,
             Err(e) => {
+                let why = format!(
+                    "`{}` does not rebase onto `{target}` at {tip}: {e}",
+                    row.branch
+                );
+                // R92.28: said, where the repository's sessions hear it — a parked row nobody is
+                // told about is a branch that never lands.
+                self.raise("merge_conflict", super::notices::merge_conflict(row, &why));
                 self.gating_to(
                     row,
                     MergeState::Conflict,
-                    Move::new(
-                        &me,
-                        format!(
-                            "`{}` does not rebase onto `{target}` at {tip}: {e}",
-                            row.branch
-                        ),
-                    )
-                    .set("onto_sha", tip.clone()),
+                    Move::new(&me, why).set("onto_sha", tip.clone()),
                 )?;
                 return Ok(());
             }
@@ -1390,6 +1608,13 @@ impl RepoQueue {
                 return Ok(());
             }
             Err(e) => {
+                self.raise(
+                    "queue_blocked",
+                    format!(
+                        "`{}` cannot land: the gate could not be read from `{target}` at {tip}: {e}",
+                        row.branch
+                    ),
+                );
                 self.gating_to(row, MergeState::Blocked, Move::new(&me, e))?;
                 return Ok(());
             }
@@ -1475,6 +1700,7 @@ impl RepoQueue {
             }
             GateVerdict::Failed(w) => {
                 let w = self.with_carry_hint(w, &wt, &carried);
+                self.raise("merge_failed", super::notices::merge_failed(row, &w));
                 self.gating_to(
                     row,
                     MergeState::Failed,
@@ -1504,10 +1730,15 @@ impl RepoQueue {
                 return Ok(());
             }
             GateVerdict::Infra(w) => {
-                self.raise(
-                    "queue_blocked",
-                    format!("the gate of `{}` could not run: {w}", row.branch),
-                );
+                // A step killed at the gate's memory cap RAN and was killed — "could not run" was
+                // the wrong sentence, and the verb that gates a branch row again is `restart`
+                // (R92.25).
+                let said = if w.starts_with(gate::GATE_KILLED) {
+                    super::notices::merge_gate_killed(row, &w)
+                } else {
+                    format!("the gate of `{}` could not run: {w}", row.branch)
+                };
+                self.raise("queue_blocked", said);
                 self.gating_to(
                     row,
                     MergeState::Blocked,
@@ -1596,14 +1827,17 @@ impl RepoQueue {
                 install_note = " Not installed: the push failed, and nothing is installed that is \
                                 not where it was pushed (decision 7)."
                     .into();
-                self.raise(
-                    "queue_blocked",
-                    format!(
-                        "`{}` landed on `{target}` locally but {pushed_text}",
-                        row.branch
-                    ),
-                );
             }
+        }
+        if !may_install {
+            // R92.33: a failed push is said whether or not the project has an install step.
+            self.raise(
+                "queue_push_failed",
+                format!(
+                    "`{}` landed on `{target}` locally but {pushed_text}.{install_note}",
+                    row.branch
+                ),
+            );
         }
         let steps = run.steps.clone();
         self.landed(&landing, run, steps, pushed_text, install_note)
@@ -1623,8 +1857,9 @@ impl RepoQueue {
             GateVerdict::Passed => " Installed after the push.".into(),
             other => {
                 let w = format!("{other:?}");
+                // Landed, so nothing is blocked: its own code (R92.33).
                 self.raise(
-                    "queue_blocked",
+                    "queue_install_failed",
                     format!(
                         "`{}` landed but its install did not: {w}",
                         landing.row.branch
@@ -1664,25 +1899,47 @@ impl RepoQueue {
                 .set("gate_steps_json", rows_json(&all_steps)),
         )?;
         // The gate passed on exactly this tree, so the target is green at it — not gated again.
-        self.store.set_target_health(
-            &TargetHealth {
-                repository: self.key.clone(),
-                target: target.clone(),
-                sha: rebased.clone(),
-                state: HealthState::Green,
-                checked_ms: gate::now_ms(),
-                evidence: format!(
-                    "the queue's own gate passed on this tree (`{}`)",
+        // Through `target_is_green`, like any green (R92.29): a red tip's review still pending
+        // is withdrawn, and an alarm that stood is said to be over.
+        let green = TargetHealth {
+            repository: self.key.clone(),
+            target: target.clone(),
+            sha: rebased.clone(),
+            state: HealthState::Green,
+            checked_ms: gate::now_ms(),
+            evidence: format!(
+                "the queue's own gate passed on this tree (`{}`)",
+                row.branch
+            ),
+            gate_steps: run.steps,
+        };
+        self.store.set_target_health(&green, &me)?;
+        self.target_is_green(&green)?;
+        if git::branch_head(repo, &row.branch).as_deref() == Some(head.as_str()) {
+            // **A child still running in that tree keeps it** (R92.24): its session is held by
+            // this daemon, and removing its cwd under it leaves every later call failing ENOENT.
+            let live = self
+                .store
+                .review_row(&row.review_id)?
+                .map(|r| r.session_id)
+                .filter(|s| !s.is_empty() && self.env.door.session_live(s));
+            let kept = match &live {
+                Some(s) => Err(format!(
+                    "the worktree {} and `{}` are kept: the session `{s}` that works in it is \
+                     still live. Remove them once it has ended (`git worktree remove` and \
+                     `git branch -D`).",
+                    row.worktree.as_deref().unwrap_or("?"),
                     row.branch
-                ),
-                gate_steps: run.steps,
-            },
-            &me,
-        )?;
-        if git::branch_head(&repo, &row.branch).as_deref() == Some(head.as_str())
-            && let Err(kept) = git::retire_branch(&repo, &row.branch, row.worktree.as_deref())
-        {
-            eprintln!("  merge queue: after landing `{}`: {kept}", row.branch);
+                )),
+                None => git::retire_branch(repo, &row.branch, row.worktree.as_deref()),
+            };
+            if let Err(kept) = kept {
+                // Said where a person reads it (R92.4), not only in the daemon's log.
+                self.raise(
+                    "queue_branch_kept",
+                    format!("after landing `{}`: {kept}", row.branch),
+                );
+            }
         }
         Ok(())
     }
@@ -1699,6 +1956,11 @@ impl Drop for RepoQueue {
 pub fn gate_running_words(sha: &str, for_ms: u64) -> String {
     let short: String = sha.chars().take(10).collect();
     format!("gate running on {short} for {}m", for_ms / 60_000)
+}
+
+/// The `queue_told` key that counts a target tip's gate kills (`""` for the sha: every tip's).
+pub fn killed_key(repository: &str, target: &str, sha: &str) -> String {
+    format!("killed:{repository}:{target}:{sha}")
 }
 
 /// **A target's health a project has to hear about** (R76 item 1): red, timed out, or unjudged

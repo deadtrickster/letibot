@@ -59,20 +59,10 @@ impl Deliverable {
     /// feeds is *"the branch does not contain them"*, and a status that could not be read is not
     /// evidence of uncommitted work. Guard the fact, not the proxy.
     pub fn uncommitted(&self) -> Option<Vec<String>> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.path)
-            .args(["status", "--porcelain"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
+        // The daemon's own leftover logs (`.letibot/*.jsonl`, written there by older builds) are
+        // not the child's work, and the child is not told to commit them (R92.4).
+        let lines =
+            crate::mergequeue::git::uncommitted_work(std::path::Path::new(&self.path)).ok()?;
         (!lines.is_empty()).then_some(lines)
     }
 }

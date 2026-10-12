@@ -465,17 +465,42 @@ pub fn clone_branch(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result
     git(dir, &["checkout", "--quiet", "--detach", head]).map(|_| ())
 }
 
+/// **A file the daemon itself wrote into a workspace** — `.letibot/<name>.jsonl`, the logs older
+/// builds kept there (`delivery-log`, `context-claims`, `notes-offers`; R92.4 moved them to the
+/// data directory). Not the child's work, so it neither keeps a tree nor is the child nudged
+/// about it. `path` is a porcelain path, relative to the tree.
+pub fn daemon_leftover(path: &str) -> bool {
+    let path = path.trim().trim_matches('"');
+    path.strip_prefix(".letibot/")
+        .is_some_and(|rest| !rest.contains('/') && rest.ends_with(".jsonl"))
+}
+
+/// **`git status --porcelain`'s lines that are the tree's own work** — every untracked file named
+/// (`-uall`, so a directory of the daemon's logs is not one opaque `?? .letibot/`), less
+/// [`daemon_leftover`]s.
+pub fn uncommitted_work(wt: &Path) -> Result<Vec<String>, String> {
+    let out = git(wt, &["status", "--porcelain", "--untracked-files=all"])?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !daemon_leftover(l.get(3..).unwrap_or_default()))
+        .map(|l| l.trim().to_string())
+        .collect())
+}
+
 /// Remove a branch's own worktree and the branch, after a landing — only when the tree holds
-/// nothing uncommitted. `Err` says what was kept and why.
+/// nothing uncommitted (the daemon's own leftover logs are not the tree's work). `Err` says what
+/// was kept and why.
 pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Result<(), String> {
     if let Some(wt) = worktree {
         let wt = Path::new(wt);
         if wt.exists() {
-            let dirty = git(wt, &["status", "--porcelain"]).map_err(|e| e.to_string())?;
-            if !dirty.trim().is_empty() {
+            let dirty = uncommitted_work(wt)?;
+            if !dirty.is_empty() {
                 return Err(format!(
-                    "the worktree {} holds uncommitted changes, so it and `{branch}` are kept",
-                    wt.display()
+                    "the worktree {} holds uncommitted changes ({}), so it and `{branch}` are kept",
+                    wt.display(),
+                    dirty.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
                 ));
             }
             git(

@@ -109,6 +109,8 @@ pub(crate) struct Door {
     pub(crate) repositories: Mutex<Vec<String>>,
     /// `(repository, code)` of every warning published for one repository only.
     pub(crate) scoped: Mutex<Vec<(String, String)>>,
+    /// The sessions [`QueueDoor::session_live`] answers `true` for.
+    pub(crate) live: Mutex<Vec<String>>,
 }
 
 impl QueueDoor for Door {
@@ -134,6 +136,9 @@ impl QueueDoor for Door {
     fn ring_repository(&self, repository: &str) -> Result<String, String> {
         self.repositories.lock().unwrap().push(repository.into());
         Ok(format!("rang the roots of {repository}"))
+    }
+    fn session_live(&self, session_id: &str) -> bool {
+        self.live.lock().unwrap().iter().any(|s| s == session_id)
     }
 }
 
@@ -269,7 +274,12 @@ impl World {
         let s = self.store();
         let r = s.review_row(id).unwrap().unwrap();
         assert_eq!(r.state, ReviewState::Reviewing, "{r:?}");
-        let merge_id = format!("m-{id}");
+        // Unique per approval, as the review pool's is: a branch sent back to review is approved
+        // again under a new merge row.
+        let merge_id = match s.merge_row(&format!("m-{id}")).unwrap() {
+            None => format!("m-{id}"),
+            Some(_) => format!("m-{id}-{}", gate::now_ms()),
+        };
         assert!(
             s.approve_review(
                 id,
@@ -538,6 +548,72 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
     // And nothing lands on a target nobody could judge.
     run(&q, 1);
     assert_eq!(w.tip(), sh(&w.repo, &["rev-parse", "HEAD"]));
+    // R92.27: and it was said, on this repository's hubs, once.
+    let said = w.door.warnings("target_timed_out");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("TIMED OUT"), "{}", said[0]);
+    assert!(
+        w.door
+            .scoped
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(r, c)| r == &w.key() && c == "target_timed_out")
+    );
+}
+
+/// **A target whose landing tree cannot be made ready is said** (R92.27): `target_unjudged`,
+/// once — not again on the passes after it.
+#[test]
+fn a_target_whose_landing_tree_cannot_be_made_is_said_once() {
+    let w = World::new("nolanding");
+    let mut e = env(Arc::new(GreenGate), w.door.clone(), "a");
+    Arc::get_mut(&mut e).unwrap().landing_root = Arc::new(|_| Err("no room at the inn".into()));
+    let store = w.store();
+    store
+        .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
+        .unwrap();
+    let q = RepoQueue::new(store, w.repo.clone(), e);
+    run(&q, 3);
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Blocked, "{h:?}");
+    let said = w.door.warnings("target_unjudged");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("no room at the inn"), "{}", said[0]);
+}
+
+/// **A merge row that does not rebase, or whose landing gate fails, is said** (R92.28).
+#[test]
+fn a_merge_row_that_conflicts_or_fails_its_gate_is_said() {
+    let w = World::new("mergefail");
+    // `c` edits a.txt; main then edits it too, so `c` no longer rebases.
+    let (wt, base, _) = branch(&w.repo, "c", "c.txt");
+    let head = commit(&wt, "a.txt", "theirs\n", "c edits a");
+    w.enqueue("c", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("c", "test/a");
+    commit(&w.repo, "a.txt", "ours\n", "main edits a");
+    run(&q, 3);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Conflict
+    );
+    let said = w.door.warnings("merge_conflict");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("agent/c"), "{}", said[0]);
+
+    // `f` adds the file the gate refuses: its landing gate fails.
+    let (wt, base, head) = branch(&w.repo, "f", "broken");
+    w.enqueue("f", &wt, &base, &head);
+    run(&q, 1);
+    let m = w.accept("f", "test/a");
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Failed
+    );
+    assert_eq!(w.door.warnings("merge_failed").len(), 1);
 }
 
 /// **A daemon that stops kills its gate and puts the row back in line** — never left `taken`
@@ -638,16 +714,44 @@ fn the_landing_pushes_then_installs_and_a_failed_push_installs_nothing() {
     assert!(row.pushed.contains("FAILED"), "{}", row.pushed);
     assert!(!marker.exists(), "nothing installed that was not pushed");
     assert!(
-        !w.door.warnings("queue_blocked").is_empty(),
+        !w.door.warnings("queue_push_failed").is_empty(),
         "and it was raised"
     );
+    assert!(
+        w.door.warnings("queue_blocked").is_empty(),
+        "a landed branch blocks nothing"
+    );
+}
+
+/// **A push that fails is said even when the project has no install step** (R92.33: the raise
+/// was inside `if !install.is_empty()`).
+#[test]
+fn a_failed_push_with_no_install_step_is_said() {
+    let w = World::new("push-noinstall");
+    sh(
+        &w.repo,
+        &["remote", "add", "origin", "/nonexistent/origin.git"],
+    );
+    let (wt, base, head) = branch(&w.repo, "p", "p.txt");
+    w.enqueue("p", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("p", "test/a");
+    run(&q, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    let said = w.door.warnings("queue_push_failed");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("FAILED"), "{}", said[0]);
 }
 
 // ===== Red target =====
 
-/// **R61's done-when, in one repository: a branch reviewed, merged, and then main turns red —
-/// three rows in two queues — and a red main stops landing without stopping enqueue or review;
-/// the red tip goes first in review; only the fix lands; green again, the queue lands again.**
+/// **R61's done-when, in one repository, under the operator's R92.18 rule: a red target HALTS
+/// BOTH queues.** A branch reviewed and merged; a second approved and waiting to land when main
+/// turns red goes back to review (its approval is spent); a third enqueued while red is not
+/// claimed; the red tip goes first in review; only the fix lands; green again, the held reviews
+/// are claimed and the queue lands again.
 #[test]
 fn a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review() {
     let w = World::new("red");
@@ -662,65 +766,79 @@ fn a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review() {
         MergeState::Landed
     );
 
-    // A hand merge breaks main (decision 10: gated on every change, hand merges included).
+    // `two` is reviewed and approved while main is green…
+    let (wt2, base2, head2) = branch(&w.repo, "two", "two.txt");
+    w.enqueue("two", &wt2, &base2, &head2);
+    run(&q, 1);
+    let m2 = w.accept("two", "test/a");
+    // …and before it lands, a hand merge breaks main (decision 10: gated on every change, hand
+    // merges included).
     commit(
         &w.repo,
         "broken",
         "x\n",
         "a hand commit that breaks the gate",
     );
-    let (wt2, base2, head2) = branch(&w.repo, "two", "two.txt");
-    w.enqueue("two", &wt2, &base2, &head2);
     run(&q, 1);
     let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
     assert_eq!(h.state, HealthState::Red, "{h:?}");
+    let said = w.door.warnings("target_red");
+    assert_eq!(said.len(), 1, "an emergency, said once: {said:?}");
     assert!(
-        !w.door.warnings("target_red").is_empty(),
-        "an emergency, said on every hub"
+        said[0].contains("approved branches go back to review"),
+        "{}",
+        said[0]
     );
     assert!(
         !crate::mergequeue::notices::health(&h).contains(crate::mergequeue::carry::LANDING_LACKS),
         "no ignored directories in this checkout: the notice says nothing about them"
     );
+    assert_eq!(
+        w.store().merge_row(&m2).unwrap().unwrap().state,
+        MergeState::Moved,
+        "a red target halts the merge queue: the approved branch goes back to review"
+    );
     let rows = w.store().review_rows(Some(&w.key())).unwrap();
     let red = rows
         .iter()
         .find(|r| r.kind == ReviewKind::Target)
-        .expect("the red tip is a review row");
+        .expect("the red tip is a review row")
+        .clone();
     assert_eq!(red.state, ReviewState::Reviewing, "taken FIRST: {red:?}");
     let two = rows.iter().find(|r| r.id == "two").unwrap();
     assert_eq!(
         two.state,
-        ReviewState::Reviewing,
-        "and other reviews go on (the relaxed rule)"
+        ReviewState::Waiting,
+        "and the review queue is halted for it too: {two:?}"
     );
-    // Three rows in two queues: the landed branch's review and merge rows, and the red tip.
-    assert_eq!(
-        w.store()
-            .review_rows(Some(&w.key()))
-            .unwrap()
-            .iter()
-            .filter(|r| r.state == ReviewState::Approved || r.kind == ReviewKind::Target)
-            .count(),
-        2
-    );
-
-    // `two` is approved, and nothing lands while main is red.
-    let m2 = w.accept("two", "test/a");
     let red_tip = w.tip();
-    run(&q, 2);
-    assert_eq!(
-        w.store().merge_row(&m2).unwrap().unwrap().state,
-        MergeState::Queued,
-        "red main lands nothing"
-    );
-    assert_eq!(w.tip(), red_tip);
-    // Enqueue is never refused.
+    // Enqueue is never refused — but nothing claims it while red.
     let (wt3, base3, head3) = branch(&w.repo, "three", "three.txt");
     w.enqueue("three", &wt3, &base3, &head3);
-    assert!(w.store().review_row("three").unwrap().is_some());
+    // Free a reviewer slot: the red tip's own reviewer rejects (the code is broken).
+    let s = w.store();
+    s.move_review(
+        &red.id,
+        ReviewState::Reviewing,
+        ReviewState::Rejected,
+        &Move::new("reviewer", "broken by the hand commit")
+            .owned_by("test/a")
+            .set("owner", ""),
+        gate::now_ms(),
+    )
+    .unwrap();
+    run(&q, 2);
+    for id in ["two", "three"] {
+        assert_eq!(
+            w.store().review_row(id).unwrap().unwrap().state,
+            ReviewState::Waiting,
+            "`{id}` is not claimed while main is red"
+        );
+    }
+    assert_eq!(w.tip(), red_tip);
 
-    // The fix: a branch that removes `broken`, marked as fixing the red tip.
+    // The fix: a branch that removes `broken`, marked as fixing the red tip — the one thing that
+    // moves.
     let fixwt = w.dir.0.join("wt-fix");
     sh(
         &w.repo,
@@ -758,18 +876,6 @@ fn a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review() {
             gate::now_ms(),
         )
         .unwrap();
-    // Free a reviewer slot: the red tip's own reviewer rejects (the code is broken).
-    let s = w.store();
-    s.move_review(
-        &red.id,
-        ReviewState::Reviewing,
-        ReviewState::Rejected,
-        &Move::new("reviewer", "broken by the hand commit")
-            .owned_by("test/a")
-            .set("owner", ""),
-        gate::now_ms(),
-    )
-    .unwrap();
     run(&q, 1);
     let mfix = w.accept("fix", "test/a");
     run(&q, 2);
@@ -780,12 +886,126 @@ fn a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review() {
     );
     let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
     assert_eq!(h.state, HealthState::Green);
+    assert_eq!(
+        w.door.warnings("target_green").len(),
+        1,
+        "green again, said once (R92.6)"
+    );
+    assert_eq!(
+        w.store().review_row(&red.id).unwrap().unwrap().state,
+        ReviewState::Withdrawn,
+        "a rejected red-tip review is withdrawn on green too (R92.29)"
+    );
+    // Green again: the held reviews are claimed, and `two` is reviewed again against the tip.
+    run(&q, 1);
+    assert_eq!(
+        w.store().review_row("two").unwrap().unwrap().state,
+        ReviewState::Reviewing
+    );
+    let m2 = w.accept("two", "test/a");
     run(&q, 3);
     assert_eq!(
         w.store().merge_row(&m2).unwrap().unwrap().state,
         MergeState::Landed,
         "green again: the queue lands again"
     );
+    assert_eq!(w.door.warnings("target_green").len(), 1, "still once");
+}
+
+/// **The same sha red twice is said twice, and a restart re-gating it to the same verdict is
+/// said once** (R92.31, R92.7). A gate that reads the machine: red, green (the machine got
+/// better), red again at the very same tip.
+#[test]
+fn the_same_sha_red_again_after_green_is_said_and_a_restart_is_not() {
+    let w = World::new("redtwice");
+    let flag = w.dir.0.join("sick");
+    std::fs::write(&flag, "x").unwrap();
+    std::fs::write(
+        w.repo.join("AGENTS.md"),
+        format!(
+            "# agents\n\n## Merge gate\n\n```sh\ntest ! -f {}\n```\n",
+            flag.display()
+        ),
+    )
+    .unwrap();
+    sh(&w.repo, &["add", "-A"]);
+    sh(
+        &w.repo,
+        &["commit", "-q", "-m", "a gate that reads the machine"],
+    );
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    assert_eq!(w.door.warnings("target_red").len(), 1);
+    assert_eq!(w.door.repositories.lock().unwrap().len(), 1);
+
+    // A restarted daemon re-gates the red tip (`regate_at_start`) and finds it red again: nothing
+    // is said or rung a second time.
+    let q2 = {
+        let env = env(Arc::new(LocalGate), w.door.clone(), "a");
+        RepoQueue::new(w.store(), w.repo.clone(), env)
+    };
+    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a").unwrap();
+    run(&q2, 2);
+    assert_eq!(
+        w.door.warnings("target_red").len(),
+        1,
+        "a restart is not news"
+    );
+    assert_eq!(w.door.repositories.lock().unwrap().len(), 1, "nor a ring");
+
+    // Green at the same tip, then red again at the same tip: said, and reviewed again.
+    std::fs::remove_file(&flag).unwrap();
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    run(&q2, 1);
+    assert_eq!(w.door.warnings("target_green").len(), 1);
+    std::fs::write(&flag, "x").unwrap();
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    run(&q2, 1);
+    let said = w.door.warnings("target_red");
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(said[1].contains("RED again"), "{}", said[1]);
+    let red = w
+        .store()
+        .review_rows(Some(&w.key()))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind == ReviewKind::Target)
+        .unwrap();
+    assert!(
+        matches!(red.state, ReviewState::Waiting | ReviewState::Reviewing),
+        "the withdrawn red-tip review is open again: {red:?}"
+    );
+}
+
+/// **A `[queue]` that does not parse is said once per error, not every pass** (R92.19).
+#[test]
+fn unreadable_queue_settings_are_said_once_per_error() {
+    let w = World::new("settings");
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut e = env(Arc::new(GreenGate), w.door.clone(), "a");
+    let m = n.clone();
+    Arc::get_mut(&mut e).unwrap().settings = Arc::new(move |_| {
+        if m.load(std::sync::atomic::Ordering::Relaxed) < 2 {
+            Err("bad toml at line 3".into())
+        } else {
+            Err("bad toml at line 4".into())
+        }
+    });
+    let store = w.store();
+    store
+        .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
+        .unwrap();
+    let q = RepoQueue::new(store, w.repo.clone(), e);
+    for _ in 0..2 {
+        run(&q, 1);
+        n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    assert_eq!(w.door.warnings("queue_settings_unreadable").len(), 1);
+    run(&q, 3);
+    let said = w.door.warnings("queue_settings_unreadable");
+    assert_eq!(said.len(), 2, "a changed error is said: {said:?}");
 }
 
 /// **One repository's red target does not stop another's landings** (decision 2) — two
@@ -1413,6 +1633,73 @@ impl GateRunner for KilledAtCapGate {
     }
 }
 
+/// **A tip killed at its cap is not re-gated at once by every daemon that takes the queue**
+/// (R92.25): the wait doubles per kill; and the kill is said once per tip, not once per re-gate.
+#[test]
+fn a_tip_killed_at_its_cap_backs_off_before_a_daemon_regates_it() {
+    let w = World::new("killedbackoff");
+    let q = w.worker(Arc::new(KilledAtCapGate), "a");
+    run(&q, 1);
+    assert_eq!(
+        w.store()
+            .target_health(&w.key(), "main")
+            .unwrap()
+            .unwrap()
+            .state,
+        HealthState::Blocked
+    );
+    assert!(
+        crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/b")
+            .unwrap()
+            .is_empty(),
+        "killed a moment ago: it waits"
+    );
+    assert_eq!(
+        crate::mergequeue::verbs::killed_backoff_ms(1),
+        15 * 60 * 1000
+    );
+    assert_eq!(
+        crate::mergequeue::verbs::killed_backoff_ms(2),
+        30 * 60 * 1000
+    );
+    assert_eq!(
+        crate::mergequeue::verbs::killed_backoff_ms(40),
+        8 * 60 * 60 * 1000
+    );
+    // `/queue regate` is the operator's way past the wait; killed again, it is not said again.
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    run(&q, 1);
+    assert_eq!(w.door.warnings("gate_killed").len(), 1);
+    let key = killed_key(&w.key(), "main", &w.tip());
+    assert_eq!(w.store().told(&key).unwrap().unwrap().count, 2);
+}
+
+/// **A landing gate killed at its cap says it was killed, and names `restart`** (R92.25).
+#[test]
+fn a_landing_gate_killed_at_its_cap_says_so_and_names_restart() {
+    let w = World::new("killedmerge");
+    let (wt, base, head) = branch(&w.repo, "k", "k.txt");
+    w.enqueue("k", &wt, &base, &head);
+    let green = w.worker(Arc::new(GreenGate), "a");
+    run(&green, 1);
+    let m = w.accept("k", "test/a");
+    let killed = {
+        let env = env(Arc::new(KilledAtCapGate), w.door.clone(), "a");
+        RepoQueue::new(w.store(), w.repo.clone(), env)
+    };
+    run(&killed, 1);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Blocked
+    );
+    let said = w.door.warnings("queue_blocked");
+    let s = said.last().unwrap();
+    assert!(s.contains("KILLED at its memory cap"), "{s}");
+    assert!(s.contains(&format!("/queue restart {m}")), "{s}");
+    assert!(!s.contains("could not run"), "{s}");
+}
+
 /// **A target whose gate was killed at its memory cap is UNJUDGED, not red** — `blocked`, nothing
 /// lands, no red-tip review, no `target_red`; the project is rung with *cannot judge* and the hubs
 /// are told `gate_killed`, naming the cap, the peak and `[memory] gate`.
@@ -1863,4 +2150,33 @@ fn a_gate_nobody_runs_any_more_is_run_again() {
     let row = w.store().merge_row(&m).unwrap().unwrap();
     assert_eq!(row.state, MergeState::Landed, "{row:?}");
     assert_eq!(history.iter().filter(|t| t.to_state == "landed").count(), 1);
+}
+
+/// **A landed branch whose child session is still live keeps its tree, and that is said** (R92.24,
+/// R92.4) — on the repository's hubs, not only in the daemon's log.
+#[test]
+fn a_landed_branch_whose_session_is_live_keeps_its_tree_and_says_so() {
+    let w = World::new("livechild");
+    let (wt, base, head) = branch(&w.repo, "live", "live.txt");
+    w.enqueue("live", &wt, &base, &head);
+    w.door.live.lock().unwrap().push("s-live".into());
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let m = w.accept("live", "test/a");
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Landed
+    );
+    assert!(
+        wt.exists(),
+        "a live child's tree is not removed from under it"
+    );
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("s-live") && said[0].contains("still live"),
+        "{}",
+        said[0]
+    );
 }
