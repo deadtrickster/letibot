@@ -323,18 +323,34 @@ impl App {
         rows.contains(&y).then_some((stop, rows))
     }
 
-    /// **The pointer moved with no button held.** The mark follows on the next frame; no full
-    /// repaint is asked for, because only the marked row's text changes and the frame's diff
-    /// writes exactly that row.
+    /// **The pointer moved with no button held.** Only where it is is kept; what it is over is
+    /// worked out at once (so the pointer's shape follows the motion) and again on every frame.
     pub(crate) fn hover_at(&mut self, x: u16, y: u16) {
-        let over = self.clickable_at(x, y);
-        self.hovered_on = over.as_ref().map(|_| self.drawn());
-        if over != self.hovered {
-            if over.is_some() != self.hovered.is_some() {
-                self.pointer_hand = Some(over.is_some());
+        self.pointer_at = Some((x, y));
+        self.relight();
+    }
+
+    /// **What the pointer lights, from the frame that is drawn now.**
+    ///
+    /// The light used to be kept as the rows the pointer was over when it MOVED, and every way
+    /// the screen changes under a still pointer left it on whatever came next: a click that put
+    /// the diff popup up lit the popup's text, a click that opened a run lit the reasoning it
+    /// opened — the operator: *"i suggest you to refactor it properly so it isnot adhoc
+    /// card-by-card click-by-click"*. So nothing is kept but the position, and the light is
+    /// derived from this frame's click targets (`hits`, the key hints, the conversation's maps)
+    /// each time it is drawn: what it lights is always what a click at the pointer would act on
+    /// now. A drag or a selection lights nothing.
+    pub(crate) fn relight(&mut self) {
+        let over = match self.pointer_at {
+            Some((x, y)) if self.drag.from.is_none() && self.selection.is_none() => {
+                self.clickable_at(x, y)
             }
-            self.hovered = over;
+            _ => None,
+        };
+        if over.is_some() != self.hovered.is_some() {
+            self.pointer_hand = Some(over.is_some());
         }
+        self.hovered = over;
     }
 
     /// **The left button went down**: the start of a click or of a selection, and the end of
@@ -472,18 +488,6 @@ impl App {
 
     /// **The hover mark and the selection, painted onto the finished frame** — the last thing a
     /// frame does, so no renderer has to know about the pointer.
-    /// **A light left on another screen goes** — the operator: *"when i hover over diff card it
-    /// highlights, then i click and the popup text on that position is highlighted too"*. The
-    /// rows it named are the popup's now; the pointer's shape goes back with it, and the next
-    /// motion lights whatever is under it on this screen.
-    pub(crate) fn settle_hover(&mut self) {
-        if self.hovered.is_some() && self.hovered_on != Some(self.drawn()) {
-            self.hovered = None;
-            self.hovered_on = None;
-            self.pointer_hand = Some(false);
-        }
-    }
-
     pub(crate) fn paint_pointer(&self, frame: &mut [String]) {
         if let Some(((x0, y0), (x1, y1))) = self.selection_span() {
             let gutter = Self::gutter(self.term_cols);

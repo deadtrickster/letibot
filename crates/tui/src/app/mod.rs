@@ -1046,11 +1046,12 @@ pub struct App {
     pub(crate) hint_rows: Vec<keyhints::HintRow>,
     /// **Keys a click typed**, for the head's next read to take before the terminal's.
     pub(crate) injected: Vec<u8>,
-    /// **What the pointer is over, if a click there would act** — underlined on the frame.
+    /// **Where the pointer is** — the one fact the hover keeps. What it lights is worked out from
+    /// it against the frame being drawn ([`App::relight`]), never kept from an earlier one.
+    pub(crate) pointer_at: Option<(u16, u16)>,
+    /// **What the pointer is over on THIS frame, if a click there would act** — derived from
+    /// `pointer_at` by [`App::relight`] on every draw, and brightened on the frame.
     pub(crate) hovered: Option<pointer::Hovered>,
-    /// **The screen the hover was taken on** — a light belongs to what was drawn when the pointer
-    /// moved, and a click that puts another screen up (the diff popup) leaves it on nothing.
-    pub(crate) hovered_on: Option<Drawn>,
     /// The left button's run since its press.
     pub(crate) drag: pointer::Drag,
     /// **The cells a drag selected**, press to pointer — drawn reversed, copied on release.
@@ -1755,8 +1756,8 @@ impl App {
             hits: Vec::new(),
             hint_rows: Vec::new(),
             injected: Vec::new(),
+            pointer_at: None,
             hovered: None,
-            hovered_on: None,
             drag: Default::default(),
             selection: None,
             pointer_hand: None,

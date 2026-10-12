@@ -170,3 +170,27 @@ fn hovering_a_part_of_the_marker_lights_it() {
         lit[y as usize]
     );
 }
+
+/// **No light is left on what a click opened** — the operator: *"stuck highlight still hapens on
+/// expanded reasoning and tools - when i click"*. The light is worked out from the frame that is
+/// drawn, so the rows the click put under the pointer are lit only if they are clickable
+/// themselves.
+#[test]
+fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
+    let mut a = a_run();
+    let screen = a.screen(200, 40);
+    let (x, y) = find(&screen, "3 thinking lines");
+    a.key(Key::Hover { x: x + 1, y });
+    assert!(
+        a.screen(200, 40)[y as usize].contains("\x1b[22;1m"),
+        "the premise"
+    );
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 40);
+    for (i, l) in open.iter().enumerate() {
+        assert!(
+            !l.contains("\x1b[22;1m"),
+            "row {i} is lit after the click: {l:?}"
+        );
+    }
+}
