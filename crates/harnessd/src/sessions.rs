@@ -48,9 +48,9 @@ use letibot_tokencore::store::{Store, TodoBy, TodoItem, TodoStatus};
 // `RunningChild` is what it holds about one, and `waits_on_a_child_with_room_to_breathe` is the
 // silence the operator asked for, kept beside the sentence it suppresses.
 use letibot_tools::builtins::todo::{
-    ChildSessions, RunningChild, RunningJobs, unfinished_plan,
+    ChildSessions, RunningChild, RunningJobs, queue_review_in_flight, unfinished_plan,
     waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, waits_on_an_undigested_ending,
-    when_a_young_child_grows_up, when_an_ending_is_digested,
+    when_a_queue_reviewer_goes_quiet, when_a_young_child_grows_up, when_an_ending_is_digested,
 };
 use std::sync::{Arc, Mutex};
 
@@ -248,6 +248,8 @@ pub(crate) fn the_check_may_ask_about(
     ) && !waits_on_a_child_with_room_to_breathe(row, children)
         && !waits_on_a_running_job(row, jobs)
         && !waits_on_an_undigested_ending(row, jobs)
+        // R93.B3: a merge queue's row is not nagged while its review is in flight.
+        && !queue_review_in_flight(row, children)
 }
 
 /// **A status, as the STORE spells it** — the wire→store half of the one conversion the two copies
@@ -601,6 +603,7 @@ impl TodoNagClock {
             when_a_young_child_grows_up(todos, children)
                 .into_iter()
                 .chain(when_an_ending_is_digested(todos, jobs))
+                .chain(when_a_queue_reviewer_goes_quiet(todos, children))
                 .min()
                 .map(|left| now + left)
         };

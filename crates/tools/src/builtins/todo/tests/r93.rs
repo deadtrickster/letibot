@@ -84,3 +84,35 @@ fn the_needs_schema_admits_the_tagged_forms() {
     assert!(any.iter().any(|a| a["type"] == "string"), "{items}");
     assert!(any.iter().any(|a| a["type"] == "object"), "{items}");
 }
+
+/// **B3: a merge queue's row is not nagged while its review is in flight** — waiting in the queue
+/// for a reviewer, or under a reviewer that is running and moving. It is asked about once the
+/// reviewer has finished (no longer running) or has been quiet past the cap.
+#[test]
+fn a_queue_row_is_quiet_while_its_review_is_in_flight() {
+    let queued = TodoItem {
+        content: "review x (entry r1): do x".into(),
+        status: TodoStatus::Pending,
+        by: TodoBy::Queue,
+        when: None,
+        needs: Vec::new(),
+    };
+    assert!(queue_review_in_flight(&queued, &ChildSessions::none()));
+    let reviewing = TodoItem {
+        status: TodoStatus::InProgress,
+        needs: vec![TodoNeed::Child { id: "s-rev".into() }],
+        ..queued.clone()
+    };
+    let moving = ChildSessions::none().running("s-rev", child(3 * 3600, Some(60), true));
+    assert!(queue_review_in_flight(&reviewing, &moving));
+    assert_eq!(
+        when_a_queue_reviewer_goes_quiet(std::slice::from_ref(&reviewing), &moving),
+        Some(REVIEWER_QUIET_CAP - Duration::from_secs(60))
+    );
+    let wedged = ChildSessions::none().running("s-rev", child(3 * 3600, Some(31 * 60), true));
+    assert!(!queue_review_in_flight(&reviewing, &wedged));
+    assert!(!queue_review_in_flight(&reviewing, &ChildSessions::none()), "finished");
+    // The model's own row is never this predicate's business.
+    let mine = TodoItem { by: TodoBy::Model, ..queued };
+    assert!(!queue_review_in_flight(&mine, &ChildSessions::none()));
+}

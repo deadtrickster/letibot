@@ -237,7 +237,9 @@ fn todo_check(text: &str) -> Option<Card> {
             "operator's"
         } else if body.contains("your parent asked for this one") {
             "parent's"
-        } else if body.contains("this row is the merge queue's") {
+        } else if body.contains("this row is the merge queue's")
+            || body.contains("— the merge queue's")
+        {
             "queue's"
         } else {
             "yours"

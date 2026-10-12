@@ -1478,6 +1478,62 @@ pub fn when_an_ending_is_digested(rows: &[TodoItem], jobs: &RunningJobs) -> Opti
         .min()
 }
 
+/// **R93.B3 — whether a merge queue's row has its review IN FLIGHT**, and so is not the check's to
+/// ask about.
+///
+/// The gatekeeper may not start a reviewer (the queue's own clock does) and no `todo_write` field
+/// moves a queue row (the verdict does), so a nag about a review that is waiting for a reviewer or
+/// under one can only be answered with *still waiting* — measured, and it also pushed the
+/// gatekeeper toward starting reviewers itself. The row is in flight when:
+///
+/// * it waits in the queue for a reviewer (no child on it yet), or
+/// * its reviewer child is running and has moved inside [`REVIEWER_QUIET_CAP`].
+///
+/// It becomes askable when the reviewer has finished (the child is no longer running, and no
+/// verdict took the row off) or has been quiet past the cap — both are something the gatekeeper
+/// can act on: read the reply, or `task_message` the child.
+pub fn queue_review_in_flight(row: &TodoItem, children: &ChildSessions) -> bool {
+    if row.by != TodoBy::Queue {
+        return false;
+    }
+    let mut reviewers = row.needs.iter().filter_map(|need| match need {
+        TodoNeed::Child { id } => Some(id),
+        _ => None,
+    });
+    match reviewers.next() {
+        None => row.status == TodoStatus::Pending,
+        Some(id) => children.child(id).is_some_and(|child| {
+            child.quiet_for.unwrap_or(child.age) < REVIEWER_QUIET_CAP
+        }),
+    }
+}
+
+/// **How long a running reviewer may be quiet before its queue row is asked about** — the same
+/// thirty minutes a child gets to breathe ([`CHILD_ROOM_TO_BREATHE`]), measured from its last event
+/// rather than its start: a review is long by nature, and only silence says it may be stuck.
+pub const REVIEWER_QUIET_CAP: Duration = CHILD_ROOM_TO_BREATHE;
+
+/// **When a queue row quiet only because its reviewer is working becomes askable on its own** —
+/// the clock half of [`queue_review_in_flight`], so a reviewer that wedges is asked about without
+/// waiting for somebody to do something. `None` when no row is in that state.
+pub fn when_a_queue_reviewer_goes_quiet(
+    rows: &[TodoItem],
+    children: &ChildSessions,
+) -> Option<Duration> {
+    rows.iter()
+        .filter(|row| row.by == TodoBy::Queue)
+        .flat_map(|row| row.needs.iter())
+        .filter_map(|need| match need {
+            TodoNeed::Child { id } => children.child(id).and_then(|child| {
+                REVIEWER_QUIET_CAP
+                    .checked_sub(child.quiet_for.unwrap_or(child.age))
+                    .filter(|left| !left.is_zero())
+            }),
+            _ => None,
+        })
+        .min()
+}
+
 /// **Whose row this is, in the words every sentence about a row uses** — `yours`, `the
 /// operator's`, the parent's own author string, or `the merge queue's`. One spelling for the
 /// check's question and for a completion naming the rows that wait on it.
@@ -1725,9 +1781,11 @@ pub fn unfinished_plan_for(
         // row off, and the row is replaced from the store on the daemon's next pass. It states the
         // row and what moves it, and commands nothing — a model told to *do this one* would reach
         // for a verb that has no door.
+        // R93.B3: it is asked about only once its reviewer has finished or gone quiet past the
+        // cap (`queue_review_in_flight`), so the advice names the two acts that are left.
         TodoBy::Queue => {
-            "This is the merge queue's row: its review's verdict takes it off, and no \
-             `todo_write` field moves it."
+            "The merge queue's row; its reviewer has finished or gone quiet: read its reply, or \
+             `task_message` it. The verdict takes the row off."
         }
         TodoBy::Model => {
             // **"or drop it" was the old contract's verb and it went with it.** A row left out of a
