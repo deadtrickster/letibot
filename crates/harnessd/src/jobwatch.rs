@@ -594,7 +594,19 @@ impl JobWatchers {
     /// **Say this handle's result is wanted the moment it ends** (R79) — the daemon's half of
     /// [`letibot_tools::runtime::CompletionWanted`]. A want already recorded is not replaced:
     /// `wake: "now"` and a later wait are both *now*, and the first is the one recorded.
+    ///
+    /// **A want for a result already delivered is not recorded** (R91.17): nothing would ever
+    /// deliver it again to take it off, so it would sit in the map for the session's life.
     pub fn want_now(&self, handle: &str, why: WantedNow) {
+        if self
+            .read
+            .lock()
+            .expect("read record")
+            .seen
+            .contains_key(handle)
+        {
+            return;
+        }
         self.wanted
             .lock()
             .expect("wanted results")
@@ -632,6 +644,15 @@ impl JobWatchers {
                 if let Some(slug) = &c.slug {
                     r.seen.insert(slug.clone(), (c.arrived, at));
                 }
+            }
+        }
+        // **And its want is spent, whichever door delivered it** (R91.17). Only the immediate
+        // door used to forget it (`delivery::sort`); a result handed over in a batch, or between
+        // turns, left its want in the map for the session's life.
+        {
+            let mut wanted = self.wanted.lock().expect("wanted results");
+            for c in done {
+                wanted.remove(&c.job);
             }
         }
         // **And a subagent's settlement is marked delivered in the store**, because this is the

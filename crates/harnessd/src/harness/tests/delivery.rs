@@ -825,3 +825,36 @@ fn a_when_job_firing_is_not_held_back_by_the_grace() {
     );
     assert_eq!(due.len(), 1, "the condition fires with the completion");
 }
+
+/// **A want does not outlive the delivery of its result, by any door** (R91.17). The `wanted` map
+/// was cleared only on IMMEDIATE delivery: a want recorded while the result was already held, and
+/// then handed over in the batch, stayed for the session's life — as did a `job_wait` on a result
+/// that had already been delivered.
+#[test]
+fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() {
+    let dir = Scratch::new("r79-wanted");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, true);
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let mut s = steering(&hub, d.clone());
+
+    w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
+    assert!(s.try_next().is_none(), "a routine completion is held");
+    assert_eq!(w.held_count(), 1);
+    // Wanted only now, while it is held — and then handed over with the batch.
+    w.want_now("j1", WantedNow::Awaited);
+    assert!(d.batch(crate::delivery::Rule::Batch).is_some());
+    assert_eq!(
+        w.wanted("j1"),
+        None,
+        "the batch delivered it and the want stayed"
+    );
+
+    // A want for a result the model has already been handed is not recorded at all.
+    w.want_now("j1", WantedNow::WakeNow);
+    assert_eq!(
+        w.wanted("j1"),
+        None,
+        "a want for a delivered result was kept"
+    );
+}
