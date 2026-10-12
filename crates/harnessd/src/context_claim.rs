@@ -751,9 +751,6 @@ mod tests {
         }
     }
 
-    /// The first-person words the shared tokeniser drops are one term here, and
-    /// `let me` is not one of them.
-    #[test]
     /// **The live miss of 2026-10-11** — a capacity claim used to justify delegating, which the
     /// stop family did not reach. It must score over the floor now.
     #[test]
@@ -765,6 +762,9 @@ mod tests {
         assert!(best >= FLOOR, "scored {best:.3}, under the floor {FLOOR}");
     }
 
+    /// The first-person words the shared tokeniser drops are one term here, and
+    /// `let me` is not one of them.
+    #[test]
     fn first_person_is_a_term_and_let_me_is_not_first_person() {
         assert_eq!(
             words("I'm at the end of my context; let me stop"),
