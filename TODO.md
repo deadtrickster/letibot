@@ -2016,8 +2016,9 @@ looking.
    `TaskSlot::as_settled`, so the line survives the replacement), and the guard's own "ended
    without saying" — has at its top, when the tree is still dirty: `the worktree <path> has
    uncommitted changes: <files> — the branch <b> does not contain them. To salvage: `git -C <path>
-   add -A -- . ':!.cargo/config.toml'` then `git -C <path> commit -m "salvage: uncommitted work of
-   <b>"`.`
+   add -A` then `git -C <path> commit -m "salvage: uncommitted work of <b>"`.` (Built with an
+   exception for the runner's `.cargo/config.toml`; the exception went when the file did — see
+   the closed item below.)
 4. Tests: `harness/deliverable.rs` (temp git repos: clean → no nudge; dirty → one nudge, commit,
    clean; still dirty → the line, and the two printed commands run and leave the branch holding the
    work; every ending through `AnswerOnce`; no worktree → untouched; an unreadable tree is not
@@ -2025,14 +2026,31 @@ looking.
 
 ### Found while building it — OPEN
 
-* **The build-cache pointer is not excluded.** `start_worktree` writes `.cargo/config.toml` into
+* ~~**The build-cache pointer is not excluded.** `start_worktree` writes `.cargo/config.toml` into
   every worktree and appends it to `$(git rev-parse --git-dir)/info/exclude`, which inside a
   worktree is `.git/worktrees/<name>/info/exclude` — a file git does not read (MEASURED, git 2.53:
   `?? .cargo/` in a fresh worktree with the line present). Every `task_start` worktree is therefore
-  dirty from birth, and a child that runs `git add -A` commits the pointer into its branch. The
-  check above excludes it by pathspec; the runner's exclude should be fixed at its source (the
-  common dir's `info/exclude` hides it in every worktree and the main tree too, so it wants a
-  decision, or `extensions.worktreeConfig` + a per-worktree `core.excludesFile`).
+  dirty from birth, and a child that runs `git add -A` commits the pointer into its branch.~~
+  **FIXED at integration, 2026-10-12** (the operator: *".cargo/config.toml situation must be
+  solved"*). Worse than the entry said: in a repository that TRACKS `.cargo/config.toml`, the
+  runner overwrote the tracked file in the child's tree. Now nothing is written into a worktree.
+  The child's commands get `CARGO_TARGET_DIR=<main>/target` through the session's own
+  environment: `harness::worktree_build_env` (the main tree found from the worktree's
+  `--git-common-dir`, so a child resumed after a restart gets it too) sets `Config::build_env` at
+  the spawn, and `Harness::open` puts it into the exec host's standing environment, the pairs
+  that survive its `env_clear`. A repository's own tracked `target-dir` loses to the variable
+  (cargo: env over config), which is intended. The exclude-writing code and the deliverable
+  check's pathspec exception (and the salvage command's `':!.cargo/config.toml'`) are gone.
+  Tests: `crates/harnessd/tests/worktree_build_cache.rs` — a `task_start` worktree has an empty
+  `git status --porcelain` and no `.cargo/`; a repository tracking its own `.cargo/config.toml`
+  keeps it byte for byte in both trees; a harness opened with `build_env` runs `bash` with
+  `CARGO_TARGET_DIR` set. **Left, a decision**: a CONFINED child (bwrap, view = the worktree)
+  does not get the variable — the main tree's `target/` is not in its view, so the variable
+  would point a build at a path that does not exist there, and granting it read-write would let
+  a confined child write binaries the operator runs from that directory. Confined children build
+  cold, as they effectively did before (the old config pointed outside their view too).
+  Existing worktrees on disk were not touched: any already holding the old `.cargo/config.toml`
+  still show `?? .cargo/` until it is removed by hand.
 * **Not exercised end to end with a model.** No test drives a child's turn through a stub server
   that edits a file; the loop's arm is three lines over `EndOfWork`, which is tested.
 * ~~**A restored child** (`wt-subrestart`, reopening subagents after a daemon restart) has to call

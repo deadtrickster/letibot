@@ -34,17 +34,6 @@ use letibot_tools::builtins::task::WorktreePlacement;
 /// How many porcelain entries a nudge or a completion line names before it counts the rest.
 const LISTED: usize = 8;
 
-/// The one file `task_start` writes into every worktree it arranges — the shared build cache's
-/// pointer — which is not the child's work and must never be reported as uncommitted, or be
-/// committed because a nudge said "commit everything".
-///
-/// MEASURED while building this, git 2.53: the runner excludes it in the worktree's OWN
-/// `info/exclude` (`git rev-parse --git-dir` inside a worktree is `.git/worktrees/<name>`), and
-/// git does not read an exclude file there — only the common dir's — so every `task_start`
-/// worktree shows `?? .cargo/` from birth. The check here excludes it by pathspec instead, which
-/// is per-call and touches nobody's exclude file.
-const CARGO_POINTER: &str = ".cargo/config.toml";
-
 /// **Where a worktree child's work has to end up**: the tree it works in and the branch that
 /// tree is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,8 +62,7 @@ impl Deliverable {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(&self.path)
-            .args(["status", "--porcelain", "--", "."])
-            .arg(format!(":(exclude){CARGO_POINTER}"))
+            .args(["status", "--porcelain"])
             .output()
             .ok()?;
         if !out.status.success() {
@@ -123,7 +111,7 @@ pub fn nudge_text(d: &Deliverable, files: &[String]) -> String {
 pub fn completion_line(d: &Deliverable, files: &[String]) -> String {
     format!(
         "the worktree {path} has uncommitted changes: {list} — the branch {branch} does not \
-         contain them. To salvage: `git -C {path} add -A -- . ':!{CARGO_POINTER}'` then \
+         contain them. To salvage: `git -C {path} add -A` then \
          `git -C {path} commit -m \"salvage: uncommitted work of {branch}\"`.",
         path = d.path,
         branch = d.branch,
@@ -231,11 +219,8 @@ mod tests {
             &main,
             &["worktree", "add", "-q", &path, "-b", &branch, "main"],
         );
-        // **What the runner writes into every worktree**, so a test of "clean" is a test of
-        // the tree a real child is handed, not of a tidier one.
-        let cargo = Path::new(&path).join(".cargo");
-        std::fs::create_dir_all(&cargo).unwrap();
-        std::fs::write(cargo.join("config.toml"), "[build]\ntarget-dir = \"x\"\n").unwrap();
+        // **Exactly the tree a real child is handed**: the runner writes nothing into it (the
+        // build cache is shared through the child's environment, `worktree_build_env`).
         Repo {
             root,
             wt: Deliverable { path, branch },
@@ -254,7 +239,6 @@ mod tests {
     #[test]
     fn a_clean_child_is_not_nudged_and_its_answer_is_untouched() {
         let r = repo("clean");
-        // The build-cache pointer the runner wrote is there, and is not the child's work.
         assert_eq!(r.wt.uncommitted(), None);
         let mut check = EndOfWork::new();
         assert_eq!(check.at_turn_end(Some(&r.wt)), None);
@@ -278,13 +262,9 @@ mod tests {
             "{nudge}"
         );
         assert!(nudge.contains(&r.wt.branch), "{nudge}");
-        assert!(
-            !nudge.contains(".cargo"),
-            "the runner's pointer is not work: {nudge}"
-        );
 
-        // The child does what it was told: commits the files it was shown. The runner's
-        // pointer is still untracked beside them, and the tree reads clean.
+        // The child does what it was told: commits the files it was shown, and the tree reads
+        // clean.
         git(wt, &["add", "lib.rs", "new.rs"]);
         git(wt, &["commit", "-q", "-m", "the work"]);
         assert_eq!(r.wt.uncommitted(), None);
@@ -324,7 +304,7 @@ mod tests {
         );
 
         // **And the two commands do what the line says**: run as printed, the branch holds the
-        // work, the tree is clean, and the runner's build-cache pointer is not in the commit.
+        // work, the tree is clean, and the commit holds the child's file and nothing else.
         let wt = Path::new(&r.wt.path);
         let sh = |cmd: &str| {
             let out = Command::new("sh")

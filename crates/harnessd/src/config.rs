@@ -571,6 +571,21 @@ pub struct Config {
     /// [`letibot_tools::builtins::task::TaskSpec::vm_verify`], applied at the spawn. Not inherited:
     /// it is set from each spawn's own spec, so a child's gate is never its parent's by accident.
     pub vm_verify: Option<String>,
+    /// **Pairs every command this session runs carries, beside the daemon's standing ones** —
+    /// set at a spawn, read by `Harness::open` into the exec host's standing environment (the
+    /// one set of pairs that survives `env_clear`).
+    ///
+    /// Today one pair: a `task_start` worktree child's `CARGO_TARGET_DIR`, the main tree's
+    /// `target/` (`harness::worktree_build_env`), so the child shares the main tree's build cache
+    /// instead of paying a cold build of the whole graph. It used to be a `.cargo/config.toml`
+    /// the runner wrote INTO the worktree, which showed up as `?? .cargo/` in every child's
+    /// status, was committed by a child's `git add -A`, and overwrote a repository's own tracked
+    /// file. An environment variable is in nobody's tree, and wins over a tracked config's
+    /// `target-dir` by cargo's own precedence.
+    ///
+    /// Inherited by a plain `task` child (it works in the same tree, so the same cache is right);
+    /// replaced at each worktree spawn.
+    pub build_env: Vec<(String, String)>,
     /// **Whether the review queue's reviewers may be placed in a firecode VM** — the one child
     /// whose placement is decided FOR it rather than by the call that spawns it
     /// (`Harness::serve_reviews`, and see `crate::sessions::gatekeeper::reviewer_placement` for the
@@ -1712,6 +1727,7 @@ impl Config {
             vm_args: Vec::new(),
             vm_source: None,
             vm_verify: None,
+            build_env: Vec::new(),
             // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**
             // `for_this_box` is what every test in this tree builds from, and the daemon — the one
             // caller that is a live operator's box — arms it in `for_the_daemon`. See the field.

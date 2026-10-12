@@ -2893,6 +2893,11 @@ impl Harness {
                         eprintln!("letibot: sudo will have no way to ask for a password: {why}")
                     }
                 }
+                // **And the pairs this session's spawn gave it** (`Config::build_env`): a
+                // worktree child's `CARGO_TARGET_DIR`, so its builds share the main tree's
+                // cache. After the daemon's own, so a spawn's word wins; never `PATH`, which the
+                // host pins.
+                env.extend(cfg.build_env.iter().cloned());
                 h.set_standing_env(env);
                 // **And a stop ends the runs this session has in flight.**
                 //
@@ -16526,12 +16531,13 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// from the base the caller named (or the repo's HEAD). The main tree is the
     /// exception, and it requires the explicit `main_tree` argument.
     ///
-    /// **The build cache is shared deliberately.** The worktree's cargo is pointed
-    /// at the main tree's `target/` (via a `.cargo/config.toml` the runner writes
-    /// into the worktree — the same mechanism as `CARGO_TARGET_DIR`, and the one
-    /// that survives the child's own environment being cleared), because cargo's
-    /// own lock serialises concurrent builds and a fresh worktree otherwise pays a
-    /// cold build of the whole graph.
+    /// **The build cache is shared deliberately, and nothing is written into the
+    /// tree for it.** The child's commands carry `CARGO_TARGET_DIR` pointing at the
+    /// main tree's `target/` ([`worktree_build_env`], set on the child's config at
+    /// the spawn and put into its exec host's standing environment, the pairs that
+    /// survive `env_clear`), because cargo's own lock serialises concurrent builds
+    /// and a fresh worktree otherwise pays a cold build of the whole graph. The tree
+    /// the child is handed is exactly the branch: `git status --porcelain` is empty.
     ///
     /// **The branch is the deliverable, and it is never pushed.** This method does
     /// not push, and will not: the branch is to be landed by a merge queue.
@@ -16633,42 +16639,13 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                      `{branch}`."
                 )
             })?;
-            // **The build cache, shared deliberately.** The worktree's cargo is pointed
-            // at the main tree's `target/`, so the child does not pay a cold build of
-            // the whole graph. Written into the worktree rather than the child's
-            // environment because the child's environment is cleared before its own
-            // pairs, and a config file survives that.
-            let cargo_dir = std::path::Path::new(&path).join(".cargo");
-            let _ = std::fs::create_dir_all(&cargo_dir);
-            let cargo_config = cargo_dir.join("config.toml");
-            let _ = std::fs::write(
-                &cargo_config,
-                format!(
-                    "# Written by `task_start`: the build cache is shared with the main \
-                     tree, so this worktree does not pay a cold build of the whole graph.\n\
-                     [build]\ntarget-dir = \"{}\"\n",
-                    std::path::Path::new(&workspace).join("target").display()
-                ),
-            );
-            // **And the config file must not be able to land in a commit or in the
-            // operator's `git status`.** It is a build-cache pointer, not a change: a
-            // config file that shows up as an untracked change in every review is a
-            // change nobody made, reviewable by nobody. So it is excluded in the
-            // worktree's own `info/exclude` — per-worktree, so the main tree's status
-            // and every other worktree are untouched, and nothing is added to the
-            // repo's `.gitignore` that the operator did not ask for.
-            if let Ok(git_dir) = git_in(&path, &["rev-parse", "--git-dir"]) {
-                let exclude = std::path::Path::new(&git_dir).join("info").join("exclude");
-                if let Some(parent) = exclude.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let line = format!(".cargo/config.toml\n");
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&exclude)
-                    .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
-            }
+            // **No file is written into the tree.** The build cache is shared through the
+            // child's environment (`worktree_build_env`, at the spawn). This used to write
+            // `.cargo/config.toml` here and "hide" it in `$(git rev-parse --git-dir)/info/
+            // exclude` — inside a worktree that is `.git/worktrees/<name>/info/exclude`, which
+            // git does not read, so every worktree showed `?? .cargo/`, a child's `git add -A`
+            // committed it, and a repository that tracks its own `.cargo/config.toml` had it
+            // overwritten.
             WorktreePlacement {
                 path,
                 branch,
@@ -17765,6 +17742,12 @@ impl HarnessTaskRunner {
         // its own. `None` is a plain `task`, which keeps the parent's workspace.
         if let Some(wt) = &spec.worktree {
             sub_cfg.workspace = std::path::PathBuf::from(&wt.path);
+            // **And the main tree's build cache, through the child's environment** — never a
+            // file in its tree. Computed from the worktree itself, so a child brought back after
+            // a restart (`RecordedSpec`) gets the same pair. The main-tree exception builds in
+            // its own `target/` already and is given nothing.
+            sub_cfg.build_env.retain(|(k, _)| k != "CARGO_TARGET_DIR");
+            sub_cfg.build_env.extend(worktree_build_env(wt));
         }
         // **And the tree a VM placement copies**, when the caller named one that is not the child's
         // workspace — the same route, and the same reason: the spawn is the one place that turns a
@@ -18897,6 +18880,39 @@ pub fn scratch_dir() -> std::path::PathBuf {
 /// able to write there, because the next gate runs in it. The directory is created (empty) when
 /// the queue has not made it yet, so the bind has something to bind: `bwrap --ro-bind` of a
 /// missing path fails every command.
+/// **The environment a `task_start` worktree child's commands carry for the shared build
+/// cache**: `CARGO_TARGET_DIR` = the main tree's `target/`. `None` for the main-tree exception
+/// (it is the main tree), and for a worktree git cannot place (nothing to share then, and a guess
+/// would point a build somewhere nobody chose).
+///
+/// The main tree is found from the worktree: `git rev-parse --git-common-dir` inside a linked
+/// worktree is the main checkout's `.git`, and its parent is the main tree.
+///
+/// **Reaches the commands of an unconfined child** (leticode's `/` backend, the seat the operator's
+/// children run under), through the exec host's standing environment. A CONFINED child's commands
+/// do not get it: the bwrap view is the worktree and nothing else, so the main tree's `target/` is
+/// absent inside the namespace, and pointing cargo at it would fail a build that otherwise works
+/// cold. Granting that directory read-write into a child's view would let a confined child write
+/// the binaries the operator runs from it — a decision for the operator, not a side effect of a
+/// build-cache optimisation.
+pub fn worktree_build_env(
+    placement: &letibot_tools::builtins::task::WorktreePlacement,
+) -> Option<(String, String)> {
+    if placement.main_tree {
+        return None;
+    }
+    let common = git_in(
+        &placement.path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let main = std::path::Path::new(common.trim()).parent()?;
+    Some((
+        "CARGO_TARGET_DIR".to_string(),
+        main.join("target").display().to_string(),
+    ))
+}
+
 pub fn confined_grants(
     cfg: &Config,
     landing_root: Option<&std::path::Path>,
