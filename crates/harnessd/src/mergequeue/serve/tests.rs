@@ -616,6 +616,26 @@ fn a_merge_row_that_conflicts_or_fails_its_gate_is_said() {
     assert_eq!(w.door.warnings("merge_failed").len(), 1);
 }
 
+/// **A merge row landed by hand settles** (R92.28, second half) — even while the target cannot
+/// be judged, which is when `land_next` would never take it.
+#[test]
+fn a_merge_row_landed_by_hand_settles() {
+    let w = World::new("byhand");
+    let (wt, base, head) = branch(&w.repo, "h", "h.txt");
+    w.enqueue("h", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("h", "test/a");
+    // The target cannot be gated from here on, so the queue lands nothing.
+    let mut e = env(Arc::new(LocalGate), w.door.clone(), "a");
+    Arc::get_mut(&mut e).unwrap().landing_root = Arc::new(|_| Err("no room".into()));
+    let q = RepoQueue::new(w.store(), w.repo.clone(), e);
+    sh(&w.repo, &["merge", "--ff-only", "agent/h"]);
+    run(&q, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Withdrawn, "{row:?}");
+}
+
 /// **A daemon that stops kills its gate and puts the row back in line** — never left `taken`
 /// for a restart to call `stale` while the orphan holds the build lock (defect 6).
 #[test]

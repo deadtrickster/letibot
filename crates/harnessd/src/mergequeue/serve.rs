@@ -401,6 +401,7 @@ impl RepoQueue {
         let mut worked = self.reap_gate()?;
         worked |= self.adopt_orphans()?;
         worked |= self.review_upkeep(&settings)?;
+        worked |= self.settle_landed_by_hand()?;
         if self.gate_in_flight() {
             // One gate per repository: the health of every target and the next landing wait for
             // it; the review queue above did not.
@@ -960,6 +961,50 @@ impl RepoQueue {
             );
         }
         Ok(false)
+    }
+
+    /// **A merge row whose branch is already on its target settles** (R92.28) — landed by hand,
+    /// or by the project's main session after a handover. `land_next` notices this only when it
+    /// TAKES the row, which it never does while the target is red, unjudged or blocked, and never
+    /// for a `blocked` row at all: such a row stayed parked for ever. A row being gated is left to
+    /// its gate. The approved head is what is looked for (the branch may be gone by now), and the
+    /// row is withdrawn saying where it was found — the queue did not land it, so `landed` would
+    /// claim a push and a cleanup that never ran.
+    fn settle_landed_by_hand(&self) -> Result<bool, StoreError> {
+        let me = self.me().to_string();
+        let mut moved = false;
+        for m in self.store.merge_rows(Some(&self.key))? {
+            if !matches!(m.state, MergeState::Queued | MergeState::Blocked) {
+                continue;
+            }
+            let head = if m.approved_sha.is_empty() {
+                match git::branch_head(&self.repo, &m.branch) {
+                    Some(h) => h,
+                    None => continue,
+                }
+            } else {
+                m.approved_sha.clone()
+            };
+            let Some(tip) = git::branch_head(&self.repo, &m.target) else {
+                continue;
+            };
+            if git::is_ancestor(&self.repo, &head, &tip).unwrap_or(false) {
+                moved |= self.merge_to(
+                    &m,
+                    m.state,
+                    MergeState::Withdrawn,
+                    Move::new(
+                        &me,
+                        format!(
+                            "`{}` is already on `{}` (at {tip}): it landed some other way, so \
+                             there is nothing to merge",
+                            m.branch, m.target
+                        ),
+                    ),
+                )?;
+            }
+        }
+        Ok(moved)
     }
 
     /// **The review of a red tip the target no longer holds** (R76 item 4). An amend, a
