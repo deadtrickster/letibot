@@ -149,9 +149,12 @@ pub trait ExecBackend: Send + Sync {
     /// call that noticed the job: a background job settles between turns, when no
     /// invocation is in scope to borrow through. `None` when this backend cannot
     /// start processes — no host, no jobs, no watcher.
-    fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
-        None
-    }
+    ///
+    /// **No default, on purpose** (R92.1). It had one, `None`, and `FirecodeBackend` implemented
+    /// [`ExecBackend::processes`] without it: every firecode session ran jobs nobody watched, and
+    /// a finished job sat `running` until the operator typed. A backend that can start processes
+    /// must say so here too, and the compiler is what makes it.
+    fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>>;
 
     /// A tool's `cwd` argument — relative to where the session sits — in the form
     /// [`crate::exec::ProcessHost::spawn`] wants it: relative to the root. The
@@ -1623,6 +1626,9 @@ mod tests {
         fn describe(&self) -> String {
             "a tree in memory".into()
         }
+        fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
+            None
+        }
     }
 
     /// The same shape with `list_tree` **defined**, as firecode defines it. An
@@ -1652,6 +1658,9 @@ mod tests {
         }
         fn describe(&self) -> String {
             "a tree in memory, in one command".into()
+        }
+        fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
+            None
         }
         fn list_tree(
             &self,

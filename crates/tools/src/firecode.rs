@@ -859,6 +859,16 @@ impl ExecBackend for FirecodeBackend {
             .map(|p| p as &dyn crate::exec::ProcessHost)
     }
 
+    /// The same host, owned — what the daemon's job watcher holds so a background job in the VM
+    /// is seen to settle between turns. It was missing (R92.1): the trait's default answered
+    /// `None`, the harness built no watcher for a firecode session, and a finished job sat
+    /// `running` until somebody typed.
+    fn processes_arc(&self) -> Option<Arc<dyn crate::exec::ProcessHost>> {
+        self.processes
+            .clone()
+            .map(|p| p as Arc<dyn crate::exec::ProcessHost>)
+    }
+
     fn close(&self) -> Option<String> {
         self.down();
         // Said as what happened to the work, not as the VM's state: "the VM is
@@ -1417,6 +1427,38 @@ mod tests {
             !cache.join("child").exists(),
             "the copy outlived the failed placement: {:?}",
             r.err()
+        );
+    }
+
+    /// **A VM's jobs can be watched** (R92.1): the owned process host is the same one `processes`
+    /// lends. Before, `processes_arc` fell to the trait default `None`, so the harness built no
+    /// job watcher for a firecode session and a finished background job was never announced.
+    #[test]
+    fn a_vm_that_runs_processes_hands_its_host_to_the_job_watcher() {
+        let root = tmp("procarc");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let bin = stub_firecode(&root.join("fc"), HAPPY);
+        let mut spec = spec_with(&src, &root.join("cache"), &bin);
+        spec.exec = true;
+        let b = FirecodeBackend::up(&spec).expect("the VM is placed");
+        assert!(b.processes().is_some(), "an exec VM lends no process host");
+        let owned = b
+            .processes_arc()
+            .expect("an exec VM hands no owned process host to the job watcher");
+        let lent = b.processes().unwrap() as *const dyn crate::exec::ProcessHost as *const ();
+        assert_eq!(
+            Arc::as_ptr(&owned) as *const (),
+            lent,
+            "the owned host is not the one the tools run on"
+        );
+
+        let mut spec = spec_with(&src, &root.join("cache2"), &bin);
+        spec.name = "child2".into();
+        let b = FirecodeBackend::up(&spec).expect("the VM is placed");
+        assert!(
+            b.processes_arc().is_none(),
+            "a no-exec VM hands out a process host"
         );
     }
 
