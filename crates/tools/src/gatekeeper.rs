@@ -327,9 +327,9 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          verdict against a SHA nobody can name is not evidence. **That call is the whole \
          of your answer to the queue**: the row comes off its board because the verdict \
          reached it, and a reply that ends in prose without that call has judged nothing — \
-         the entry waits and this attempt is counted against it. You may reason in prose \
-         for as long as you like before and after the call, and what you found belongs in \
-         your reply too: the session that started you reads it there.\n\
+         the entry waits and this attempt is counted against it. Explain what you found \
+         in your reply too — the session that started you reads it there — and keep to \
+         the evidence.\n\
          5. **One command per call.** Every `bash` call runs exactly one simple \
          command: no `&&`, no `;`, no `|`, no `>` or `<` to a file, no `$(…)` or \
          backticks, and no `cd`-then-command. The permission rules are tested one \

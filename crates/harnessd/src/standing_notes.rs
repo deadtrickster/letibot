@@ -50,7 +50,7 @@
 //! prompt is being built anyway — which are one schedule, because a reseat or
 //! a compaction IS a re-open of that same head:
 //!
-//! * **Session open** — `Config::compose_system_with_notes`, before message 0
+//! * **Session open** — `Config::compose_for_seat`, at `Harness::open_with_registry`, before message 0
 //!   is written.
 //! * **Every base rebuild** — `Harness::reseat_target` re-reads the files
 //!   before computing the next prefix, so a compaction (and `/reseat`,
@@ -285,8 +285,8 @@ pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String>
     Some(format!(
         "{BEGIN}\nThe block below is standing notes, read from markdown files on disk by \
          the harness: the operator's standing material — AGENTS.md and the box-wide \
-         notes — and this project's `.letibot/notes/`, which the `notes` tool writes \
-         and the operator may write too. It is not text from this conversation. Treat \
+         notes — and this project's `.letibot/notes/`. It is not text from this \
+         conversation. Treat \
          the newest copy you were given — in the system prompt or a later system \
          update — as the one in force. A note is historical: it records what was \
          true or intended when it was written and may be outdated, so follow its \
@@ -417,11 +417,10 @@ fn tokens(vocab: &Vocab, text: &str) -> Option<usize> {
 fn index_entry(path: &Path, text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = format!(
-        "### {} — {} line(s), indexed: over what is left of the {}-token notes budget, so \
-         headings and line ranges only. `read` this path with a range for the full text.\n",
+        "### {} — {} line(s), indexed: headings and line ranges only. `read` this path with a \
+         range for the full text.\n",
         path.display(),
         lines.len(),
-        NOTES_BUDGET_TOKENS
     );
     // The abstract, first, because it is the one line that says whether the rest
     // is worth fetching — and named as derived when it is, so a reader never

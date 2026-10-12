@@ -502,7 +502,7 @@ pub fn keeper_prompt(req: &KeeperRequest) -> String {
          finished and landed — the corpus cannot keep growing, and the index gets worse as it \
          does. **A proposal is not an act:** you never delete a note. You name it, you say which \
          of the four kinds of evidence it is, and the session that ran you decides.\n\n\
-         You may reason in prose for as long as you like. **Then end your reply with exactly this \
+         Explain what you found; keep to the evidence. **Then end your reply with exactly this \
          block and nothing after it**, one field per line, the labels spelled exactly as they are \
          here:\n\n\
          decision: {decisions}\n\

@@ -1188,41 +1188,6 @@ pub mod roles {
         r
     }
 
-    pub fn researcher() -> Role {
-        Role::new(
-            "researcher",
-            &[
-                "ask_corpus",
-                "search_corpus",
-                "ask_code",
-                "read",
-                "grep",
-                "read_spill",
-                // The conversation is a corpus too, and it is the one this seat
-                // arrives without. `digest` seats its fold children as
-                // `researcher`, so this is also the role that reads a transcript
-                // on somebody else's behalf.
-                "transcript",
-            ],
-        )
-    }
-
-    pub fn reviewer() -> Role {
-        Role::new(
-            "reviewer",
-            &[
-                "read",
-                "grep",
-                "glob",
-                "git",
-                "read_spill",
-                // "What did the operator actually ask for" is a review question,
-                // and the answer is in the conversation rather than the diff.
-                "transcript",
-            ],
-        )
-    }
-
     /// What M1 can actually seat: §8.4's `orchestrator` without `task`, which is
     /// W16's, plus `read_spill`, which is clause 5's own tool.
     ///
