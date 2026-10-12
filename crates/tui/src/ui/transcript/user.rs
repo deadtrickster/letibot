@@ -49,53 +49,64 @@ pub(crate) fn user_row_lines(
             }
             (RowClass::Speech, rows)
         }
-        letibot_transcript::Speaker::Agent => {
-            // **A job's completion notice is two lines a job** — the operator: *"i dont need
-            // job completion card that huge - first line is j<id> - slug - truncated cmd and
-            // second line is truncated output"*. The whole card is a click away (the notice
-            // popup); see `job_card` for the shape and for where the output line comes from.
-            let cols = session_text_cols(it.ts, cfg);
-            // **A red merge target is ONE line** — the operator, of the `EMERGENCY —` notice and
-            // the warning above it: *"please make all this: … a one-line similar to job - with a
-            // popup"*. **And so is a review's outcome** — the operator, of a reviewer that could
-            // not decide, drawn as dozens of lines: *"same story about reviews - … one line +
-            // popup"*. The whole notice is the same click away the job card's is; see
-            // `line_cards`, `red_card` and `review_card`.
-            if let Some(lines) = compact_cards(&text, subagents, job_tails, cols) {
-                return (RowClass::Other, session_card_block(&lines, it.ts, cfg));
-            }
-            if let Some(lines) = compact_notice(&text, subagents, job_tails, cols) {
-                return (
-                    RowClass::Other,
-                    session_block(&lines.join("\n"), it.ts, cfg),
-                );
-            }
-            // **A completion notice is folded; anything else is drawn as it arrived.**
-            // The row this replaces carried R7's promise to the model in the operator's
-            // reading line — see [`folded_notice`], which folds only what it can
-            // account for completely and hands back everything else untouched.
-            match folded_notice(&text, subagents) {
-                // **A settlement line is a LINE, however long the fact in it is.** One of
-                // the facts `folded_notice` folds in is the child's own task, and a head
-                // that starts subagents with a brief has tasks of thousands of
-                // characters: pasted into the row they drew five wrapped rows of
-                // somebody's instructions. The operator, looking at a finished child:
-                // *"a giant prompt"*. So every folded line is trimmed to the width the
-                // block will draw it in, with the head's own `…` — the rule every other
-                // clamped row here keeps, and the one the pane already keeps (its rows
-                // end in `trim_to`). What is dropped is on the pane and in the child's
-                // own session, which is where a reader goes for the whole of it.
-                Some(folded) => {
-                    let folded = folded
-                        .lines()
-                        .map(|l| trim_to(l, cols))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (RowClass::Other, session_block(&folded, it.ts, cfg))
-                }
-                None => (RowClass::Other, session_block(&text, it.ts, cfg)),
-            }
+        letibot_transcript::Speaker::Agent => (
+            RowClass::Other,
+            session_row_lines(&text, it.ts, cfg, subagents, job_tails),
+        ),
+    }
+}
+
+/// **A row this session spoke in the operator's place, drawn** — the agent arm of
+/// [`user_row_lines`], on its own so the notice measurement (`walls`) reads exactly what the
+/// transcript draws.
+pub(crate) fn session_row_lines(
+    text: &str,
+    ts: u64,
+    cfg: &crate::ui::render::RenderConfig,
+    subagents: &[crate::app::SubagentState],
+    job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+) -> Vec<String> {
+    // **A job's completion notice is two lines a job** — the operator: *"i dont need
+    // job completion card that huge - first line is j<id> - slug - truncated cmd and
+    // second line is truncated output"*. The whole card is a click away (the notice
+    // popup); see `job_card` for the shape and for where the output line comes from.
+    let cols = session_text_cols(ts, cfg);
+    // **A red merge target is ONE line** — the operator, of the `EMERGENCY —` notice and
+    // the warning above it: *"please make all this: … a one-line similar to job - with a
+    // popup"*. **And so is a review's outcome** — the operator, of a reviewer that could
+    // not decide, drawn as dozens of lines: *"same story about reviews - … one line +
+    // popup"*. The whole notice is the same click away the job card's is; see
+    // `line_cards`, `red_card` and `review_card`.
+    if let Some(lines) = compact_cards(text, subagents, job_tails, cols) {
+        return session_card_block(&lines, ts, cfg);
+    }
+    if let Some(lines) = compact_notice(text, subagents, job_tails, cols) {
+        return session_block(&lines.join("\n"), ts, cfg);
+    }
+    // **A completion notice is folded; anything else is drawn as it arrived.**
+    // The row this replaces carried R7's promise to the model in the operator's
+    // reading line — see [`folded_notice`], which folds only what it can
+    // account for completely and hands back everything else untouched.
+    match folded_notice(text, subagents) {
+        // **A settlement line is a LINE, however long the fact in it is.** One of
+        // the facts `folded_notice` folds in is the child's own task, and a head
+        // that starts subagents with a brief has tasks of thousands of
+        // characters: pasted into the row they drew five wrapped rows of
+        // somebody's instructions. The operator, looking at a finished child:
+        // *"a giant prompt"*. So every folded line is trimmed to the width the
+        // block will draw it in, with the head's own `…` — the rule every other
+        // clamped row here keeps, and the one the pane already keeps (its rows
+        // end in `trim_to`). What is dropped is on the pane and in the child's
+        // own session, which is where a reader goes for the whole of it.
+        Some(folded) => {
+            let folded = folded
+                .lines()
+                .map(|l| trim_to(l, cols))
+                .collect::<Vec<_>>()
+                .join("\n");
+            session_block(&folded, ts, cfg)
         }
+        None => session_block(text, ts, cfg),
     }
 }
 

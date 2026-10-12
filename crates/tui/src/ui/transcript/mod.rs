@@ -17,4 +17,5 @@ pub mod stale_card;
 pub mod tool_result;
 pub mod turn;
 pub mod user;
+pub mod walls;
 pub mod window;

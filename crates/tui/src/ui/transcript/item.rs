@@ -269,10 +269,7 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
     match item {
         TranscriptItem::System { text, origin } => (
             RowClass::Other,
-            row_strings(
-                &rano::agent::screens::system_row(&format!("{origin:?}"), text, cfg.width),
-                cfg.palette(),
-            ),
+            system_row_lines(text, *origin, it.ts, cfg),
         ),
         TranscriptItem::User { .. } => user_row_lines(it, item, ctx),
         TranscriptItem::Reasoning { .. } => reasoning_row_lines(item, ctx, ind),
@@ -286,4 +283,18 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
             )],
         ),
     }
+}
+
+/// **A row the system wrote into the conversation, drawn** — on its own so the notice
+/// measurement (`walls`) reads exactly what the transcript draws.
+pub(crate) fn system_row_lines(
+    text: &str,
+    origin: letibot_transcript::SystemOrigin,
+    _ts: u64,
+    cfg: &RenderConfig,
+) -> Vec<String> {
+    row_strings(
+        &rano::agent::screens::system_row(&format!("{origin:?}"), text, cfg.width),
+        cfg.palette(),
+    )
 }
