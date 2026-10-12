@@ -2222,6 +2222,31 @@ pub fn stale_notice_for_the_model(said: &str) -> String {
 /// Same shape as the stale notice (`nag_notice_naming`): the fact, then what to DO, because
 /// the rule has to travel with the notice. In the harness's voice (`Speaker::Agent`), as the
 /// nag is — this is the daemon reporting an act the person took, never the person's words.
+/// **Whether a verbatim reseat's carry can be sent** — see [`Harness::reingest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerbatimFit {
+    /// It fits with a turn's room beside it.
+    Fits,
+    /// It fits, short of a turn's room: as close to the window as it was before the reseat,
+    /// and the compaction before the next turn makes the room.
+    Tight,
+    /// It is more than the window holds: nothing could be sent, so the reseat is refused.
+    Over,
+}
+
+/// The rule: refused only over the window. A schema change moves a conversation by a few
+/// thousand tokens; refusing it for the headroom a turn needs kept a session on its stale
+/// prompt at exactly the size it was already running at.
+pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
+    if carried >= window {
+        VerbatimFit::Over
+    } else if carried + headroom >= window {
+        VerbatimFit::Tight
+    } else {
+        VerbatimFit::Fits
+    }
+}
+
 pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
     let how = if summarise {
         format!(
@@ -9748,9 +9773,13 @@ impl Harness {
             true => self.cfg.provider_tokens(resident),
             false => Some(resident),
         };
+        let fit = match (self.cfg.context_window, carried) {
+            (Some(window), Some(carried)) => verbatim_fit(carried, window, self.cfg.headroom()),
+            _ => VerbatimFit::Fits,
+        };
         if let Some(window) = self.cfg.context_window
             && let Some(carried) = carried
-            && carried + self.cfg.headroom() >= window
+            && fit == VerbatimFit::Over
         {
             let note = if carried == resident {
                 String::new()
@@ -9763,12 +9792,30 @@ impl Harness {
             };
             return Err(HarnessError::Setup(format!(
                 "carrying this conversation verbatim would put {carried} token(s) in front \
-                 of a {window}-token window{note}, leaving less than the {} a turn needs. \
+                 of a {window}-token window{note}, which is more than the window holds. \
                  Re-seating without summarising only works while the conversation still \
                  fits; `/reseat summarise` summarises and fits, and `/compact` does the \
-                 same without changing the prompt. Nothing was changed.",
-                self.cfg.headroom()
+                 same without changing the prompt. Nothing was changed."
             )));
+        }
+        // **Under the window but short of a turn's room**: the conversation was already this
+        // size on the old prompt, and the reseat changes that by the schema's difference. The
+        // room a turn needs is the compaction's to make before the next turn, as it would have
+        // been without the reseat — so this goes ahead and says so.
+        if fit == VerbatimFit::Tight
+            && let (Some(window), Some(carried)) = (self.cfg.context_window, carried)
+        {
+            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "reseat_tight".into(),
+                detail: format!(
+                    "re-seated verbatim at {carried} of a {window}-token window, less than the \
+                     {} a turn needs to the side — as it was before the reseat. That room is \
+                     made by compaction, as it would have been without the reseat; \
+                     `/compact` makes it now.",
+                    self.cfg.headroom()
+                ),
+                compaction: None,
+            });
         }
         // Unmeasured ratio: carry it, and say that the fit was not checked rather
         // than pretend either way. The first metered turn measures the scale, so

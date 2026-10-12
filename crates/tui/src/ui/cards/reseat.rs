@@ -1,7 +1,7 @@
 //! **The reseat card and its pinned strip** — what a stale prompt looks like on this head. The
 //! state and the keys are `app::reseat`'s; this is only the drawing.
 
-use crate::app::reseat::{NOT_NOW, RESEAT_NOW};
+use crate::app::reseat::{NOT_NOW, RESEAT_NOW, RESEAT_SUMMARISE};
 use crate::app::*;
 use crate::ui::render::row_strings;
 use rano::agent::text::{one, trim_to, wrap};
@@ -71,7 +71,12 @@ impl App {
                 .map(|l| one(format!("  {l}"), Role::Plain)),
         );
         let mut choices = Vec::new();
-        for (i, name) in [RESEAT_NOW, NOT_NOW].iter().enumerate() {
+        let first = if c.summarise {
+            RESEAT_SUMMARISE
+        } else {
+            RESEAT_NOW
+        };
+        for (i, name) in [first, NOT_NOW].iter().enumerate() {
             let picked = i == c.sel.min(1);
             choices.push(one(
                 trim_to(
@@ -110,6 +115,10 @@ impl App {
         }
         let said = if c.asked {
             "PROMPT IS STALE — reseat asked for, waiting for the daemon · alt-p shows the card"
+                .to_string()
+        } else if c.summarise {
+            "PROMPT IS STALE — too big to carry verbatim · alt-r reseats with a summary · alt-p \
+             shows the card"
                 .to_string()
         } else {
             "PROMPT IS STALE — reseat now? · alt-r reseats now · alt-p shows the card".to_string()

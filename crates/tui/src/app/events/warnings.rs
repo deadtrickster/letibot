@@ -58,7 +58,7 @@ impl App {
                     self.prefix_current();
                 }
                 if code == "reseat_refused" {
-                    self.reseat_refused();
+                    self.reseat_refused(&detail);
                 }
                 // The clear is the card's signal and nothing else: the `reseated` row (or the
                 // `compacted` one) already says in the record what moved the session, so a

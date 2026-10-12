@@ -308,3 +308,38 @@ fn the_short_form_keeps_what_changed_and_drops_the_explanation() {
         "the card is the remedy: {short}"
     );
 }
+
+/// The daemon's refusal when the conversation no longer fits verbatim, as it says it.
+const TOO_BIG: &str = "carrying this conversation verbatim would put 901221 token(s) in front of \
+                       a 1000000-token window, leaving less than the 214420 a turn needs. \
+                       Re-seating without summarising only works while the conversation still \
+                       fits; `/reseat summarise` summarises and fits, and `/compact` does the \
+                       same without changing the prompt. Nothing was changed.";
+
+/// **A reseat that cannot fit verbatim offers the one that can** — the operator pasted the card
+/// offering `alt-r reseats now` under the daemon's refusal that a verbatim reseat does not fit:
+/// the choice it stared at them with could not be taken. After that refusal the card's first
+/// row is a reseat with a summary, alt-r sends that, and the card opens again to say so.
+#[test]
+fn a_reseat_too_big_to_carry_verbatim_offers_one_with_a_summary() {
+    let (mut a, hub) = stale();
+    assert_eq!(a.key(Key::AltR), Some(Action::Reseat { summarise: false }));
+    a.apply(warned(&hub, "reseat_refused", TOO_BIG));
+    assert!(
+        a.reseat_card_up(),
+        "the card opens again with the choice that can work"
+    );
+    let s = screen(&mut a);
+    assert!(
+        s.contains(&format!("▸  1  {}", reseat::RESEAT_SUMMARISE)),
+        "{s}"
+    );
+    assert!(
+        !s.contains(reseat::RESEAT_NOW),
+        "the one that cannot work is gone: {s}"
+    );
+    a.key(Key::Esc);
+    let s = screen(&mut a);
+    assert!(s.contains("alt-r reseats with a summary"), "{s}");
+    assert_eq!(a.key(Key::AltR), Some(Action::Reseat { summarise: true }));
+}

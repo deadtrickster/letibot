@@ -427,3 +427,28 @@ fn the_ladder_rungs_carry_less_verbatim_and_the_sliced_one_ignores_size() {
         other => panic!("asked by name, the sliced fold plans a cut: {other:?}"),
     }
 }
+
+/// **A verbatim reseat is refused only when the conversation cannot be sent at all** — the
+/// operator, of a peerdb session at 901,221 of a 1,000,000-token window refused a `/reseat`
+/// because a turn's headroom would not fit: *"why reseat cant work if it is a mere tool schema
+/// change? it is a very strange thing to say"*. The conversation was already that size on the
+/// old prompt; a reseat changes it by the schema's difference. Keeping a turn's room is the
+/// compaction's job before the next turn, reseated or not.
+#[test]
+fn a_verbatim_reseat_is_refused_only_over_the_window() {
+    use crate::harness::{VerbatimFit, verbatim_fit};
+    assert_eq!(verbatim_fit(500_000, 1_000_000, 214_420), VerbatimFit::Fits);
+    assert_eq!(
+        verbatim_fit(901_221, 1_000_000, 214_420),
+        VerbatimFit::Tight,
+        "under the window, short of a turn's room: reseat, and compaction makes the room"
+    );
+    assert_eq!(
+        verbatim_fit(1_000_000, 1_000_000, 214_420),
+        VerbatimFit::Over
+    );
+    assert_eq!(
+        verbatim_fit(1_200_000, 1_000_000, 214_420),
+        VerbatimFit::Over
+    );
+}

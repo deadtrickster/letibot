@@ -33,6 +33,11 @@ use std::ops::ControlFlow;
 
 /// The card's first row: the bare `/reseat`, which carries the conversation across.
 pub(crate) const RESEAT_NOW: &str = "Reseat now — carry the conversation onto the current prompt";
+/// **The first row once the daemon has said the conversation no longer fits verbatim**:
+/// `/reseat summarise`, the reseat that can work. The operator pasted the card still offering
+/// `alt-r reseats now` under the refusal that said it could not.
+pub(crate) const RESEAT_SUMMARISE: &str =
+    "Reseat with a summary — the conversation no longer fits onto the prompt verbatim";
 /// The card's second row: abstain, which pins the card rather than closing it.
 pub(crate) const NOT_NOW: &str = "Not now — continue on the old prompt (at my risk)";
 
@@ -50,6 +55,9 @@ pub(crate) struct ReseatCard {
     pub(crate) whole: bool,
     /// A reseat was sent from this head and the daemon has not answered it yet.
     pub(crate) asked: bool,
+    /// The daemon refused a verbatim reseat because the conversation does not fit: the card
+    /// offers, and alt-r sends, `/reseat summarise` instead.
+    pub(crate) summarise: bool,
 }
 
 impl App {
@@ -66,6 +74,7 @@ impl App {
                     sel: 0,
                     whole: false,
                     asked: false,
+                    summarise: false,
                 });
             }
         }
@@ -79,10 +88,19 @@ impl App {
         }
     }
 
-    /// **A reseat was refused** — the card is still true, and alt-r may send again.
-    pub(crate) fn reseat_refused(&mut self) {
+    /// **A reseat was refused** — the card is still true, and alt-r may send again. A refusal
+    /// because the conversation does not fit verbatim (the daemon's sentence names
+    /// `/reseat summarise` as what fits) turns the card's reseat into that one, and opens the
+    /// card so the new choice is seen rather than discovered on the next alt-r.
+    pub(crate) fn reseat_refused(&mut self, said: &str) {
+        let empty = self.editor.text().is_empty();
         if let Some(c) = self.reseat.as_mut() {
             c.asked = false;
+            if said.contains("/reseat summarise") && !c.summarise {
+                c.summarise = true;
+                c.sel = 0;
+                c.open = empty;
+            }
             self.redraw = true;
         }
     }
@@ -123,7 +141,12 @@ impl App {
             }
             Some(_) => {}
         }
-        let action = self.submit("/reseat".to_string());
+        let line = if self.reseat.as_ref().is_some_and(|c| c.summarise) {
+            "/reseat summarise"
+        } else {
+            "/reseat"
+        };
+        let action = self.submit(line.to_string());
         if let Some(c) = self.reseat.as_mut() {
             c.open = false;
             c.asked = action.is_some();

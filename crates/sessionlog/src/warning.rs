@@ -405,6 +405,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // `Harness::open` through `prefix_fingerprint`, which is the one place the two sides
     // of the comparison are computed.
     ("prefix_stale", Class::Routine),
+    // **A verbatim reseat that went ahead under the window but short of a turn's room** — as
+    // close to the window as the session already was; compaction makes the room, as before.
+    ("reseat_tight", Class::Routine),
     // **And the end of it**: the session has been moved onto the prompt this daemon seats (a
     // re-seat, or any fork onto it), so the notice above has stopped being true. Routine — the
     // operator's own act, or the session doing what it should. A head drawing the reseat card
@@ -1082,8 +1085,10 @@ mod the_register_census {
         //     re-seated, said so a head's reseat card can come down.
         //   · **127, not 126**: `auto_decision` (Routine) — a question's default taken when
         //     nobody answered in time.
-        assert_eq!(TABLE.len(), 127, "the table's size");
-        assert_eq!(count(Class::Routine), 47);
+        //   · **128, not 127**: `reseat_tight` (Routine) — a verbatim reseat under the window
+        //     and short of a turn's room, which goes ahead now.
+        assert_eq!(TABLE.len(), 128, "the table's size");
+        assert_eq!(count(Class::Routine), 48);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 69);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
