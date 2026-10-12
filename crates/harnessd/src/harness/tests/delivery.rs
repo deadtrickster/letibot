@@ -98,7 +98,7 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         monitor_cursor: Arc::new(AtomicUsize::new(0)),
         deliveries: Some(d),
         subagents: None,
-        held: VecDeque::new(),
+        held: Default::default(),
         todos: None,
     }
 }

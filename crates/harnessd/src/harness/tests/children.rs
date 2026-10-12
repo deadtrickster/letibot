@@ -622,7 +622,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
             me: "s-root".into(),
             stops: stops.clone(),
         })),
-        held: VecDeque::new(),
+        held: Default::default(),
         todos: None,
     };
     let child_hub = Hub::new("s-child");
@@ -637,7 +637,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
             me: "s-child".into(),
             stops: stops.clone(),
         })),
-        held: VecDeque::new(),
+        held: Default::default(),
         todos: None,
     };
 
@@ -897,7 +897,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         deliveries: None,
         // No children either: what is asserted here is the message's scoping.
         subagents: None,
-        held: VecDeque::new(),
+        held: Default::default(),
         todos: None,
     };
 
@@ -961,7 +961,7 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
         monitor_cursor: Arc::new(AtomicUsize::new(0)),
         deliveries: None,
         subagents: None,
-        held: VecDeque::new(),
+        held: Default::default(),
         todos: None,
     };
 

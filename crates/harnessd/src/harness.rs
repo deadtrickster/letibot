@@ -958,7 +958,14 @@ pub struct HubSteering {
     subagents: Option<Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
     /// Messages handed back by a failed turn, drained before the hub's queue so the
     /// next poll finds them first. See [`SteeringSource::give_back`].
-    held: VecDeque<SteeringMessage>,
+    ///
+    /// **Shared with the harness (R91.1)**, not owned by this value: a `HubSteering` is
+    /// built per round, and one that owned what it was handed back took it with it when
+    /// the round's retry, or the turn, let it go — an operator follow-up typed mid-stream
+    /// and then a provider drop or an esc-esc, R79 immediates already marked delivered,
+    /// a monitor firing whose cursor had moved. In the harness's queue they survive into
+    /// the retried round, the next round, and — after a failed turn — the next turn.
+    held: Arc<Mutex<VecDeque<SteeringMessage>>>,
     /// **This session's board**, for the one command a running turn applies to it: the
     /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
     /// at the next step boundary rather than after the turn. `None` in a test with no board.
@@ -975,7 +982,7 @@ impl HubSteering {
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
             deliveries: None,
             subagents: None,
-            held: VecDeque::new(),
+            held: Default::default(),
             todos: None,
         }
     }
@@ -1514,7 +1521,12 @@ impl SteeringSource for HubSteering {
         // intact — and it is not recorded in the trail here, because `try_next`
         // records a message when it is taken and this one was already recorded the
         // first time it was taken. See [`Self::give_back`].
-        if let Some(m) = self.held.pop_front() {
+        if let Some(m) = self
+            .held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+        {
             return Some(m);
         }
         // The head first: somebody is waiting on it. Steering-scoped, so a
@@ -1694,9 +1706,10 @@ impl SteeringSource for HubSteering {
     /// `from_operator`/`urgent` flags because it is the same `SteeringMessage`
     /// coming out again.
     fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
-        for m in msgs {
-            self.held.push_back(m);
-        }
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(msgs);
     }
 }
 
@@ -1916,6 +1929,11 @@ pub struct Harness {
     /// What the next step boundary will inject: intent findings, monitor firings.
     /// Shared with the session's [`HubSteering`].
     injected: Arc<Mutex<VecDeque<String>>>,
+    /// **What a round handed back to its steering** — shared with every [`HubSteering`]
+    /// this harness builds, so a message taken out of the hub and handed back by a
+    /// failed or interrupted round outlives the round (R91.1). See [`Harness::run_rounds`]
+    /// for what happens to it when the turn ends.
+    handed_back: Arc<Mutex<VecDeque<SteeringMessage>>>,
     /// This session's monitors, when the backend can start processes.
     monitors: Option<Arc<Monitors>>,
     /// Shared with [`HubSteering`] so a firing reaches the model exactly once,
@@ -4852,6 +4870,7 @@ impl Harness {
             meter: Default::default(),
             intent,
             injected,
+            handed_back: Default::default(),
             monitors,
             monitor_cursor,
             tool_sink,
@@ -11065,7 +11084,38 @@ impl Harness {
         &self.open_notes
     }
 
+    /// **A turn's rounds, and what is left of its steering when they end** (R91.1).
+    ///
+    /// The rounds hand back to [`Self::handed_back`] whatever a failed or interrupted round
+    /// had taken out of the hub; while the turn runs, the next round's greedy poll takes it.
+    /// When the turn is over:
+    ///
+    /// * **an interrupt is spent** — the turn it was pressed against has ended, and one
+    ///   left behind would stop the NEXT turn at its first token;
+    /// * **everything else stays**, for the next turn's greedy poll: the operator's words,
+    ///   a parent's correction, an answer the board already took, results already marked
+    ///   delivered. A failed turn read none of it, and the operator is told so.
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
+        let out = self.rounds();
+        let left = {
+            let mut held = self.handed_back.lock().unwrap_or_else(|e| e.into_inner());
+            held.retain(|m| !m.urgent);
+            held.len()
+        };
+        if left > 0 {
+            self.hub.publish(SessionEvent::Warning {
+                code: "steering_carried".into(),
+                detail: format!(
+                    "{left} message(s) that reached this turn while it ran were not read by \
+                     the model before it ended; they go in at the start of the next turn."
+                ),
+                compaction: None,
+            });
+        }
+        out
+    }
+
+    fn rounds(&mut self) -> Result<Reply, HarnessError> {
         // **The key first, before anything is drained or sent.** A provider with no key
         // is asked for one here; a refusal returns before the turn takes the operator's
         // message, so nothing they typed is spent on a turn that could not run.
@@ -11332,6 +11382,10 @@ impl Harness {
             // model already in force is a no-op and says nothing.
             let mut sent_to = self.provider_line();
             let mut tried_fallbacks: Vec<String> = Vec::new();
+            // **One steering per round, outside the retry loop (R91.1).** A failed attempt
+            // hands what it took back to this value, and the retried attempt's greedy poll
+            // must find it there; one built per pass dropped it on the floor.
+            let mut steering = self.steering();
             let outcome = loop {
                 // **A model switch the operator made while this turn was running.**
                 // Applied before the attempt that will be sent under it — and before
@@ -11354,7 +11408,6 @@ impl Harness {
                     // policy: only the counter it is measured against starts over.
                     attempt = 0;
                 }
-                let mut steering = self.steering();
                 // **Start watching BEFORE the round, so the wait itself is covered.**
                 // The host is `Some` only on the metered route — a local prefill's
                 // silence is progress, not a hang; see `SilenceWatch`.
@@ -12393,7 +12446,7 @@ impl Harness {
             // **And the session's own children, so a stop takes them with it.** See the
             // interrupt arm of `try_next`.
             subagents: Some(self.subagents.clone()),
-            held: VecDeque::new(),
+            held: self.handed_back.clone(),
             // **And the board, so the operator's answer lands mid-turn.** See the `AnswerTodo` arm.
             todos: Some(self.todos.clone()),
         }
