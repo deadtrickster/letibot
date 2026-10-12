@@ -1808,3 +1808,50 @@ fn a_prompt_queued_behind_a_reseat_says_so() {
     assert!(s.contains("queued · pull"), "{s}");
     assert!(!s.contains("queued behind"), "{s}");
 }
+
+/// **A prompt typed while the daemon is still starting says it runs once the daemon has started**
+/// (TODO R92.2) — the rano "took ages and showed nothing but the queued prompt" report. The boot's
+/// steps are a line on the tail, never rows; `daemon_started` takes both away.
+#[test]
+fn a_prompt_typed_while_the_daemon_boots_says_it_runs_once_started() {
+    let mut a = app();
+    let warn = |code: &str, detail: &str| SessionEvent::Warning {
+        code: code.into(),
+        detail: detail.into(),
+        compaction: None,
+    };
+    a.apply(ServerFrame::Event(env(
+        1,
+        warn("daemon_starting", "starting: loading the vocabulary"),
+    )));
+    typed(&mut a, "pull");
+    assert!(matches!(a.key(Key::Enter), Some(Action::Prompt(_))));
+    let s = a.screen(120, 30).join("\n");
+    assert!(s.contains("daemon starting: loading the vocabulary"), "{s}");
+    assert!(s.contains("runs when the daemon has started"), "{s}");
+    a.apply(ServerFrame::Event(env(
+        2,
+        warn(
+            "daemon_starting",
+            "starting: resuming the session (971 rows)",
+        ),
+    )));
+    let s = a.screen(120, 30).join("\n");
+    assert!(s.contains("resuming the session (971 rows)"), "{s}");
+    assert!(
+        !s.contains("loading the vocabulary"),
+        "one step at a time: {s}"
+    );
+    a.apply(ServerFrame::Event(env(
+        3,
+        warn("daemon_started", "started: the daemon takes prompts now"),
+    )));
+    let s = a.screen(120, 30).join("\n");
+    assert!(!s.contains("daemon starting"), "{s}");
+    assert!(!s.contains("runs when the daemon has started"), "{s}");
+    assert!(
+        !s.contains("takes prompts now"),
+        "the steps are not rows: {s}"
+    );
+    assert!(s.contains("queued · pull"), "{s}");
+}

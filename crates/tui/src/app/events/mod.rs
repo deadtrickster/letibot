@@ -411,6 +411,10 @@ impl App {
             if w.code == "turn_failed" {
                 continue;
             }
+            // The boot's steps are state (`App::boot_warning`), here as on the live arm.
+            if self.boot_warning(&w.code, &w.detail) {
+                continue;
+            }
             let n = Note::Warned(w);
             if holds(&mine, &n) {
                 continue;

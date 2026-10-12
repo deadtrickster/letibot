@@ -393,6 +393,7 @@ impl App {
             let unconfirmed = self.unconfirmed.clone();
             // What the daemon is busy with instead, when it has said: a named fill, or a fold
             // (`CompactionProgress`), which holds the worker the same way.
+            let booting = self.booting.is_some();
             let filling_now = self
                 .filling
                 .as_ref()
@@ -446,6 +447,9 @@ impl App {
                 // (`SessionEvent::Filling`), an untaken prompt waits behind THAT, and says so.
                 let mark = match claimed_by {
                     Some(_) => mark.to_string(),
+                    // **A prompt typed while the daemon boots runs once it has started**
+                    // (R92.2): nothing takes it before the worker runs.
+                    None if booting && mark == QUEUED => QUEUED_UNTIL_STARTED.to_string(),
                     None => queued_behind(mark, filling_now.as_deref()),
                 };
                 // **The split, at the one place the fact is known.** A remainder has a row
@@ -501,6 +505,11 @@ impl App {
         // all. The bar carries settled-vs-to-come in the **glyph** (`█`/`░`, never the
         // prefill's `▓` *being computed now*) because nothing here is being computed — so
         // the distinction survives a terminal with no colour.
+        // **The daemon is still starting** (R92.2): the step it named, until its worker runs.
+        if let Some(step) = self.booting.clone() {
+            segs.push(Seg::Owned(booting_line(&step, &cfg)));
+        }
+
         if let Some((what, unit, done, total)) = self.filling.clone()
             && total >= MIN_FILLING
         {

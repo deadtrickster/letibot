@@ -234,4 +234,21 @@ else
   echo "skip the going-daemon case: no python3 to listen on a unix socket"
 fi
 
+# **`--stop --force N` stops daemon N, not this folder's** (TODO R92.23): only `$2` was read
+# as the target, so `--force` in front of the number dropped it. One record, for another
+# folder, numbered 1 by `--ls`; nothing listens anywhere, so the stop finds no daemon THERE.
+mkdir -p "$T/other" "$T/run/letibot"
+OTHER_P="$(cd "$T/other" && pwd -P)"
+rm -f "$T/run/letibot/"*.json
+printf '{"workspace": "%s", "socket": "%s", "pid": 999999999}' "$OTHER_P" \
+  "$T/run/letibot/$(printf '%s' "$OTHER_P" | key12).sock" \
+  > "$T/run/letibot/$(printf '%s' "$OTHER_P" | key12).json"
+out="$(run "$DEFAULT_ONLY" --stop --force 1)"
+expect "--stop --force N retargets N" "$out" "no daemon for $OTHER_P"
+out="$(run "$DEFAULT_ONLY" --stop 1 --force)"
+expect "  ...as --stop N --force always did" "$out" "no daemon for $OTHER_P"
+out="$(run "$DEFAULT_ONLY" --stop 1 2)"
+expect "  ...and two targets are refused" "$out" "takes one daemon"
+rm -f "$T/run/letibot/"*.json
+
 [ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }

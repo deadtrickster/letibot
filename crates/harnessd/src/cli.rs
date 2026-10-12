@@ -61,6 +61,65 @@ use letibot_turn::Endpoint;
 
 /// Resolve the credentials and open the seat. Every refusal in here names what
 /// was looked at, because "no flowy" and "the wrong flowy" must not read alike.
+/// **The daemon's boot, said on the first session's hub** (TODO R92.2, R92.3).
+///
+/// The socket binds before the session opens — a second daemon must find out it is second before
+/// a vocabulary is loaded — and the launcher execs the head as soon as it listens. So a head is
+/// attached to a session that cannot run anything until the worker starts, sometimes for minutes
+/// (a model server probe has a 3-minute read timeout; a long transcript is re-tokenised on
+/// resume). Each step is published as `daemon_starting` (`starting: <step>`), the end as
+/// `daemon_started`, and a failure's reason as `daemon_start_failed` BEFORE the hubs close, so the
+/// head shows why instead of a closed connection. Warnings rather than a new event: they are in
+/// the hub's log, so a head that attaches mid-boot replays the step it missed, and no protocol
+/// changes.
+struct Boot {
+    hub: Option<std::sync::Arc<letibot_sessionlog::hub::Hub>>,
+}
+
+impl Boot {
+    fn new(registry: &letibot_sessionlog::registry::Registry, session_id: &str) -> Boot {
+        Boot {
+            hub: registry.get(session_id),
+        }
+    }
+
+    fn say(&self, code: &str, detail: String) {
+        if let Some(h) = &self.hub {
+            h.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: code.into(),
+                detail,
+                compaction: None,
+            });
+        }
+    }
+
+    /// The next step of the boot.
+    fn step(&self, what: impl std::fmt::Display) {
+        eprintln!("  starting: {what}");
+        self.say("daemon_starting", format!("starting: {what}"));
+    }
+
+    /// The worker is about to run: a prompt is taken from now on.
+    fn done(&self) {
+        self.say(
+            "daemon_started",
+            "started: the daemon takes prompts now".into(),
+        );
+    }
+
+    /// **Why the boot failed, on the hub, and a moment for a head to read it** before the caller
+    /// shuts the daemon down. Answers `why`, for the caller's `Err`.
+    fn failed(&self, why: String) -> String {
+        self.say(
+            "daemon_start_failed",
+            format!("the daemon did not start: {why}"),
+        );
+        // The head drains its queue on its own thread; the hubs close at `shutdown`.
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        why
+    }
+}
+
 fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, String> {
     let onboarding = letibot_flowy::Onboarding {
         addr: f.addr.clone(),
@@ -1076,6 +1135,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // wastes the load.
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
     daemon.catch_signals().map_err(|e| e.to_string())?;
+    let boot = Boot::new(&registry, &cfg.session_id);
+    boot.step("the socket is bound; starting the queues");
 
     // **The review queue and the merge queue (R61), before the worker loop takes this thread.**
     // Their own threads — a supervisor that claims each repository's lease and a worker per
@@ -1101,13 +1162,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // reports rather than a refusal to start.
     let seat = match &cfg.flowy {
         None => None,
-        Some(f) => match open_seat(f) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                daemon.shutdown();
-                return Err(format!("--flowy: {e}"));
+        Some(f) => {
+            boot.step("opening the flowy seat");
+            match open_seat(f) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    let why = boot.failed(format!("--flowy: {e}"));
+                    daemon.shutdown();
+                    return Err(why);
+                }
             }
-        },
+        }
     };
 
     // **The user's `leticode.toml`, at one fixed path beside `providers.toml`.**
@@ -1359,6 +1424,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `400 Prompt contains invalid tokens`, neither of which names the file or the
     // line that wrote it. `/props` is asked once, and only when a file set a bare
     // local alias — a start where no file spoke pays nothing for this.
+    if cfg.provider.is_none() {
+        boot.step(format!(
+            "asking the model server at {} what it serves",
+            cfg.endpoint.authority()
+        ));
+    }
     {
         let wants_served = cfg.provider.is_none()
             && cfg
@@ -1532,7 +1603,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `main_model` in leticode.toml, `[default]` in providers.toml — because which
     // vocabulary a daemon needs depends on who answers: a cloud provider with no
     // `--vocab` is the byte vocabulary, and that is only knowable once the provider is.
-    let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
+    boot.step("loading the vocabulary");
+    let parts = match Parts::load(&cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            let why = boot.failed(e.to_string());
+            daemon.shutdown();
+            return Err(why);
+        }
+    };
 
     // Captured before `cfg` and `parts` are handed to the worker: the HTTP head
     // needs the same vocabulary and dialect and none of the session state.
@@ -1545,12 +1624,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // (`crate::restart`). Before the first session opens, because that open reads the LAST
     // daemon's life to decide what to restore.
     let lifeline = crate::restart::Lifeline::start(cfg.store.clone(), registry.clone());
+    boot.step(match resume_rows(&cfg) {
+        Some(n) if n > 0 => format!("resuming the session ({n} rows)"),
+        _ => "opening the session".to_string(),
+    });
     let mut sessions =
         match Sessions::open_first_with_seat(&parts, cfg, registry.clone(), seat.clone()) {
             Ok(s) => s,
             Err(e) => {
+                let why = boot.failed(e.to_string());
                 daemon.shutdown();
-                return Err(e.to_string());
+                return Err(why);
             }
         };
     if let Some(seat) = &seat {
@@ -1758,10 +1842,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     .spawn(move || crate::httphead::serve(l, p, c))
                     .map_err(|e| format!("starting the http head: {e}"))?;
             }
-            Err(e) => return Err(format!("--http {addr}: {e}")),
+            Err(e) => {
+                let why = boot.failed(format!("--http {addr}: {e}"));
+                daemon.shutdown();
+                return Err(why);
+            }
         }
     }
 
+    boot.done();
     eprintln!("  waiting for a head. Ctrl-C to stop.");
     daemon.run(&mut sessions, |session, cmd, outcome| match outcome {
         // The session is named on every line: with more than one of them, "who did
@@ -1832,6 +1921,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 /// A `SELECT` through `Store::connection`, which is the escape hatch that exists
 /// for exactly this: the append-only guarantees are triggers, not a property of
 /// whoever holds the connection, so a read here cannot weaken them.
+/// **How many rows the first session's resume will read** — for the boot step's words; `None`
+/// with no store or no such session (a new one).
+fn resume_rows(cfg: &Config) -> Option<u32> {
+    let store = letibot_tokencore::store::Store::open(cfg.store.as_ref()?).ok()?;
+    let t = store.current_transcript_id(&cfg.session_id).ok()??;
+    store.item_count(&t).ok()
+}
+
 fn stored_sessions(cfg: &Config) -> Option<u64> {
     let path = cfg.store.as_ref()?;
     let store = letibot_tokencore::store::Store::open(path).ok()?;

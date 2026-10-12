@@ -1491,6 +1491,12 @@ pub struct App {
     /// stays. See [`filling_line`] for why this is the daemon's count and not a count of
     /// the rows still lacking a body.
     pub(crate) filling: Option<(String, String, u64, u64)>,
+    /// **The daemon is still starting** (TODO R92.2): the last `daemon_starting` step it named
+    /// (`starting: loading the vocabulary`, `starting: resuming the session (N rows)` …), until
+    /// `daemon_started`. The socket listens before the worker runs, so a head can be attached
+    /// to a session that cannot run anything yet; this is what says so, and what labels a
+    /// prompt typed meanwhile as running once the daemon has started.
+    pub(crate) booting: Option<String>,
     /// **What the daemon is holding back from the model right now** — `(jobs, subagents,
     /// failed)` from the last [`SessionEvent::HeldResults`](letibot_sessionlog::SessionEvent::HeldResults),
     /// `None` once they are all zero. The operator, 2026-10-11: *"what would be useful is a
@@ -1810,6 +1816,7 @@ impl App {
             cursor: None,
             bulk: None,
             filling: None,
+            booting: None,
             compacting: None,
             held: None,
             auto_compact_off: None,

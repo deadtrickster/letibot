@@ -77,6 +77,9 @@ struct Args {
     theme_template: bool,
     /// How long `--interrupt-all` waits for the turns to end.
     wait: u64,
+    /// **What the interrupt is recorded as** (`--reason`): the command that sent it, so a plain
+    /// `letibot --stop` is not written into the transcript as a forced one (TODO R92.21).
+    reason: String,
     /// Answer "is there a daemon here, and does it speak this build's protocol" and
     /// exit. No screen, no snapshot, no frame — see [`probe`].
     probe: bool,
@@ -111,6 +114,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         version: false,
         theme_template: false,
         wait: 30,
+        reason: "letibot-tui --interrupt-all".into(),
         probe: false,
     };
     let mut it = args.iter().cloned();
@@ -141,6 +145,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             // `letibot --ls`, which draws the byobu-shaped view across folders.
             "--list-sessions" => a.list_sessions = true,
             "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
+            "--reason" => a.reason = next()?,
             "-V" | "--version" => a.version = true,
             // Every role with its default look, as a theme file reads them: the starting point
             // for `~/.config/letibot/themes/NAME.toml`. See `rano::theme`.
@@ -157,7 +162,8 @@ fn usage() -> String {
      \x20           [--since SEQ] [--identity NAME]\n\
      \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
      \x20           [--body-lines N] [--reasoning-lines N]\n\
-     \x20           [--interrupt-all [--wait SECS]] [--list-sessions] [--theme-template]"
+     \x20           [--interrupt-all [--wait SECS] [--reason TEXT]] [--list-sessions]\n\
+     \x20           [--theme-template]"
         .into()
 }
 
@@ -535,15 +541,21 @@ fn one_line(title: &str) -> String {
 /// `--interrupt-all`: [`interrupt_turns`], said on stdout the way `scripts/letibot` has
 /// always read it.
 fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    match interrupt_turns(&args.socket, Duration::from_secs(args.wait.max(1)), |id| {
-        println!("  {id} · interrupted")
-    })? {
+    match interrupt_turns(
+        &args.socket,
+        Duration::from_secs(args.wait.max(1)),
+        &args.reason,
+        |id| println!("  {id} · interrupted"),
+    )? {
         Interrupted::NoSessions => println!("the daemon holds no sessions"),
         Interrupted::NoneRunning => println!("no turns in flight"),
         Interrupted::Ended(_) => println!("all turns stopped"),
     }
     Ok(())
 }
+
+/// How long one ask for the session list may take, on its own clock (see [`interrupt_turns`]).
+const SESSION_LIST_WAIT: Duration = Duration::from_secs(5);
 
 /// What [`interrupt_turns`] found and did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -566,14 +578,21 @@ pub enum Interrupted {
 /// abort is recorded like any other, and the daemon is left to a plain SIGTERM, which
 /// it can now take promptly because nothing is mid-turn.
 ///
-/// `each` is told every session id as its interrupt goes out. An `Err` is a daemon
-/// that could not be asked, or turns still running when `wait` ran out.
+/// `each` is told every session id as its interrupt goes out. `reason` is what the abort is
+/// recorded as — the command that asked. An `Err` is a daemon that could not be asked, or turns
+/// still running when `wait` ran out.
 pub fn interrupt_turns(
     socket: &std::path::Path,
     wait: Duration,
+    reason: &str,
     mut each: impl FnMut(&str),
 ) -> Result<Interrupted, Box<dyn std::error::Error>> {
     let deadline = Instant::now() + wait;
+    // **Each question gets its own time to be answered** (R92.21). The list was asked with the
+    // OVERALL deadline, so the ask after it had passed timed out at once and the intended
+    // "N turn(s) still running" could never be printed — the operator read "timed out waiting for
+    // the session list" instead.
+    let ask_by = || Instant::now() + SESSION_LIST_WAIT;
     let held = discover(socket)?;
     if held.is_empty() {
         return Ok(Interrupted::NoSessions);
@@ -586,7 +605,7 @@ pub fn interrupt_turns(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || pump(reader, tx));
 
-    let sessions = ask_sessions(&mut client, &rx, deadline)?;
+    let sessions = ask_sessions(&mut client, &rx, ask_by())?;
     let running: Vec<SessionBrief> = sessions.into_iter().filter(|s| s.status.running).collect();
     if running.is_empty() {
         return Ok(Interrupted::NoneRunning);
@@ -595,19 +614,19 @@ pub fn interrupt_turns(
         client.switch(&s.session_id, 0)?;
         // `expected_seq = 0` is "no expectation" at the hub — never stale —
         // which is what a client that is not following the stream gets to say.
-        client.interrupt(0, "letibot --stop --force")?;
+        client.interrupt(0, reason)?;
         each(&s.session_id);
     }
     loop {
         if Instant::now() >= deadline {
-            let left = ask_sessions(&mut client, &rx, deadline)?
+            let left = ask_sessions(&mut client, &rx, ask_by())?
                 .into_iter()
                 .filter(|s| s.status.running)
                 .count();
             return Err(format!("{left} turn(s) still running after {}s", wait.as_secs()).into());
         }
         std::thread::sleep(Duration::from_millis(400));
-        if !ask_sessions(&mut client, &rx, deadline)?
+        if !ask_sessions(&mut client, &rx, ask_by())?
             .into_iter()
             .any(|s| s.status.running)
         {
@@ -680,11 +699,17 @@ pub fn force_stop(t: &ForceTarget, signal: &Signaller) -> crate::app::ForceOutco
     let (tx, rx) = std::sync::mpsc::channel();
     let socket = t.socket.clone();
     std::thread::spawn(move || {
-        let r = interrupt_turns(&socket, FORCE_INTERRUPT_WAIT, |_| {}).map_err(|e| e.to_string());
+        let r = interrupt_turns(
+            &socket,
+            FORCE_INTERRUPT_WAIT,
+            "the head's exit-and-stop (force)",
+            |_| {},
+        )
+        .map_err(|e| e.to_string());
         let _ = tx.send(r);
     });
     said.push(
-        match rx.recv_timeout(FORCE_INTERRUPT_WAIT + Duration::from_secs(1)) {
+        match rx.recv_timeout(FORCE_INTERRUPT_WAIT + SESSION_LIST_WAIT + Duration::from_secs(1)) {
             Ok(Ok(Interrupted::NoSessions)) => "it held no sessions to interrupt".into(),
             Ok(Ok(Interrupted::NoneRunning)) => "no turns were in flight".into(),
             Ok(Ok(Interrupted::Ended(n))) => format!("{n} turn(s) interrupted and ended"),
@@ -1122,8 +1147,39 @@ mod probe_tests {
             version: false,
             theme_template: false,
             wait: 30,
+            reason: "test".into(),
             probe: true,
         }
+    }
+
+    /// **A turn that does not end in time is said as one, under the command that asked**
+    /// (TODO R92.21). The list used to be asked with the deadline already past, so this answered
+    /// "timed out waiting for the session list"; and every interrupt was recorded as
+    /// `letibot --stop --force`.
+    #[test]
+    fn a_turn_still_running_at_the_deadline_is_counted_and_the_reason_is_the_callers() {
+        let (hub, h) = start("running");
+        hub.publish(letibot_sessionlog::SessionEvent::TurnStarted {
+            turn_id: "t1".into(),
+            model: "m".into(),
+            ledger_head: String::new(),
+            began_ms: None,
+        });
+        let mut told = Vec::new();
+        let r = interrupt_turns(h.path(), Duration::from_secs(1), "letibot --stop", |id| {
+            told.push(id.to_string())
+        });
+        let e = r.expect_err("nothing here ends the turn").to_string();
+        assert_eq!(e, "1 turn(s) still running after 1s");
+        assert_eq!(told, vec!["s".to_string()]);
+        let mut reasons = Vec::new();
+        while let Some(c) = hub.try_command() {
+            if let letibot_sessionlog::CommandKind::Interrupt { reason } = c.kind {
+                reasons.push(reason);
+            }
+        }
+        assert_eq!(reasons, vec!["letibot --stop".to_string()]);
+        h.shutdown();
     }
 
     /// A live daemon is a `0`, which is what the launcher reads as "there is one

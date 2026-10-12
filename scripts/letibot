@@ -32,7 +32,8 @@
 #                same two frames the ctrl-s picker sends. Restarting the daemon
 #                instead would take down every other session on the box to open one.
 #
-# The daemon logs to ~/logs/harnessd.log; the socket lives in $XDG_RUNTIME_DIR.
+# Each folder's daemon logs to ~/logs/harnessd-<folder hash>.log (~/logs/harnessd.log names
+# which file a start went to); the socket lives in $XDG_RUNTIME_DIR.
 
 set -euo pipefail
 
@@ -265,7 +266,12 @@ KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
 STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
-LOG="${LETIBOT_LOG:-$HOME/logs/harnessd.log}"
+# **Each folder's daemon logs to its own file** (TODO R92.3), keyed like its socket. One file
+# shared by every folder's daemon meant a boot failure's reason sat among other daemons' lines,
+# and the "did not come up" tail below could show another folder's. The shared file
+# (`SHARED_LOG`) still gets one line per start naming where that daemon logs.
+SHARED_LOG="$HOME/logs/harnessd.log"
+LOG="${LETIBOT_LOG:-$HOME/logs/harnessd-$KEY.log}"
 
 # THE DAEMON NEEDS NO GPU AND WAS TAKING 1.1 GB OF IT.
 #
@@ -346,7 +352,8 @@ already up, then attaches the TUI head to it.
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
   letibot --glm               GLM's dialect+vocab; providers.toml names the address
   letibot --stop              stop the daemon
-  letibot --stop --force      interrupt all in-flight turns, then stop
+  letibot --stop [N|DIR] [--force]   interrupt its turns, stop it; --force SIGKILLs one still there after 5s
+  letibot --stop --all [--force]     the same for every folder's daemon
   letibot --status            is it up, and on what
 
   letibot                     the leticode seat: opencode's tools and bash, on this host
@@ -395,7 +402,8 @@ LETIBOT_GRANTS_RO LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS
 LETIBOT_ENDPOINT — the manual override: the address for this run's model server,
                    winning over the [model."…"] lookup in providers.toml
 
-The daemon logs to ~/logs/harnessd.log. The model server's address comes from
+The daemon logs to ~/logs/harnessd-<folder hash>.log (one per folder; each start
+is named in ~/logs/harnessd.log). The model server's address comes from
 providers.toml — the [model."…"] block whose model matches this run's (the flag,
 or the default); LETIBOT_ENDPOINT overrides it by hand. Model choice is detected
 from what that server has loaded (letibot --status reports it); explicit
@@ -1227,6 +1235,7 @@ retarget() {
   KEY="$(printf '%s' "$WORKSPACE" | sha12)"
   SOCKET="$RUNDIR/$KEY.sock"
   RECORD="$RUNDIR/$KEY.json"
+  [ -n "${LETIBOT_LOG:-}" ] || LOG="$HOME/logs/harnessd-$KEY.log"
 }
 # **Is this pid gone, waited for, bounded.** The one place the launcher decides
 # whether a daemon actually stopped, so the two verbs that stop one cannot disagree.
@@ -1510,9 +1519,53 @@ SESSIONS_EOF
     exit 0 ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
-    # still this one's. Numbering comes from `--ls`.
-    [ "${2:-}" = "--all" ] || [ "${2:-}" = "--force" ] || retarget "${2:-}"
-    if [ "${2:-}" = "--all" ]; then
+    # still this one's. Numbering comes from `--ls`. **The flags go anywhere after it**
+    # (TODO R92.23): `--stop --force 3` stopped THIS folder's daemon, because only `$2` was
+    # read as the target.
+    STOP_ALL=0
+    STOP_AT=""
+    shift
+    for a in "$@"; do
+      case "$a" in
+        --force) ;;
+        --all) STOP_ALL=1 ;;
+        *)
+          [ -z "$STOP_AT" ] || die "--stop takes one daemon, not both $STOP_AT and $a"
+          STOP_AT="$a" ;;
+      esac
+    done
+    [ "$STOP_ALL" = 1 ] || retarget "$STOP_AT"
+    # What the interrupt is recorded as in each session's transcript: this command.
+    STOP_REASON="letibot --stop"
+    [ "$STOP_ALL" = 1 ] && STOP_REASON="$STOP_REASON --all"
+    [ "$FORCE" = 1 ] && STOP_REASON="$STOP_REASON --force"
+    [ -n "$STOP_AT" ] && STOP_REASON="$STOP_REASON $STOP_AT"
+    # interrupt SOCKET -- abort the daemon's running turns; on failure INTR_FAILED holds why.
+    # Not `|| true` (R92.21): a failed interrupt is why a daemon then goes on past SIGTERM,
+    # and the sentence after it has to say so instead of blaming the signal.
+    INTR_FAILED=""
+    interrupt() {
+      local out
+      INTR_FAILED=""
+      if out="$("$BIN/letibot-tui" --socket "$1" --interrupt-all --reason "$STOP_REASON" 2>&1)"; then
+        [ -z "$out" ] || printf '%s\n' "$out"
+      else
+        INTR_FAILED="$(printf '%s' "$out" | sed 's/^letibot-tui: //' | tail -1)"
+        [ -n "$INTR_FAILED" ] || INTR_FAILED="letibot-tui --interrupt-all failed"
+        echo "letibot: the interrupt did not go through: $INTR_FAILED" >&2
+      fi
+    }
+    # not_stopped LINE PID ADVICE -- the sentence for a daemon still there after SIGTERM.
+    not_stopped() {
+      if [ -n "$INTR_FAILED" ]; then
+        echo "NOT stopped: $1 (pid $2) is still running 5s after SIGTERM. Its turns were not" >&2
+        echo "  interrupted ($INTR_FAILED), so it is most likely finishing one before it exits." >&2
+      else
+        echo "NOT stopped: $1 (pid $2) is ignoring SIGTERM after 5s." >&2
+      fi
+      echo "  $3    sends SIGKILL; the record is kept until it is gone" >&2
+    }
+    if [ "$STOP_ALL" = 1 ]; then
       # **And the exit status agrees with the words**, as the single-target path's
       # does: a run that said `NOT stopped` and exited 0 would be a script a caller
       # cannot branch on, which is the same defect one layer out.
@@ -1522,16 +1575,25 @@ SESSIONS_EOF
         pid="$(json_num pid "$r")"
         ws="$(json_str workspace "$r")"
         if pid_alive "$pid" && pid_argv "$pid" | head -1 | grep -q harnessd; then
+          # The turns first, as for one daemon (R92.23: `--all` never interrupted).
+          sock="$(json_str socket "$r")"
+          if [ -n "$sock" ] && socket_is_listening "$sock"; then interrupt "$sock"; else INTR_FAILED=""; fi
           # **Signal, then WAIT, then say it.** The exit status of `kill` says the
           # signal was delivered and nothing about whether the process took it —
           # which is the whole of the 2026-09-16 incident, one verb over.
           kill "$pid" 2>/dev/null || true
-          if wait_gone "$pid"; then
+          wait_gone "$pid" || true
+          if pid_alive "$pid" && [ "$FORCE" = 1 ]; then
+            kill -9 "$pid" 2>/dev/null || true
+            wait_gone "$pid" 4 || true
+          fi
+          if ! pid_alive "$pid"; then
             echo "stopped $ws (pid $pid)"
             rm -f "$r"
           else
-            echo "NOT stopped: $ws (pid $pid) is ignoring SIGTERM after 5s." >&2
-            echo "  letibot --stop --force    sends SIGKILL; the record is kept until it is gone" >&2
+            # The advice acts on ALL of them, as this run did — `--stop --force` alone is
+            # this folder's daemon only.
+            not_stopped "$ws" "$pid" "letibot --stop --all --force"
             all_failed=1
           fi
         else
@@ -1554,7 +1616,7 @@ SESSIONS_EOF
       # The daemon's own half (`Registry::close`) interrupts what it holds when the signal
       # reaches it, which is what covers `--stop --all` and every stop this script did not
       # make — a ctrl-c, a systemd unit, another terminal. This is the first of two doors.
-      "$BIN/letibot-tui" --socket "$SOCKET" --interrupt-all || true
+      interrupt "$SOCKET"
       # "stopped" is said AFTER the process is gone, not after the signal is
       # sent, and the record is removed only then. Measured 2026-09-16: a daemon
       # wedged on a llama-server that had gone away swallowed SIGTERM, this
@@ -1568,8 +1630,7 @@ SESSIONS_EOF
         wait_gone "$p" 4 || true
       fi
       if pid_alive "$p"; then
-        echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
-        echo "  letibot --stop --force    sends SIGKILL; the record is kept until it is gone" >&2
+        not_stopped "$line" "$p" "letibot --stop --force${STOP_AT:+ $STOP_AT}"
         exit 1
       fi
       echo "stopped $line"
@@ -1825,7 +1886,7 @@ if live && [ -n "$ENDPOINT" ]; then
   fi
 fi
 
-mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
+mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
 
 # One-shot: no daemon, no TUI. Useful in scripts and for a quick question. The
 # socket is its own, so two one-shots side by side do not fight over the
@@ -1923,6 +1984,9 @@ if ! live; then
       ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
       >>"$LOG" 2>&1 </dev/null &
   DPID=$!
+  [ "$LOG" = "$SHARED_LOG" ] ||
+    printf '%s letibot: harnessd pid %s for %s logs to %s\n' "$(date '+%F %T')" "$DPID" "$WORKSPACE" "$LOG" \
+      >>"$SHARED_LOG" 2>/dev/null || true
   # The banner names what will answer the turns, not the local vocab's model — see
   # `answers_now`.
   echo "letibot: no harnessd for $WORKSPACE - starting one (role $ROLE, model $(answers_now), pid $DPID)" >&2

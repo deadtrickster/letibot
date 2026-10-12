@@ -6,7 +6,29 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::view::Warned;
 use letibot_ui::text::without_control;
 
+/// The daemon's boot steps (`cli::Boot`): `daemon_starting` names the step, `daemon_started`
+/// ends it.
+pub(crate) const DAEMON_STARTING: &str = "daemon_starting";
+pub(crate) const DAEMON_STARTED: &str = "daemon_started";
+
 impl App {
+    /// **A boot step, taken as the state it is** — `true` when `code` was one, so the caller
+    /// draws no row for it. The live arm and the snapshot both come here, so a head that attaches
+    /// mid-boot (the hub's log replays them) and one that watched it agree.
+    pub(crate) fn boot_warning(&mut self, code: &str, detail: &str) -> bool {
+        match code {
+            DAEMON_STARTING => {
+                self.booting = Some(detail.to_string());
+                true
+            }
+            DAEMON_STARTED => {
+                self.booting = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// **A warning the daemon raised.** One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_warning(&mut self, e: SessionEvent, ts: u64) -> Disposition {
@@ -20,6 +42,12 @@ impl App {
                 // Counted, not dropped: the status line's `filtered` is what makes
                 // "I chose not to show this" different from "nothing happened".
                 if code == "turn_failed" {
+                    return Disposition::Filtered;
+                }
+                // **The daemon's boot, as a state and not as rows** (R92.2) — the line on the
+                // tail and the label on a queued prompt; the steps are not the conversation.
+                if self.boot_warning(&code, &detail) {
+                    self.redraw = true;
                     return Disposition::Filtered;
                 }
                 // **R16, the two halves of a fork.** `auto_compact` is published
