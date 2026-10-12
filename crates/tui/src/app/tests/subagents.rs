@@ -393,6 +393,12 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
     a.open.push(decision_with(&[
         letibot_sessionlog::event::OptionKind::AllowOnce,
     ]));
+    // The first Esc puts the card away (R90.5) and the second is kept from leaving with it
+    // unanswered (R90.15) — and neither arms the interrupt.
+    assert_eq!(a.key(Key::Esc), None);
+    assert_eq!(a.session_id, "s-sub-1");
+    assert!(a.open.is_empty() && a.away.len() == 1, "put away");
+    a.clock(1_100);
     assert_eq!(a.key(Key::Esc), None);
     assert_eq!(a.session_id, "s-sub-1");
     let screen = a.screen(120, 30).join("\n");

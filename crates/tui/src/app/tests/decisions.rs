@@ -1150,7 +1150,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
     );
     assert!(expired.contains("it RUNS anyway"), "{expired}");
     assert!(
-        !expired.contains("-14s") && !expired.contains("-"),
+        !expired.contains("-14s") && !expired.contains(" -1"),
         "a countdown below zero is a rendering fault: {expired}"
     );
 

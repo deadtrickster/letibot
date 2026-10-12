@@ -264,12 +264,23 @@ impl App {
     /// **The words go with the card.** While a question is up the composer is its field, so
     /// what is typed there is the card's draft: it is taken off the composer (which would
     /// otherwise send it to the model as a prompt) and put back by alt-a with the highlight.
+    ///
+    /// **A permission card is put away the same way** (R90.5): Esc used to fall through it — it
+    /// closed a pane behind the card, or reached the editor and armed the Esc-Esc interrupt, so a
+    /// second Esc interrupted the very turn waiting on the card. One meaning for Esc on every
+    /// decision card: step away, answer nothing, alt-a brings it back.
     pub(crate) fn put_question_away(&mut self) {
-        if !self.open.first().is_some_and(|d| d.kind == "question") {
+        let Some(d) = self.open.first() else {
             return;
-        }
+        };
+        let question = d.kind == "question";
         self.stash_front_card();
-        self.say("put away — nothing was sent, it is still waiting on you · alt-a brings it back");
+        self.say(if question {
+            "put away — nothing was sent, it is still waiting on you · alt-a brings it back"
+        } else {
+            "put away — nothing was answered, the call is still waiting on you · alt-a brings it \
+             back"
+        });
         self.redraw = true;
     }
 
@@ -382,6 +393,14 @@ impl App {
     /// in board order, which is what alt-a always opened. Todo rows carry no time of asking, so
     /// board order is the only order they have.
     pub(crate) fn bring_back_question(&mut self) {
+        // **The prompt card put away comes back first** (R90.5): it is the operator's own
+        // command blocked on a line, and alt-a was no way back to it at all — only `!send`.
+        if self.prompt.is_some() && self.prompt_away {
+            self.prompt_away = false;
+            self.prompt_buf.clear();
+            self.redraw = true;
+            return;
+        }
         if let Some(d) = self.open.first()
             && d.kind == "question"
             && !d.req_id.starts_with(TODO_ASK)

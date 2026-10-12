@@ -387,18 +387,33 @@ fn alt_a_brings_back_the_models_question_first_then_a_put_away_row() {
     assert_eq!(a.editor.text(), "yes");
 }
 
-/// **A permission card is not a question**: Esc does not put it away.
+/// **A permission card is put away by Esc too** (R90.5) — its Esc used to fall through, close a
+/// pane behind it or arm the Esc-Esc interrupt — and alt-a brings it back.
 #[test]
-fn esc_leaves_a_permission_card_where_it_is() {
-    use letibot_sessionlog::event::OptionKind;
+fn esc_puts_a_permission_card_away_and_alt_a_brings_it_back() {
     let mut a = app();
-    a.open.push(decision_with(&[
-        OptionKind::AllowOnce,
-        OptionKind::RejectOnce,
-    ]));
-    a.key(Key::Esc);
-    assert_eq!(a.open.len(), 1);
-    assert!(a.away.is_empty());
+    a.session_id = "s".into();
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(2, testing::requested("r1", "rm"))));
+    a.key(Key::Down);
+    a.clock(1_000);
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(a.open.is_empty());
+    assert_eq!(a.away.len(), 1);
+    assert!(line(&a).contains("PERMISSION PUT AWAY"), "{}", line(&a));
+    a.clock(1_200);
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(
+        !a.take_actions()
+            .iter()
+            .any(|x| matches!(x, Action::Interrupt(_))),
+        "the put-away Esc armed the interrupt"
+    );
+    a.key(Key::AltA);
+    assert_eq!(a.open[0].req_id, "r1");
+    assert_eq!(a.sel, 1, "with the row it was left on");
+    let card = a.decision_lines(&a.open[0].clone(), 120).join("\n");
+    assert!(card.contains("esc puts it away"), "{card}");
 }
 
 /// **The cards and the hint bar say how to step away** — `esc puts it away — alt-a brings it back`.

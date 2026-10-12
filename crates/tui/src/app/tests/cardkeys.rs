@@ -190,3 +190,41 @@ fn a_question_without_choices_offers_no_arrows_and_an_empty_choice_is_named() {
     let card = b.decision_lines(&b.open[0].clone(), 80).join("\n");
     assert!(card.contains("▸ 1  (an empty answer)"), "{card}");
 }
+
+// ───────────────────── R90.5: the prompt card has a way back ─────────────────────
+
+/// Esc puts the prompt card away; a resident line says the command waits, and alt-a brings the
+/// card back.
+#[test]
+fn the_prompt_card_put_away_has_a_resident_line_and_alt_a_brings_it_back() {
+    let mut a = app();
+    ask(
+        &mut a,
+        1,
+        SessionEvent::PromptRequested {
+            req_id: "p1".into(),
+            job: "j1".into(),
+            command: "sudo apt install mc".into(),
+            question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
+        },
+    );
+    a.key(Key::Esc);
+    assert!(a.prompt_away);
+    let line = a.waiting_line(200).join("");
+    assert!(
+        line.contains("YOUR COMMAND IS WAITING") && line.contains("alt-a"),
+        "{line}"
+    );
+    a.key(Key::AltA);
+    assert!(!a.prompt_away, "alt-a brought the card back");
+    assert!(a.waiting_line(200).is_empty());
+    typed(&mut a, "y");
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::PromptAnswer {
+            req_id: "p1".into(),
+            line: "y".into()
+        })
+    );
+}

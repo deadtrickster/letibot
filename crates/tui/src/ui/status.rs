@@ -136,6 +136,20 @@ impl App {
     /// let the card stay"*, and the time to think is not unlimited. A todo row's card put away
     /// needs no line of its own: the row is still on the board, and the line below names it.
     pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
+        // **The operator's own command, its card put away** (R90.5) — the run is blocked on a
+        // line and nothing on the screen said so once Esc had taken the card down.
+        if let Some(p) = self.prompt.as_ref().filter(|_| self.prompt_away) {
+            let asks = p
+                .question
+                .as_deref()
+                .map(|q| format!(" asks \"{}\"", q.trim()))
+                .unwrap_or_default();
+            let said = format!(
+                "YOUR COMMAND IS WAITING: `{}`{asks} — alt-a brings the card back, or `!send LINE`",
+                p.command.trim()
+            );
+            return row_strings(&facts::warning(&said, w), self.cfg.palette());
+        }
         let asks = self.operator_asks();
         if let Some(a) = self
             .away
@@ -144,12 +158,14 @@ impl App {
         {
             use letibot_sessionlog::event::OnTimeout;
             let d = &a.decision;
+            let question = d.kind == "question";
             let clock = match d.deadline {
                 Some(at) => format!(
                     " — {} left, then {}",
                     time_left(at.saturating_sub(self.now_ms)),
                     match d.on_timeout {
-                        OnTimeout::Deny => "the model goes on without your answer",
+                        OnTimeout::Deny if question => "the model goes on without your answer",
+                        OnTimeout::Deny => "it is denied",
                         OnTimeout::Allow => "it runs anyway",
                         OnTimeout::Ask => "the guard model decides",
                     }
@@ -162,7 +178,8 @@ impl App {
                 n => format!(" (+{n} todo questions)"),
             };
             let said = format!(
-                "QUESTION PUT AWAY: \"{}\"{clock}{more} — alt-a brings it back",
+                "{} PUT AWAY: \"{}\"{clock}{more} — alt-a brings it back",
+                if question { "QUESTION" } else { "PERMISSION" },
                 d.summary.trim()
             );
             return row_strings(&facts::warning(&said, w), self.cfg.palette());

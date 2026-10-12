@@ -283,8 +283,8 @@ impl App {
                     self.prompt_away = true;
                     self.redraw = true;
                     self.say(
-                        "card put away — the command is still waiting, and \
-                              `!send LINE` answers it",
+                        "card put away — the command is still waiting · alt-a brings it back, \
+                         and `!send LINE` answers it",
                     );
                     return ControlFlow::Break(None);
                 }
@@ -393,8 +393,9 @@ impl App {
                 // is not handed to the editor**: a second Esc must not interrupt the turn the
                 // operator only meant to step away from — the trap a subagent's Esc already fell
                 // into (*"pressed esc and it didnt work, pressed second time - subagent stopped
-                // lol"*). A permission card is not a question and keeps its keys as they were.
-                Key::Esc if self.open[0].kind == "question" => {
+                // lol"*). **A permission card is put away the same way** (R90.5): its Esc fell
+                // through and armed exactly that interrupt.
+                Key::Esc => {
                     self.put_question_away();
                     return ControlFlow::Break(None);
                 }

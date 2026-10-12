@@ -100,14 +100,15 @@ impl App {
                 ),
                 w,
             )));
-            // **And the way to step away from it without answering** — the operator: *"i want
-            // to be able to escape the selection card. sometimes i need time to think and just
-            // let the card stay"*. Its own row so a narrow card trims the line above, not this.
-            choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
-                &format!("  {PUT_AWAY_HINT}"),
-                w,
-            )));
         }
+        // **And the way to step away from it without answering** — the operator: *"i want to
+        // be able to escape the selection card. sometimes i need time to think and just let the
+        // card stay"*. Its own row so a narrow card trims the line above, not this. On every
+        // decision card, because Esc means the same on every one (R90.5).
+        choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
+            &format!("  {PUT_AWAY_HINT}"),
+            w,
+        )));
         (row_strings(&content, p), row_strings(&choices, p))
     }
 

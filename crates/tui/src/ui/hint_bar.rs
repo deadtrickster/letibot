@@ -71,7 +71,7 @@ impl App {
             Some(d) if d.kind == "question" => {
                 format!("{LADDER_HINT} · or type your own · {PUT_AWAY_HINT}")
             }
-            _ => format!("{LADDER_HINT} · or type an option · /help"),
+            _ => format!("{LADDER_HINT} · or type an option · {PUT_AWAY_HINT}"),
         }
     }
 

@@ -445,6 +445,22 @@ impl App {
                 self.redraw = true;
                 return None;
             }
+            // **A card put away here keeps the operator here too** (R90.15): the parent's
+            // waiting line is filtered to the parent's session, so a child's question left
+            // behind with its deadline would be invisible from up there.
+            let sid = self.session_id.clone();
+            if self
+                .away
+                .iter()
+                .any(|a| a.session_id == sid && !a.is_todo())
+            {
+                self.say(
+                    "a decision put away is waiting in this subagent — alt-a brings it back; \
+                     answer it, then esc goes up",
+                );
+                self.redraw = true;
+                return None;
+            }
             // The rows the operator climbed out of are the ones the pane shows, so the
             // pane opens and the cursor lands on the child they came from — the row is
             // found by id once the parent's `Hello` has rebuilt the list
