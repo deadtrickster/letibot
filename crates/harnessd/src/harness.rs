@@ -11780,7 +11780,21 @@ impl Harness {
             // Persisted with the ledger beside the count, so a restart recovers the
             // pair above instead of pairing the count with whatever ledger it has
             // then. See the gate in `Harness::open`.
-            self.persist_context(&ok.metrics, rendered_at)?;
+            //
+            // **Not fatal (R91.6).** The row is a measurement, and the round it measures is
+            // already in the ledger and the store: a busy store that refused it used to end
+            // the whole turn. Said, and the next round writes a fresh one.
+            if let Err(e) = self.persist_context(&ok.metrics, rendered_at) {
+                eprintln!("  store: {e}");
+                self.hub.publish(SessionEvent::Warning {
+                    code: "context_not_stored".into(),
+                    detail: format!(
+                        "this round's context size was not written to the session row: {e}. \
+                         The turn goes on; the next round's measurement replaces it."
+                    ),
+                    compaction: None,
+                });
+            }
             truncated |= ok.truncated;
             // A steering message injected at the step boundary is already in the
             // transcript, and its own `TranscriptAppended` came through the same
@@ -12708,13 +12722,17 @@ impl Harness {
         if v == self.todos_version {
             return Ok(());
         }
-        self.todos_version = v;
         let items = self.todos.snapshot();
-        if let Some(store) = &self.store {
-            store
-                .put_todos(&self.cfg.session_id, &items)
-                .map_err(|e| HarnessError::Store(format!("todos: {e}")))?;
+        // **Patient (R91.6), and only then marked written (R91.7).** The version was recorded
+        // BEFORE the write, so a write that failed left the next flush seeing "nothing moved"
+        // and returning `Ok` without writing — and a restart then reverted the operator's
+        // answers, `wait_on` edges and consumed conditions. Now a busy store is waited out as
+        // the transcript's rows are, and the version moves only once the store has the board.
+        if self.store.is_some() {
+            let session = self.cfg.session_id.clone();
+            self.store_patiently("todos", |store| store.put_todos(&session, &items))?;
         }
+        self.todos_version = v;
         // **AND SAY IT LOUDLY WHEN A PERSON STARTS OR STOPS BEING WAITED ON** — *"the heads show
         // loud notification that im waited"*. Compared across flushes, so a re-publish of the same
         // board says nothing and each question is announced once when it is asked and once when it
@@ -12870,6 +12888,60 @@ impl Harness {
 
     fn persist(&mut self) -> Result<(), HarnessError> {
         self.persist_reporting(&mut |_, _| {})
+    }
+
+    /// **One store write, with the patience [`Self::persist_reporting`] has** (R91.6): the
+    /// store's own minute of busy retries, and past that a wait — said on the session's log
+    /// every two minutes — until the store frees, the session closes, or
+    /// [`STORE_BUSY_PATIENCE`] runs out counted from the first busy failure. Anything that is
+    /// not busy is returned at once. `f` must be safe to run again: a busy write committed
+    /// nothing.
+    fn store_patiently<T>(
+        &self,
+        what: &str,
+        mut f: impl FnMut(&Store) -> letibot_tokencore::store::Result<T>,
+    ) -> Result<T, HarnessError> {
+        let Some(store) = &self.store else {
+            return Err(HarnessError::Store(format!(
+                "{what}: this session has no store"
+            )));
+        };
+        let mut first_busy: Option<std::time::Instant> = None;
+        let mut said_at: Option<std::time::Instant> = None;
+        loop {
+            match f(store) {
+                Ok(t) => return Ok(t),
+                Err(e) if e.is_busy() => {
+                    let since = *first_busy.get_or_insert_with(std::time::Instant::now);
+                    let waited = since.elapsed();
+                    if waited >= STORE_BUSY_PATIENCE {
+                        return Err(HarnessError::Store(format!(
+                            "{what}: {e} — still busy after waiting {}s",
+                            waited.as_secs()
+                        )));
+                    }
+                    if said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(120)) {
+                        said_at = Some(std::time::Instant::now());
+                        self.hub.publish(SessionEvent::Warning {
+                            code: "store_busy_wait".into(),
+                            detail: format!(
+                                "the session store is busy (`{e}`) — another daemon holds its \
+                                 write lock. The {what} write is kept in memory and made when it \
+                                 frees; this session is waiting, not failing ({}s so far).",
+                                waited.as_secs()
+                            ),
+                            compaction: None,
+                        });
+                    }
+                    if !self.sleep_unless_closed(std::time::Duration::from_secs(5)) {
+                        return Err(HarnessError::Store(format!(
+                            "{what}: {e} — the session closed while waiting for the store"
+                        )));
+                    }
+                }
+                Err(e) => return Err(HarnessError::Store(format!("{what}: {e}"))),
+            }
+        }
     }
 
     /// **The rows not yet written, written in chunks of [`PERSIST_CHUNK`], one transaction
