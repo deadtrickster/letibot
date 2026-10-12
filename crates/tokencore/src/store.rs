@@ -3374,6 +3374,23 @@ impl Store {
         Ok(())
     }
 
+    /// **The highest `jN` handle any job in this store was given**, across every session — what a
+    /// daemon seeds its handle counter above at start, so a handle is never minted twice for one
+    /// session across restarts (TODO.md R91.3). `0` for a store with no `jN` handle.
+    pub fn max_job_number(&self) -> Result<u64> {
+        let mut st = self
+            .conn
+            .prepare("SELECT handle FROM job WHERE handle GLOB 'j[0-9]*'")?;
+        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+        let mut max = 0u64;
+        for h in rows {
+            if let Some(n) = h?.strip_prefix('j').and_then(|n| n.parse::<u64>().ok()) {
+                max = max.max(n);
+            }
+        }
+        Ok(max)
+    }
+
     /// Remove a session that holds no transcript rows.
     ///
     /// **A session with rows cannot be deleted, and that is not an omission.**

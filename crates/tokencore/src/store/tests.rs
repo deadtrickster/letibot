@@ -2163,3 +2163,61 @@ fn under_a_competing_writer_a_run_is_written_far_faster_than_rows_one_by_one() {
         "the run form must not pay the lock per row: one by one {one_by_one:?}, in runs {in_runs:?}"
     );
 }
+
+fn job_store(tag: &str) -> (std::path::PathBuf, Store) {
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-jobs-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sessions.db");
+    let s = Store::open(&path).expect("a store");
+    for id in ["s-a", "s-b"] {
+        s.put_session(&SessionRecord {
+            id: id.into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+    }
+    (dir, s)
+}
+
+fn job_row(handle: &str, state: &str) -> JobRecord {
+    JobRecord {
+        handle: handle.into(),
+        command: "cargo test".into(),
+        how: "asked".into(),
+        state: state.into(),
+        produced: 0,
+        elapsed_ms: 10,
+        redirect: None,
+    }
+}
+
+/// **The highest `jN` across every session** is what a daemon seeds its counter above (R91.3), so
+/// a handle minted after a restart cannot be one a session already has.
+#[test]
+fn the_highest_job_number_is_read_across_sessions() {
+    let (dir, s) = job_store("maxjob");
+    assert_eq!(s.max_job_number().unwrap(), 0, "an empty store");
+    s.put_job("s-a", &job_row("j9", "exited 0")).unwrap();
+    s.put_job("s-b", &job_row("j41", "running")).unwrap();
+    s.put_job("s-b", &job_row("j100", "exited 0")).unwrap();
+    // Not a counter's handle: a subagent's, or a name.
+    s.put_job("s-b", &job_row("s-1-sub", "exited 0")).unwrap();
+    s.put_job("s-b", &job_row("jx", "exited 0")).unwrap();
+    assert_eq!(s.max_job_number().unwrap(), 100);
+    let _ = std::fs::remove_dir_all(&dir);
+}

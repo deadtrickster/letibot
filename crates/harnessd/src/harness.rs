@@ -2657,6 +2657,16 @@ impl Harness {
             .as_ref()
             .and_then(|path| crate::corpus::StoreCorpus::open(path).ok())
             .map(std::sync::Arc::new);
+        // **Job handles above every one the store has seen** (TODO.md R91.3): the counter is the
+        // process's and started at `j1` in every daemon life, so the first job after a restart
+        // was an old `j7` to every reader that matches by handle. Seeded on every open, not only
+        // the first, because `sessions.db` is shared by every daemon and a session can arrive here
+        // from one that minted higher handles after this one started.
+        if let Some(s) = &store {
+            if let Ok(n) = s.max_job_number() {
+                letibot_tools::exec::JobId::seed_above(n);
+            }
+        }
         // As the table holds it, including every earlier run's rows.
         let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
         let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =

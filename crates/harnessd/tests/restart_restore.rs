@@ -1289,3 +1289,46 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
     assert_eq!(warnings(&d.hub(), "restart_reminded").len(), 1);
     d.stop(None);
 }
+
+fn a_job(handle: &str, state: &str, command: &str) -> JobRecord {
+    JobRecord {
+        handle: handle.into(),
+        command: command.into(),
+        how: String::new(),
+        state: state.into(),
+        produced: 512,
+        elapsed_ms: 90_000,
+        redirect: None,
+    }
+}
+
+/// **A job handle minted after a restart is above every one the store holds** (TODO.md R91.3).
+/// The counter started at `j1` in every daemon life, so a session's first job after a restart
+/// could be its own pre-restart `j7` to every reader that matches by handle, and its row
+/// inherited the old job's command.
+#[test]
+fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-job-ids");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        store
+            .put_job(PARENT, &a_job("j9000", "exited 0", "cargo build"))
+            .unwrap();
+    }
+    let d = a_daemon(&parts, &cfg);
+    let next = letibot_tools::exec::JobId::next();
+    let n: u64 = next.0[1..].parse().unwrap();
+    assert!(n > 9000, "{next} was minted over a store that holds j9000");
+    d.stop(None);
+}

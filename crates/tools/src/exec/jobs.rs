@@ -41,10 +41,26 @@ use std::time::{Duration, SystemTime};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JobId(pub String);
 
+/// The next `jN` this process mints. Process-wide, and seeded from the store
+/// ([`JobId::seed_above`]) so it does not start at `j1` in every daemon life.
+static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
+
 impl JobId {
     pub fn next() -> JobId {
-        static N: AtomicU64 = AtomicU64::new(1);
-        JobId(format!("j{}", N.fetch_add(1, Ordering::Relaxed)))
+        JobId(format!("j{}", NEXT_JOB.fetch_add(1, Ordering::Relaxed)))
+    }
+
+    /// **Never mint `j{n}` or anything below it again in this process** (TODO.md R91.3).
+    ///
+    /// The counter used to start at `j1` in every daemon, and the store keys a job by
+    /// `(session, handle)`: the first job after a restart was a pre-restart `j7` to every reader
+    /// that matches by handle — `job_fate`, `RunningJobs`, the delivery sort, a row's
+    /// `when: job` — and its row inherited the old job's command. The daemon seeds this from the
+    /// store's highest `jN` (`Store::max_job_number`) whenever it opens a session, so handles
+    /// stay short and are never repeated for a session. Only ever raises the counter: two
+    /// seeds in either order leave it above both.
+    pub fn seed_above(n: u64) {
+        NEXT_JOB.fetch_max(n.saturating_add(1), Ordering::Relaxed);
     }
 }
 
@@ -831,6 +847,25 @@ impl Job {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A seeded counter never mints a handle at or below the seed** (R91.3), and a lower seed
+    /// does not move it back. Process-wide, so this asserts bounds rather than exact values: other
+    /// tests mint handles concurrently.
+    #[test]
+    fn a_seeded_counter_mints_above_the_store_and_never_goes_back() {
+        let n = |id: JobId| id.0[1..].parse::<u64>().unwrap();
+        JobId::seed_above(7_000_000);
+        assert!(
+            n(JobId::next()) > 7_000_000,
+            "a handle at or below the seed"
+        );
+        JobId::seed_above(3);
+        assert!(
+            n(JobId::next()) > 7_000_000,
+            "a lower seed moved the counter back"
+        );
+    }
+
     use super::*;
 
     /// **A name is one line, capped, and blank words are no name at all.**
