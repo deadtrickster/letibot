@@ -295,10 +295,24 @@ impl App {
         // so the row is present-tense and lives while the work does, and the tense comes from
         // `turn_busy` rather than from the state name.
         let status = self.turn_status(w);
-        let notice = self
-            .notice
-            .clone()
-            .map(|n| row(&screens::notice(&n, w), self.cfg.palette()));
+        // **A flash notice too long for its line says so, and a click reads it whole** (R89): the
+        // line was cut to the width with nothing to read the rest by. Cut, it ends in the hint
+        // every notice line ends in, and the row is a click target (`Target::FlashNotice`).
+        let hint = format!(" · {}", crate::ui::transcript::line_cards::CLICK);
+        let notice_cut = self.notice.as_ref().is_some_and(|n| {
+            crate::ui::render::visible_width(n) + 2 > w
+                && w > crate::ui::render::visible_width(&hint) + 12
+        });
+        let notice = self.notice.clone().map(|n| {
+            let shown = if notice_cut {
+                let room = w - 2 - crate::ui::render::visible_width(&hint);
+                format!("{}{hint}", crate::ui::render::trim_to(&n, room))
+            } else {
+                n
+            };
+            row(&screens::notice(&shown, w), self.cfg.palette())
+        });
+        let mut notice_at: Option<usize> = None;
         // Live slash-command matches, one dim row above the composer. It is a
         // typing aid, not a message.
         //
@@ -396,6 +410,7 @@ impl App {
             chrome.push(l);
         }
         if show_notice && let Some(l) = notice {
+            notice_at = Some(chrome.len());
             chrome.push(l);
         }
         // The turn's own row, last before the box: directly above the composer when nothing else
@@ -564,6 +579,25 @@ impl App {
                 jobs: labels.jobs.map(|(col, w)| (col + gutter, w)),
             })
         });
+        // **The cut flash notice, as a target** — where this frame put it, if the backstop and the
+        // truncate left it on the frame.
+        if notice_cut
+            && let Some(row) = notice_at
+                .and_then(|at| at.checked_sub(drained))
+                .map(|at| body_rows + at)
+                .filter(|row| *row < out.len())
+        {
+            self.hits.push(Hit {
+                rect: Rect {
+                    x: 0,
+                    y: row,
+                    w: term_w,
+                    h: 1,
+                },
+                target: Target::FlashNotice,
+                stops: vec![(row, 0)],
+            });
+        }
         // **And the labels as targets**, from the same record.
         if let Some(b) = self.box_top_hits {
             for (label, at) in [

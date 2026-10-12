@@ -35,6 +35,7 @@ impl App {
             Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
             Target::CountLabel(_) => true,
+            Target::FlashNotice => self.notice.is_some(),
         }
     }
 
@@ -107,6 +108,13 @@ impl App {
             // **A todo row's `waits on j97 · pg-timing` opens the job** — the operator: *"\"waits
             // on j97\" - make j97 a link to the real job, also render job slug"*. A button, like
             // the notice: the click is the act, and `w` on the row is the same act.
+            // **The flash notice, cut to its line, opens whole** (R89).
+            (Target::FlashNotice, _) => {
+                if let Some(text) = self.notice.clone() {
+                    self.open_text_popup(text, ("notice".to_string(), rano::style::Role::Pending));
+                }
+                return ControlFlow::Break(None);
+            }
             (Target::TodoWait, Some(k)) => {
                 return ControlFlow::Break(self.open_wait_link(k));
             }
@@ -182,7 +190,7 @@ impl App {
             Target::Decision | Target::QuitCard | Target::ReseatCard => {
                 self.scroll_card(up, NOTCH);
             }
-            Target::SettingCard | Target::CountLabel(_) => {}
+            Target::SettingCard | Target::CountLabel(_) | Target::FlashNotice => {}
         }
         ControlFlow::Break(None)
     }

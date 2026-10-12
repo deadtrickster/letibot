@@ -1524,7 +1524,7 @@ fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
     );
 }
 
-/// **A note that is a document folds to its head, and `/notes` still has all of it.**
+/// **A note that is a document folds to ONE line, and the popup and `/notes` have all of it.**
 ///
 /// The other half of R10: the operator's wall was *two* gate timeouts at about
 /// thirteen lines each — *"how to remove this red wall?"*. The instrument is the one
@@ -1546,17 +1546,29 @@ fn a_note_that_is_a_document_folds_to_its_head_and_the_verb_has_the_rest() {
         detail: long.clone(),
         ts: 7,
     }));
-    let screen = a.screen(100, 40).join("\n");
-    // The head of it, and a seam that names the verb.
-    assert!(screen.contains("gate_timeout"), "{screen}");
-    assert!(screen.contains("anybody answered"), "{screen}");
-    assert!(screen.contains("· /notes"), "the seam is missing: {screen}");
+    let frame = a.screen(100, 40);
+    let screen = frame.join("\n");
+    // **ONE line now** (R89, the operator's *"make them the usual one liners"*): the code, its
+    // first words and the hint — and the whole document a click (or alt-n) away.
+    let rows: Vec<&String> = frame
+        .iter()
+        .filter(|l| l.contains("gate_timeout"))
+        .collect();
+    assert_eq!(rows.len(), 1, "{screen}");
+    assert!(rows[0].contains("denied: the gate timed out"), "{screen}");
     assert!(
-        !screen.contains("line 11 of the rule it cites"),
-        "the whole document is on the screen: {screen}"
+        rows[0].contains("· click for details"),
+        "the hint is missing: {screen}"
     );
-    // **Twelve lines is three plus nine**, so the seam counts what it took out.
-    assert!(screen.contains("+9 lines"), "{screen}");
+    assert!(
+        !screen.contains("line 1 of the rule it cites"),
+        "the document is on the screen: {screen}"
+    );
+    assert_eq!(
+        newest_notice(&mut a),
+        long,
+        "the popup is the whole document"
+    );
     // And the record is whole where the seam points.
     let listed = a.notes_lines().join("\n");
     assert!(listed.contains("line 11 of the rule it cites"), "{listed}");
@@ -1712,9 +1724,13 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
     // says what ctrl-n does — `ctrl-n clears notes`, where rano's sentence said `ctrl-n notes`
     // about a chord that retires every note (R67 item 9): 160 → 167. Both pinned entries are
     // still whole inside 80; the `ctrl-v`/`/t` pair is whole from 128 rather than 120.
+    //
+    // **Re-measured 2026-10-12 for R89**, which adds `alt-n newest notice` — every notice is one
+    // line now and alt-n is the keyboard's way to the rest of one: 167 → 189. The two pinned
+    // entries are still whole inside 80.
     assert_eq!(
         bar.trim().chars().count(),
-        167,
+        189,
         "the bar's width changed; re-measure what is visible at 80: {bar}"
     );
     let at80 = a.screen(80, 24).pop().unwrap_or_default();

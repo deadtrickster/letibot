@@ -30,9 +30,9 @@ impl App {
         if stale {
             let laid = match &what {
                 PopupBody::Change(file) => self.diff_popup_layout(file, inner),
-                PopupBody::Notice { text, jobs, answer } => {
-                    self.notice_popup_layout(text, jobs, answer.as_deref(), inner)
-                }
+                PopupBody::Notice {
+                    text, jobs, answer, ..
+                } => self.notice_popup_layout(text, jobs, answer.as_deref(), inner),
             };
             if let Some(p) = self.diff_popup.as_mut() {
                 p.laid = Some(laid);
@@ -75,9 +75,19 @@ impl App {
             // **A card names what it is about** — a red target's the target and the tip, in the
             // alarm's register; a review's the branch and the verdict, in the verdict's
             // (`line_cards`).
-            PopupBody::Notice { jobs, text, .. } if jobs.is_empty() => {
-                let (title, role) = crate::ui::transcript::line_cards::popup_title(text)
-                    .unwrap_or_else(|| ("notice".to_string(), Role::Failure));
+            PopupBody::Notice {
+                jobs, text, title, ..
+            } if jobs.is_empty() => {
+                // **The title is the card's**, whichever card drew the line (R89): the opener's
+                // when it knew it, a reader's, or the fallback's — never a bare `notice` in red.
+                let (title, role) = title
+                    .clone()
+                    .or_else(|| crate::ui::transcript::line_cards::popup_title(text))
+                    .unwrap_or_else(|| {
+                        let first = crate::ui::transcript::notice_card::notices(text)[0];
+                        let c = crate::ui::transcript::notice_card::session_notice(first);
+                        (c.title, c.role)
+                    });
                 (
                     Line::new(vec![Span::styled(title, Style::of(role))]),
                     if deciding {

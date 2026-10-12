@@ -617,6 +617,19 @@ pub const TABLE: &[(&str, Class)] = &[
     // module can say about a *build* rather than about a session — the two halves of the tree
     // disagree about where a note goes, and no event, socket or grant is involved.
     ("alarm_only_unregistered", Class::Failure),
+    // **The daemon's resident memory crossed a step** (`harnessd/src/memwatch.rs`). It was not
+    // in this table, so it was a Failure by default (R89); it is one by the rule, now on
+    // purpose: what is at risk is every session this daemon holds — a daemon that keeps growing
+    // is killed by the kernel with all of them — and the reader cannot fix it by typing
+    // something else. Restarting the daemon is the remedy, and the sentence says so.
+    ("memory_high", Class::Failure),
+    // **A tool call somebody DECIDED to refuse** — the head's `denied:<request id>` note
+    // (`tui/src/app/events/asks.rs`), looked up here under `denied` for every id ([`class`]).
+    // It was a Failure by default (R89); it is one by the rule: the call did not happen, the
+    // model's direction is blocked, and only the operator can lift it — which is why the head
+    // gives it the loud register and the request id. The harness's own refusals (`boundary:`)
+    // are a different note (`Note::NotRun`) in the faint register.
+    ("denied", Class::Failure),
     // Codes that exist only in fixtures in this tree — a head under test is handed a
     // wall, a gap, a decision that timed out, a guard that tripped. They are classified
     // because the guard reads every `code:` literal under `crates/`, which is where the
@@ -630,6 +643,12 @@ pub const TABLE: &[(&str, Class)] = &[
 /// **Which register a code is drawn in.** See [`TABLE`], and the module doc for why an
 /// unknown code is a failure rather than a guess.
 pub fn class(code: &str) -> Class {
+    // **A code with an id in it is classified by its family** — `denied:<request id>`, one code
+    // a request, is `denied`.
+    let code = match code.split_once(':') {
+        Some(("denied", _)) => "denied",
+        _ => code,
+    };
     match TABLE.iter().find(|(c, _)| *c == code) {
         Some((_, class)) => *class,
         None => Class::Failure,
@@ -1097,10 +1116,16 @@ mod the_register_census {
         //     and short of a turn's room, which goes ahead now.
         //   · **131, not 128**: `steering_carried`, `context_not_stored` and `fork_unstored`
         //     (Failure) — TODO R91.
-        assert_eq!(TABLE.len(), 131, "the table's size");
+        //   · **133, not 131**: `memory_high` and `denied` (`denied:<id>`, read by its family)
+        //     (Failures) — both were Failures by DEFAULT, missing from this table; now by the
+        //     rule (R89).
+        assert_eq!(TABLE.len(), 133, "the table's size");
         assert_eq!(count(Class::Routine), 48);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 72);
+        assert_eq!(count(Class::Failure), 74);
+        // A code with an id is read by its family.
+        assert_eq!(class("denied:req-7"), Class::Failure);
+        assert_eq!(class("memory_high"), Class::Failure);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 64 of 114 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the

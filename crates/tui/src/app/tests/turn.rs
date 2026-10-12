@@ -529,13 +529,26 @@ fn the_thinking_chord_in_read_edits_says_why_rather_than_storing_it() {
         "and the mirror must not move either"
     );
     let screen = a.screen(100, 30).join("\n");
-    // **The whole clause, and it has to fit inside the notice's 100 columns.** `say` draws the
-    // sentence through `trim_to(…, w)`, so a refusal whose facts sit past the frame is a
-    // refusal that lost them — measured here first, when the ladder came before the remedy.
+    // **The whole clause, a click away when it does not fit** (R89). `say` draws the sentence
+    // cut to the frame, and a cut one ends `· click for details` and opens whole on a click —
+    // before, a refusal whose facts sat past the frame was a refusal that lost them.
+    let hit = a
+        .hits
+        .iter()
+        .find(|h| h.target == crate::app::hits::Target::FlashNotice)
+        .unwrap_or_else(|| panic!("the cut notice is not a click target:\n{screen}"))
+        .clone();
+    assert!(screen.contains("· click for details"), "{screen}");
+    a.key(Key::Click {
+        x: 10,
+        y: hit.rect.y as u16,
+    });
+    let whole = super::redcard::popup_text(&mut a);
     assert!(
-        screen.contains("`thinking` is drawn while `tools` is off"),
-        "the refusal must say which switch and which way round, inside the frame:\n{screen}"
+        super::redcard::holds(&whole, "`thinking` is drawn while `tools` is off"),
+        "the refusal must say which switch and which way round:\n{whole}"
     );
+    a.key(Key::Esc);
     assert!(
         screen.contains("thinking=hidden"),
         "and the way back, in the verb's own words — INSIDE the notice's own width, which \

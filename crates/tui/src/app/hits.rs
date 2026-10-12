@@ -57,6 +57,8 @@ pub(crate) enum Target {
     /// **One warning drawn as a card's line** (`line_cards`); its one stop is the card's
     /// index in `note_cards`. A click opens the detail whole, in the same popup.
     NoteCard,
+    /// **The flash notice above the composer, cut to its line** (R89); a click opens it whole.
+    FlashNotice,
     /// **A todo row's `waits on …` link** (`todos_wait_links`), over the todos pane; its one stop
     /// is the link's index in that record. A click opens the job or the child the row waits on.
     TodoWait,

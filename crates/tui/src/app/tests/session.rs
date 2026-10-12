@@ -663,6 +663,8 @@ fn a_head_with_no_daemon_says_so_keeps_its_screen_and_holds_the_line() {
     let back = a.screen(100, 24).join("\n");
     assert!(!back.contains("daemon connection is down"), "{back}");
     assert!(back.contains("daemon is back after 4.4s"), "{back}");
+    // One line on the glass (R89); the sentence whole a click — or alt-n — away.
+    let back = newest_notice(&mut a);
     assert!(back.contains("Resuming from seq"), "{back}");
     // The ordinary reconnect succeeds on its first try, so there is no attempt count
     // to show — and the sentence must not show an empty one.

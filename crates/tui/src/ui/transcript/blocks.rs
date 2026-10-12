@@ -87,7 +87,13 @@ pub(crate) fn session_card_block(
 /// entire brief this head had written for that child — *"a giant prompt"* — five wrapped rows of
 /// instructions where a settlement should be one line.
 pub(crate) fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
+    // **Less the row's own two-column indent**, which rano's count leaves out: a line cut to
+    // its count drew past the frame by two, and the frame's truncation took the clock — every
+    // one-line card at full length lost its `HH:MM:SS` to `HH:MM…` (R89, measured on the
+    // fallback's lines, which are the first that are routinely that long).
     SessionBlock::text_cols(&clock_time(ts), cfg.width)
+        .saturating_sub(2)
+        .max(8)
 }
 
 /// **What a child was asked, as one line** — the rule the subagents pane and the folded
@@ -191,6 +197,10 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
         // closing — *mark it done, or drop it* — is gone with the old contract: a row left out of
         // `todo_write` STAYS on the board, so a model's own row is retired by marking it done.
         "mark it done with `todo_write`",
+        // **An orphan child's completion** (R89 item 13): told to this session because the one
+        // that started it has stopped. `job_card::CLOSINGS` has the same sentence for `[job]`, so
+        // the two folds agree about it.
+        "This session is told because the one that started it cannot be:",
     ];
     let mut out: Vec<String> = Vec::new();
     for group in text.split("\n\n") {

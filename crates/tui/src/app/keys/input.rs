@@ -60,6 +60,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         // alt-r / alt-p: reseat now, and show the reseat card (`app/reseat.rs`).
         KeyCode::Char('r') if m == Mods::ALT => Key::AltR,
         KeyCode::Char('p') if m == Mods::ALT => Key::AltP,
+        // alt-n: open the newest notice line whole — the key for what a click on one does (R89).
+        KeyCode::Char('n') if m == Mods::ALT => Key::AltN,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.
@@ -384,6 +386,8 @@ mod tests {
             // The reseat card's two (`app/reseat.rs`): reseat now, show the card.
             (b"\x1br", Key::AltR),
             (b"\x1bp", Key::AltP),
+            // The newest notice, opened whole (R89).
+            (b"\x1bn", Key::AltN),
             (b"\x01", Key::Home),
             (b"\x09", Key::Tab),
             // Its own key now: end-of-line in the composer, the editor on an empty prompt. The

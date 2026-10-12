@@ -40,6 +40,8 @@ const CONVERSATION: &[Chord] = &[
     // confuses, so the bar states both — one result against all of them.
     Chord::Says("ctrl-v", "newest result"),
     Chord::Says("/t", "all tool rows"),
+    // **A notice line's details from the keyboard** (R89): the click's other half.
+    Chord::Says("alt-n", "newest notice"),
     Chord::Surface(Surface::Jobs, "jobs"),
     Chord::Says("ctrl-p", "hold"),
     Chord::Says("/help", ""),

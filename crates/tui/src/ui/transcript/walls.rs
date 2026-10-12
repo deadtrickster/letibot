@@ -23,11 +23,16 @@ mod tests {
     fn key(text: &str) -> String {
         if text.starts_with('[')
             && let Some(end) = text.find(']')
-            && text[1..end].chars().all(|c| c.is_ascii_lowercase() || c == ' ')
+            && text[1..end]
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == ' ')
         {
             return text[..=end].to_string();
         }
-        text.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
+        text.split_whitespace()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// The most lines a row may draw and not be a wall: a line a notice (a `\n\n` group) and a
@@ -35,7 +40,11 @@ mod tests {
     fn allowed(text: &str) -> usize {
         let groups = text.split("\n\n").count();
         let bullets = text.matches("\n  - ").count();
-        let jobs = text.matches("\n  - `j").count();
+        let jobs: usize = text
+            .split("\n\n")
+            .filter(|g| g.starts_with("[job] "))
+            .map(|g| g.matches("\n  - `").count())
+            .sum();
         groups + bullets + jobs
     }
 
@@ -69,9 +78,22 @@ mod tests {
                     system_row_lines(text, origin, ts, &cfg).len(),
                 )
             } else {
-                (key(text), session_row_lines(text, ts, &cfg, &[], &tails).len())
+                (
+                    key(text),
+                    session_row_lines(text, ts, &cfg, &[], &tails).len(),
+                )
             };
             let wall = drawn > allowed(text);
+            // `LETIBOT_WALL_SHOW=<key>` prints that notice's walls as drawn, to read them.
+            if wall
+                && std::env::var("LETIBOT_WALL_SHOW").is_ok_and(|w| k.starts_with(&w))
+                && v["kind"] == "agent"
+            {
+                println!("==== {k} ({drawn} rows, {} allowed)", allowed(text));
+                for l in session_row_lines(text, ts, &cfg, &[], &tails) {
+                    println!("{l}");
+                }
+            }
             let e = by.entry(k).or_default();
             e.0 += 1;
             e.1 += usize::from(wall);

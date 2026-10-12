@@ -42,6 +42,19 @@ fn app() -> App {
     })
 }
 
+/// **The newest notice, read whole** — every notice is one line now (R89), so a test that reads
+/// a notice's words opens it the way the operator does (`alt-n`), reads the popup and closes it.
+fn newest_notice(a: &mut App) -> String {
+    a.screen(120, 30);
+    a.key(Key::AltN);
+    let text = match a.diff_popup.as_ref().map(|p| &p.body) {
+        Some(crate::app::diff_popup::PopupBody::Notice { text, .. }) => text.clone(),
+        _ => panic!("alt-n opened no notice"),
+    };
+    a.key(Key::Esc);
+    text
+}
+
 fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecision {
     use letibot_sessionlog::event::DecisionOption;
     OpenDecision {
@@ -1402,6 +1415,7 @@ mod jobcard;
 mod jobs;
 mod misc;
 mod notes;
+mod oneliners;
 mod pane;
 mod queue;
 mod redcard;

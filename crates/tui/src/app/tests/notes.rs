@@ -347,19 +347,25 @@ fn a_refusal_nobody_made_is_quiet_and_one_line() {
     feed(&mut a, &hub, &att.head_id);
     let note = a.notes.last().expect("a repeat is worth saying");
     let lines = note_lines(&a.cfg, &note.1);
-    // One sentence, so at most a wrap of one. The thing being measured is that
-    // it is not a paragraph per unresolved construct.
-    assert!(
-        lines.len() <= 2,
+    // ONE line (R89), and the head's one sentence a click away. The thing being measured
+    // is that it is not a paragraph per unresolved construct.
+    assert_eq!(
+        lines.len(),
+        1,
         "a wall again, {} lines: {lines:#?}",
         lines.len()
     );
     let l = lines.join(" ");
     let l = &l;
     assert!(l.contains("bash not_run"), "{l}");
+    let (_, whole, _) = crate::ui::note_card(&note.1).expect("a card");
     assert!(
-        l.contains("meaning does not exist yet"),
-        "the gist survived: {l}"
+        whole.contains("meaning does not exist yet"),
+        "the gist survived: {whole}"
+    );
+    assert!(
+        !whole.contains("parameter_expansion"),
+        "the model's detail leaked: {whole}"
     );
     // Not the paragraph, not the id, not the loud register.
     assert!(
@@ -1327,7 +1333,10 @@ fn an_unreadable_frame_is_said_counted_and_survived() {
 
     // The sentence is in the conversation: what it was, that this is almost always
     // a newer daemon, and that this head is still attached.
+    // One line on the glass (R89), the sentence whole in the popup.
     let screen = a.screen(120, 60).join("\n");
+    assert!(screen.contains("unreadable_frame"), "{screen}");
+    let screen = newest_notice(&mut a);
     assert!(screen.contains("peeked_v2"), "{screen}");
     assert!(screen.contains("cannot read"), "{screen}");
     assert!(screen.contains("newer"), "{screen}");
@@ -1729,36 +1738,32 @@ fn a_fleeting_notice_goes_after_its_time_and_a_failure_does_not() {
         )));
     }
     let screen = a.screen(100, 24).join("\n");
-    assert!(screen.contains("is in the merge queue"), "{screen}");
-    assert!(screen.contains("nothing will land it"), "{screen}");
+    assert!(screen.contains("is in the merge"), "{screen}");
+    assert!(screen.contains("the store would not open"), "{screen}");
 
     // Frames do not age it (§11.3).
     for _ in 0..200 {
         a.screen(100, 24);
     }
     assert!(
-        a.screen(100, 24)
-            .join("\n")
-            .contains("is in the merge queue"),
+        a.screen(100, 24).join("\n").contains("is in the merge"),
         "200 repaints is not a duration"
     );
 
     // The boundary, and not "eventually".
     a.clock(1_000 + FLEETING_MS - 1);
     assert!(
-        a.screen(100, 24)
-            .join("\n")
-            .contains("is in the merge queue"),
+        a.screen(100, 24).join("\n").contains("is in the merge"),
         "still there a millisecond before"
     );
     a.clock(1_000 + FLEETING_MS);
     let screen = a.screen(100, 24).join("\n");
     assert!(
-        !screen.contains("is in the merge queue"),
+        !screen.contains("is in the merge"),
         "gone the millisecond it is due: {screen}"
     );
     assert!(
-        screen.contains("nothing will land it"),
+        screen.contains("the store would not open"),
         "a failure is not on a timer, and the class table is what keeps it off one: {screen}"
     );
 
@@ -2011,8 +2016,8 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
         "a compaction changes the conversation and is a row in it"
     );
     assert!(
-        b.screen(80, 24).join("\n").contains("940188"),
-        "the compaction's own sentence is not drawn"
+        b.screen(80, 24).join("\n").contains("940k → 9k tokens"),
+        "the compaction's own figures are not drawn"
     );
     assert_eq!(b.slow_first_byte, 0, "a compaction is not the weather");
     assert!(
@@ -2145,7 +2150,7 @@ fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
         let screen = frame.join("\n");
         let carrying = |needle: &str| frame.iter().filter(|l| l.contains(needle)).count();
         assert_eq!(
-            carrying("958397 → 100005 tokens"),
+            carrying("958k → 100k tokens"),
             1,
             "a compaction's numbers are on ONE row at `{}`:\n{screen}",
             profile.name
@@ -2156,11 +2161,14 @@ fn a_compaction_is_one_line_in_the_two_rungs_the_operator_named() {
             "and the compaction is one row, not a block at `{}`:\n{screen}",
             profile.name
         );
+        // **The row says how to read the whole sentence, and a click (or alt-n) opens it** —
+        // R89: it ended `· /notes` and could not be clicked.
         assert!(
-            screen.contains("/notes"),
-            "the row says where the whole sentence is at `{}`:\n{screen}",
+            screen.contains("click for details"),
+            "the row says how to read the whole sentence at `{}`:\n{screen}",
             profile.name
         );
+        assert_eq!(newest_notice(&mut a), a_compacted_said());
         // **The model's record is not on the screen.** It is the prompt, not anything that
         // happened, and this is the half the operator was complaining about.
         assert!(
@@ -2229,14 +2237,21 @@ fn a_compaction_is_one_line_at_every_rung_and_the_forks_row_still_draws() {
     assert_eq!(
         frame
             .iter()
-            .filter(|l| l.contains("958397 → 100005 tokens"))
+            .filter(|l| l.contains("958k → 100k tokens"))
             .count(),
         1,
         "the warning is still one row at `loud`:\n{screen}"
     );
+    // **The fork's row is drawn, as ONE line** (R89: a System row was drawn whole, up to 190
+    // screen rows of the model's own record), and a click — or alt-n — opens it whole.
     assert!(
-        screen.contains("This conversation was compacted"),
+        screen.contains("system · compacted summary ("),
         "the fork's own row vanished from the rung that draws what the head was given:\n{screen}"
+    );
+    assert!(!screen.contains("THE MODEL'S OWN RECORD"), "{screen}");
+    assert!(
+        newest_notice(&mut a).starts_with("This conversation was compacted"),
+        "the popup holds the row whole"
     );
 }
 
@@ -2281,9 +2296,15 @@ fn a_warning_beside_a_compaction_still_draws_whole() {
         .filter(|l| l.contains("ledger_chain_mismatch"))
         .collect();
     assert_eq!(mismatch.len(), 1, "the failure has its own row:\n{screen}");
+    // **Its register and its first clause are on the row, and its sentence is a click away**
+    // (R89): one line a notice, a failure included — the mark and the red say what it is.
     assert!(
-        screen.contains("unverifiable"),
-        "and its sentence is drawn, not folded away:\n{screen}"
+        mismatch[0].contains("! ledger_chain_mismatch · row 41's head is not the one"),
+        "{screen}"
+    );
+    assert!(
+        newest_notice(&mut a).contains("unverifiable"),
+        "and its sentence is in the popup, not folded away"
     );
     assert!(
         !screen.contains("THE MODEL'S OWN RECORD"),
@@ -2341,7 +2362,7 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
         letibot_sessionlog::warning::Class::Routine,
         "the register is the whole of what a reader takes from the colour"
     );
-    // **One line now, a pointer to the reseat card** — the operator, of the wall this note
+    // **One line now** — the operator, of the wall this note
     // used to draw: *"these gray walls are hilarious … make them the usual one liners"*
     // (`stale_card`). The remedy is the card's (`alt-r`), and the sentence is one click away.
     let screen = a.screen(120, 40).join("\n");
@@ -2350,8 +2371,8 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
         .find(|l| l.contains("prompt stale · seated 10-08 21:14"))
         .unwrap_or_else(|| panic!("the notice is not on a note row at all:\n{screen}"));
     assert!(
-        row.contains("tool schemas changed · alt-p for the card"),
-        "what moved, and where to decide: {row:?}"
+        row.contains("tool schemas changed · click for details"),
+        "what moved, and how to read the rest: {row:?}"
     );
     assert!(!row.contains('!'), "never the failure mark: {row:?}");
     let (y, _) = a.card_rows[0];

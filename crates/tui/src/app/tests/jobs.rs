@@ -66,7 +66,8 @@ fn the_daemons_verbs_come_from_its_row_and_are_not_guessed_at() {
 /// recognise. The monitor notice is the live test of it — it is the same voice, the same
 /// bullets and the same closing sentence as a job's, and it is deliberately NOT folded,
 /// because leticl does not fold it either and two heads folding different sets is the drift
-/// this file has been fixed for before.
+/// this file has been fixed for before. (It is still ONE line on the glass: what the fold
+/// refuses, `notice_card` draws as `monitor · w1 … · click for details` — R89.)
 #[test]
 fn the_notice_fold_refuses_anything_it_cannot_account_for() {
     let cases: &[(&str, &str)] = &[

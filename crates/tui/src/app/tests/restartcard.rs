@@ -184,12 +184,12 @@ fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
     assert_eq!(s.session, "s-1789919514688401228");
     assert_eq!(
         s.line(),
-        "prompt stale · seated 09-20 17:51 · new: task_resume · alt-p for the card"
+        "prompt stale · seated 09-20 17:51 · new: task_resume · click for details"
     );
     assert_eq!(
         stale_of(STALE_MANY).expect("parses").line(),
         "prompt stale · seated 09-20 17:51 · instructions changed · new: task_resume, pkill · \
-         gone: job_wait · changed: todo_write · alt-p for the card"
+         gone: job_wait · changed: todo_write · click for details"
     );
     let instructions_only = STALE.replace("the tool schemas have", "the system instructions have");
     let instructions_only = instructions_only.replace(
@@ -199,13 +199,13 @@ fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
     );
     assert_eq!(
         stale_of(&instructions_only).expect("parses").line(),
-        "prompt stale · seated 09-20 17:51 · instructions changed · alt-p for the card"
+        "prompt stale · seated 09-20 17:51 · instructions changed · click for details"
     );
 
     let mut a = with_warning("prefix_stale", STALE);
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
-    let line = "prompt stale · seated 09-20 17:51 · new: task_resume · alt-p for the card";
+    let line = "prompt stale · seated 09-20 17:51 · new: task_resume · click for details";
     assert_eq!(rows_with(&screen, line).len(), 1, "{joined}");
     assert!(!joined.contains("message 0 is frozen"), "{joined}");
     assert!(!joined.contains("+1 lines"), "{joined}");
@@ -222,7 +222,8 @@ fn the_stale_prompt_note_is_one_line_pointing_at_the_card() {
     }
 }
 
-/// **What it does not know, it does not fold** — drawn as it always was, and no click target.
+/// **What it does not know, it does not read** — and the note is still ONE line (R89): the
+/// generic `<mark> <code> · <first clause>`, the detail a click away. Nothing is guessed.
 #[test]
 fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
     for (code, detail) in [
@@ -244,20 +245,35 @@ fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
     ] {
         assert!(warning_card(code, detail).is_none(), "{code}: {detail}");
         let mut a = with_warning(code, detail);
-        let joined = a.screen(200, 40).join("\n");
-        assert!(joined.contains(code), "drawn as a note: {joined}");
-        assert!(a.card_rows.is_empty(), "{code}");
+        let screen = a.screen(200, 40);
+        let joined = screen.join("\n");
+        assert_eq!(
+            rows_with(&screen, &format!("· {code} · ")).len(),
+            1,
+            "the generic line: {joined}"
+        );
+        assert_eq!(a.card_rows.len(), 1, "{code}");
+        assert_eq!(
+            newest_notice(&mut a),
+            detail,
+            "the popup is the detail verbatim"
+        );
     }
     // The same words under another code are not these cards.
     assert!(warning_card("compacted", RESTORED_WARNING).is_none());
     assert!(warning_card("reseated", STALE).is_none());
-    // A session row that opens with some other `[restart]` sentence is drawn as before.
+    // A session row that opens with some other `[restart]` sentence is the generic line.
     let mut a = with_notice(
         "[restart] subagent `s-1` (x) was running when the daemon restarted and has been resumed.",
     );
-    let joined = a.screen(200, 40).join("\n");
-    assert!(joined.contains("has been resumed"), "{joined}");
-    assert!(a.notice_rows.is_empty(), "{:?}", a.notice_rows);
+    let screen = a.screen(200, 40);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, "session · restart · subagent `s-1`").len(),
+        1,
+        "{joined}"
+    );
+    assert_eq!(a.notice_rows.len(), 1, "{:?}", a.notice_rows);
 }
 
 /// **A restart notice beside a job's completion in one wake** is one line and the job's.

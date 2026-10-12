@@ -179,6 +179,14 @@ impl App {
                 self.reseat_expand();
                 return None;
             }
+            // **alt-n opens the newest notice line whole** (R89) — every notice is one line and a
+            // click opens the rest; this is the same act from the keyboard, wherever it is, since
+            // the line is on the conversation whatever is in front of it. Nothing typed is lost:
+            // the popup closes with Esc onto the composer as it was.
+            Key::AltN => {
+                self.open_latest_notice();
+                return None;
+            }
             k => k,
         };
         // **A wheel notch goes to the surface under the pointer** — see [`App::wheel_at`]. One
@@ -1194,6 +1202,9 @@ pub enum Key {
     AltR,
     /// **alt-p: show the reseat card** — open the card the strip is the pinned form of.
     AltP,
+    /// **alt-n: open the newest notice whole** — the popup a click on its one line opens (R89):
+    /// every notice is one line, and the keyboard needs a way to the rest of it.
+    AltN,
     Backspace,
     Delete,
     Left,
@@ -1389,6 +1400,7 @@ impl Key {
             | Key::AltA
             | Key::AltR
             | Key::AltP
+            | Key::AltN
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

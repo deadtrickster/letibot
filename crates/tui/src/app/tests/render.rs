@@ -58,7 +58,13 @@ fn the_three_registers_are_three_marks() {
     );
     // The three marks, and they are three DIFFERENT marks — which is what survives a
     // `--replay`, a pipe and a light theme, where the colours do not.
-    assert!(routine.contains("· compacted"), "{routine:?}");
+    // The routine register's mark is the `·` of the frame's own `session ·` (R89: every note is
+    // a card's one line in that frame, and a second `·` read as a stutter).
+    assert!(routine.contains("session · "), "{routine:?}");
+    assert!(
+        !routine.contains("! compacted") && !routine.contains("× compacted"),
+        "{routine:?}"
+    );
     assert!(refused.contains("× slash_refused"), "{refused:?}");
     assert!(failure.contains("! ledger_chain_mismatch"), "{failure:?}");
     // The colours: a typo is not red, and it is not the housekeeping dim either.

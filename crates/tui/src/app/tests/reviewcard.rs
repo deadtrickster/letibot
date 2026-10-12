@@ -429,12 +429,15 @@ fn a_shape_the_reader_does_not_know_falls_back() {
             format!("Something the queue says first.\n\n{CANNOT_DECIDE}"),
         ),
     ] {
+        // **Not read as a review — and still one line a notice** (R89): the generic first
+        // clause (or, for a row that opens with something else, that line and the review's
+        // card under it), the reviewer's reasons a click away.
         let mut a = with_notice(&text);
         let screen = a.screen(200, 80);
         let joined = screen.join("\n");
-        assert!(!joined.contains("click for details"), "{what}: {joined}");
-        assert!(joined.contains("COPY FROM STDIN"), "{what}: {joined}");
-        assert!(a.notice_rows.is_empty(), "{what}");
+        assert!(!joined.contains("COPY FROM STDIN"), "{what}: {joined}");
+        assert!(!a.notice_rows.is_empty(), "{what}");
+        assert!(newest_notice(&mut a).contains("COPY FROM STDIN"), "{what}");
     }
     // A `queue_blocked` about a landing is the merge queue's, not a review's.
     for (code, detail) in [
@@ -450,9 +453,17 @@ fn a_shape_the_reader_does_not_know_falls_back() {
     ] {
         assert!(warning_card(code, detail).is_none(), "{code}: {detail}");
         let mut a = with_warning(code, detail);
-        let joined = a.screen(200, 60).join("\n");
-        assert!(joined.contains(code), "{code}: drawn as a note: {joined}");
-        assert!(a.card_rows.is_empty(), "{code}");
+        let screen = a.screen(200, 60);
+        let joined = screen.join("\n");
+        assert_eq!(
+            screen
+                .iter()
+                .filter(|l| l.contains(&format!(" {code} · ")))
+                .count(),
+            1,
+            "{code}: drawn as the generic line: {joined}"
+        );
+        assert_eq!(newest_notice(&mut a), detail, "{code}");
     }
 }
 

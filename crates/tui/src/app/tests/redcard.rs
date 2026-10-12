@@ -392,12 +392,19 @@ fn a_shape_the_parser_does_not_know_falls_back() {
         let mut a = with_notice(&text);
         let screen = a.screen(200, 60);
         let joined = screen.join("\n");
+        // **Not read as red** — no `‼` guessed — and still ONE line (R89): the generic
+        // first clause, the whole notice a click away.
         assert!(!joined.contains("‼"), "{what}: {joined}");
-        assert!(
-            joined.contains("its own merge gate fails there"),
+        assert_eq!(
+            rows_with(&screen, "session · notice · ").len(),
+            1,
             "{what}: {joined}"
         );
-        assert!(a.notice_rows.is_empty(), "{what}");
+        assert_eq!(a.notice_rows.len(), 1, "{what}");
+        assert!(
+            holds(&newest_notice(&mut a), "its own merge gate fails there"),
+            "{what}"
+        );
     }
     for (what, detail) in [
         (
@@ -411,18 +418,26 @@ fn a_shape_the_parser_does_not_know_falls_back() {
     ] {
         assert!(warning_tip(&detail).is_none(), "{what} parsed");
         let mut a = with_warning("target_red", &detail);
-        let joined = a.screen(200, 60).join("\n");
-        assert!(
-            joined.contains("target_red"),
-            "{what}: drawn as a note: {joined}"
+        let screen = a.screen(200, 60);
+        let joined = screen.join("\n");
+        assert_eq!(
+            rows_with(&screen, "! target_red · ").len(),
+            1,
+            "{what}: drawn as the generic line: {joined}"
         );
-        assert!(a.card_rows.is_empty(), "{what}");
+        assert!(!joined.contains("‼"), "{what}: {joined}");
+        assert_eq!(newest_notice(&mut a), detail, "{what}");
     }
     // Another code with the same words is not this card.
     let mut a = with_warning("queue_blocked", WARNING);
-    let joined = a.screen(200, 60).join("\n");
-    assert!(joined.contains("queue_blocked"), "{joined}");
-    assert!(a.card_rows.is_empty());
+    let screen = a.screen(200, 60);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, "! queue_blocked · ").len(),
+        1,
+        "{joined}"
+    );
+    assert!(!joined.contains("‼"), "{joined}");
 }
 
 /// **A gate killed at its memory cap is UNJUDGED, not red — one line, from the session notice
@@ -458,11 +473,22 @@ fn a_gate_killed_at_its_cap_is_one_unjudged_line() {
     }
 }
 
-/// **A `gate_killed` warning in a shape this head does not know is drawn as it always was.**
+/// **A `gate_killed` warning in a shape this head does not know is the generic line** — not read
+/// as unjudged, and still one line with its detail a click away (R89).
 #[test]
 fn an_unknown_gate_killed_warning_falls_back() {
     let mut a = with_warning("gate_killed", "the gate was killed, somehow");
     let screen = a.screen(200, 30);
-    assert!(a.card_rows.is_empty(), "{:?}", a.card_rows);
-    assert_eq!(rows_with(&screen, "the gate was killed, somehow").len(), 1);
+    assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
+    assert_eq!(
+        rows_with(
+            &screen,
+            "! gate_killed · the gate was killed, somehow · click for details"
+        )
+        .len(),
+        1,
+        "{}",
+        screen.join("\n")
+    );
+    assert!(!screen.join("\n").contains("UNJUDGED"));
 }

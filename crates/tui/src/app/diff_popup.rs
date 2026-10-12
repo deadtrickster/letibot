@@ -15,7 +15,6 @@ use rano::style::Role;
 use super::editor::FileRef;
 use super::*;
 use crate::ui::transcript::job_card::{EndedJob, JobTail, TAIL_BYTES, notice_jobs};
-use crate::ui::transcript::line_cards::is_card_row;
 
 /// The popup's state: what it shows, where the reader is in it, and the rows it last laid out
 /// (kept per width and diff shape, because a file is re-diffed only when either changes).
@@ -52,6 +51,9 @@ pub(crate) enum PopupBody {
         /// **The operator's answer, when the notice is a question to them** (`asked_card`): the
         /// row the session wrote right after it, so the popup can mark what they chose.
         answer: Option<String>,
+        /// **The top edge, when the opener knew it** — a note card's (whose code the text no
+        /// longer carries), a System row's, the flash notice's. `None` reads it from the text.
+        title: Option<(String, Role)>,
     },
 }
 
@@ -62,6 +64,8 @@ pub(crate) struct NoteCard {
     pub(crate) at: usize,
     pub(crate) lines: usize,
     pub(crate) text: String,
+    /// The popup's top edge and its role — the card's own, read where the code was known.
+    pub(crate) title: (String, Role),
 }
 
 #[derive(Debug, Clone)]
@@ -96,14 +100,26 @@ impl App {
     /// **A card's notice opens the same way** (`line_cards`) — a red target's, a review's: its
     /// text whole, the gate's output or the reviewer's reasons with it, and no jobs under it.
     pub(crate) fn open_notice_popup(&mut self, k: usize) {
-        let Some(text) = self.items.get(k).and_then(agent_row_text) else {
+        let Some(it) = self.items.get(k) else {
             return;
         };
-        let jobs = match notice_jobs(&text) {
-            Some(jobs) => jobs,
-            None if is_card_row(&text) => Vec::new(),
-            None => return,
+        // **A System row is a notice too** (R89): its one line opens its text whole.
+        if let Some((text, bootstrap)) = system_row_text(it) {
+            let c = crate::ui::transcript::notice_card::system_notice(&text, bootstrap);
+            self.open_popup(PopupBody::Notice {
+                text,
+                jobs: Vec::new(),
+                answer: None,
+                title: Some((c.title, c.role)),
+            });
+            return;
+        }
+        // **And every row the session spoke is one** (R89): a card's, a job's, a fold's, or the
+        // fallback's line — each is a summary, and the popup is the text.
+        let Some(text) = agent_row_text(it) else {
+            return;
         };
+        let jobs = notice_jobs(&text).unwrap_or_default();
         let asks: Vec<(String, u64)> = jobs
             .iter()
             .filter(|(mine, _)| *mine)
@@ -112,7 +128,47 @@ impl App {
         self.ask_tails(asks);
         let answer = crate::ui::transcript::asked_card::question_of(&text)
             .and_then(|_| crate::ui::transcript::asked_card::answer_after(&self.items, k));
-        self.open_popup(PopupBody::Notice { text, jobs, answer });
+        self.open_popup(PopupBody::Notice {
+            text,
+            jobs,
+            answer,
+            title: None,
+        });
+    }
+
+    /// **Open a text whole in the notice popup** under `title` — the flash notice's, cut on its
+    /// line (R89).
+    pub(crate) fn open_text_popup(&mut self, text: String, title: (String, Role)) {
+        self.open_popup(PopupBody::Notice {
+            text,
+            jobs: Vec::new(),
+            answer: None,
+            title: Some(title),
+        });
+    }
+
+    /// **The newest notice line on the conversation, opened** — `alt-n` (R89): the keyboard's way
+    /// to what a click on the line does. The newest of the notes' cards and the rows a click
+    /// opens, by where they are drawn.
+    pub(crate) fn open_latest_notice(&mut self) {
+        let row = self
+            .spans
+            .iter()
+            .rev()
+            .find(|sp| {
+                sp.lines > 0
+                    && self.items.get(sp.row).is_some_and(|it| {
+                        agent_row_text(it).is_some() || system_row_text(it).is_some()
+                    })
+            })
+            .map(|sp| (sp.row, sp.at));
+        let card = self.note_cards.len().checked_sub(1);
+        let card_at = card.map(|i| self.note_cards[i].at);
+        match (row, card, card_at) {
+            (_, Some(i), Some(c)) if row.is_none_or(|(_, r)| c > r) => self.open_card_popup(i),
+            (Some((k, _)), _, _) => self.open_notice_popup(k),
+            _ => self.say("no notice on the conversation to open"),
+        }
     }
 
     /// **Open the note card `i` whole** — the click on a card's one line (a `target_red` warning, a
@@ -123,10 +179,12 @@ impl App {
             return;
         };
         let text = card.text.clone();
+        let title = Some(card.title.clone());
         self.open_popup(PopupBody::Notice {
             text,
             jobs: Vec::new(),
             answer: None,
+            title,
         });
     }
 
@@ -224,8 +282,14 @@ impl App {
                                 .map(|(_, j)| (j.id.clone(), j.produced)),
                         );
                     }
-                    // A card's notice is a notice too (`line_cards`).
-                    let is = jobs.is_some() || text.as_deref().is_some_and(is_card_row);
+                    // **Every row the session spoke is a notice, and every System row** (R89):
+                    // each is drawn as notice lines — a card's, a job's, a fold's or the
+                    // fallback's — and a click opens the text whole.
+                    let is = text.is_some()
+                        || self
+                            .items
+                            .get(sp.row)
+                            .is_some_and(|it| system_row_text(it).is_some());
                     last = Some((sp.row, is));
                     is
                 }
@@ -492,4 +556,18 @@ pub(crate) fn whole_file_before(now: &str, c: &rano::review::Change) -> Option<S
         s.push('\n');
     }
     Some(s)
+}
+
+/// **A System row's text, and whether it is the prompt the session opened with** — `None` for
+/// any other row.
+pub(crate) fn system_row_text(
+    it: &letibot_sessionlog::view::SnapshotItem,
+) -> Option<(String, bool)> {
+    match it.item.as_ref()? {
+        letibot_transcript::TranscriptItem::System { text, origin } => Some((
+            text.clone(),
+            *origin == letibot_transcript::SystemOrigin::Bootstrap,
+        )),
+        _ => None,
+    }
 }

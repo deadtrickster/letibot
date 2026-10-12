@@ -912,17 +912,16 @@ impl App {
                     if !hist_lines.is_empty() {
                         hist_lines.push(String::new());
                     }
-                    // **A red target's warning is a card's one line** (`red_card`), and so is
-                    // a review's (`review_card`); a click on it opens the detail whole: where
-                    // it is, kept for the click map.
+                    // **Every note but a pane's ending is a card's one line** (R89); a click on
+                    // it opens the text whole: where it is, kept for the click map, with the
+                    // popup's title — the card's, since the popup no longer has the code.
                     let drawn = note_lines(&cfg, &notes[*note_upto].1);
-                    if let Note::Warned(w) = &notes[*note_upto].1
-                        && card_row(&cfg, &notes[*note_upto].1).is_some()
-                    {
+                    if let Some((card, text, _)) = note_card(&notes[*note_upto].1) {
                         note_cards.push(crate::app::diff_popup::NoteCard {
                             at: hist_lines.len(),
                             lines: drawn.len(),
-                            text: w.detail.clone(),
+                            text,
+                            title: (card.title, card.role),
                         });
                     }
                     hist_lines.extend(drawn);

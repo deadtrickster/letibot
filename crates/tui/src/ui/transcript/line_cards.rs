@@ -36,7 +36,7 @@ use std::ops::Range;
 use rano::style::Role;
 
 use crate::app::SubagentState;
-use crate::ui::render::trim_to;
+use crate::ui::render::{trim_to, visible_width};
 use crate::ui::transcript::job_card::{JobTail, compact_notice};
 use crate::ui::transcript::{asked_card, red_card, restart_card, review_card, stale_card};
 use crate::ui::*;
@@ -91,8 +91,25 @@ impl Card {
     }
 
     /// **The line cut to `cols`** with the head's `…`, the accent kept to what survived the cut.
+    ///
+    /// **The hint is the last thing cut** (R89): a line that ends with [`CLICK`] is cut in the
+    /// facts before it, so the one words that say a click opens the rest survive any width the
+    /// lead still fits in — a hint at the end of a line was the first thing a narrow terminal
+    /// took.
     pub(crate) fn cut(&self, cols: usize) -> CardLine {
-        let text = trim_to(&self.line, cols);
+        let hint = format!(" · {CLICK}");
+        // The facts keep at least this much beside the hint; narrower, the line is cut whole.
+        const FACTS: usize = 16;
+        let lead = visible_width(&self.line[..self.accent.end.min(self.line.len())]);
+        let text = match self.line.strip_suffix(hint.as_str()) {
+            Some(facts)
+                if visible_width(&self.line) > cols
+                    && cols >= visible_width(&hint) + lead + FACTS =>
+            {
+                format!("{}{hint}", trim_to(facts, cols - visible_width(&hint)))
+            }
+            _ => trim_to(&self.line, cols),
+        };
         let kept = text
             .char_indices()
             .zip(self.line.chars())
@@ -144,6 +161,11 @@ pub(crate) const WARNING_KINDS: &[WarningKind] = &[
 
 fn kind_of(text: &str) -> Option<&'static SessionKind> {
     SESSION_KINDS.iter().find(|k| (k.opens)(text))
+}
+
+/// **Whether a text opens with a notice a card reads** — where `notice_card` splits a row.
+pub(crate) fn opens_card(text: &str) -> bool {
+    kind_of(text).is_some()
 }
 
 /// **Where a row's first notice ends**, when the row opens with a card: `(the notice, the rest,

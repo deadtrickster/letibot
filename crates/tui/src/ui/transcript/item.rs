@@ -267,10 +267,9 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         return (RowClass::Other, Vec::new());
     };
     match item {
-        TranscriptItem::System { text, origin } => (
-            RowClass::Other,
-            system_row_lines(text, *origin, it.ts, cfg),
-        ),
+        TranscriptItem::System { text, origin } => {
+            (RowClass::Other, system_row_lines(text, *origin, it.ts, cfg))
+        }
         TranscriptItem::User { .. } => user_row_lines(it, item, ctx),
         TranscriptItem::Reasoning { .. } => reasoning_row_lines(item, ctx, ind),
         TranscriptItem::Assistant { .. } => assistant_row_lines(it, item, ctx, ind),
@@ -285,16 +284,19 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
     }
 }
 
-/// **A row the system wrote into the conversation, drawn** — on its own so the notice
-/// measurement (`walls`) reads exactly what the transcript draws.
+/// **A row the system wrote into the conversation, drawn** — ONE line (R89): `system ·
+/// compacted summary (18.7k chars) · click for details`, the text whole in the popup. A
+/// compaction's summary was drawn whole, up to 190 screen rows of the model's own record, at every
+/// rung that shows system rows. On its own so the notice measurement (`walls`) reads exactly what
+/// the transcript draws.
 pub(crate) fn system_row_lines(
     text: &str,
     origin: letibot_transcript::SystemOrigin,
-    _ts: u64,
+    ts: u64,
     cfg: &RenderConfig,
 ) -> Vec<String> {
-    row_strings(
-        &rano::agent::screens::system_row(&format!("{origin:?}"), text, cfg.width),
-        cfg.palette(),
-    )
+    use crate::ui::transcript::notice_card::system_notice;
+    let bootstrap = origin == letibot_transcript::SystemOrigin::Bootstrap;
+    let line = system_notice(text, bootstrap).cut(session_text_cols(ts, cfg));
+    session_card_block(&[line], ts, cfg)
 }

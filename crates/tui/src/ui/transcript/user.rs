@@ -106,8 +106,37 @@ pub(crate) fn session_row_lines(
                 .join("\n");
             session_block(&folded, ts, cfg)
         }
-        None => session_block(text, ts, cfg),
+        // **And anything else is ONE line a notice** (R89) — the operator's standing rule, *"make
+        // them the usual one liners"*. A row no card and no fold accounts for used to be drawn as
+        // it arrived: a plan check, a parent's brief, a length cap's 6,902 lines. Each notice in
+        // it is now a line (`notice_card`), the whole row a click away.
+        None => session_card_block(&notice_lines(text, subagents, job_tails, cols), ts, cfg),
     }
+}
+
+/// **A row's notices, one line each** — a card's, a job's two, a fold's, or `notice_card`'s
+/// line for a notice nothing else reads. Never empty, never a wall.
+pub(crate) fn notice_lines(
+    text: &str,
+    subagents: &[crate::app::SubagentState],
+    job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+    cols: usize,
+) -> Vec<crate::ui::transcript::line_cards::CardLine> {
+    use crate::ui::transcript::line_cards::CardLine;
+    use crate::ui::transcript::notice_card::{notices, session_notice};
+    let mut out = Vec::new();
+    for part in notices(text) {
+        if let Some(lines) = compact_cards(part, subagents, job_tails, cols) {
+            out.extend(lines);
+        } else if let Some(lines) = compact_notice(part, subagents, job_tails, cols) {
+            out.extend(lines.into_iter().map(CardLine::plain));
+        } else if let Some(folded) = folded_notice(part, subagents) {
+            out.extend(folded.lines().map(|l| CardLine::plain(trim_to(l, cols))));
+        } else {
+            out.push(session_notice(part).cut(cols));
+        }
+    }
+    out
 }
 
 /// **The faint `re: "…"` line under an operator's answer**, behind the same `▌` bar their
