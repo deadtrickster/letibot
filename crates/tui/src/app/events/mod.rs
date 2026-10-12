@@ -32,6 +32,8 @@ impl App {
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         let d = self.apply_frame(frame);
+        // R89: one event, one row — a warning and the session rows that say the same event.
+        self.pair_one_event();
         // **The front card is settled after every frame** (R90.3, R90.4) — see
         // [`App::sync_front`].
         self.sync_front();
@@ -70,6 +72,8 @@ impl App {
         // **The held counts are not in a snapshot** (R91.12): the daemon says them again right
         // after one, so whatever this head last read is dropped rather than carried over.
         self.held = None;
+        // The rows are replaced, so the pairings by row index go with them (re-made after it).
+        self.absorbed.clear();
         // **The same conversation, or a different one**, read once and at the top: the
         // session id is assigned a few lines down, and three things here ask the
         // question — what is carried over, and (R19) which of this head's own notes keep

@@ -450,6 +450,15 @@ impl App {
                     ],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
+                None if crate::app::one_event::is_absorbed(
+                    &self.absorbed,
+                    &self.notes,
+                    &self.dismissed,
+                    k,
+                ) =>
+                {
+                    (RowClass::Other, Vec::new())
+                }
                 None => item_lines(
                     &self.items[k],
                     &ItemCtx {

@@ -1556,6 +1556,10 @@ pub struct App {
     /// until the daemon settles them (`DecisionAnswered`) or refuses the answer (`Rejected`, which
     /// puts the card back in front). See [`App::answer_leaving`].
     pub(crate) answering: Vec<crate::app::todos::Answering>,
+    /// **Rows a warning's card stands for** (R89, one event one row): row index → the key of the
+    /// note whose card draws the event. Such a row draws nothing; its text is in the card's
+    /// popup. See [`one_event`]. Cleared with the rows on a snapshot.
+    pub(crate) absorbed: std::collections::HashMap<usize, String>,
     /// **Todo questions this head has answered and whose board has not come back yet**, as
     /// `(row, question)`. [`App::operator_asks`] leaves them out, so the card can move on to the
     /// next row and the resident line can count what is really left the moment the answer goes;
@@ -1829,6 +1833,7 @@ impl App {
             asks_setting: None,
             away: Vec::new(),
             answering: Vec::new(),
+            absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
             bye: None,
             daemon_pid: None,
@@ -2041,6 +2046,7 @@ mod hits;
 mod keyhints;
 mod keys;
 mod notes;
+pub(crate) mod one_event;
 mod panes;
 mod pick;
 mod pointer;

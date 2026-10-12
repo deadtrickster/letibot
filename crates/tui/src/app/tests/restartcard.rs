@@ -297,3 +297,59 @@ fn a_restart_notice_beside_a_job_completion_keeps_both_compact() {
     );
     assert!(!joined.contains("Their wait is RELEASED"), "{joined}");
 }
+
+/// **R89: one event, one row.** A restart's warning and the session's `[restart]` notice are one
+/// line — the warning's card — whichever arrives first, and its popup carries the notice too.
+#[test]
+fn a_restart_warning_and_its_notice_are_one_line() {
+    for warning_first in [false, true] {
+        let mut a = if warning_first {
+            let mut a = with_warning("restart_restored", RESTORED_WARNING);
+            a.apply(ServerFrame::Event(env(
+                2,
+                SessionEvent::TranscriptAppended {
+                    item_id: "s.0".into(),
+                    kind: "user".into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::TranscriptContent {
+                    item_id: "s.0".into(),
+                    item: Box::new(TranscriptItem::User {
+                        speaker: letibot_transcript::Speaker::Agent,
+                        parts: vec![UserPart::Text {
+                            text: RESTORED_NOTICE.into(),
+                        }],
+                    }),
+                },
+            )));
+            a
+        } else {
+            let mut a = with_notice(RESTORED_NOTICE);
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::Warning {
+                    code: "restart_restored".into(),
+                    detail: RESTORED_WARNING.into(),
+                    compaction: None,
+                },
+            )));
+            a
+        };
+        let screen = a.screen(200, 40);
+        let joined = screen.join("\n");
+        assert_eq!(
+            rows_with(&screen, "restarted · down 4m12s").len(),
+            1,
+            "warning first: {warning_first}\n{joined}"
+        );
+        assert_eq!(a.notice_rows.len(), 0, "{:?}", a.notice_rows);
+        assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
+        let (y, _) = a.card_rows[0];
+        a.key(Key::Click { x: 10, y: y as u16 });
+        let whole = popup_text(&mut a);
+        assert!(holds(&whole, "To run it again: `bash {"), "the notice is in the popup: {whole}");
+    }
+}

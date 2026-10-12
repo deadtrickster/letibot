@@ -885,6 +885,7 @@ impl App {
             note_cards,
             visibility,
             dismissed,
+            absorbed,
             ..
         } = self;
         let diff_split = *diff_split;
@@ -925,7 +926,16 @@ impl App {
                     // it opens the text whole: where it is, kept for the click map, with the
                     // popup's title — the card's, since the popup no longer has the code.
                     let drawn = note_lines(&cfg, &notes[*note_upto].1);
-                    if let Some((card, text, _)) = note_card(&notes[*note_upto].1) {
+                    if let Some((card, mut text, _)) = note_card(&notes[*note_upto].1) {
+                        // R89: the session rows this card stands for, under its own text.
+                        for t in crate::app::one_event::absorbed_texts(
+                            absorbed,
+                            items,
+                            &note_key(&notes[*note_upto].1),
+                        ) {
+                            text.push_str("\n\n");
+                            text.push_str(&t);
+                        }
                         note_cards.push(crate::app::diff_popup::NoteCard {
                             at: hist_lines.len(),
                             lines: drawn.len(),
@@ -1103,6 +1113,13 @@ impl App {
                         }
                     }
                     Some(_) => (RowClass::Other, Vec::new()),
+                    // R89: a row a warning's card stands for draws nothing.
+                    None if crate::app::one_event::is_absorbed(
+                        absorbed, notes, dismissed, *hist_upto,
+                    ) =>
+                    {
+                        (RowClass::Other, Vec::new())
+                    }
                     None => item_lines(
                         &items[*hist_upto],
                         &ItemCtx {

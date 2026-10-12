@@ -492,3 +492,26 @@ fn an_unknown_gate_killed_warning_falls_back() {
     );
     assert!(!screen.join("\n").contains("UNJUDGED"));
 }
+
+/// **R89: one event, one row** — a red target's warning and the session's `EMERGENCY` notice
+/// for the same tip are one line, the notice in its popup.
+#[test]
+fn a_red_warning_and_its_emergency_notice_are_one_line() {
+    let mut a = with_notice(NOTICE);
+    a.apply(ServerFrame::Event(env(
+        3,
+        SessionEvent::Warning {
+            code: "target_red".into(),
+            detail: WARNING.into(),
+            compaction: None,
+        },
+    )));
+    let screen = a.screen(200, 40);
+    assert_eq!(a.notice_rows.len(), 0, "{}", screen.join("\n"));
+    assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
+    let (y, _) = a.card_rows[0];
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let whole = popup_text(&mut a);
+    let first = NOTICE.lines().next().unwrap();
+    assert!(holds(&whole, first), "the notice is in the popup: {whole}");
+}
