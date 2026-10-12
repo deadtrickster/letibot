@@ -276,9 +276,9 @@ impl Parts {
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
             wiring: std::sync::Arc::new(wiring),
-            mode_store: std::sync::Arc::new(
-                std::sync::RwLock::new(crate::modes::ModeStore::open()),
-            ),
+            mode_store: std::sync::Arc::new(std::sync::RwLock::new(crate::modes::ModeStore::open(
+                cfg.store.as_deref(),
+            ))),
             tasks,
             lsp,
             skills,
@@ -2701,7 +2701,18 @@ impl Harness {
         // moving a project never means restarting the daemon.
         let mut mode_source = String::from("daemon flag / default");
         {
-            let store = parts.mode_store.read().unwrap();
+            // **Read fresh**: another daemon may have written a row since this one started.
+            let mut store = parts.mode_store.write().unwrap();
+            store.refresh();
+            let store = &*store;
+            // **The session's own point first** — the one it was put at, which a restart or
+            // a reseat must bring back whatever the project row says now. The operator:
+            // *"and again peerdb allow-all lost after restart/reseat"*.
+            let own = cfg
+                .parent_session_id
+                .is_none()
+                .then(|| store.session(&cfg.session_id))
+                .flatten();
             // **A subagent keeps its parent's point and never re-reads the row.**
             //
             // `sub_cfg` is built with `..self.base.clone()`, so the child already
@@ -2723,7 +2734,25 @@ impl Harness {
             //
             // So the row is for a session somebody opened in that project. A
             // subagent is not that; it is part of a session whose point is settled.
-            if cfg.parent_session_id.is_some() {
+            if let Some((own, when)) = own {
+                cfg.mode = own;
+                mode_source = "this session's own (set with /mode)".into();
+                if own.name == letibot_tools::mode::Mode::ALLOW_ALL.name
+                    && let Some(when) = when
+                {
+                    cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
+                    mode_source = format!("this session's own, at your word of {when}");
+                    notes.push(format!(
+                        "`allow-all` for this session — on this box, with nothing confining it, \
+                         because you said so on {when}. `/mode <other>` takes it back."
+                    ));
+                } else {
+                    notes.push(format!(
+                        "mode is `{}` for this session (set with /mode)",
+                        cfg.mode.name
+                    ));
+                }
+            } else if cfg.parent_session_id.is_some() {
                 // The point itself is the parent's, read live by the spawn and carried in
                 // `cfg.mode`; whether this seat can carry it is decided below, where the
                 // seat's own supplies exist. Here is where the row says where it came from.
@@ -2731,7 +2760,7 @@ impl Harness {
             } else if store.is_set(&cfg.workspace) {
                 let before = cfg.mode.name;
                 cfg.mode = store.for_project(&cfg.workspace);
-                mode_source = "project store (modes.tsv)".into();
+                mode_source = "project store".into();
                 // **And the recorded consent, when the row names the point that needs one.**
                 //
                 // `allow-all` is the point that requires a confinement, so on a bare host the
@@ -2745,7 +2774,7 @@ impl Harness {
                     && let Some(when) = store.consent(&cfg.workspace)
                 {
                     cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL_HERE;
-                    mode_source = format!("project store (modes.tsv), at your word of {when}");
+                    mode_source = format!("project store, at your word of {when}");
                     notes.push(format!(
                         "`allow-all` for {} — on this box, with nothing confining it, because you \
                          said so on {when}. Nothing is asked here and the always-ask list is \

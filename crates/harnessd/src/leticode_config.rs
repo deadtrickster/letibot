@@ -86,7 +86,7 @@
 //! * **the project's** `leticode.toml`, found by walking up from the session's
 //!   workspace — a `.env` for one project, and the file above;
 //! * **the user's** `~/.config/letibot/leticode.toml`, at one fixed path beside
-//!   `providers.toml`, `prompts.toml`, `modes.tsv` and `head.toml`.
+//!   `providers.toml`, `prompts.toml` and `head.toml`.
 //!
 //! > *"nah i thought you will do the user module thing for me."*
 //!

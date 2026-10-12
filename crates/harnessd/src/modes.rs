@@ -1,39 +1,40 @@
-//! **Where a project sits, remembered.**
+//! **Where a project sits, and where a session does, remembered.**
 //!
 //! One durable mapping: **project root → point name**. `~/Projects/letibot` at *writes
 //! allowed*; a directory nobody has said anything about at *always-ask*; `/etc` at
-//! *read-only* if the operator put it there.
+//! *read-only* if the operator put it there. And beside it the point each SESSION was put at,
+//! which is the session's own fact: a restart or a reseat brings it back there.
 //!
 //! This is what replaces the grant table an earlier draft of this design asked for —
 //! `(project, tool, intent class)`, durable, listable, revocable. That table is
 //! correct and nobody audits one. A per-project **point** is a single value a person
 //! can hold in their head, which is the property that makes it safe rather than merely
-//! configurable, and it is the reason the file below is one line per project rather
-//! than a schema.
+//! configurable.
 //!
-//! # It is a text file on purpose
+//! # In the store, not a file
 //!
-//! Two lines of TSV: the point's name, then the root. An operator can read it with
-//! `cat`, edit it with an editor, and delete a line to put a project back to the
-//! default — and every one of those is a thing they can do while the daemon is not
-//! running, which a database is not.
+//! It was `modes.tsv`, a text file each daemon read once at start and rewrote whole from its
+//! own copy — and there is a daemon per workspace, so one daemon's write undid another's. The
+//! operator: *"and again peerdb allow-all lost after restart/reseat"*, then *"lets switch it to
+//! sqlite db"*. The rows are now `project_mode` and `session_mode` in the session store every
+//! daemon already shares (`letibot_tokencore::store::modes`): a write is one row, and a read is
+//! the table as it is now ([`ModeStore::refresh`]). A `modes.tsv` from before is imported once.
 //!
-//! # What an unknown line does
+//! # What an unknown row does
 //!
 //! **It is reported and skipped, never guessed at.** A row naming a point this build
-//! does not have — a newer name, a typo, a hand-edit — does not silently fall back to
-//! the default and does not stop the daemon: [`ModeStore::load`] returns the rows it
-//! could not read alongside the ones it could, and the caller puts them in the startup
-//! disclosure. A store that quietly downgraded one project would be the silent
-//! degradation `crate::config`'s adjudicator refusals already refuse to do, one layer
-//! out.
+//! does not have — a newer name, a typo — does not silently fall back to the default and
+//! does not stop the daemon: it is kept in [`ModeStore::unreadable`] and the caller puts it
+//! in the startup disclosure. A store that quietly downgraded one project would be the silent
+//! degradation `crate::config`'s adjudicator refusals already refuse to do, one layer out.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use letibot_tokencore::store::Store;
 use letibot_tools::mode::{Mode, UNSEEN_PROJECT};
 
-/// A line the store could not read.
+/// A row the store could not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unreadable {
     pub line: usize,
@@ -41,39 +42,31 @@ pub struct Unreadable {
     pub why: String,
 }
 
-/// The mapping, in memory.
+/// The mapping, as last read from the store.
 #[derive(Debug, Clone, Default)]
 pub struct ModeStore {
-    path: Option<PathBuf>,
+    /// The session store the rows live in. `None` is a store that forgets, and says so.
+    db: Option<PathBuf>,
+    /// The legacy `modes.tsv` still to import, taken at the first read.
+    legacy: Option<PathBuf>,
     by_root: BTreeMap<PathBuf, Mode>,
     /// **The operator's recorded consent, per root** — the moment it was given, for the one
     /// point that needs one.
     ///
     /// `allow-all` on a bare host is reachable only through the operator's answer to a
-    /// question ([`Mode::ALLOW_ALL_HERE`]), and that answer used to live in a single process:
-    /// every restart dropped it and they gave it again. Their words: *"make my allow-all
-    /// survive across restarts"*. Recording it HERE is what the module's own objection asks
-    /// for rather than what it forbids — the row then says the point AND that a person agreed
-    /// to it, and [`ModeStore::describe`] reads both aloud, so nothing comes back that the
-    /// banner cannot explain. What the module refused was a point that arrived silently and
-    /// claimed a boundary it did not have; a stamp is the opposite of silent.
-    ///
-    /// Meaningful only on an `allow-all` row, and cleared when the row moves anywhere else,
-    /// because consent is for one question and does not travel to a point nobody picked.
+    /// question ([`Mode::ALLOW_ALL_HERE`]); recorded, the row says the point AND that a person
+    /// agreed to it, and [`ModeStore::describe`] reads both aloud. Meaningful only on an
+    /// `allow-all` row, and cleared when the row moves anywhere else, because consent is for
+    /// one question and does not travel to a point nobody picked.
     consented: BTreeMap<PathBuf, String>,
     /// Rows that did not parse, kept so the disclosure can say so. **Not** dropped: a
-    /// project whose line is malformed is a project the operator thinks they
-    /// configured.
+    /// project whose row is malformed is a project the operator thinks they configured.
     pub unreadable: Vec<Unreadable>,
 }
 
-/// `$XDG_CONFIG_HOME/letibot/modes.tsv`, or `$HOME/.config/letibot/modes.tsv`.
-///
-/// `None` when neither is set, which is a bare test environment. A store with no path
-/// still works and simply forgets — and says so in [`ModeStore::describe`], because a
-/// harness that silently failed to remember would have an operator setting the same
-/// point every morning and wondering why.
-pub fn default_path() -> Option<PathBuf> {
+/// `$XDG_CONFIG_HOME/letibot/modes.tsv`, or `$HOME/.config/letibot/modes.tsv` — where the
+/// rows were kept before the store held them, read once to import them.
+pub fn legacy_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
@@ -81,61 +74,67 @@ pub fn default_path() -> Option<PathBuf> {
 }
 
 impl ModeStore {
-    /// Read the store at `path`. A missing file is an empty store and **not** an
-    /// error: the first run of anything has no file, and treating that as a failure
-    /// would make the ordinary case look broken.
-    pub fn load(path: &Path) -> ModeStore {
+    /// The rows in the store at `db`. A store that cannot be opened is an empty one that says
+    /// why in [`ModeStore::unreadable`] rather than stopping the daemon.
+    pub fn load(db: &Path) -> ModeStore {
         let mut s = ModeStore {
-            path: Some(path.to_path_buf()),
+            db: Some(db.to_path_buf()),
             ..Default::default()
         };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return s;
-        };
-        for (i, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            // Two fields are a row; a third is the operator's recorded consent for it. A
-            // row without one is every row written before this existed, and it loads
-            // unchanged.
-            let mut fields = line.split('\t');
-            let (Some(name), Some(root)) = (fields.next(), fields.next()) else {
-                s.unreadable.push(Unreadable {
-                    line: i + 1,
-                    text: line.to_string(),
-                    why: "no tab: a row is `<mode name>\\t<absolute project root>`, and a third \
-                          `\\t<consented-at>` is the operator's own answer for `allow-all`"
-                        .into(),
-                });
-                continue;
-            };
-            let consented = fields.next().map(str::trim).filter(|c| !c.is_empty());
-            match Mode::parse(name.trim()) {
-                Ok(m) => {
-                    let root = PathBuf::from(root.trim());
-                    if let Some(when) = consented {
-                        s.consented.insert(root.clone(), when.to_string());
-                    }
-                    s.by_root.insert(root, m);
-                }
-                Err(why) => s.unreadable.push(Unreadable {
-                    line: i + 1,
-                    text: line.to_string(),
-                    why,
-                }),
-            }
-        }
+        s.refresh();
         s
     }
 
-    /// Load from [`default_path`], or an empty forgetful store when there is no
-    /// config directory to put one in.
-    pub fn open() -> ModeStore {
-        match default_path() {
-            Some(p) => ModeStore::load(&p),
-            None => ModeStore::default(),
+    /// **The store at `db`, not yet read** — or a forgetful store when the daemon has no
+    /// session store. Nothing is opened here: the daemon builds this before any session exists,
+    /// and the first [`ModeStore::refresh`] (a session opening) imports the legacy file once
+    /// and reads the rows.
+    pub fn open(db: Option<&Path>) -> ModeStore {
+        ModeStore {
+            db: db.map(Path::to_path_buf),
+            legacy: db.and(legacy_path()),
+            ..Default::default()
+        }
+    }
+
+    /// **Read the rows again** — what any daemon wrote since this one last looked. Called at
+    /// every session open and after every write, so no copy outlives the moment it is read.
+    pub fn refresh(&mut self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        if let Some(tsv) = self.legacy.take() {
+            let _ = import_tsv(db, &tsv);
+        }
+        self.by_root.clear();
+        self.consented.clear();
+        self.unreadable.clear();
+        let rows = match Store::open(db).and_then(|st| st.project_modes()) {
+            Ok(rows) => rows,
+            Err(e) => {
+                self.unreadable.push(Unreadable {
+                    line: 0,
+                    text: db.display().to_string(),
+                    why: format!("the store could not be read: {e}"),
+                });
+                return;
+            }
+        };
+        for (i, r) in rows.into_iter().enumerate() {
+            match Mode::parse(r.mode.trim()) {
+                Ok(m) => {
+                    let root = PathBuf::from(&r.root);
+                    if let Some(when) = r.consented_at.filter(|c| !c.is_empty()) {
+                        self.consented.insert(root.clone(), when);
+                    }
+                    self.by_root.insert(root, m);
+                }
+                Err(why) => self.unreadable.push(Unreadable {
+                    line: i + 1,
+                    text: format!("{}\t{}", r.mode, r.root),
+                    why,
+                }),
+            }
         }
     }
 
@@ -170,24 +169,21 @@ impl ModeStore {
         self.by_root.keys().any(|k| root.starts_with(k))
     }
 
-    /// Put a project at a point, and write the file.
+    /// Put a project at a point, and write its row.
     ///
     /// The prerequisite check is **not** here. It belongs to whoever is opening a
     /// session, because what is available is a fact about this daemon on this box at
     /// this moment — a store that refused to record *writes allowed* because no head
     /// happened to be attached would be refusing to remember an intention.
+    ///
+    /// **A row that moves OFF `allow-all` takes the consent with it**; moving TO `allow-all`
+    /// keeps what was recorded, so the row and the answer can arrive in either order.
     pub fn set(&mut self, root: &Path, mode: Mode) -> std::io::Result<()> {
         let root = canonical(root);
-        // **A row that moves OFF `allow-all` takes the consent with it.** The operator
-        // answered a question about that point, not about the one they are moving to — the
-        // same rule the point itself states, that consent does not travel. Moving TO
-        // `allow-all` keeps whatever was recorded, so the row write and the answer can arrive
-        // in either order without one undoing the other.
-        if mode.name != Mode::ALLOW_ALL.name {
-            self.consented.remove(&root);
-        }
-        self.by_root.insert(root, mode);
-        self.flush()
+        let keep = (mode.name == Mode::ALLOW_ALL.name)
+            .then(|| self.consented.get(&root).cloned())
+            .flatten();
+        self.write(&root, mode, keep)
     }
 
     /// **The operator's recorded consent for this project**, if they have given one.
@@ -206,42 +202,41 @@ impl ModeStore {
             .map(|(_, when)| when.as_str())
     }
 
-    /// **Record the operator's answer**, and write the file.
-    ///
-    /// Called from the `/mode` path when the answer to the unconfined-`allow-all` question is
-    /// yes; `when` is the moment, so the disclosure can say whose answer it was and when.
+    /// **Record the operator's answer**, on the project's row.
     pub fn set_consent(&mut self, root: &Path, when: &str) -> std::io::Result<()> {
-        self.consented.insert(canonical(root), when.to_string());
-        self.flush()
+        let root = canonical(root);
+        let mode = self.by_root.get(&root).copied().unwrap_or(Mode::ALLOW_ALL);
+        self.write(&root, mode, Some(when.to_string()))
     }
 
-    /// **Forget it**, for a point that does not need an answer.
-    ///
-    /// `set` already does this when a row moves off `allow-all`; this is the same act for a
-    /// caller that knows the answer is not wanted, and it reports whether there was one — a
-    /// "forgotten" that forgot nothing is the kind of report that makes somebody think they
-    /// revoked something.
+    /// **Forget it**, for a point that does not need an answer. Reports whether there was one
+    /// — a "forgotten" that forgot nothing is the kind of report that makes somebody think
+    /// they revoked something.
     pub fn clear_consent(&mut self, root: &Path) -> std::io::Result<bool> {
-        let had = self.consented.remove(&canonical(root)).is_some();
-        self.flush()?;
+        let root = canonical(root);
+        let had = self.consented.contains_key(&root);
+        if let Some(mode) = self.by_root.get(&root).copied() {
+            self.write(&root, mode, None)?;
+        }
         Ok(had)
     }
 
-    /// Drop a project's row, putting it back to [`UNSEEN_PROJECT`]. Returns whether
-    /// there was one — a "removed" that removed nothing is the kind of report that
-    /// makes somebody think they revoked something.
+    /// Drop a project's row, putting it back to [`UNSEEN_PROJECT`]; the answer goes with it.
+    /// Returns whether there was one.
     pub fn remove(&mut self, root: &Path) -> std::io::Result<bool> {
         let root = canonical(root);
-        let had = self.by_root.remove(&root).is_some();
-        // **The row and the answer go together**: a project with no row has no consent, or a
-        // `/mode` that forgot where the project sits would still open `allow-all` for it.
-        self.consented.remove(&root);
-        self.flush()?;
+        let Some(db) = &self.db else {
+            self.consented.remove(&root);
+            return Ok(self.by_root.remove(&root).is_some());
+        };
+        let had = Store::open(db)
+            .and_then(|st| st.remove_project_mode(&root.display().to_string()))
+            .map_err(std::io::Error::other)?;
+        self.refresh();
         Ok(had)
     }
 
-    /// Every project and where it sits, for a listing. Sorted by root, because a
-    /// listing whose order changes between runs is one nobody can diff.
+    /// Every project and where it sits, for a listing, sorted by root.
     pub fn list(&self) -> Vec<(&Path, Mode)> {
         self.by_root
             .iter()
@@ -249,41 +244,54 @@ impl ModeStore {
             .collect()
     }
 
-    fn flush(&self) -> std::io::Result<()> {
-        let Some(path) = &self.path else {
+    /// **The point this session was put at**, with the answer that opened it — `None` for a
+    /// session nobody moved, which opens at its project's point.
+    pub fn session(&self, session_id: &str) -> Option<(Mode, Option<String>)> {
+        let db = self.db.as_ref()?;
+        let (name, when) = Store::open(db).ok()?.session_mode(session_id).ok()??;
+        Some((Mode::parse(&name).ok()?, when))
+    }
+
+    /// Record the point this session was put at.
+    pub fn set_session(
+        &self,
+        session_id: &str,
+        mode: Mode,
+        consented: Option<&str>,
+    ) -> std::io::Result<()> {
+        let Some(db) = &self.db else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut out = String::from(
-            "# letibot: where each project sits. One row per project root.\n\
-             #   <mode name>\\t<absolute project root>[\\t<consented-at>]\n\
-             # A root with no row is `always-ask`. The longest matching ancestor wins.\n\
-             # The third field is the operator's own answer to the question `allow-all` asks\n\
-             # on a bare host, recorded so that a restart does not throw it away.\n",
-        );
-        for (root, m) in &self.by_root {
-            match self.consented.get(root) {
-                Some(when) => out.push_str(&format!("{}\t{}\t{}\n", m.name, root.display(), when)),
-                None => out.push_str(&format!("{}\t{}\n", m.name, root.display())),
-            }
-        }
-        // Rows this build could not read are **kept**, not dropped on the first write.
-        // Losing an operator's line because a newer build wrote the file is the worst
-        // thing this file could do, and it is the thing a naive rewrite does.
-        for u in &self.unreadable {
-            out.push_str(&format!("{}\n", u.text));
-        }
-        std::fs::write(path, out)
+        Store::open(db)
+            .and_then(|st| st.set_session_mode(session_id, mode.name, consented))
+            .map_err(std::io::Error::other)
+    }
+
+    /// One row, written; then the table read back.
+    fn write(&mut self, root: &Path, mode: Mode, consent: Option<String>) -> std::io::Result<()> {
+        let Some(db) = &self.db else {
+            match &consent {
+                Some(w) => self.consented.insert(root.to_path_buf(), w.clone()),
+                None => self.consented.remove(root),
+            };
+            self.by_root.insert(root.to_path_buf(), mode);
+            return Ok(());
+        };
+        Store::open(db)
+            .and_then(|st| {
+                st.set_project_mode(&root.display().to_string(), mode.name, consent.as_deref())
+            })
+            .map_err(std::io::Error::other)?;
+        self.refresh();
+        Ok(())
     }
 
     /// One line for the startup disclosure, with denominators.
     pub fn describe(&self, root: &Path) -> String {
         let mode = self.for_project(root);
-        let where_ = match &self.path {
+        let where_ = match &self.db {
             Some(p) => p.display().to_string(),
-            None => "nowhere — no XDG_CONFIG_HOME and no HOME, so a change to this \
+            None => "nowhere — this daemon has no session store, so a change to this \
                      project's mode will not survive the daemon"
                 .to_string(),
         };
@@ -301,18 +309,60 @@ impl ModeStore {
         ));
         if !self.unreadable.is_empty() {
             s.push_str(&format!(
-                ". {} row(s) in that file could not be read and were SKIPPED rather \
+                ". {} row(s) there could not be read and were SKIPPED rather \
                  than guessed at: {}",
                 self.unreadable.len(),
                 self.unreadable
                     .iter()
-                    .map(|u| format!("line {} ({})", u.line, u.why))
+                    .map(|u| format!("row {} ({})", u.line, u.why))
                     .collect::<Vec<_>>()
                     .join("; ")
             ));
         }
         s
     }
+}
+
+/// **The rows `modes.tsv` held, into the store — once per store.** A row the store already has
+/// is not overwritten (the store's is newer), and the file is left exactly where it is: the
+/// store records that it was imported, so a row removed later is not brought back by it.
+/// Returns how many rows were imported.
+pub fn import_tsv(db: &Path, tsv: &Path) -> std::io::Result<usize> {
+    let Ok(text) = std::fs::read_to_string(tsv) else {
+        return Ok(0);
+    };
+    let st = Store::open(db).map_err(std::io::Error::other)?;
+    let source = tsv.display().to_string();
+    if st.mode_imported(&source).map_err(std::io::Error::other)? {
+        return Ok(0);
+    }
+    let have: std::collections::BTreeSet<String> = st
+        .project_modes()
+        .map_err(std::io::Error::other)?
+        .into_iter()
+        .map(|r| r.root)
+        .collect();
+    let mut n = 0;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut f = line.split('\t');
+        let (Some(name), Some(root)) = (f.next(), f.next()) else {
+            continue;
+        };
+        let (name, root) = (name.trim(), root.trim());
+        let consent = f.next().map(str::trim).filter(|c| !c.is_empty());
+        if have.contains(root) {
+            continue;
+        }
+        st.set_project_mode(root, name, consent)
+            .map_err(std::io::Error::other)?;
+        n += 1;
+    }
+    st.mark_mode_imported(&source)
+        .map_err(std::io::Error::other)?;
+    Ok(n)
 }
 
 /// Resolve a path as far as the filesystem allows, and keep it as given otherwise.
@@ -330,76 +380,161 @@ fn canonical(p: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("letibot-modes-{name}-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        d.join("modes.tsv")
+    /// A store of its own per call, in a directory removed when the test ends.
+    struct Db(PathBuf);
+
+    impl Drop for Db {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
-    /// **The operator's answer round-trips, and only on the row it was given for.**
-    ///
-    /// MEASURED 2026-10-10: `allow-all` was the one point that could not survive a restart,
-    /// because it needs a confinement a bare host cannot supply and the only thing that opens
-    /// it is a person's answer — an answer that lived in one process and died with it. The row
-    /// carries it now, and this is what that has to mean: it survives the file, it is there
-    /// only for the project that was asked about, and moving that project anywhere else
-    /// forgets it, so `/mode` away and back cannot resurrect an older `yes`.
+    impl Db {
+        fn path(&self) -> PathBuf {
+            self.0.join("sessions.db")
+        }
+    }
+
+    fn db(name: &str) -> Db {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = letibot_sessionlog::testing::scratch_root()
+            .join(format!("letibot-modes-{name}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        Db(d)
+    }
+
+    /// **The operator's answer round-trips, and only on the row it was given for** — and
+    /// moving that project anywhere else forgets it, so `/mode` away and back cannot resurrect
+    /// an older `yes`.
     #[test]
     fn the_operators_answer_round_trips_and_only_where_it_was_given() {
-        let path = tmp("consent");
-        let _ = std::fs::remove_file(&path);
-        let mine = std::env::temp_dir().join("consent/mine");
-        let theirs = std::env::temp_dir().join("consent/theirs");
+        let d = db("consent");
+        let mine = d.0.join("mine");
+        let theirs = d.0.join("theirs");
         let when = "2026-10-10T13:22:13+00:00";
 
-        let mut s = ModeStore::load(&path);
+        let mut s = ModeStore::load(&d.path());
         s.set(&mine, Mode::ALLOW_ALL).expect("set the row");
         s.set_consent(&mine, when).expect("record the answer");
         assert_eq!(s.consent(&mine), Some(when), "the answer did not come back");
         assert_eq!(
             s.consent(&theirs),
             None,
-            "an answer to one project travelled to another"
+            "an answer travelled to another project"
         );
 
-        // **It survives the file**, which is the whole point of recording it rather than
-        // keeping it in memory.
-        let back = ModeStore::load(&path);
+        let back = ModeStore::load(&d.path());
         assert_eq!(
             back.consent(&mine),
             Some(when),
-            "the answer did not survive a reload"
+            "the answer did not survive"
         );
         assert_eq!(back.for_project(&mine).name, "allow-all");
-        let text = std::fs::read_to_string(&path).expect("the file");
-        assert!(
-            text.lines()
-                .any(|l| l.starts_with("allow-all\t") && l.ends_with(when)),
-            "the row does not carry the answer: {text}"
-        );
 
-        // **And moving the project off `allow-all` forgets it.** Consent is for one
-        // question, and it does not travel to a point nobody picked.
-        let mut s = ModeStore::load(&path);
+        let mut s = ModeStore::load(&d.path());
         s.set(&mine, Mode::WRITES_ALLOWED).expect("move the row");
-        assert_eq!(
-            s.consent(&mine),
-            None,
-            "the answer outlived the row it was given for"
-        );
-        let back = ModeStore::load(&path);
-        assert_eq!(back.consent(&mine), None, "and not in the file either");
-        let text = std::fs::read_to_string(&path).expect("the file");
-        assert!(
-            !text.contains(when),
-            "the forgotten answer is still written: {text}"
-        );
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(s.consent(&mine), None, "the answer outlived its row");
+        assert_eq!(ModeStore::load(&d.path()).consent(&mine), None);
+
+        // And the row and the answer arriving in the other order keep each other.
+        let mut s = ModeStore::load(&d.path());
+        s.set_consent(&theirs, when).unwrap();
+        s.set(&theirs, Mode::ALLOW_ALL).unwrap();
+        assert_eq!(ModeStore::load(&d.path()).consent(&theirs), Some(when));
     }
 
-    /// A directory nobody has configured is at always-ask: nothing that is not a read
-    /// happens without the operator, and the first thing they hit is not "why can this
-    /// session not edit".
+    /// **Two daemons share the store, and neither drops the other's row** — the operator,
+    /// 2026-10-12: *"and again peerdb allow-all lost after restart/reseat"*. Each workspace has
+    /// its own daemon; each read `modes.tsv` once at its start and rewrote the whole of it from
+    /// that copy, so letim's daemon, started before peerdb's row was written, wrote its own
+    /// row later and took peerdb's out. A write is one row now, and a fresh read sees the rest.
+    #[test]
+    fn two_daemons_writing_the_store_keep_each_others_rows() {
+        let d = db("two-daemons");
+        let peerdb = d.0.join("peerdb");
+        let letim = d.0.join("letim");
+        let when = "2026-10-12T07:00:00Z";
+
+        let mut a = ModeStore::load(&d.path());
+        let mut b = ModeStore::load(&d.path());
+        a.set(&peerdb, Mode::ALLOW_ALL).unwrap();
+        a.set_consent(&peerdb, when).unwrap();
+        b.set(&letim, Mode::ALLOW_ALL).unwrap();
+
+        let back = ModeStore::load(&d.path());
+        assert_eq!(
+            back.for_project(&peerdb).name,
+            "allow-all",
+            "peerdb's row went"
+        );
+        assert_eq!(back.consent(&peerdb), Some(when), "peerdb's answer went");
+        assert_eq!(back.for_project(&letim).name, "allow-all");
+
+        // A daemon holding an older read sees the row once it looks again.
+        let mut c = ModeStore::load(&d.path());
+        a.set(&d.0.join("later"), Mode::READ_ONLY).unwrap();
+        assert!(!c.is_set(&d.0.join("later")));
+        c.refresh();
+        assert!(c.is_set(&d.0.join("later")), "a fresh read sees it");
+    }
+
+    /// **A session keeps the point it was put at**, whatever its project's row says later.
+    #[test]
+    fn a_session_keeps_its_own_point() {
+        let d = db("session");
+        let s = ModeStore::load(&d.path());
+        assert_eq!(s.session("s-1"), None, "nobody moved it");
+        s.set_session("s-1", Mode::ALLOW_ALL, Some("t")).unwrap();
+        let (m, when) = ModeStore::load(&d.path()).session("s-1").unwrap();
+        assert_eq!(m.name, "allow-all");
+        assert_eq!(when.as_deref(), Some("t"));
+    }
+
+    /// **`modes.tsv` is imported once, and left where it is.** A row the store already has is
+    /// the newer and is kept; a row removed after the import does not come back.
+    #[test]
+    fn the_legacy_file_is_imported_once_and_left_alone() {
+        let d = db("import");
+        let tsv = d.0.join("modes.tsv");
+        let a = d.0.join("a");
+        let b = d.0.join("b");
+        std::fs::write(
+            &tsv,
+            format!(
+                "# a comment\nallow-all\t{}\t2026-10-12T07:54:18Z\nread-only\t{}\n",
+                a.display(),
+                b.display()
+            ),
+        )
+        .unwrap();
+        let mut s = ModeStore::load(&d.path());
+        s.set(&b, Mode::WRITES_ALLOWED).unwrap();
+
+        assert_eq!(
+            import_tsv(&d.path(), &tsv).unwrap(),
+            1,
+            "only the row it lacks"
+        );
+        assert!(tsv.exists(), "the file is left where it is");
+        let mut s = ModeStore::load(&d.path());
+        assert_eq!(s.consent(&a), Some("2026-10-12T07:54:18Z"));
+        assert_eq!(
+            s.for_project(&b).name,
+            "writes allowed",
+            "the store's row is newer"
+        );
+
+        assert!(s.remove(&a).unwrap());
+        assert_eq!(import_tsv(&d.path(), &tsv).unwrap(), 0, "once");
+        assert!(
+            !ModeStore::load(&d.path()).is_set(&a),
+            "a removed row stays removed"
+        );
+    }
+
+    /// A directory nobody has configured is at always-ask, and says nobody said.
     #[test]
     fn an_unseen_project_is_always_ask_and_says_nobody_said() {
         let s = ModeStore::default();
@@ -411,23 +546,22 @@ mod tests {
     }
 
     #[test]
-    fn a_project_round_trips_through_the_file() {
-        let path = tmp("round-trip");
-        let _ = std::fs::remove_file(&path);
-        let root = std::env::temp_dir();
-        let mut s = ModeStore::load(&path);
+    fn a_project_round_trips_through_the_store() {
+        let d = db("round-trip");
+        let root = d.0.join("p");
+        let mut s = ModeStore::load(&d.path());
         s.set(&root, Mode::WRITES_ALLOWED).unwrap();
 
-        let back = ModeStore::load(&path);
+        let mut back = ModeStore::load(&d.path());
         assert_eq!(back.for_project(&root).name, "writes allowed");
         assert!(back.is_set(&root));
         assert_eq!(back.list().len(), 1);
-
-        let mut back = back;
         assert!(back.remove(&root).unwrap(), "there was a row");
         assert!(!back.remove(&root).unwrap(), "and now there is not");
-        assert_eq!(ModeStore::load(&path).for_project(&root).name, "always-ask");
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            ModeStore::load(&d.path()).for_project(&root).name,
+            "always-ask"
+        );
     }
 
     /// The longest matching ancestor wins, and a parent does **not** inherit from a
@@ -440,7 +574,6 @@ mod tests {
             .insert(PathBuf::from("/home/x/Projects"), Mode::WRITES_ALLOWED);
         s.by_root
             .insert(PathBuf::from("/home/x/Projects/secret"), Mode::READ_ONLY);
-
         assert_eq!(
             s.for_project(Path::new("/home/x/Projects/letibot")).name,
             "writes allowed"
@@ -457,40 +590,30 @@ mod tests {
         );
     }
 
-    /// **A row this build cannot read is reported and skipped, never guessed at**, and
-    /// it survives the next write. Losing an operator's line because a newer build
-    /// rewrote the file is the worst thing this file could do.
+    /// **A row this build cannot read is reported and skipped, never guessed at**, and a
+    /// write to another project leaves it in the store.
     #[test]
     fn an_unknown_row_is_reported_skipped_and_kept() {
-        let path = tmp("unknown-row");
-        std::fs::write(
-            &path,
-            "# a comment\nwrites allowed\t/home/x/a\nyolo\t/home/x/b\nnotabhere\n",
-        )
-        .unwrap();
-        let mut s = ModeStore::load(&path);
-        assert_eq!(s.unreadable.len(), 2, "{:?}", s.unreadable);
+        let d = db("unknown-row");
+        let st = Store::open(&d.path()).unwrap();
+        st.set_project_mode("/home/x/a", "writes allowed", None)
+            .unwrap();
+        st.set_project_mode("/home/x/b", "yolo", None).unwrap();
+        drop(st);
+        let mut s = ModeStore::load(&d.path());
+        assert_eq!(s.unreadable.len(), 1, "{:?}", s.unreadable);
         assert_eq!(s.for_project(Path::new("/home/x/a")).name, "writes allowed");
-        assert_eq!(
-            s.for_project(Path::new("/home/x/b")).name,
-            "always-ask",
-            "an unreadable row does not silently downgrade — it is simply not there, \
-             and the disclosure says so"
-        );
-        let d = s.describe(Path::new("/home/x/b"));
-        assert!(d.contains("could not be read"), "{d}");
-        assert!(d.contains("SKIPPED"), "{d}");
+        assert_eq!(s.for_project(Path::new("/home/x/b")).name, "always-ask");
+        let desc = s.describe(Path::new("/home/x/b"));
+        assert!(desc.contains("could not be read"), "{desc}");
+        assert!(desc.contains("SKIPPED"), "{desc}");
 
-        // And a write keeps them.
         s.set(Path::new("/home/x/c"), Mode::READ_ONLY).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("yolo\t/home/x/b"), "{text}");
-        assert!(text.contains("notabhere"), "{text}");
-        let _ = std::fs::remove_file(&path);
+        let rows = Store::open(&d.path()).unwrap().project_modes().unwrap();
+        assert!(rows.iter().any(|r| r.mode == "yolo"), "{rows:?}");
     }
 
-    /// A store with nowhere to write says so rather than silently forgetting. An
-    /// operator setting the same point every morning is the symptom this avoids.
+    /// A store with nowhere to write says so rather than silently forgetting.
     #[test]
     fn a_store_with_no_path_admits_it_forgets() {
         let mut s = ModeStore::default();

@@ -331,7 +331,6 @@ impl App {
             });
         }
         for f in [
-            "modes.tsv",
             "permission.json",
             "providers.toml",
             // **The system prompt's per-model overrides** — a file the operator edits by hand

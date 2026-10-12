@@ -4117,6 +4117,26 @@ impl<'a> Sessions<'a> {
                         .map(|said| (said, h.config().mode)),
                     None => Err("this session has no harness open".into()),
                 };
+                // **And the session remembers where it was put** — its own row, so a restart or
+                // a reseat brings it back here whatever the project's row says by then. The
+                // requested point's NAME with the answer beside it, as the project row is
+                // written: a consented `allow-all` comes back as `allow-all (this box, consented)`.
+                if moved.is_ok() {
+                    let when = consented_here.then(letibot_flowy::seat::rfc3339_now);
+                    let store = self.parts.mode_store.read().unwrap();
+                    if let Err(e) = store.set_session(session_id, mode, when.as_deref())
+                        && let Some(hub) = &hub
+                    {
+                        hub.publish(SessionEvent::Warning {
+                            code: "mode_unpersisted".into(),
+                            detail: format!(
+                                "could not record `{}` for this session: {e}",
+                                mode.name
+                            ),
+                            compaction: None,
+                        });
+                    }
+                }
                 if let Some(hub) = &hub {
                     let _ = match moved {
                         Ok((said, applied)) => hub.publish(SessionEvent::Warning {
