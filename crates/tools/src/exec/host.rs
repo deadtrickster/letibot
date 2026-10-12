@@ -2332,8 +2332,16 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let h =
             HostProcesses::with_tree("/tmp", Box::new(super::super::scope::NoScopes::new("test")));
         let weak = Arc::downgrade(&h.deadlines);
-        // Ours is among the threads that appeared; other tests may have added their own.
-        let started: Vec<String> = deadline_threads().difference(&before).cloned().collect();
+        // Ours is among the threads that appeared; other tests may have added their own. A thread
+        // names itself once it runs, so a loaded box can show it a moment after the spawn.
+        let mut started: Vec<String> = Vec::new();
+        let named_by = Instant::now() + Duration::from_secs(5);
+        while started.is_empty() && Instant::now() < named_by {
+            started = deadline_threads().difference(&before).cloned().collect();
+            if started.is_empty() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         assert!(
             !started.is_empty() || cfg!(not(target_os = "linux")),
             "a host starts a watchdog"
