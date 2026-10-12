@@ -42,7 +42,8 @@ use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
 use letibot_sessionlog::wire::FrameReader;
 
-use crate::app::{Action, App, Disposition, Key, WAY_OUT};
+use crate::app::{Action, App, Disposition, ForceOutcome, ForceWhy, Key, WAY_OUT};
+use crate::head::{ForceTarget, Signaller, force_stop, kill_signaller};
 
 /// Where the terminal's caret belongs: `(row, column)`, zero-based, or nowhere.
 pub type Caret = Option<(usize, usize)>;
@@ -79,6 +80,15 @@ pub struct Link {
     /// itself, not a number read out of a file that may be stale or belong to an older
     /// daemon with the same workspace. `None` when the kernel would not say.
     daemon_pid: Option<i32>,
+    /// **The force path, while it runs** — `head::force_stop` on its own thread, its answer
+    /// arriving here. `Some` from the moment the head takes the force path until the answer
+    /// has been handed to the app.
+    force: Option<Receiver<ForceOutcome>>,
+    /// When the daemon the head is stopping started (`process_started`), read when the stop
+    /// began: what the force path checks the pid against before every signal.
+    stop_started: Option<u64>,
+    /// How the force path sends a signal. `kill(2)`, unless a test stood something else in.
+    signaller: Signaller,
 }
 
 /// **Which process is at the other end of this socket.**
@@ -246,7 +256,7 @@ fn stat_state(stat: &str) -> Option<char> {
 /// **The four facts stay four.** This is what `gone` means: nothing here touches `sent`,
 /// `acked` or `closed`, and the sentence the operator reads still names which of the four it
 /// observed.
-fn process_gone(pid: i32) -> Option<bool> {
+pub(crate) fn process_gone(pid: i32) -> Option<bool> {
     match parentage(pid) {
         Parentage::Ours => match reap_own_child(pid) {
             Some(gone) => Some(gone),
@@ -256,6 +266,42 @@ fn process_gone(pid: i32) -> Option<bool> {
         },
         Parentage::NotOurs => process_gone_by_proc(pid),
     }
+}
+
+/// **When that process started**, as a number that is the same for one process for its whole
+/// life and different for the next process given the same pid — which is the whole of what
+/// the force path needs to know before it signals a pid it read earlier (`head::force_stop`).
+///
+/// Linux: `/proc/<pid>/stat` field 22, `starttime`, in clock ticks since boot — read from the
+/// last `)` like the other fields. macOS: `PROC_PIDTBSDINFO`'s start time, in microseconds.
+/// `None` when the process is gone or cannot be described, and the caller then sends nothing.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn process_started(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat_starttime(&stat)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn process_started(pid: i32) -> Option<u64> {
+    let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut bi as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (got == size).then(|| bi.pbi_start_tvsec * 1_000_000 + bi.pbi_start_tvusec)
+}
+
+/// Field 22 (`starttime`) of one `/proc/<pid>/stat` line: the 20th field after the last `)`.
+#[cfg(any(not(target_os = "macos"), test))]
+fn stat_starttime(stat: &str) -> Option<u64> {
+    let after = &stat[stat.rfind(')')? + 1..];
+    after.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// **Reap our own child, if it has exited** — and answer whether it is gone.
@@ -369,7 +415,35 @@ impl Link {
             identity,
             socket_path,
             daemon_pid,
+            force: None,
+            stop_started: None,
+            signaller: kill_signaller(),
         }
+    }
+
+    /// **Stand in how the force path signals.** For a test that needs a daemon which
+    /// survives SIGTERM and SIGKILL — the one case the head's last farewell is for — and
+    /// cannot have one from the kernel. Kept across [`Link::reconnect`].
+    pub fn set_signaller(&mut self, signaller: Signaller) {
+        self.signaller = signaller;
+    }
+
+    /// **Take the force path** — once — on its own thread, against the pid the HEAD holds.
+    fn start_force(&mut self, pid: Option<i32>) {
+        if self.force.is_some() {
+            return;
+        }
+        let target = ForceTarget {
+            socket: self.socket_path.clone(),
+            pid,
+            started: self.stop_started,
+        };
+        let signal = self.signaller.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(force_stop(&target, &signal));
+        });
+        self.force = Some(rx);
     }
 
     /// **The process at the other end of this socket**, or `None`.
@@ -427,6 +501,11 @@ impl Link {
             self.kind.clone(),
             self.identity.clone(),
         );
+        // **The force path is the head's, not the connection's**: a stop in flight keeps its
+        // thread, its answer and the identity it checks across a new socket.
+        let signaller = self.signaller.clone();
+        let force = self.force.take();
+        let stop_started = self.stop_started;
         *self = Link::spawn(
             client,
             reader,
@@ -435,6 +514,9 @@ impl Link {
             identity,
             self.socket_path.clone(),
         );
+        self.signaller = signaller;
+        self.force = force;
+        self.stop_started = stop_started;
         Ok(())
     }
 
@@ -654,6 +736,32 @@ impl Link {
             // bytes, a `ctrl-q` that would ask `ListJobs` of a daemon that may never have
             // heard of it. Same shape as the detached arm: say once, send nothing, keep
             // reading — a locked head still receives every frame and acks what it renders.
+            //
+            // **Except the exit-and-stop against an OLDER daemon**, which is exactly when the
+            // lock is on and exactly when the stop must still happen: the head does not send
+            // its stop frame to that daemon at all, it takes the force path (see
+            // `ForceWhy::OlderDaemon`). Taken here, ahead of the lock, so the lock cannot
+            // swallow the operator's *stop* and leave a head that exits over a daemon it was
+            // told to stop.
+            if matches!(a, Action::StopDaemon)
+                && let Some(daemon) = app.daemon_protocol()
+                && daemon < letibot_sessionlog::protocol::PROTOCOL_VERSION
+            {
+                let who = self.client.identity().to_string();
+                let pid = app.daemon_pid();
+                self.stop_started = pid.and_then(process_started);
+                app.force_stop_began(
+                    &who,
+                    pid,
+                    ForceWhy::OlderDaemon {
+                        daemon,
+                        head: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+                    },
+                    now_ms(),
+                );
+                self.start_force(pid);
+                continue;
+            }
             if app.skew_locked() {
                 app.refused_while_locked();
                 break;
@@ -956,6 +1064,10 @@ impl Link {
                         // to disagree about which process the operator is being sent to
                         // `ps` for — found by a test that injects a pid the link never saw.
                         let pid = app.daemon_pid();
+                        // **Which process that pid is, read now** while it is certainly the
+                        // daemon: the force path re-reads it before every signal and sends
+                        // nothing to a pid that has since been handed to something else.
+                        self.stop_started = pid.and_then(process_started);
                         let sent = self.client.stop(app.seq, &who);
                         // A failed write is not a failed stop — the socket may already be
                         // gone because the daemon is going — so it is recorded as *not
@@ -1024,10 +1136,37 @@ impl Link {
         // **Read the state out before touching it.** `App::stopping` borrows the app, and
         // every write below is also on the app — a preview in one borrow and a write in
         // the next is what keeps this one function rather than three passes over `self`.
-        let Some((closed, gone, pid, deadline)) = app
-            .stopping()
-            .map(|s| (s.closed, s.gone, s.pid, s.deadline_ms))
-        else {
+        // **The force path's answer, when it has one.** Before the `gone` return below: a
+        // force path that saw the process go is still owed its line in the farewell.
+        if let Some(rx) = &self.force {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.force = None;
+                    app.force_stop_finished(outcome);
+                    app.mark_redraw();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                // The thread died without answering — a panic in it. Said rather than
+                // waited on for ever.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.force = None;
+                    app.force_stop_finished(ForceOutcome {
+                        gone: false,
+                        said: "the force path ended without an answer".into(),
+                    });
+                }
+            }
+        }
+        let Some((closed, gone, pid, deadline, since, forced)) = app.stopping().map(|s| {
+            (
+                s.closed,
+                s.gone,
+                s.pid,
+                s.deadline_ms,
+                s.since_ms,
+                s.forced.is_some(),
+            )
+        }) else {
             return;
         };
         if gone {
@@ -1060,6 +1199,20 @@ impl Link {
                 s.gone = next_gone;
             }
             app.mark_redraw();
+        }
+        // **The ordinary stop did not finish: escalate, once.** The deadline passed and the
+        // process is still there — and only then: a daemon observed gone is never forced, and
+        // the pid is the one the head holds (`App::daemon_pid`), checked again by the force
+        // path before each signal. `forced` is what makes it once: the force path's own
+        // failure is not escalated again, it is said in the farewell with the verb to run.
+        if !next_gone && !forced && now >= deadline {
+            app.force_stop_escalated(
+                ForceWhy::DidNotStop {
+                    waited_ms: deadline.saturating_sub(since),
+                },
+                now,
+            );
+            self.start_force(pid);
         }
         // **The deadline crossing is a frame too.** The waiting line stops being drawn the
         // moment the question is answered, and without this the head would sit on the last
@@ -1116,6 +1269,24 @@ mod tests {
         assert_eq!(stat_state("nonsense with no bracket"), None);
         assert_eq!(stat_ppid("42 (x) S"), None);
         assert_eq!(stat_ppid("42 (x) S not-a-number 1"), None);
+    }
+
+    /// **`starttime` is field 22, read from the last `)`** — the number the force path checks
+    /// a pid against before it signals, so a pid handed on to another process is not signalled.
+    #[test]
+    fn the_start_time_is_field_22_and_names_one_process() {
+        let line = "42 (my ) odd) S 1 42 42 0 -1 4194560 10 0 0 0 1 2 0 0 20 0 3 0 777123 0 0";
+        assert_eq!(stat_starttime(line), Some(777123));
+        assert_eq!(stat_starttime("42 (x) S 1"), None);
+        // This process: one answer, read twice.
+        let me = std::process::id() as i32;
+        assert!(process_started(me).is_some());
+        assert_eq!(process_started(me), process_started(me));
+        assert_eq!(
+            process_started(i32::MAX),
+            None,
+            "a pid that is not there has none"
+        );
     }
 
     /// **A zombie is GONE** — the defect, reproduced against a real one.

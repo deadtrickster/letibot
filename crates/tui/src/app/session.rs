@@ -53,8 +53,68 @@ impl App {
             gone: false,
             pid,
             turn_busy: self.turn_busy(),
+            forced: None,
         });
         self.redraw = true;
+    }
+
+    /// **The head is stopping the daemon the forced way from the start**, because the
+    /// daemon is an older build. No stop frame went out — see [`ForceWhy::OlderDaemon`] —
+    /// so `sent` is false and the farewell says why rather than *could NOT be sent*.
+    pub fn force_stop_began(&mut self, who: &str, pid: Option<i32>, why: ForceWhy, now_ms: u64) {
+        self.stopping = Some(Stopping {
+            who: who.to_string(),
+            since_ms: now_ms,
+            deadline_ms: now_ms,
+            sent: false,
+            acked: false,
+            closed: false,
+            gone: false,
+            pid,
+            turn_busy: self.turn_busy(),
+            forced: Some(Forcing {
+                why,
+                since_ms: now_ms,
+                outcome: None,
+            }),
+        });
+        self.redraw = true;
+    }
+
+    /// **The ordinary stop did not finish, and the head is escalating — once.** Called by
+    /// the driver when the deadline passes with the daemon's process still there. A second
+    /// call is ignored: the escalation is the one extra thing the head does, and if that
+    /// fails too the operator is told what to run.
+    pub fn force_stop_escalated(&mut self, why: ForceWhy, now_ms: u64) {
+        if let Some(s) = self.stopping.as_mut()
+            && s.forced.is_none()
+        {
+            s.forced = Some(Forcing {
+                why,
+                since_ms: now_ms,
+                outcome: None,
+            });
+            self.redraw = true;
+        }
+    }
+
+    /// The forced stop has an answer. `gone` is the force path's own observation of the
+    /// process; it is folded into [`Stopping::gone`] so every reader sees one fact.
+    pub fn force_stop_finished(&mut self, outcome: ForceOutcome) {
+        if let Some(s) = self.stopping.as_mut()
+            && let Some(f) = s.forced.as_mut()
+        {
+            if outcome.gone {
+                s.gone = true;
+            }
+            f.outcome = Some(outcome);
+            self.redraw = true;
+        }
+    }
+
+    /// The protocol the attached daemon said it speaks in its `Hello`, or `None` before one.
+    pub fn daemon_protocol(&self) -> Option<u32> {
+        self.daemon_protocol
     }
 
     /// **Whether a plain detach should be sent on the way out.** Not while a stop is in
@@ -79,6 +139,22 @@ impl App {
     pub fn stop_farewell(&self) -> Option<String> {
         let s = self.stopping.as_ref()?;
         let secs = s.since_ms.max(self.now_ms).saturating_sub(s.since_ms) / 1000;
+        // **A forced stop is always said**, whether or not it worked. The operator chose
+        // *stop*, and the head did something sharper than they asked for — interrupted the
+        // turns and signalled the process — so the farewell says that it did, and why, even
+        // when the daemon is gone: *"yes"* was the answer to *should the head take the force
+        // path itself, with a line saying why*.
+        let forced = s.forced.as_ref().map(|f| {
+            let done = match &f.outcome {
+                Some(o) if o.gone => format!("done: {}.", o.said),
+                Some(o) => format!("the forced way did not finish it either: {}.", o.said),
+                None => "the forced way had not finished when this head left.".to_string(),
+            };
+            format!("{}\n  {done}", f.why.line())
+        });
+        if s.gone {
+            return forced;
+        }
         // **A `Bye` is not the daemon going, on this path.** The operator was reading this
         // pair on nearly every orderly stop, four lines apart and in this order:
         //
@@ -123,11 +199,16 @@ impl App {
         // down, and its process is still in `/proc` — which is the fact a person needs in
         // order to know that `--force` is the right next move and not a workaround for a
         // lie.
-        if s.gone {
-            return None;
-        }
         let pid = pid_word(s.pid);
-        let ask = if self.bye.is_some() {
+        let ask = if matches!(
+            s.forced,
+            Some(Forcing {
+                why: ForceWhy::OlderDaemon { .. },
+                ..
+            })
+        ) {
+            "was not sent as a stop frame, because the daemon is an older build"
+        } else if self.bye.is_some() {
             "was acknowledged, and the daemon began shutting down"
         } else if s.acked {
             "was acknowledged and did not stop"
@@ -154,10 +235,11 @@ impl App {
         } else {
             "No turn was running, so there was nothing for it to finish."
         };
+        let forced = forced.map(|f| format!("{f}\n  ")).unwrap_or_default();
         Some(format!(
             "the daemon was asked to stop and had not gone {secs}s later.\n  \
              the request {ask}; the daemon is still there ({pid}).\n  {because}\n  \
-             `letibot --stop --force` finishes it — it aborts in-flight turns over the \
+             {forced}`letibot --stop --force` finishes it — it aborts in-flight turns over the \
              protocol, then signals, and says `NOT stopped` if the process survives."
         ))
     }
@@ -1027,18 +1109,96 @@ pub struct Stopping {
     /// one whose tool call is executing, and a head that asked only whether a round was generating
     /// would call that stop *a refused one* when it was merely slow.
     pub turn_busy: bool,
+    /// **The force path, when the head took it** — directly for an older daemon, or once,
+    /// automatically, when the ordinary stop's deadline passed with the process still there.
+    /// `None` for a stop that never needed it.
+    pub forced: Option<Forcing>,
 }
+
+/// **Why the head stopped the daemon the forced way.** The operator, after an exit-and-stop
+/// that did not take against an older daemon: *"yeah when i exited letidb and chose to stop
+/// daemon too - it couldnt. had to --stop --force"* — and asked whether the head should
+/// detect that and take the force path itself, with a line saying why: *"yes"*. Each variant
+/// is one of those lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForceWhy {
+    /// The daemon's `Hello` named an older protocol than this head speaks. Such a daemon may
+    /// not read this head's stop frame at all — and this head holds its writes against it
+    /// anyway (`App::skew_locked`) — so the head does not ask and wait: it goes straight to
+    /// the force path, whose interrupt frame every daemon this head can attach to reads.
+    OlderDaemon { daemon: u32, head: u32 },
+    /// The ordinary stop was asked for and the process was still there at the deadline.
+    DidNotStop { waited_ms: u64 },
+}
+
+impl ForceWhy {
+    /// The sentence, said on the screen while the head waits and again in the farewell.
+    pub fn line(&self) -> String {
+        let how = format!(
+            "stopping it the forced way: in-flight turns are interrupted first, then it is \
+             sent SIGTERM, and SIGKILL if it is still there {}s later",
+            FORCE_TERM_GRACE_MS / 1000
+        );
+        match self {
+            ForceWhy::OlderDaemon { daemon, head } => format!(
+                "the daemon is an older build (protocol {daemon}, this head speaks {head}) — {how}"
+            ),
+            ForceWhy::DidNotStop { waited_ms } => format!(
+                "the daemon did not stop within {}s — {how}",
+                waited_ms / 1000
+            ),
+        }
+    }
+}
+
+/// The force path in flight, and its answer once it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forcing {
+    pub why: ForceWhy,
+    /// The head's own clock when the force path started.
+    pub since_ms: u64,
+    pub outcome: Option<ForceOutcome>,
+}
+
+/// **What the force path did** — `crate::head::force_stop`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForceOutcome {
+    /// The daemon's process is gone, observed (zombie-aware, as `watch_stop` observes it).
+    pub gone: bool,
+    /// What was done, in order, as the operator reads it: the interrupt's answer, each
+    /// signal and what followed it, or why no signal was sent.
+    pub said: String,
+}
+
+/// **How long the force path gives SIGTERM before SIGKILL**: five seconds, the figure
+/// `scripts/letibot --stop --force` waits (`wait_gone`) between the two, so the head's force
+/// path and the wrapper's are one path with one number.
+pub const FORCE_TERM_GRACE_MS: u64 = 5_000;
 
 impl Stopping {
     /// **Has the question been answered?** Either the daemon's process is gone — the
     /// operator's choice, carried out — or the deadline has passed and the head can say
     /// what it observed.
+    ///
+    /// **A force path in flight holds the head**, gone or not: it ends on its own
+    /// observation of the process, within its own bounds, and leaving before it answers
+    /// would drop the line saying what it did.
     pub fn resolved(&self, now_ms: u64) -> bool {
-        self.gone || now_ms >= self.deadline_ms
+        match &self.forced {
+            Some(f) => f.outcome.is_some(),
+            None => self.gone || now_ms >= self.deadline_ms,
+        }
     }
 
     /// The line the head draws while it waits, so the screen is never a freeze.
     pub fn waiting_line(&self, now_ms: u64) -> String {
+        if let Some(f) = &self.forced {
+            return format!(
+                "stopping the daemon: {} — {} so far.",
+                f.why.line(),
+                dur_human(now_ms.saturating_sub(f.since_ms)),
+            );
+        }
         let out = now_ms.saturating_sub(self.since_ms);
         let left = self.deadline_ms.saturating_sub(now_ms);
         let seen = if self.acked {
@@ -1049,8 +1209,8 @@ impl Stopping {
             "the request could not be sent — the socket is already gone"
         };
         format!(
-            "stopping the daemon: {seen} — {} waiting, {} before this head gives up \
-             and tells you what it saw. A turn already generating is interrupted on the \
+            "stopping the daemon: {seen} — {} waiting, {} before this head stops it \
+             the forced way. A turn already generating is interrupted on the \
              way out, not waited for.",
             dur_human(out),
             dur_human(left),
@@ -1058,23 +1218,31 @@ impl Stopping {
     }
 }
 
-/// **How long a head waits for a daemon it has asked to stop.**
+/// **How long a head waits for a daemon it has asked to stop** — and, since the head escalates
+/// on its own, **how long an orderly stop is given before it is forced**.
 ///
-/// **Five seconds, and it is not this head's number** — it is the figure
-/// `~/bin/letibot` settled on for the same question, at the site of the same incident:
+/// It was five seconds, the wrapper's figure for *SIGTERM → SIGKILL* (`wait_gone` in
+/// `scripts/letibot`), and that was fine while the deadline only decided when to print a
+/// sentence. It now decides when to interrupt and signal, so it has to cover what an orderly
+/// stop legitimately does after the request is read (`harnessd`'s `cli.rs`, after the worker
+/// loop returns):
 ///
-/// ```bash
-/// for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d "/proc/$p" ] || break; sleep 0.5; done
-/// if [ -d "/proc/$p" ]; then
-///   echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
-/// ```
+/// * the merge queue is joined, and a gate in flight is killed with its process group —
+///   *SIGTERM, five seconds, SIGKILL* — **up to 5 s**;
+/// * every subagent's VM is brought down (`firecode::down_all`);
+/// * `daemon.shutdown()` joins the accept loop and unlinks the socket;
+/// * `drain_subagents(SUBAGENT_EXIT_GRACE)` waits for the children it told to stop —
+///   **up to 5 s**;
+/// * `lifeline.stopped()` writes the stop time the next daemon measures its down time from
+///   (one store open), and the heartbeat thread dies with the process.
 ///
-/// Its comment carries the measurement: *"'stopped' is said AFTER the process is gone, not
-/// after the signal is sent … Measured 2026-09-16: a daemon wedged on a llama-server that
-/// had gone away swallowed SIGTERM, this printed 'stopped', deleted the record, and left an
-/// orphan holding the store and the GPU that `--daemons` could no longer see."* Two halves
-/// of one program, one figure, and the head never read it.
-pub const STOP_DEADLINE_MS: u64 = 5_000;
+/// Two bounded five-second waits back to back, plus the VMs and a store write: **fifteen
+/// seconds** covers the slowest orderly stop with room, and a daemon that is still there
+/// after it is not draining — it is wedged. Forcing one sooner would SIGKILL a daemon in
+/// the middle of recording its own stop, which turns a clean restart into a crash the next
+/// daemon reports. An orderly stop with nothing to drain takes milliseconds, so this costs
+/// nothing in the ordinary case; the screen says what it is waiting for the whole time.
+pub const STOP_DEADLINE_MS: u64 = 15_000;
 
 /// How long between attempts to get back, in milliseconds.
 ///

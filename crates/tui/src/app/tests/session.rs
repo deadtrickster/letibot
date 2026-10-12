@@ -2502,3 +2502,112 @@ fn a_resume_keeps_the_cat_until_the_asked_for_session_arrives() {
         "the refusal was not said"
     );
 }
+
+/// **A force path in flight holds the head, and the farewell says what it did** — whether or
+/// not it worked. The operator asked for the head to take the force path itself *"with a line
+/// saying why"*: *"yes"*. So a forced stop that ended the daemon is still said, and one that
+/// did not end it keeps the verb.
+#[test]
+fn a_forced_stop_holds_the_head_and_is_said_either_way() {
+    let escalated = || {
+        let mut a = app();
+        a.stop_began("dead", true, Some(4242), 1_000);
+        a.clock(1_000 + STOP_DEADLINE_MS + 1);
+        a.force_stop_escalated(
+            ForceWhy::DidNotStop {
+                waited_ms: STOP_DEADLINE_MS,
+            },
+            1_000 + STOP_DEADLINE_MS + 1,
+        );
+        a
+    };
+    let mut a = escalated();
+    let later = 1_000 + STOP_DEADLINE_MS + 60_000;
+    assert!(
+        !a.stopping().unwrap().resolved(later),
+        "past the deadline, but the force path has not answered"
+    );
+    let line = a
+        .stopping()
+        .unwrap()
+        .waiting_line(1_000 + STOP_DEADLINE_MS + 500);
+    assert!(
+        line.contains("the daemon did not stop within 15s — stopping it the forced way"),
+        "{line}"
+    );
+    // Escalated once: a second call does not restart it.
+    a.force_stop_escalated(ForceWhy::DidNotStop { waited_ms: 1 }, 99_999);
+    assert!(matches!(
+        a.stopping().unwrap().forced.as_ref().unwrap().why,
+        ForceWhy::DidNotStop { waited_ms } if waited_ms == STOP_DEADLINE_MS
+    ));
+
+    let mut failed = escalated();
+    a.force_stop_finished(ForceOutcome {
+        gone: true,
+        said: "no turns were in flight; SIGTERM ended it (pid 4242)".into(),
+    });
+    assert!(a.stopping().unwrap().resolved(later));
+    let said = a.stop_farewell().expect("a forced stop is said");
+    assert!(said.contains("stopping it the forced way"), "{said}");
+    assert!(
+        said.contains("done: no turns were in flight; SIGTERM ended it"),
+        "{said}"
+    );
+    assert!(!said.contains("letibot --stop --force"), "{said}");
+
+    failed.force_stop_finished(ForceOutcome {
+        gone: false,
+        said: "SIGKILL did not end it within 2s".into(),
+    });
+    assert!(failed.stopping().unwrap().resolved(later));
+    let said = failed
+        .stop_farewell()
+        .expect("a stop that did not happen is said");
+    assert!(
+        said.contains("the forced way did not finish it either"),
+        "{said}"
+    );
+    assert!(
+        said.contains("4242") && said.contains("letibot --stop --force"),
+        "{said}"
+    );
+}
+
+/// **An older daemon: the line names both protocols, and no stop frame is claimed.**
+#[test]
+fn an_older_daemon_is_said_as_one() {
+    let mut a = app();
+    a.force_stop_began(
+        "dead",
+        Some(4242),
+        ForceWhy::OlderDaemon {
+            daemon: 45,
+            head: 47,
+        },
+        1_000,
+    );
+    let s = a.stopping().unwrap();
+    assert!(!s.sent);
+    assert!(
+        s.waiting_line(1_200).contains(
+            "the daemon is an older build (protocol 45, this head speaks 47) — stopping it \
+             the forced way: in-flight turns are interrupted first"
+        ),
+        "{}",
+        s.waiting_line(1_200)
+    );
+    assert!(
+        !a.stopping().unwrap().resolved(u64::MAX),
+        "held until the force path answers"
+    );
+    a.force_stop_finished(ForceOutcome {
+        gone: false,
+        said: "SIGKILL did not end it within 2s".into(),
+    });
+    let said = a.stop_farewell().unwrap();
+    assert!(
+        said.contains("was not sent as a stop frame, because the daemon is an older build"),
+        "{said}"
+    );
+}

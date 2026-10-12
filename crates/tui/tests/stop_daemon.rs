@@ -367,8 +367,18 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
 /// the operator asked for in the incident's own words: they found the orphan with `ps` a
 /// day later, and the whole point is that they should have read it here.
 ///
-/// The real deadline is waited out rather than faked. Five seconds in one test is the price
-/// of asserting a number the operator reads instead of a number the test chose.
+/// The real deadline is waited out rather than faked. Fifteen seconds in one test — and the
+/// force path's own bounds after it — is the price of asserting a number the operator reads
+/// instead of a number the test chose.
+///
+/// **And since the head escalates on its own, this is now the case where the escalation
+/// fails too.** The operator: *"yeah when i exited letidb and chose to stop daemon too - it
+/// couldnt. had to --stop --force"* — so a stop that does not finish is forced by the head
+/// itself (`crates/tui/tests/stop_force.rs`), and only when THAT fails is the operator sent to
+/// run the verb. A process the kernel cannot end does not exist to test with, so the head's
+/// signaller is stood in by one that records what it was asked and delivers nothing: the
+/// head asks for SIGTERM and then SIGKILL, for the pid it holds and no other, and then says
+/// it is still there.
 #[test]
 fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     let path = socket_path("survives");
@@ -379,6 +389,12 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     let pid = child.id() as i32;
 
     let mut link = Link::open(&path, SESSION, 0, "tui", "test").expect("attach");
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(i32, i32)>::new()));
+    let record = asked.clone();
+    link.set_signaller(std::sync::Arc::new(move |pid, sig| {
+        record.lock().unwrap().push((pid, sig));
+        Ok(())
+    }));
     let mut a = app();
     step(&mut link, &mut a);
     a.set_daemon_pid(Some(pid));
@@ -413,8 +429,8 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     // …and it does not leave, for as long as the process is there.
     assert!(!a.should_quit(), "still waiting");
 
-    // Wait the deadline out, ticking as the real loop would.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Wait the deadline and the force path out, ticking as the real loop would.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !a.should_quit() && Instant::now() < deadline {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(25));
@@ -448,6 +464,19 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
     assert!(
         !a.stopping().is_some_and(|s| s.gone),
         "the process was there the whole time"
+    );
+    assert_eq!(
+        *asked.lock().unwrap(),
+        vec![(pid, libc::SIGTERM), (pid, libc::SIGKILL)],
+        "the head forced it once — SIGTERM, then SIGKILL — and only the pid it holds"
+    );
+    assert!(
+        said.contains("did not stop within") && said.contains("stopping it the forced way"),
+        "the escalation is said: {said}"
+    );
+    assert!(
+        said.contains("the forced way did not finish it either"),
+        "and that it failed, which is why the verb follows: {said}"
     );
 
     child.kill().expect("kill");
@@ -581,7 +610,10 @@ fn the_daemons_goodbye_is_not_the_daemon_being_gone() {
     );
 
     // The deadline is the head's own way out, and the sentence it leaves says what it saw.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // **The escalation runs here too** and sends nothing: this head was never told a pid
+    // (nothing seeded `App::daemon_pid`), and the force path signals only the pid the head
+    // holds — so it interrupts, finds no pid, and the farewell keeps its verb.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !a.should_quit() && Instant::now() < deadline {
         step(&mut link, &mut a);
         std::thread::sleep(Duration::from_millis(25));

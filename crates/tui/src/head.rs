@@ -459,15 +459,6 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Interrupt every session whose turn is running, through the same frame an
-/// Esc-Esc sends, and wait for the turns to end.
-///
-/// This is `letibot --stop --force`'s first half. The daemon's own signal
-/// handler deliberately has no force path — its comment calls a kill "a way to
-/// lose the last turn's rows" — and this is the shape that loses none: each
-/// running turn is asked to stop over the protocol, the abort is recorded like
-/// any other, and the daemon is left to a plain SIGTERM, which it can now take
-/// promptly because nothing is mid-turn.
 /// This daemon's sessions, one TSV line each, for `letibot --ls`.
 ///
 /// Reuses `discover` — which learns the ids from the daemon's own refusal of a
@@ -541,39 +532,71 @@ fn one_line(title: &str) -> String {
     }
 }
 
+/// `--interrupt-all`: [`interrupt_turns`], said on stdout the way `scripts/letibot` has
+/// always read it.
 fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = Instant::now() + Duration::from_secs(args.wait.max(1));
-    let held = discover(&args.socket)?;
+    match interrupt_turns(&args.socket, Duration::from_secs(args.wait.max(1)), |id| {
+        println!("  {id} · interrupted")
+    })? {
+        Interrupted::NoSessions => println!("the daemon holds no sessions"),
+        Interrupted::NoneRunning => println!("no turns in flight"),
+        Interrupted::Ended(_) => println!("all turns stopped"),
+    }
+    Ok(())
+}
+
+/// What [`interrupt_turns`] found and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interrupted {
+    /// The daemon holds no sessions at all.
+    NoSessions,
+    /// It holds some and none had a turn running.
+    NoneRunning,
+    /// This many turns were interrupted, and every one has ended.
+    Ended(usize),
+}
+
+/// Interrupt every session whose turn is running, through the same frame an
+/// Esc-Esc sends, and wait for the turns to end.
+///
+/// This is `letibot --stop --force`'s first half — and the head's own force path's
+/// ([`force_stop`]). The daemon's own signal handler deliberately has no force path —
+/// its comment calls a kill "a way to lose the last turn's rows" — and this is the
+/// shape that loses none: each running turn is asked to stop over the protocol, the
+/// abort is recorded like any other, and the daemon is left to a plain SIGTERM, which
+/// it can now take promptly because nothing is mid-turn.
+///
+/// `each` is told every session id as its interrupt goes out. An `Err` is a daemon
+/// that could not be asked, or turns still running when `wait` ran out.
+pub fn interrupt_turns(
+    socket: &std::path::Path,
+    wait: Duration,
+    mut each: impl FnMut(&str),
+) -> Result<Interrupted, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + wait;
+    let held = discover(socket)?;
     if held.is_empty() {
-        println!("the daemon holds no sessions");
-        return Ok(());
+        return Ok(Interrupted::NoSessions);
     }
     // One seat, moved across the sessions that need the interrupt: `Switch`
     // exists so a connection can change sessions, and an interrupt is scoped to
     // the seat's session, so the moving is how one client covers many.
-    let (mut client, _hello, reader) = HeadClient::attach(
-        &args.socket,
-        &held[0],
-        0,
-        "remote",
-        "stop-force",
-        Caps::default(),
-    )?;
+    let (mut client, _hello, reader) =
+        HeadClient::attach(socket, &held[0], 0, "remote", "stop-force", Caps::default())?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || pump(reader, tx));
 
     let sessions = ask_sessions(&mut client, &rx, deadline)?;
     let running: Vec<SessionBrief> = sessions.into_iter().filter(|s| s.status.running).collect();
     if running.is_empty() {
-        println!("no turns in flight");
-        return Ok(());
+        return Ok(Interrupted::NoneRunning);
     }
     for s in &running {
         client.switch(&s.session_id, 0)?;
         // `expected_seq = 0` is "no expectation" at the hub — never stale —
         // which is what a client that is not following the stream gets to say.
         client.interrupt(0, "letibot --stop --force")?;
-        println!("  {} · interrupted", s.session_id);
+        each(&s.session_id);
     }
     loop {
         if Instant::now() >= deadline {
@@ -581,17 +604,153 @@ fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 .into_iter()
                 .filter(|s| s.status.running)
                 .count();
-            return Err(format!("{left} turn(s) still running after {}s", args.wait).into());
+            return Err(format!("{left} turn(s) still running after {}s", wait.as_secs()).into());
         }
         std::thread::sleep(Duration::from_millis(400));
         if !ask_sessions(&mut client, &rx, deadline)?
             .into_iter()
             .any(|s| s.status.running)
         {
-            println!("all turns stopped");
-            return Ok(());
+            return Ok(Interrupted::Ended(running.len()));
         }
     }
+}
+
+/// **How the force path sends a signal**: `kill(pid, sig)`. A parameter rather than a
+/// call so a test can stand in a process that survives everything — the one case the
+/// head's last sentence is for — without needing a process the kernel cannot kill.
+pub type Signaller = std::sync::Arc<dyn Fn(i32, i32) -> std::io::Result<()> + Send + Sync>;
+
+/// The real one: `kill(2)`.
+pub fn kill_signaller() -> Signaller {
+    std::sync::Arc::new(|pid, sig| {
+        if unsafe { libc::kill(pid, sig) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    })
+}
+
+/// **The daemon the force path may signal**: the one this head attached to and nothing else.
+#[derive(Debug, Clone)]
+pub struct ForceTarget {
+    /// The daemon's socket, for the interrupt half.
+    pub socket: std::path::PathBuf,
+    /// `App::daemon_pid` — the process at the other end of this head's socket, from
+    /// `SO_PEERCRED`. `None` and no signal is sent at all.
+    pub pid: Option<i32>,
+    /// **When that process started**, read when the stop began. Re-read before every signal:
+    /// a pid that now names a process that started at a different time is not the daemon
+    /// this head attached to — the daemon went and the number was handed on — and it is not
+    /// signalled.
+    pub started: Option<u64>,
+}
+
+/// How long the force path waits for the interrupt half to answer at all. A daemon that
+/// accepted the connection and then says nothing is exactly the wedge being forced, so the
+/// interrupt is not allowed to hold the signals up past this.
+pub const FORCE_INTERRUPT_WAIT: Duration = Duration::from_secs(3);
+
+/// How long the force path waits for the process after SIGKILL — the wrapper's
+/// `wait_gone "$p" 4`, four half-second steps.
+pub const FORCE_KILL_WAIT: Duration = Duration::from_secs(2);
+
+/// **`letibot --stop --force`, in process** — what the head runs itself when the daemon is
+/// an older build, or when an ordinary stop did not finish.
+///
+/// The operator: *"yeah when i exited letidb and chose to stop daemon too - it couldnt. had
+/// to --stop --force"*; asked whether the head should detect an older daemon and take the
+/// force path itself with a line saying why: *"yes"*.
+///
+/// The same steps as `scripts/letibot --stop --force`, in the same order and with the same
+/// waits: [`interrupt_turns`] (the protocol half, so no turn's rows are lost), then SIGTERM —
+/// which `harnessd` takes as `Registry::close` — then, if the process is still there
+/// [`FORCE_TERM_GRACE_MS`](crate::app::FORCE_TERM_GRACE_MS) later, SIGKILL.
+///
+/// **It signals only [`ForceTarget::pid`], and only while that pid is still the process it
+/// was** (its start time, re-read before each signal), never this process itself, and never
+/// a process that is already gone. Blocking: the driver runs it on its own thread so the
+/// screen stays live.
+pub fn force_stop(t: &ForceTarget, signal: &Signaller) -> crate::app::ForceOutcome {
+    use crate::driver::{process_gone, process_started};
+    let mut said: Vec<String> = Vec::new();
+    // ---- The interrupt, bounded. On its own thread because a wedged daemon accepts the
+    // connection and never answers it, and `HeadClient::attach` has no deadline of its own.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let socket = t.socket.clone();
+    std::thread::spawn(move || {
+        let r = interrupt_turns(&socket, FORCE_INTERRUPT_WAIT, |_| {}).map_err(|e| e.to_string());
+        let _ = tx.send(r);
+    });
+    said.push(
+        match rx.recv_timeout(FORCE_INTERRUPT_WAIT + Duration::from_secs(1)) {
+            Ok(Ok(Interrupted::NoSessions)) => "it held no sessions to interrupt".into(),
+            Ok(Ok(Interrupted::NoneRunning)) => "no turns were in flight".into(),
+            Ok(Ok(Interrupted::Ended(n))) => format!("{n} turn(s) interrupted and ended"),
+            Ok(Err(e)) => format!("the interrupt did not go through ({e})"),
+            Err(_) => format!(
+                "the daemon did not answer the interrupt within {}s",
+                FORCE_INTERRUPT_WAIT.as_secs()
+            ),
+        },
+    );
+    let gone = |pid| process_gone(pid) == Some(true);
+    let finish = |said: Vec<String>, gone: bool| crate::app::ForceOutcome {
+        gone,
+        said: said.join("; "),
+    };
+    let Some(pid) = t.pid else {
+        said.push("no signal sent: the kernel did not name the daemon's pid".into());
+        return finish(said, false);
+    };
+    if gone(pid) {
+        said.push(format!("it went without a signal (pid {pid})"));
+        return finish(said, true);
+    }
+    // **Never this process.** A head whose daemon runs in its own process (a test's
+    // in-process server is the only such case) must not be the one it kills.
+    if pid == std::process::id() as i32 {
+        said.push(format!("no signal sent: pid {pid} is this head itself"));
+        return finish(said, false);
+    }
+    let steps = [
+        (
+            libc::SIGTERM,
+            "SIGTERM",
+            Duration::from_millis(crate::app::FORCE_TERM_GRACE_MS),
+        ),
+        (libc::SIGKILL, "SIGKILL", FORCE_KILL_WAIT),
+    ];
+    for (sig, name, grace) in steps {
+        // **Still the same process?** Read immediately before the signal, so the window in
+        // which the pid could be handed on is a syscall wide.
+        if process_started(pid) != t.started || t.started.is_none() {
+            said.push(format!(
+                "no {name} sent: pid {pid} is no longer the process this head attached to"
+            ));
+            return finish(said, gone(pid));
+        }
+        if let Err(e) = signal(pid, sig) {
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                said.push(format!("it went before {name} (pid {pid})"));
+                return finish(said, true);
+            }
+            said.push(format!("{name} could not be sent to pid {pid} ({e})"));
+            return finish(said, false);
+        }
+        let until = Instant::now() + grace;
+        while Instant::now() < until {
+            if gone(pid) {
+                said.push(format!("{name} ended it (pid {pid})"));
+                return finish(said, true);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        said.push(format!("{name} did not end it within {}s", grace.as_secs()));
+    }
+    let g = gone(pid);
+    finish(said, g)
 }
 
 /// Which sessions does the daemon hold?
