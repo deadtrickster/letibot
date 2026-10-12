@@ -167,18 +167,19 @@ impl App {
                 // answers the password releases the command that was going to ask them the other
                 // question. See [`App::prompt_lines`] for what the second card shows.
                 (None, Some(ask), _) => (self.prompt_lines(ask, w), Vec::new()),
+                // **A key the picker asked for rides in the ask card's slot too**, ahead of a
+                // decision, the pickers and the todo card: it owns the keyboard while it is up,
+                // and the slot draws the card the keys go to (R90.16) — a decision drawn here
+                // while every key typed the key was a screen that lied about the keys.
+                (None, None, _) if self.key_ask.is_some() => (self.key_ask_lines(w), Vec::new()),
+                // **The new-todo card rides in the ask card's slot too**, ahead of a decision and
+                // the quit card, for the same reason: Enter and Esc are its own while it is up.
+                (None, None, _) if self.todo_draft.is_some() => {
+                    (self.todo_card_lines(w), Vec::new())
+                }
                 (None, None, Some(d)) => {
                     card_target = Some(Target::Decision);
                     self.decision_card(d, w)
-                }
-                // **A key the picker asked for rides in the ask card's slot too**, ahead of the
-                // pickers and the todo card: it is the newest question, it owns the keyboard
-                // while it is up, and a list under it is a list nobody is going to use.
-                (None, None, None) if self.key_ask.is_some() => (self.key_ask_lines(w), Vec::new()),
-                // **The new-todo card rides in the ask card's slot too**, and ahead of the quit card:
-                // it is the newest question and the one the keyboard belongs to while it is up.
-                (None, None, None) if self.todo_draft.is_some() => {
-                    (self.todo_card_lines(w), Vec::new())
                 }
                 // The mode card rides in the ask card's slot: a compact card at
                 // the bottom of the screen with the transcript still visible above

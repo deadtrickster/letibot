@@ -378,7 +378,9 @@ impl App {
     /// mid-typing must not turn Enter into "send the half-thought" — and a line
     /// being typed keeps its digits.
     pub(crate) fn key_decision(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if !self.open.is_empty() {
+        // **Not while a draft card is drawn in front of it** (R90.16): ↑↓ and the digits moved a
+        // ladder the operator could not see.
+        if !self.open.is_empty() && self.todo_draft.is_none() && self.key_ask.is_none() {
             let n = decision_rows(&self.open[0]);
             let typing = !self.editor.text().is_empty();
             match k {

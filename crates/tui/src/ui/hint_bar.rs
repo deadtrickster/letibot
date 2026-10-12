@@ -75,6 +75,46 @@ impl App {
         }
     }
 
+    /// **The bar of a card that owns the keyboard**, in `App::key`'s order (R90.19): the tail,
+    /// and whether the composer's half stays (only the todo card types into the composer).
+    pub(crate) fn card_hint(&self) -> Option<(String, bool)> {
+        use crate::ui::cards::decision::PUT_AWAY_HINT;
+        let (tail, composer) = if self.mode_confirm.is_some() {
+            (
+                "y or enter confirms allow-all · any other key cancels".to_string(),
+                false,
+            )
+        } else if self.secret.is_some() {
+            (
+                "type the password · enter gives it · esc refuses".to_string(),
+                false,
+            )
+        } else if self.term_ask.is_some() {
+            (
+                "y ends it · any other key keeps it running".to_string(),
+                false,
+            )
+        } else if self.prompt.is_some() && !self.prompt_away {
+            (
+                format!("type the line · enter sends it · {PUT_AWAY_HINT}"),
+                false,
+            )
+        } else if self.key_ask.is_some() {
+            (
+                "type the key · enter stores it · esc cancels".to_string(),
+                false,
+            )
+        } else if self.todo_draft.is_some() {
+            (
+                "tab next field · enter adds it · esc cancels".to_string(),
+                true,
+            )
+        } else {
+            return None;
+        };
+        Some((tail, composer))
+    }
+
     /// The bottom bar: what the keys do, right now.
     ///
     /// The composer owns the first half and changes it after the first Esc or
@@ -95,11 +135,21 @@ impl App {
         // The order below is the order `App::key` asks in: a card that owns every key, then the
         // diff popup, rano, the cards in the chrome, the surface, the conversation.
         let drawn = self.drawn();
-        let rano_mode = if self.quit_card {
-            Some(HintMode::QuitCard)
-        } else if self.detached() {
-            Some(HintMode::Detached)
-        } else if drawn == Drawn::DiffPopup && !self.open.is_empty() {
+        // **The cards that own the keyboard come first, in `App::key`'s order** (R90.19): they
+        // had no bar of their own, so the sudo card's bar read "ctrl-s sessions · ctrl-t todos…"
+        // — chords it swallows — and pressing the advertised ctrl-t under the allow-all
+        // confirmation cancelled it. Every key is theirs, so the composer's half is dropped,
+        // except under the todo card, whose fields ARE the composer.
+        if let Some((tail, composer)) = self.card_hint() {
+            let head = composer.then_some(&editor);
+            return crate::ui::render::row(&centred(head, &tail, w), p);
+        }
+        // **Then the order `App::key` asks in and the slot draws in** (R90.6, R90.7, R90.16,
+        // R90.18): the diff popup, the editor pane while it has the keyboard (rano takes every
+        // key before `App::key` sees one), an open decision, the quit card, the setting card.
+        // The quit card and the pickers used to be asked ahead of the decision here while the
+        // decision was drawn ahead of them and took their keys.
+        let rano_mode = if drawn == Drawn::DiffPopup && !self.open.is_empty() {
             // **A decision under the diff popup has the card's keys** (`App::key_diff_popup`
             // yields them); the popup's own keys lead.
             let own = "the diff: pgup/pgdn scroll · esc closes it";
@@ -130,18 +180,20 @@ impl App {
             );
         } else if self.editor_focused() {
             Some(HintMode::Editor)
+        } else if !self.open.is_empty() {
+            // **The decision's own bar** (R90.2) — a question's names the way to step away, and
+            // a permission's says a row number marks rather than answers.
+            return crate::ui::render::row(&centred(Some(&editor), &self.deciding_tail(), w), p);
+        } else if self.quit_card {
+            Some(HintMode::QuitCard)
+        } else if self.detached() {
+            Some(HintMode::Detached)
         } else if self.editor_drawn() {
             Some(HintMode::EditorBehind)
         } else if self.pick.is_some() {
             // **The cards in the chrome are in front of the surface** — they take their keys
             // first in `App::key` — so the bar describes the card while one is up.
             Some(HintMode::Pick)
-        } else if self.open.first().is_some_and(|d| d.kind == "question") {
-            // **A question card's bar names the way to step away from it** — rano's `Deciding`
-            // tail is a permission's, and pinned, so the question's is written here.
-            return crate::ui::render::row(&centred(Some(&editor), &self.deciding_tail(), w), p);
-        } else if !self.open.is_empty() {
-            return crate::ui::render::row(&centred(Some(&editor), &self.deciding_tail(), w), p);
         } else {
             None
         };

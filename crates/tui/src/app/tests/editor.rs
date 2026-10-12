@@ -1367,3 +1367,37 @@ fn a_note_the_notes_tool_rewrote_is_drawn_and_clicked_as_an_edit() {
     assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
     assert!(a.diff_popup.is_some(), "a click opens the popup");
 }
+
+/// **R90.7: a decision arriving while the editor has the keyboard takes it back**, and the bar
+/// describes the card — `1` or Enter meant for the card used to edit the file.
+#[test]
+fn a_decision_arriving_takes_the_keyboard_back_from_the_editor() {
+    let ws = workspace("decision");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    a.key(Key::CtrlBracket);
+    settle(&mut a);
+    assert!(a.editor_focused());
+    a.apply(ServerFrame::Event(env(9, testing::requested("r1", "rm"))));
+    assert!(!a.editor_focused(), "the keyboard is back on the composer");
+    assert!(a.editor_drawn(), "the file stays on the screen");
+    let bar = a.hint_bar(200);
+    assert!(
+        bar.contains("a row number marks"),
+        "the bar is the card's: {bar}"
+    );
+    let keys = route_text(&mut a, "2");
+    for k in keys {
+        a.key(k);
+    }
+    assert_eq!(a.sel, 1, "the digit reached the card");
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::Answer {
+            req_id: "r1".into(),
+            option_id: "deny".into(),
+            pattern: None,
+            note: None
+        })
+    );
+}

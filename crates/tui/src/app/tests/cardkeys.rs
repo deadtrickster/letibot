@@ -273,3 +273,71 @@ fn the_quit_cards_enter_keeps_the_empty_composer_guard() {
     assert!(a.quit_card && !a.quit, "still up, nothing quit");
     assert_eq!(a.input(), "wait");
 }
+
+// ──────────── R90.16 / R90.18 / R90.19: one order for the slot, the keys and the bar ────────────
+
+/// The todo card is open and a permission arrives: the todo card stays drawn and keeps its keys,
+/// the permission's ladder does not move under it, and the bar is the todo card's.
+#[test]
+fn a_draft_card_in_front_of_a_decision_is_drawn_keyed_and_barred_as_one() {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.open_todo_card();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        !screen.contains("Allow once"),
+        "the decision waits behind: {screen}"
+    );
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("waiting behind this card"),
+        "{:?}",
+        a.notice
+    );
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("enter adds it"), "{bar}");
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(a.sel, 0, "↓ did not move a ladder nobody sees");
+    a.key(Key::Esc);
+    assert!(a.todo_draft.is_none(), "Esc was the todo card's");
+    assert_eq!(a.open.len(), 1, "and not the decision's");
+    assert!(a.screen(120, 30).join("\n").contains("Allow once"));
+}
+
+/// The setting picker opened while a decision is up: the decision is drawn and keyed, so the bar
+/// is the decision's, not the picker's.
+#[test]
+fn the_bar_names_the_decision_over_a_picker() {
+    let mut a = app();
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    a.pick = Some(Pick::Mode);
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("a row number marks"), "{bar}");
+}
+
+/// Cards that own every key have a bar of their own, without the conversation's chords.
+#[test]
+fn a_card_that_owns_the_keyboard_has_its_own_bar() {
+    let mut a = app();
+    a.mode_confirm = Some("allow-all".into());
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("any other key cancels"), "{bar}");
+    assert!(!bar.contains("ctrl-t"), "{bar}");
+    let mut b = app();
+    ask(
+        &mut b,
+        1,
+        SessionEvent::SecretRequested {
+            req_id: "s1".into(),
+            prompt: "password".into(),
+            command: "sudo ls".into(),
+            deadline: 0,
+        },
+    );
+    let bar = b.hint_bar(200);
+    assert!(bar.contains("type the password"), "{bar}");
+    assert!(!bar.contains("ctrl-s"), "{bar}");
+}

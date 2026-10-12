@@ -192,10 +192,13 @@ impl App {
             },
             k => k,
         };
+        // **The cards that own the keyboard, in the order the slot draws them and the bar names
+        // them** (R90.16, R90.19): the password, the pane-ending confirmation, the prompt card,
+        // the key ask, the new-todo card. The todo card was asked first here while a decision
+        // arriving over it was drawn in its place: Enter filed the todo and Esc cancelled the
+        // draft under a permission card. Both draft cards are drawn ahead of a decision now, and
+        // the decision's keys wait for them (`key_decision`).
         if let ControlFlow::Break(r) = self.key_mode_confirm(&k) {
-            return r;
-        }
-        if let ControlFlow::Break(r) = self.key_todo_draft(&k) {
             return r;
         }
         if let ControlFlow::Break(r) = self.key_secret(&k) {
@@ -208,6 +211,9 @@ impl App {
             return r;
         }
         if let ControlFlow::Break(r) = self.key_key_ask(&k) {
+            return r;
+        }
+        if let ControlFlow::Break(r) = self.key_todo_draft(&k) {
             return r;
         }
         // **An open diff popup owns the keyboard**, below the cards and asks above (a question

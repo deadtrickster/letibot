@@ -340,6 +340,21 @@ impl App {
                 self.quit_card = false;
                 self.say("a decision came up — the quit card closed; ctrl-c twice asks again");
             }
+            // **A decision coming up takes the keyboard back from the editor pane** (R90.7):
+            // rano took every key while it was focused, so `1` or Enter meant for the card
+            // edited the file.
+            if !front.is_empty()
+                && let Some(p) = self.edit_pane.as_mut()
+                && p.focused
+            {
+                p.focused = false;
+                p.dirty = true;
+                self.say("a decision came up — the keyboard is back on the card; ctrl-] returns to the editor");
+            }
+            // **A draft card in front keeps the keys, and says what waits behind it** (R90.16).
+            if !front.is_empty() && (self.todo_draft.is_some() || self.key_ask.is_some()) {
+                self.say("a decision is waiting behind this card — enter or esc it, then answer");
+            }
             if question && !self.editor.text().is_empty() {
                 self.hold_line();
                 self.say(
