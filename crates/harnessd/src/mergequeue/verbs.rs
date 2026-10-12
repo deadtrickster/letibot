@@ -14,6 +14,8 @@
 use std::path::Path;
 
 use letibot_sessionlog::SessionEvent;
+
+use crate::slash::QueueScope;
 use letibot_tokencore::store::{
     Approval, HealthState, MergeRow, MergeState, Move, ReviewKind, ReviewRow, ReviewState, Store,
     TargetHealth,
@@ -57,6 +59,48 @@ fn find(store: &Store, id: &str) -> Result<Found, String> {
         0 => Err(format!("no row of either queue is called `{id}`")),
         n => Err(format!("`{id}` names {n} rows; give more of the id")),
     }
+}
+
+/// **The repository a `/queue` verb typed in a session at `workspace` may act in** (R92 item 5)
+/// — `None` is every repository. [`QueueScope::Here`] is the session's own (the queues' key for
+/// its workspace), and a session of no repository is told so with the lines that reach one.
+pub fn scope_repository(workspace: &Path, scope: &QueueScope) -> Result<Option<String>, String> {
+    match scope {
+        QueueScope::All => Ok(None),
+        QueueScope::Repo(p) => git::repository_key(Path::new(p))
+            .map(Some)
+            .ok_or_else(|| format!("{p} is not a git repository")),
+        QueueScope::Here => super::repository_of_workspace(workspace)
+            .map(Some)
+            .ok_or_else(|| {
+                format!(
+                    "this session's workspace {} is in no repository, so it has no queue of its \
+                     own; `/queue all VERB …` acts across every repository, and `/queue /REPO \
+                     VERB …` in one",
+                    workspace.display()
+                )
+            }),
+    }
+}
+
+/// **Whether the row `id` names is in `repository`** (R92 item 5) — `None` is every repository.
+/// A row of another repository is refused with the line that acts on it, so a verb typed in one
+/// project's session never moves another project's row by accident.
+pub fn in_scope(store: &Store, id: &str, repository: Option<&str>) -> Result<(), String> {
+    let Some(here) = repository else {
+        return Ok(());
+    };
+    let (its, verb_id) = match find(store, id)? {
+        Found::Review(r) => (r.repository, r.id),
+        Found::Merge(m) => (m.repository, m.id),
+    };
+    if its == here {
+        return Ok(());
+    }
+    Err(format!(
+        "`{verb_id}` is a row of {its}, not of this session's repository {here}; `/queue all \
+         VERB {verb_id}` (or `/queue {its} VERB {verb_id}`) acts on it"
+    ))
 }
 
 fn announce(events: &dyn Fn(SessionEvent), queue: &str, id: &str, to: &str, why: &str) {
@@ -398,9 +442,9 @@ pub fn withdraw_by(
 
 /// The parked rows a sweep acts on, by id: rejected, undecided and blocked reviews; failed, timed
 /// out, conflicted and blocked landings.
-fn parked(store: &Store) -> Result<Vec<String>, String> {
-    let reviews = store.review_rows(None).map_err(|e| e.to_string())?;
-    let merges = store.merge_rows(None).map_err(|e| e.to_string())?;
+fn parked(store: &Store, repository: Option<&str>) -> Result<Vec<String>, String> {
+    let reviews = store.review_rows(repository).map_err(|e| e.to_string())?;
+    let merges = store.merge_rows(repository).map_err(|e| e.to_string())?;
     Ok(reviews
         .into_iter()
         .filter(|r| {
@@ -428,17 +472,19 @@ fn parked(store: &Store) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// `/queue reset [ID]` — restart one parked row, or every one.
+/// `/queue reset [ID]` — restart one parked row, or every one in `repository` (`None`: every
+/// repository's).
 pub fn reset(
     store: &Store,
     id: Option<&str>,
+    repository: Option<&str>,
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
     if let Some(id) = id {
         return restart(store, id, session, events);
     }
-    let ids = parked(store)?;
+    let ids = parked(store, repository)?;
     let n = ids
         .iter()
         .filter(|id| restart(store, id, session, events).is_ok())
@@ -446,17 +492,19 @@ pub fn reset(
     Ok(format!("{n} parked row(s) restarted"))
 }
 
-/// `/queue clean [ID]` — withdraw one parked row, or every one. Nothing is deleted.
+/// `/queue clean [ID]` — withdraw one parked row, or every one in `repository` (`None`: every
+/// repository's). Nothing is deleted.
 pub fn clean(
     store: &Store,
     id: Option<&str>,
+    repository: Option<&str>,
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
     if let Some(id) = id {
         return remove(store, id, session, events);
     }
-    let ids = parked(store)?;
+    let ids = parked(store, repository)?;
     let n = ids
         .iter()
         .filter(|id| remove(store, id, session, events).is_ok())
@@ -568,4 +616,109 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
         out.push(h.target);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mergequeue::serve::tests::{TempDir, repo};
+    use letibot_tokencore::store::{MergePriority, NewReview};
+
+    fn parked_review(store: &Store, id: &str, repository: &str) {
+        store
+            .enqueue_review(
+                &NewReview {
+                    id: id.into(),
+                    repository: repository.into(),
+                    target: "main".into(),
+                    kind: ReviewKind::Branch,
+                    session_id: "s-x".into(),
+                    branch: format!("agent/{id}"),
+                    worktree: None,
+                    base_sha: String::new(),
+                    head_sha: "abc".into(),
+                    brief: String::new(),
+                    priority: MergePriority::Subagent,
+                    fixes: None,
+                    evidence: String::new(),
+                },
+                "test",
+                1,
+            )
+            .unwrap();
+        assert!(
+            store
+                .move_review(
+                    id,
+                    ReviewState::Waiting,
+                    ReviewState::Rejected,
+                    &Move::new("test", "rejected"),
+                    2,
+                )
+                .unwrap()
+        );
+    }
+
+    fn state(store: &Store, id: &str) -> ReviewState {
+        store.review_row(id).unwrap().unwrap().state
+    }
+
+    /// **`/queue clean` in one project's session sweeps that project's queue only** (R92 item
+    /// 5) — the operator's *"the /queue is still not project scoped"*. Before, the sweep read
+    /// every repository's parked rows. A row of another repository named by id is refused with the
+    /// line that reaches it; `/queue all` is the explicit way to every repository.
+    #[test]
+    fn the_sweeps_and_the_row_verbs_stay_in_the_sessions_repository() {
+        let dir = TempDir::new("verbs-scope");
+        let mine = repo(&dir.0);
+        let key = git::repository_key(&mine).unwrap();
+        let store = Store::open(&dir.0.join("sessions.db")).unwrap();
+        parked_review(&store, "r-mine", &key);
+        parked_review(&store, "r-theirs", "/elsewhere/other");
+
+        let here = scope_repository(&mine, &QueueScope::Here).unwrap();
+        assert_eq!(here.as_deref(), Some(key.as_str()));
+        let said = clean(&store, None, here.as_deref(), "s-1", &|_| {}).unwrap();
+        assert!(said.starts_with("1 parked"), "{said}");
+        assert_eq!(state(&store, "r-mine"), ReviewState::Withdrawn);
+        assert_eq!(
+            state(&store, "r-theirs"),
+            ReviewState::Rejected,
+            "another repository's row is not this session's to sweep"
+        );
+
+        let refused = in_scope(&store, "r-theirs", here.as_deref()).unwrap_err();
+        assert!(
+            refused.contains("/elsewhere/other") && refused.contains("/queue all"),
+            "{refused}"
+        );
+        assert!(in_scope(&store, "r-mine", here.as_deref()).is_ok());
+
+        // **Explicitly every repository.**
+        let all = scope_repository(&mine, &QueueScope::All).unwrap();
+        assert!(in_scope(&store, "r-theirs", all.as_deref()).is_ok());
+        clean(&store, None, all.as_deref(), "s-1", &|_| {}).unwrap();
+        assert_eq!(state(&store, "r-theirs"), ReviewState::Withdrawn);
+
+        // **A path names one repository** — a worktree path or a subdirectory means its repository.
+        std::fs::create_dir_all(mine.join("sub")).unwrap();
+        let named = QueueScope::Repo(mine.join("sub").display().to_string());
+        assert_eq!(
+            scope_repository(&dir.0, &named).unwrap().as_deref(),
+            Some(key.as_str())
+        );
+    }
+
+    /// **A session of no repository is told so, and offered `/queue all`.**
+    #[test]
+    fn a_session_outside_every_repository_is_told_and_offered_all() {
+        let dir = TempDir::new("verbs-none");
+        let empty = dir.0.join("nothing-here");
+        std::fs::create_dir_all(&empty).unwrap();
+        let why = scope_repository(&empty, &QueueScope::Here).unwrap_err();
+        assert!(
+            why.contains("in no repository") && why.contains("/queue all"),
+            "{why}"
+        );
+    }
 }

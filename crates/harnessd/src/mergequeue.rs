@@ -56,6 +56,7 @@ pub mod serve;
 pub mod settings;
 pub mod setup;
 pub mod verbs;
+pub mod watch;
 
 pub use git::{repo_of_workspace, repo_of_worktree, repo_root};
 
@@ -440,11 +441,27 @@ pub fn spawn_for(
     let store_path = cfg.store.clone()?;
     let env = serve::QueueEnv::production(
         Arc::new(RegistryDoor {
-            registry,
+            registry: registry.clone(),
             store_path: store_path.clone(),
         }),
         cfg.landing_root.clone(),
     );
+    // **Every daemon hears every repository's moves** (R92 item 5): the worker below announces
+    // only what THIS daemon moves, so a head attached here would never re-read a queue another
+    // daemon serves. The watcher reads the shared store's history and says the rest.
+    {
+        let registry = registry.clone();
+        if let Err(e) = watch::spawn(
+            store_path.clone(),
+            lease::this_daemon().owner.clone(),
+            Arc::new(move |e| {
+                registry.broadcast(e);
+            }),
+            stop.clone(),
+        ) {
+            eprintln!("  queues: other daemons' moves will not be heard here: {e}");
+        }
+    }
     let service = serve::QueueService::new(store_path, &cfg.workspace, env);
     match service.spawn(stop) {
         Ok(h) => {
@@ -475,6 +492,32 @@ pub fn spawn_for(
 /// of them.
 pub fn repository_of_workspace(workspace: &Path) -> Option<String> {
     repo_of_workspace(workspace).and_then(|r| git::repository_key(&r))
+}
+
+/// **[`repository_of_workspace`], remembered for a minute** — a head asks for the queues on
+/// every move (R92 item 5), and each answer names the asking session's repository; the answer
+/// for one workspace does not change between two moves, and git need not be asked each time.
+pub fn repository_of_workspace_cached(workspace: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    type Memo = Mutex<HashMap<std::path::PathBuf, (Instant, Option<String>)>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    const KEEP: Duration = Duration::from_secs(60);
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some((at, r)) = memo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(workspace)
+        && at.elapsed() < KEEP
+    {
+        return r.clone();
+    }
+    let r = repository_of_workspace(workspace);
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(workspace.to_path_buf(), (Instant::now(), r.clone()));
+    r
 }
 
 /// **Whether a daemon seated at `workspace` is one of `repo`'s session daemons** — its workspace

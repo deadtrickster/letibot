@@ -1157,33 +1157,66 @@ impl<'a> Sessions<'a> {
             // A refusal is a `SlashReply` with `ok: false`, which the worker publishes as
             // `slash_refused` — the same door every other verb's "no" comes through, so a verb
             // that could not happen says so where the operator is already looking.
-            Slash::Queue(verb) => {
-                use crate::slash::QueueVerb;
+            parsed @ (Slash::Queue(_) | Slash::QueueIn { .. }) => {
+                use crate::slash::{QueueScope, QueueVerb};
+                let (scope, verb) = match parsed {
+                    Slash::QueueIn { scope, verb } => (scope, verb),
+                    Slash::Queue(verb) => (QueueScope::Here, verb),
+                    _ => unreachable!("the arm's own pattern"),
+                };
                 let Some(h) = self.open.get_mut(session_id) else {
                     return SlashReply {
                         lines: vec![format!("session {session_id} is not open")],
                         ok: false,
                     };
                 };
+                // **Scoped to this session's repository unless the line names another** (R92
+                // item 5). `regate` resolves its own repository (it was already the session's
+                // by default); a named scope stands in for its `/REPO`.
+                let repo = match (&verb, &scope) {
+                    (QueueVerb::Regate { .. }, _) => None,
+                    _ => match h.queue_scope(&scope) {
+                        Ok(r) => r,
+                        Err(why) => {
+                            return SlashReply {
+                                lines: vec![why],
+                                ok: false,
+                            };
+                        }
+                    },
+                };
+                let repo = repo.as_deref();
                 // **`session_id` is passed to `approve` and not to the others**, because it is the
                 // one act that writes a decider onto a row: the review's `session_id` becomes the
                 // session the person decided in, and the pane draws that field as *attach to it to
                 // read the argument*.
                 let said = match verb {
-                    QueueVerb::Restart { entry } => h.restart_review(&entry),
-                    QueueVerb::Approve { entry } => h.approve_review(&entry, session_id),
-                    QueueVerb::Veto { entry, why } => h.veto_review(&entry, &why),
-                    QueueVerb::Rm { entry } => h.remove_merge_entry(&entry),
+                    QueueVerb::Restart { entry } => h.restart_review(&entry, repo),
+                    QueueVerb::Approve { entry } => h.approve_review(&entry, session_id, repo),
+                    QueueVerb::Veto { entry, why } => h.veto_review(&entry, &why, repo),
+                    QueueVerb::Rm { entry } => h.remove_merge_entry(&entry, repo),
                     // **The two sweeps take an id or none**, and none is the whole queue — the
                     // operator's ruling is about the queue as much as about a row, so the
                     // `Option` travels as it was parsed rather than being refused here.
-                    QueueVerb::Reset { entry } => h.reset_reviews(entry.as_deref()),
-                    QueueVerb::Clean { entry } => h.clean_entries(entry.as_deref()),
-                    QueueVerb::Regate { repository, target } => h.regate_target(
-                        repository.as_deref(),
-                        target.as_deref(),
-                        &format!("operator:{session_id}"),
-                    ),
+                    QueueVerb::Reset { entry } => h.reset_reviews(entry.as_deref(), repo),
+                    QueueVerb::Clean { entry } => h.clean_entries(entry.as_deref(), repo),
+                    QueueVerb::Regate { repository, target } => match (&scope, repository) {
+                        (QueueScope::All, None) => Err(
+                            "`/queue all regate` names no one repository to gate; `/queue \
+                             regate /REPO [TARGET]` does"
+                                .to_string(),
+                        ),
+                        (QueueScope::Repo(p), None) => h.regate_target(
+                            Some(p),
+                            target.as_deref(),
+                            &format!("operator:{session_id}"),
+                        ),
+                        (_, repository) => h.regate_target(
+                            repository.as_deref(),
+                            target.as_deref(),
+                            &format!("operator:{session_id}"),
+                        ),
+                    },
                 };
                 match said {
                     Ok(line) => SlashReply {
@@ -4606,6 +4639,22 @@ impl SessionSource for StoreSessions {
     fn queues(&self) -> letibot_sessionlog::event::QueueSnapshot {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         crate::mergequeue::snapshot(&g)
+    }
+
+    /// **The asking session's repository, by the queues' own rule** (R92 item 5) — the
+    /// workspace the store holds for it, read as `mergequeue::repository_of_workspace` reads it.
+    /// The store lock is released before git is asked.
+    fn queue_here(&self, session_id: &str) -> Option<letibot_sessionlog::event::QueueHere> {
+        let workspace = {
+            let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            g.session_workspace(session_id).ok().flatten()?
+        };
+        Some(letibot_sessionlog::event::QueueHere {
+            repository: crate::mergequeue::repository_of_workspace_cached(std::path::Path::new(
+                &workspace,
+            )),
+            workspace,
+        })
     }
 
     fn list(&self) -> Vec<StoredBrief> {

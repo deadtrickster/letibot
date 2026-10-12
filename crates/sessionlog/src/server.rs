@@ -917,8 +917,10 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // registry: a pane that opens must answer while it is open. Both queues, every
                 // state, with the leases, the targets' health and the last moves; a store that
                 // could not be read is said in the snapshot (R61), never sent as an empty queue.
+                // The asking session's repository rides along (R92 item 5): the pane and the
+                // edge are scoped to it by default.
                 let f = ServerFrame::Queues {
-                    snapshot: registry.queues(),
+                    snapshot: registry.queues_for(&seat.hub.session_id()),
                 };
                 writer.lock().unwrap().write(&f)?;
             }

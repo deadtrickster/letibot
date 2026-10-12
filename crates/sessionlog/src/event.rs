@@ -393,6 +393,25 @@ pub struct QueueSnapshot {
     /// whole read.
     #[serde(default)]
     pub unreadable: Option<String>,
+    /// **Which repository the ASKING session is a session of** — filled per connection by the
+    /// server, so a head scopes its pane and its edge to its own project (R92 item 5) without
+    /// re-deriving the daemon's repository identity (the canonical main checkout of the
+    /// workspace's `git-common-dir`). `None` from a daemon too old to say; `Some` with no
+    /// `repository` is a session whose workspace is in no repository. An added, defaulted field
+    /// on an existing struct: no `PROTOCOL_VERSION` bump.
+    #[serde(default)]
+    pub here: Option<QueueHere>,
+}
+
+/// **The asking session's place in the queues** — see [`QueueSnapshot::here`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueHere {
+    /// The session's workspace, as the store has it.
+    pub workspace: String,
+    /// The queues' key for the repository that workspace is a session of — `None` when it is a
+    /// session of no repository.
+    #[serde(default)]
+    pub repository: Option<String>,
 }
 
 /// **One review row on the wire** — see `letibot_tokencore::store::ReviewRow`.

@@ -8535,26 +8535,50 @@ impl Harness {
         })
     }
 
+    /// **The repository a `/queue` verb may act in** (R92 item 5) — `None` is every repository.
+    /// [`QueueScope::Here`](crate::slash::QueueScope::Here) is this session's own, and a session
+    /// of no repository is told so with the line that reaches every repository.
+    pub fn queue_scope(&self, scope: &crate::slash::QueueScope) -> Result<Option<String>, String> {
+        crate::mergequeue::verbs::scope_repository(&self.cfg.workspace, scope)
+    }
+
     /// `/queue restart ID` — a parked review back to waiting, a parked landing back in line.
-    pub fn restart_review(&self, entry_id: &str) -> Result<String, String> {
+    pub fn restart_review(
+        &self,
+        entry_id: &str,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
         let me = self.hub.session_id();
         self.queue_verb("restart anything in", |s, ev| {
+            crate::mergequeue::verbs::in_scope(s, entry_id, repository)?;
             crate::mergequeue::verbs::restart(s, entry_id, &me, ev)
         })
     }
 
     /// `/queue approve ID` — the operator's approval over the reviewer (decision 5).
-    pub fn approve_review(&self, entry_id: &str, by: &str) -> Result<String, String> {
+    pub fn approve_review(
+        &self,
+        entry_id: &str,
+        by: &str,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
         self.queue_verb("approve anything in", |s, ev| {
+            crate::mergequeue::verbs::in_scope(s, entry_id, repository)?;
             crate::mergequeue::verbs::approve(s, entry_id, by, ev)
         })
     }
 
     /// `/queue veto ID WHY` — the operator's rejection, delivered to the child that did the work.
-    pub fn veto_review(&self, entry_id: &str, why: &str) -> Result<String, String> {
+    pub fn veto_review(
+        &self,
+        entry_id: &str,
+        why: &str,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
         let me = self.hub.session_id();
         let runner = self.subagents.clone();
         self.queue_verb("veto anything in", |s, ev| {
+            crate::mergequeue::verbs::in_scope(s, entry_id, repository)?;
             crate::mergequeue::verbs::veto(
                 s,
                 entry_id,
@@ -8567,26 +8591,45 @@ impl Harness {
     }
 
     /// `/queue rm ID` — withdrawn, with the history kept.
-    pub fn remove_merge_entry(&self, entry_id: &str) -> Result<String, String> {
+    pub fn remove_merge_entry(
+        &self,
+        entry_id: &str,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
         let me = self.hub.session_id();
         self.queue_verb("remove anything from", |s, ev| {
+            crate::mergequeue::verbs::in_scope(s, entry_id, repository)?;
             crate::mergequeue::verbs::remove(s, entry_id, &me, ev)
         })
     }
 
-    /// `/queue reset [ID]` — every parked row restarted, or the one named.
-    pub fn reset_reviews(&self, entry: Option<&str>) -> Result<String, String> {
+    /// `/queue reset [ID]` — every parked row of `repository` restarted, or the one named.
+    pub fn reset_reviews(
+        &self,
+        entry: Option<&str>,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
         let me = self.hub.session_id();
         self.queue_verb("reset", |s, ev| {
-            crate::mergequeue::verbs::reset(s, entry, &me, ev)
+            if let Some(id) = entry {
+                crate::mergequeue::verbs::in_scope(s, id, repository)?;
+            }
+            crate::mergequeue::verbs::reset(s, entry, repository, &me, ev)
         })
     }
 
-    /// `/queue clean [ID]` — every parked row withdrawn, or the one named.
-    pub fn clean_entries(&self, entry: Option<&str>) -> Result<String, String> {
+    /// `/queue clean [ID]` — every parked row of `repository` withdrawn, or the one named.
+    pub fn clean_entries(
+        &self,
+        entry: Option<&str>,
+        repository: Option<&str>,
+    ) -> Result<String, String> {
         let me = self.hub.session_id();
         self.queue_verb("clean", |s, ev| {
-            crate::mergequeue::verbs::clean(s, entry, &me, ev)
+            if let Some(id) = entry {
+                crate::mergequeue::verbs::in_scope(s, id, repository)?;
+            }
+            crate::mergequeue::verbs::clean(s, entry, repository, &me, ev)
         })
     }
 

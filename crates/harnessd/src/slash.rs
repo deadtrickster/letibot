@@ -143,6 +143,13 @@ pub enum Slash {
     /// its rows are the daemon's, and the pane may be open in a session that is not the one the
     /// entry came from.
     Queue(QueueVerb),
+    /// **A queue verb with its scope named** (R92 item 5) — `/queue all VERB …` acts across every
+    /// repository, `/queue /PATH VERB …` in that one. A bare [`Slash::Queue`] is
+    /// [`QueueScope::Here`]: the session's own repository, and nothing else.
+    QueueIn {
+        scope: QueueScope,
+        verb: QueueVerb,
+    },
     /// Turn the guard model on or off on the running session. `None` reports.
     ///
     /// `at` carries an address the first time somebody names one; it is remembered,
@@ -207,6 +214,20 @@ pub enum QueueVerb {
         repository: Option<String>,
         target: Option<String>,
     },
+}
+
+/// **Which repositories a `/queue` verb may act in** (R92 item 5). The operator: *"the /queue is
+/// still not project scoped"* — a sweep typed in one project's session withdrew another
+/// project's parked rows. The default is the session's own repository; any other needs the line
+/// to say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueScope {
+    /// The repository the session's workspace is a session of.
+    Here,
+    /// Every repository the queues hold — `/queue all …`.
+    All,
+    /// The repository at this path — `/queue /PATH …`.
+    Repo(String),
 }
 
 /// What the operator is saying about a decision the gate already made.
@@ -387,6 +408,22 @@ impl Slash {
             // grammar rather than forwarded to `Slash::Help`'s *"is not a daemon verb"* about a
             // verb that is.
             Some("queue") => match words.get(1).copied() {
+                // **A scope first** (R92 item 5): `all`, or a path — a sub-verb never starts
+                // with `/`. What follows is parsed as a bare `/queue` line would be.
+                Some(w) if w == "all" || w.starts_with('/') => {
+                    let scope = if w == "all" {
+                        QueueScope::All
+                    } else {
+                        QueueScope::Repo(w.to_string())
+                    };
+                    match Slash::parse(&format!("queue {}", words[2..].join(" "))) {
+                        Slash::Queue(verb) => Slash::QueueIn { scope, verb },
+                        Slash::QueueIn { .. } => {
+                            Slash::Help(format!("/queue {w}: name one scope, not two"))
+                        }
+                        other => other,
+                    }
+                }
                 Some("restart") => match words.get(2) {
                     Some(id) => Slash::Queue(QueueVerb::Restart {
                         entry: (*id).to_string(),
@@ -460,8 +497,9 @@ impl Slash {
                 Some(other) => Slash::Help(format!(
                     "/queue {other}: the sub-verbs are `approve ENTRY-ID`, `veto ENTRY-ID [in your \
                      words]`, `rm ENTRY-ID`, `restart ENTRY-ID`, `reset [ENTRY-ID]`, `clean \
-                     [ENTRY-ID]` and `regate [/REPO] [TARGET]`. A bare `/queue` opens the \
-                     merge-queue pane."
+                     [ENTRY-ID]` and `regate [/REPO] [TARGET]`, each about this session's \
+                     repository unless `/queue all VERB …` or `/queue /REPO VERB …` names \
+                     another scope. A bare `/queue` opens the merge-queue pane."
                 )),
                 None => Slash::Help(
                     "/queue opens the merge-queue pane; `/queue approve ENTRY-ID` lets an entry \
@@ -470,7 +508,9 @@ impl Slash {
                      gatekeeper again about a parked entry, `/queue reset [ENTRY-ID]` re-asks the \
                      reviews of every parked entry (or of one), `/queue clean [ENTRY-ID]` \
                      deletes rows from the queue (or one), and `/queue regate [/REPO] [TARGET]` \
-                     gates the target's tip again even when it was already judged"
+                     gates the target's tip again even when it was already judged — all of \
+                     them about this session's repository; `/queue all …` is every repository's \
+                     queues and `/queue /REPO …` one other's"
                         .into(),
                 ),
             },
@@ -1693,6 +1733,52 @@ mod the_verb_table_is_the_parser {
             }
             other => panic!("`/queue stop x` is not a daemon act: {other:?}"),
         }
+    }
+
+    /// **A scope names where a `/queue` verb acts** (R92 item 5): nothing is the session's own
+    /// repository, `all` is every one, a path is that one — and a scope with no verb is the
+    /// head's pane, so the daemon refuses it with the grammar.
+    #[test]
+    fn a_queue_verb_takes_a_scope_first() {
+        assert_eq!(
+            Slash::parse("queue all clean"),
+            Slash::QueueIn {
+                scope: QueueScope::All,
+                verb: QueueVerb::Clean { entry: None }
+            }
+        );
+        assert_eq!(
+            Slash::parse("queue /home/x/pg-noop approve r-1"),
+            Slash::QueueIn {
+                scope: QueueScope::Repo("/home/x/pg-noop".into()),
+                verb: QueueVerb::Approve {
+                    entry: "r-1".into()
+                }
+            }
+        );
+        assert_eq!(
+            Slash::parse("queue all veto r-1 not this one"),
+            Slash::QueueIn {
+                scope: QueueScope::All,
+                verb: QueueVerb::Veto {
+                    entry: "r-1".into(),
+                    why: "not this one".into()
+                }
+            }
+        );
+        assert!(matches!(Slash::parse("queue all"), Slash::Help(_)));
+        assert!(matches!(
+            Slash::parse("queue all all clean"),
+            Slash::Help(_)
+        ));
+        // The path-first `regate` keeps its meaning.
+        assert_eq!(
+            Slash::parse("queue regate /home/x/pg-noop main"),
+            Slash::Queue(QueueVerb::Regate {
+                repository: Some("/home/x/pg-noop".into()),
+                target: Some("main".into())
+            })
+        );
     }
 
     /// **Every arm's first word is in [`VERBS`], and every name there has an arm.**

@@ -555,6 +555,12 @@ pub trait SessionSource: Send + Sync {
             ..Default::default()
         }
     }
+    /// **Which repository `session_id` is a session of** (R92 item 5) — the daemon's own
+    /// identity rule, so a head scopes its queue pane and edge to its project. `None` is a source
+    /// that cannot say (no store, or a session it has never heard of).
+    fn queue_here(&self, _session_id: &str) -> Option<crate::event::QueueHere> {
+        None
+    }
 }
 
 struct Entry {
@@ -1745,6 +1751,15 @@ impl Registry {
                 unreadable: Some("this daemon has no session store, so it has no queues".into()),
                 ..Default::default()
             })
+    }
+
+    /// **The queues' snapshot for one asking session** — [`Registry::queues`] with
+    /// [`crate::event::QueueSnapshot::here`] filled from the source, so the head can scope what
+    /// it draws to its own repository.
+    pub fn queues_for(&self, session_id: &str) -> crate::event::QueueSnapshot {
+        let mut snap = self.queues();
+        snap.here = self.source().and_then(|s| s.queue_here(session_id));
+        snap
     }
 
     /// **Publish one event to EVERY session's log** — the door a daemon-level fact takes, and
