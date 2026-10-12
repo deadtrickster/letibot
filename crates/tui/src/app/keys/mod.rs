@@ -54,6 +54,15 @@ impl App {
     /// after the first press — that is the entire mechanism by which anyone
     /// discovers a double-tap exists.
     pub fn key(&mut self, k: Key) -> Option<Action> {
+        // **The front card is settled before and after every key** (R90.3, R90.4) — see
+        // [`App::sync_front`].
+        self.sync_front();
+        let r = self.key_dispatch(k);
+        self.sync_front();
+        r
+    }
+
+    fn key_dispatch(&mut self, k: Key) -> Option<Action> {
         // **The terminal talking about itself**, not the person: focus and the background
         // colour. Recorded and nothing else — they must not dismiss a notice, end a recall or
         // reach a pane the way a keystroke does.

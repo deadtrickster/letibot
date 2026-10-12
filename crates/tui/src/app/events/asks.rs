@@ -53,10 +53,10 @@ impl App {
                     return Disposition::Rendered;
                 }
                 self.open.retain(|d| d.req_id != req_id);
-                // A fresh question starts at the top of its ladder rather than
-                // wherever the last one was left: the highlight must never be
-                // somewhere the operator did not put it when Enter is one key away.
-                self.sel = 0;
+                // **The highlight is NOT reset here** (R90.4): the card goes to the BACK, and the
+                // one on screen keeps the row the operator moved to. A fresh question still
+                // starts at the top of its ladder — when it reaches the front — because
+                // `App::sync_front` resets the highlight exactly when the front card changes.
                 self.open.push(OpenDecision {
                     req_id,
                     write_targets,

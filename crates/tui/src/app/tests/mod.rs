@@ -1390,6 +1390,7 @@ mod askedcard;
 mod asks;
 mod attention;
 mod bindings;
+mod cardkeys;
 mod commands;
 mod composer;
 mod decisions;

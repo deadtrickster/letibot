@@ -133,22 +133,7 @@ impl App {
         }
         // **What was put away for this row comes back with it** — the words and the highlight —
         // provided it is still the same question (a row that asks something new starts clean).
-        let kept = self.away.iter().position(|a| {
-            a.decision.req_id == req_id
-                && a.decision.summary == ask.question
-                && a.session_id == self.session_id
-        });
-        if let Some(i) = kept
-            && !self.away[i].draft.is_empty()
-            && !self.editor.text().is_empty()
-        {
-            self.say(
-                "the composer has words in it — send or clear them (ctrl-c), then alt-a brings \
-                 the question back with what you typed on it",
-            );
-            self.redraw = true;
-            return;
-        }
+        // Looked up after the front card is stashed, which may itself be this row's.
         // Another row's card on the screen is put away, not thrown away: its words go with it.
         if self
             .open
@@ -157,6 +142,13 @@ impl App {
         {
             self.stash_front_card();
         }
+        // **The operator's own line is held, never the card's answer** (R90.3).
+        self.hold_typed_line();
+        let kept = self.away.iter().position(|a| {
+            a.decision.req_id == req_id
+                && a.decision.summary == ask.question
+                && a.session_id == self.session_id
+        });
         let (draft, sel) = match kept {
             Some(i) => {
                 let a = self.away.remove(i);
@@ -168,6 +160,7 @@ impl App {
             self.set_composer(&draft);
         }
         self.sel = sel.min(ask.options.len().saturating_sub(1));
+        self.sel_for = req_id.clone();
         self.open.insert(
             0,
             letibot_sessionlog::view::OpenDecision {
@@ -304,6 +297,81 @@ impl App {
         self.redraw = true;
     }
 
+    /// **The front card changed, or did not** — run after every key and every frame (R90.3,
+    /// R90.4).
+    ///
+    /// * The highlight is reset exactly when `open[0]` is a different card from the one it was
+    ///   last reset for. A decision arriving BEHIND the card on screen leaves it alone (↓↓ to
+    ///   deny, a second permission arrives, Enter still denies), and the next card up starts at
+    ///   its top rather than at the row the last one was answered on.
+    /// * A question that comes to the front over composer text does not take that text as its
+    ///   answer: the words are held ([`App::held_line`]) and the card gets an empty field — the
+    ///   permission path's rule, *"your line is held"*. They come back to the composer as soon as
+    ///   no question is in front.
+    ///
+    /// The openers that seed a card themselves (alt-a's [`App::bring_back_question`] and
+    /// [`App::open_operator_ask`]) hold the line and claim `sel_for` before they put the card's
+    /// own draft into the composer, so the draft is not mistaken for the operator's line here.
+    pub(crate) fn sync_front(&mut self) {
+        let front = self
+            .open
+            .first()
+            .map(|d| d.req_id.clone())
+            .unwrap_or_default();
+        let question = self.open.first().is_some_and(|d| d.kind == "question");
+        if front != self.sel_for {
+            self.sel_for = front;
+            self.sel = 0;
+            self.redraw = true;
+            if question && !self.editor.text().is_empty() {
+                self.hold_line();
+                self.say(
+                    "a question came up — your line is held, and comes back when the card is \
+                     answered or put away",
+                );
+            }
+        }
+        if !question && let Some(held) = self.held_line.take() {
+            let now = self.editor.expanded();
+            self.clear_composer();
+            if now.trim().is_empty() {
+                self.editor.insert(&held);
+            } else {
+                self.editor.insert(&format!("{held}\n{now}"));
+            }
+            self.redraw = true;
+        }
+    }
+
+    /// [`App::hold_line`], saying so when there was a line to hold.
+    fn hold_typed_line(&mut self) {
+        if !self.editor.text().is_empty() {
+            self.hold_line();
+            self.say("your line is held — it comes back when the card is answered or put away");
+        }
+    }
+
+    /// Take the composer's words aside into [`App::held_line`] and empty it (R90.3).
+    pub(crate) fn hold_line(&mut self) {
+        if self.editor.text().is_empty() {
+            return;
+        }
+        let words = self.editor.expanded();
+        self.held_line = Some(match self.held_line.take() {
+            Some(h) => format!("{h}\n{words}"),
+            None => words,
+        });
+        self.clear_composer();
+    }
+
+    /// Empty the composer, every line of it — ctrl-c on a non-empty composer is the editor's own
+    /// "clear what I typed", and an undo away; Home + kill-to-end would clear one line of several.
+    pub(crate) fn clear_composer(&mut self) {
+        if !self.editor.text().is_empty() {
+            self.editor.key(letibot_ui::editor::Key::CtrlC, self.now_ms);
+        }
+    }
+
     /// **alt-a: bring back the oldest pending question of either kind.**
     ///
     /// One key for both kinds because the resident line names one key, and the operator should
@@ -323,32 +391,34 @@ impl App {
             return;
         }
         let sid = self.session_id.clone();
-        if let Some(i) = self
+        if self
             .away
             .iter()
-            .position(|a| !a.is_todo() && a.session_id == sid)
+            .any(|a| !a.is_todo() && a.session_id == sid)
         {
             if !self.open.is_empty() && !self.open[0].req_id.starts_with(TODO_ASK) {
                 self.say("answer the open card first — then alt-a brings the question back");
                 self.redraw = true;
                 return;
             }
-            if !self.away[i].draft.is_empty() && !self.editor.text().is_empty() {
-                self.say(
-                    "the composer has words in it — send or clear them (ctrl-c), then alt-a \
-                     brings the question back with what you typed on it",
-                );
-                self.redraw = true;
-                return;
-            }
             if !self.open.is_empty() {
                 self.stash_front_card();
             }
+            // **The operator's own line is held, never the card's answer** (R90.3).
+            self.hold_typed_line();
+            let Some(i) = self
+                .away
+                .iter()
+                .position(|a| !a.is_todo() && a.session_id == sid)
+            else {
+                return;
+            };
             let a = self.away.remove(i);
             if !a.draft.is_empty() {
                 self.set_composer(&a.draft);
             }
             self.sel = a.sel.min(decision_rows(&a.decision).saturating_sub(1));
+            self.sel_for = a.decision.req_id.clone();
             self.open.insert(0, a.decision);
             self.redraw = true;
             return;

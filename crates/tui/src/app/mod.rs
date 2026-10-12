@@ -536,6 +536,15 @@ pub struct App {
     /// because a head driven by a script and the tests both use it, and because the
     /// first letter is faster than two arrow presses once you know the ladder.
     pub(crate) sel: usize,
+    /// **The `req_id` [`App::sel`] was last reset for** (R90.4): the highlight is reset exactly
+    /// when the FRONT card changes — a card arriving behind the one on screen must not move it,
+    /// and the next card up must not inherit the last one's row. See [`App::sync_front`].
+    pub(crate) sel_for: String,
+    /// **The operator's own line, held while a question card owns the composer** (R90.3). A
+    /// question that arrives — or comes back with alt-a — over typed words would otherwise take
+    /// those words as its answer; they are set aside here instead, the card gets an empty field,
+    /// and they come back to the composer when no question is in front. See [`App::sync_front`].
+    pub(crate) held_line: Option<String>,
     /// Things that happened *between* transcript rows and belong in the
     /// conversation: a guard that fired, a decision that settled.
     ///
@@ -1660,6 +1669,8 @@ impl App {
             screen_requests: Vec::new(),
             term_cols: 0,
             sel: 0,
+            sel_for: String::new(),
+            held_line: None,
             notes: Vec::new(),
             dec_scroll: 0,
             dec_scroll_for: String::new(),

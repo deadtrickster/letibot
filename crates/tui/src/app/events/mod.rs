@@ -31,6 +31,14 @@ impl App {
 
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
+        let d = self.apply_frame(frame);
+        // **The front card is settled after every frame** (R90.3, R90.4) — see
+        // [`App::sync_front`].
+        self.sync_front();
+        d
+    }
+
+    fn apply_frame(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
             frame @ ServerFrame::Hello { .. } => self.on_hello(frame),
             frame @ (ServerFrame::Sessions { .. }
@@ -341,8 +349,11 @@ impl App {
         }
         open.retain(|d| !self.away.iter().any(|a| a.decision.req_id == d.req_id));
         self.open = open;
-        // A snapshot can replace the open set wholesale; keep the highlight in range.
-        self.sel = 0;
+        // A snapshot can replace the open set wholesale; the highlight is reset only if the
+        // front card changed (`App::sync_front`), and kept in range here when it did not.
+        if let Some(d) = self.open.first() {
+            self.sel = self.sel.min(decision_rows(d).saturating_sub(1));
+        }
         // A permission settles on the call it gated, so it rides the call's card
         // rather than the note list; a question — or a log recorded before the field
         // existed — has no call to ride and stays a note. The live arm makes the same
