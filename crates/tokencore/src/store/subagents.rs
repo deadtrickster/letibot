@@ -164,7 +164,7 @@ impl Store {
     /// **A child has been started** (or brought back): its row, replacing any earlier one for
     /// the same handle. `resumes` and `instance` are the caller's.
     pub fn put_subagent_run(&self, run: &SubagentRun) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO subagent_run
                (child_id, parent_id, state, prompt, spec_json, instance, resumes, outcome,
                 delivered, started_ms, updated_ms)
@@ -198,7 +198,7 @@ impl Store {
         state: &str,
         outcome: Option<&str>,
     ) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "UPDATE subagent_run SET state = ?2, outcome = ?3, delivered = 0, updated_ms = ?4
               WHERE child_id = ?1",
             params![child_id, state, outcome, now_ms()],
@@ -209,7 +209,7 @@ impl Store {
     /// **An orderly stop interrupted this child**: it stays `running`, so the next open
     /// resumes it, and its crash count goes back to zero — an orderly stop is not a crash.
     pub fn interrupt_subagent_run(&self, child_id: &str) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "UPDATE subagent_run SET state = 'running', resumes = 0, updated_ms = ?2
               WHERE child_id = ?1 AND state = 'running'",
             params![child_id, now_ms()],
@@ -219,7 +219,7 @@ impl Store {
 
     /// **The parent's model has been handed this child's settlement.**
     pub fn deliver_subagent_run(&self, child_id: &str) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "UPDATE subagent_run SET delivered = 1, updated_ms = ?2 WHERE child_id = ?1",
             params![child_id, now_ms()],
         )?;
@@ -264,7 +264,7 @@ impl Store {
         ttl_ms: u64,
     ) -> Result<()> {
         let now = now_ms();
-        self.conn.execute(
+        self.exec(
             "INSERT INTO session_monitor
                (session_id, name, args_json, instance, ttl_ms, live, declared_ms, updated_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)
@@ -278,7 +278,7 @@ impl Store {
 
     /// **A monitor is no longer live** — retired, settled, expired, or reported after a restart.
     pub fn end_monitor(&self, session_id: &str, name: &str) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "UPDATE session_monitor SET live = 0, updated_ms = ?3
               WHERE session_id = ?1 AND name = ?2",
             params![session_id, name, now_ms()],
@@ -313,7 +313,7 @@ impl Store {
 
     /// **A background job's context**, written when it is backgrounded.
     pub fn put_job_context(&self, session_id: &str, ctx: &JobContext) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO job_context (session_id, handle, slug, cwd, instance, started_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(session_id, handle) DO UPDATE SET
@@ -352,7 +352,7 @@ impl Store {
 
     /// **A daemon started**: its row, with the heartbeat at the start.
     pub fn life_started(&self, instance: &str, at_ms: u64) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "INSERT INTO daemon_life (instance, started_ms, beat_ms, stopped_ms)
              VALUES (?1, ?2, ?2, NULL)
              ON CONFLICT(instance) DO UPDATE SET started_ms = ?2, beat_ms = ?2, stopped_ms = NULL",
@@ -363,7 +363,7 @@ impl Store {
 
     /// **The daemon is alive** at `at_ms`.
     pub fn life_beat(&self, instance: &str, at_ms: u64) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "UPDATE daemon_life SET beat_ms = ?2 WHERE instance = ?1",
             params![instance, at_ms as i64],
         )?;
@@ -372,7 +372,7 @@ impl Store {
 
     /// **The daemon stopped in an orderly way** at `at_ms`.
     pub fn life_stopped(&self, instance: &str, at_ms: u64) -> Result<()> {
-        self.conn.execute(
+        self.exec(
             "UPDATE daemon_life SET beat_ms = ?2, stopped_ms = ?2 WHERE instance = ?1",
             params![instance, at_ms as i64],
         )?;
@@ -508,5 +508,103 @@ mod tests {
         assert_eq!((l.beat_ms, l.stopped_ms), (150, None));
         store.life_stopped("i-1", 170).unwrap();
         assert_eq!(store.life("i-1").unwrap().unwrap().stopped_ms, Some(170));
+    }
+
+    /// **Every write here outlasts a lock held past the busy timeout** (R91.6). They went to
+    /// `self.conn.execute` directly, so each had one 30 s busy-timeout attempt — the single
+    /// lottery ticket `busy.rs` describes — and a lost one cost a redelivery
+    /// (`deliver_subagent_run`), a crash counted against `RESUME_LIMIT`
+    /// (`interrupt_subagent_run`) or a child that could never be restored (`put_subagent_run`).
+    /// The connection's timeout is cut to 50 ms and another connection holds the write lock for
+    /// 600 ms; every write must wait it out.
+    #[test]
+    fn every_write_outlasts_a_lock_held_past_the_busy_timeout() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-subagents-busy-{}-{}.db",
+            std::process::id(),
+            now_ms()
+        ));
+        let clean = |p: &std::path::Path| {
+            for s in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{s}", p.display()));
+            }
+        };
+        clean(&path);
+        let store = Store::open(&path).unwrap();
+        store.put_subagent_run(&run("s-1-sub-1", "s-1")).unwrap();
+        store
+            .connection()
+            .busy_timeout(std::time::Duration::from_millis(50))
+            .unwrap();
+
+        let writes: Vec<(&str, Box<dyn Fn(&Store) -> Result<()>>)> = vec![
+            (
+                "put_subagent_run",
+                Box::new(|s| s.put_subagent_run(&run("s-1-sub-2", "s-1"))),
+            ),
+            (
+                "settle_subagent_run",
+                Box::new(|s| s.settle_subagent_run("s-1-sub-1", "done", None)),
+            ),
+            (
+                "interrupt_subagent_run",
+                Box::new(|s| s.interrupt_subagent_run("s-1-sub-2")),
+            ),
+            (
+                "deliver_subagent_run",
+                Box::new(|s| s.deliver_subagent_run("s-1-sub-1")),
+            ),
+            (
+                "put_monitor",
+                Box::new(|s| s.put_monitor("s-1", "m", "{}", "i-1", 1)),
+            ),
+            ("end_monitor", Box::new(|s| s.end_monitor("s-1", "m"))),
+            (
+                "put_job_context",
+                Box::new(|s| {
+                    s.put_job_context(
+                        "s-1",
+                        &JobContext {
+                            handle: "j1".into(),
+                            slug: None,
+                            cwd: "/w".into(),
+                            instance: "i-1".into(),
+                            started_ms: 1,
+                        },
+                    )
+                }),
+            ),
+            ("life_started", Box::new(|s| s.life_started("i-1", 1))),
+            ("life_beat", Box::new(|s| s.life_beat("i-1", 2))),
+            ("life_stopped", Box::new(|s| s.life_stopped("i-1", 3))),
+        ];
+        for (name, write) in writes {
+            let (go, wait) = std::sync::mpsc::channel::<()>();
+            let (held, is_held) = std::sync::mpsc::channel::<()>();
+            let p = path.clone();
+            let holder = std::thread::spawn(move || {
+                let c = rusqlite::Connection::open(&p).unwrap();
+                c.execute_batch("BEGIN IMMEDIATE; UPDATE daemon_life SET beat_ms = beat_ms;")
+                    .unwrap();
+                held.send(()).unwrap();
+                let _ = wait.recv();
+                c.execute_batch("COMMIT").unwrap();
+            });
+            is_held.recv().unwrap();
+            let releaser = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                let _ = go.send(());
+            });
+            let r = write(&store);
+            releaser.join().unwrap();
+            holder.join().unwrap();
+            if let Err(e) = r {
+                clean(&path);
+                panic!("`{name}` died of a busy store instead of waiting: {e}");
+            }
+        }
+        assert!(store.subagent_run("s-1-sub-1").unwrap().unwrap().delivered);
+        assert_eq!(store.life("i-1").unwrap().unwrap().stopped_ms, Some(3));
+        clean(&path);
     }
 }
