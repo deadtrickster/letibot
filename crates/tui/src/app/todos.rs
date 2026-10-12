@@ -331,9 +331,15 @@ impl App {
             .unwrap_or_default();
         let question = self.open.first().is_some_and(|d| d.kind == "question");
         if front != self.sel_for {
-            self.sel_for = front;
+            self.sel_for = front.clone();
             self.sel = 0;
             self.redraw = true;
+            // **A decision coming up closes the quit card** (R90.6): the decision is drawn ahead
+            // of it and takes its keys, so a `1` meant as "detach" would answer the decision.
+            if !front.is_empty() && self.quit_card {
+                self.quit_card = false;
+                self.say("a decision came up — the quit card closed; ctrl-c twice asks again");
+            }
             if question && !self.editor.text().is_empty() {
                 self.hold_line();
                 self.say(

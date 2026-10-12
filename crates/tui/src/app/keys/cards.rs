@@ -466,6 +466,16 @@ impl App {
                         Action::StopDaemon
                     }));
                 }
+                // **Enter has the digits' empty-composer guard** (R90.30): words typed after the
+                // card opened were lost on an Enter that quit.
+                Key::Enter if !self.editor.text().is_empty() => {
+                    self.say(
+                        "the composer has words in it — clear them (ctrl-c) to choose, or esc \
+                         stays",
+                    );
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
                 Key::Enter => {
                     self.quit_card = false;
                     self.quit = true;

@@ -501,6 +501,17 @@ impl App {
             // the daemon stopped as well needed a second terminal and
             // `letibot --stop`. The card is one keystroke either way and it
             // makes the irreversible half a choice rather than a default.
+            // **Not over a decision** (R90.6): the decision is drawn ahead of the quit card and
+            // takes Enter and the digits first, so `1` meant as "detach" answered the
+            // permission. The decision is answered (or put away) first.
+            Reaction::Quit if !self.open.is_empty() => {
+                self.say(
+                    "a decision is up — answer it or esc puts it away, then ctrl-c twice asks \
+                     whether to leave",
+                );
+                self.redraw = true;
+                None
+            }
             Reaction::Quit => {
                 self.quit_card = true;
                 self.quit_sel = 0;

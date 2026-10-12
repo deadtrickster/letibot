@@ -228,3 +228,48 @@ fn the_prompt_card_put_away_has_a_resident_line_and_alt_a_brings_it_back() {
         })
     );
 }
+
+// ─────────────── R90.6 / R90.30: the quit card and what it can be answered by ───────────────
+
+/// ctrl-c ctrl-c over a permission card does not open the quit card (whose `1` would answer the
+/// permission); a decision arriving over an open quit card closes it.
+#[test]
+fn the_quit_card_never_stands_over_a_decision() {
+    let mut a = app();
+    a.clock(1_000);
+    ask(&mut a, 1, testing::requested("r1", "rm"));
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(!a.quit_card, "not over a decision");
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("a decision is up")
+    );
+    assert_eq!(a.open[0].req_id, "r1");
+
+    let mut b = app();
+    b.clock(1_000);
+    b.key(Key::CtrlC);
+    b.key(Key::CtrlC);
+    assert!(b.quit_card);
+    ask(&mut b, 1, testing::requested("r1", "rm"));
+    assert!(!b.quit_card, "the decision closed it");
+    assert_eq!(b.key(Key::Char('1')), None, "1 marks the decision's row");
+    assert!(!b.quit);
+}
+
+/// Words typed after the quit card opened are not lost on an Enter that quits.
+#[test]
+fn the_quit_cards_enter_keeps_the_empty_composer_guard() {
+    let mut a = app();
+    a.clock(1_000);
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card);
+    typed(&mut a, "wait");
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(a.quit_card && !a.quit, "still up, nothing quit");
+    assert_eq!(a.input(), "wait");
+}
