@@ -285,7 +285,7 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
         );
     }
     assert!(
-        said.iter().any(|p| p.contains("Decide it yourself")),
+        said.iter().any(|p| p.contains("proceed and state the assumption you proceed on")),
         "an abstention tells the model to state its assumption"
     );
     assert_eq!(asks_row(&registry, &id), "none", "the loud state clears");

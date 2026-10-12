@@ -79,8 +79,7 @@ pub fn answer_line(row: &str, question: &str, reply: &str, abstained: bool) -> S
     );
     if abstained {
         line.push_str(
-            " Decide it yourself: state the assumption you are making in your reply and carry on, \
-             or ask something they can answer.",
+            " They will not decide, so proceed and state the assumption you proceed on.",
         );
     }
     line

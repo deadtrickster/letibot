@@ -84,7 +84,7 @@
 //! |---|---|---|---|
 //! | **silence** | nothing; the deadline passed | `not_run` | nobody answered, the question is still open |
 //! | **an empty answer** | a frame with no option, no note, no words, no abstention | `not_run` | there is nothing in it; an empty answer is not a shrug |
-//! | **an abstention** | a frame that says so | **`Abstained`** | *this person deliberately did not answer* — an answer, and not permission to proceed |
+//! | **an abstention** | a frame that says so | **`Abstained`** | *this person will not decide* — an answer: proceed and state the assumption (R93.B11, the rule `todo_write`'s operator wait states too) |
 //!
 //! So the abstention is the only one of the three with its own outcome class. The
 //! model reads the class first (a `NO_RESULT` envelope rather than a `TOOL_ERROR`),
@@ -450,7 +450,8 @@ impl Tool for AskUserQuestion {
              Give `question`; optionally `options` to choose between and `because`, one \
              line on what you are stuck on. They answer with a choice, a choice with \
              their note, words of their own, or an abstention — an abstention is an \
-             ANSWER and not permission to proceed on an assumption. If nobody is \
+             answer: they will not decide, so proceed and state the assumption you \
+             proceed on. If nobody is \
              attached or nobody answers in time, it returns no result — never a default \
              you did not give. Give `default` (one of `options`) and `timeout_s` \
              (30..3600, 300 if omitted) and your default is taken at the deadline, said \
@@ -624,17 +625,15 @@ fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
     body.push_str(a.render(q).trim_start());
     if a.abstain {
         body.push_str(&format!(
-            "{by} was asked and chose not to answer, so there is no answer to this \
-             question. This is NOT silence and NOT an empty answer: an abstention is a \
-             decision they made, and it is not permission to proceed on an assumption. \
-             State the assumption you would have to make and stop, or ask a question they \
-             can answer."
+            "{by} was asked and chose not to decide. This is an answer, not silence and \
+             not an empty answer: they will not decide, so proceed and state the \
+             assumption you proceed on."
         ));
         return Invocation {
             outcome: ToolOutcome::Abstained {
                 reason: format!(
-                    "{by} abstained: they deliberately did not answer, so nothing was \
-                     decided. An abstention is not permission to proceed on an assumption."
+                    "{by} abstained: they will not decide, so proceed and state the \
+                     assumption you proceed on."
                 ),
             },
             payload: body,
@@ -645,8 +644,7 @@ fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
         }
         .with_note(format!(
             "the abstention is attributed to {by} and is theirs, not the harness's \
-             inference: do not read it as a choice, and do not carry on as though the \
-             question had been answered."
+             inference: do not read it as one of the options."
         ));
     }
     Invocation::ok(body).with_note(format!(
@@ -995,8 +993,10 @@ mod tests {
         let out = r.render();
         assert!(out.contains("deadtrickster"), "{out}");
         assert!(out.contains("abstained"), "{out}");
+        // R93.B11: the same rule as an operator wait on a `todo_write` row — an abstention
+        // is an answer, and the model proceeds on an assumption it states.
         assert!(
-            out.contains("not permission to proceed on an assumption"),
+            out.contains("proceed and state the assumption you proceed on"),
             "{out}"
         );
         // The envelope says the same thing the outcome does: no result, rather than
@@ -1232,9 +1232,11 @@ mod tests {
         ] {
             assert!(d.contains(needle), "the description omits {what}: {d}");
         }
-        // And the one sentence that keeps an abstention from reading as assent.
+        // R93.B11: the one rule for an abstention, the same one `todo_write`'s operator
+        // wait states — an answer that unblocks, with the assumption said.
         assert!(
-            d.contains("abstention is an ANSWER and not permission to proceed"),
+            d.contains("abstention is an answer: they will not decide, so proceed and state the \
+                        assumption you proceed on"),
             "{d}"
         );
         // The two absences stay named too, because they are what a model will see

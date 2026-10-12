@@ -116,3 +116,20 @@ fn a_queue_row_is_quiet_while_its_review_is_in_flight() {
     let mine = TodoItem { by: TodoBy::Model, ..queued };
     assert!(!queue_review_in_flight(&mine, &ChildSessions::none()));
 }
+
+/// **B11: one rule for an abstention.** `ask_user_question` and an operator wait on a
+/// `todo_write` row say the same thing — an abstention is an answer, and the model proceeds on
+/// an assumption it states — where one used to call it "not permission to proceed".
+#[test]
+fn an_abstention_means_the_same_in_ask_and_in_a_todo_wait() {
+    let rule = "proceed and state the assumption you proceed on";
+    let todo = TodoWriteTool::new(Arc::new(TodoBoard::new(Vec::new()))).schema();
+    let ask = crate::builtins::intent::AskUserQuestion::new(Arc::new(
+        crate::builtins::intent::Headless,
+    ))
+    .schema();
+    for d in [&todo.description, &ask.description] {
+        assert!(d.contains(rule), "{d}");
+        assert!(!d.contains("not permission to proceed"), "{d}");
+    }
+}

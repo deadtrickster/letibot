@@ -2618,8 +2618,9 @@ impl Tool for TodoWriteTool {
                other row that can start, so carry on with them. Meanwhile try to work the question \
                out yourself; if you can, take the wait off with {\"content\": \"…\", \"detach\": \
                true} and say what you decided. Their answer reaches you at once as an `[answer]` \
-               line, the row is unblocked, and the reply stays on the row. An abstention unblocks \
-               it too: it means they will not decide, so state the assumption you are making.",
+               line, the row is unblocked, and the reply stays on the row. An abstention is an \
+               answer too and unblocks the row: they will not decide, so proceed and state the \
+               assumption you proceed on.",
             json!({
                 "type": "object",
                 "properties": {
