@@ -892,6 +892,13 @@ impl DenialSink for HubDenials {
 // Steering
 // ---------------------------------------------------------------------------
 
+/// A fork registered in the store but not yet the session's conversation. See
+/// `Store::put_fork_unsealed`.
+struct UnsealedFork {
+    transcript_id: String,
+    fingerprint: String,
+}
+
 /// Steering from the head socket (§5.8), from the intent check, from a fired
 /// monitor, and from a background job of this session's own that has ended.
 ///
@@ -1949,6 +1956,9 @@ pub struct Harness {
     /// once more; cleared by the fork that re-seats. Held in memory: a daemon restart may tell
     /// the model once more, which is one line per restart and not one per nag window.
     stale_told: Option<String>,
+    /// **A fork whose rows are not all stored yet** (R91.2) — sealed by [`Harness::seal_fork`]
+    /// once they are.
+    unsealed_fork: Option<UnsealedFork>,
     /// **This turn's metrics, as it runs** (TODO R81) — begun and closed by the turn tail, fed
     /// by the round loop. See `crate::instruments`.
     pub(crate) meter: crate::instruments::TurnMeter,
@@ -4390,25 +4400,16 @@ impl Harness {
                             ))
                         })?;
 
+                    // **Unsealed until every row is in (R91.2)**: a daemon that dies while
+                    // the rows go in reopens on the stored transcript, whole, not on part of
+                    // this one. Sealed after the rows, and the fingerprint follows the seal.
                     store
-                        .put_fork(
+                        .put_fork_unsealed(
                             &new_id,
                             &cfg.session_id,
                             &new_prefix_id,
                             &transcript_id,
                             items.len() as u32,
-                        )
-                        .map_err(|e| HarnessError::Store(e.to_string()))?;
-                    // The session now speaks the prefix this daemon composes, and the column
-                    // says so — see `Store::set_prefix_fingerprint`: it is written wherever a
-                    // transcript row is, and a re-render fork onto the seated prefix is one of
-                    // those places. Left alone here, this session would report itself stale on
-                    // its very next resume, having just been re-rendered onto exactly the
-                    // prompt the comparison would compose.
-                    store
-                        .set_prefix_fingerprint(
-                            &cfg.session_id,
-                            &prefix_fingerprint(cfg.seat, &prefix),
                         )
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
 
@@ -4429,6 +4430,21 @@ impl Harness {
                     store
                         .append_items(&new_id, 0, run)
                         .map_err(|e| HarnessError::Store(format!("re-rendered rows: {e}")))?;
+                    store
+                        .seal_transcript(&new_id)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    // The session now speaks the prefix this daemon composes, and the column
+                    // says so — see `Store::set_prefix_fingerprint`: it is written wherever a
+                    // transcript row is, and a re-render fork onto the seated prefix is one of
+                    // those places. Left alone here, this session would report itself stale on
+                    // its very next resume, having just been re-rendered onto exactly the
+                    // prompt the comparison would compose.
+                    store
+                        .set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
 
                     let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
                     let recorded_under = if vocab_moved {
@@ -4897,6 +4913,7 @@ impl Harness {
             asks_said: Vec::new(),
             nag_choice: None,
             stale_told: None,
+            unsealed_fork: None,
             meter: Default::default(),
             intent,
             injected,
@@ -9895,26 +9912,44 @@ impl Harness {
         // the fork keeps the seated prefix without a new row. This and open are
         // the whole schedule — a reseat or a compaction is a re-open of the
         // same head — and it is the same for every session.
+        match self.reseat_candidate() {
+            None => Ok(None),
+            Some(next) => self.seat_target(next).map(Some),
+        }
+    }
+
+    /// **The prompt a fork would land on, decided and NOT yet recorded** — the first half of
+    /// [`Self::reseat_target`], for a caller that has a check to make before anything is
+    /// written (R91.13: `reingest` refused an over-window carry AFTER `cfg.system` had moved
+    /// and a `stable_prefix` row had been written, so every refused attempt left an orphan row
+    /// and a system prompt the session was not speaking). `None` when the prompt is unchanged
+    /// (the standing notes are still taken up then, as they always were), or when there is no
+    /// store to record a new one in.
+    fn reseat_candidate(&mut self) -> Option<StablePrefix> {
         let notes = crate::standing_notes::section(
             &self.cfg.workspace,
             &crate::standing_notes::global_dir(),
             self.engine.vocab(),
         );
-        self.cfg.system = crate::standing_notes::replace(&self.cfg.system, notes.as_deref());
+        let system = crate::standing_notes::replace(&self.cfg.system, notes.as_deref());
         let next = StablePrefix {
-            system: self.cfg.system.clone(),
+            system,
             tools_json: self.render.tools_json(&self.runtime.registry.schemas()),
         };
         if next == self.prefix {
-            return Ok(None);
+            self.cfg.system = next.system;
+            return None;
         }
         // No store is not a refusal here — a compaction without one refuses later
         // and for its own reason. It is simply nowhere to record a new prefix, so
         // the fork keeps the old one.
-        let Some(store) = self.store.as_ref() else {
-            return Ok(None);
-        };
-        let _ = store;
+        self.store.as_ref()?;
+        Some(next)
+    }
+
+    /// **Record the prompt [`Self::reseat_candidate`] decided**: its `stable_prefix` row, and
+    /// `cfg.system` moved to it — the second half of [`Self::reseat_target`].
+    fn seat_target(&mut self, next: StablePrefix) -> Result<(StablePrefix, String), HarnessError> {
         let measured = self
             .engine
             .open(&format!("{}#reseat-probe", self.cfg.session_id), &next)
@@ -9931,10 +9966,11 @@ impl Harness {
         let id = self
             .store
             .as_ref()
-            .expect("checked above")
+            .ok_or_else(|| HarnessError::Setup("no store to record the new prompt in".into()))?
             .put_stable_prefix(&rec)
             .map_err(|e| HarnessError::Store(e.to_string()))?;
-        Ok(Some((next, id)))
+        self.cfg.system = next.system.clone();
+        Ok((next, id))
     }
 
     /// **Re-seat without summarising: carry the whole conversation across.**
@@ -9974,7 +10010,9 @@ impl Harness {
                     .into(),
             ));
         }
-        let Some((next, next_id)) = self.reseat_target()? else {
+        // **Decided, not yet recorded (R91.13)** — the row and `cfg.system` wait for the fit
+        // check below, so a refusal changes nothing.
+        let Some(next) = self.reseat_candidate() else {
             return Err(HarnessError::Setup(
                 "this conversation's prompt already carries exactly the tools that are \
                  seated, so there is nothing to re-seat."
@@ -10046,25 +10084,8 @@ impl Harness {
                  same without changing the prompt. Nothing was changed."
             )));
         }
-        // **Under the window but short of a turn's room**: the conversation was already this
-        // size on the old prompt, and the reseat changes that by the schema's difference. The
-        // room a turn needs is the compaction's to make before the next turn, as it would have
-        // been without the reseat — so this goes ahead and says so.
-        if fit == VerbatimFit::Tight
-            && let (Some(window), Some(carried)) = (self.cfg.context_window, carried)
-        {
-            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                code: "reseat_tight".into(),
-                detail: format!(
-                    "re-seated verbatim at {carried} of a {window}-token window, less than the \
-                     {} a turn needs to the side — as it was before the reseat. That room is \
-                     made by compaction, as it would have been without the reseat; \
-                     `/compact` makes it now.",
-                    self.cfg.headroom()
-                ),
-                compaction: None,
-            });
-        }
+        // The fit is checked: now the prompt is recorded.
+        let (next, next_id) = self.seat_target(next)?;
         // Unmeasured ratio: carry it, and say that the fit was not checked rather
         // than pretend either way. The first metered turn measures the scale, so
         // this is a window of one turn per daemon and not a standing hole.
@@ -10142,6 +10163,26 @@ impl Harness {
         out.gained.sort();
         out.lost.sort();
         self.publish_settings();
+        // **Under the window but short of a turn's room**: the conversation was already this
+        // size on the old prompt, and the reseat changes that by the schema's difference. The
+        // room a turn needs is the compaction's to make before the next turn, as it would have
+        // been without the reseat — so this goes ahead and says so. **Said once the fork has
+        // landed (R91.13)**: it reads "re-seated", and a fork that failed re-seated nothing.
+        if fit == VerbatimFit::Tight
+            && let (Some(window), Some(carried)) = (self.cfg.context_window, carried)
+        {
+            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "reseat_tight".into(),
+                detail: format!(
+                    "re-seated verbatim at {carried} of a {window}-token window, less than the \
+                     {} a turn needs to the side — as it was before the reseat. That room is \
+                     made by compaction, as it would have been without the reseat; \
+                     `/compact` makes it now.",
+                    self.cfg.headroom()
+                ),
+                compaction: None,
+            });
+        }
         Ok(out)
     }
 
@@ -10708,45 +10749,28 @@ impl Harness {
         // `forked_at_seq` means: where in the session's event stream the divergence
         // happened, not where in the transcript.
         let forked_at = self.hub.head_seq();
-        store
-            .put_fork(
-                &new_id,
-                &self.cfg.session_id,
-                &onto_id,
-                &old_id,
-                forked_at as u32,
-            )
-            .map_err(|e| HarnessError::Store(e.to_string()))?;
-        // **And the fingerprint follows the transcript.** A fork is the other place a
-        // session's prefix is decided — `/reseat`, a compaction that picked up the seated
-        // tools, a dialect or model switch — and a column left at what the session was
-        // CREATED with would report every re-seated session stale on the next attach, which
-        // is the false positive that makes a warning furniture. One rule, and the writers are
-        // the places a transcript row is written: see `Store::set_prefix_fingerprint`.
+        // **Nothing is written to the store yet (R91.2).** The transcript row, the fingerprint
+        // and the stale flag were written here, before a row of the new transcript existed: a
+        // crash during the carry resumed onto a partial conversation, and an error before the
+        // swap left the dead fork the store's newest and the reseat offer cleared on a session
+        // still speaking the stale prompt. Now the row goes in UNSEALED just before the swap
+        // (`Store::put_fork_unsealed` — not what a resume opens), and the seal, the fingerprint
+        // and the stale flag follow the last row (`Harness::seal_fork`, from `persist_reporting`).
         //
-        // A plain compaction reaches here with `onto` already resolved to the prefix the
-        // conversation is speaking, and only the standing notes have moved — the frozen
-        // half is byte-identical, so this writes the same hash it read. That is deliberate:
-        // the write is unconditional so that there is no second rule about when it is needed.
-        store
-            .set_prefix_fingerprint(
-                &self.cfg.session_id,
-                &prefix_fingerprint(self.cfg.seat, &onto),
-            )
-            .map_err(|e| HarnessError::Store(e.to_string()))?;
-        // **And there is nothing left to tell an attaching head.** A fork is what takes a
-        // session off a stale prefix, and the argument is `reseat_target`'s own: a fork
-        // opens under `onto`, and `onto` is `self.prefix` only when the caller had no new
-        // prefix to hand in — which happens exactly when `reseat_target` answered `None`,
-        // which happens exactly when the prefix being spoken IS the one this daemon would
-        // compose. So a fork either moves the session onto the seated prompt or leaves it on
-        // one that was never stale, and in both cases the notice has stopped being true.
-        // Leaving it would be a head told *your prompt is not what this daemon seats* about
-        // a session that has just been re-seated onto it.
-        self.session_registry
-            .set_stale_prefix(&self.cfg.session_id, None);
-        // And the model may be told about a LATER staleness, once, as it was about this one.
-        self.stale_told = None;
+        // What the seal does, kept here because this is where a reader looks for it:
+        //
+        // **The fingerprint follows the transcript.** A fork is the other place a session's
+        // prefix is decided — `/reseat`, a compaction that picked up the seated tools, a dialect
+        // or model switch — and a column left at what the session was CREATED with would report
+        // every re-seated session stale on the next attach. A plain compaction writes the same
+        // hash it read, deliberately: the write is unconditional so that there is no second rule
+        // about when it is needed.
+        //
+        // **And there is nothing left to tell an attaching head.** A fork either moves the
+        // session onto the seated prompt or leaves it on one that was never stale (`onto` is
+        // `self.prefix` only when `reseat_target` answered `None`), so the stale notice stops
+        // being true — once the fork is the session's, and not before.
+        let fingerprint = prefix_fingerprint(self.cfg.seat, &onto);
         let mut next = self
             .engine
             .open(&new_id, &onto)
@@ -10883,6 +10907,20 @@ impl Harness {
             }
             return Err(e.into());
         }
+        // The transcript row, unsealed (see above), with a busy store's patience (R91.6).
+        let registered = {
+            let (session_id, new_id, onto_id, old_id) =
+                (&self.cfg.session_id, &new_id, &onto_id, &old_id);
+            self.store_patiently("the fork's transcript row", |store| {
+                store.put_fork_unsealed(new_id, session_id, onto_id, old_id, forked_at as u32)
+            })
+        };
+        if let Err(e) = registered {
+            if carrying {
+                self.filling(filling_what, "rows", body.len() as u64, body.len() as u64);
+            }
+            return Err(e);
+        }
         // The swap is the point of no return, and it is deliberately **after** every
         // store write that could fail: a harness that swapped and then could not
         // persist would be a session whose transcript row exists but whose body does
@@ -10890,6 +10928,10 @@ impl Harness {
         self.session = next;
         self.transcript_id = new_id.clone();
         self.persisted = 0;
+        self.unsealed_fork = Some(UnsealedFork {
+            transcript_id: new_id.clone(),
+            fingerprint,
+        });
         self.reconcile(&mut sink, &body);
         // **AND EVERY ROW THAT WAS JUST PUBLISHED REPLACED THE ONES EVERY READER IS HOLDING.**
         //
@@ -10945,7 +10987,24 @@ impl Harness {
             // The line must not be left walking over a write that stopped.
             self.filling(what, "rows", total, total);
         }
-        persisted?;
+        // **Past the swap a failed write is not a failed fork (R91.2).** The session speaks the
+        // new transcript in this daemon, so returning an error here sent every caller down its
+        // refusal path — `reingest` returned before `self.prefix = next`, so metered turns sent
+        // the OLD schemas against the new transcript, and the operator was told "Nothing was
+        // changed". The rows stay in memory and the next store write takes them up from where
+        // this one stopped; the fork is sealed when it does, and until then a restart resumes
+        // the parent, whole. Said, because the gap is real.
+        if let Err(e) = persisted {
+            self.hub.publish(SessionEvent::Warning {
+                code: "fork_unstored".into(),
+                detail: format!(
+                    "the conversation moved to {new_id} in this daemon, but its rows are not all \
+                     stored yet ({e}). They are written with the next store write; until then a \
+                     restart resumes {old_id}, as it was before the fork."
+                ),
+                compaction: None,
+            });
+        }
         // **The stored context size is about the OLD conversation.** It is the
         // last prompt the provider measured, and that prompt no longer exists:
         // this fork replaced the history with a summary. Only a turn can put a
@@ -13129,7 +13188,37 @@ impl Harness {
                 }
             }
         }
+        self.seal_fork();
         Ok(())
+    }
+
+    /// **Every row of the fork is stored: make it the session's conversation** (R91.2) — the
+    /// seal, then the fingerprint and the stale flag that follow the transcript (see
+    /// `fork_onto`). A seal that fails stays owed and is tried after the next store write; the
+    /// parent is still what a resume opens, which is consistent, only behind.
+    fn seal_fork(&mut self) {
+        let Some(u) = self.unsealed_fork.take() else {
+            return;
+        };
+        if u.transcript_id != self.transcript_id {
+            // Superseded by a later fork before its rows were all written: a dead branch.
+            return;
+        }
+        let Some(store) = &self.store else {
+            return;
+        };
+        if let Err(e) = store.seal_transcript(&u.transcript_id) {
+            eprintln!("  store: sealing {}: {e}", u.transcript_id);
+            self.unsealed_fork = Some(u);
+            return;
+        }
+        if let Err(e) = store.set_prefix_fingerprint(&self.cfg.session_id, &u.fingerprint) {
+            eprintln!("  store: the fork's prefix fingerprint: {e}");
+        }
+        self.session_registry
+            .set_stale_prefix(&self.cfg.session_id, None);
+        // And the model may be told about a LATER staleness, once, as it was about this one.
+        self.stale_told = None;
     }
 
     /// The round's prompt size onto the session row. See the call in `run_rounds`
