@@ -18,6 +18,7 @@ impl App {
                 // The board is the truth once it arrives: a row answered from here is either
                 // off it or — the answer refused — still asking, and asked again.
                 self.todo_answered.clear();
+                self.prune_todo_asks();
                 // **AND A WAITING SEED RUNS HERE** — the board has just been read whole, which is
                 // the only moment this head may add rows to its own half without risking a wipe:
                 // `SetOperatorTodos` REPLACES the operator half, so seeding against a stale list

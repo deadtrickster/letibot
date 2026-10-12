@@ -308,6 +308,96 @@ impl App {
         self.redraw = true;
     }
 
+    /// **A resync or a switch replaces the open list with the daemon's** — and this head's own
+    /// todo cards are not on it. They are put away (with the front card's words) rather than
+    /// dropped (R90.14): dropped, the card vanished and the composer kept the words typed for it,
+    /// so the next Enter sent a half-typed answer to the model as a prompt.
+    pub(crate) fn stash_todo_cards(&mut self) {
+        let mut stashed = false;
+        if self
+            .open
+            .first()
+            .is_some_and(|d| d.req_id.starts_with(TODO_ASK))
+        {
+            self.stash_front_card();
+            stashed = true;
+        }
+        while let Some(i) = self
+            .open
+            .iter()
+            .position(|d| d.req_id.starts_with(TODO_ASK))
+        {
+            let decision = self.open.remove(i);
+            self.away.retain(|a| a.decision.req_id != decision.req_id);
+            self.away.push(AwayCard {
+                session_id: self.session_id.clone(),
+                decision,
+                draft: String::new(),
+                sel: 0,
+            });
+            stashed = true;
+        }
+        if stashed {
+            self.say("the todo question was put away — alt-a brings it back with what you typed");
+        }
+    }
+
+    /// **The board moved: a todo card whose row no longer asks is closed** (R90.12), and one put
+    /// away is forgotten. Another head answered the row, the model completed it or changed the
+    /// question — and the card stayed up, so answering it sent `AnswerTodo` for a question
+    /// nobody was asking. A row still asking the same question keeps its card, its options
+    /// refreshed. Run on every board this head reads for its own session.
+    pub(crate) fn prune_todo_asks(&mut self) {
+        let asks = self.operator_asks();
+        let live = |req_id: &str, question: &str| {
+            req_id.strip_prefix(TODO_ASK).and_then(|content| {
+                asks.iter()
+                    .find(|a| a.content == content && a.question == question)
+            })
+        };
+        let mut closed_front = false;
+        let mut i = 0;
+        while i < self.open.len() {
+            let d = &self.open[i];
+            if !d.req_id.starts_with(TODO_ASK) {
+                i += 1;
+                continue;
+            }
+            match live(&d.req_id, &d.summary) {
+                Some(a) => {
+                    let choices = a.options.clone();
+                    self.open[i].choices = choices;
+                    i += 1;
+                }
+                None => {
+                    self.open.remove(i);
+                    closed_front |= i == 0;
+                }
+            }
+        }
+        let sid = self.session_id.clone();
+        self.away.retain(|a| {
+            !a.is_todo()
+                || a.session_id != sid
+                || live(&a.decision.req_id, &a.decision.summary).is_some()
+        });
+        if closed_front {
+            // The composer was the card's field: its words were an answer, not a prompt.
+            let typed = !self.editor.text().is_empty();
+            self.clear_composer();
+            self.say(if typed {
+                "that todo row no longer waits on you — its card closed, and what you typed on it \
+                 was cleared (ctrl-z brings it back)"
+            } else {
+                "that todo row no longer waits on you — its card closed"
+            });
+            self.redraw = true;
+        }
+        if let Some(d) = self.open.first() {
+            self.sel = self.sel.min(decision_rows(d).saturating_sub(1));
+        }
+    }
+
     /// **The front card changed, or did not** — run after every key and every frame (R90.3,
     /// R90.4).
     ///

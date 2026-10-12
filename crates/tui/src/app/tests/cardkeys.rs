@@ -428,3 +428,96 @@ fn a_peek_over_no_pane_names_the_conversation_as_where_esc_goes() {
     b.push_surface(Surface::SubOut);
     assert!(b.hint_bar(400).contains("esc back to the jobs"));
 }
+
+// ──────────── R90.12 / R90.13 / R90.14 / R90.27: todo cards follow the board ────────────
+
+/// Another head answered the row: the board no longer has it waiting, so this head's card closes
+/// and what was typed on it does not become a prompt.
+#[test]
+fn a_todo_card_closes_when_its_row_stops_waiting() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    waiting_board(&mut a);
+    a.key(Key::AltA);
+    assert!(a.open[0].req_id.starts_with("todo-ask:"));
+    typed(&mut a, "sqli");
+    let done = TodoEntry {
+        content: "pick the db".into(),
+        status: TodoStatus::Completed,
+        by: TodoBy::Model,
+        when: None,
+        needs: Vec::new(),
+    };
+    a.apply(ServerFrame::Todos {
+        session_id: "s".into(),
+        todos: vec![done.clone()],
+    });
+    assert!(a.open.is_empty(), "the stale card closed");
+    assert_eq!(a.input(), "", "its words are not left to become a prompt");
+    assert!(
+        a.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("no longer waits")
+    );
+
+    // A put-away card for a row that stopped waiting is forgotten too, and the tab stops waiting.
+    let mut b = app();
+    waiting_board(&mut b);
+    b.key(Key::AltA);
+    b.key(Key::Esc);
+    assert_eq!(b.away.len(), 1);
+    b.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated { todos: vec![done] },
+    )));
+    assert!(b.away.is_empty());
+    assert_eq!(b.progress(), rano::term::Progress::Idle);
+}
+
+/// A question put away in session A does not keep session B's tab on Waiting.
+#[test]
+fn the_tab_waits_only_on_what_waits_in_this_session() {
+    let mut a = app();
+    a.session_id = "a".into();
+    ask(&mut a, 1, testing::asked("q1", "which?", &["x", "y"], ""));
+    a.key(Key::Esc);
+    assert_eq!(a.progress(), rano::term::Progress::Waiting);
+    a.session_id = "b".into();
+    assert_ne!(a.progress(), rano::term::Progress::Waiting);
+}
+
+/// A resync while answering a todo row: the card is put away with its draft, not dropped with the
+/// draft left to be sent as a prompt.
+#[test]
+fn a_resync_puts_the_todo_card_away_with_its_draft() {
+    let hub = Hub::new("s");
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    waiting_board(&mut a);
+    a.key(Key::AltA);
+    typed(&mut a, "sqli");
+    a.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert!(a.open.is_empty());
+    assert_eq!(a.input(), "", "the draft did not stay behind as a prompt");
+    a.key(Key::AltA);
+    assert!(a.open[0].req_id.starts_with("todo-ask:"));
+    assert_eq!(a.input(), "sqli", "alt-a brings it back with the draft");
+}
+
+/// A model's question notifies as a question, a todo card as a todo row asking.
+#[test]
+fn a_notification_names_the_kind_of_card() {
+    let mut a = app();
+    a.set_features(rano::term::Features::ALL);
+    a.take_notification();
+    a.key(Key::FocusOut);
+    ask(&mut a, 1, testing::asked("q1", "which branch?", &["x"], ""));
+    let n = a.take_notification().expect("notified");
+    assert!(n.contains("question for you"), "{n}");
+}

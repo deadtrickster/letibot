@@ -72,6 +72,9 @@ impl App {
         // question — what is carried over, and (R19) which of this head's own notes keep
         // the seam they were filed at.
         let same_session = self.session_id == s.session_id;
+        // **This head's own todo cards are put away before the open list is replaced** (R90.14)
+        // — under the session they were asked in, which is still `self.session_id` here.
+        self.stash_todo_cards();
         // Everything session-scoped goes, not just the transcript. A snapshot is a
         // *replacement*, and this is also the switch path: carrying the previous
         // session's model name or a tool target keyed by a call id that only

@@ -21,8 +21,13 @@ impl App {
     /// that is merely busy.
     pub fn progress(&self) -> rano::term::Progress {
         use rano::term::Progress;
-        // A question card put away is still a question waiting on the person.
-        if !self.open.is_empty() || !self.away.is_empty() || self.secret.is_some() {
+        // A question card put away is still a question waiting on the person — in THIS session,
+        // the waiting line's rule (R90.13): a card put away in another session kept this tab on
+        // Waiting while nothing on its screen waited. Stale todo cards are pruned on every board
+        // (`App::prune_todo_asks`), so one answered elsewhere no longer holds it either.
+        let away_here = self.away.iter().any(|a| a.session_id == self.session_id);
+        let prompt_away = self.prompt.is_some() && self.prompt_away;
+        if !self.open.is_empty() || away_here || prompt_away || self.secret.is_some() {
             return Progress::Waiting;
         }
         if self.turn_busy() {
@@ -77,7 +82,16 @@ impl App {
             .rev()
             .find(|d| !before.asks.contains(&d.req_id))
         {
-            return Some(format!("{who}: permission needed — {}", d.summary));
+            // **Named for what it is** (R90.27): every open card was called "permission needed",
+            // a model's question and a todo row's alike.
+            let what = if d.req_id.starts_with(crate::app::todos::TODO_ASK) {
+                "a todo row asks you"
+            } else if d.kind == "question" {
+                "question for you"
+            } else {
+                "permission needed"
+            };
+            return Some(format!("{who}: {what} — {}", d.summary));
         }
         if let Some(s) = &self.secret
             && before.secret.as_ref() != Some(&s.req_id)
