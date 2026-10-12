@@ -186,9 +186,11 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
         line.starts_with("[context check] you said \"My context is at the wall"),
         "{line}"
     );
-    assert!(line.contains("% full — "), "the numbers: {line}");
-    assert!(line.contains(" tokens. That is not the wall"), "{line}");
-    assert!(line.ends_with("Continue with what you stopped."), "{line}");
+    // The operator, 2026-10-12: "we should stop giving the real numbers really, no point - just
+    // tell it stop sizing and do the work".
+    assert!(!line.contains("% full"), "no numbers for the model: {line}");
+    assert!(line.contains("not yours to manage"), "{line}");
+    assert!(line.ends_with("continue with what you stopped."), "{line}");
     assert!(warnings_of(&hub, REPEATED).is_empty());
 
     let log = std::fs::read_to_string(dir.path.join(LOG)).expect("the claim is logged");
