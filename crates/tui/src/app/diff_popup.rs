@@ -49,6 +49,9 @@ pub(crate) enum PopupBody {
     Notice {
         text: String,
         jobs: Vec<(bool, EndedJob)>,
+        /// **The operator's answer, when the notice is a question to them** (`asked_card`): the
+        /// row the session wrote right after it, so the popup can mark what they chose.
+        answer: Option<String>,
     },
 }
 
@@ -107,7 +110,9 @@ impl App {
             .map(|(_, j)| (j.id.clone(), j.produced))
             .collect();
         self.ask_tails(asks);
-        self.open_popup(PopupBody::Notice { text, jobs });
+        let answer = crate::ui::transcript::asked_card::question_of(&text)
+            .and_then(|_| crate::ui::transcript::asked_card::answer_after(&self.items, k));
+        self.open_popup(PopupBody::Notice { text, jobs, answer });
     }
 
     /// **Open the note card `i` whole** — the click on a card's one line (a `target_red` warning, a
@@ -121,6 +126,7 @@ impl App {
         self.open_popup(PopupBody::Notice {
             text,
             jobs: Vec::new(),
+            answer: None,
         });
     }
 
@@ -239,6 +245,7 @@ impl App {
         &self,
         text: &str,
         jobs: &[(bool, EndedJob)],
+        answer: Option<&str>,
         width: usize,
     ) -> Layout {
         use crate::ui::render::wrap;
@@ -252,7 +259,12 @@ impl App {
                 });
             }
         };
-        for l in text.lines() {
+        // **A question to the operator is drawn with its options one per line**, theirs marked
+        // (`asked_card::full_lines`); every other notice as the daemon wrote it.
+        let asked = crate::ui::transcript::asked_card::full_lines(text, answer, width);
+        let as_written = if asked.is_some() { "" } else { text };
+        rows.extend(asked.into_iter().flatten());
+        for l in as_written.lines() {
             if l.is_empty() {
                 rows.push(Line::default());
             } else {
