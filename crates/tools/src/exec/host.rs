@@ -216,8 +216,9 @@ pub fn job_label(slug: Option<&str>, id: &str) -> String {
 }
 
 impl JobView {
-    /// **One clause about this job's memory**, or `None` for a job nobody capped and the kernel
-    /// counted nothing for — the clause `job_list` and a completion notice both print.
+    /// **One clause about this job's memory**, or `None` unless there is something to say: it was
+    /// killed at its cap, came within a tenth of it, or ran uncapped against an ask — the clause
+    /// `job_list` and a completion notice both print.
     pub fn memory_clause(&self) -> Option<String> {
         match (&self.memory_cap, &self.memory) {
             (MemoryCap::Uncapped { asked, why }, _) => Some(format!(
@@ -227,11 +228,10 @@ impl JobView {
             (_, Some(u)) if u.killed_at_cap() => {
                 Some(format!("{} — KILLED at the cap", u.clause()))
             }
-            (_, Some(u)) => Some(u.clause()),
-            (MemoryCap::Capped(b), None) => {
-                Some(format!("capped at {}", super::scope::human_bytes(*b)))
-            }
-            (MemoryCap::NotAsked, None) => None,
+            // R93.F7/C4: a job that ended well inside its cap says nothing about memory — the
+            // peak on every row was a number to size work by, which the model is not given.
+            (_, Some(u)) if u.near_its_cap() => Some(format!("{} — near its cap", u.clause())),
+            (_, Some(_)) | (MemoryCap::Capped(_), None) | (MemoryCap::NotAsked, None) => None,
         }
     }
 

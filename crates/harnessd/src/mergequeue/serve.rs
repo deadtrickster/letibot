@@ -1148,7 +1148,7 @@ impl RepoQueue {
             } else {
                 format!(" at `{failing}`")
             },
-            out = h.evidence,
+            out = super::gate::for_the_model(&h.evidence),
         );
         let fresh = self.store.enqueue_review(
             &NewReview {

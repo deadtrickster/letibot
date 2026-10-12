@@ -20,9 +20,9 @@ const MEANWHILE_TURN_END: &str = include_str!("fixtures/job_notice_meanwhile_tur
 
 /// The operator's paste, the notice's shape with one job — a command over several lines and the
 /// memory clause, which is what used to defeat the fold and draw six raw rows.
-const ONE: &str = "[job] a job you backgrounded has ended:\n  - `build-and-test-null · j1042` exited 0 after 2m54s, wrote 1008 bytes: bash -c 'cd /home/dead/Projects/dbtest/pg-noop; echo \"=== building release\"\n  cargo build --release 2>&1 | tail -3'\n    memory: peak 245 MiB of a 8 GiB cap\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have. Read what it wrote with `job_output` (job=\"…\"), then carry on with what you were doing.";
+const ONE: &str = "[job] a job you backgrounded has ended:\n  - `build-and-test-null · j1042` exited 0 after 2m54s, wrote 1008 bytes: bash -c 'cd /home/dead/Projects/dbtest/pg-noop; echo \"=== building release\"\n  cargo build --release 2>&1 | tail -3'\n    memory: peak 245 MiB of a 8 GiB cap\nOutput: `job_output` job=\"j1042\".";
 
-const BOILERPLATE: &str = "This is the completion arriving on its own";
+const BOILERPLATE: &str = "Output: `job_output`";
 
 /// A head attached to `s` with `notice` as its one row, spoken by the harness.
 fn with_notice(notice: &str) -> App {
@@ -122,8 +122,8 @@ fn a_notice_shape_the_parser_does_not_know_is_refused() {
         (
             "text after the memory clause",
             ONE.replace(
-                "cap\nThis is",
-                "cap\n  and something the daemon started saying\nThis is",
+                "cap\nOutput:",
+                "cap\n  and something the daemon started saying\nOutput:",
             ),
         ),
     ] {
@@ -402,7 +402,7 @@ fn a_meanwhile_batch_draws_its_heading_and_two_lines_per_job() {
     let screen = a.screen(120, 30);
     let joined = screen.join("\n");
     assert_eq!(
-        rows_with(&screen, "Meanwhile: 2 results arrived while you were busy").len(),
+        rows_with(&screen, "Meanwhile: Finished while you were working").len(),
         1,
         "{joined}"
     );
@@ -433,11 +433,7 @@ fn a_turn_end_batch_folds_to_its_heading_and_two_lines_per_job() {
     let screen = a.screen(120, 30);
     let joined = screen.join("\n");
     assert_eq!(
-        rows_with(
-            &screen,
-            "Meanwhile: 2 results arrived while you were working"
-        )
-        .len(),
+        rows_with(&screen, "Meanwhile: Finished while you were working").len(),
         1,
         "{joined}"
     );
@@ -489,10 +485,7 @@ fn the_rows_waiting_on_a_completion_are_kept_on_the_compact_row() {
 
     // A subagent's notice folds the same way.
     let task = "[task] a subagent you started has finished:\n  - `s-1-sub-2` done: all green\n\
-                This is the completion arriving on its own — you do not need to wait for it, and \
-                calling `task_result` to block would only hold you for a result you already have. \
-                Read what it said with `task_result` (task=\"…\"), then carry on with what you were \
-                doing.\nWaiting on this: \"ship it\" (yours) — update it with `todo_write` now that \
+                Full answer: `task_result` task=\"s-1-sub-2\".\nWaiting on this: \"ship it\" (yours) — update it with `todo_write` now that \
                 it has finished.";
     let folded = crate::ui::transcript::blocks::folded_notice(task, &[]).expect("it folds");
     assert!(

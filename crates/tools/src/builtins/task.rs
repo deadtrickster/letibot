@@ -454,8 +454,8 @@ impl TaskStatus {
             // A turn in flight that has published nothing for the window: the one state a reader
             // is sent to LOOK at, and the one `job_kill` answers.
             ChildDoing::Quiet | ChildDoing::NoEvidence => {
-                "check whether it is stuck: `job_kill` stops a child that is wedged, and its own \
-                 transcript is on the board under its handle"
+                "check whether it is stuck: `job_kill` stops a child that is wedged, and `transcript` \
+                 with `session` set to its handle reads what it did"
             }
         };
         Some(format!(
@@ -802,6 +802,12 @@ impl TaskTool {
     }
 }
 
+/// The `wake` argument's description, the same for `task` and `task_start` (R93.F22: `task_start`
+/// had none, while its result promised a delivery `wake` decides).
+const WAKE_ARG: &str = "When the child's answer reaches you. `later` (the default): when your \
+     current turn ends, or at once if a todo row needs it. `now`: the moment it finishes, even \
+     mid-turn.";
+
 impl Tool for TaskTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
@@ -817,7 +823,10 @@ impl Tool for TaskTool {
              permissions and can only be given less, never more. This returns as soon \
              as the subagent has STARTED, with a handle — a subagent is minutes of \
              work and this call does not wait for it, so the rest of your calls run \
-             while it does. Collect its answer with `task_result`. **A child that \
+             while it does. "
+                .to_string()
+                + super::DELIVERED
+                + " `task_result` shows its state or re-reads its answer. **A child that \
              writes code must be told, in its prompt, to END with \
              `sh scripts/check-fmt.sh <the ref it was cut from>`**: code a child has \
              written, built and TESTED can still be unformatted, because `cargo fmt` \
@@ -833,7 +842,8 @@ impl Tool for TaskTool {
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
                     "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
-                    "wake": {"type": "string", "enum": ["now", "later"], "description": "When the child's answer reaches you. `later` (the default): at once if your plan waits on it (a todo row `needs` the child, or you call `task_result` on it), otherwise held and handed over with other results in one note at your next break, so it does not pull you off the work you are in. `now`: the moment it finishes, even mid-turn."}
+                    "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG}
                 },
                 "required": ["prompt"]
             }),
@@ -916,17 +926,13 @@ impl Tool for TaskTool {
             std::time::Duration::ZERO,
             letibot_transcript::Backgrounding::Asked,
             format!(
-                "carry on — `{handle}`'s answer is delivered to you on its own when it \
-                 finishes, so there is nothing to wait for. `task_result` with \
-                 task=\"{handle}\" and no `timeout_ms` shows where it has got to.{}",
-                crate::builtins::todo::attach_now("child", &handle)
+                "`task_result` with task=\"{handle}\" shows where it has got to.{}",
+                crate::builtins::todo::attach_now(ctx, "child", &handle)
             ),
             format!(
                 "started subagent `{handle}` as `{}`.\n  subtask: {}\n\nIt is working \
-                 now, and this call did not wait for it — the rest of this round runs \
-                 while it does, and its answer comes back to you on its own \
-                 when it finishes. `task_result` with task=\"{handle}\" (no \
-                 `timeout_ms`) reports where it has got to.\n\n{}",
+                 now, and this call did not wait for it. {} `task_result` with \
+                 task=\"{handle}\" shows where it has got to.",
                 match &spec.model {
                     // **The model is named when the child was given one** — a spawn that
                     // prints only the role would leave the reader to guess which model is
@@ -935,7 +941,7 @@ impl Tool for TaskTool {
                     None => spec.role.clone(),
                 },
                 first_line(prompt),
-                super::bash::wake_sentence(wake),
+                super::DELIVERED,
             ),
         )
     }
@@ -1031,7 +1037,10 @@ impl Tool for TaskStartTool {
              already exists is refused by name and nothing is spawned. The branch is \
              the deliverable and is NEVER pushed — it is to be landed by a merge queue. \
              A child in the wrong PLACE is corrected with `task_message`, not killed: \
-             killing is for wrong work. Collect its answer with `task_result`.",
+             killing is for wrong work. "
+                .to_string()
+                + super::DELIVERED
+                + " `task_result` shows its state or re-reads its answer.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1044,7 +1053,8 @@ impl Tool for TaskStartTool {
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
                     "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."},
-                    "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."}
+                    "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."},
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG}
                 },
                 "required": ["prompt"]
             }),
@@ -1083,6 +1093,12 @@ impl Tool for TaskStartTool {
         };
         let vm_verify = match verify_arg(args, placement) {
             Ok(v) => v,
+            Err(refused) => return refused,
+        };
+        // R93.F22: `task_start` takes `wake` as `task` does, refused by name before anything is
+        // arranged.
+        let wake = match super::bash::wake_arg(args) {
+            Ok(w) => w,
             Err(refused) => return refused,
         };
         let model = args
@@ -1180,6 +1196,9 @@ impl Tool for TaskStartTool {
             "subagent {} started in {}",
             handle.handle, handle.placement.path
         ));
+        if let Some(w) = wake {
+            ctx.want_completion(&handle.handle, w);
+        }
 
         // **The placement is in the answer.** The handle names the path, the branch
         // and the base SHA, so the caller and the operator see where the child is
@@ -1202,22 +1221,17 @@ impl Tool for TaskStartTool {
             std::time::Duration::ZERO,
             letibot_transcript::Backgrounding::Asked,
             format!(
-                "carry on — `{0}`'s answer is delivered to you on its own when it \
-                 finishes, so there is nothing to wait for. `task_result` with \
-                 task=\"{0}\" and no `timeout_ms` shows where it has got to.{1}",
+                "`task_result` with task=\"{0}\" shows where it has got to.{1}",
                 handle.handle,
-                crate::builtins::todo::attach_now("child", &handle.handle)
+                crate::builtins::todo::attach_now(ctx, "child", &handle.handle)
             ),
             format!(
                 "started subagent `{}` as `{}` in {}.\n  subtask: {}\n  path: {}\n  \
                  branch: {}\n  base: {}\n{seam_line}\nThe branch is the deliverable and \
                  is NOT pushed; it is to be landed by a merge queue. It is working now, \
-                 and this call did not wait for it — the rest of this round runs while \
-                 it does, and its answer comes back to you as a turn of its own when it \
-                 finishes. `task_result` with task=\"{}\" (no `timeout_ms`) reports \
-                 where it has got to. A child in the wrong \
-                 PLACE is corrected with `task_message`, not killed: killing is for \
-                 wrong work.",
+                 and this call did not wait for it. {} `task_result` with task=\"{}\" \
+                 reports where it has got to. A child in the wrong PLACE is corrected \
+                 with `task_message`, not killed: killing is for wrong work.",
                 handle.handle,
                 match &spec.model {
                     Some(m) => format!("{m} (as a {})", spec.role),
@@ -1228,6 +1242,7 @@ impl Tool for TaskStartTool {
                 handle.placement.path,
                 handle.placement.branch,
                 handle.placement.base_sha,
+                super::DELIVERED,
                 handle.handle,
             ),
         )
@@ -1249,9 +1264,9 @@ impl Tool for TaskResultTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "task_result",
-            "Look at a subagent started by `task`. You do not need this to get its \
-             answer: that is delivered to you on its own, as a turn, when it finishes. \
-             Give `task` (the handle `task` returned) to see where it has got to. \
+            "Look at a subagent started by `task`. Its answer is delivered to you \
+             (when your current turn ends, or at once if a todo row needs it or wake is \
+             \"now\"); this shows its state or re-reads the answer. Give `task` (the handle `task` returned) to see where it has got to. \
              `timeout_ms` blocks only for a child this session is not already being \
              told about. \
              The three endings are three different outcomes: it answered, it failed, or \
@@ -1407,7 +1422,7 @@ impl Tool for TaskResultTool {
                 format!("subagent `{handle}` did not finish"),
                 format!(
                     "{why}\n\nNothing of its work is lost: it has its own session, \
-                         and its transcript is on the board under `{handle}`."
+                         and `transcript` with session=\"{handle}\" reads it."
                 ),
             ),
             // **The sentence that said one thing about three states.** *"Still working"* was
@@ -1416,6 +1431,22 @@ impl Tool for TaskResultTool {
             // own measurement, three asks and one sentence. The headline now names the state, and
             // the body carries what the daemon can see and the move that state asks for. A runner
             // that keeps no reading gets the old words, byte for byte.
+            // R93.F18: a look (no `timeout_ms`) at a child this session is told about is not a
+            // wait that ran out, and "call again with a longer timeout_ms" contradicted every
+            // text that says its answer is delivered.
+            TaskStatus::Running { .. } if timeout.is_zero() && ctx.completion_delivered(handle) => {
+                Invocation::abstained(
+                    format!("subagent `{handle}` is {}", doing_word(&status)),
+                    format!(
+                        "`{handle}` has not answered yet; its answer is delivered to you when it \
+                         finishes.{}",
+                        status
+                            .child_now()
+                            .map(|said| format!(" Right now {said}."))
+                            .unwrap_or_default()
+                    ),
+                )
+            }
             TaskStatus::Running { ref note, .. } => Invocation::abstained(
                 format!("subagent `{handle}` is {}", doing_word(&status)),
                 format!(
@@ -1594,8 +1625,8 @@ impl Tool for TaskResumeTool {
                 std::time::Duration::ZERO,
                 letibot_transcript::Backgrounding::Asked,
                 format!(
-                    "carry on — `{handle}`'s answer is delivered to you on its own when it \
-                     finishes. `task_result` with task=\"{handle}\" shows where it has got to."
+                    "{} `task_result` with task=\"{handle}\" shows where it has got to.",
+                    super::DELIVERED
                 ),
                 said,
             ),

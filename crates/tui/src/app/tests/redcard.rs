@@ -172,12 +172,13 @@ fn a_click_on_the_emergency_opens_the_whole_notice() {
         "EMERGENCY — `main` at 60bf819c3342 in /home/dead/Projects/firecode is RED",
         "The failing step is 1 of 1, `bin/firecode test`. The end of its output:",
         "frame_matches_golden",
-        "[gate memory: peak 1.6 GiB of a 40.9 GiB cap]",
         "(`red-main-60bf819c3342`)",
         "whose decision it is.",
     ] {
         assert!(holds(&whole, needle), "the popup lost `{needle}`: {whole}");
     }
+    // R93.F8: a peak far from its cap is the operator's (the warning keeps it), not the model's.
+    assert!(!holds(&whole, "[gate memory: peak 1.6 GiB"), "{whole}");
     // Scrollable, like the job card's: the whole notice is taller than the screen.
     assert_eq!(a.key(Key::End), None);
     let end = a.screen(120, 30).join("\n");
@@ -350,10 +351,8 @@ fn an_extra_sentence_keeps_the_one_line_and_the_popup_shows_it() {
 #[test]
 fn an_emergency_beside_a_job_completion_keeps_both_compact() {
     const ONE: &str = "[job] a job you backgrounded has ended:\n  - `build · j7` exited 0 after \
-                       4.4s, wrote 0 bytes: cargo build\nThis is the completion arriving on its \
-                       own — you do not need to wait for it, and `job_wait` would only block you \
-                       for a result you already have. Read what it wrote with `job_output` \
-                       (job=\"…\"), then carry on with what you were doing.";
+                       4.4s, wrote 0 bytes: cargo build\nOutput: `job_output` \
+                       job=\"j7\".";
     let mut a = with_notice(&format!("{NOTICE}\n\n{ONE}"));
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");

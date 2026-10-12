@@ -677,8 +677,8 @@ fn a_backgrounded_job_with_a_redirect_says_its_output_is_not_captured() {
         "the note must state the rule rather than one spelling of it: {body}"
     );
     assert!(
-        body.contains("You are woken when it finishes"),
-        "the rule must carry its REASON — that the completion wakes you — rather than only \
+        body.contains(letibot_tools::builtins::DELIVERED),
+        "the rule must carry its REASON — that the completion reaches you — rather than only \
          forbidding a verb: {body}"
     );
     let id = job_id_anywhere(&body).expect("a job id");
@@ -810,11 +810,11 @@ fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
         named.contains(&format!("`{label}` has produced no output")),
         "a result names the job by its label, whoever asked by whatever handle: {named}"
     );
-    // **And the argument it suggests is a handle, not the label.** It echoes what the caller
-    // wrote — here the name, which resolves — rather than `release-build · j10`, which does not.
+    // **And no argument it suggests is the label**, which does not resolve. (R93: the running,
+    // empty case no longer suggests a `job_wait` at all — its completion is delivered.)
     assert!(
-        named.contains("job=\"release-build\"") && !named.contains(&format!("job=\"{label}\"")),
-        "the suggested argument must be the resolvable one: {named}"
+        !named.contains(&format!("job=\"{label}\"")),
+        "a suggested argument must be a resolvable one: {named}"
     );
 
     // ...and by the id, with the same label in the answer.

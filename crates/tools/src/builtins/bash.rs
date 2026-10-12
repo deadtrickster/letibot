@@ -71,15 +71,22 @@ use crate::schema::{Access, ToolSchema};
 
 /// The `bash` tool. It carries the operator's memory policy (TODO.md R65) because the policy
 /// is part of what its description says, and the description is fixed when the session opens.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Default)]
 pub struct Bash {
     memory: MemoryPolicy,
+    /// Whether this session's model has been told that some modified files are past the
+    /// snapshot budget (R93.F38): 5,611 times in the data, for a fact it can do nothing about.
+    /// Said once.
+    snapshot_budget_said: std::sync::atomic::AtomicBool,
 }
 
 impl Bash {
     /// `bash` under the operator's `[memory]` settings.
     pub fn with_memory(memory: MemoryPolicy) -> Bash {
-        Bash { memory }
+        Bash {
+            memory,
+            snapshot_budget_said: Default::default(),
+        }
     }
 }
 
@@ -105,15 +112,14 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 
 /// **The `memory` argument's description**, with the operator's two numbers in it. Rendered
 /// from the policy rather than from what is free, because the schema is part of the
-/// session's stable prefix: the live numbers arrive in every result instead
-/// ([`Meminfo::clause`]).
+/// session's stable prefix.
 fn memory_arg(p: &MemoryPolicy) -> String {
     format!(
         "The memory cap for this command: a size (`512M`, `4G`) or a fraction of what is free \
          when it starts (`0.25`, `25%`). Omitted, the command runs under {} — {}. Up to {} \
          is granted at once; more than that — or `uncapped` — is put to the operator as a \
-         question first, and the command does not start unless they agree. Every result \
-         reports the command's peak, so you can size the next ask from the last one.",
+         question first, and the command does not start unless they agree. A result says so \
+         when the command was killed at its cap or came near it.",
         p.default,
         p.default_from.describe(),
         p.ceiling
@@ -134,36 +140,33 @@ fn default_sentence(p: &MemoryPolicy) -> String {
     )
 }
 
-/// **The note every model call's result carries about memory**: what it ran under, what it
-/// peaked at, and what the box has free now — the operator's *"it should know the free, how
-/// much it can ask and what are the consequences"*, said where the model reads it.
-fn memory_note(job: &crate::exec::jobs::Job, policy: &MemoryPolicy) -> Option<String> {
+/// **The note a model call's result carries about memory — only when there is one to carry.**
+///
+/// It used to be on every result: the peak, the cap and what the box had free (`box: … free of
+/// …; you may ask up to …`), measured on 93% of bash results on 2026-10-12. The operator's
+/// rule: the model is not handed numbers to size its work by. So it is said when the run was
+/// killed at its cap or came within a tenth of it (R93.F1), and when a cap that was asked for
+/// could not be set; never the box's free and total.
+fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
     use crate::exec::MemoryCap;
-    let box_now = Meminfo::read()
-        .map(|m| format!(" · {}", m.clause(policy)))
-        .unwrap_or_default();
     let used = job.memory_used();
-    let line = match (job.memory_cap(), used) {
-        (MemoryCap::NotAsked, None) => return None,
-        (MemoryCap::Uncapped { asked, why }, _) => format!(
+    match (job.memory_cap(), used) {
+        (MemoryCap::Uncapped { asked, why }, _) => Some(format!(
             "memory: ran UNCAPPED — {} was asked for and could not be set: {why}",
             crate::exec::human_bytes(*asked)
-        ),
-        (_, Some(u)) => {
-            let mut l = format!("memory: {}", u.clause());
-            if u.killed_at_cap() {
-                l.push_str(&format!(
-                    "; the kernel killed {} process(es) inside it at the cap",
-                    u.oom_kills
-                ));
-            }
-            l
-        }
-        (MemoryCap::Capped(b), None) => {
-            format!("memory: capped at {}", crate::exec::human_bytes(*b))
-        }
-    };
-    Some(format!("{line}{box_now}"))
+        )),
+        (_, Some(u)) if u.killed_at_cap() => Some(format!(
+            "memory: {}; the kernel killed {} process(es) inside it at the cap",
+            u.clause(),
+            u.oom_kills
+        )),
+        (_, Some(u)) if u.near_its_cap() => Some(format!(
+            "memory: {} — this command used nearly all of its cap; pass a larger `memory` if \
+             it needs more.",
+            u.clause()
+        )),
+        _ => None,
+    }
 }
 
 impl Bash {
@@ -309,26 +312,6 @@ pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     }
 }
 
-/// **The sentence a started job or child carries about when its result arrives** (R79) — the
-/// tool result says which rule applies, so the model is never left to guess whether it will be
-/// interrupted or has to ask.
-pub(crate) fn wake_sentence(wake: Option<WantedNow>) -> &'static str {
-    match wake {
-        Some(_) => {
-            "wake: now — its result is handed to you the moment it ends, at the next round \
-             boundary of a running turn or as a turn of its own."
-        }
-        None => {
-            "wake: later (the default) — unless your plan waits on it (a todo row that `needs` \
-             it, or a `job_wait`/`task_result` on it), its result is HELD and arrives with any \
-             others in one `[meanwhile]` note at your next break: the next turn you take, or a \
-             long turn's next round once it has been held for the cap (ten minutes by \
-             default). It never starts a turn of its own. Pass `wake: \"now\"` to be told the \
-             moment it ends."
-        }
-    }
-}
-
 /// **How long a foreground run may go before the daemon says it is the wrong
 /// shape** — one minute.
 ///
@@ -378,52 +361,43 @@ impl Tool for Bash {
             "Run a shell command in the session's workspace and return its output. \
              Give `command`; optionally `cwd` (relative to the workspace), \
              `timeout_ms`, `slug` and `background: true` to start it and return \
-             immediately. A command you did NOT mark background is moved to the \
-             background by the runtime once it has run longer than `timeout_ms`, and \
-             the result says so, names its job id and says which call gets its \
-             output — it is still running, it did not fail, and starting it again \
-             would give you two. Every run is a job with an id: output is capped \
-             inline and the rest is read with `job_output`, and a job's completion \
-             **arrives on its own** when it ends — you are told, unprompted, so you \
-             do not sit and wait on it. **Give `slug` when the job is one a person \
+             immediately. A foreground command is killed at `timeout_ms` (default \
+             120 s); use `background: true` for anything longer. Every run is a job \
+             with an id: output is capped inline and the rest is read with \
+             `job_output`. A background job's completion is not something you wait \
+             for: "
+                .to_string()
+                + super::DELIVERED
+                + " **Give `slug` when the job is one a person \
              will want to recognise** (`release-build`, `fold-tests`): your own name \
              for the work, which is what the transcript calls this job and what the jobs \
              pane draws beside the id — and never a restatement of the command. Leave it \
-             out when you have no name and none is invented for you. **That is the rule, \
-             and it is about clocks rather than about verbs: you are woken when the job \
-             finishes, so do not build your own clock.** `sleep 200`, a `tail -f` of a \
-             log, a `until … ; do sleep 5; done` — every one of them is the same mistake \
-             in a different spelling, and \
-             each spends the wait twice: it cannot be woken early when the work finishes \
+             out when you have no name and none is invented for you. **So do not build \
+             your own clock:** `sleep 200`, a `tail -f` of a log, a `until … ; do sleep \
+             5; done` — every one of them is the same mistake in a different spelling, \
+             and each spends the wait twice: it cannot end early when the work finishes \
              in twenty seconds, and it cannot be ended cleanly when it fails. A job is \
-             stopped with `job_kill`. Every process lands in a cgroup \
-             owned by a scope, so a foreground command dies with the turn and a \
-             background one with the session unless you name an `scope`. Do not \
-             write `pkill`, `pgrep` or a `while ... sleep` wait loop: those match the \
-             process running them, and `job_kill` and `job_wait` take a job id \
-             instead of a pattern. When this session has a boundary, the command runs \
-             in a filesystem view rooted at the workspace: a path outside that view \
-             is absent rather than denied, and a result that says a path is not in \
-             the view is a fact about the boundary, not about whether anything is \
-             there — asking again with a different spelling will not reach it. \
-             **Every model call runs under a memory cap**: the kernel kills the \
-             command, and only it, when it reaches the cap — the result then says it \
-             was killed at its cap and how much it peaked at. Each result also says \
-             how much the box has free and how much you may ask for. Without a cap, \
-             a command that ate the box would be killed by the kernel's out-of-memory \
-             killer along with whatever else it picked — the session, its daemon and \
-             the operator's terminal window have all gone that way. Set `memory` when \
-             the command needs more than the default, and no more than it needs."
-                .to_string()
+             stopped with `job_kill`. Every process lands in a cgroup owned by a scope, \
+             so a foreground command dies with the turn and a background one with the \
+             session unless you name a `scope`. Do not write `pkill`, `pgrep` or a \
+             `while ... sleep` wait loop in a command: those match the process running \
+             them, and `job_kill` and `job_wait` take a job id instead of a pattern. \
+             When this session has a boundary, the command runs in a filesystem view \
+             rooted at the workspace: a path outside that view is absent rather than \
+             denied, and a result that says a path is not in the view is a fact about \
+             the boundary, not about whether anything is there — asking again with a \
+             different spelling will not reach it. Every command runs under a memory \
+             cap and is killed alone if it reaches it; set `memory` for builds and tests \
+             (e.g. \"4G\")."
                 + &default_sentence(&self.memory),
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
-                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes); set it higher for a command you know takes longer. Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and wakes you when it ends — rather than behind a raised timeout_ms."},
+                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
-                    "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: when its completion reaches you. `later` (the default): at once if your plan waits on it (a todo row `needs` it, or you `job_wait` it), otherwise held and handed over with other results in one note at your next break, so it does not pull you off the work you are in. `now`: the moment it ends, even mid-turn."},
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: when its completion reaches you. `later` (the default): when your current turn ends, or at once if a todo row needs it. `now`: the moment it ends, even mid-turn."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
                     "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."},
@@ -754,19 +728,6 @@ impl Tool for Bash {
                      `job_kill` stops it."
                 ),
             };
-            // **The rule, not a verb list.** R7 closed `job_wait` and the model went on
-            // waiting with `sleep 200; tail -3 log`, so what has to be said is *why* the wait
-            // is unnecessary rather than which words are forbidden.
-            // One line per sentence, and one `concat!` rather than a wrapped literal:
-            // a `\` continuation strips, and the version of this that shipped without
-            // one put `a                          `sleep`` in front of a model that
-            // reads every character.
-            let clock = concat!(
-                "**You are woken when it finishes, so do not build your own clock** — a ",
-                "`sleep`, a `tail` in a loop or a poll are the same mistake in three ",
-                "spellings, and each spends the wait twice: it cannot be woken early when ",
-                "the work finishes in twenty seconds, and it cannot be ended when it fails.",
-            );
             // **And the handles a caller may pass.** The name is the caller's own word for
             // the work, and it is spelled back with the id so that a string a person can
             // read is a string that resolves to this job: the label above is what a reader
@@ -782,25 +743,24 @@ impl Tool for Bash {
             if let Some(w) = wake {
                 ctx.want_completion(&id.0, w);
             }
-            let wake_said = wake_sentence(wake);
+            // R93.F13: this was ~250 words saying "reaches you on its own" four times, then a
+            // `wake` sentence that contradicted R79. One delivery sentence, the handle, and the
+            // way to read it ([`super::DELIVERED`]); the envelope adds "STILL RUNNING".
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 Duration::ZERO,
                 Backgrounding::Asked,
                 format!(
-                    "carry on — `{label}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}{}",
-                    crate::builtins::todo::attach_now("job", &id.0)
+                    "{read_it}{}",
+                    crate::builtins::todo::attach_now(ctx, "job", &id.0)
                 ),
                 format!(
-                    "started `{label}` in the background.\n  command: {command}\n{named}  \
-                     pid: {}\n  scope: {} — {}\n\nIt is running now, and **its \
-                     completion will reach you by itself when it ends — do not wait for \
-                     it, and do not poll.** {clock}\n\n{read_it} Carry on with something \
-                     else; when the job finishes you are told, unprompted, with its command, \
-                     how it ended and where its output is.\n\n{wake_said}",
+                    "started `{label}` in the background (pid {}).\n{named}  scope: {} — {}\n\n{} \
+                     So do not build your own clock: no `sleep`, no polling loop.",
                     view.as_ref().map(|v| v.pid).unwrap_or(0),
                     scope.as_str(),
                     scope.reaped_when(),
+                    super::DELIVERED,
                 ),
             );
             for n in notes {
@@ -898,7 +858,7 @@ impl Tool for Bash {
                 None => format!(
                     "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far."
                 ),
-            } + &crate::builtins::todo::attach_now("job", &id.0);
+            } + &crate::builtins::todo::attach_now(ctx, "job", &id.0);
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 p.ran_for,
@@ -1075,7 +1035,7 @@ impl Tool for Bash {
             crate::exec::scope::note_memory(u);
         }
         if !ctx.tty
-            && let Some(note) = job.as_deref().and_then(|j| memory_note(j, &self.memory))
+            && let Some(note) = job.as_deref().and_then(memory_note)
         {
             inv = inv.with_note(note);
         }
@@ -1146,7 +1106,11 @@ impl Tool for Bash {
                     ));
                 }
             }
-            if base.skipped > 0 {
+            if base.skipped > 0
+                && !self
+                    .snapshot_budget_said
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
                 inv = inv.with_note(format!(
                     "{} file(s) were already modified and beyond the snapshot budget, so a \
                      change to one of them is not reported",
@@ -1621,14 +1585,6 @@ mod tests {
                 "{bad} was not refused"
             );
         }
-        assert!(wake_sentence(Some(WantedNow::WakeNow)).starts_with("wake: now"));
-        let later = wake_sentence(None);
-        assert!(
-            later.starts_with("wake: later")
-                && later.contains("HELD")
-                && later.contains("[meanwhile]"),
-            "{later}"
-        );
     }
 
     #[test]

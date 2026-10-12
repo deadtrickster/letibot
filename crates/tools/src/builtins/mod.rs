@@ -173,6 +173,16 @@ pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
     }
 }
 
+/// **How a background job's or a subagent's completion reaches the model — one sentence,
+/// everywhere** (R93.F12, under R79's delivery rules in `harnessd`'s `delivery.rs`).
+///
+/// Seven texts said it seven ways, some of them false under R79 (*"it never starts a turn of its
+/// own"*, *"as a turn of its own"*, *"you are woken when it finishes"*), and some of them
+/// contradicting each other inside one result. Every tool text that says how a completion
+/// arrives says this.
+pub const DELIVERED: &str = "Its completion reaches you automatically — when your current turn \
+     ends, or at once if a todo row needs it or wake is \"now\".";
+
 /// **Where a command sends its own output instead of letting the job capture it** —
 /// R41, requirement one.
 ///
@@ -384,8 +394,8 @@ mod prompt_line_tests {
             "the prompt must state the rule about clocks: {d}"
         );
         assert!(
-            d.contains("you are woken"),
-            "the prompt must say WHY — that the completion wakes you — rather than only \
+            d.contains(super::DELIVERED),
+            "the prompt must say WHY — that the completion reaches you — rather than only \
              forbidding a verb: {d}"
         );
         // **And the one spelling that defeated R7 is named as an EXAMPLE of the rule**, not

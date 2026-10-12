@@ -1046,7 +1046,7 @@ fn a_completion_row_holds_a_whole_brief_on_one_line() {
                 item: Box::new(TranscriptItem::User {
                     speaker: letibot_transcript::Speaker::Agent,
                     parts: vec![letibot_transcript::UserPart::Text {
-                        text: "[task] a subagent you started has finished:\n  - `s-sub-1` failed: the cap is spent\nThis is the completion arriving on its own — you do not need to wait for it.".into(),
+                        text: "[task] a subagent you started has finished:\n  - `s-sub-1` failed: the cap is spent\nFull answer: `task_result` task=\"s-sub-1\".".into(),
                     }],
                 }),
             },

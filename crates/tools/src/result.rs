@@ -51,6 +51,11 @@ pub struct ToolResult {
     /// point of the call. The payload carries the *sentence* about it, which is what a text-only
     /// reader gets.
     pub media: Option<crate::media::Media>,
+    /// **Repair codes this session's model has already been told about** (R93.F56), which
+    /// [`ToolResult::render`] does not repeat. `repairs` still holds them — the head and the metrics
+    /// count every repair — and only the model's copy is spared the same `[repaired]` line on every
+    /// call for a habit (*"arguments arrived inside a markdown code fence"*) it will not drop.
+    pub repairs_told: Vec<&'static str>,
 }
 
 impl ToolResult {
@@ -65,6 +70,7 @@ impl ToolResult {
             spill: None,
             edit: None,
             media: None,
+            repairs_told: Vec::new(),
         }
     }
 
@@ -98,6 +104,9 @@ impl ToolResult {
     pub fn render(&self) -> String {
         let mut head = String::new();
         for r in &self.repairs {
+            if self.repairs_told.contains(&r.code) {
+                continue;
+            }
             head.push_str("[repaired] ");
             head.push_str(&r.detail);
             head.push('\n');
@@ -136,14 +145,19 @@ impl ToolResult {
                 how,
                 next,
             } => Envelope::still_running(&self.call_id).wrap(&format!(
-                "tool: {}\njob: {handle}\nran in the foreground for: {} before it went \
-                 to the background\nhow: {}\n{head}{}\n\n\
-                 THIS COMMAND IS STILL RUNNING. It did not fail, it was not \
-                 abandoned, and nothing above is its finished output. Do NOT start it \
-                 again — that would give you two. To get its output when it is done: \
-                 {next}",
+                // R93.F13: a call that asked for the background ran in the foreground for 0 ms,
+                // and saying so was a line of nothing; and the rest was said three times.
+                "tool: {}\njob: {handle}\n{}how: {}\n{head}{}\n\n\
+                 STILL RUNNING — not failed and not finished; do not start it again. {next}",
                 self.name,
-                human_ms(*ran_for_ms),
+                if *ran_for_ms == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "ran in the foreground for: {} before it went to the background\n",
+                        human_ms(*ran_for_ms)
+                    )
+                },
                 how.phrasing(),
                 self.payload
             )),
@@ -430,10 +444,10 @@ pub fn propagate(children: &[ToolOutcome]) -> Propagation {
     if !running.is_empty() && running.len() + abstentions.len() == children.len() {
         return Propagation::Must(ToolOutcome::NotRun {
             why: format!(
-                "{} of {} tool call(s) are STILL RUNNING in the background and none \
-                 has produced a result yet — nothing failed and nothing is missing. \
-                 The handles are: {}. Wait on them, or read what they have written, \
-                 before reporting anything as an answer.",
+                // R93.F20: "Wait on them" contradicted every text that says not to wait.
+                "{} of {} tool call(s) are STILL RUNNING in the background ({}); nothing \
+                 failed, and their results will be delivered to you. Do not report an \
+                 answer yet.",
                 running.len(),
                 children.len(),
                 running.join(", ")
@@ -561,7 +575,7 @@ mod tests {
         assert!(out.contains("j4"), "{out}");
         assert!(out.contains("15.0s"), "{out}");
         assert!(out.contains("job_output"), "{out}");
-        assert!(out.contains("Do NOT start it again"), "{out}");
+        assert!(out.contains("do not start it again"), "{out}");
         assert!(out.contains("did not ask"), "{out}");
         // It is not grounding: there is no answer yet to be grounded in.
         assert!(!r.is_grounded());

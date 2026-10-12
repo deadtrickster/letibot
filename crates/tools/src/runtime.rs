@@ -456,6 +456,11 @@ pub struct InvokeCtx<'a> {
     /// [`InvokeCtx::grant_memory`]. `None` on the operator's own run, which has nobody
     /// left to ask, and in a runtime with no gate.
     gate: Option<&'a std::sync::Mutex<Box<dyn Gate>>>,
+    /// **Whether a plan row could wait on what this call starts**: `todo_write` is seated in
+    /// this runtime and its board has an open row ([`Tool::open_plan`]). The `wait_on` offer a
+    /// background start carries is said only then (R93.B6) — it was on every start, to seats
+    /// with no plan and to seats with no `todo_write` at all.
+    pub plan_open: bool,
 }
 
 impl InvokeCtx<'_> {
@@ -583,6 +588,13 @@ pub trait Tool: Send + Sync {
     /// consequential of the two, so a tool cannot talk its way out of the gate by
     /// claiming a call is a read.
     fn access_for(&self, _args: &Value) -> Option<crate::schema::Access> {
+        None
+    }
+
+    /// **Whether this tool holds a plan with an open row** — `Some` only from the tool that
+    /// keeps the board (`todo_write`), `None` from every other. Read once per call into
+    /// [`InvokeCtx::plan_open`].
+    fn open_plan(&self) -> Option<bool> {
         None
     }
 }
@@ -1733,6 +1745,9 @@ pub struct ToolRuntime {
     /// See [`OperatorRun`]. `None` in a runtime with no daemon behind it, and the
     /// operator's own run then raises no card at all — the manual way in is unaffected.
     pub operator_runs: Option<OperatorRuns>,
+    /// The repair codes the model has been told about in this runtime (R93.F56) — see
+    /// [`ToolResult::repairs_told`].
+    pub repairs_told: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
 }
 
 impl ToolRuntime {
@@ -1750,6 +1765,7 @@ impl ToolRuntime {
             completion_delivered: None,
             completion_wanted: None,
             operator_runs: None,
+            repairs_told: Default::default(),
         }
     }
 
@@ -2080,6 +2096,11 @@ impl ToolRuntime {
                 // distinction between the two entries — see `InvokeCtx::tty`.
                 tty: !gated,
                 gate: gated.then_some(&self.gate),
+                plan_open: self
+                    .registry
+                    .get("todo_write")
+                    .and_then(|t| t.open_plan())
+                    .unwrap_or(false),
             };
             tool.invoke(&mut ctx, &args)
         };
@@ -2172,11 +2193,22 @@ impl ToolRuntime {
             },
         );
 
+        // R93.F56: an ENVELOPE repair (a fence, a leaked tag, prose around the JSON — the model's
+        // habit, not this call's mistake) is said to the model once per session per kind.
+        let repairs_told = {
+            let mut told = self.repairs_told.lock().unwrap_or_else(|e| e.into_inner());
+            repairs
+                .iter()
+                .map(|r| r.code)
+                .filter(|c| c.starts_with("envelope.") && !told.insert(*c))
+                .collect()
+        };
         let result = ToolResult {
             call_id: call.id.clone(),
             name: call.name.clone(),
             outcome: invocation.outcome,
             payload,
+            repairs_told,
             repairs,
             notes: invocation.notes,
             spill,
@@ -2441,6 +2473,27 @@ mod tests {
         // rather than complicate every caller.
         std::mem::forget(d);
         ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(ExplodingGate))
+    }
+
+    /// **R93.F56: an envelope repair is said to the model once per session**, and still counted.
+    #[test]
+    fn an_envelope_repair_is_said_once_and_still_counted() {
+        let rt = runtime(Access::Read);
+        let mut sink = RecordingToolSink::default();
+        let fenced = "```json\n{\"path\": \"a\"}\n```";
+        let first = rt.invoke("t1", &call("probe", fenced), &mut sink);
+        let second = rt.invoke("t1", &call("probe", fenced), &mut sink);
+        assert!(first.render().contains("[repaired]"), "{}", first.render());
+        assert!(
+            !second.render().contains("[repaired]"),
+            "{}",
+            second.render()
+        );
+        assert!(
+            second.repairs.iter().any(|r| r.code == "envelope.fence"),
+            "the head and the metrics still see it: {:?}",
+            second.repairs
+        );
     }
 
     fn call(name: &str, args: &str) -> ToolCall {
@@ -2806,6 +2859,7 @@ mod tests {
             notes: Vec::new(),
             spill: None,
             media: None,
+            repairs_told: Vec::new(),
             edit: Some(crate::edit::FileEdit {
                 path: "f".into(),
                 before: before.clone(),

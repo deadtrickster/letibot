@@ -5,4 +5,4 @@
   echo "=== testing"; cargo test 2>&1 | tail -5'
     memory: peak 245 MiB of a 8 GiB cap
   - `j1043` exited 101 after 4.4s, wrote 0 bytes: cargo test -p letibot-tui
-This is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have. Read what it wrote with `job_output` (job="…"), then carry on with what you were doing.
+Output: `job_output` job="j1042", job="j1043".

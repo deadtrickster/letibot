@@ -302,17 +302,16 @@ impl Tool for Todo {
                     Err(inv) => return *inv,
                 };
                 match self.ledger.start(&turn, id) {
+                    // R93.F58: it used to add *"If this turn ends with no successful tool call,
+                    // the intent check will say so"* — 163× on `todo`, a threat about the prose
+                    // check that is off by default (`--intent-prose`), and not what the
+                    // deterministic check does (it speaks a turn later, and only of a stall).
                     Ok(i) => Invocation::ok(format!(
                         "{}{}{}",
                         self.render(&i),
                         self.board_summary(),
                         self.backing()
-                    ))
-                    .with_note(
-                        "started. If this turn ends with no successful tool call, the \
-                         intent check will say so before the next one begins."
-                            .to_string(),
-                    ),
+                    )),
                     Err(_) => self.no_such_item(id_arg),
                 }
             }

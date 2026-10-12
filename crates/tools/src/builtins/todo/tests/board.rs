@@ -764,7 +764,8 @@ fn the_nag_says_whose_row_it_is_and_how_to_dispose_of_it() {
         !theirs.contains("drop it"),
         "while *drop* is not offered for a row that is not the model's to remove: {theirs}"
     );
-    assert!(theirs.contains("say why in your reply"), "{theirs}");
+    // R93.B3: the advice is one line now, and *"say why in your reply"* went with the rest.
+    assert!(theirs.contains("(quote it exactly)"), "{theirs}");
 }
 
 /// **THE FIRING IS RECORDED ON THE ROW, not in a daemon's memory.** The operator's own choice:

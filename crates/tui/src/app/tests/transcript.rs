@@ -3884,8 +3884,8 @@ fn a_set_the_card_can_choose_is_a_set_the_file_keeps() {
 /// it is addressed to the model.
 #[test]
 fn a_completion_notice_folds_to_one_line_per_settlement() {
-    const JOB: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
-    const TASK: &str = "[task] a subagent you started has finished:\n  - `s-1791017230755743833-sub-1791119445423` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it, and calling `task_result` to block would only hold you for a result you already have.";
+    const JOB: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done\nOutput: `job_output` job=\"j57\".";
+    const TASK: &str = "[task] a subagent you started has finished:\n  - `s-1791017230755743833-sub-1791119445423` done: 3529\nFull answer: `task_result` task=\"s-1791017230755743833-sub-1791119445423\".";
 
     let folded = folded_notice(JOB, &[]).expect("a job notice folds");
     assert_eq!(
@@ -3893,7 +3893,7 @@ fn a_completion_notice_folds_to_one_line_per_settlement() {
         "every fact is kept and the heading is not"
     );
     assert!(
-        !folded.contains("you do not need to wait for it"),
+        !folded.contains("Output: `job_output`"),
         "the promise is to the model: {folded}"
     );
     // The same shape, the other noun, and the child's own answer kept whole.
@@ -3905,7 +3905,7 @@ fn a_completion_notice_folds_to_one_line_per_settlement() {
     // **Three settlements are three lines, not a heading and a count.** The daemon's
     // heading is `3 jobs you backgrounded have ended:`, and a folded line names its own
     // kind — which is exactly the argument for dropping it.
-    const THREE: &str = "[job] 3 jobs you backgrounded have ended:\n  - `j11` exited 0 after 12.0s, wrote 13 bytes: a\n  - `j12` exited 0 after 16.0s, wrote 13 bytes: b\n  - `j13` exited 0 after 20.0s, wrote 13 bytes: c\nThis is the completion arriving on its own — you do not need to wait for it.";
+    const THREE: &str = "[job] 3 jobs you backgrounded have ended:\n  - `j11` exited 0 after 12.0s, wrote 13 bytes: a\n  - `j12` exited 0 after 16.0s, wrote 13 bytes: b\n  - `j13` exited 0 after 20.0s, wrote 13 bytes: c\nOutput: `job_output` job=\"j11\", job=\"j12\", job=\"j13\".";
     let three = folded_notice(THREE, &[]).expect("a group of three folds");
     let lines: Vec<&str> = three.lines().collect();
     assert_eq!(lines.len(), 3, "one line per settlement: {three}");
@@ -3928,7 +3928,7 @@ fn a_completion_notice_folds_to_one_line_per_settlement() {
 /// the whole span between the backticks, and this is the test that says so.
 #[test]
 fn a_named_jobs_settlement_folds_with_its_name() {
-    const NAMED: &str = "[job] a job you backgrounded has ended:\n  - `release-build · j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test --workspace\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
+    const NAMED: &str = "[job] a job you backgrounded has ended:\n  - `release-build · j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test --workspace\nOutput: `job_output` job=\"j65\".";
     let folded = folded_notice(NAMED, &[]).expect("a named job's notice folds");
     assert_eq!(
         folded,
@@ -3936,7 +3936,7 @@ fn a_named_jobs_settlement_folds_with_its_name() {
         "the name is kept; the heading and the promise are not"
     );
     assert!(
-        !folded.contains("you do not need to wait for it"),
+        !folded.contains("Output: `job_output`"),
         "the promise is to the model: {folded}"
     );
 }
@@ -3987,7 +3987,7 @@ fn the_todo_nag_folds_to_the_item_and_not_to_the_advice() {
 /// a child group arrive as one item — and both fold, in the order they were written.
 #[test]
 fn a_notice_holding_a_job_and_a_child_folds_to_both() {
-    const BOTH: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it.\n\n[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it.";
+    const BOTH: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nOutput: `job_output` job=\"j57\".\n\n[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nFull answer: `task_result` task=\"s-p-sub-1\".";
     let folded = folded_notice(BOTH, &[]).expect("both kinds fold");
     let lines: Vec<&str> = folded.lines().collect();
     assert_eq!(
@@ -4012,7 +4012,7 @@ fn a_notice_holding_a_job_and_a_child_folds_to_both() {
 /// field, whose `prompt` still holds the row.
 #[test]
 fn the_folded_agent_line_names_the_task_it_was_asked() {
-    const TASK: &str = "[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it.";
+    const TASK: &str = "[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nFull answer: `task_result` task=\"s-p-sub-1\".";
 
     let sub = SubagentState {
         session_id: "s-p-sub-1".into(),

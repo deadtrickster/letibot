@@ -478,12 +478,12 @@ pub fn refusal(command: &str, hazards: &[Hazard]) -> String {
 fn remedy(hazards: &[Hazard]) -> &'static str {
     let waiting = hazards.iter().any(|h| h.predicate.intent == Intent::Wait);
     if waiting {
-        "Wait on a HANDLE instead of a pattern. `job_wait` takes `job` (a job id from \
-         `bash` or `job_list`) or `scope`, and blocks until that job leaves `running` \
-         or that cgroup empties — with a mandatory deadline whose expiry is reported \
-         as its own outcome, never as completion. There is no pattern in it, so there \
-         is nothing that can match the waiter. `job_list` answers \"is it still \
-         running\" without blocking at all."
+        "Wait on a HANDLE instead of a pattern — or not at all: a background job you \
+         started is delivered to you when it ends. For anything else, `job_wait` takes \
+         `job` (a job id from `bash` or `job_list`) or `scope`, with a deadline whose \
+         expiry is reported as its own outcome, never as completion. There is no pattern \
+         in it, so there is nothing that can match the waiter. `job_list` answers \"is it \
+         still running\" without blocking at all."
     } else {
         "Kill by HANDLE instead of by pattern. `job_kill` takes `job` (a job id from \
          `bash` or `job_list`) or `scope` (`turn`, `session`, or an explicit scope's \

@@ -142,7 +142,7 @@ fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
     w.turn_ended();
     let note = d.at_turn_start().expect("the next turn carries the batch");
     assert!(
-        note.starts_with("[meanwhile] 2 results arrived while you were busy"),
+        note.starts_with("[meanwhile] Finished while you were working:"),
         "{note}"
     );
     assert!(
@@ -240,7 +240,7 @@ fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     assert!(b.now.is_empty(), "nothing arrived while idle: {:?}", b.now);
     let batch = b.batch.expect("the held result is delivered");
     assert!(
-        batch.starts_with("[meanwhile] 1 result arrived while you were working")
+        batch.starts_with("[meanwhile] Finished while you were working:")
             && batch.contains("`j1` exited 0"),
         "{batch}"
     );
@@ -280,7 +280,7 @@ fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
     assert!(!b.now[0].contains("`j1`") && !b.now[0].contains("[meanwhile]"));
     let batch = b.batch.expect("the two held");
     assert!(
-        batch.starts_with("[meanwhile] 2 results arrived while you were working")
+        batch.starts_with("[meanwhile] Finished while you were working:")
             && batch.contains("`j1`")
             && batch.contains("`j2`")
             && !batch.contains("`j3`"),
@@ -471,7 +471,7 @@ fn the_starvation_cap_releases_the_batch_mid_turn() {
     let got = s.try_next().expect("past the cap, the batch is released");
     assert!(
         got.text
-            .starts_with("[meanwhile] 2 results held for over 300ms while this turn ran"),
+            .starts_with("[meanwhile] Finished while you were working:"),
         "{}",
         got.text
     );

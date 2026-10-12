@@ -1352,11 +1352,16 @@ impl RunningJobs {
 /// wrong place to learn about `wait_on`: measured on pg-noop, 2026-10-11, the check offered it on 2
 /// of 62 asks (it can only offer while something runs) and the model took the first offer — on the
 /// wrong row. Said here, beside the handle, it costs nothing to a call that no row waits on.
-pub fn attach_now(field: &str, handle: &str) -> String {
+///
+/// **Only when it can apply** (R93.B6): `todo_write` seated and a row open
+/// ([`InvokeCtx::plan_open`]); otherwise nothing.
+pub fn attach_now(ctx: &InvokeCtx<'_>, field: &str, handle: &str) -> String {
+    if !ctx.plan_open {
+        return String::new();
+    }
     format!(
-        " If a row on your plan is waiting on this, attach it now — `todo_write` {{\"wait_on\": \
-         [{{\"content\": \"<that row, quoted exactly>\", \"{field}\": \"{handle}\"}}]}} — and the \
-         end-of-turn check stays quiet about that row until this ends."
+        " If a todo row waits on this: `todo_write` {{\"wait_on\": [{{\"content\": \"<the row, \
+         quoted exactly>\", \"{field}\": \"{handle}\"}}]}}."
     )
 }
 
@@ -1648,11 +1653,7 @@ pub fn unfinished_plan_for(
     children: &ChildSessions,
     jobs: &RunningJobs,
 ) -> Option<(String, String)> {
-    let PlanAsGraph {
-        open,
-        ready,
-        blocked,
-    } = as_a_graph(rows, board, children, jobs);
+    let PlanAsGraph { ready, blocked, .. } = as_a_graph(rows, board, children, jobs);
     let Some(next) = the_row_to_name(&ready, chosen) else {
         // **THE DEGENERATE CASE, and it is the one that has to be SAID out loud.** An unfinished
         // plan whose ready set is EMPTY — every row left waits on another — is not a plan to work,
@@ -1675,16 +1676,9 @@ pub fn unfinished_plan_for(
         }
         return (!blocked.is_empty()).then(|| (nothing_can_start(&blocked), String::new()));
     };
-    // The count of what is BEHIND this one, because the model is entitled to know the plan is bigger
-    // than the row it is being asked about — and that is exactly the fact that must not become a
-    // list. **It is the OPEN rows and not the ready ones**: a blocked row is still work nobody has
-    // done, and the count has always been the plan's size rather than the queue's.
-    let left = open - 1;
-    let rest = match left {
-        0 => String::new(),
-        1 => " (1 more open)".to_string(),
-        n => format!(" ({n} more open)"),
-    };
+    // R93.B1: "(N more open)" is gone from the notice. It was in the text the idle clock compares
+    // (`Harness::nag_said_as`), so a row added or closed ELSEWHERE on the plan made the same
+    // question a new notice and reset the backoff; and it was a number with nothing to do.
     // **WHO ASKED, and it is not a courtesy — it decides WHICH FIELD disposes of the row.** A row the
     // model wrote is moved with `update`, its text quoted exactly; a row the OPERATOR wrote is moved
     // with `operator`, the same way; and a row a PARENT wrote is one NO field of this tool may
@@ -1702,19 +1696,12 @@ pub fn unfinished_plan_for(
     let operator_added = next.by == TodoBy::Operator
         && next.status == TodoStatus::Pending
         && chosen != Some(next.content.as_str());
-    let state = match (next.status, chosen == Some(next.content.as_str())) {
-        // **A row the model marked in progress is a claim it made**, and the check holds it to that
-        // claim rather than asking the same question it asked before the mark existed.
-        (TodoStatus::InProgress, true) => {
-            format!(" — {who}, and it is marked in progress and still open")
-        }
-        (TodoStatus::InProgress, false) => format!(" — {who}, and you had it in progress"),
-        // The row this check already named, still not started: the question is the same one, and it
-        // says so — which is what makes the repeat legible as a repeat rather than a new demand.
-        (_, true) => format!(
-            " — {who}, and you were asked about this one already and it has not been started"
-        ),
-        (_, false) => format!(" — {who}"),
+    // R93.B2: the state is said, not argued. *"marked in progress and still open"* and *"you were
+    // asked about this one already"* invited a restatement in reply (113× *"still in progress"*
+    // in one session), which is not a tool call and moves nothing.
+    let state = match next.status {
+        TodoStatus::InProgress => format!(" — {who} (in progress)"),
+        _ => format!(" — {who}"),
     };
     // **AND THE VERBS DIFFER BY AUTHOR, for the same reason.** The model may mark its OWN row done —
     // `update`, quoting it — and may not do that to the operator's: their row is their words, so the
@@ -1727,15 +1714,11 @@ pub fn unfinished_plan_for(
     // could silently close a parent's row could silently close work it was told to do.
     let advice = match &next.by {
         TodoBy::Operator => {
-            "the operator asked for this one, so do it — or mark it done with `todo_write`'s \
-             `operator` field, quoting the text above exactly. You cannot remove their row: if you \
-             think it should not be done, say why in your reply."
+            "The operator asked for it: do it, or mark it done with `todo_write`'s `operator` \
+             field (quote it exactly)."
         }
         TodoBy::Parent(_) => {
-            "your parent asked for this one, so do it and say in your reply when it is done — \
-             they retire the row themselves when they read you. You cannot remove or restate \
-             their row: it is theirs, and if you think it should not be done, say why in your \
-             reply."
+            "Your parent asked for it: do it and say so in your reply; they retire the row."
         }
         // **The queue's rows are the one kind whose disposal is not a tool call at all**, and the
         // advice says so rather than naming a verb that does not exist: the verdict is what takes a
@@ -1743,11 +1726,8 @@ pub fn unfinished_plan_for(
         // row and what moves it, and commands nothing — a model told to *do this one* would reach
         // for a verb that has no door.
         TodoBy::Queue => {
-            "this row is the merge queue's, not your plan's: it is one entry of this daemon's \
-             review queue, written onto your board from the store, and it comes off when that \
-             entry's review is ANSWERED. No field of `todo_write` reaches it — `update`, `todos` \
-             and `operator` do not move it — and neither does anything you say in your reply: the \
-             verdict is what takes it off."
+            "This is the merge queue's row: its review's verdict takes it off, and no \
+             `todo_write` field moves it."
         }
         TodoBy::Model => {
             // **"or drop it" was the old contract's verb and it went with it.** A row left out of a
@@ -1755,10 +1735,7 @@ pub fn unfinished_plan_for(
             // dropping a line of work is something it SAYS in its reply rather than something a call
             // does. The phrase `mark it done with \`todo_write\`` is kept whole on purpose:
             // `blocks.rs`'s notice fold matches on it, so the nag still folds to its item.
-            "do this one, or mark it done with `todo_write`'s `update` field, quoting the text \
-             above exactly — a row left out of `todo_write` STAYS on the board, so a line of work \
-             you are dropping is something you say in your reply, not something a call does. If you \
-             are stopping here deliberately, say why in your reply."
+            "Do it, or mark it done with `todo_write`'s `update` field (quote it exactly)."
         }
     };
     // **AND THE DOOR FOR A ROW THAT IS ONLY WAITING, when there is something it could wait on.**
@@ -1811,13 +1788,12 @@ pub fn unfinished_plan_for(
     // the bullet, the advice and the waiting line are the same lines in the same order, because
     // the head's notice fold (`blocks.rs`) reads a `[todo check] ` head and `  - ` bullets, and the
     // advice still says to quote *the text above*, which the bullet is.
+    // R93.B1: *"this turn is finished"* was said inside a fresh idle turn; the head says only what
+    // is true of the row.
     let head = if operator_added {
-        format!(
-            "[todo check] the operator added: \"{}\" — this turn is finished and it is not done{rest}",
-            next.content.trim(),
-        )
+        "[todo check] The operator added this, and it is not done".to_string()
     } else {
-        format!("[todo check] this turn is finished and one item is not done{rest}")
+        "[todo check] Not done".to_string()
     };
     Some((
         format!(
@@ -1846,8 +1822,12 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
             if on.contains(row.content.trim()) {
                 continue;
             }
+            // R93.B5: a running job and a child still young are roots
+            // the check is silent about everywhere else (`todo_write` promises it), so a plan
+            // blocked only on them is not a plan to fix either.
             let rooted = unmet.iter().all(|(name, fate)| match fate {
-                NeedFate::OperatorAsked => true,
+                NeedFate::OperatorAsked | NeedFate::JobRunning => true,
+                NeedFate::ChildRunning(child) => child.age < CHILD_ROOM_TO_BREATHE,
                 NeedFate::NotDone => on.contains(name.trim()),
                 _ => false,
             });
@@ -1961,9 +1941,6 @@ pub enum NeedFate {
 
 /// **The rows the check may speak about, read as a graph** — split by whether they can start.
 struct PlanAsGraph<'a> {
-    /// How many rows the check may speak about at all: the plan's size, which is what the message
-    /// counts. A blocked row is still open work, so it counts here and not in `ready`.
-    open: usize,
     /// The READY rows, in [`open_priority`]'s order.
     ready: Vec<&'a TodoItem>,
     /// The rest, each with what it waits for that the board does not give it.
@@ -1999,11 +1976,7 @@ fn as_a_graph<'a>(
             blocked.push((row, unmet));
         }
     }
-    PlanAsGraph {
-        open: queue.len(),
-        ready,
-        blocked,
-    }
+    PlanAsGraph { ready, blocked }
 }
 
 /// **What this row is waiting for that the board does not give it** — empty when the row is ready.
@@ -2126,7 +2099,7 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             // the sentence says the two things the reader needs and nothing else: the blocker is
             // still there, and it is not theirs to move — the settlement is already on its way.
             NeedFate::JobRunning => format!(
-                "the job `{name}`, still running — its completion arrives as a turn of its own"
+                "the job `{name}`, still running — its completion reaches you as soon as it ends"
             ),
             NeedFate::EndedUnread => format!(
                 "`{name}`, which has ended — its completion is reaching you; read it before \
@@ -2403,8 +2376,7 @@ fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String
     if a_job_is_waiting {
         out.push_str(
             " — and where what is waited on is a JOB, there is nothing to unblock and nothing to \
-             look at: its completion arrives as a turn of its own, and the row can start when it \
-             does",
+             look at: its completion reaches you as soon as it ends, and the row can start then",
         );
     }
     out.push_str(". A plan where nothing can start is a plan to fix, not a plan to work.");
@@ -2491,6 +2463,15 @@ impl TodoWriteTool {
 }
 
 impl Tool for TodoWriteTool {
+    fn open_plan(&self) -> Option<bool> {
+        Some(
+            self.board
+                .snapshot()
+                .iter()
+                .any(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress)),
+        )
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "todo_write",
@@ -2519,8 +2500,8 @@ impl Tool for TodoWriteTool {
              does not match exactly one of their rows is refused and nothing is \
              written, because a guessed row is a row changing state under you. You \
              cannot delete their row; if you think it should not be done, say so in \
-             your reply.\n\n`update` moves ONE of YOUR OWN rows — the way to mark a \
-             single row without re-sending the list. It takes `content` (the row's \
+             your reply.\n\n`update` moves ONE OR MORE of YOUR OWN rows — the way to mark \
+             rows without re-sending the list. It takes `content` (the row's \
              own words, quoted exactly as the reply shows them) and `status`, and \
              sets the status and nothing else: it cannot add a row, cannot change \
              one's edges, and cannot remove one. A quote that matches no row is \
@@ -2553,7 +2534,7 @@ impl Tool for TodoWriteTool {
                {\"kind\": \"job\", \"handle\": \"<the handle `bash` with `background: true`, or \
                `job_list`, printed>\"}, and the row cannot start until that job has ENDED, any \
                ending. While the job runs the check is SILENT about the row — its completion \
-               arrives as a turn of its own, so there is nothing to watch and nothing to look at \
+               reaches you as soon as it ends, so there is nothing to watch and nothing to look at \
                — and the row is asked about once it is over. Use it for work that has to land \
                first: a row that pushes a branch waits on the job that tests it. This is an EDGE \
                and not a clock: a row that FIRES when a job ends is the operator's `when`, which \
@@ -2653,7 +2634,20 @@ impl Tool for TodoWriteTool {
                                 },
                                 "needs": {
                                     "type": "array",
-                                    "items": {"type": "string"},
+                                    // R93.B10: the tagged forms below are objects, and a
+                                    // schema of strings only is one a constrained model cannot
+                                    // emit them under.
+                                    "items": {"anyOf": [
+                                        {"type": "string"},
+                                        {"type": "object", "properties": {
+                                            "kind": {"type": "string", "enum": ["row", "child", "job", "operator"]},
+                                            "content": {"type": "string"},
+                                            "id": {"type": "string"},
+                                            "handle": {"type": "string"},
+                                            "question": {"type": "string"},
+                                            "options": {"type": "array", "items": {"type": "string"}}
+                                        }, "required": ["kind"]}
+                                    ]},
                                     "description": "What this row waits for. A plain string is \
                                                     the exact `content` of another row on this \
                                                     list that must be COMPLETED before this one \

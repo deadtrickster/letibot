@@ -26,7 +26,8 @@ pub fn failing_step(steps: &[MergeGateStep]) -> Option<(usize, usize, &MergeGate
         )
     })?;
     let s = &steps[i];
-    let lines: Vec<&str> = s.output.lines().collect();
+    let output = super::gate::for_the_model(&s.output);
+    let lines: Vec<&str> = output.lines().collect();
     let tail = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
     Some((i + 1, steps.len(), s, tail))
 }
@@ -42,7 +43,10 @@ fn step_and_tail(h: &TargetHealth) -> String {
                 tail.as_str()
             }
         ),
-        None => format!("The queue's words:\n\n```\n{}\n```", h.evidence),
+        None => format!(
+            "The queue's words:\n\n```\n{}\n```",
+            super::gate::for_the_model(&h.evidence)
+        ),
     }
 }
 
@@ -520,7 +524,7 @@ mod tests {
     /// red (`gate::killed_at_cap_words`), as letibot's own gate was killed building its tests.
     fn letibot_main_killed() -> TargetHealth {
         let output = "warning: `letibot-tui` (lib test) generated 17 warnings\n[gate memory: peak \
-                      24.1 GiB of a 24.9 GiB cap]";
+                      24.1 GiB of a 24.9 GiB cap — near its cap]";
         TargetHealth {
             repository: "/home/dead/Projects/letibot/letibot".into(),
             target: "main".into(),

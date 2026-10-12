@@ -403,15 +403,11 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         (2..=3).contains(&said.len()),
         "a check and its repeat inside three windows — not one per window: {said:#?}"
     );
-    // **The repeat names the same row and says it is a repeat** (R77): the first check names it
-    // plainly and the second says it was asked already. They were equal only because the first
-    // delivery read the notice twice and already counted itself as asked.
+    // **The repeat names the same row, in the same words** (R93.B2): it used to say *"you were
+    // asked about this one already"*, which the model answered instead of the row.
     assert!(
-        !said[0].contains("asked about this one already")
-            && said[1].contains(&format!(
-                "{PARENTS_ROW} — Parent {parent}, and you were asked about this one already"
-            )),
-        "the repeat is the same row, said as a repeat, because the plan has not moved: {said:#?}"
+        said[0].contains(&format!("{PARENTS_ROW} — Parent {parent}")) && said[0] == said[1],
+        "the repeat is the same notice, because the plan has not moved: {said:#?}"
     );
 
     // **THE WAKE ITSELF, which one write cannot prove.** By now the first check has been
@@ -421,29 +417,26 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     kid.parent(parent)
         .upsert_child(
             child,
-            &[(SECOND_ROW.into(), TodoStatus::Pending, Vec::new())],
+            // The first row done and a second one open: the QUESTION moves (R93.B1 — a row added
+            // beside an unchanged question no longer makes a new notice).
+            &[
+                (PARENTS_ROW.into(), TodoStatus::Completed, Vec::new()),
+                (SECOND_ROW.into(), TodoStatus::Pending, Vec::new()),
+            ],
         )
         .expect("the parent's second write is accepted");
-    // The second notice is found by its OWN words and not by the second row's: a check names the
-    // head of the plan and COUNTS the rest (`unfinished_plan`), so the row the parent added is the
-    // "(1 more open)" and not a line — which is also what tells the two notices apart.
+    // The second notice names the second row, which is what tells the two notices apart.
     let second = wait_for(&kid.hub, |hub| {
-        checks_on(hub)
-            .into_iter()
-            .find(|t| t.contains("(1 more open)"))
+        checks_on(hub).into_iter().find(|t| t.contains(SECOND_ROW))
     });
     assert_ne!(
         second, found,
         "the plan moved, so the second check is a new thing to say rather than the first \
          one over again"
     );
-    // **The plan is bigger than the row it names, and the check says so.** A check serves the
-    // queue's head one at a time (`unfinished_plan`), so the second row is the COUNT and not
-    // a second line — which is the fact that makes this a check about the moved plan rather
-    // than a re-rendering of the first one.
     assert!(
-        second.contains("(1 more open)") && second.contains(PARENTS_ROW),
-        "the second check knows about both rows: {second}"
+        !second.contains(PARENTS_ROW),
+        "the done row is not asked about: {second}"
     );
 
     // And the second plan's saying is as repeated-not-metronomic as the first's: its own check and
@@ -625,12 +618,13 @@ fn a_childs_check_names_the_operators_row_first() {
 
     let first = wait_for(&kid.hub, |hub| checks_on(hub).into_iter().next());
     assert!(
-        first.starts_with(&format!("[todo check] the operator added: \"{THEIRS}\"")),
+        first.starts_with("[todo check] The operator added this, and it is not done:")
+            && first.contains(&format!("  - {THEIRS} — the operator's")),
         "the child's first check names the operator's row, and says they added it: {first}"
     );
     assert!(
-        first.contains("(1 more open)") && !first.contains(&format!("  - {PARENTS_ROW}")),
-        "the parent's row is the count, not the line: {first}"
+        !first.contains(&format!("  - {PARENTS_ROW}")),
+        "the parent's row is not the line: {first}"
     );
 
     kid.release();

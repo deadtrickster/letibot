@@ -385,7 +385,10 @@ fn an_unchanged_plan_is_not_a_new_notice() {
     ));
 }
 
-/// Any change at all is a new thing to say — an item closed, one started, one added.
+/// A change to the QUESTION is a new thing to say — the named row started, or another row named.
+/// **A row added elsewhere is not** (R93.B1): the notice used to carry *"(N more open)"*, so every
+/// row added or closed anywhere on the plan made the same question a new notice and reset the
+/// backoff.
 #[test]
 fn a_plan_that_moved_is_armed_again() {
     let plan = [row("open", TodoStatus::Pending)];
@@ -402,9 +405,18 @@ fn a_plan_that_moved_is_armed_again() {
         &no_children(),
         &no_jobs(),
     ));
-    assert!(nag_should_arm(
+    assert!(!nag_should_arm(
         &[
             row("open", TodoStatus::Pending),
+            row("added", TodoStatus::Pending)
+        ],
+        Some(&sent),
+        &no_children(),
+        &no_jobs(),
+    ));
+    assert!(nag_should_arm(
+        &[
+            row("open", TodoStatus::Completed),
             row("added", TodoStatus::Pending)
         ],
         Some(&sent),

@@ -756,10 +756,9 @@ fn a_completion_notice_names_the_job_and_says_do_not_wait() {
     assert!(text.contains("cargo build --release"), "{text}");
     assert!(text.contains("4.4s"), "how long it ran: {text}");
     assert!(text.contains("4096"), "how much it wrote: {text}");
-    // The half that is the fix, not the footnote.
-    assert!(text.contains("do not need to wait"), "{text}");
-    // And it must not inline the output — only say where it is.
-    assert!(text.contains("job_output"), "{text}");
+    // R93.C1: the closing names the door with the real handle — not `job_wait`, not `job="…"`.
+    assert!(text.ends_with("Output: `job_output` job=\"j7\"."), "{text}");
+    assert!(!text.contains("job_wait") && !text.contains('…'), "{text}");
 }
 
 /// **A prompt is answered, a parent's message is HEARD, a stop is a STOP for the whole

@@ -1146,3 +1146,24 @@ fn the_main_tree_is_named_as_the_exception() {
         r.payload
     );
 }
+
+/// **R93.F21/F22: the schemas take what the tools read.** `task` read `model` with no property
+/// for it, and `task_start` promised a delivery `wake` decides with no `wake` to pass.
+#[test]
+fn task_and_task_start_schemas_name_model_and_wake() {
+    let runner: Arc<dyn TaskRunner> = Arc::new(NoTaskRunner);
+    for s in [
+        TaskTool::new(runner.clone()).schema(),
+        TaskStartTool::new(runner.clone()).schema(),
+    ] {
+        let names = s.param_names();
+        assert!(names.contains(&"model"), "{}: {names:?}", s.name);
+        assert!(names.contains(&"wake"), "{}: {names:?}", s.name);
+        assert!(
+            s.description.contains(crate::builtins::DELIVERED),
+            "{} says how the answer arrives the one way: {}",
+            s.name,
+            s.description
+        );
+    }
+}

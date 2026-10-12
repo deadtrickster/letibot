@@ -172,11 +172,11 @@ fn a_parent_row_is_nag_worthy_by_construction() {
              told from what it decided: {nag}"
     );
     assert!(
-        nag.contains("your parent asked for this one"),
+        nag.contains("Your parent asked for it"),
         "and the advice is the parent's, not the operator's and not the model's own: {nag}"
     );
     assert!(
-        nag.contains("they retire the row themselves"),
+        nag.contains("they retire the row"),
         "the child is told who disposes of the row: {nag}"
     );
 

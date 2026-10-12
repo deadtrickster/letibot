@@ -243,10 +243,10 @@ fn a_turn_that_ends_with_results_held_delivers_them_as_its_own_turn() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].0, Speaker::Agent);
     assert!(
-        rows[0].1.starts_with(
-            "[meanwhile] 2 results arrived while you were working — nothing in your plan was \
-             waiting on them, so they were held until your turn ended instead of interrupting you."
-        ) && rows[0].1.contains("`j21` exited 0")
+        rows[0]
+            .1
+            .starts_with("[meanwhile] Finished while you were working:")
+            && rows[0].1.contains("`j21` exited 0")
             && rows[0].1.contains("`j22` exited 1"),
         "{}",
         rows[0].1
@@ -330,7 +330,7 @@ fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing
     assert!(
         rows[0]
             .1
-            .starts_with("[meanwhile] 1 result arrived while you were busy")
+            .starts_with("[meanwhile] Finished while you were working:")
             && rows[0].1.contains("`j21` exited 0"),
         "{}",
         rows[0].1
@@ -389,7 +389,7 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     let text = &rows[0].1;
     let needed = text.find("`j30`").expect("the needed job is told");
     let batch = text
-        .find("[meanwhile] 1 result arrived while you were working")
+        .find("[meanwhile] Finished while you were working:")
         .expect("the batch rides along");
     assert!(needed < batch, "what the plan waits on first: {text}");
     assert!(text[batch..].contains("`j31`"), "{text}");

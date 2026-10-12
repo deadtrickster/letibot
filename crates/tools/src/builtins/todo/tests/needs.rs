@@ -318,25 +318,19 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
         item("wire the check", TodoStatus::InProgress),
         item("test it", TodoStatus::Pending),
     ];
+    // R93.B1–B3: the sentence changed deliberately — no count, no restating suffix, one line of
+    // advice — and it is pinned byte for byte here as the old one was.
     assert_eq!(
         nag_for(&plan).expect("open work"),
-        "[todo check] this turn is finished and one item is not done (1 more open):\n  - wire \
-             the check — yours, and you had it in progress\ndo this one, or mark it done with \
-             `todo_write`'s `update` field, quoting the text above exactly — a row left out of \
-             `todo_write` STAYS on the board, so a line of work you are dropping is something you \
-             say in your reply, not something a call does. If you are stopping here deliberately, \
-             say why in your reply.",
-        "the sentence a dependency-free board gets is the one `1d24fab` produced, byte for byte"
+        "[todo check] Not done:\n  - wire the check — yours (in progress)\nDo it, or mark it done \
+         with `todo_write`'s `update` field (quote it exactly).",
     );
 
-    // The other three arms, one at a time, because the arm is what the field could have moved.
+    // The other arms, one at a time, because the arm is what the field could have moved.
     assert_eq!(
         nag_for(&[item("first", TodoStatus::Pending)]).expect("open work"),
-        "[todo check] this turn is finished and one item is not done:\n  - first — yours\ndo \
-             this one, or mark it done with `todo_write`'s `update` field, quoting the text above \
-             exactly — a row left out of `todo_write` STAYS on the board, so a line of work you \
-             are dropping is something you say in your reply, not something a call does. If you \
-             are stopping here deliberately, say why in your reply."
+        "[todo check] Not done:\n  - first — yours\nDo it, or mark it done with `todo_write`'s \
+         `update` field (quote it exactly)."
     );
     assert_eq!(
         nag_for(&[
@@ -347,7 +341,7 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
         .lines()
         .next()
         .expect("a first line"),
-        "[todo check] this turn is finished and one item is not done (1 more open):"
+        "[todo check] Not done:"
     );
     assert!(
         nag_for(&[
@@ -356,14 +350,14 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
         ])
         .expect("open work")
         .contains("  - first — yours\n"),
-        "the first open row is named, and the repeat arm says so"
+        "the first open row is named"
     );
     assert_eq!(
         nag_for(&[item("first", TodoStatus::InProgress)])
             .expect("open work")
             .lines()
             .nth(1),
-        Some("  - first — yours, and you had it in progress")
+        Some("  - first — yours (in progress)")
     );
     let sticky = unfinished_plan_for(
         &[item("first", TodoStatus::Pending)],
@@ -373,21 +367,10 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
         &no_jobs(),
     )
     .expect("open work");
-    assert_eq!(
-        sticky.0.lines().nth(1),
-        Some(
-            "  - first — yours, and you were asked about this one already and it has not \
-                 been started"
-        )
-    );
+    assert_eq!(sticky.0.lines().nth(1), Some("  - first — yours"));
 
     // **AND THE STRUCTURE**: the graph split of a board with no edges is the identity.
     let graph = as_a_graph(&plan, &plan, &ChildSessions::none(), &no_jobs());
-    assert_eq!(
-        graph.open, 2,
-        "the plan's size, minus the row that is done — a completed row is not work this check \
-             may speak about"
-    );
     assert!(
         graph.blocked.is_empty(),
         "nothing can be blocked with no edges: {:?}",
@@ -448,10 +431,6 @@ fn a_row_whose_need_is_open_is_not_asked_about() {
     assert!(
         msg.contains("1 row cannot start yet: `deploy` waits on `run the tests` (still open)."),
         "what cannot start is said, with what it waits for: {msg}"
-    );
-    assert!(
-        msg.contains("(1 more open)"),
-        "and a blocked row is still open work, so it is counted: {msg}"
     );
 }
 
@@ -793,14 +772,13 @@ fn a_running_job_keeps_the_row_silent_and_the_end_of_it_asks_again() {
         vec![("j2070".to_string(), NeedFate::JobRunning)],
         "the edge is unmet while the job runs"
     );
-    let msg = nag_with(&plan, &ChildSessions::none(), &running).expect("a stuck plan speaks");
-    assert!(
-        msg.contains("the job `j2070`, still running"),
-        "and the line names the job: {msg}"
-    );
-    assert!(
-        !msg.contains("check whether it is stuck"),
-        "a job needs no steering — its settlement is already on its way: {msg}"
+    // R93.B5: and a plan blocked ONLY on a running job is silent even unnarrowed — the
+    // *"NOTHING can start … a plan to fix"* notice fired on exactly this, which `todo_write`
+    // promises is silent.
+    assert_eq!(
+        nag_with(&plan, &ChildSessions::none(), &running),
+        None,
+        "a plan waiting only on a running job is not a plan to fix"
     );
 
     // **And the lead a reader gets when there IS other work to do.** A blocked row is SAID

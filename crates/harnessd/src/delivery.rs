@@ -332,53 +332,14 @@ impl Rule {
     }
 }
 
-/// **The `[meanwhile]` note's first line** — what the model is told about why these results
-/// arrive together and late. The `[job]` / `[task]` groups under it are `completion_notices`'
-/// own, unchanged, so the head's compact job rows read them as they always did.
+/// **The `[meanwhile]` note's first line.** The `[job]` / `[task]` groups under it are
+/// `completion_notices`' own, so the head's compact job rows read them as they always did.
 ///
-/// [`Rule::TurnEnd`] says what is true of a batch delivered the moment a turn ended: the results
-/// came in while the model was working and were held so it could finish. [`Rule::Idle`] has no
-/// heading in practice — an idle arrival is an ordinary completion — and is worded as the batch
-/// only so the function stays total.
-pub fn meanwhile_heading(n: usize, rule: Rule, cap: Duration) -> String {
-    let what = if n == 1 {
-        "1 result".to_string()
-    } else {
-        format!("{n} results")
-    };
-    let (it, they) = if n == 1 {
-        ("it", "it was")
-    } else {
-        ("them", "they were")
-    };
-    match rule {
-        Rule::TurnEnd => format!(
-            "[meanwhile] {what} arrived while you were working — nothing in your plan was waiting \
-             on {it}, so {they} held until your turn ended instead of interrupting you."
-        ),
-        Rule::Starvation => format!(
-            "[meanwhile] {what} held for over {} while this turn ran — nothing in your plan waits \
-             on them; here they are so they do not wait for ever. Carry on with what you were \
-             doing unless one of them changes it.",
-            minutes(cap)
-        ),
-        _ => format!(
-            "[meanwhile] {what} arrived while you were busy — nothing in your plan was waiting on \
-             them, so they were held for this break instead of interrupting you."
-        ),
-    }
-}
-
-/// The cap in the words the note reads with: `10 min`, `90s`, `300ms`.
-fn minutes(d: Duration) -> String {
-    let s = d.as_secs();
-    if s >= 60 && s % 60 == 0 {
-        format!("{} min", s / 60)
-    } else if s > 0 {
-        format!("{s}s")
-    } else {
-        format!("{}ms", d.as_millis())
-    }
+/// **R93.C7: one heading for every rule.** It said why the results were held — the daemon's
+/// holding policy, with its ten-minute cap in it — and *"them/they"* for one. It says what they
+/// are; which rule delivered them is the record's ([`DeliveryLog`]), not the model's.
+pub fn meanwhile_heading(_n: usize, _rule: Rule, _cap: Duration) -> String {
+    "[meanwhile] Finished while you were working:".to_string()
 }
 
 /// **The append-only delivery record** — one JSON line per delivered result, under the

@@ -239,22 +239,22 @@ pub const SUMMARY_SECTIONS: [&str; 8] = [
 /// deliberate; "if you are close to the limit" is a CONDITION it must evaluate,
 /// which is more thinking, and it is already true. Neither said the thing that
 /// worked. Imperative, short, no question, no condition.
+///
+/// **R93.D2: and it says what happened, not an accusation.** *"You keep overthinking"* accused
+/// on the first occurrence, *"thought until it ran out"* was false (this arm is the turn ending
+/// INSIDE its reasoning, not running out), and *"before any reasoning"* is impossible for a model
+/// whose thinking always comes first. Still imperative, short, and no question.
 pub const UNFINISHED_REASONING_NOTICE: &str = "\
-You keep overthinking. Cut it short and do things. Your last turn thought until it ran \
-out and said nothing. Write the summary now, first, before any reasoning.";
+Your reply ended inside reasoning with no output. Write the summary now.";
 
 /// What is appended when the summary turn hits the output limit with nothing
 /// usable in it (§5.7's hard fail, given the loop's salvage).
 ///
 /// Worded from the harness's `EmptyLength` arm with one word changed: the answer
 /// this turn owes is the summary.
-fn empty_length_notice(reason: EmptyReason) -> String {
-    format!(
-        "You keep overthinking. Cut it short and do things. Your last turn spent its \
-         whole output on reasoning ({}) and nothing was recorded. Write the summary now, \
-         first, before any reasoning.",
-        reason.as_str()
-    )
+/// R93.D1: no enum name (`reasoning_only`) and no *"reason after"*.
+fn empty_length_notice(_reason: EmptyReason) -> String {
+    "Your reply was all reasoning and nothing was kept. Write the summary now.".to_string()
 }
 
 /// What a compaction turn leaves behind.

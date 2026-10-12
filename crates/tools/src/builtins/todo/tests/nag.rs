@@ -57,8 +57,9 @@ fn the_check_keeps_asking_about_the_row_it_named() {
         text.contains("first") && !text.contains("something else"),
         "the question did not wander: {text}"
     );
-    // And the count is still the plan's, so the model learns the plan is bigger than the row.
-    assert!(text.contains("(2 more open)"), "{text}");
+    // R93.B1: no count — it was in the text the idle clock compares, and a row moving elsewhere
+    // on the plan made the same question a new notice.
+    assert!(!text.contains("more open"), "{text}");
 }
 
 /// **The choice moves on when the named row leaves the queue** — done, or set aside by the
@@ -118,20 +119,21 @@ fn the_choice_moves_on_when_the_named_row_leaves_the_queue() {
     );
 }
 
-/// **A row the model marked in progress is asked about in its own words** — the operator:
-/// *"deliberate in progress so nag can be specific … and then it keeps naggin while it is in
-/// progress."* The two sentences are different questions: one is *you were asked and have not
-/// started*, the other is *you claimed this and it is still open*.
+/// **A row the model marked in progress is said to be in progress, and nothing more** (R93.B2).
+///
+/// It used to be argued with — *"marked in progress and still open"*, *"you were asked about this
+/// one already and it has not been started"* — and the model answered the argument instead of the
+/// row: 113 identical *"still in progress"* replies in one session. The state is said; the notice is
+/// the same notice on a repeat, which is also what the idle clock's backoff counts.
 #[test]
 fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
     let plan = vec![item("the migration", TodoStatus::InProgress)];
     let (fresh, _) = unfinished_plan_for(&plan, &plan, None, &ChildSessions::none(), &no_jobs())
         .expect("open work");
     assert!(
-        fresh.contains("you had it in progress"),
+        fresh.contains("  - the migration — yours (in progress)\n"),
         "a row already in progress at the first check: {fresh}"
     );
-
     let (sticky, _) = unfinished_plan_for(
         &plan,
         &plan,
@@ -140,14 +142,11 @@ fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
         &no_jobs(),
     )
     .expect("open work");
-    assert!(
-        sticky.contains("marked in progress and still open"),
-        "the model's own claim, said back to it: {sticky}"
+    assert_eq!(
+        fresh, sticky,
+        "a repeat is the same notice, not a restatement"
     );
-    assert_ne!(fresh, sticky, "the question changed with the mark");
 
-    // And a PENDING row that was already asked about says so, rather than repeating the first
-    // check's sentence verbatim — which is what makes the repeat legible as a repeat.
     let pending = vec![item("the migration", TodoStatus::Pending)];
     let (first, _) =
         unfinished_plan_for(&pending, &pending, None, &ChildSessions::none(), &no_jobs())
@@ -161,10 +160,10 @@ fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
     )
     .expect("open work");
     assert!(
-        repeat.contains("asked about this one already"),
-        "the repeat says it is a repeat: {repeat}"
+        !repeat.contains("asked about this one already"),
+        "the repeat does not ask to be answered as a repeat: {repeat}"
     );
-    assert_ne!(first, repeat);
+    assert_eq!(first, repeat);
 }
 
 /// **The queue's ORDER, asserted as an order.** The operator: *"priority queues - in progress
@@ -203,7 +202,7 @@ fn the_open_work_is_queued_in_progress_first_then_not_done() {
     // and the head of that queue is what the message names
     let msg = nag_for(&todos).expect("four open items is a finding");
     assert!(msg.contains("model in progress"), "{msg}");
-    assert!(msg.contains("(3 more open)"), "{msg}");
+    assert!(!msg.contains("more open"), "no count (R93.B1): {msg}");
 }
 
 /// **Every serve takes the next one**, which is what *one-by-one* means: deal with the head and
@@ -254,7 +253,7 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         "the in-progress item is the one named: {msg}"
     );
     assert!(
-        msg.contains("yours, and you had it in progress"),
+        msg.contains("yours (in progress)"),
         "and the message says why this one, AND whose it is: {msg}"
     );
     // **and NOT the other open row** — that is the defocusing the operator asked me to stop
@@ -266,25 +265,11 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         !msg.contains("write it up"),
         "a completed item is not part of what is open: {msg}"
     );
-    // the rest is a COUNT, which is the fact that must not become a list
-    assert!(
-        msg.contains("(1 more open)"),
-        "the remainder is counted, not listed: {msg}"
-    );
-    // **all three honest answers are offered, and the third is the one that keeps this from
-    // being a trap.** Without *say in your reply that you are dropping it* the model's only exit
-    // is to lie about its own statuses, which is the failure this exists to stop — and now that
-    // a row left out of `todo_write` STAYS on the board, saying so is the only way to drop one.
-    assert!(msg.contains("do this one"), "{msg}");
-    assert!(msg.contains("mark it done"), "{msg}");
-    assert!(
-        msg.contains("you are dropping is something you say in your reply"),
-        "{msg}"
-    );
-    assert!(
-        msg.contains("deliberately"),
-        "and stopping on purpose is answerable: {msg}"
-    );
+    // R93.B1/B3: no count, and the advice is one line — do it, or mark it done (the phrase the
+    // head's fold matches).
+    assert!(!msg.contains("more open"), "{msg}");
+    assert!(msg.contains("Do it"), "{msg}");
+    assert!(msg.contains("mark it done with `todo_write`"), "{msg}");
     assert!(msg.starts_with("[todo check]"), "the house prefix: {msg}");
 }
 
@@ -301,7 +286,6 @@ fn with_nothing_in_progress_it_names_the_first_open_row() {
     assert!(msg.contains("the first"), "{msg}");
     assert!(!msg.contains("the second"), "one at a time: {msg}");
     assert!(!msg.contains("the third"), "one at a time: {msg}");
-    assert!(msg.contains("(2 more open)"), "{msg}");
     assert!(
         !msg.contains("in progress"),
         "and it does not claim to know why this one: {msg}"
@@ -319,7 +303,7 @@ fn a_long_plan_is_one_item_and_a_count() {
     let msg = nag_for(&todos).expect("ten open items is a finding");
     assert!(msg.contains("item 0"), "the first is named: {msg}");
     assert!(!msg.contains("item 1"), "and no other: {msg}");
-    assert!(msg.contains("(9 more open)"), "the rest is counted: {msg}");
+    assert!(!msg.contains("more open"), "no count (R93.B1): {msg}");
 }
 
 /// **A list written and finished inside the turn says nothing**, which is what taking a
@@ -371,7 +355,6 @@ fn the_operators_row_added_last_is_named_ahead_of_the_models() {
         named, "make tier 1 green",
         "the operator's row outranks the model's sticky choice: {text}"
     );
-    assert!(text.contains("(2 more open)"), "{text}");
     assert!(text.contains("the operator's"), "{text}");
 }
 
@@ -392,7 +375,7 @@ fn the_first_check_after_an_operator_add_says_the_operator_added_it() {
     )
     .expect("open work");
     assert!(
-        first.starts_with("[todo check] the operator added: \"make tier 1 green\""),
+        first.starts_with("[todo check] The operator added this, and it is not done:"),
         "{first}"
     );
     // The rest of the notice keeps its shape: the bullet the head's fold reads, and the advice.
@@ -412,7 +395,7 @@ fn the_first_check_after_an_operator_add_says_the_operator_added_it() {
     .expect("open work");
     assert_eq!(named, "make tier 1 green", "still first");
     assert!(!later.contains("the operator added"), "told once: {later}");
-    assert!(later.contains("asked about this one already"), "{later}");
+    assert!(later.starts_with("[todo check] Not done:"), "{later}");
 
     // Blocked: the model's row is named, and the operator's is the waiting line.
     let blocked = vec![

@@ -264,10 +264,8 @@ fn a_restart_or_stale_shape_this_head_does_not_know_falls_back() {
 #[test]
 fn a_restart_notice_beside_a_job_completion_keeps_both_compact() {
     const ONE: &str = "[job] a job you backgrounded has ended:\n  - `build · j7` exited 0 after \
-                       4.4s, wrote 0 bytes: cargo build\nThis is the completion arriving on its \
-                       own — you do not need to wait for it, and `job_wait` would only block you \
-                       for a result you already have. Read what it wrote with `job_output` \
-                       (job=\"…\"), then carry on with what you were doing.";
+                       4.4s, wrote 0 bytes: cargo build\nOutput: `job_output` \
+                       job=\"j7\".";
     let mut a = with_notice(&format!("{RESTORED_NOTICE}\n\n{ONE}"));
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");

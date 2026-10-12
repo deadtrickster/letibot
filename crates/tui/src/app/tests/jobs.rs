@@ -81,19 +81,19 @@ fn the_notice_fold_refuses_anything_it_cannot_account_for() {
         ),
         (
             "a heading with nothing under it",
-            "[job] a job you backgrounded has ended:\nThis is the completion arriving on its own — you do not need to wait for it.",
+            "[job] a job you backgrounded has ended:\nOutput: `job_output` .",
         ),
         (
             "a settlement line whose handle is not in backticks",
-            "[job] a job you backgrounded has ended:\n  - j57 exited 0\nThis is the completion arriving on its own — you do not need to wait for it.",
+            "[job] a job you backgrounded has ended:\n  - j57 exited 0\nOutput: `job_output` .",
         ),
         (
             "a settlement AFTER the promise",
-            "[job] a job you backgrounded has ended:\nThis is the completion arriving on its own — you do not need to wait for it.\n  - `j57` exited 0",
+            "[job] a job you backgrounded has ended:\nOutput: `job_output` .\n  - `j57` exited 0",
         ),
         (
             "a line that is neither a settlement nor the promise",
-            "[job] a job you backgrounded has ended:\n  - `j57` exited 0\nSomething new the daemon has started saying.\nThis is the completion arriving on its own — you do not need to wait for it.",
+            "[job] a job you backgrounded has ended:\n  - `j57` exited 0\nSomething new the daemon has started saying.\nOutput: `job_output` job=\"j57\".",
         ),
     ];
     for (what, text) in cases {
@@ -123,7 +123,7 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
             ledger_head: String::new(),
         },
     )));
-    let notice = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
+    let notice = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nOutput: `job_output` job=\"j57\".";
     a.apply(ServerFrame::Event(env(
         2,
         SessionEvent::TranscriptContent {
@@ -146,7 +146,7 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
     );
     assert!(screen.contains("⎿ wrote 5 bytes"), "{screen}");
     assert!(
-        !screen.contains("you do not need to wait for it"),
+        !screen.contains("Output: `job_output`"),
         "R7's promise is to the model, not to the person reading the row: {screen}"
     );
     assert!(

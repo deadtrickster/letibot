@@ -580,9 +580,10 @@ impl Tool for JobOutput {
                         "`{label}` was started with its stdout redirected to `{path}`, so the \
                          job's capture is empty by construction — this is not a job that \
                          wrote nothing and not a window that has not filled yet. Read the \
-                         file with `read`, or `tail -n` it with `bash`.\n\n**You are woken \
-                         when `{label}` ends** — that never depended on the capture — so do not \
-                         poll for it with a `sleep` or a loop.\n\ncommand: {}\n",
+                         file with `read`, or `tail -n` it with `bash`.\n\n{} That never \
+                         depended on the capture, so do not poll for it with a `sleep` or a \
+                         loop.\n\ncommand: {}\n",
+                        super::DELIVERED,
                         clip(&view.command, 200),
                     ),
                 );
@@ -591,11 +592,9 @@ impl Tool for JobOutput {
                 format!(
                     "`{label}` is still running ({} elapsed) and has written nothing \
                      yet. That is not evidence that it will not — but there is nothing \
-                     to do here: when it ends, its completion reaches you on its own, \
-                     with how it ended and where its output is. `job_wait` with \
-                     job=\"{id}\" is there if you must have the result before you can do \
-                     anything else; otherwise carry on.",
-                    secs(view.elapsed)
+                     to do here. {}",
+                    secs(view.elapsed),
+                    super::DELIVERED
                 )
             } else if view.state.never_ran() {
                 format!(
@@ -647,9 +646,11 @@ impl Tool for JobWait {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "job_wait",
-            "Block until a job finishes or a scope empties, then return. Give `job` \
-             or `scope`, and optionally `timeout_ms`; a deadline always applies. The \
-             three endings are reported as three different outcomes: it finished, \
+            "Wait for a job to finish or a scope to empty. For a job this session \
+             started in the background it returns AT ONCE — its completion is delivered \
+             to you, and asking only makes it arrive the moment it ends; it blocks only \
+             for a job or scope this session is not told about. Give `job` or `scope`, \
+             and optionally `timeout_ms`; a deadline always applies. The three endings are reported as three different outcomes: it finished, \
              the deadline passed and it is still running, or nothing was ever there \
              to wait for. Use this instead of writing a `while ... sleep` loop — a \
              loop's condition can match the shell evaluating it, and a job id \

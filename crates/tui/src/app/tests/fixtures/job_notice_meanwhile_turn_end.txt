@@ -1,6 +1,6 @@
-[meanwhile] 2 results arrived while you were working — nothing in your plan was waiting on them, so they were held until your turn ended instead of interrupting you.
+[meanwhile] Finished while you were working:
 
 [job] 2 jobs you backgrounded have ended:
   - `release-build · j1042` exited 0 after 2m54s, wrote 1008 bytes: cargo build --release
   - `j1043` exited 101 after 4.4s, wrote 0 bytes: cargo test -p letibot-tui
-This is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have. Read what it wrote with `job_output` (job="…"), then carry on with what you were doing.
+Output: `job_output` job="j1042", job="j1043".

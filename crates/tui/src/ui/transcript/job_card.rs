@@ -49,7 +49,8 @@ use crate::ui::*;
 /// words: the owner's (R7's promise not to wait) and the one a parent is told when the session
 /// that started the job has stopped.
 const CLOSINGS: &[&str] = &[
-    "This is the completion arriving on its own — you do not need to wait for it, and `job_wait`",
+    // `harnessd`'s `JOB_CLOSING` (R93.C1: the old closing was a paragraph about not waiting).
+    "Output: `job_output` ",
     "This session is told because the one that started it cannot be:",
 ];
 

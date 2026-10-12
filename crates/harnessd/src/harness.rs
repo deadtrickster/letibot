@@ -1074,11 +1074,9 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         }
     }
     if mine {
-        s.push_str(
-            "This is the completion arriving on its own — you do not need to wait for it, and \
-             `job_wait` would only block you for a result you already have. Read what it wrote \
-             with `job_output` (job=\"…\"), then carry on with what you were doing.",
-        );
+        // R93.C1: the closing named `job_wait` on every completion, said "you do not need to wait"
+        // to a model that had just waited, and gave `job="…"` for an id it knew. It names the door.
+        s.push_str(&format!("{JOB_CLOSING}{}.", handles_as("job", done)));
     } else {
         s.push_str(
             "This session is told because the one that started it cannot be: it has stopped and \
@@ -1135,20 +1133,32 @@ fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
         }
     }
     if mine {
-        s.push_str(
-            "This is the completion arriving on its own — you do not need to wait for it, and \
-             calling `task_result` to block would only hold you for a result you already have. \
-             Read what it said with `task_result` (task=\"…\"), then carry on with what you \
-             were doing.",
-        );
+        // R93.C2: "calling `task_result` would only hold you … Read what it said with
+        // `task_result`" said don't and do in one breath, with `task="…"` for a known handle.
+        s.push_str(&format!("{TASK_CLOSING}{}.", handles_as("task", done)));
     } else {
-        s.push_str(
+        s.push_str(&format!(
             "This session is told because the one that started it cannot be: it has stopped and \
-             will not run again. Read what it said with `task_result` (task=\"…\") — the handle \
-             is in this tree, so the whole answer is still there.",
-        );
+             will not run again. The handle is in this tree, so the whole answer is still there: \
+             `task_result` {}.",
+            handles_as("task", done)
+        ));
     }
     s
+}
+
+/// **The closing a `[job]` notice for this session's own jobs ends with**, up to its handles — the
+/// words the head's fold and job card recognise (`tui`'s `PROMISES` and `CLOSINGS`).
+pub const JOB_CLOSING: &str = "Output: `job_output` ";
+/// The same for a `[task]` notice of this session's own children.
+pub const TASK_CLOSING: &str = "Full answer: `task_result` ";
+
+/// `job="j1", job="j2"` — the real handles, never a placeholder.
+fn handles_as(field: &str, done: &[JobCompletion]) -> String {
+    done.iter()
+        .map(|c| format!("{field}=\"{}\"", c.job))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 /// **One channel, two nouns: the sentences a settlement produces, in one place.**
 ///
@@ -8747,10 +8757,9 @@ impl Harness {
                 .iter()
                 .map(|(text, handle, fate)| format!("  - {text} — {}", fate_line(handle, fate)))
                 .collect();
+            // R93.C9: "{n} row you attached a condition to is due" was wrong for n > 1.
             notices.push(format!(
-                "[todo] {} row you attached a condition to is due:\n{}\nThe condition is met and \
-                 the row itself is unchanged — it is yours to act on.",
-                due.len(),
+                "[todo] Due (its condition is met):\n{}",
                 lines.join("\n")
             ));
         }
@@ -11492,13 +11501,13 @@ impl Harness {
                 // So: imperative, short, no question, no condition, and it names the behaviour
                 // rather than the mechanism. A model does not need to be told about token
                 // limits; it needs to be told what to do next.
-                Err(TurnFailure::EmptyLength { reason, .. }) => {
-                    self.append_notice(&format!(
-                        "You keep overthinking. Cut it short and do things. Your last \
-                             turn spent its whole output on reasoning ({}) and nothing was \
-                             recorded. Answer first. Reason after, or not at all.",
-                        reason.as_str()
-                    ))?;
+                // R93.D1: it named the enum (`reasoning_only`), told models whose thinking
+                // always comes first to "reason after", and accused on the first occurrence.
+                Err(TurnFailure::EmptyLength { .. }) => {
+                    self.append_notice(
+                        "Your reply was all reasoning and nothing was kept. Make the tool call \
+                         or give the answer now.",
+                    )?;
                     continue;
                 }
                 // R7: the turn stopped inside its own reasoning block and said
@@ -11509,10 +11518,10 @@ impl Harness {
                 // once the cap is spent the engine returns `SalvageExhausted` and
                 // this arm never sees another unfinished turn.
                 Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                    // R93.D2: this arm is the turn ending INSIDE its reasoning, not running out.
                     self.append_notice(
-                        "You keep overthinking. Cut it short and do things. Your last \
-                             turn thought until it ran out and said nothing. Stop reasoning \
-                             and act now.",
+                        "Your reply ended inside reasoning with no output. Make the tool call \
+                         or give the answer now.",
                     )?;
                     continue;
                 }
@@ -12435,10 +12444,16 @@ impl Harness {
             return None;
         }
         let fill = self.context_fill();
-        let finding = match reasoning {
+        let mut finding = match reasoning {
             false => check.judge(text, fill)?,
             true => check.judge_reasoning(text, fill)?,
         };
+        // R93.A4: with auto-compaction off, "the harness handles it" is false — nothing compacts
+        // at the wall (`turn_tail` says so when the turn stops there) — so the model is told
+        // nothing, and the operator is not told it was. The claim is still logged and measured.
+        if !self.cfg.auto_compact {
+            finding.verdict = Verdict::Quiet;
+        }
         finding.log(&self.cfg.workspace, &self.cfg.session_id);
         crate::instruments::context_claim(&self.cfg.session_id, &finding);
         match finding.verdict {

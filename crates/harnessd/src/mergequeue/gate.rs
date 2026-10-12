@@ -229,6 +229,19 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
     }
 }
 
+/// **The gate's evidence as a model reads it** (R93.F8): the `[gate memory: …]` line is dropped
+/// unless the step was killed at its cap or came near it. The row keeps it for the operator; the
+/// model is not handed peaks to size work by.
+pub fn for_the_model(evidence: &str) -> String {
+    evidence
+        .lines()
+        .filter(|l| {
+            !l.starts_with("[gate memory: ") || l.contains("KILLED") || l.contains("near its cap")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 trait NearCap {
     fn near_cap(&self) -> bool;
 }
@@ -255,6 +268,9 @@ impl StepMemory {
                 u.clause(),
                 u.oom_kills
             ),
+            StepMemory::Used(u) if u.near_its_cap() => {
+                format!("[gate memory: {} — near its cap]", u.clause())
+            }
             StepMemory::Used(u) => format!("[gate memory: {}]", u.clause()),
             StepMemory::Uncapped(why) => {
                 format!("[gate memory: uncapped — the step ran in the daemon's own cgroup: {why}]")
@@ -777,8 +793,19 @@ mod tests {
         assert!(killed.contains("[memory] gate"));
         assert!(used(1).killed_at_cap());
         let fine = used(0).evidence(2, None).unwrap();
-        assert!(fine.starts_with("[gate memory: peak 64 MiB of a 64 MiB cap]"));
+        assert!(fine.starts_with("[gate memory: peak 64 MiB of a 64 MiB cap — near its cap]"));
         assert!(fine.contains("2 process(es) the step left running"));
+        // R93.F8: what the model reads keeps a near-cap or killed line and drops a quiet peak.
+        assert_eq!(for_the_model(&fine), fine);
+        let quiet = StepMemory::Used(MemoryUse {
+            cap: Some(64 << 20),
+            peak: 8 << 20,
+            oom_kills: 0,
+        })
+        .evidence(0, None)
+        .unwrap();
+        assert!(quiet.starts_with("[gate memory: peak 8 MiB"), "{quiet}");
+        assert_eq!(for_the_model(&format!("ok\n{quiet}")), "ok");
         assert_eq!(StepMemory::Unknown.evidence(0, None), None);
     }
 
@@ -835,8 +862,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             line,
-            "[gate memory: peak 24.1 GiB of a 24.9 GiB cap]\n[step: killed by signal 9 \
-             (SIGKILL)]\n[128 process(es) the step left running were killed with its cgroup]"
+            "[gate memory: peak 24.1 GiB of a 24.9 GiB cap — near its cap]\n[step: killed by \
+             signal 9 (SIGKILL)]\n[128 process(es) the step left running were killed with its cgroup]"
         );
     }
 

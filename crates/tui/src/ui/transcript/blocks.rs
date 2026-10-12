@@ -180,7 +180,10 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
     /// — and named as phrases rather than by position, so a row whose shape changed under this
     /// head stops folding instead of losing the half it did not recognise.
     const PROMISES: &[&str] = &[
-        "you do not need to wait for it",
+        // A completion's closing, `harnessd`'s `JOB_CLOSING` and `TASK_CLOSING` (R93.C1/C2: it
+        // used to be a paragraph promising "you do not need to wait for it").
+        "Output: `job_output` ",
+        "Full answer: `task_result` ",
         // The plan's nudge, whose two closings are the operator's row and the model's own
         // (`unfinished_plan`): the first is *do it, or mark it done with `todo_write`'s `operator`
         // field*, the second is *do this one, or mark it done with `todo_write`'s `update` field*.
@@ -199,7 +202,11 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
             if said.contains('\n') {
                 return None;
             }
-            let said = said.split(" — ").next().unwrap_or(said);
+            let said = said
+                .split(" — ")
+                .next()
+                .unwrap_or(said)
+                .trim_end_matches(':');
             out.push(format!("Meanwhile: {said}"));
             continue;
         }

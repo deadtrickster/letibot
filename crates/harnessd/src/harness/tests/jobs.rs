@@ -737,9 +737,11 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
     // **What the child SAID.** Without this the notice is a doorbell with no answer behind it:
     // the parent is told something happened and must still go and read.
     assert!(text.contains("two facts off a fixture"), "{text}");
-    // The half that is the fix and not the footnote, in the job side's own words.
-    assert!(text.contains("do not need to wait"), "{text}");
-    assert!(text.contains("task_result"), "{text}");
+    // R93.C2: one instruction, with the real handle — not "don't call `task_result` … call it".
+    assert!(
+        text.ends_with("Full answer: `task_result` task=\"s-1-sub-1\"."),
+        "{text}"
+    );
     assert!(
         !text.contains("job_output"),
         "a subagent is read with `task_result`; sending the parent to `job_output` is a door \

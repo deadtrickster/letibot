@@ -449,21 +449,22 @@ impl Fill {
     }
 }
 
-/// **The line the model is given**, in the harness's voice and with the numbers —
-/// because a number is what the model did not have. The words are R71's.
+/// **The line the model is given**, in the harness's voice.
 ///
 /// **No numbers.** The operator, 2026-10-12: *"we should stop giving the real numbers really, no
 /// point - just tell it stop sizing and do the work"*. A fill quoted back is one more thing to
 /// reason about, and on a false hit — a model at 93% saying "my context is 92% — carry on" — the
 /// numbers were the only part of the line that pushed it anywhere. The measurement still decides
 /// whether the line is sent (`Check::judge`) and still goes to the log and to the operator.
-pub fn notice(claim: &Claim, _fill: &Fill) -> String {
-    format!(
-        "[context check] you said \"{}\". The context window is not yours to manage: the \
-         harness compacts when it is reached and the work carries on. Stop sizing the work by \
-         it and continue with what you stopped.",
-        claim.sentence,
-    )
+///
+/// **And no quote** (R93.A1). It quoted the model's own sentence back — ✓ marks, percentages and
+/// all — and the *"my context N%"* tic began two minutes after the first numbered check: the line
+/// planted the phrase it was there to stop. The claim still goes to the log and to the operator.
+/// *"If context was the only reason"* (R93.A5) because a legitimate stop may mention context.
+pub fn notice(_claim: &Claim, _fill: &Fill) -> String {
+    "[context check] Don't size the work by context; the harness handles it. If context was the \
+     only reason you stopped, continue the task."
+        .to_string()
 }
 
 /// **The operator's line for a model that said it again after being told.**
@@ -525,13 +526,11 @@ impl Source {
 /// rather than stopping, so the line does not say "continue with what you stopped"; it says whose
 /// budget the window is and what to size the work by.
 /// No numbers, for [`notice`]'s reason.
-pub fn reasoning_notice(claim: &Claim, _fill: &Fill) -> String {
-    format!(
-        "[context check] your reasoning sized the work by your context: \"{}\". The context \
-         window is not yours to budget: the harness compacts at the wall and the work carries \
-         on. Stop sizing and do the work the task needs.",
-        claim.sentence,
-    )
+/// No quote, for [`notice`]'s reason.
+pub fn reasoning_notice(_claim: &Claim, _fill: &Fill) -> String {
+    "[context check] Don't size the work by context; the harness handles it. Do the work the task \
+     needs."
+        .to_string()
 }
 
 /// One claim found, what the measurement said, and what is done about it.
@@ -678,8 +677,11 @@ mod tests {
         let Verdict::Slap(line) = &first.verdict else {
             panic!("{:?}", first.verdict)
         };
-        assert!(line.contains("sized the work by your context"), "{line}");
-        assert!(line.contains("Stop sizing"), "{line}");
+        assert!(
+            !line.contains("my context 49%"),
+            "no quote (R93.A1): {line}"
+        );
+        assert!(line.contains("Do the work the task needs"), "{line}");
         assert!(!line.contains("% full"), "no numbers for the model: {line}");
         assert!(!line.contains("Continue with what you stopped"), "{line}");
         // The reply saying it next is the operator's warning, not a second line to the model.
@@ -809,9 +811,13 @@ mod tests {
         let Verdict::Slap(line) = &first.verdict else {
             panic!("the first claim is slapped: {first:?}")
         };
-        assert!(line.starts_with("[context check] you said \"My context is nearly spent"));
+        // R93.A1: no quote — the model's own sentence said back re-planted the phrase.
+        assert!(!line.contains("nearly spent"), "{line}");
+        assert!(
+            line.starts_with("[context check] Don't size the work by context"),
+            "{line}"
+        );
         assert!(!line.contains("% full"), "no numbers for the model: {line}");
-        assert!(line.contains("continue with what you stopped."), "{line}");
 
         let second = check.judge(excuse, Some(LOW)).expect("a claim");
         assert!(

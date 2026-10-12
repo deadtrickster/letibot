@@ -377,10 +377,8 @@ fn the_verdict_is_coloured_by_what_it_means() {
 #[test]
 fn a_row_of_several_notices_is_a_line_a_notice() {
     const JOB: &str = "[job] a job you backgrounded has ended:\n  - `build · j7` exited 0 after \
-                       4.4s, wrote 0 bytes: cargo build\nThis is the completion arriving on its \
-                       own — you do not need to wait for it, and `job_wait` would only block you \
-                       for a result you already have. Read what it wrote with `job_output` \
-                       (job=\"…\"), then carry on with what you were doing.";
+                       4.4s, wrote 0 bytes: cargo build\nOutput: `job_output` \
+                       job=\"j7\".";
     let row =
         format!("{HANDED_OVER}\n\n{RED_NOTICE}\n\n{CANNOT_DECIDE}\n\n{RED_TIP_BLOCKED}\n\n{JOB}");
     let mut a = with_notice(&row);
