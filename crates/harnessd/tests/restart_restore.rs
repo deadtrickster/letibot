@@ -500,6 +500,10 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
             .is_some()
     );
 
+    // Work the child left uncommitted when its daemon stopped: the resumed child is a worktree
+    // child like any other, and is held to its branch at the end of its turn (`set_deliverable`).
+    std::fs::write(Path::new(&worktree).join("half-done.txt"), "uncommitted\n").unwrap();
+
     // --- daemon two: the same store, a new registry ---
     let stub2 = Stub::new(plain(&parts.vocab, ANSWER), 0);
     let cfg2 = config(&dir.repo(), &dir.store(), stub2.endpoint.clone());
@@ -551,6 +555,20 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         user_rows(&child)
     );
     wait_until("the resumed child to answer", || answered(&two, &handle));
+    // **The resumed child is checked as a fresh one is**: its turn was about to end with the
+    // tree dirty, so it was told once, and the parent's answer carries the salvage line.
+    assert!(
+        user_rows(&child)
+            .iter()
+            .any(|r| r.starts_with("[the deliverable]") && r.contains("half-done.txt")),
+        "the resumed child was not held to its branch: {:?}",
+        user_rows(&child)
+    );
+    let collected = task_result(&two, &handle).payload;
+    assert!(
+        collected.contains("has uncommitted changes") && collected.contains("half-done.txt"),
+        "{collected}"
+    );
     let row = store.subagent_run(&handle).unwrap().unwrap();
     assert_eq!(row.state, "done");
     assert_eq!(row.resumes, 1);

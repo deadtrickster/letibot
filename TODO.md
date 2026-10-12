@@ -2035,8 +2035,12 @@ looking.
   decision, or `extensions.worktreeConfig` + a per-worktree `core.excludesFile`).
 * **Not exercised end to end with a model.** No test drives a child's turn through a stub server
   that edits a file; the loop's arm is three lines over `EndOfWork`, which is tested.
-* **A restored child** (`wt-subrestart`, reopening subagents after a daemon restart) has to call
-  `Harness::set_deliverable` with its placement, or its later turns are not checked.
+* ~~**A restored child** (`wt-subrestart`, reopening subagents after a daemon restart) has to call
+  `Harness::set_deliverable` with its placement, or its later turns are not checked.~~ **DONE at
+  integration (with R85)**: `run_to_completion` sets the deliverable before either door (the
+  fresh brief or `continue_after_restart`), from the placement `RecordedSpec` brings back;
+  `restart_restore.rs`'s resumed child is left a dirty tree and must be nudged and carry the
+  salvage line.
 
 ## R84 — The landing tree lives outside `.git`, a session can read it, and a gate gets its gitignored inputs — **MERGED on main 2026-10-12 (4ac0f18, d27ed56); the placement rule after it is PARKED, see R84a**
 
