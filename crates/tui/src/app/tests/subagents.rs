@@ -82,6 +82,7 @@ fn ctrl_g_opens_the_subagent_tree_and_esc_closes_it() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     // A spawn that the head saw. The running count lives in the pane —
@@ -263,6 +264,7 @@ fn the_running_subagent_is_drawn_above_the_folded_finished_ones() {
             task: "the one that is running".into(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.key(Key::CtrlG);
@@ -519,6 +521,7 @@ fn the_session_list_owns_the_word_running_and_the_event_owns_everything_else() {
         task: "audit the store".into(),
         model: "qwen-3.8-flash-next".into(),
         answer: answer.map(str::to_string),
+        slug: String::new(),
     };
     a.apply(ServerFrame::Event(env(
         1,
@@ -578,6 +581,7 @@ fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it(
         task: String::new(),
         model: String::new(),
         answer: None,
+        slug: String::new(),
     };
     a.apply(ServerFrame::Event(env(1, spawn.clone())));
     a.key(Key::CtrlG);
@@ -632,6 +636,7 @@ fn an_opening_subagent_is_listed_but_cannot_be_entered() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.key(Key::CtrlG);
@@ -669,6 +674,7 @@ fn an_opening_subagent_is_listed_but_cannot_be_entered() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     assert_eq!(a.subagents.len(), 1);
@@ -704,6 +710,7 @@ fn enter_on_a_subagent_row_switches_into_its_session() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.key(Key::CtrlG);
@@ -738,6 +745,7 @@ fn p_reads_a_subagents_output_without_moving_the_head() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.key(Key::CtrlG);
@@ -849,6 +857,7 @@ fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.key(Key::CtrlG);
@@ -901,6 +910,7 @@ fn a_running_subagent_row_becomes_done_rather_than_a_second_line() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.apply(ServerFrame::Event(env(
@@ -913,6 +923,7 @@ fn a_running_subagent_row_becomes_done_rather_than_a_second_line() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     assert_eq!(a.subagents.len(), 1, "done replaces running, not appends");
@@ -952,6 +963,7 @@ fn a_subagent_row_shows_the_task_and_the_answer_beside_it() {
             task: "audit the session store\nand say which rows are never read".into(),
             model: String::new(),
             answer: Some("twelve rows have no reader".into()),
+            slug: String::new(),
         },
     )));
     // **Unfold the `finished` group**, where a `done` child lives; the cursor starts on the
@@ -1008,6 +1020,7 @@ fn the_stop_row_names_the_jobs_and_subagents_that_die_with_the_daemon() {
             model: String::new(),
             answer: None,
             spawned_ms: 0,
+            slug: String::new(),
         },
         SubagentState {
             session_id: "s-sub-2".into(),
@@ -1019,6 +1032,7 @@ fn the_stop_row_names_the_jobs_and_subagents_that_die_with_the_daemon() {
             model: String::new(),
             answer: None,
             spawned_ms: 0,
+            slug: String::new(),
         },
     ];
     a.key(Key::CtrlC);
@@ -1062,6 +1076,7 @@ fn a_running_subagent_is_counted_on_the_top_border_and_a_done_one_is_not() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     let screen = a.screen(100, 24);
@@ -1081,6 +1096,7 @@ fn a_running_subagent_is_counted_on_the_top_border_and_a_done_one_is_not() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     assert!(
@@ -1259,6 +1275,7 @@ fn a_gatekeeper_child_is_not_counted_or_listed() {
             ),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();

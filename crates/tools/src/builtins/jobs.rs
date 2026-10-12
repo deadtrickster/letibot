@@ -1006,6 +1006,50 @@ impl JobKill {
             )),
         }
     }
+
+    /// **The subagent half of `job_kill`**, over the session's job table in hand: `Some` when the
+    /// call was a child's (stopped, or refused by name), `None` to go on to the host's jobs.
+    ///
+    /// A child's handle is a child's. A child's SLUG is the child's only when no job of this
+    /// session answers to it as well — a name a child and a job share names two things, and that
+    /// is refused naming both rather than guessed, the rule a name two jobs share already follows;
+    /// a name two children share is refused the same way. Anything else is offered to the runner
+    /// as written (it may know a handle no list here shows) and then to the host.
+    fn route_subagent(&self, id: &str, jobs: &[JobView]) -> Option<Invocation> {
+        use crate::builtins::task::{PickedChild, ambiguous_child, pick_child};
+        let children = self
+            .tasks
+            .as_ref()
+            .map(|r| r.children())
+            .unwrap_or_default();
+        match pick_child(&children, id) {
+            PickedChild::Ambiguous(many) => Some(ambiguous_child(id, &many)),
+            PickedChild::One(handle) if handle != id.trim() => {
+                if let Picked::One(i) = pick_job(jobs, id) {
+                    let child = children
+                        .iter()
+                        .find(|c| c.handle == handle)
+                        .map(|c| c.label())
+                        .unwrap_or(handle);
+                    return Some(Invocation::failed(
+                        format!("`{id}` names a job and a subagent, so it does not name one"),
+                        format!(
+                            "  job: {}\n  subagent: {child}\n\nNothing was stopped. Use the \
+                             handle of the one you mean.\n",
+                            jobs[i].label()
+                        ),
+                    ));
+                }
+                self.kill_subagent(&handle)
+                    .ok()
+                    .map(|said| Invocation::ok(format!("{said}\n")))
+            }
+            _ => self
+                .kill_subagent(id)
+                .ok()
+                .map(|said| Invocation::ok(format!("{said}\n"))),
+        }
+    }
 }
 
 impl Default for JobKill {
@@ -1029,7 +1073,7 @@ impl Tool for JobKill {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "job": {"type": "string", "description": "The job to stop: its id (`j65`) or the name the agent stated (`release-build`)."},
+                    "job": {"type": "string", "description": "The job to stop: its id (`j65`) or the name the agent stated (`release-build`) — or a subagent, by its handle or its slug."},
                     "scope": {"type": "string", "description": "Kill everything in this scope: `turn`, `session`, or an explicit scope's name."}
                 }
             }),
@@ -1047,10 +1091,20 @@ impl Tool for JobKill {
         // the runner — but the *order* is load-bearing for a different reason: a session
         // with no process host must still be able to stop its own child, so this cannot sit
         // behind `processes()`.
-        if let Some(id) = job
-            && let Ok(said) = self.kill_subagent(id)
-        {
-            return Invocation::ok(format!("{said}\n"));
+        //
+        // **A child may be named by its slug, as a job may.** A name is the child's only when no
+        // job of this session answers to it as well: a slug a child and a job share names two
+        // things, and that is refused naming both rather than guessed — the rule a name two jobs
+        // share already follows.
+        if let Some(id) = job {
+            let jobs = ctx
+                .backend
+                .processes()
+                .map(|h| h.jobs())
+                .unwrap_or_default();
+            if let Some(done) = self.route_subagent(id, &jobs) {
+                return done;
+            }
         }
         let Some(host) = ctx.backend.processes() else {
             // A host that cannot start processes has no jobs. What it may still have is a
@@ -1559,6 +1613,90 @@ mod tests {
         assert!(
             refused.contains("not attached"),
             "the runner's own words must reach the caller, unchanged: {refused}"
+        );
+    }
+
+    /// **`job_kill` takes a subagent's slug as it takes a job's name**, and refuses a name two
+    /// children share — or a child and a job share — without stopping anything. The runner must
+    /// be asked about the HANDLE the name stands for.
+    #[test]
+    fn job_kill_stops_a_subagent_named_by_its_slug_and_refuses_a_shared_name() {
+        use crate::builtins::task::{ChildName, TaskRunner, TaskSpec, TaskStatus};
+        use letibot_transcript::ToolOutcome;
+
+        struct Named(std::sync::Mutex<Vec<String>>);
+
+        impl TaskRunner for Named {
+            fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+                Err("this runner starts nothing".into())
+            }
+            fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn children(&self) -> Vec<ChildName> {
+                [
+                    ("s-1-sub-1", "fix-login"),
+                    ("s-1-sub-2", "bench"),
+                    ("s-1-sub-3", "bench"),
+                ]
+                .into_iter()
+                .map(|(h, s)| ChildName {
+                    handle: h.into(),
+                    slug: Some(s.into()),
+                    own: true,
+                })
+                .collect()
+            }
+            fn kill(&self, handle: &str) -> Result<String, String> {
+                if !self.children().iter().any(|c| c.handle == handle) {
+                    return Err(format!("no subagent `{handle}` in this session"));
+                }
+                self.0.lock().expect("recorded").push(handle.to_string());
+                Ok(format!("stopped `{handle}`"))
+            }
+        }
+
+        let runner = std::sync::Arc::new(Named(Default::default()));
+        let kill = super::JobKill::with_tasks(runner.clone());
+
+        let stopped = kill
+            .route_subagent("fix-login", &[])
+            .expect("a child's name is the child's");
+        assert!(
+            stopped.payload.contains("stopped `s-1-sub-1`"),
+            "{}",
+            stopped.payload
+        );
+        let refused = kill
+            .route_subagent("bench", &[])
+            .expect("a shared name is refused here");
+        assert!(
+            matches!(refused.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            refused.outcome
+        );
+        assert!(
+            refused.payload.contains("bench · s-1-sub-2")
+                && refused.payload.contains("bench · s-1-sub-3"),
+            "{}",
+            refused.payload
+        );
+        // A name no child carries goes on to the host's jobs.
+        assert!(kill.route_subagent("release-build", &[]).is_none());
+        // A name a child and a job of this session share names neither.
+        let both = kill
+            .route_subagent("fix-login", &[view("j7", Some("fix-login"))])
+            .expect("a name a job shares is refused here");
+        assert!(
+            both.payload.contains("fix-login · j7")
+                && both.payload.contains("fix-login · s-1-sub-1"),
+            "{}",
+            both.payload
+        );
+        assert_eq!(
+            runner.0.lock().expect("recorded").as_slice(),
+            ["s-1-sub-1".to_string()],
+            "the name reached the runner as its handle, and the shared name reached nothing"
         );
     }
 }

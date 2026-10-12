@@ -715,7 +715,8 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
         job: "s-1-sub-1".into(),
         // A subagent runs no command, and the field must not quietly hold an answer.
         command: String::new(),
-        // Nor does it have a name: a `task` child's handle is its identity.
+        // A child from a runner that keeps no names: its handle alone, as every notice from
+        // before names said it.
         slug: None,
         state: "done".into(),
         produced: 0,
@@ -784,6 +785,24 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
     assert!(
         pair.contains("s-1-sub-1") && pair.contains("s-1-sub-2"),
         "{pair}"
+    );
+
+    // **A named child is named** — `fix-login · s-1-sub-1`, the job's spelling — while the
+    // closing still hands the model the real handle to collect it by.
+    let named = subagent_notice(
+        &[JobCompletion {
+            slug: Some("fix-login".into()),
+            ..one.clone()
+        }],
+        true,
+    );
+    assert!(
+        named.contains("  - `fix-login · s-1-sub-1` done: two facts off a fixture\n"),
+        "{named}"
+    );
+    assert!(
+        named.ends_with("Full answer: `task_result` task=\"s-1-sub-1\"."),
+        "{named}"
     );
 }
 

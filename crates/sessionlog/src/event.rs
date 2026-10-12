@@ -1957,6 +1957,14 @@ pub enum SessionEvent {
         /// to know the state to interpret it.
         #[serde(default)]
         answer: Option<String>,
+        /// **The child's name — its slug** (`fix-login`), the same on every state: the slug
+        /// `task_start` cut its worktree's branch `agent/<slug>` from, or the one `task` derived
+        /// from its prompt. A head draws the child by it where it drew the session id.
+        ///
+        /// Empty from a daemon older than this field, and the head then draws the id as before
+        /// — `#[serde(default)]` for `task`'s reason, so no protocol bump.
+        #[serde(default)]
+        slug: String,
     },
 
     /// A background job this session started has stopped running.

@@ -2774,7 +2774,7 @@ impl Tool for TodoWriteTool {
                     "target": {
                         "type": "string",
                         "description": "Write onto a CHILD session's board instead of \
-                                        your own: the child's session id, full or the \
+                                        your own: the child's session id, its slug, or the \
                                         short `…tail` form the subagent pane and \
                                         `task_result` show. Only a session YOU spawned \
                                         with `task` may be named; anything else — a \
@@ -2945,6 +2945,13 @@ impl TodoWriteTool {
         // every reader after that asks about a HANDLE — `job_fate` found no job called
         // `release-build`, answered Unknown, and the row read as waiting on a job that had already
         // ended while the job was still running.
+        // **And a child named by its slug becomes its session id** the same way: a `child` need
+        // (or a `job` need that names no job but one of this session's subagents) is resolved
+        // through the same door `wait_on`'s `child` uses, so the board holds the id every reader
+        // keys on.
+        if let Err(inv) = resolve_child_needs(&mut rows, self.children.as_deref(), jobs) {
+            return inv;
+        }
         if let Err(inv) = resolve_job_needs(&mut rows, jobs) {
             return inv;
         }
@@ -3074,7 +3081,7 @@ impl TodoWriteTool {
         let shape = || {
             "`wait_on` is a list of {\"content\": \"<the row, quoted exactly>\", \"job\": \"<a \
              handle or name `job_list` prints>\"}, or \"child\": \"<a session id `task` handed \
-             back>\" in place of `job`, or \"operator\": {\"question\": \"…\", \"options\": \
+             back, or its slug>\" in place of `job`, or \"operator\": {\"question\": \"…\", \"options\": \
              [\"…\", \"…\"]} to wait on the operator's answer, or \"detach\": true to take the \
              row's waits off."
                 .to_string()
@@ -3530,6 +3537,59 @@ fn resolve_job_needs(
                         ),
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// **A child named in `needs` by its slug is stored as its session id.**
+///
+/// Subagents are named by slug now (`task_start`'s worktree slug, or the one `task` derives), and
+/// a model writes the name it was handed. A `child` need whose id is not a session id (`s-…`) is
+/// resolved through [`ChildTodos::own_child`] — the door `wait_on`'s `child` goes through — and
+/// refused by name when it is not one of this session's children. A `job` need that names no job
+/// of this session and IS one of this session's children becomes a `child` need, because a
+/// subagent settles through the same sink and the model may well have called it a job. A session
+/// id is never touched: it is the handle, and the board's readers answer for it.
+fn resolve_child_needs(
+    rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
+    children: Option<&dyn ChildTodos>,
+    jobs: Option<&[crate::exec::JobView]>,
+) -> Result<(), Invocation> {
+    // A `job` need that names a job of this session stays a job need, whatever a child is called.
+    let a_job = |name: &str| {
+        jobs.is_some_and(|t| {
+            t.iter()
+                .any(|j| j.id.0 == name || j.slug.as_deref() == Some(name))
+        })
+    };
+    let Some(children) = children else {
+        return Ok(());
+    };
+    for (content, _, needs) in rows.iter_mut() {
+        for need in needs.iter_mut() {
+            match need {
+                TodoNeed::Child { id } if !id.starts_with("s-") => match children.own_child(id) {
+                    Ok(full) => *id = full,
+                    Err(why) => {
+                        return Err(Invocation::failed(
+                            format!(
+                                "nothing was written: the row `{content}` needs a child `{id}`"
+                            ),
+                            format!(
+                                "{why}\n\na `child` need names a subagent you started, by the \
+                                 handle `task` handed back or by its slug."
+                            ),
+                        ));
+                    }
+                },
+                TodoNeed::Job { handle } if !job_handle_shaped(handle) && !a_job(handle) => {
+                    if let Ok(full) = children.own_child(handle) {
+                        *need = TodoNeed::Child { id: full };
+                    }
+                }
+                _ => {}
             }
         }
     }

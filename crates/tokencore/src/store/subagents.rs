@@ -238,6 +238,20 @@ impl Store {
             .optional()?)
     }
 
+    /// **Every child any session started**, oldest first — what the daemon's session list reads
+    /// the children's names from (their slugs are in `spec_json`, the spawn's own description).
+    pub fn subagent_runs(&self) -> Result<Vec<SubagentRun>> {
+        let mut st = self
+            .conn
+            .prepare(&format!("{SELECT_RUN} ORDER BY started_ms, child_id"))?;
+        let rows = st.query_map([], run_of)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// **Every child this session started**, oldest first — what a parent reads when it is
     /// opened.
     pub fn subagent_runs_of(&self, parent_id: &str) -> Result<Vec<SubagentRun>> {

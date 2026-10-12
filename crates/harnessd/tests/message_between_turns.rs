@@ -752,6 +752,34 @@ fn a_message_to_a_child_between_turns_starts_its_turn() {
     let handle = parent.spawn("do the task, then stop and wait");
     let child = parent.hub_of(&handle);
 
+    // **A plain `task` child is named as `task_start` would name it** — the slug derived from
+    // its prompt — on the daemon's list and on every `Subagent` row the parent's hub carries.
+    let slug = letibot_tools::builtins::task::slug_from_prompt("do the task, then stop and wait");
+    let listed = parent
+        .registry
+        .list()
+        .into_iter()
+        .find(|b| b.session_id == handle)
+        .map(|b| b.slug);
+    assert_eq!(listed.as_deref(), Some(slug.as_str()));
+    let named_rows: Vec<String> = parent
+        .registry
+        .get(parent_id)
+        .expect("the parent's hub")
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Subagent {
+                subagent_id, slug, ..
+            } if *subagent_id == handle => Some(slug.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !named_rows.is_empty() && named_rows.iter().all(|s| *s == slug),
+        "{named_rows:?}"
+    );
+
     // Between turns: its first answer has landed and its serving thread is parked.
     parent.wait_until_parked(&handle);
     assert!(

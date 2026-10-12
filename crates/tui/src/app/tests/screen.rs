@@ -393,6 +393,7 @@ fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     let screen = a.screen(100, 24);
@@ -498,6 +499,7 @@ fn a_click_one_column_off_the_labels_opens_nothing() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.apply(ServerFrame::Jobs {
@@ -595,6 +597,7 @@ fn a_narrow_edge_keeps_only_the_labels_it_drew() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.apply(ServerFrame::Jobs {
@@ -651,6 +654,7 @@ fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a.key(Key::CtrlG);

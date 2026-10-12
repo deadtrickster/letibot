@@ -466,6 +466,23 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     assert_eq!(recorded.state, "running");
     assert_eq!(recorded.parent_id, PARENT);
     assert_eq!(recorded.prompt, "fix the flaky test");
+    // **The child is named after its worktree, and the name is recorded and listed** — the slug
+    // its branch `agent/fix-flaky` was cut from.
+    assert_eq!(
+        RecordedSpec::from_json(&recorded.spec_json)
+            .unwrap()
+            .slug
+            .as_deref(),
+        Some("fix-flaky")
+    );
+    let brief = |d: &Daemon| {
+        d.registry
+            .list()
+            .into_iter()
+            .find(|b| b.session_id == handle)
+            .map(|b| b.slug)
+    };
+    assert_eq!(brief(&one).as_deref(), Some("fix-flaky"));
     let worktree = RecordedSpec::from_json(&recorded.spec_json)
         .unwrap()
         .worktree
@@ -519,8 +536,8 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     );
     assert!(
         notice.contains(&format!(
-            "[restart] subagent `{handle}` (fix the flaky test) was running when the daemon \
-             restarted and has been resumed."
+            "[restart] subagent `fix-flaky · {handle}` (fix the flaky test) was running when \
+             the daemon restarted and has been resumed."
         )),
         "{notice}"
     );
@@ -564,6 +581,11 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         "the resumed child was not held to its branch: {:?}",
         user_rows(&child)
     );
+    // **And after the restart the child is still known by its name**: the new daemon's list
+    // carries it, and `task_result` takes it in place of the handle.
+    assert_eq!(brief(&two).as_deref(), Some("fix-flaky"));
+    let by_name = task_result(&two, "fix-flaky");
+    assert!(by_name.payload.contains(ANSWER), "{}", by_name.payload);
     let collected = task_result(&two, &handle).payload;
     assert!(
         collected.contains("has uncommitted changes") && collected.contains("half-done.txt"),
@@ -590,6 +612,12 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         said.iter()
             .any(|r| r.contains("a subagent you started has finished") && r.contains(&handle))
     });
+    // The completion names the child as `fix-flaky · <handle>`.
+    assert!(
+        said.iter()
+            .any(|r| r.contains(&format!("`fix-flaky · {handle}` done"))),
+        "{said:?}"
+    );
     assert!(
         said.iter().any(|r| r.contains("has been resumed")),
         "the parent's model got the restart line: {said:?}"
@@ -805,7 +833,8 @@ fn what_must_not_be_respawned_is_reported_or_delivered() {
     let notice = d.parent.restore_after_restart().expect("a notice");
     eprintln!("--- what the parent's model is told ---\n{notice}");
     assert!(
-        notice.contains("`s-restart-parent-sub-gone`")
+        // Named by its record: the branch its worktree was cut on, `agent/gone`.
+        notice.contains("`gone · s-restart-parent-sub-gone`")
             && notice.contains("could NOT be resumed")
             && notice.contains("no-such-worktree")
             && notice.contains("is gone"),

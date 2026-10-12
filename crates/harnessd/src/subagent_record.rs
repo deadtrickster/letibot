@@ -83,6 +83,31 @@ pub struct RecordedSpec {
     pub vm_source: Option<PathBuf>,
     #[serde(default)]
     pub vm_verify: Option<String>,
+    /// **The child's name** ([`TaskSpec::slug`]). Absent in a record written before children had
+    /// names; [`recorded_slug`] then answers from the worktree branch or the prompt, so a child
+    /// brought back is still named the way a fresh one would have been.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+}
+
+/// **The name a recorded child answers to**: the slug its record carries, or — for a record from
+/// before children had names — the one its spawn would have been given: the slug its worktree's
+/// branch `agent/<slug>` was cut from, else [`slug_from_prompt`] over what it was asked. A
+/// record that does not parse is named from its prompt alone.
+pub fn recorded_slug(run: &SubagentRun) -> String {
+    use letibot_tools::builtins::task::slug_from_prompt;
+    let spec = RecordedSpec::from_json(&run.spec_json).unwrap_or_default();
+    if let Some(s) = spec.slug.filter(|s| !s.trim().is_empty()) {
+        return s;
+    }
+    if let Some(w) = &spec.worktree
+        && !w.main_tree
+        && let Some(s) = w.branch.strip_prefix("agent/")
+        && !s.is_empty()
+    {
+        return s.to_string();
+    }
+    slug_from_prompt(&run.prompt)
 }
 
 /// [`WorktreePlacement`], as written down.
@@ -109,6 +134,7 @@ impl RecordedSpec {
             }),
             vm_source: spec.vm_source.clone(),
             vm_verify: spec.vm_verify.clone(),
+            slug: spec.slug.clone(),
         }
     }
 
@@ -126,6 +152,7 @@ impl RecordedSpec {
             }),
             vm_source: self.vm_source.clone(),
             vm_verify: self.vm_verify.clone(),
+            slug: self.slug.clone(),
         })
     }
 
@@ -640,12 +667,36 @@ mod tests {
             worktree: None,
             vm_source: Some("/src".into()),
             vm_verify: None,
+            slug: Some("survey-the-store".into()),
         };
         let back = RecordedSpec::from_json(&RecordedSpec::of(&spec).to_json())
             .unwrap()
             .spec()
             .unwrap();
         assert_eq!(back, spec);
+    }
+
+    /// **A recorded child is named by its record, and an old record still gets a name** — the
+    /// slug the record carries, else the branch its worktree was cut on, else its prompt's.
+    #[test]
+    fn a_recorded_child_is_named_by_its_record_or_as_its_spawn_would_have_been() {
+        // A record from before names: the worktree branch `agent/fix` names it.
+        assert_eq!(recorded_slug(&run("running")), "fix");
+        // A record that carries its name: that name, whatever the branch says.
+        let mut named = run("running");
+        named.spec_json = RecordedSpec::of(&TaskSpec {
+            slug: Some("release-notes".into()),
+            ..TaskSpec::default()
+        })
+        .to_json();
+        assert_eq!(recorded_slug(&named), "release-notes");
+        // A plain `task` child from before names, with no worktree: its prompt's derivation.
+        let mut plain = run("done");
+        plain.spec_json = RecordedSpec::of(&TaskSpec::default()).to_json();
+        assert_eq!(recorded_slug(&plain), "fix-the-thing");
+        // And a record written before the field existed decodes with no name rather than failing.
+        let old = r#"{"role":"coder","placement":"host"}"#;
+        assert_eq!(RecordedSpec::from_json(old).unwrap().slug, None);
     }
 
     #[test]

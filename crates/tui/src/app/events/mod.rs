@@ -169,6 +169,7 @@ impl App {
                     // The daemon's own stamp for when the event was published. The list's
                     // `created_ms` overrides it in the fold, the way it always did.
                     spawned_ms: v.ts,
+                    slug: v.slug.clone(),
                 })
                 .collect();
             self.subagents_sel = 0;

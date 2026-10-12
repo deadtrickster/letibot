@@ -86,6 +86,7 @@ fn board() -> App {
         model: String::new(),
         answer: None,
         spawned_ms: 0,
+        slug: String::new(),
     }];
     a
 }

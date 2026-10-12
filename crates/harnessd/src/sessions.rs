@@ -4666,11 +4666,20 @@ impl SessionSource for StoreSessions {
         // is the question's one home, so a session nobody has opened since a restart is marked
         // as surely as a live one.
         let waiting = g.sessions_waiting_on_operator().unwrap_or_default();
+        // **Every child's name, from its record** (`subagent_record::recorded_slug`), so a child
+        // listed after a restart is named as it was when it was spawned.
+        let slugs: std::collections::HashMap<String, String> = g
+            .subagent_runs()
+            .unwrap_or_default()
+            .iter()
+            .map(|r| (r.child_id.clone(), crate::subagent_record::recorded_slug(r)))
+            .collect();
         g.list_sessions()
             .unwrap_or_default()
             .into_iter()
             .map(|s| StoredBrief {
                 waits_on_operator: waiting.get(&s.id).copied().unwrap_or(0),
+                slug: slugs.get(&s.id).cloned().unwrap_or_default(),
                 session_id: s.id,
                 title: s.title.unwrap_or_default(),
                 items: s.items,

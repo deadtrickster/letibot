@@ -162,6 +162,12 @@ impl App {
                     if b.created_ms > 0 {
                         k.spawned_ms = b.created_ms;
                     }
+                    // **The list's name for a child the event did not name** — a spawn this
+                    // head heard from a daemon that published no slug, then listed by one that
+                    // records it.
+                    if k.slug.is_empty() {
+                        k.slug = b.slug.clone();
+                    }
                     rows.push(k);
                 }
                 None => rows.push(SubagentState {
@@ -200,6 +206,7 @@ impl App {
                         _ => None,
                     },
                     spawned_ms: b.created_ms,
+                    slug: b.slug.clone(),
                 }),
             }
         }
@@ -420,9 +427,20 @@ pub(crate) struct SubagentState {
     /// it sorts LAST, below every row somebody can date. That is the honest place for it: a row
     /// nobody can order belongs at the bottom, not at the top pretending to be new.
     pub(crate) spawned_ms: u64,
+    /// **The child's name — its slug** (`fix-login`), from the event's `slug` or the daemon's
+    /// list. Empty for a child nobody named (a daemon from before names), which is drawn by its
+    /// short id exactly as before. See [`SubagentState::name`].
+    pub(crate) slug: String,
 }
 
 impl SubagentState {
+    /// **How a person is shown this child**: `fix-login · …14688401` — its name and the short id,
+    /// the pane's spelling of the label the model reads (`fix-login · s-…`) — or the short id
+    /// alone for a child nobody named.
+    pub(crate) fn name(&self) -> String {
+        child_name(&self.slug, &self.session_id)
+    }
+
     /// **Whether this child is done** — the one thing the pane's two groups are made of, and
     /// now the one thing the count above the composer is made of too.
     ///
@@ -445,6 +463,21 @@ impl SubagentState {
     /// [`App::fold_subagents`], which is where the two facts are kept apart.
     pub(crate) fn is_finished(&self) -> bool {
         !matches!(self.state.as_str(), "running" | "opening")
+    }
+}
+
+/// **A child as a person reads it**: `slug · …tail`, or the short id alone when nobody named it.
+/// One function, because the pane, its output view, the todos' `waits on …`, the attention line
+/// and the header all name a child and must not spell it four ways.
+pub(crate) fn child_name(slug: &str, session_id: &str) -> String {
+    let short = letibot_sessionlog::registry::short_id(session_id);
+    if slug.trim().is_empty() {
+        short
+    } else {
+        format!(
+            "{} · {short}",
+            slug.split_whitespace().collect::<Vec<_>>().join(" ")
+        )
     }
 }
 

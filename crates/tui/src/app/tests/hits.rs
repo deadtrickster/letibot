@@ -42,6 +42,7 @@ fn running(a: &mut App, seq: u64, id: &str, prompt: &str) {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
 }

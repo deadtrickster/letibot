@@ -695,6 +695,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
         stored_end: None,
         nags_paused: None,
         waits_on_operator: 0,
+        slug: String::new(),
     }
 }
 
@@ -840,6 +841,7 @@ fn child_event(id: &str, state: &str, answer: Option<&str>) -> SessionEvent {
         task: "find the bug in the reader".into(),
         model: String::new(),
         answer: answer.map(str::to_string),
+        slug: String::new(),
     }
 }
 
@@ -1428,6 +1430,7 @@ mod screen;
 mod scroll;
 mod session;
 mod settings;
+mod slugs;
 mod standing;
 mod subagents;
 mod surfaces;

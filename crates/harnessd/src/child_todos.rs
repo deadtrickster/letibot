@@ -147,7 +147,7 @@ impl ParentTodos {
             .list()
             .into_iter()
             .filter(|b| b.parent_session_id.as_deref() == Some(self.caller.as_str()))
-            .map(|b| b.session_id)
+            .map(|b| letibot_tools::builtins::task::subagent_label(Some(&b.slug), &b.session_id))
             .collect()
     }
 
@@ -180,6 +180,29 @@ impl ParentTodos {
         let all = self.registry.list();
         if let Some(exact) = all.iter().find(|b| b.session_id == target) {
             return Ok(exact.clone());
+        }
+        // **A child's name** — its slug, as `task` and `task_start` handed it back — among the
+        // CALLER's children only: a name is unique among one parent's children, not across the
+        // daemon, and a sibling's child of the same name is not this caller's to write. Two of
+        // the caller's own children under one name is refused naming both.
+        let named: Vec<_> = all
+            .iter()
+            .filter(|b| b.parent_session_id.as_deref() == Some(self.caller.as_str()))
+            .filter(|b| !b.slug.is_empty() && b.slug == target)
+            .collect();
+        match named.as_slice() {
+            [one] => return Ok((*one).clone()),
+            [] => {}
+            many => {
+                let named: Vec<String> =
+                    many.iter().map(|b| format!("`{}`", b.session_id)).collect();
+                return Err(format!(
+                    "`{target}` is the name of {} of this session's children, so it does not \
+                     name one. Quote the full id: {}",
+                    many.len(),
+                    named.join(", ")
+                ));
+            }
         }
         let hits: Vec<_> = all
             .iter()
@@ -642,5 +665,43 @@ mod tests {
             "the refusal names the state: {why}"
         );
         assert!(boards.board("s-child-late").is_none(), "and none was made");
+    }
+
+    /// **A child is named by its slug too**, among the CALLER's children only: the name its
+    /// runner gave it resolves, two of the caller's children under one name are refused naming
+    /// both, and a name only another parent's child carries is no child of this caller's.
+    #[test]
+    fn a_child_resolves_by_its_slug_among_the_callers_children() {
+        let (registry, _boards, resolver) = family();
+        registry.set_slug("s-child-aaaa", "fix-login");
+        registry.set_slug("s-other-child", "elsewhere");
+        assert_eq!(
+            resolver
+                .own_child("fix-login")
+                .expect("the caller's child, by name"),
+            "s-child-aaaa"
+        );
+        let board = resolver
+            .upsert_child(
+                "fix-login",
+                &[("by its name".into(), TodoStatus::Pending, Vec::new())],
+            )
+            .expect("the name reaches the child's board");
+        assert!(board.iter().any(|t| t.content == "by its name"));
+        let why = resolver
+            .own_child("elsewhere")
+            .expect_err("another parent's child is not this caller's");
+        assert!(why.contains("elsewhere"), "{why}");
+        // The list of what the caller holds names the child by its label.
+        assert!(why.contains("fix-login · s-child-aaaa"), "{why}");
+
+        registry.set_slug("s-child-bbbb", "fix-login");
+        let why = resolver
+            .own_child("fix-login")
+            .expect_err("a name two children share names neither");
+        assert!(
+            why.contains("s-child-aaaa") && why.contains("s-child-bbbb"),
+            "{why}"
+        );
     }
 }

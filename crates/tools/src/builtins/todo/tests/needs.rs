@@ -1034,3 +1034,53 @@ fn the_sticky_choice_moves_on_when_the_named_row_becomes_blocked() {
         "and the row it stopped holding is still SAID, as blocked: {msg}"
     );
 }
+
+/// **A child named in `needs` by its slug is stored as its session id**, and a name that is no
+/// child of this session is refused with nothing written — the resolution `wait_on`'s `child`
+/// already goes through. A `job` need that names no job but is one of this session's children
+/// becomes a `child` need. A session id is stored as written.
+#[test]
+fn a_child_named_in_needs_by_its_slug_is_stored_as_its_id() {
+    let child = Arc::new(TodoBoard::new(vec![]));
+    let (mut rt, own, _fake) = children_runtime(child);
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke(
+        "t1",
+        &call(
+            r#"{"todos": [
+                {"content": "collect the login fix", "status": "pending",
+                 "needs": [{"kind": "child", "id": "fix-login"}]},
+                {"content": "merge it", "status": "pending",
+                 "needs": [{"kind": "job", "handle": "fix-login"}]}]}"#,
+        ),
+        &mut sink,
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+    let rows = own.snapshot();
+    for row in &rows {
+        assert_eq!(
+            row.needs,
+            vec![TodoNeed::Child {
+                id: "s-1-sub-2".into()
+            }],
+            "{}: the name became the child's id",
+            row.content
+        );
+    }
+
+    let r = rt.invoke(
+        "t2",
+        &call(
+            r#"{"todos": [{"content": "wait for nobody", "status": "pending",
+                     "needs": [{"kind": "child", "id": "no-such-child"}]}]}"#,
+        ),
+        &mut sink,
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Failed { .. }),
+        "{:?}",
+        r.outcome
+    );
+    assert!(r.payload.contains("no-such-child"), "{}", r.payload);
+    assert_eq!(own.snapshot(), rows, "nothing was written");
+}

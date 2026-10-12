@@ -366,6 +366,17 @@ pub struct SessionBrief {
     /// has to say.
     #[serde(default)]
     pub waits_on_operator: usize,
+    /// **A subagent's name — its slug** (`fix-login`), or empty for a session nobody named: every
+    /// root, and a child spawned by a daemon from before children had names.
+    ///
+    /// The operator: *"lets do slugs for subagents too"*. A child was drawn by its session id or
+    /// by its 256-character brief, and a job by the name the agent gave it; this is the child's
+    /// name, the same one `task_start` cut its worktree's branch `agent/<slug>` from, so a head
+    /// can name it in the header, the picker and the subagents pane the way the jobs pane names
+    /// a job. Defaulted for `waits_on_operator`'s reason: empty is also what a daemon too old to
+    /// know the name has to say, so it is added without a protocol bump.
+    #[serde(default)]
+    pub slug: String,
 }
 
 /// **How long the operator has paused a session's idle plan-check** (`/nag pause`).
@@ -508,6 +519,9 @@ pub struct StoredBrief {
     /// Open questions the session's board waits on the operator for — see
     /// [`SessionBrief::waits_on_operator`].
     pub waits_on_operator: usize,
+    /// A subagent's name, from its record — see [`SessionBrief::slug`]. Empty for a session
+    /// nobody named.
+    pub slug: String,
 }
 
 /// Where a registry can find sessions it is not already holding.
@@ -979,6 +993,9 @@ pub struct Registry {
     started_ms: u64,
     /// See [`Registry::is_stopping`].
     stopping: std::sync::atomic::AtomicBool,
+    /// **The names of the subagents this daemon spawned**, by session id — see
+    /// [`Registry::set_slug`].
+    slugs: Mutex<std::collections::HashMap<String, String>>,
 }
 
 /// What the worker was woken for.
@@ -1102,7 +1119,31 @@ impl Registry {
             instance: mint_instance(),
             started_ms: now_ms(),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            slugs: Mutex::new(std::collections::HashMap::new()),
         })
+    }
+
+    /// **A subagent's name, recorded by the runner that spawned it** — what
+    /// [`SessionBrief::slug`] carries for a session this daemon holds. Kept beside the entries
+    /// rather than in one, because the runner names the child BEFORE its session is opened (a
+    /// head that lists the tree while the child is still opening must already see the name),
+    /// and a name for an id no entry has is simply unused. An empty slug is no name.
+    pub fn set_slug(&self, session_id: &str, slug: &str) {
+        let mut g = self.slugs.lock().unwrap_or_else(|e| e.into_inner());
+        if slug.trim().is_empty() {
+            g.remove(session_id);
+        } else {
+            g.insert(session_id.to_string(), slug.to_string());
+        }
+    }
+
+    /// The name [`Registry::set_slug`] recorded for a session, if any.
+    pub fn slug(&self, session_id: &str) -> Option<String> {
+        self.slugs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
     }
 
     /// **This daemon's instance id** — distinct for every registry ever built, across processes
@@ -1853,7 +1894,6 @@ impl Registry {
                         .filter(|t| !t.is_empty())
                         .unwrap_or(title),
                     stored_items: on_disk.map(|d| d.items).unwrap_or(0),
-                    session_id,
                     created_ms,
                     status: hub.status(),
                     wiring,
@@ -1874,6 +1914,13 @@ impl Registry {
                     // moment the verb lands, so the store is never behind the session here.
                     nags_paused: on_disk.and_then(|d| d.nags_paused),
                     waits_on_operator: on_disk.map(|d| d.waits_on_operator).unwrap_or(0),
+                    // The runner's own record for a child it is running, then the store's for
+                    // one a restart brought back.
+                    slug: self
+                        .slug(&session_id)
+                        .or_else(|| on_disk.map(|d| d.slug.clone()))
+                        .unwrap_or_default(),
+                    session_id,
                 }
             })
             .collect();
@@ -1900,6 +1947,7 @@ impl Registry {
                 stored_end: d.stored_end,
                 nags_paused: d.nags_paused,
                 waits_on_operator: d.waits_on_operator,
+                slug: d.slug,
             });
         }
         out
@@ -2886,6 +2934,7 @@ mod stored_end_wire {
             }),
             nags_paused: None,
             waits_on_operator: 0,
+            slug: String::new(),
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(
@@ -2900,5 +2949,33 @@ mod stored_end_wire {
                 .stored_end,
             None
         );
+    }
+
+    /// **A child's name rides the list** — the runner's record for a session this daemon
+    /// holds — and a brief from a daemon that predates the field decodes with no name.
+    #[test]
+    fn a_childs_slug_is_on_its_brief_and_an_old_brief_has_none() {
+        let r = Registry::new();
+        let hub = r.new_hub("s-1-sub-1".to_string());
+        r.adopt(
+            hub,
+            "s-1-sub-1".to_string(),
+            SessionWiring::default(),
+            Some("s-1".into()),
+        )
+        .unwrap();
+        r.set_slug("s-1-sub-1", "fix-login");
+        let b = r
+            .list()
+            .into_iter()
+            .find(|b| b.session_id == "s-1-sub-1")
+            .unwrap();
+        assert_eq!(b.slug, "fix-login");
+        r.set_slug("s-1-sub-1", "");
+        assert_eq!(r.slug("s-1-sub-1"), None, "an empty name is no name");
+
+        let mut v = serde_json::to_value(&b).unwrap();
+        v.as_object_mut().unwrap().remove("slug");
+        assert_eq!(serde_json::from_value::<SessionBrief>(v).unwrap().slug, "");
     }
 }

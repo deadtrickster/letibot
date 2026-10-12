@@ -2,7 +2,6 @@
 //! the clipboard, and the images it has uploaded to the terminal.
 
 use super::*;
-use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::TurnState;
 use letibot_transcript::TranscriptItem;
 
@@ -104,7 +103,7 @@ impl App {
             .iter()
             .find(|id| !before.answered.contains(*id))
         {
-            return Some(format!("{who}: subagent {} finished", short_id(id)));
+            return Some(format!("{who}: subagent {} finished", self.child_label(id)));
         }
         if before.busy && !now.busy && now.asks.is_empty() && now.secret.is_none() {
             let how = match self.turn.as_ref().and_then(|t| t.state.as_ref()) {

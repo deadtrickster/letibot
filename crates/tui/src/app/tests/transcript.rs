@@ -4042,6 +4042,7 @@ fn the_folded_agent_line_names_the_task_it_was_asked() {
         model: String::new(),
         answer: Some("ready".into()),
         spawned_ms: 0,
+        slug: String::new(),
     };
     assert_eq!(
         folded_notice(TASK, std::slice::from_ref(&sub)).unwrap(),

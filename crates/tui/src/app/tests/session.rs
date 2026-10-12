@@ -1013,6 +1013,7 @@ fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
         task: "find the bug in the reader".into(),
         model: String::new(),
         answer: None,
+        slug: String::new(),
     });
     let snapshot = hub.snapshot();
     assert_eq!(

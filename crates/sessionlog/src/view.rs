@@ -376,6 +376,9 @@ pub struct SubagentView {
     pub model: String,
     #[serde(default)]
     pub answer: Option<String>,
+    /// The child's name, from the event's `slug` — empty from a daemon that predates it.
+    #[serde(default)]
+    pub slug: String,
     /// `Envelope::ts` of the event that last said this.
     pub ts: u64,
 }
@@ -904,6 +907,7 @@ impl SessionView {
                 task,
                 model,
                 answer,
+                slug,
             } => {
                 let row = SubagentView {
                     session_id: subagent_id.clone(),
@@ -913,6 +917,7 @@ impl SessionView {
                     task: task.clone(),
                     model: model.clone(),
                     answer: answer.clone(),
+                    slug: slug.clone(),
                     // When this happened, on the log's own clock — the head has its own
                     // `now_ms` and this is not it, the same rule `SnapshotItem::ts` keeps.
                     ts: env.ts,
@@ -1395,6 +1400,7 @@ mod tests {
             task: "find the bug in the reader".into(),
             model: "local".into(),
             answer: None,
+            slug: String::new(),
         });
         let snap = fold(&log).snapshot(2, 0);
         assert_eq!(snap.subagents.len(), 1, "the child is in the snapshot");
@@ -1416,6 +1422,7 @@ mod tests {
             task: "find the bug in the reader".into(),
             model: "local".into(),
             answer: Some("the reader drops the last byte".into()),
+            slug: String::new(),
         });
         let snap = fold(&log).snapshot(3, 0);
         assert_eq!(snap.subagents.len(), 1, "one child, one row");
@@ -1434,6 +1441,7 @@ mod tests {
             task: "check the docs".into(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         });
         let snap = fold(&log).snapshot(4, 0);
         let ids: Vec<&str> = snap

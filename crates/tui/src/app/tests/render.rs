@@ -675,6 +675,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     b.push_surface(Surface::Subagents);

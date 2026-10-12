@@ -1030,6 +1030,7 @@ fn a_completion_row_holds_a_whole_brief_on_one_line() {
         model: String::new(),
         answer: None,
         spawned_ms: 0,
+        slug: String::new(),
     }];
     a.apply(ServerFrame::Event(env(
         1,

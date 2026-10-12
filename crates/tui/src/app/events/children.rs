@@ -19,6 +19,7 @@ impl App {
                 task,
                 model,
                 answer,
+                slug,
             } => {
                 // **The merge queue's reviewer is not one of this session's subagents.** The
                 // daemon starts it under this session so its approvals have a head to reach, but
@@ -47,6 +48,11 @@ impl App {
                     row.task = task;
                     row.model = model;
                     row.answer = answer;
+                    // An empty name is an older daemon's silence, not a rename: it does not
+                    // erase a name the list already gave this row.
+                    if !slug.is_empty() {
+                        row.slug = slug;
+                    }
                 } else {
                     self.subagents.push(SubagentState {
                         session_id: subagent_id,
@@ -61,6 +67,7 @@ impl App {
                         // `fold_subagents` replaces it with the daemon's own `created_ms` the
                         // moment a list carrying the child arrives.
                         spawned_ms: ts,
+                        slug,
                     });
                 }
                 self.redraw = true;

@@ -78,6 +78,13 @@ impl App {
                             } else {
                                 s.title.clone()
                             };
+                            // **A subagent's name leads its row** — `fix-login · <its brief>` —
+                            // the slug its parent and its branch call it by.
+                            let name = if s.slug.trim().is_empty() {
+                                name
+                            } else {
+                                format!("{} · {name}", s.slug)
+                            };
                             // **And a session waiting on YOU says so**, louder and first: a
                             // person who is being waited on has to be able to see it from the
                             // list, without attaching to every session to find out.

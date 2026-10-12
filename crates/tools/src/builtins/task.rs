@@ -209,6 +209,21 @@ pub struct TaskSpec {
     /// The verdict comes back in the child's answer, beside where its work was delivered.
     /// `None` on the host: there is no VM to run it in after the child.
     pub vm_verify: Option<String>,
+    /// **The child's name — its slug — when the caller has one to give.**
+    ///
+    /// The operator: *"lets do slugs for subagents too"*. A background job is named by the
+    /// agent's own word for the work (`bash(slug: "release-build")`), and a child was named by its
+    /// session id, `s-1789919514688401228-sub-3`, which rings no bell. `task_start` already had a
+    /// name for every child it placed — the slug its worktree and branch `agent/<slug>` are cut
+    /// from — so that is the child's name, and a plain `task` names its child the same way: the
+    /// `slug` argument when the caller gave one, otherwise [`slug_from_prompt`], the derivation
+    /// `task_start` makes.
+    ///
+    /// `None` is *the runner derives it*: the runner is the one that knows the session's other
+    /// children, so it is the one that makes the name unique among them (`-2`, `-3`, …, as
+    /// [`unique_slug`] does for a worktree). `Some` is `task_start`'s slug, already made unique
+    /// against the repository's branches, or a plain `task`'s named one.
+    pub slug: Option<String>,
 }
 
 /// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
@@ -371,6 +386,141 @@ pub fn unique_slug(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .map(|n| format!("{base}-{n}"))
         .find(|s| !taken(s))
         .unwrap_or_else(|| format!("{base}-{}", std::process::id()))
+}
+
+/// **One child, by the names it answers to** — its handle (the session id the runner minted) and
+/// its slug, the name [`TaskSpec::slug`] gave it.
+///
+/// `own` says whether THIS session started it. A runner's handle list is shared with the whole
+/// tree (`task_result` may collect any handle in it), so a parent's list carries its
+/// grandchildren too; a name is looked for among its own children first, which is the
+/// *"unique among this session's subagents"* the rule promises.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChildName {
+    pub handle: String,
+    pub slug: Option<String>,
+    pub own: bool,
+}
+
+impl ChildName {
+    /// `fix-login · s-…-sub-3`, or the bare handle for a child nobody named — the job rule
+    /// ([`crate::exec::job_label`]), so a child and a job are named the same way in every
+    /// sentence about them.
+    pub fn label(&self) -> String {
+        subagent_label(self.slug.as_deref(), &self.handle)
+    }
+}
+
+/// **The one spelling of a child's name in a sentence**: `slug · handle`, or the handle alone.
+///
+/// The same function a job's label is ([`crate::exec::job_label`]), on purpose: the operator's
+/// ask was parity with jobs, and two spellings of *how a background thing is called* would be
+/// two strings for a reader to learn. The full handle stays in it because it is what the model
+/// collects by and what an older reader of the transcript keys on.
+pub fn subagent_label(slug: Option<&str>, handle: &str) -> String {
+    crate::exec::job_label(slug, handle)
+}
+
+/// **A label split back into its name and handle** — the inverse of [`subagent_label`], for a
+/// reader of a sentence written either way: `fix-login · s-1-sub-3` is `(Some("fix-login"),
+/// "s-1-sub-3")`, and a bare handle (every notice from before children had names) is `(None,
+/// handle)`. Only an `s-` handle on the right is a child's, so a label that merely contains a
+/// `·` is not misread.
+pub fn split_subagent_label(label: &str) -> (Option<&str>, &str) {
+    match label.rsplit_once(" · ") {
+        Some((slug, handle)) if handle.starts_with("s-") && !slug.trim().is_empty() => {
+            (Some(slug), handle)
+        }
+        _ => (None, label),
+    }
+}
+
+/// **Which child the caller meant**, over a list of children in hand.
+///
+/// Pure, so the rules are assertable without a runner — the job rule, kept: **the handle wins**
+/// (an exact session id always names its child, whatever another child is called), and **a name
+/// that fits more than one child is not a name**. A name is looked for among this session's own
+/// children first and only then in the rest of the tree, so a grandchild that happens to share a
+/// child's name does not make the child's name ambiguous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickedChild {
+    /// Exactly one child: its handle.
+    One(String),
+    /// No child has that handle and none carries that name.
+    Unknown,
+    /// The name fits more than one child, so it does not identify one.
+    Ambiguous(Vec<ChildName>),
+}
+
+pub fn pick_child(children: &[ChildName], asked: &str) -> PickedChild {
+    let asked = asked.trim();
+    if asked.is_empty() {
+        return PickedChild::Unknown;
+    }
+    if children.iter().any(|c| c.handle == asked) {
+        return PickedChild::One(asked.to_string());
+    }
+    let named: Vec<&ChildName> = children
+        .iter()
+        .filter(|c| c.slug.as_deref() == Some(asked))
+        .collect();
+    let own: Vec<&ChildName> = named.iter().copied().filter(|c| c.own).collect();
+    let pool = if own.is_empty() { named } else { own };
+    match pool.as_slice() {
+        [] => PickedChild::Unknown,
+        [one] => PickedChild::One(one.handle.clone()),
+        many => PickedChild::Ambiguous(many.iter().map(|c| (*c).clone()).collect()),
+    }
+}
+
+/// **A child, from what the caller wrote: its handle, or its slug.**
+///
+/// `task_result`, `task_message`, `task_resume` and `job_kill` take either, as `job_output` takes a
+/// job's id or name. A name that fits exactly one child is its handle; a name two children carry
+/// is **refused, naming them** — guessing would act on a child the caller did not name. A string
+/// that is neither a handle nor a name of a child here is handed on **unchanged**: the runner's own
+/// refusal names it as it was asked, and `task_message` may address a peer session that is no
+/// child of this one at all.
+pub fn resolve_child(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation> {
+    resolve_child_in(&runner.children(), asked)
+}
+
+/// [`resolve_child`] over a list already in hand.
+pub fn resolve_child_in(children: &[ChildName], asked: &str) -> Result<String, Invocation> {
+    match pick_child(children, asked) {
+        PickedChild::One(handle) => Ok(handle),
+        PickedChild::Unknown => Ok(asked.trim().to_string()),
+        PickedChild::Ambiguous(many) => Err(ambiguous_child(asked, &many)),
+    }
+}
+
+/// The refusal for a name more than one child carries. **It names the child the way it was asked
+/// for** — the job rule — and lists the candidates by their labels, so the next call can use the
+/// handle.
+pub fn ambiguous_child(asked: &str, many: &[ChildName]) -> Invocation {
+    let lines: String = many.iter().map(|c| format!("  {}\n", c.label())).collect();
+    Invocation::failed(
+        format!(
+            "`{}` is the name of {} subagents, so it does not name one",
+            asked.trim(),
+            many.len()
+        ),
+        format!(
+            "{lines}\nNothing was done. Use the handle — the name was meant to save looking it \
+             up, and a name that fits two subagents cannot do that.\n"
+        ),
+    )
+}
+
+/// **The name a plain `task` child gets**: the `slug` it was given, or the one
+/// [`slug_from_prompt`] derives, made unique among the names `taken` already holds (`-2`, `-3`,
+/// …) — a child's name is a handle, and a name two children answer to resolves to neither.
+pub fn child_slug(given: Option<&str>, prompt: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base = match given.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => slug_from_prompt(prompt),
+    };
+    unique_slug(&base, taken)
 }
 
 /// Whether `agent/<slug>`'s worktree path or branch exists in the repository at `under`.
@@ -611,6 +761,34 @@ pub trait TaskRunner: Send + Sync {
     /// it without the operator.
     fn started(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// **The children a handle or a name may resolve to**, with their slugs — what
+    /// [`resolve_child`] reads and what the sentences about a child label it by. The default is
+    /// [`Self::started`] with no names, so a runner that keeps none resolves handles exactly as
+    /// before and labels every child by its handle.
+    fn children(&self) -> Vec<ChildName> {
+        self.started()
+            .into_iter()
+            .map(|handle| ChildName {
+                handle,
+                slug: None,
+                own: true,
+            })
+            .collect()
+    }
+
+    /// The slug of one child, `None` for a child nobody named or this runner does not know.
+    fn slug_of(&self, handle: &str) -> Option<String> {
+        self.children()
+            .into_iter()
+            .find(|c| c.handle == handle)
+            .and_then(|c| c.slug)
+    }
+
+    /// `slug · handle` for one child, or the handle — [`subagent_label`] over [`Self::slug_of`].
+    fn label_of(&self, handle: &str) -> String {
+        subagent_label(self.slug_of(handle).as_deref(), handle)
     }
 
     /// **A `task_start` child has finished: its branch goes to be landed** — the seam the
@@ -904,6 +1082,7 @@ impl Tool for TaskTool {
                     "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
+                    "slug": {"type": "string", "description": "A short name for the child (letters, digits, `-`), your word for the work — `task_result`, `task_message` and `job_kill` take it in place of the handle. Defaults to a derivation from the prompt; made unique among your subagents."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG}
                 },
                 "required": ["prompt"]
@@ -951,6 +1130,22 @@ impl Tool for TaskTool {
             Ok(w) => w,
             Err(refused) => return refused,
         };
+        // **The child's name**, when the caller gave one: held to `task_start`'s rule for a slug,
+        // so one name is spelled one way whichever tool started the child. Absent, the runner
+        // derives it from the prompt as `task_start` does.
+        let slug = args
+            .get("slug")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(s) = &slug
+            && let Some(why) = slug_refusal(s)
+        {
+            return Invocation::failed(
+                format!("the slug `{s}` is not a name"),
+                format!("{why} Nothing was spawned."),
+            );
+        }
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
@@ -969,12 +1164,15 @@ impl Tool for TaskTool {
             // has not looked at.
             vm_source: None,
             vm_verify,
+            slug,
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
             Err(e) => return Invocation::failed(e, "the subagent did not start."),
         };
-        ctx.progress(&format!("subagent {handle} started"));
+        // **The name the runner gave it**, for every sentence below: `slug · handle`.
+        let label = self.runner.label_of(&handle);
+        ctx.progress(&format!("subagent {label} started"));
         if let Some(w) = wake {
             ctx.want_completion(&handle, w);
         }
@@ -991,7 +1189,7 @@ impl Tool for TaskTool {
                 crate::builtins::todo::attach_now(ctx, "child", &handle)
             ),
             format!(
-                "started subagent `{handle}` as `{}`.\n  subtask: {}\n\nIt is working \
+                "started subagent `{label}` as `{}`.\n  subtask: {}\n\nIt is working \
                  now, and this call did not wait for it. {} `task_result` with \
                  task=\"{handle}\" shows where it has got to.",
                 match &spec.model {
@@ -1255,6 +1453,10 @@ impl Tool for TaskStartTool {
             // that — the child's own workspace, which is what `None` means.
             vm_source: None,
             vm_verify,
+            // **The child is named after its worktree** — the slug its branch `agent/<slug>` is
+            // cut from, already made unique against the repository above. A main-tree child has
+            // no branch of its own and is still named by the same slug.
+            slug: Some(slug.clone()),
         };
         let worktree_spec = WorktreeSpec {
             slug,
@@ -1267,9 +1469,10 @@ impl Tool for TaskStartTool {
             Ok(h) => h,
             Err(e) => return Invocation::failed(e, "the subagent did not start."),
         };
+        let label = self.runner.label_of(&handle.handle);
         ctx.progress(&format!(
-            "subagent {} started in {}",
-            handle.handle, handle.placement.path
+            "subagent {label} started in {}",
+            handle.placement.path
         ));
         if let Some(w) = wake {
             ctx.want_completion(&handle.handle, w);
@@ -1307,7 +1510,7 @@ impl Tool for TaskStartTool {
                  and this call did not wait for it. {} `task_result` with task=\"{}\" \
                  reports where it has got to. A child in the wrong PLACE is corrected \
                  with `task_message`, not killed: killing is for wrong work.",
-                handle.handle,
+                label,
                 match &spec.model {
                     Some(m) => format!("{m} (as a {})", spec.role),
                     None => spec.role.clone(),
@@ -1355,7 +1558,7 @@ impl Tool for TaskResultTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "The handle `task` returned. Omit to list this session's subagents."},
+                    "task": {"type": "string", "description": "The handle `task` returned, or the child's slug. Omit to list this session's subagents."},
                     "timeout_ms": {"type": "integer", "description": "Block up to this long for a subagent whose answer is not already being delivered to you. Omit to report its state without waiting."}
                 }
             }),
@@ -1367,7 +1570,7 @@ impl Tool for TaskResultTool {
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
         let Some(handle) = args.get("task").and_then(|v| v.as_str()) else {
-            let started = self.runner.started();
+            let started = self.runner.children();
             if started.is_empty() {
                 return Invocation::ok(
                     "this session has started no subagents. `task` starts one and \
@@ -1376,7 +1579,8 @@ impl Tool for TaskResultTool {
                 );
             }
             let mut out = format!("{} subagent(s) started here:\n", started.len());
-            for h in &started {
+            for c in &started {
+                let h = &c.handle;
                 let status = self.runner.collect(h, std::time::Duration::ZERO);
                 // **The listing says the STATE, not liveness** — a row that says `running` about a
                 // child between turns is the sentence this change exists to stop printing, and the
@@ -1393,10 +1597,18 @@ impl Tool for TaskResultTool {
                     TaskStatus::Failed { .. } => "failed".into(),
                     TaskStatus::Unknown => "unknown".into(),
                 };
-                out.push_str(&format!("  {h} — {state}\n"));
+                out.push_str(&format!("  {} — {state}\n", c.label()));
             }
             return Invocation::ok(out);
         };
+        // **The handle, or the child's name** — the job rule: the id wins, a name two children
+        // carry is refused naming them, and anything else goes on as it was written.
+        let handle = match resolve_child(self.runner.as_ref(), handle) {
+            Ok(h) => h,
+            Err(refused) => return refused,
+        };
+        let handle = handle.as_str();
+        let label = self.runner.label_of(handle);
         // A deadline always applies, and its expiry is its own outcome rather
         // than being reported as completion — `job_wait`'s rule, for the same
         // reason: a wait that ran out and a child that answered are two facts.
@@ -1434,7 +1646,7 @@ impl Tool for TaskResultTool {
                          the result the moment it lands, unprompted. Waiting here would hold the floor \
                          while the answer is already on its way. Carry on with something \
                          else; {next}.{}",
-                        running_said(handle, &status),
+                        running_said(&label, &status),
                         // **The spawn's own line, and it is named as the spawn's.** It used to
                         // print as *`(last: …)`* — the child's last word — and it is not one: the
                         // note is written by the progress callback during the child's OPENING
@@ -1486,7 +1698,7 @@ impl Tool for TaskResultTool {
                     // else carries it, so a parent told nothing would believe the work was on
                     // its way to main when it is sitting on a branch in a worktree.
                     Err(why) => Invocation::ok(format!(
-                        "{answer}\n\n[merge queue] the branch of `{handle}` was NOT enqueued: \
+                        "{answer}\n\n[merge queue] the branch of `{label}` was NOT enqueued: \
                          {why} It is still on its branch in its worktree, and nothing has been \
                          lost — but nothing will land it until it is enqueued.{}",
                         now.unwrap_or_default()
@@ -1494,7 +1706,7 @@ impl Tool for TaskResultTool {
                 }
             }
             TaskStatus::Failed { why } => Invocation::failed(
-                format!("subagent `{handle}` did not finish"),
+                format!("subagent `{label}` did not finish"),
                 format!(
                     "{why}\n\nNothing of its work is lost: it has its own session, \
                          and `transcript` with session=\"{handle}\" reads it."
@@ -1511,9 +1723,9 @@ impl Tool for TaskResultTool {
             // text that says its answer is delivered.
             TaskStatus::Running { .. } if timeout.is_zero() && ctx.completion_delivered(handle) => {
                 Invocation::abstained(
-                    format!("subagent `{handle}` is {}", doing_word(&status)),
+                    format!("subagent `{label}` is {}", doing_word(&status)),
                     format!(
-                        "`{handle}` has not answered yet; its answer is delivered to you when it \
+                        "`{label}` has not answered yet; its answer is delivered to you when it \
                          finishes.{}",
                         status
                             .child_now()
@@ -1523,9 +1735,9 @@ impl Tool for TaskResultTool {
                 )
             }
             TaskStatus::Running { ref note, .. } => Invocation::abstained(
-                format!("subagent `{handle}` is {}", doing_word(&status)),
+                format!("subagent `{label}` is {}", doing_word(&status)),
                 format!(
-                    "the deadline passed and `{handle}` has not answered yet{}. {} This is \
+                    "the deadline passed and `{label}` has not answered yet{}. {} This is \
                      the wait ending, not the subagent ending — call `task_result` again \
                      with a longer `timeout_ms`, or do something else and collect it \
                      later.",
@@ -1562,8 +1774,8 @@ fn doing_word(status: &TaskStatus) -> String {
 
 /// **`task_result`'s half of the child's state, with the name attached** — the state word and the
 /// child's handle, for a sentence that has to say which child it is about.
-fn running_said(handle: &str, status: &TaskStatus) -> String {
-    format!("`{handle}` is {}", doing_word(status))
+fn running_said(label: &str, status: &TaskStatus) -> String {
+    format!("`{label}` is {}", doing_word(status))
 }
 
 /// `task_message` — say something to a session, running or not.
@@ -1603,7 +1815,7 @@ impl Tool for TaskMessageTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "The handle `task` returned, or the id of a live session to address."},
+                    "task": {"type": "string", "description": "The handle `task` returned (or the child's slug), or the id of a live session to address."},
                     "text": {"type": "string", "description": "What to say to the session. It keeps working; this steers what it does next."}
                 },
                 "required": ["task", "text"]
@@ -1635,6 +1847,11 @@ impl Tool for TaskMessageTool {
                 "an empty message is not a correction. Nothing was sent.",
             );
         }
+        let handle = match resolve_child(self.runner.as_ref(), handle) {
+            Ok(h) => h,
+            Err(refused) => return refused,
+        };
+        let handle = handle.as_str();
         match self.runner.send(handle, text) {
             Ok(said) => Invocation::ok(said),
             // A refusal comes back unchanged, like `job_kill`'s: the runner is the only thing
@@ -1675,7 +1892,7 @@ impl Tool for TaskResumeTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "The handle of the subagent to bring back."}
+                    "task": {"type": "string", "description": "The handle of the subagent to bring back, or its slug."}
                 },
                 "required": ["task"]
             }),
@@ -1691,7 +1908,11 @@ impl Tool for TaskResumeTool {
                 "call `task_resume` with `task` set to the subagent's handle.",
             );
         };
-        let handle = handle.trim();
+        let handle = match resolve_child(self.runner.as_ref(), handle) {
+            Ok(h) => h,
+            Err(refused) => return refused,
+        };
+        let handle = handle.as_str();
         match self.runner.resume(handle) {
             // **`Backgrounded`, as `task`'s is** — the child is working again and has not
             // answered, and the outcome is what arms this session's watcher for its result.

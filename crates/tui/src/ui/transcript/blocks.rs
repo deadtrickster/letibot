@@ -268,15 +268,31 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
                         // and a second source for that fact is how the row and the pane come to
                         // disagree. Absent — an older daemon, or a child this head never watched
                         // spawn — the line still names the handle and the answer.
-                        let said = if who == "Agent " {
-                            match subagents.iter().find(|s| s.session_id == handle) {
+                        //
+                        // **And a child's handle may be its LABEL** — `fix-login · s-…-sub-3`
+                        // since children have names (`subagent_notice`), a bare `s-…` id in every
+                        // notice from before. Split back into the two (`split_subagent_label`),
+                        // the row is looked up by the id, and a named child is drawn by its name
+                        // and short id — the pane's own spelling — while a child with no name is
+                        // drawn by its handle exactly as it always was.
+                        if who == "Agent " {
+                            let (slug, id) = split_child_label(handle);
+                            let row = subagents.iter().find(|s| s.session_id == id);
+                            let slug: Option<String> = slug
+                                .map(str::to_string)
+                                .or_else(|| row.map(|s| s.slug.clone()).filter(|s| !s.is_empty()));
+                            let name = match slug {
+                                Some(slug) => crate::app::child_name(&slug, id),
+                                None => id.to_string(),
+                            };
+                            let said = match row {
                                 Some(s) => format!("{} · {said}", subagent_asked(s)),
                                 None => said.to_string(),
-                            }
+                            };
+                            format!("{name}{sep}{said}")
                         } else {
-                            said.to_string()
-                        };
-                        format!("{handle}{sep}{said}")
+                            format!("{handle}{sep}{said}")
+                        }
                     }
                     None => bullet.trim().to_string(),
                 };
@@ -298,6 +314,19 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
         }
     }
     (!out.is_empty()).then(|| out.join("\n"))
+}
+
+/// **A child's label split back into its name and handle** — `fix-login · s-1-sub-3` is
+/// `(Some("fix-login"), "s-1-sub-3")`, a bare handle `(None, handle)`. The head's copy of
+/// `letibot_tools::builtins::task::split_subagent_label` (this crate does not link the tools),
+/// with the same rule: only an `s-` handle on the right is a child's.
+pub(crate) fn split_child_label(label: &str) -> (Option<&str>, &str) {
+    match label.rsplit_once(" · ") {
+        Some((slug, handle)) if handle.starts_with("s-") && !slug.trim().is_empty() => {
+            (Some(slug), handle)
+        }
+        _ => (None, label),
+    }
 }
 
 pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {

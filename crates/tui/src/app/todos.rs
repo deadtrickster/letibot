@@ -1032,10 +1032,24 @@ impl App {
                 Some(slug) => format!("{h} · {slug}"),
                 None => h.clone(),
             },
+            // **A child by its name when it has one** — `…14688401 · fix-login`, the handle first
+            // as a job's is (`j97 · pg-timing`) — and by its role when it has none, as before.
             WaitOn::Child(id) => {
                 let short = letibot_sessionlog::registry::short_id(id);
-                match self.subagents.iter().find(|s| s.session_id == *id) {
-                    Some(s) if !s.role.is_empty() => format!("{short} · {}", s.role),
+                let row = self.subagents.iter().find(|s| s.session_id == *id);
+                let slug = row
+                    .map(|s| s.slug.clone())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        self.sessions
+                            .iter()
+                            .find(|s| s.session_id == *id)
+                            .map(|s| s.slug.clone())
+                            .filter(|s| !s.is_empty())
+                    });
+                match (slug, row) {
+                    (Some(slug), _) => format!("{short} · {slug}"),
+                    (None, Some(s)) if !s.role.is_empty() => format!("{short} · {}", s.role),
                     _ => short,
                 }
             }

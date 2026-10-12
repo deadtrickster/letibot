@@ -1169,12 +1169,16 @@ fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
         } else {
             format!(" (started by `{}`)", c.owner)
         };
+        // **The child by its name**, `fix-login · s-…-sub-3` — the job rule, and the same
+        // spelling `task` printed when it started the child. A child nobody named (a settlement
+        // from a daemon before names) is its bare handle, byte for byte what this always said.
+        let label = letibot_tools::builtins::task::subagent_label(c.slug.as_deref(), &c.job);
         if c.detail.is_empty() {
-            s.push_str(&format!("  - `{}` {}{}\n", c.job, c.state, whose));
+            s.push_str(&format!("  - `{label}` {}{}\n", c.state, whose));
         } else {
             s.push_str(&format!(
-                "  - `{}` {}: {}{}\n",
-                c.job, c.state, c.detail, whose
+                "  - `{label}` {}: {}{}\n",
+                c.state, c.detail, whose
             ));
         }
     }
@@ -9190,7 +9194,7 @@ impl Harness {
 
         // **Subagents.**
         for c in self.subagents.resume_recorded(mode) {
-            let name = format!("`{}` ({})", c.handle, c.title);
+            let name = format!("`{}` ({})", self.subagents.label_of(&c.handle), c.title);
             match &c.fate {
                 RestartFate::Resumed => {
                     restored_any = true;
@@ -15069,6 +15073,20 @@ pub const SUBAGENT_TITLE_MAX: usize = 256;
 /// [`letibot_sessionlog::SessionEvent::Subagent::task`] — whole, on every state — so this
 /// title is what names the child's own session and appears in the picker; it is generous
 /// for the same reason.
+/// **The name a child spawned without one is given** — a resumed child whose record predates
+/// names, or a caller that bypassed `start`: the slug its worktree's branch `agent/<slug>` was cut
+/// from, else the derivation from its prompt. The same rule
+/// [`crate::subagent_record::recorded_slug`] reads a record with.
+fn legacy_slug(spec: &letibot_tools::builtins::task::TaskSpec, prompt: &str) -> String {
+    spec.worktree
+        .as_ref()
+        .filter(|w| !w.main_tree)
+        .and_then(|w| w.branch.strip_prefix("agent/"))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| letibot_tools::builtins::task::slug_from_prompt(prompt))
+}
+
 fn subagent_title(prompt: &str) -> String {
     let line = prompt
         .lines()
@@ -15154,6 +15172,11 @@ pub(crate) struct TaskSlot {
     /// child back. `None` for a slot with no store behind it (a test, a storeless run, the review
     /// queue's reviewers) and for a settlement re-delivered after a restart.
     record: Option<crate::subagent_record::SubagentRecord>,
+    /// **The child's name** ([`letibot_tools::builtins::task::TaskSpec::slug`]) — what a handle
+    /// may be given as, and what every sentence about the child labels it by. `None` for a slot
+    /// made without a spec (a settlement re-delivered after a restart, whose name is in its
+    /// record; a test).
+    slug: Option<String>,
 }
 
 impl TaskSlot {
@@ -15167,6 +15190,7 @@ impl TaskSlot {
     fn new(owner: &str) -> TaskSlot {
         TaskSlot {
             record: None,
+            slug: None,
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
                 // **The reading is attached where it is ASKED for, not settled here.** A value
@@ -16804,7 +16828,18 @@ impl HarnessTaskRunner {
         record: Option<crate::subagent_record::SubagentRecord>,
         restart: Option<String>,
     ) -> Result<String, String> {
-        let slot = Arc::new(TaskSlot::recorded(&self.base.session_id, record));
+        // **The child's name** — the spec's (a fresh spawn's, made unique by `start`), else the one
+        // its record would give it (`recorded_slug`'s rule: the worktree branch, then the prompt).
+        let slug = spec
+            .slug
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| legacy_slug(spec, prompt));
+        self.registry.set_slug(&sub_id, &slug);
+        let slot = Arc::new(TaskSlot {
+            slug: Some(slug),
+            ..TaskSlot::recorded(&self.base.session_id, record)
+        });
         self.slots
             .lock()
             .expect("task slots")
@@ -17143,8 +17178,33 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // **Recorded before the thread exists** (the operator: *"we should record them … and
         // restart automatically"*): a daemon that dies while this child is still opening must
         // know it had one. See `crate::subagent_record`.
-        let record = self.record_start(&sub_id, prompt, spec);
-        self.spawn_child(sub_id, prompt, spec, record, None)
+        // **The child's name, unique among this session's children**: the one the caller gave
+        // (`task`'s `slug`), else the derivation from the prompt `task_start` makes — `-2`, `-3` …
+        // when a sibling already answers to it, because a name two children share resolves to
+        // neither. **A child in a worktree of its own is named after its branch** (`agent/<slug>`)
+        // and kept as that: the branch is already unique against the repository, and a name that
+        // drifted from it would be two names for one child.
+        let mut spec = spec.clone();
+        let own_branch = spec.worktree.as_ref().is_some_and(|w| !w.main_tree);
+        if own_branch {
+            if spec.slug.is_none() {
+                spec.slug = Some(legacy_slug(&spec, prompt));
+            }
+        } else {
+            let taken: Vec<String> = self
+                .children()
+                .into_iter()
+                .filter(|c| c.own)
+                .filter_map(|c| c.slug)
+                .collect();
+            spec.slug = Some(letibot_tools::builtins::task::child_slug(
+                spec.slug.as_deref(),
+                prompt,
+                |s| taken.iter().any(|t| t == s),
+            ));
+        }
+        let record = self.record_start(&sub_id, prompt, &spec);
+        self.spawn_child(sub_id, prompt, &spec, record, None)
     }
 
     /// **Bring back the children a daemon that is gone left mid-task** — see
@@ -17338,6 +17398,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // the path, branch and base SHA the child was put in.
         let mut spec = spec.clone();
         spec.worktree = Some(placement.clone());
+        // **The child is named after its worktree**: the slug the branch was cut from, which is
+        // the name `task_start`'s answer and the branch both already say.
+        spec.slug = Some(slug.clone());
         let handle = self.start(prompt, &spec)?;
         // **And the two facts the enqueue will need are kept, now that both exist.** The
         // handle is minted by `start`, and the placement and the ask are in hand here — so
@@ -17686,6 +17749,48 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .iter()
             .map(|(h, _)| h.clone())
             .collect()
+    }
+
+    /// **Every child a handle or a name may resolve to**: the tree's slots, with each one's name
+    /// and whether THIS session started it, and then this session's recorded children that a
+    /// restart left without a slot (a child paused past the restore threshold is still one
+    /// `task_resume` may be given by name). A slot with no name of its own — a settlement
+    /// re-delivered after a restart — is named from its record.
+    fn children(&self) -> Vec<letibot_tools::builtins::task::ChildName> {
+        use letibot_tools::builtins::task::ChildName;
+        let me = self.base.session_id.as_str();
+        let mut out: Vec<ChildName> = self
+            .slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .map(|(h, s)| ChildName {
+                handle: h.clone(),
+                slug: s.slug.clone(),
+                own: s.owner == me,
+            })
+            .collect();
+        let runs = self
+            .run_store()
+            .and_then(|store| {
+                store
+                    .with(|s| s.subagent_runs_of(me).map_err(|e| e.to_string()))
+                    .ok()
+            })
+            .unwrap_or_default();
+        for run in runs {
+            let slug = crate::subagent_record::recorded_slug(&run);
+            match out.iter_mut().find(|c| c.handle == run.child_id) {
+                Some(c) if c.slug.is_none() => c.slug = Some(slug),
+                Some(_) => {}
+                None => out.push(ChildName {
+                    handle: run.child_id,
+                    slug: Some(slug),
+                    own: true,
+                }),
+            }
+        }
+        out
     }
 
     /// **The child has finished, so its branch goes to be landed** — the merge queue's enqueue,
@@ -18294,6 +18399,8 @@ impl HarnessTaskRunner {
             return Err(why);
         }
         let task = prompt.to_string();
+        // The child's name, on every state of its row (`TaskSlot::slug`).
+        let sub_slug = slot.slug.clone().unwrap_or_default();
         let publish = |state: &str, said: &str, answer: Option<String>| {
             if let Some(hub) = self.registry.get(&parent) {
                 hub.publish(SessionEvent::Subagent {
@@ -18304,6 +18411,7 @@ impl HarnessTaskRunner {
                     task: task.clone(),
                     model: sub_model.clone(),
                     answer,
+                    slug: sub_slug.clone(),
                 });
             }
         };

@@ -314,6 +314,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             task: "summarize ~/bin/letibot".into(),
             model: String::new(),
             answer: None,
+            slug: "summarize-bin-letibot".into(),
         },
         SessionEvent::JobSettled {
             job: "j7".into(),

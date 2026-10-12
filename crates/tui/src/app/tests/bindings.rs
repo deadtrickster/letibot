@@ -67,6 +67,7 @@ fn running_child(a: &mut App) {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
 }

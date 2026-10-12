@@ -435,12 +435,37 @@ impl App {
     }
 
     pub(crate) fn session_label(&self, id: &str) -> String {
-        self.sessions
-            .iter()
-            .find(|s| s.session_id == id)
+        let brief = self.sessions.iter().find(|s| s.session_id == id);
+        // **A subagent is named by its slug** — `fix-login`, the name its parent was handed and
+        // the one its branch carries — where its title is the first line of a brief that can run
+        // to 256 characters. A session nobody named keeps its title, or its short id.
+        if let Some(b) = brief.filter(|b| !b.slug.trim().is_empty()) {
+            return b.slug.clone();
+        }
+        brief
             .filter(|s| !s.title.is_empty())
             .map(|s| s.title.clone())
             .unwrap_or_else(|| short_id(id))
+    }
+
+    /// **A child as a person reads it** — `fix-login · …14688401`, or its short id — from what
+    /// this head knows of it: the subagents pane's row, then the daemon's list. See
+    /// [`crate::app::child_name`].
+    pub(crate) fn child_label(&self, id: &str) -> String {
+        let slug = self
+            .subagents
+            .iter()
+            .find(|s| s.session_id == id)
+            .map(|s| s.slug.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                self.sessions
+                    .iter()
+                    .find(|s| s.session_id == id)
+                    .map(|s| s.slug.clone())
+            })
+            .unwrap_or_default();
+        crate::app::child_name(&slug, id)
     }
 
     /// Ask the daemon for a session as soon as this head is attached: resume it out

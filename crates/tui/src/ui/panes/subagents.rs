@@ -4,7 +4,6 @@ use crate::app::*;
 use crate::ui::render::row_strings;
 use crate::ui::*;
 use letibot_sessionlog::event::{Envelope, SessionEvent};
-use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::text::without_control_lines;
@@ -41,7 +40,10 @@ impl App {
                 .map(|s| SubagentRow {
                     state: s.state.clone(),
                     asked: subagent_asked(s),
-                    session: short_id(&s.session_id),
+                    // **The child by its name**, `fix-login · …14688401`, where the pane drew the
+                    // bare short id — the operator's *"slugs for subagents too"*. A child nobody
+                    // named still draws its short id alone.
+                    session: s.name(),
                     role: s.role.clone(),
                     model: s.model.clone(),
                     generating: s.generating,
@@ -149,11 +151,15 @@ impl App {
     /// answered with its event ring, the plain fallback sayings so on the screen.
     pub(crate) fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
         let p = self.cfg.palette();
+        let session = match self.sub_out.as_ref() {
+            Some(v) => self.child_label(&v.session_id),
+            None => return Vec::new(),
+        };
         let Some(v) = self.sub_out.as_mut() else {
             return Vec::new();
         };
         let frame = SubagentOutput {
-            session: short_id(&v.session_id),
+            session,
             dropped: v.dropped,
             degraded: v.degraded,
             spill: v.spill.clone(),

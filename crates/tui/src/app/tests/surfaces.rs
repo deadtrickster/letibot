@@ -16,6 +16,7 @@ fn with_a_subagent() -> App {
             task: String::new(),
             model: String::new(),
             answer: None,
+            slug: String::new(),
         },
     )));
     a

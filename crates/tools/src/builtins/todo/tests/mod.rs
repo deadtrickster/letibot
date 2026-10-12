@@ -148,8 +148,9 @@ impl super::ChildTodos for FakeChildren {
     /// One child of this session, `s-1-sub-2`, and nothing else — the parentage the real
     /// resolver checks, reduced to the one answer each test needs.
     fn own_child(&self, asked: &str) -> Result<String, String> {
-        if asked == "s-1-sub-2" {
-            Ok(asked.to_string())
+        // The child's name resolves to it too — the real resolver's slug arm, reduced.
+        if asked == "s-1-sub-2" || asked == "fix-login" {
+            Ok("s-1-sub-2".to_string())
         } else {
             Err(format!("`{asked}` is not one of this session's children"))
         }

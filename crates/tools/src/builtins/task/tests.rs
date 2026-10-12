@@ -1200,3 +1200,308 @@ fn a_taken_derived_slug_gets_the_next_free_suffix() {
     );
     assert_eq!(unique_slug("free", |_| false), "free");
 }
+
+/// **A runner that keeps names** — three children of this session (two of them sharing a name),
+/// one grandchild elsewhere in the tree, and a log of every handle the tools asked it about.
+/// `start` names its child the way the daemon does: the spec's slug, else the prompt's, made
+/// unique among the names it holds.
+#[derive(Default)]
+struct Named {
+    kids: std::sync::Mutex<Vec<ChildName>>,
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl Named {
+    fn family() -> Named {
+        let kid = |handle: &str, slug: Option<&str>, own: bool| ChildName {
+            handle: handle.into(),
+            slug: slug.map(str::to_string),
+            own,
+        };
+        Named {
+            kids: std::sync::Mutex::new(vec![
+                kid("s-1-sub-1", Some("fix-login"), true),
+                kid("s-1-sub-2", Some("bench"), true),
+                kid("s-1-sub-3", Some("bench"), true),
+                kid("s-1-sub-1-sub-1", Some("fix-login"), false),
+                kid("s-1-sub-1-sub-2", Some("survey"), false),
+                kid("s-1-sub-4", None, true),
+            ]),
+            asked: Default::default(),
+        }
+    }
+}
+
+impl TaskRunner for Named {
+    fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+        let mut kids = self.kids.lock().unwrap();
+        let handle = format!("s-1-sub-{}", kids.len() + 1);
+        let taken: Vec<String> = kids.iter().filter_map(|c| c.slug.clone()).collect();
+        let slug = child_slug(spec.slug.as_deref(), prompt, |s| {
+            taken.iter().any(|t| t == s)
+        });
+        kids.push(ChildName {
+            handle: handle.clone(),
+            slug: Some(slug),
+            own: true,
+        });
+        Ok(handle)
+    }
+    fn collect(&self, handle: &str, _t: std::time::Duration) -> TaskStatus {
+        self.asked.lock().unwrap().push(handle.to_string());
+        if self.kids.lock().unwrap().iter().any(|c| c.handle == handle) {
+            TaskStatus::Done {
+                answer: format!("answer of {handle}"),
+                child: None,
+            }
+        } else {
+            TaskStatus::Unknown
+        }
+    }
+    fn started(&self) -> Vec<String> {
+        self.kids
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.handle.clone())
+            .collect()
+    }
+    fn children(&self) -> Vec<ChildName> {
+        self.kids.lock().unwrap().clone()
+    }
+    fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
+        self.asked.lock().unwrap().push(handle.to_string());
+        Ok(format!("`{handle}` was told"))
+    }
+    fn resume(&self, handle: &str) -> Result<String, String> {
+        self.asked.lock().unwrap().push(handle.to_string());
+        Ok(format!("`{handle}` is resumed"))
+    }
+    fn kill(&self, handle: &str) -> Result<String, String> {
+        self.asked.lock().unwrap().push(handle.to_string());
+        Ok(format!("stopped `{handle}`"))
+    }
+}
+
+/// **A child is named by its handle or its slug — the job rule, case by case.** The handle
+/// always wins; a name one child carries is that child; a name two of this session's children
+/// carry is refused naming both; a name a grandchild shares with a child is the child's; a name
+/// only a grandchild carries is the grandchild's; and anything else is handed on unchanged, so the
+/// runner's own refusal (or a peer session's id) reaches it as it was written.
+#[test]
+fn a_child_resolves_by_id_or_slug_and_an_ambiguous_name_is_refused() {
+    let kids = Named::family().children();
+    // The id.
+    assert_eq!(
+        pick_child(&kids, "s-1-sub-2"),
+        PickedChild::One("s-1-sub-2".into())
+    );
+    // The slug, among this session's own children first: the grandchild's `fix-login` does not
+    // make the child's ambiguous.
+    assert_eq!(
+        pick_child(&kids, "fix-login"),
+        PickedChild::One("s-1-sub-1".into())
+    );
+    // A name only somewhere else in the tree still names that one.
+    assert_eq!(
+        pick_child(&kids, " survey "),
+        PickedChild::One("s-1-sub-1-sub-2".into())
+    );
+    // Two of this session's children answer to `bench`: neither is guessed.
+    let PickedChild::Ambiguous(two) = pick_child(&kids, "bench") else {
+        panic!("a shared name must not resolve");
+    };
+    let handles: Vec<&str> = two.iter().map(|c| c.handle.as_str()).collect();
+    assert_eq!(handles, ["s-1-sub-2", "s-1-sub-3"]);
+    // Unknown, and empty.
+    assert_eq!(pick_child(&kids, "no-such"), PickedChild::Unknown);
+    assert_eq!(pick_child(&kids, "  "), PickedChild::Unknown);
+
+    // The resolver over it: the refusal names the name as it was asked and lists both by label.
+    let refused = resolve_child_in(&kids, "bench").expect_err("two children carry it");
+    let letibot_transcript::ToolOutcome::Failed { reason } = &refused.outcome else {
+        panic!("a refusal is a failure: {:?}", refused.outcome);
+    };
+    assert!(
+        reason.contains("`bench` is the name of 2 subagents"),
+        "{reason}"
+    );
+    assert!(
+        refused.payload.contains("bench · s-1-sub-2"),
+        "{}",
+        refused.payload
+    );
+    assert!(
+        refused.payload.contains("bench · s-1-sub-3"),
+        "{}",
+        refused.payload
+    );
+    // An unknown string goes on unchanged — the runner answers for it.
+    assert_eq!(resolve_child_in(&kids, "s-peer").unwrap(), "s-peer");
+}
+
+/// **A child's label is the job's spelling, and it reads back.** `slug · handle`, the bare handle
+/// for a child nobody named, and the split recovers both — and refuses to read a `·` that has no
+/// child's handle after it.
+#[test]
+fn a_childs_label_is_its_slug_and_handle_and_splits_back() {
+    assert_eq!(
+        subagent_label(Some("fix-login"), "s-1-sub-3"),
+        "fix-login · s-1-sub-3"
+    );
+    assert_eq!(subagent_label(None, "s-1-sub-3"), "s-1-sub-3");
+    assert_eq!(subagent_label(Some("  "), "s-1-sub-3"), "s-1-sub-3");
+    assert_eq!(
+        split_subagent_label("fix-login · s-1-sub-3"),
+        (Some("fix-login"), "s-1-sub-3")
+    );
+    assert_eq!(split_subagent_label("s-1-sub-3"), (None, "s-1-sub-3"));
+    assert_eq!(
+        split_subagent_label("release-build · j65"),
+        (None, "release-build · j65")
+    );
+    // A default runner keeps no names and labels by the handle.
+    assert_eq!(Echo::default().label_of("sub-1"), "sub-1");
+}
+
+/// **A plain `task` child's name**: the one given, else the prompt's, unique among its siblings.
+#[test]
+fn a_task_childs_slug_is_given_or_derived_and_made_unique() {
+    let taken = ["fix-the-login".to_string(), "bench".to_string()];
+    let is_taken = |s: &str| taken.iter().any(|t| t == s);
+    assert_eq!(
+        child_slug(None, "Fix the login page.\nMore.", is_taken),
+        "fix-the-login-page"
+    );
+    assert_eq!(child_slug(Some("bench"), "whatever", is_taken), "bench-2");
+    assert_eq!(child_slug(Some(" "), "Bench it", is_taken), "bench-it");
+}
+
+/// **The tools take the slug where they took the handle, and say the name back.** `task` names
+/// the child it started by its label; `task_result`, `task_message` and `task_resume` reach the
+/// runner with the HANDLE the slug stands for; a shared name reaches nothing; and `task_result`'s
+/// listing names every child by its label.
+#[test]
+fn the_task_tools_take_a_slug_and_name_the_child_by_it() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::{ToolCall, ToolOutcome};
+
+    let runner = Arc::new(Named::family());
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskTool::new(runner.clone())))
+        .unwrap();
+    reg.register(Box::new(TaskResultTool::new(runner.clone())))
+        .unwrap();
+    reg.register(Box::new(TaskMessageTool::new(runner.clone())))
+        .unwrap();
+    reg.register(Box::new(TaskResumeTool::new(runner.clone())))
+        .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let mut call = |name: &str, args: &str| {
+        rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: name.into(),
+                arguments: args.into(),
+            },
+            &mut sink,
+        )
+    };
+
+    // `task` with a name already taken: the next free one, and the result says it.
+    let started = call(
+        "task",
+        r#"{"prompt": "run the benchmarks", "slug": "bench"}"#,
+    );
+    assert!(
+        started
+            .payload
+            .contains("started subagent `bench-2 · s-1-sub-7`"),
+        "{}",
+        started.payload
+    );
+    // `task` with no name: the prompt's.
+    let started = call("task", r#"{"prompt": "Audit the store schema"}"#);
+    assert!(
+        started
+            .payload
+            .contains("started subagent `audit-the-store-schema · s-1-sub-8`"),
+        "{}",
+        started.payload
+    );
+    // A name that cannot be one is refused before anything spawns.
+    let bad = call("task", r#"{"prompt": "x", "slug": "a/b"}"#);
+    assert!(
+        matches!(bad.outcome, ToolOutcome::Failed { .. }),
+        "{:?}",
+        bad.outcome
+    );
+    assert_eq!(runner.kids.lock().unwrap().len(), 8, "nothing was spawned");
+
+    runner.asked.lock().unwrap().clear();
+    let got = call("task_result", r#"{"task": "fix-login"}"#);
+    assert!(
+        got.payload.contains("answer of s-1-sub-1"),
+        "{}",
+        got.payload
+    );
+    let told = call("task_message", r#"{"task": "bench-2", "text": "hurry"}"#);
+    assert!(
+        told.payload.contains("`s-1-sub-7` was told"),
+        "{}",
+        told.payload
+    );
+    let back = call("task_resume", r#"{"task": "survey"}"#);
+    assert!(
+        matches!(back.outcome, ToolOutcome::Backgrounded { .. }),
+        "{:?}",
+        back.outcome
+    );
+    assert_eq!(
+        runner.asked.lock().unwrap().as_slice(),
+        ["s-1-sub-1", "s-1-sub-7", "s-1-sub-1-sub-2"],
+        "each tool reached the runner with the handle the name stands for"
+    );
+
+    // A shared name reaches nothing, and says which children carry it.
+    runner.asked.lock().unwrap().clear();
+    for (tool, args) in [
+        ("task_result", r#"{"task": "bench"}"#),
+        ("task_message", r#"{"task": "bench", "text": "x"}"#),
+        ("task_resume", r#"{"task": "bench"}"#),
+    ] {
+        let refused = call(tool, args);
+        assert!(
+            matches!(refused.outcome, ToolOutcome::Failed { .. }),
+            "{tool}: {:?}",
+            refused.outcome
+        );
+        assert!(
+            refused.payload.contains("bench · s-1-sub-2")
+                && refused.payload.contains("bench · s-1-sub-3"),
+            "{tool}: {}",
+            refused.payload
+        );
+    }
+    assert!(
+        runner.asked.lock().unwrap().is_empty(),
+        "no child was touched"
+    );
+
+    // The listing names each child by its label; one nobody named by its handle alone.
+    let list = call("task_result", "{}");
+    assert!(
+        list.payload.contains("  fix-login · s-1-sub-1 — answered"),
+        "{}",
+        list.payload
+    );
+    assert!(
+        list.payload.contains("  s-1-sub-4 — answered"),
+        "{}",
+        list.payload
+    );
+}

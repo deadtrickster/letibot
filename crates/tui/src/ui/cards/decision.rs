@@ -137,7 +137,11 @@ impl App {
             summary: d.summary.clone(),
             target: d.target.clone(),
             subagent: d.subagent.as_ref().map(|s| card::SubagentAsk {
-                handle: s.handle.clone(),
+                // The child by its name when this head knows one (`fix-login · …tail`).
+                handle: match self.child_label(&s.handle) {
+                    named if named.contains(" · ") => named,
+                    _ => s.handle.clone(),
+                },
                 task: s.task.clone(),
             }),
             write_targets: d

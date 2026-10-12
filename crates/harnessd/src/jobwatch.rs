@@ -173,8 +173,10 @@ pub struct JobCompletion {
     /// say `release-build · j65` — [`letibot_tools::exec::job_label`]'s rule, which is what
     /// the `bash` result, `/job` and the tools all use — instead of a bare counter.
     ///
-    /// **Always `None` for a subagent**, which has a handle and no slug; the notice for one
-    /// is [`crate::harness::subagent_notice`], which never reads this.
+    /// **For a subagent, the child's name** — `task_start`'s worktree slug or the one `task`
+    /// derived, read off the runner at the settlement — which
+    /// [`crate::harness::subagent_notice`] labels the child with. `None` for a runner that keeps
+    /// no names.
     pub slug: Option<String>,
     /// What happened to the process: `exited 0`, `signalled 15`, `killed by job_kill`.
     ///
@@ -1389,11 +1391,13 @@ fn watch_task(
             // that failed is the thing the parent is blocked on just as much as one
             // that answered.
             TaskStatus::Done { answer, .. } => {
-                settled_here("done", first_line(&answer), &job, &queue, &settled);
+                let slug = runner.slug_of(&job);
+                settled_here("done", first_line(&answer), &job, slug, &queue, &settled);
                 break;
             }
             TaskStatus::Failed { why } => {
-                settled_here("failed", first_line(&why), &job, &queue, &settled);
+                let slug = runner.slug_of(&job);
+                settled_here("failed", first_line(&why), &job, slug, &queue, &settled);
                 break;
             }
             // Still working, or a handle this runner never minted.
@@ -1424,6 +1428,7 @@ fn settled_here(
     state: &str,
     detail: String,
     job: &str,
+    slug: Option<String>,
     queue: &Arc<SettlementQueue>,
     settled: &Arc<Mutex<HashSet<String>>>,
 ) {
@@ -1434,10 +1439,12 @@ fn settled_here(
         // A subagent runs no command; the notice for one is built from `state`
         // and `detail` and never reads this.
         command: String::new(),
-        // **And it has no name**, because a `task` child's handle IS its identity:
-        // there is no `bash(slug: …)` behind it and `subagent_notice` never reads
-        // this. `None` rather than a guess at the handle.
-        slug: None,
+        // **Its name, as the runner gave it** — `task_start`'s worktree slug or the one
+        // `task` derived — so `subagent_notice` labels the child as `fix-login · s-…`, the way a
+        // job's notice labels a job. Read off the runner at the settlement, beside the handle,
+        // for the reason a job's slug is: the notice is built after the fact. `None` for a
+        // runner that keeps no names, which draws the bare handle as before.
+        slug,
         state: state.to_string(),
         // It writes no bytes to a stream this end can count. The tokens it
         // generated are in the subagent's own metrics, and `produced` means
