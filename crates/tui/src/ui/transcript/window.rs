@@ -505,10 +505,9 @@ impl App {
         // all. The bar carries settled-vs-to-come in the **glyph** (`█`/`░`, never the
         // prefill's `▓` *being computed now*) because nothing here is being computed — so
         // the distinction survives a terminal with no colour.
-        // **The daemon is still starting** (R92.2): the step it named, until its worker runs.
-        if let Some(step) = self.booting.clone() {
-            segs.push(Seg::Owned(booting_line(&step, &cfg)));
-        }
+        // **The daemon is still starting** (R92.2): the step it named, until its worker runs —
+        // drawn in the status row now (`App::status_row`), not as a row here: a line at the foot
+        // of the conversation that comes and goes moves every row above it.
 
         if let Some((what, unit, done, total)) = self.filling.clone()
             && total >= MIN_FILLING

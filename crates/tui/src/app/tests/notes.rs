@@ -530,8 +530,11 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     // a chord with its own wording is a chord that can come to disagree with `/notes
     // dismiss all` about what just happened. `(not saved: ...)` is in this frame because
     // this test's head has no `head.toml`; that suffix is the same writer's too.
+    // In the status row, after the turn's clock, cut to the room it has there — and whole in the
+    // notice a click opens.
     assert!(after.contains("retired 4 note(s)"), "{after}");
-    assert!(after.contains("still counted on /status"), "{after}");
+    let notice = a.notice.clone().unwrap_or_default();
+    assert!(notice.contains("still counted on /status"), "{notice}");
 
     // **Not deleted.** Every one is still held, still counted, still readable.
     assert_eq!(a.notes.len(), 4, "a note was dropped, not retired");
@@ -560,9 +563,11 @@ fn ctrl_n_retires_every_note_and_keeps_every_note() {
     a.key(Key::Enter);
     let back = a.screen(100, 30).join("\n");
     assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
+    // Said whole in the notice; the status row carries what fits after the turn's clock.
+    let notice = a.notice.clone().unwrap_or_default();
     assert!(
-        back.contains("/notes restore") || back.contains("back on the screen"),
-        "{back}"
+        notice.contains("/notes restore") || notice.contains("back on the screen"),
+        "{notice}"
     );
 }
 

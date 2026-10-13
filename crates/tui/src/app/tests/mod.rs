@@ -1432,6 +1432,7 @@ mod session;
 mod settings;
 mod slugs;
 mod standing;
+mod statusrow;
 mod subagents;
 mod surfaces;
 mod todos;

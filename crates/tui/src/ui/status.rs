@@ -15,34 +15,36 @@ impl App {
     /// the same argument the stuck line makes, one level up: this is why the turn went
     /// quiet.
     ///
+    /// Under [`LINK_IMPATIENT_MS`] it draws nothing here: the drop is said in the status row
+    /// ([`App::status_row`]), which never changes height.
+    ///
     /// Past [`LINK_IMPATIENT_MS`] it stops saying `reconnecting` and starts saying how
     /// long, how many tries, and what the operator can do — because at that point the
     /// wait is not going to end on its own, and a person staring at a head that says
     /// `reconnecting` has no way to tell a quarter of a second from an afternoon.
     pub(crate) fn link_line(&self, w: usize) -> Vec<String> {
         let Link::Reconnecting {
-            since_ms,
-            attempts,
-            why,
-            ..
+            since_ms, attempts, ..
         } = &self.link
         else {
             return Vec::new();
         };
         let out = self.now_ms.saturating_sub(*since_ms);
-        let impatient = out >= LINK_IMPATIENT_MS;
-        let said = if impatient {
-            format!(
-                "the daemon connection is down — trying for {} ({} attempt{}). If the \
-                 daemon is gone: `letibot` starts one and `letibot --status` says what is \
-                 on the socket. This head keeps trying either way.",
-                dur_human(out),
-                attempts,
-                if *attempts == 1 { "" } else { "s" },
-            )
-        } else {
-            format!("the daemon connection is down — reconnecting. {why}")
-        };
+        // **Under the threshold the drop is a blip, and a blip is drawn in the status row**
+        // ([`App::status_row`]): the ordinary reconnect across a daemon restart is over in a
+        // second, and as lines of its own here it moved the conversation down and back up again.
+        // Past it the outage is a state, and a state gets its resident lines and the advice.
+        if self.link_blip().is_some() {
+            return Vec::new();
+        }
+        let said = format!(
+            "the daemon connection is down — trying for {} ({} attempt{}). If the \
+             daemon is gone: `letibot` starts one and `letibot --status` says what is \
+             on the socket. This head keeps trying either way.",
+            dur_human(out),
+            attempts,
+            if *attempts == 1 { "" } else { "s" },
+        );
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 

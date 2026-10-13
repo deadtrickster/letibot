@@ -432,23 +432,6 @@ pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'st
 /// until the daemon has started, and a bare `queued` read like a daemon that stopped listening.
 pub(crate) const QUEUED_UNTIL_STARTED: &str = "queued — runs when the daemon has started";
 
-/// **The tail's line while the daemon boots**: the step it named, dim, one row.
-pub(crate) fn booting_line(step: &str, cfg: &RenderConfig) -> Vec<String> {
-    use rano::render::{Line, Span, Style};
-    use rano::style::Role;
-    let text: String = format!("daemon {step}")
-        .chars()
-        .take(cfg.width.max(1) as usize)
-        .collect();
-    row_strings(
-        &[Line::new(vec![Span::styled(
-            text,
-            Style::of(Role::Pending),
-        )])],
-        cfg.palette(),
-    )
-}
-
 /// **`queued`, and what the daemon is busy with instead, when it has said.**
 ///
 /// `filling` is the `what` of the [`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)

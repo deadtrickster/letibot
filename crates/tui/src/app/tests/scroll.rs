@@ -461,9 +461,13 @@ fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
     let released = a.screen(100, 24);
     assert_ne!(released, frozen, "the view did not come back");
     let said = released.join("\n");
+    // Said in the status row, after the turn's clock — cut to the room it has there, and whole
+    // in the notice a click opens.
+    assert!(said.contains("the view follows again"), "{said}");
+    let notice = a.notice.clone().unwrap_or_default();
     assert!(
-        said.contains("the view follows again — 2 rows arrived while it was held"),
-        "the release did not count what arrived:\n{said}"
+        notice.contains("the view follows again — 2 rows arrived while it was held"),
+        "the release did not count what arrived: {notice}"
     );
     assert!(
         !said.contains(HOLD_MARKER),

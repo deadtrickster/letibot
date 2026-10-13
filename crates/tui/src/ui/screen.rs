@@ -296,24 +296,16 @@ impl App {
         // composer would be the same facts twice, which is the defect this document keeps naming;
         // so the row is present-tense and lives while the work does, and the tense comes from
         // `turn_busy` rather than from the state name.
-        let status = self.turn_status(w);
-        // **A flash notice too long for its line says so, and a click reads it whole** (R89): the
-        // line was cut to the width with nothing to read the rest by. Cut, it ends in the hint
-        // every notice line ends in, and the row is a click target (`Target::FlashNotice`).
-        let hint = format!(" · {}", crate::ui::transcript::line_cards::CLICK);
-        let notice_cut = self.notice.as_ref().is_some_and(|n| {
-            crate::ui::render::visible_width(n) + 2 > w
-                && w > crate::ui::render::visible_width(&hint) + 12
-        });
-        let notice = self.notice.clone().map(|n| {
-            let shown = if notice_cut {
-                let room = w - 2 - crate::ui::render::visible_width(&hint);
-                format!("{}{hint}", crate::ui::render::trim_to(&n, room))
-            } else {
-                n
-            };
-            row(&screens::notice(&shown, w), self.cfg.palette())
-        });
+        //
+        // **And the transients ride in it** — the flash notice, a reconnect under way, the
+        // daemon's boot step — see [`App::status_row`]. They used to be rows of their own (the
+        // notice was the fit ladder's `notice`), and a row that comes and goes moves the whole
+        // conversation by one. In this row they cost nothing the transcript can see.
+        //
+        // **A flash notice too long for the room it has says so, and a click reads it whole**
+        // (R89): cut, it ends in the hint every notice line ends in, and the row is a click
+        // target (`Target::FlashNotice`).
+        let (status, notice_cut) = self.status_row(w);
         let mut notice_at: Option<usize> = None;
         // Live slash-command matches, one dim row above the composer. It is a
         // typing aid, not a message.
@@ -345,7 +337,7 @@ impl App {
         let Fit {
             rows,
             hint,
-            show_notice,
+            show_notice: _,
             show_stuck: _,
             show_pane,
             show_status,
@@ -356,7 +348,9 @@ impl App {
             composer: self.editor.height(self.composer_cols(), h),
             card: dec.len(),
             pinned: dec_pinned.len(),
-            notice: notice.is_some(),
+            // **Never a row of its own** — the notice is drawn in the status row, which is
+            // reserved whether or not anything is in it (see `let status`).
+            notice: false,
             // No stuck sentence any more: a slow turn is the Responding row in yellow.
             stuck: false,
             pane: pane.is_some(),
@@ -411,14 +405,11 @@ impl App {
         if show_pane && let Some(l) = pane {
             chrome.push(l);
         }
-        if show_notice && let Some(l) = notice {
-            notice_at = Some(chrome.len());
-            chrome.push(l);
-        }
         // The turn's own row, last before the box: directly above the composer when nothing else
         // is up, and below the typing aids when they are — a completion list that is not adjacent
         // to the line being typed is the one row here that must not move.
         if show_status {
+            notice_at = Some(chrome.len());
             chrome.push(status);
         }
         let mut box_top_at: Option<(usize, BoxTopLabels)> = None;

@@ -404,7 +404,10 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
     assert_eq!(a.key(Key::Esc), None);
     assert_eq!(a.session_id, "s-sub-1");
     let screen = a.screen(120, 30).join("\n");
-    assert!(screen.contains("answer it, then esc goes up"), "{screen}");
+    // In the status row after the turn's clock, cut there and whole in the notice.
+    assert!(screen.contains("a decision put away"), "{screen}");
+    let notice = a.notice.clone().unwrap_or_default();
+    assert!(notice.contains("answer it, then esc goes up"), "{notice}");
     a.clock(1_200);
     assert_eq!(a.key(Key::Esc), None);
     assert!(
