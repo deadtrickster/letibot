@@ -560,3 +560,47 @@ fn hovering_a_notice_brightens_every_row_it_opens_from() {
         );
     }
 }
+
+/// **The note that says "continue from the summary above" opens with the summary in it** — the
+/// operator: *"then session note - continue from the summary above (click for details). well i
+/// clicked - no summary"*. The popup was the note's own sentence; the summary is the compacted
+/// transcript's first row, often far above and hidden entirely at the `conversation` rung.
+#[test]
+fn the_continue_note_opens_with_the_summary_it_points_at() {
+    let hub = Hub::new("s");
+    let rows = [
+        (
+            "s.1",
+            "system",
+            TranscriptItem::System {
+                text: "This conversation was compacted: what was said before this point is \
+                       summarised here.\n\nSUMMARY-BODY: the parser is done, the caller is not."
+                    .into(),
+                origin: letibot_transcript::SystemOrigin::Update,
+            },
+        ),
+        (
+            "s.2",
+            "user",
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "Continue from the summary above; don't redo what it records as done."
+                        .into(),
+                }],
+                speaker: letibot_transcript::Speaker::Agent,
+            },
+        ),
+    ];
+    for (id, kind, item) in rows {
+        hub.publish(testing::appended(id, kind));
+        hub.record_item(id, item);
+    }
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a.open_notice_popup(1);
+    let popup = a.screen(120, 40).join("\n");
+    assert!(
+        popup.contains("SUMMARY-BODY"),
+        "the summary is in the popup:\n{popup}"
+    );
+}
