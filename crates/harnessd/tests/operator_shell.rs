@@ -765,9 +765,20 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
     });
     // **No card is waited for.** The verb is the way in whether or not anything looked like a
     // question, which is the whole point of it being a verb.
-    std::thread::sleep(Duration::from_millis(1200));
-    head.send_line("hello from the verb")
-        .expect("the verb's line is written");
+    //
+    // **Sent until it is read, not once after a fixed sleep.** A single send after 1.2 s hung
+    // this test for 49 minutes at load 150: the line arrived before the command was running,
+    // was dropped, and `read x` waited forever. So the line is resent until the run ends, and
+    // a run that never ends fails the test at 60 s instead of hanging the suite.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !runner.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "`read x` never received the verb's line in 60 s"
+        );
+        let _ = head.send_line("hello from the verb");
+        std::thread::sleep(Duration::from_millis(500));
+    }
     runner
         .join()
         .expect("the run thread")
