@@ -82,6 +82,11 @@ pub(crate) struct BoxTopHits {
     pub(crate) jobs: Option<(usize, usize)>,
 }
 
+/// **What reads the workspace's git state** — a function of the workspace path, run on a
+/// thread of its own (see [`App::refresh_git`]).
+pub(crate) type GitReader =
+    std::sync::Arc<dyn Fn(&str) -> Option<crate::gitfield::GitState> + Send + Sync>;
+
 /// The head.
 pub struct App {
     pub cfg: RenderConfig,
@@ -1196,6 +1201,19 @@ pub struct App {
     /// another path, and a field left over from the previous tree would be drawn as this one's
     /// branch — the same class of lie as inventing one.
     pub(crate) git_read: (String, u64),
+    /// **The git reading in flight, if one is** — the workspace it is of and the channel its
+    /// answer arrives on. `git status` is a process, and on serenedb (49 submodules, a build
+    /// running) it took 1.9 s of wall clock every time: run on the loop it held every key for
+    /// as long, which is the operator's *"laggy as hell … try to scroll"*. So the loop starts
+    /// it and collects it, and never waits for it. One at a time: a reading that outlives the
+    /// interval is not joined by a second.
+    pub(crate) git_job: Option<(
+        String,
+        std::sync::mpsc::Receiver<Option<crate::gitfield::GitState>>,
+    )>,
+    /// **What takes a reading** — [`crate::gitfield::read_state`] in production; a test puts
+    /// a reader here it can hold, to prove the loop does not wait for it.
+    pub(crate) git_reader: GitReader,
     /// **The live marker's join, as the pair that lets it be UNDONE.**
     ///
     /// The marker is glued to the end of the sentence that introduces the work — *"…the last
@@ -1826,6 +1844,8 @@ impl App {
             git_state: None,
             git_format: None,
             git_read: (String::new(), 0),
+            git_job: None,
+            git_reader: std::sync::Arc::new(crate::gitfield::read_state),
             live_join: None,
             marker_facts: MarkerFacts::default(),
             body_len: 0,

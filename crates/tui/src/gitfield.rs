@@ -31,6 +31,11 @@
 //! by `driver::tick`, and [`GIT_REFRESH_MS`] is leticl's own interval — chosen to hold the process
 //! rate down rather than because a frame could not afford it. It is wrapped in coreutils'
 //! `timeout`, because a `wait` with no deadline is what turns a slow mount into a frozen head.
+//!
+//! **And the loop does not run it, it starts it.** The reading is taken on a thread of its own
+//! and collected on a later tick: a `wait` *with* a deadline still holds every key for as long
+//! as the process runs, and on a repository with submodules under a build that was 1.9 s a
+//! reading — every page key in that head took two seconds or more. See `App::refresh_git`.
 
 use std::process::Command;
 

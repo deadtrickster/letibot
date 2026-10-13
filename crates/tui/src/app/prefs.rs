@@ -60,21 +60,86 @@ impl App {
     /// template stays a bad line rather than becoming a header that fails to draw. The STATE is
     /// kept beside the pieces for the one thing that changes the format without a new reading:
     /// `/config`'s cycle re-renders from the cache (`apply_git_format`).
+    ///
+    /// **The reading runs on a thread, and the loop never waits for it.** This called
+    /// `read_state` inline, so the loop sat in `wait()` for as long as `git status` took — and
+    /// the keys read before the tick were handled only after it. Measured on the serenedb head
+    /// (2026-10-13): `git status` 1.9 s wall in that repository (49 submodules, a build
+    /// running), a PageUp or PageDown taking 2.0–3.5 s to move the body while the head itself
+    /// spent under 20 ms of CPU on it; the letidb head on the same box, whose repository reads
+    /// in milliseconds, paged in 10 ms. And because the stamp was the clock read *before* the
+    /// process ran, a 1.9 s reading came due again 0.1 s after it ended, so the loop was
+    /// blocked almost all of the time. Now a tick starts a reading when one is due and none is
+    /// running, and collects it on a later tick; the interval is counted from when the reading
+    /// was collected, so a slow repository is read every `GIT_REFRESH_MS` of *quiet*, not
+    /// back to back.
     pub fn refresh_git(&mut self) {
         let ws = self.wiring.workspace.clone();
         if ws.is_empty() {
             self.git = None;
             self.git_state = None;
+            self.git_job = None;
             return;
+        }
+        if let Some((of, rx)) = &self.git_job {
+            match rx.try_recv() {
+                // Still reading this workspace: one at a time, and nothing to draw yet.
+                Err(std::sync::mpsc::TryRecvError::Empty) if of == &ws => return,
+                // Reading a workspace the head has left: abandoned, and its answer with it —
+                // the thread's send fails on a dropped receiver and it ends.
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.git_job = None,
+                Ok(state) => {
+                    let of = of.clone();
+                    self.git_job = None;
+                    if of == ws {
+                        self.git_state = state;
+                        self.apply_git_format();
+                        self.git_read = (ws, self.now_ms);
+                        return;
+                    }
+                }
+                // The reader died without answering: an absence, stamped, so a reader that
+                // panics is not restarted on every tick.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let of = of.clone();
+                    self.git_job = None;
+                    if of == ws {
+                        self.git_state = None;
+                        self.apply_git_format();
+                        self.git_read = (ws, self.now_ms);
+                        return;
+                    }
+                }
+            }
         }
         let (last_of, at) = &self.git_read;
         let stale = self.now_ms.saturating_sub(*at) >= crate::gitfield::GIT_REFRESH_MS;
         if last_of == &ws && !stale {
             return;
         }
-        self.git_state = crate::gitfield::read_state(&ws);
-        self.apply_git_format();
-        self.git_read = (ws, self.now_ms);
+        // **Another tree's branch is not drawn over this one** while its own reading runs:
+        // a switch blanks the field rather than leaving the old repository's state up.
+        if last_of != &ws {
+            self.git = None;
+            self.git_state = None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = self.git_reader.clone();
+        let of = ws.clone();
+        let spawned = std::thread::Builder::new()
+            .name("git-field".into())
+            .spawn(move || {
+                let _ = tx.send(reader(&of));
+            });
+        match spawned {
+            Ok(_) => self.git_job = Some((ws, rx)),
+            // No thread, no reading: said as an absence and tried again after the interval.
+            Err(_) => {
+                self.git = None;
+                self.git_state = None;
+                self.git_read = (ws, self.now_ms);
+            }
+        }
     }
 
     /// **Render the cached state through the format in force** — the whole of what a format

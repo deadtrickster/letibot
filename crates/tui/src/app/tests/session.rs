@@ -1177,6 +1177,21 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
     );
 }
 
+/// **Tick until the git reading in flight is collected** — the reading runs on its own thread
+/// ([`App::refresh_git`]), so a test that wants its answer drives the loop's half until the
+/// job is gone. Bounded, so a reader that never answers fails the test instead of hanging it.
+fn collect_git(a: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while a.git_job.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the git reading was never collected"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        a.refresh_git();
+    }
+}
+
 /// **A reading of a directory that is not a repository is ABSENT, and the head remembers
 /// which directory it read** — so a session switch re-reads at once and the interval applies
 /// only within one workspace.
@@ -1192,6 +1207,7 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
     a.clock(1_000);
     a.wiring.workspace = dir.display().to_string();
     a.refresh_git();
+    collect_git(&mut a);
     assert!(
         a.git.is_none(),
         "a directory that is not a repository must draw nothing, not a bare field: {:?}",
@@ -1206,15 +1222,116 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
     // and a workspace that CHANGED is read at once rather than waiting it out.
     a.clock(1_500);
     a.refresh_git();
+    assert!(a.git_job.is_none(), "re-read inside the interval");
     assert_eq!(a.git_read.1, 1_000, "re-read inside the interval");
     a.clock(1_600);
     a.wiring.workspace = "/home/dead/Projects/letibot".into();
     a.refresh_git();
+    assert!(
+        a.git_job.is_some(),
+        "a workspace that changed is read at once"
+    );
+    collect_git(&mut a);
     assert_eq!(
         a.git_read.1, 1_600,
         "a workspace that changed is read at once"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The loop never waits for `git status`** — the serenedb head, 2026-10-13: *"laggy as hell
+/// … try to scroll"*. Every PageUp took 2.0–3.5 s to move the body while the head spent under
+/// 20 ms of CPU on it, because `refresh_git` ran `git status` inline on the loop and that
+/// repository (49 submodules, a build running) took 1.9 s to read — so every key read during
+/// the reading waited for it, and the reading came due again 0.1 s after it ended.
+///
+/// Pinned by COUNTING, not timing: the reader here cannot answer until the test lets it, so
+/// a `refresh_git` that waited for it could only return after the reader had finished — and
+/// the `finished` count says whether it had. Then: one reading at a time however many ticks
+/// pass while it runs, the answer drawn when it is collected, and the interval counted from
+/// that collection rather than from when the slow reading began.
+#[test]
+fn a_slow_git_reading_does_not_hold_the_loop_and_is_never_doubled() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let started = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Arc::new(Mutex::new(gate));
+    let mut a = app();
+    {
+        let (started, finished, gate) = (started.clone(), finished.clone(), gate.clone());
+        a.git_reader = Arc::new(move |_ws: &str| {
+            started.fetch_add(1, Ordering::SeqCst);
+            // Held until the test releases it — the 1.9 s `git status`, made as long as the
+            // test needs. The timeout is a backstop so a broken loop fails rather than hangs.
+            let _ = gate
+                .lock()
+                .expect("gate")
+                .recv_timeout(std::time::Duration::from_secs(30));
+            finished.fetch_add(1, Ordering::SeqCst);
+            Some(crate::gitfield::GitState {
+                branch: "main".into(),
+                detached: false,
+                behind: None,
+                ahead: None,
+                stash: None,
+                action: None,
+                conflict: None,
+                staged: None,
+                unstaged: None,
+                untracked: None,
+            })
+        });
+    }
+    a.wiring.workspace = "/somewhere/slow".into();
+    a.clock(1_000);
+    a.refresh_git();
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        0,
+        "refresh_git returned only after the reading finished: the loop waited for git"
+    );
+    assert!(a.git_job.is_some(), "a reading is in flight");
+    // Ticks while the reading runs, the clock well past the interval: still one reading.
+    for t in 1..=20u64 {
+        a.clock(1_000 + t * crate::gitfield::GIT_REFRESH_MS);
+        a.refresh_git();
+    }
+    // The thread may not have been scheduled yet; it is started once whatever the timing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while started.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 1, "one reading at a time");
+    assert_eq!(finished.load(Ordering::SeqCst), 0);
+    assert!(
+        a.git.is_none(),
+        "nothing to draw before the reading answers"
+    );
+    let collected_at = 1_000 + 21 * crate::gitfield::GIT_REFRESH_MS;
+    a.clock(collected_at);
+    release.send(()).expect("release the reader");
+    collect_git(&mut a);
+    assert_eq!(finished.load(Ordering::SeqCst), 1);
+    assert!(a.git.is_some(), "the reading is drawn once it is collected");
+    assert_eq!(
+        a.git_read.1, collected_at,
+        "the interval counts from when the reading was collected, not from when it began"
+    );
+    // Inside the interval after the collection: no second reading, however slow the first was.
+    a.clock(collected_at + crate::gitfield::GIT_REFRESH_MS - 1);
+    a.refresh_git();
+    assert!(
+        a.git_job.is_none(),
+        "a reading came due before its interval"
+    );
+    a.clock(collected_at + crate::gitfield::GIT_REFRESH_MS);
+    a.refresh_git();
+    assert!(a.git_job.is_some(), "and after it, the next reading starts");
+    release.send(()).expect("release the second reading");
+    collect_git(&mut a);
+    assert_eq!(started.load(Ordering::SeqCst), 2);
 }
 
 /// **The head asks for the settings on attach.** The daemon answers
