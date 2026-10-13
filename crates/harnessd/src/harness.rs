@@ -17690,6 +17690,18 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             true => Some(self.reopen_parked(handle)?),
             false => live,
         };
+        // **A child still opening has a slot and no session yet** — a `firecode` child is
+        // registered only once its VM has booted and answered, which takes minutes. Saying *no
+        // session is live* there is what made a model take a booting run for dead and start a
+        // second VM doing the same work (the operator's stroppy session, 2026-10-14).
+        if hub.is_none() && self.slot(handle).is_some_and(|s| !s.has_exited()) {
+            return Err(format!(
+                "`{handle}` is still starting — its session opens once its placement is up (a \
+                 VM boots and its tree is copied in first), and a message can only be queued on \
+                 a session that has opened. It is not gone: nothing needs dispatching again. \
+                 Nothing was sent; say it once the child is running, or wait on it."
+            ));
+        }
         let Some(hub) = hub else {
             return Err(format!(
                 "no session `{handle}` is live in this daemon, so there is nothing to say it to: \
