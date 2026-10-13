@@ -1423,6 +1423,7 @@ mod pane;
 mod queue;
 mod redcard;
 mod render;
+mod repos;
 mod reseatcard;
 mod restartcard;
 mod reviewcard;

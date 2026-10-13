@@ -430,12 +430,58 @@ pub fn read_state(workspace: &str) -> Option<GitState> {
     // **Resolved, not assumed** — the workspace may be the parent of the repository rather than
     // the repository (`project_dir`), which is the nested layout both this field and the todos
     // pane were drawing nothing over.
-    let dir = project_dir(workspace);
+    read_state_at(&project_dir(workspace))
+}
+
+/// **The repositories a workspace holds** — the operator, of `~/Projects/stroppy-io`: *"there are
+/// many repos in that stroppy-io … without any main"*. One entry when the workspace is a
+/// repository itself or sits inside one (git walks up); otherwise every child that is one, the
+/// same-named child first (the nested layout's main checkout) and the rest by name. Empty for a
+/// folder that holds none.
+pub fn repos_in(ws: &str) -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new(ws);
+    if ws.is_empty() {
+        return Vec::new();
+    }
+    if dir.ancestors().any(|a| a.join(".git").exists()) {
+        return vec![dir.to_path_buf()];
+    }
+    let own = dir.file_name().map(std::ffi::OsStr::to_owned);
+    let mut repos: Vec<std::path::PathBuf> = dir
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| p.join(".git").exists())
+        .collect();
+    repos.sort_by_key(|p| (p.file_name() != own.as_deref(), p.clone()));
+    repos
+}
+
+/// **The repository of `path`** among a workspace's — `path` relative to the workspace or
+/// absolute: the repository that holds it, when it is one of [`repos_in`]'s.
+pub fn repo_holding(ws: &str, path: &str) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(path);
+    let full = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::path::Path::new(ws).join(p)
+    };
+    repos_in(ws)
+        .into_iter()
+        .filter(|r| full.starts_with(r))
+        .max_by_key(|r| r.as_os_str().len())
+}
+
+/// **One reading of the repository at `dir`**, or `None` — see [`read_state`].
+pub fn read_state_at(dir: &std::path::Path) -> Option<GitState> {
     let out = Command::new("timeout")
         .arg(GIT_TIMEOUT_SECS.to_string())
         .arg("git")
         .arg("-C")
-        .arg(&dir)
+        .arg(dir)
         // A reader writes nothing to the repository it reports on.
         .arg("--no-optional-locks")
         .args(["status", "--porcelain=v2", "--branch", "--show-stash"])
@@ -447,6 +493,29 @@ pub fn read_state(workspace: &str) -> Option<GitState> {
     let text = String::from_utf8_lossy(&out.stdout);
     let action = git_action(dir.to_str()?);
     git_parts(&text, action)
+}
+
+/// **The path a tool call is about, from its arguments** — `path`, `file_path` or `file` (what
+/// `display_target` reads first), else a `cwd`/`workdir`, else the directory a shell command
+/// starts with `cd` into. What the git field follows in a workspace of several repositories.
+pub fn call_path(arguments: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    for k in ["path", "file_path", "file", "cwd", "workdir"] {
+        if let Some(p) = v
+            .get(k)
+            .and_then(|p| p.as_str())
+            .filter(|p| !p.is_empty() && *p != ".")
+        {
+            return Some(p.to_string());
+        }
+    }
+    let cmd = v.get("command").and_then(|c| c.as_str())?.trim_start();
+    let rest = cmd.strip_prefix("cd ")?.trim_start();
+    let end = rest
+        .find(|c: char| c.is_whitespace() || c == '&' || c == ';' || c == '|')
+        .unwrap_or(rest.len());
+    let dir = rest[..end].trim_matches(['"', '\'']);
+    (!dir.is_empty()).then(|| dir.to_string())
 }
 
 /// **The field as one plain string through the DEFAULT format** — what the tests assert, and the

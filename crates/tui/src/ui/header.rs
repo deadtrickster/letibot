@@ -191,7 +191,7 @@ impl App {
             workspace: if self.wiring.workspace.is_empty() {
                 String::new()
             } else {
-                tilde(&self.wiring.workspace)
+                tilde(&self.header_workspace())
             },
             // **The workspace's repository, in gitstatus's own segments** — drawn from the pieces
             // the READER rendered (`refresh_git` applies the format; a paint never formats). An

@@ -239,7 +239,7 @@ impl App {
         let hit = self.hit_at(x, y)?;
         let row = usize::from(y);
         match hit.target {
-            Target::CountLabel(_) | Target::QueueTab(_) => Some(Hovered::one(
+            Target::CountLabel(_) | Target::QueueTab(_) | Target::GitField => Some(Hovered::one(
                 row,
                 Some((hit.rect.x, hit.rect.x + hit.rect.w)),
             )),
