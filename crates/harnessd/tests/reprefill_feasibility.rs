@@ -17,13 +17,13 @@
 //!
 //!     cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
 //!
-//! # The store is copied, never opened
+//! # The store is read through a read-only view, never opened and never copied
 //!
 //! `Store::open` is not a read: it **migrates**. A build whose `SCHEMA_VERSION` is
 //! newer than the file's rewrites it in place, so a test that opens the operator's
 //! live `~/.local/share/letibot/sessions.db` is a test that upgrades the operator's
 //! store underneath the daemon serving it. This one did exactly that — MEASURED
-//! with `strace` on 2026-10-06, before this fix:
+//! with `strace` on 2026-10-06, before the first fix:
 //!
 //!     openat(AT_FDCWD, "/home/dead/.local/share/letibot/sessions.db",
 //!            O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 3
@@ -32,13 +32,16 @@
 //! daemon was built at 15, and every spawn after that was refused with
 //! `SchemaTooNew { found: 16, known: 15 }`.
 //!
-//! So the live file is only ever READ here, by the copy below, and every row
-//! measured below is read from the copy. `resume.rs` has the same helper and the
-//! same reason; `crates/turn/tests/restore.rs::real_store_copy` is where the idiom
-//! comes from.
+//! The first fix copied the whole file into the temp dir, which by 2026-10-14 was
+//! 5.2 GB of a RAM-backed `/tmp` per run, left behind whenever the run was killed,
+//! and not a consistent snapshot of a file a daemon is checkpointing. So the live
+//! file is now attached `mode=ro` by `letibot_tokencore::store::live_view::LiveView`,
+//! which SQLite itself refuses to write through, and the one transcript measured is
+//! copied into memory in one read transaction. `crates/turn/tests/restore.rs` reads
+//! the store the same way.
 
 use letibot_tokencore::control::{resolve, tokenize_spans};
-use letibot_tokencore::store::Store;
+use letibot_tokencore::store::live_view::LiveView;
 use letibot_tokencore::vocab::Vocab;
 use letibot_transcript::TranscriptItem;
 
@@ -48,31 +51,6 @@ fn env_path(var: &str, fallback: String) -> std::path::PathBuf {
 
 fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
-}
-
-/// **The operator's store, COPIED — this file never opens the live one.**
-///
-/// The argument is in the module doc above; the two details here are the ones that
-/// make the copy usable rather than merely safe:
-///
-/// * **The `-wal` comes with it.** This database is written by a daemon that may be
-///   running right now, so a bare copy of the `.db` alone is silently a snapshot from
-///   the last checkpoint — old rows, no error, and a measurement of the wrong week.
-///   `-shm` is copied for the same reason: it is derived, but leaving a stale one
-///   beside a fresh `-wal` is the one combination SQLite complains about.
-/// * **The copy is opened, and only the copy.** A test that cannot name the file it
-///   opened is a test that cannot say whether it touched the operator's.
-fn copied_store(src: &std::path::Path) -> Option<(TempDir, Store)> {
-    let dir = TempDir::new("reprefill");
-    let dst = dir.path().join("sessions.db");
-    std::fs::copy(src, &dst).ok()?;
-    for suffix in ["-wal", "-shm"] {
-        let from = src.with_file_name(format!("{}{suffix}", src.file_name()?.to_string_lossy()));
-        if from.is_file() {
-            let _ = std::fs::copy(&from, dir.path().join(format!("sessions.db{suffix}")));
-        }
-    }
-    Some((dir, Store::open(&dst).expect("opening the copy")))
 }
 
 #[test]
@@ -102,17 +80,14 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    // **The copy, never the operator's file** — see the module doc. `store_path` is
-    // read once, by the copy; everything below is measured on the copy.
-    let Some((_dir, store)) = copied_store(&store_path) else {
-        eprintln!("skipped: {} could not be copied", store_path.display());
-        return;
-    };
-    let Some(transcript_id) = biggest_foreign(&store, &ours) else {
+    // **Read-only, never the writer's `Store::open`** — see the module doc.
+    let view = LiveView::open(&store_path)
+        .unwrap_or_else(|e| panic!("opening {}: {e}", store_path.display()));
+    let Some(transcript_id) = biggest_foreign(&view, &ours) else {
         eprintln!("skipped: no transcript recorded under a different dialect");
         return;
     };
-    let loaded = store.load_transcript(&transcript_id).expect("it loads");
+    let loaded = view.load(&transcript_id).expect("it loads");
 
     let vocab = letibot_llama::load(&vocab_path).expect("the vocabulary loads");
     let control =
@@ -161,47 +136,27 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     assert!(tokens > 0, "the re-rendered prompt is not empty");
 }
 
-/// Ten lines rather than a dev-dependency, spelled as `resume.rs` spells them so the
-/// two files cannot drift on the one thing they both exist to guarantee.
-struct TempDir(std::path::PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> TempDir {
-        let p = letibot_sessionlog::testing::scratch_root().join(format!(
-            "letibot-{tag}-{}-{}-{}",
-            std::process::id(),
-            letibot_harnessd::config::now_ns(),
-            {
-                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            }
-        ));
-        std::fs::create_dir_all(&p).expect("a temp dir");
-        TempDir(p)
-    }
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// The largest transcript whose recorded dialect is not `ours` — a two-row
 /// session would prove nothing about a six-hundred-row one.
-fn biggest_foreign(store: &Store, ours: &str) -> Option<String> {
-    let mut best: Option<(u32, String)> = None;
-    for s in store.list_sessions().ok()? {
-        if s.dialect_sha == ours || s.items == 0 {
-            continue;
-        }
-        let Some(t) = s.transcript_id else { continue };
-        if best.as_ref().is_none_or(|(n, _)| s.items > *n) {
-            best = Some((s.items, t));
-        }
-    }
-    best.map(|(_, t)| t)
+///
+/// A session's transcript is its CURRENT one — newest by `created_at`, then `rowid`, the
+/// order `Store::list_sessions` uses — and its size is that transcript's row count.
+fn biggest_foreign(view: &LiveView, ours: &str) -> Option<String> {
+    let mut stmt = view
+        .connection()
+        .prepare(
+            "SELECT t.id, (SELECT COUNT(*) FROM live.transcript_item i
+                            WHERE i.transcript_id = t.id) AS n
+               FROM live.session s
+               JOIN live.transcript t ON t.id = (
+                    SELECT t2.id FROM live.transcript t2 WHERE t2.session_id = s.id
+                     ORDER BY t2.created_at DESC, t2.rowid DESC LIMIT 1)
+              WHERE s.dialect_sha <> ?1 AND n > 0
+              ORDER BY n DESC LIMIT 1",
+        )
+        .expect("querying the live store");
+    let mut rows = stmt
+        .query_map([ours], |r| r.get::<_, String>(0))
+        .expect("querying the live store");
+    rows.next().map(|r| r.expect("reading the live store"))
 }

@@ -38,17 +38,22 @@
 //! absent reports the health of a `Path::exists`.
 
 use letibot_tokencore::ledger::{LedgerError, hex};
-use letibot_tokencore::store::{LoadedTranscript, Store};
+use letibot_tokencore::store::LoadedTranscript;
+use letibot_tokencore::store::live_view::LiveView;
 use letibot_turn::resume::RestoreError;
 use letibot_turn::{Session, resume};
 
-/// The operator's store, copied so nothing here can touch the original.
+/// **The operator's store, read in place through a read-only view — never copied.**
 ///
-/// The `-wal` file is copied with it: this database is written by a daemon that may
-/// be running right now, and a bare copy of the `.db` alone would silently be a
-/// snapshot from the last checkpoint — old rows, no error, and a test that measured
-/// the wrong week.
-fn real_store_copy() -> Option<(TempDir, Store)> {
+/// This used to `std::fs::copy` the whole file, `-wal` and `-shm` beside it, into the temp
+/// dir, once per test. MEASURED 2026-10-14: a 5.2 GB store with a 346 MB WAL, three tests
+/// running in parallel, so ~16.7 GB in a `/tmp` that is a tmpfs; a failed or killed run left
+/// its copy behind (two 9.3 GB leftovers found that day); and a file copy of a database a
+/// daemon is checkpointing is not a snapshot of it. No test here ever wrote to its copy, and
+/// each reads one transcript at a time, so [`LiveView`] attaches the file `mode=ro` and
+/// copies one transcript into memory per load, in one read transaction. See its module doc.
+fn real_store() -> Option<LiveView> {
+    sweep_stale_copies();
     let src = std::env::var("LETIBOT_STORE").unwrap_or_else(|_| {
         format!(
             "{}/.local/share/letibot/sessions.db",
@@ -59,64 +64,71 @@ fn real_store_copy() -> Option<(TempDir, Store)> {
     if !src.is_file() {
         return None;
     }
-    let dir = TempDir::new("letibot-restore");
-    let dst = dir.path().join("sessions.db");
-    std::fs::copy(&src, &dst).expect("copying the store");
-    for suffix in ["-wal", "-shm"] {
-        let from = src.with_file_name(format!(
-            "{}{suffix}",
-            src.file_name().unwrap().to_string_lossy()
-        ));
-        if from.is_file() {
-            let _ = std::fs::copy(&from, dir.path().join(format!("sessions.db{suffix}")));
+    Some(LiveView::open(&src).unwrap_or_else(|e| panic!("opening {}: {e}", src.display())))
+}
+
+/// **The copies older builds of this file left behind**, removed once their owner is gone.
+///
+/// Builds before the [`LiveView`] wrote `letibot-restore-<pid>-<nanos>-<n>/sessions.db`, a
+/// full copy of the store, and lost it whenever the test panicked past its guard or was
+/// killed. Those builds still exist in other checkouts, so this sweeps their leftovers: only
+/// that exact name shape, and only when no process `<pid>` exists — a live pid, even a reused
+/// one, keeps its directory. Linux only, because `/proc` is the probe; elsewhere it does
+/// nothing rather than guess.
+fn sweep_stale_copies() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if !std::path::Path::new("/proc/self").exists() {
+            return;
         }
-    }
-    let store = Store::open(&dst).expect("opening the copy");
-    Some((dir, store))
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(rest) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("letibot-restore-"))
+            else {
+                continue;
+            };
+            let parts: Vec<&str> = rest.split('-').collect();
+            let [pid, nanos, n] = parts.as_slice() else {
+                continue;
+            };
+            if ![pid, nanos, n]
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                continue;
+            }
+            if std::path::Path::new("/proc").join(pid).exists() {
+                continue;
+            }
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => eprintln!("  removed a stale store copy: {}", entry.path().display()),
+                Err(e) => eprintln!(
+                    "  could not remove a stale store copy {}: {e}",
+                    entry.path().display()
+                ),
+            }
+        }
+    });
 }
 
-/// Ten lines rather than a dev-dependency, for one test file.
-struct TempDir(std::path::PathBuf);
-
-impl TempDir {
-    /// **A counter in the name, not only the clock**: the tests here run in parallel in one
-    /// process and macOS's clock has microsecond resolution, so two copies of the store could
-    /// land in one directory and the first test to finish removed the other's. Both store
-    /// tests failed `opening the copy` together on a workspace run, 2026-10-08.
-    fn new(tag: &str) -> TempDir {
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "{tag}-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&p).expect("a temp dir");
-        TempDir(p)
-    }
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn transcripts(store: &Store) -> Vec<String> {
-    let mut stmt = store
+/// The first transcript with at least two rows, which is what the tamper tests need.
+fn a_transcript_with_rows(view: &LiveView) -> LoadedTranscript {
+    let id: String = view
         .connection()
-        .prepare("SELECT id FROM transcript ORDER BY id")
-        .expect("listing transcripts");
-    stmt.query_map([], |r| r.get::<_, String>(0))
-        .expect("listing transcripts")
-        .filter_map(Result::ok)
-        .collect()
+        .query_row(
+            "SELECT transcript_id FROM live.transcript_item
+              GROUP BY transcript_id HAVING COUNT(*) >= 2
+              ORDER BY transcript_id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("a transcript with rows to tamper with");
+    view.load(&id).expect("loading")
 }
 
 /// Assertions 1 and 2, over one loaded transcript.
@@ -194,7 +206,7 @@ fn restores_faithfully(loaded: &LoadedTranscript) -> Session {
 
 #[test]
 fn every_session_in_the_real_store_restores_with_its_chain_intact() {
-    let Some((_dir, store)) = real_store_copy() else {
+    let Some(view) = real_store() else {
         // **Absent apparatus, not a failed assertion** — and the comment it replaces
         // is kept in substance, because it is right about FIXTURES: a synthetic store
         // holds tokens this harness produced, not tokens a model did, so it cannot
@@ -206,7 +218,7 @@ fn every_session_in_the_real_store_restores_with_its_chain_intact() {
         );
     };
 
-    let ids = transcripts(&store);
+    let ids = view.transcripts().expect("listing transcripts");
     assert!(
         !ids.is_empty(),
         "the store has no transcripts; there is nothing to restore"
@@ -214,8 +226,8 @@ fn every_session_in_the_real_store_restores_with_its_chain_intact() {
 
     let mut with_rows = 0;
     for id in &ids {
-        let loaded = store
-            .load_transcript(id)
+        let loaded = view
+            .load(id)
             .unwrap_or_else(|e| panic!("{id} did not load: {e}"));
         let session = restores_faithfully(&loaded);
         if !loaded.items.is_empty() {
@@ -236,16 +248,12 @@ fn every_session_in_the_real_store_restores_with_its_chain_intact() {
 
 #[test]
 fn a_row_whose_tokens_were_changed_is_refused_by_name() {
-    let Some((_dir, store)) = real_store_copy() else {
+    let Some(view) = real_store() else {
         return letibot_tokencore::apparatus::absent(
             "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
         );
     };
-    let id = transcripts(&store)
-        .into_iter()
-        .find(|id| store.item_count(id).unwrap_or(0) >= 2)
-        .expect("a transcript with rows to tamper with");
-    let mut loaded = store.load_transcript(&id).expect("loading");
+    let mut loaded = a_transcript_with_rows(&view);
 
     // Somebody edited the database — or a renderer changed under us, which produces
     // the same bytes and is the case this is really guarding.
@@ -271,16 +279,12 @@ fn a_row_whose_tokens_were_changed_is_refused_by_name() {
 
 #[test]
 fn rows_and_items_that_do_not_pair_are_refused_rather_than_zipped() {
-    let Some((_dir, store)) = real_store_copy() else {
+    let Some(view) = real_store() else {
         return letibot_tokencore::apparatus::absent(
             "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
         );
     };
-    let id = transcripts(&store)
-        .into_iter()
-        .find(|id| store.item_count(id).unwrap_or(0) >= 2)
-        .expect("a transcript with rows");
-    let loaded = store.load_transcript(&id).expect("loading");
+    let loaded = a_transcript_with_rows(&view);
 
     // `persist` indexes `session.items[i]` with the *ledger row's* index and
     // `append_items` mints `"{transcript}.{items.len()}"`. Both are wrong the moment

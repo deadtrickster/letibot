@@ -81,6 +81,7 @@ use crate::ledger::LedgerRow;
 use crate::vocab::TokenId;
 
 mod busy;
+pub mod live_view;
 mod queues;
 pub use busy::{BUSY_RETRY_TOTAL, is_busy_sql};
 pub use queues::*;
