@@ -71,11 +71,6 @@ impl App {
                 .map(|l| one(format!("  {l}"), Role::Plain)),
         );
         let mut choices = Vec::new();
-        let first = if c.summarise {
-            RESEAT_SUMMARISE
-        } else {
-            RESEAT_NOW
-        };
         for (i, rows) in self.reseat_choice_lines(w).into_iter().enumerate() {
             let picked = i == c.sel.min(1);
             for l in rows {
