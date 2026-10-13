@@ -552,7 +552,23 @@ impl Session {
         new_items: &[TranscriptItem],
         sink: &mut dyn EventSink,
     ) -> Result<(), EngineError> {
-        for item in new_items {
+        self.append_items_reporting(engine, new_items, sink, &mut |_, _| {})
+    }
+
+    /// **[`Session::append_items`], saying how far it has got** — `progress(done, total)` after
+    /// each item. Rendering a long conversation onto a new prompt is the long half of a fork that
+    /// carries it (`/reseat`), and a bar fed only by the write that follows sat at zero for the
+    /// whole render: the operator, *"progress bars do not work — neither on reseat, nor on
+    /// compaction … always at zero"*. The caller decides how often to say so.
+    pub fn append_items_reporting(
+        &mut self,
+        engine: &TurnEngine,
+        new_items: &[TranscriptItem],
+        sink: &mut dyn EventSink,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<(), EngineError> {
+        let total = new_items.len() as u64;
+        for (done, item) in new_items.iter().enumerate() {
             let spans = engine
                 .renderer
                 .render_incremental(&self.items, std::slice::from_ref(item));
@@ -572,6 +588,7 @@ impl Session {
                 ledger_head: head,
                 tokens: n,
             });
+            progress(done as u64 + 1, total);
         }
         Ok(())
     }

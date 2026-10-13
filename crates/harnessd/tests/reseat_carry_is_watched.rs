@@ -345,9 +345,35 @@ fn a_long_reseat_is_watched_by_a_boot_window_head_and_its_queued_prompt_is_taken
         "and ended by fact, `total of total`: {ticks:?}"
     );
     assert!(
-        ticks.len() <= total as usize / 64 + 3,
-        "a tick per chunk, not per row — a flood demotes the head: {} ticks",
+        ticks.len() <= 2 * (total as usize / 64 + 3),
+        "a tick per chunk in each of the two phases, not per row — a flood demotes the head: \
+         {} ticks",
         ticks.len()
+    );
+    // **The render ticks too** — the long half of the carry, which used to say `0 of N` and
+    // nothing more until the write raced through: the operator, *"progress bars do not work …
+    // always at zero"*. Between its start and its end it says how far it has got, and it ends
+    // before the write's bar begins.
+    let rendering: Vec<u64> = ticks
+        .iter()
+        .filter(|(w, _, _)| w.contains("rendering"))
+        .map(|(_, d, _)| *d)
+        .collect();
+    assert!(
+        rendering.iter().any(|d| *d > 0 && *d < total),
+        "the render moves between 0 and {total}: {ticks:?}"
+    );
+    let last_render = ticks
+        .iter()
+        .rposition(|(w, _, _)| w.contains("rendering"))
+        .unwrap();
+    let first_write = ticks
+        .iter()
+        .position(|(w, _, _)| w.contains("writing"))
+        .expect("the write has a bar of its own");
+    assert!(
+        last_render < first_write,
+        "the render ends before the write begins: {ticks:?}"
     );
     assert!(
         seen[forked..]
