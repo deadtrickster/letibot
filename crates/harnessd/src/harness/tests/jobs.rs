@@ -492,6 +492,76 @@ mod job_tail {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **A RUNNING job's output is readable by the off-worker source, and grows as it does.**
+    ///
+    /// The operator's `serendb` session: a turn in flight, `docker pull` backgrounded, the
+    /// list saying 1.8 KB written, and Enter on it drawing nothing — the read was queued
+    /// behind the turn. `live_job_output` is what a head's connection thread now answers
+    /// with, so it must read a job that has not settled, and a second read must see what the
+    /// job wrote since the first. A handle the host never held is `None`, which sends the
+    /// read to the worker and the store.
+    #[test]
+    fn a_running_jobs_window_is_read_live_and_grows() {
+        let Some((root, host)) = a_host("running") else {
+            return;
+        };
+        let gate = root.join("go");
+        let command = format!(
+            "echo first; while [ ! -e {g} ]; do sleep 0.05; done; echo second; sleep 30",
+            g = gate.display()
+        );
+        let id = host
+            .spawn(&SpawnRequest {
+                command,
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+                memory: None,
+            })
+            .expect("spawn");
+        let read = |want: &str| -> SessionEvent {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let e = live_job_output(host.as_ref(), &id.0, 0, JOB_OUTPUT_WINDOW)
+                    .expect("the host holds a running job");
+                if let SessionEvent::JobOutput { lines, .. } = &e
+                    && lines.iter().any(|l| l.contains(want))
+                {
+                    return e;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "never saw {want:?}: {e:?}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let SessionEvent::JobOutput {
+            job, state, lines, ..
+        } = read("first")
+        else {
+            unreachable!()
+        };
+        assert_eq!(job, id.0);
+        assert_eq!(state, "running", "read while the job runs");
+        assert!(!lines.iter().any(|l| l.contains("second")));
+        std::fs::write(&gate, b"").expect("open the gate");
+        let SessionEvent::JobOutput { state, .. } = read("second") else {
+            unreachable!()
+        };
+        assert_eq!(state, "running", "still running, and the window grew");
+        assert!(
+            live_job_output(host.as_ref(), "j-never", 0, JOB_OUTPUT_WINDOW).is_none(),
+            "a handle the host does not hold is the worker's to answer"
+        );
+        let _ = host.kill_job(&id);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// **A job with no redirect is unaffected**: the capture is the window, exactly
     /// as before — the redirect branch must not have widened into this case.
     #[test]

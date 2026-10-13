@@ -559,6 +559,8 @@ impl App {
             back: Vec::new(),
             scroll: 0,
             loading: true,
+            polling: false,
+            asked_ms: self.now_ms,
             error: None,
         });
         self.push_surface(Surface::JobOut);

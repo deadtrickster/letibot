@@ -145,7 +145,10 @@ impl App {
                         .filter(|(_, t)| matches!(t, JobTail::Asked))
                         .map(|(j, _)| j.clone())
                         .collect();
-                    let pane_reading = self.job_out.as_ref().is_some_and(|v| v.loading);
+                    let pane_reading = self
+                        .job_out
+                        .as_ref()
+                        .is_some_and(|v| v.loading || v.polling);
                     let named: Vec<String> = pending
                         .iter()
                         .filter(|j| detail.contains(&format!("`{j}`")))
@@ -161,7 +164,7 @@ impl App {
                     let pane_named = self
                         .job_out
                         .as_ref()
-                        .is_some_and(|v| v.loading && theirs.contains(&v.job));
+                        .is_some_and(|v| (v.loading || v.polling) && theirs.contains(&v.job));
                     if !theirs.is_empty() && !pane_named {
                         for j in theirs {
                             self.job_tail_landed(&j, JobTail::Gone(detail.clone()));
@@ -177,6 +180,7 @@ impl App {
                     && let Some(v) = self.job_out.as_mut()
                 {
                     v.loading = false;
+                    v.polling = false;
                     v.error = Some(detail.clone());
                     self.redraw = true;
                 }

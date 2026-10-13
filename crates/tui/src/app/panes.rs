@@ -349,10 +349,47 @@ impl App {
             v.back.pop()?
         };
         v.loading = true;
+        v.asked_ms = self.now_ms;
         Some(Action::ReadJobOutput {
             job: v.job.clone(),
             offset,
         })
+    }
+
+    /// **A running job's open window follows what it writes.** The pane used to be one read
+    /// at Enter and another only when the reader pressed → at the end; a `docker pull` that
+    /// kept writing showed the bytes it had at Enter for as long as the pane stayed open.
+    ///
+    /// Asked on the head's clock, every [`JOB_OUT_FOLLOW_MS`], and only when following is what
+    /// the reader is doing: the pane is on top, the job is `running` (the daemon's own word,
+    /// tested literally as the renderer does), the window is the last page (`next` is `None`),
+    /// it sits at its tail (`scroll == 0` — a re-read lands at the tail, and yanking a reader
+    /// who scrolled up back down is not following), and no read is already out. The re-read
+    /// is the one → at the end sends: the page on screen, from its own offset.
+    pub(crate) fn poll_job_out(&mut self) {
+        if self.top_surface() != Some(Surface::JobOut) {
+            return;
+        }
+        let now = self.now_ms;
+        let Some(v) = self.job_out.as_mut() else {
+            return;
+        };
+        if v.loading
+            || v.polling
+            || v.error.is_some()
+            || v.state != "running"
+            || v.next.is_some()
+            || v.scroll != 0
+            || now.saturating_sub(v.asked_ms) < JOB_OUT_FOLLOW_MS
+        {
+            return;
+        }
+        v.polling = true;
+        v.asked_ms = now;
+        self.queued.push(Action::ReadJobOutput {
+            job: v.job.clone(),
+            offset: v.from,
+        });
     }
 }
 
@@ -523,6 +560,9 @@ pub(crate) struct SubOut {
     pub(crate) dropped: u64,
 }
 
+/// How often an open window over a running job re-reads its tail. See [`App::poll_job_out`].
+pub(crate) const JOB_OUT_FOLLOW_MS: u64 = 1_000;
+
 /// The output view the jobs pane's Enter opens: one job's retained output, as the
 /// daemon measured it.
 ///
@@ -577,6 +617,14 @@ pub(crate) struct JobOut {
     /// True from the request until its answer: the overlay says so rather than
     /// showing an empty window it cannot yet fill.
     pub(crate) loading: bool,
+    /// **A background re-read of a running job's tail is in flight** — the follow
+    /// [`App::poll_job_out`] sends. Separate from `loading` because the window on screen is
+    /// still true while it is out: `loading` would blank the `nothing yet` line and flicker
+    /// the pane once a second.
+    pub(crate) polling: bool,
+    /// When this head last asked for this window or was last answered (its clock, ms) — the
+    /// follow's interval runs from it.
+    pub(crate) asked_ms: u64,
     /// The daemon's refusal, when the read could not be answered — a job that fell
     /// out of the host's table between the listing and Enter. Shown in place of the
     /// window so the pane does not sit at `reading…` forever.

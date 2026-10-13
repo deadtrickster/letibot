@@ -127,7 +127,7 @@ impl App {
                 let pane_reading = self
                     .job_out
                     .as_ref()
-                    .is_some_and(|v| v.job == job && v.loading);
+                    .is_some_and(|v| v.job == job && (v.loading || v.polling));
                 let asked = matches!(
                     self.job_tails.get(&job),
                     Some(crate::ui::transcript::job_card::JobTail::Asked)
@@ -159,9 +159,13 @@ impl App {
                 // Taken only when a window is open for *this* job: a head here may
                 // have closed the pane with Esc before the reply landed, and a
                 // window for a job nobody is looking at is nothing to keep.
+                let now = self.now_ms;
                 if let Some(v) = self.job_out.as_mut()
                     && v.job == job
                 {
+                    // The follow's interval runs from the answer, not the ask: a slow daemon
+                    // is asked once a second after it answers, never more often than it can.
+                    v.asked_ms = now;
                     v.state = state;
                     v.never_ran = never_ran;
                     v.from = from;
@@ -171,6 +175,7 @@ impl App {
                     v.lines = lines;
                     v.next = next;
                     v.loading = false;
+                    v.polling = false;
                     v.error = None;
                     // A window lands at its **tail**: a fresh page, or a re-read of
                     // a running job, should show what it just wrote. `back` is left

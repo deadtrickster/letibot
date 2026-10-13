@@ -1902,6 +1902,8 @@ impl App {
             self.notice_until = Some(now_ms.saturating_add(NOTICE_MS));
         }
         self.now_ms = now_ms;
+        // An open window over a running job follows what it writes. See `poll_job_out`.
+        self.poll_job_out();
     }
 
     /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a

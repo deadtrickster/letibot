@@ -5015,6 +5015,10 @@ impl Harness {
         // is answered from it, so it has to be installed before a head can attach. See
         // `Harness::install_notes_source`.
         h.install_notes_source();
+        // **And the live job-output read**, for the same reason and with the same timing: the
+        // jobs pane's Enter is answered from it while a turn holds the worker. See
+        // `Harness::install_job_output_source`.
+        h.install_job_output_source();
         if h.resumed.is_some() {
             // **The RESUME's own sentence, and it is not the carry's.** The operator read the
             // carry's wording here and asked the obvious question — *"why it was decided to carry
@@ -7526,6 +7530,26 @@ impl Harness {
                 .as_millis()
                 .min(u64::MAX as u128) as u64,
         }
+    }
+
+    /// **Install this session's live job-output read**, which is what a head's `ReadJobOutput`
+    /// is answered from while the worker is busy with a turn
+    /// (`letibot_sessionlog::registry::JobOutputSource`).
+    ///
+    /// It holds the process host and nothing else of the harness, so it reads exactly what
+    /// [`Harness::job_output_window`] reads for a job the host holds — the same
+    /// [`job_window_for`] decision over the same two reads. A job the host does not hold
+    /// answers `None` and the read is queued, because that answer comes from the store.
+    fn install_job_output_source(&self) {
+        let Some(host) = self.runtime.backend.processes_arc() else {
+            return;
+        };
+        self.session_registry.set_job_output_source(
+            &self.cfg.session_id,
+            Arc::new(move |job, offset| {
+                live_job_output(host.as_ref(), job, offset, JOB_OUTPUT_WINDOW)
+            }),
+        );
     }
 
     /// **Install this session's standing-notes source**, which is what a head's `ListNotes`
@@ -14354,6 +14378,50 @@ impl Harness {
             offset,
             limit,
         ))
+    }
+}
+
+/// **One live read of a job's output, as the event that answers it** — the half of
+/// [`Harness::job_output_window`] that needs only the process host, so it can run on a head's
+/// connection thread while the worker runs a turn (`Harness::install_job_output_source`).
+///
+/// `None` when the host does not hold the job: that answer is the store's record, and the
+/// worker reads it. A host that holds the job but cannot read its output is a refusal, said as
+/// the same `job_output_refused` warning the queued path publishes.
+pub(crate) fn live_job_output(
+    host: &dyn letibot_tools::exec::ProcessHost,
+    job: &str,
+    offset: u64,
+    limit: usize,
+) -> Option<SessionEvent> {
+    let jid = letibot_tools::exec::JobId(job.to_string());
+    let view = host.job(&jid)?;
+    Some(match host.output(&jid, offset, limit) {
+        Ok(slice) => {
+            job_window_for(&view.command, &view.state, &slice, offset, limit).into_event(job)
+        }
+        Err(e) => SessionEvent::Warning {
+            code: "job_output_refused".into(),
+            detail: e.to_string(),
+            compaction: None,
+        },
+    })
+}
+
+impl JobWindow {
+    /// The event a head's pane is filled from: the window with the job it belongs to.
+    pub fn into_event(self, job: &str) -> SessionEvent {
+        SessionEvent::JobOutput {
+            job: job.to_string(),
+            from: self.from,
+            to: self.to,
+            produced: self.produced,
+            dropped: self.dropped,
+            state: self.state,
+            never_ran: self.never_ran,
+            lines: self.lines,
+            next: self.next,
+        }
     }
 }
 

@@ -923,3 +923,123 @@ fn switching_drops_the_old_sessions_jobs_and_coming_back_rebuilds_them() {
     a.apply(jobs_frame("s", vec![daemon_job("j9", "old", false)]));
     assert!(a.jobs.is_empty(), "another session's table was folded in");
 }
+
+/// **An open window over a running job follows what it writes** — and says so in one line
+/// while it has written nothing.
+///
+/// The operator, on the `serendb` session: *"look at serendb window, try to get into a job -
+/// no output"*. `j16496` (`docker pull`) had written 1.8 KB and `j16497` (`… | tail -40`)
+/// nothing, and the pane was one read at Enter. Now the head's clock re-reads the page on
+/// screen while the job runs, the reader follows its tail, and nothing else is in flight; the
+/// window the re-read brings lands at the tail. A scrolled-up reader, a settled job and a page
+/// that is not the last are left alone.
+#[test]
+fn a_running_jobs_window_follows_its_output() {
+    let window =
+        |state: &str, lines: Vec<&str>, to: u64, next: Option<u64>| SessionEvent::JobOutput {
+            job: "j16496".into(),
+            from: 0,
+            to,
+            produced: to,
+            dropped: 0,
+            state: state.into(),
+            never_ran: false,
+            lines: lines.into_iter().map(String::from).collect(),
+            next,
+        };
+    let mut a = App::new(plain_cfg(100));
+    a.session_id = "s1".into();
+    a.clock(10_000);
+    a.apply(jobs_frame(
+        "s1",
+        vec![daemon_job(
+            "j16496",
+            "docker pull serenedb/serenedb-build-ubuntu:latest",
+            true,
+        )],
+    ));
+    a.key(Key::CtrlQ);
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::ReadJobOutput {
+            job: "j16496".into(),
+            offset: 0
+        })
+    );
+    // While the first read is out, the clock asks nothing more.
+    a.clock(20_000);
+    assert!(a.take_actions().is_empty(), "one read at a time");
+
+    // **Nothing written yet: one line says so**, not a blank pane.
+    a.apply(ServerFrame::Event(env(
+        1,
+        window("running", vec![], 0, None),
+    )));
+    let screen = a.screen(100, 24).join("\n");
+    assert!(
+        screen.contains("it is running and has written nothing yet."),
+        "{screen}"
+    );
+
+    // Under the interval, nothing; past it, the page on screen is re-read.
+    a.clock(20_500);
+    assert!(a.take_actions().is_empty(), "not before the interval");
+    a.clock(21_000);
+    assert_eq!(
+        a.take_actions(),
+        vec![Action::ReadJobOutput {
+            job: "j16496".into(),
+            offset: 0
+        }]
+    );
+    // The re-read in flight does not blank what is on screen.
+    let screen = a.screen(100, 24).join("\n");
+    assert!(
+        screen.contains("it is running and has written nothing yet."),
+        "{screen}"
+    );
+    a.clock(23_000);
+    assert!(a.take_actions().is_empty(), "the follow is in flight");
+
+    // It lands, and the pane shows what the job wrote since.
+    a.apply(ServerFrame::Event(env(
+        2,
+        window("running", vec!["latest: Pulling from serenedb"], 30, None),
+    )));
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("latest: Pulling from serenedb"), "{screen}");
+    assert!(screen.contains("running — bytes 0..30 of 30"), "{screen}");
+
+    // A reader who scrolled up is not yanked back down.
+    a.job_out.as_mut().unwrap().scroll = 1;
+    a.clock(30_000);
+    assert!(a.take_actions().is_empty(), "scrolled up is not following");
+    a.job_out.as_mut().unwrap().scroll = 0;
+
+    // A page that is not the last is the reader's to page through with →.
+    a.clock(31_000);
+    assert_eq!(a.take_actions().len(), 1);
+    a.apply(ServerFrame::Event(env(
+        3,
+        window("running", vec!["a"], 30, Some(30)),
+    )));
+    a.clock(40_000);
+    assert!(a.take_actions().is_empty(), "not the last page");
+
+    // A settled job has nothing more to follow.
+    a.job_out.as_mut().unwrap().next = None;
+    a.clock(41_000);
+    assert_eq!(a.take_actions().len(), 1);
+    a.apply(ServerFrame::Event(env(
+        4,
+        window("exited 0", vec!["done"], 34, None),
+    )));
+    a.clock(50_000);
+    assert!(a.take_actions().is_empty(), "a settled job is not followed");
+
+    // And a closed pane asks for nothing.
+    a.key(Key::Esc);
+    a.job_out = None;
+    a.clock(60_000);
+    assert!(a.take_actions().is_empty());
+}

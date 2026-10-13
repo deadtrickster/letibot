@@ -1688,6 +1688,19 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 job,
                 offset,
             }) => {
+                // **Answered here and now, off the queue, for the reason `ListJobs` is** — when
+                // the session's host still holds the job. The queue's one reader is the worker,
+                // and the worker is the thread running the turn: a read queued behind a turn
+                // left the pane at `reading…` for as long as the turn ran, over a job the list
+                // beside it said was writing. See `registry::JobOutputSource`.
+                //
+                // Published on the hub exactly as the worker publishes it, so both heads see
+                // the window and the head's handling is unchanged. No `Accepted` is written:
+                // nothing was queued, and the head drops this request's id anyway.
+                if let Some(event) = registry.job_output(&seat.hub.session_id(), &job, offset) {
+                    seat.hub.publish(event);
+                    continue;
+                }
                 let f = seat.hub.submit(
                     &seat.head_id,
                     client_request_id,

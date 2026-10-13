@@ -4065,17 +4065,7 @@ impl<'a> Sessions<'a> {
                 };
                 if let Some(hub) = &hub {
                     match window {
-                        Ok(w) => hub.publish(SessionEvent::JobOutput {
-                            job: job.clone(),
-                            from: w.from,
-                            to: w.to,
-                            produced: w.produced,
-                            dropped: w.dropped,
-                            state: w.state,
-                            never_ran: w.never_ran,
-                            lines: w.lines,
-                            next: w.next,
-                        }),
+                        Ok(w) => hub.publish(w.into_event(&job)),
                         // A refused read is a `Warning`, the same as a refused slash,
                         // and the code says which read it was: the pane renders it as
                         // a line rather than a window.

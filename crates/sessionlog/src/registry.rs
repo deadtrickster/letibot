@@ -948,6 +948,32 @@ pub const STOPPING_TURN_REASON: &str = "the daemon is stopping";
 /// read is no rows rather than an error — see `standing_notes::rows`.
 pub type NotesSource = Arc<dyn Fn() -> Vec<crate::protocol::NoteEntry> + Send + Sync>;
 
+/// **A live read of one background job's output, answered off the worker.**
+///
+/// The jobs pane's Enter sends `ReadJobOutput`, and that frame used to go through the command
+/// queue like a prompt. The queue has one reader — the session's worker — and that worker is
+/// the thread RUNNING the turn, so a read asked while a turn was in flight waited for the turn
+/// to end. The operator, with a turn four minutes into `Responding` and two jobs running:
+/// *"look at serendb window, try to get into a job - no output"* — the pane sat at `reading…`
+/// over a job the list itself said had written 1.8 KB. The listing answered (it is read off
+/// the registry, `ListJobs`); the window did not (it was queued). This is the window's half of
+/// what `ListJobs` already does.
+///
+/// **The harness installs it, because only the harness holds the process host** — the job
+/// table and its capture rings — and this crate must not learn what a process is. The closure
+/// returns the EVENT to publish (`SessionEvent::JobOutput`, or a `job_output_refused`
+/// `Warning`), so the shape of the answer stays the harness's own and is the same one the
+/// queued path publishes.
+///
+/// **`None` means "not from here"**, and the server then queues the read as it always did: a
+/// job the host no longer holds is answered from the store's record of how it ended, which is
+/// the worker's to read. That case is a finished job, so waiting for the turn costs nothing a
+/// running job's reader is owed.
+///
+/// **It must not block**: it runs on a head's connection thread. The host's reads are a lock
+/// on the job table and a copy out of a ring — the same work `ListJobs`' refill does.
+pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> + Send + Sync>;
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -962,6 +988,9 @@ pub struct Registry {
     /// owns the token counter — and removed with the session ([`Registry::remove`]). See
     /// [`NotesSource`].
     notes: Mutex<std::collections::HashMap<String, NotesSource>>,
+    /// **One per session that has a process host**, installed by its harness at open beside
+    /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
+    job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
     /// **`close` is not idempotent where the enders are concerned.** It is called by the
     /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending
     /// every run three times would be three reap records for one decision. The turns are
@@ -1109,6 +1138,7 @@ impl Registry {
             runs: Mutex::new(std::collections::HashMap::new()),
             panes: Mutex::new(std::collections::HashMap::new()),
             notes: Mutex::new(std::collections::HashMap::new()),
+            job_output: Mutex::new(std::collections::HashMap::new()),
             ended_runs: std::sync::atomic::AtomicBool::new(false),
             source: Mutex::new(None),
             rows: Mutex::new(None),
@@ -1574,10 +1604,15 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let job_output = self
+            .job_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
-        drop((ender, prompt, notes, boundary));
+        drop((ender, prompt, notes, boundary, job_output));
         entry.hub.close();
         Some(entry.hub)
     }
@@ -1737,6 +1772,34 @@ impl Registry {
             .get(session_id)
             .cloned();
         source.map(|s| s()).unwrap_or_default()
+    }
+
+    /// **Install a session's live job-output read.** Called by the session's own harness at
+    /// open, when it has a process host. See [`JobOutputSource`].
+    pub fn set_job_output_source(&self, session_id: &str, source: JobOutputSource) {
+        self.job_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), source);
+    }
+
+    /// **One job's output window, read NOW, off the worker** — or `None` when this session has
+    /// no live source or its host does not hold the job, and the read must be queued for the
+    /// worker to answer from the store. See [`JobOutputSource`].
+    pub fn job_output(
+        &self,
+        session_id: &str,
+        job: &str,
+        offset: u64,
+    ) -> Option<crate::SessionEvent> {
+        // Cloned out before it is called, so the lock is not held across the host's own.
+        let source = self
+            .job_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()?;
+        source(job, offset)
     }
 
     /// What a session's harness last published. Empty for a session whose
