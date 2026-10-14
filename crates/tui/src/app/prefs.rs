@@ -81,20 +81,52 @@ impl App {
             self.git_job = None;
             return;
         }
+        // **Which repository, in a workspace of several** — the pinned one, else the one the work
+        // is in (see `followed_repo`); the reading's key carries it, so following another
+        // repository reads at once rather than waiting out the interval, and a reading of the
+        // one the field has left is dropped like a reading of a workspace it has left.
+        let repos = crate::gitfield::repos_in(&ws);
+        let dir = if repos.len() > 1 {
+            self.git_pinned
+                .clone()
+                .filter(|p| repos.contains(p))
+                .or_else(|| self.followed_repo(&ws))
+        } else {
+            None
+        };
+        let key = match &dir {
+            Some(d) => format!("{ws}\n{}", d.display()),
+            None => ws.clone(),
+        };
+        self.git_repos = repos.clone();
+        self.git_dir = dir.clone();
+        // **Several and nothing to follow yet**: no reading at all — the field says how many, and
+        // a click on it opens the card that lists them, rather than no field, which read as *no
+        // repository here*.
+        if dir.is_none() && repos.len() > 1 {
+            self.git_job = None;
+            self.git_state = None;
+            self.git = Some(vec![(
+                format!("{} repos", repos.len()),
+                crate::gitfield::GitRole::BranchClean,
+            )]);
+            self.git_read = (key, self.now_ms);
+            return;
+        }
         if let Some((of, rx)) = &self.git_job {
             match rx.try_recv() {
-                // Still reading this workspace: one at a time, and nothing to draw yet.
-                Err(std::sync::mpsc::TryRecvError::Empty) if of == &ws => return,
-                // Reading a workspace the head has left: abandoned, and its answer with it —
-                // the thread's send fails on a dropped receiver and it ends.
+                // Still reading this one: one at a time, and nothing to draw yet.
+                Err(std::sync::mpsc::TryRecvError::Empty) if of == &key => return,
+                // Reading a workspace (or a repository) the head has left: abandoned, and its
+                // answer with it — the thread's send fails on a dropped receiver and it ends.
                 Err(std::sync::mpsc::TryRecvError::Empty) => self.git_job = None,
                 Ok(state) => {
                     let of = of.clone();
                     self.git_job = None;
-                    if of == ws {
+                    if of == key {
                         self.git_state = state;
                         self.apply_git_format();
-                        self.git_read = (ws, self.now_ms);
+                        self.git_read = (key, self.now_ms);
                         return;
                     }
                 }
@@ -103,10 +135,10 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     let of = of.clone();
                     self.git_job = None;
-                    if of == ws {
+                    if of == key {
                         self.git_state = None;
                         self.apply_git_format();
-                        self.git_read = (ws, self.now_ms);
+                        self.git_read = (key, self.now_ms);
                         return;
                     }
                 }
@@ -114,31 +146,82 @@ impl App {
         }
         let (last_of, at) = &self.git_read;
         let stale = self.now_ms.saturating_sub(*at) >= crate::gitfield::GIT_REFRESH_MS;
-        if last_of == &ws && !stale {
+        if last_of == &key && !stale {
             return;
         }
         // **Another tree's branch is not drawn over this one** while its own reading runs:
         // a switch blanks the field rather than leaving the old repository's state up.
-        if last_of != &ws {
+        if last_of != &key {
             self.git = None;
             self.git_state = None;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let reader = self.git_reader.clone();
-        let of = ws.clone();
+        // The reader reads a path the way `read_state` does: the followed repository's own, or
+        // the workspace (which `project_dir` resolves).
+        let target = dir
+            .as_ref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| ws.clone());
         let spawned = std::thread::Builder::new()
             .name("git-field".into())
             .spawn(move || {
-                let _ = tx.send(reader(&of));
+                let _ = tx.send(reader(&target));
             });
         match spawned {
-            Ok(_) => self.git_job = Some((ws, rx)),
+            Ok(_) => self.git_job = Some((key, rx)),
             // No thread, no reading: said as an absence and tried again after the interval.
             Err(_) => {
                 self.git = None;
                 self.git_state = None;
-                self.git_read = (ws, self.now_ms);
+                self.git_read = (key, self.now_ms);
             }
+        }
+    }
+
+    /// **The repository the session's newest work is in**, among the workspace's: the newest edit's
+    /// path, else the newest tool call's path or working directory (`gitfield::call_path`), read off
+    /// the rows this head holds and the live turn's finished calls. Derived each reading, not kept.
+    pub(crate) fn followed_repo(&self, ws: &str) -> Option<std::path::PathBuf> {
+        use letibot_sessionlog::view::CallState;
+        use letibot_transcript::TranscriptItem as T;
+        let holding = |p: &str| crate::gitfield::repo_holding(ws, p);
+        if let Some(t) = &self.turn {
+            for c in t.calls.iter().rev() {
+                if let CallState::Finished { edit: Some(e), .. } = &c.state
+                    && let Some(r) = holding(&e.path)
+                {
+                    return Some(r);
+                }
+            }
+        }
+        for it in self.items.iter().rev().take(400) {
+            let found = match it.item.as_ref() {
+                Some(T::ToolResult { edit, .. }) => self
+                    .call_edits
+                    .get(&it.item_id)
+                    .or(edit.as_ref())
+                    .and_then(|e| holding(&e.path)),
+                Some(T::Assistant { tool_calls, .. }) => tool_calls
+                    .iter()
+                    .rev()
+                    .filter_map(|c| crate::gitfield::call_path(&c.arguments))
+                    .find_map(|p| holding(&p)),
+                _ => None,
+            };
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    /// **The workspace as the header names it**: the followed or pinned repository's own path, in a
+    /// workspace of several — so the path beside the branch is the tree the branch is of.
+    pub(crate) fn header_workspace(&self) -> String {
+        match &self.git_dir {
+            Some(d) => d.display().to_string(),
+            None => self.wiring.workspace.clone(),
         }
     }
 

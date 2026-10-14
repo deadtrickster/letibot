@@ -72,6 +72,8 @@ pub(crate) enum Target {
     SettingCard,
     /// A count label on the composer's top edge.
     CountLabel(CountLabel),
+    /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
+    GitField,
 }
 
 /// **One target on the last frame**: where it was, what it was, and which of its stops each

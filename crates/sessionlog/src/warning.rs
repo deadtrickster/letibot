@@ -441,6 +441,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // `Harness::open` through `prefix_fingerprint`, which is the one place the two sides
     // of the comparison are computed.
     ("prefix_stale", Class::Routine),
+    // **A wall the prompt goes on past** — compacted, room for the next turn, continuations
+    // left: one routine line in place of the red failure each one used to publish. The wall that
+    // ends the prompt is still `turn_failed`.
+    ("context_wall_continued", Class::Routine),
     // **A verbatim reseat that went ahead under the window but short of a turn's room** — as
     // close to the window as the session already was; compaction makes the room, as before.
     ("reseat_tight", Class::Routine),
@@ -1153,8 +1157,9 @@ mod the_register_census {
         //   · **144, not 141**: the daemon's boot — `daemon_starting`, `daemon_started`
         //     (Routine) and `daemon_start_failed` (Failure).
         //   · **145, not 144**: `workspace_gone` (Failure, R92.24).
-        assert_eq!(TABLE.len(), 145, "the table's size");
-        assert_eq!(count(Class::Routine), 52);
+        //   · **146, not 145**: `context_wall_continued` (Routine) — a wall the prompt goes on past.
+        assert_eq!(TABLE.len(), 146, "the table's size");
+        assert_eq!(count(Class::Routine), 53);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
         assert_eq!(count(Class::Failure), 82);
         // A code with an id is read by its family.

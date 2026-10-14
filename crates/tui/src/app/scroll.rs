@@ -113,6 +113,25 @@ impl App {
     /// Keyed on `kind` rather than on the body, because [`round_results`] breaks on
     /// an *announced* assistant row whose content has not arrived yet, and two
     /// answers to "where does this round start" is one too many.
+    /// **Where the marker counting row `idx` is drawn** — at a rung that hides the working, the
+    /// start of the stretch of undrawn rows `idx` belongs to, and the drawn row before it, whose
+    /// line the marker is glued to. A run spans rounds, so its marker can sit on an EARLIER
+    /// round's prose line than `idx`'s own round, and rebuilding from the round's head left that
+    /// line with the count it had (the operator's *"backfilled"*). `idx` itself at any other rung,
+    /// or when it is a drawn row.
+    pub(crate) fn run_head(&self, idx: usize) -> usize {
+        let vis = self.visibility;
+        if !vis.hides_the_working() || idx >= self.items.len() {
+            return idx;
+        }
+        let drawn = |r: usize| crate::ui::row_drawn(&self.items, vis, &self.bound_prompts, r);
+        let mut start = idx;
+        while start > 0 && !drawn(start - 1) {
+            start -= 1;
+        }
+        start.saturating_sub(1)
+    }
+
     pub(crate) fn round_head(&self, idx: usize) -> usize {
         // A user row is its own head — a conversation of user rows must not
         // rewind to zero on every one. Anything else belongs to the nearest

@@ -116,9 +116,22 @@ impl App {
         }
         // **And every row the session spoke is one** (R89): a card's, a job's, a fold's, or the
         // fallback's line — each is a summary, and the popup is the text.
-        let Some(text) = agent_row_text(it) else {
+        let Some(mut text) = agent_row_text(it) else {
             return;
         };
+        // **A note that points at the summary carries it** — the operator: *"continue from the
+        // summary above (click for details). well i clicked - no summary"*. The summary is the
+        // compacted transcript's first row, a System row that can be far above and is hidden
+        // entirely at the `conversation` rung; the click on the note is where they look for it.
+        if text.starts_with("Continue from the summary above")
+            && let Some(summary) = self.items[..k].iter().rev().find_map(|it| {
+                system_row_text(it)
+                    .map(|(t, _)| t)
+                    .filter(|t| t.starts_with("This conversation was compacted"))
+            })
+        {
+            text = format!("{text}\n\n── the summary it continues from ──\n\n{summary}");
+        }
         let jobs = notice_jobs(&text).unwrap_or_default();
         let asks: Vec<(String, Option<u64>)> = jobs
             .iter()

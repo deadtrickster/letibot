@@ -334,13 +334,31 @@ pub(crate) fn live_tail_covered(
 /// replacement: a drawn row landing after the run (the model's own prose, the operator's
 /// message) leaves the run reaching nothing, and the run is still this turn's — see
 /// [`hidden_run_marker`]'s own account of the pair that fix was made for.
+///
+/// **And it stops at the model's reply (2026-10-14)**, by the operator's ruling on where a round's
+/// counts go: *all of it after the reply*. A reply of the model's landing after the run means the
+/// work in flight comes AFTER that reply, so it is drawn below it and never folded into the run
+/// above — folding it there was the marker *"above the current reply"* whose counts then jumped
+/// down when the next row landed, the *"backfilled"* the operator reported. Their own queued
+/// message between the two still does not split them: that was their earlier ruling (*"again it
+/// happens when we have my queued messages"*), and a reply of theirs is not the model's.
 pub(crate) fn run_carries_live(
     items: &[SnapshotItem],
     turn_rows: &std::collections::HashSet<String>,
     start: usize,
     end: usize,
 ) -> bool {
-    end == items.len() || (start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()))
+    end == items.len()
+        || ((start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()))
+            && !(end..items.len()).any(|r| model_prose(&items[r])))
+}
+
+/// A row that is the model's reply as the reader sees it: an assistant row with text.
+fn model_prose(it: &SnapshotItem) -> bool {
+    matches!(
+        it.item.as_ref(),
+        Some(letibot_transcript::TranscriptItem::Assistant { text, .. }) if !text.trim().is_empty()
+    )
 }
 
 /// **Does the MODEL's own sentence introduce this run.**

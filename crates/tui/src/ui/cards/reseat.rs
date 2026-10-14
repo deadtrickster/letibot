@@ -71,11 +71,6 @@ impl App {
                 .map(|l| one(format!("  {l}"), Role::Plain)),
         );
         let mut choices = Vec::new();
-        let first = if c.summarise {
-            RESEAT_SUMMARISE
-        } else {
-            RESEAT_NOW
-        };
         for (i, rows) in self.reseat_choice_lines(w).into_iter().enumerate() {
             let picked = i == c.sel.min(1);
             for l in rows {
@@ -144,7 +139,13 @@ impl App {
         if self.reseat_card_up() {
             return Vec::new();
         }
-        let said = if c.asked {
+        // **Asked for during a turn, it waits for the turn**: the daemon runs a reseat on its
+        // queue, between turns and never inside one — the operator, watching this strip stay up
+        // after answering it: *"maybe it will go away when the turn ends"*. It does, and it says so.
+        let said = if c.asked && self.turn.is_some() {
+            "PROMPT IS STALE — reseat queued: it runs when this turn ends · alt-p shows the card"
+                .to_string()
+        } else if c.asked {
             "PROMPT IS STALE — reseat asked for, waiting for the daemon · alt-p shows the card"
                 .to_string()
         } else if c.summarise {

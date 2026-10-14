@@ -118,6 +118,29 @@ impl ChildBoards {
             }
         }
     }
+
+    /// **`parent`'s children the store records as running** — `(id, name)` from their
+    /// `subagent_run` rows. A child is recorded the moment it is spawned and registered only
+    /// once its session has opened, which for a `firecode` child is after its VM has booted:
+    /// minutes in which the registry has never heard of it. Empty for a storeless daemon.
+    fn running_children(&self, parent: &str) -> Vec<(String, String)> {
+        let Some(path) = &self.store_path else {
+            return Vec::new();
+        };
+        let Ok(runs) = Store::open(path).and_then(|s| s.subagent_runs_of(parent)) else {
+            return Vec::new();
+        };
+        runs.into_iter()
+            .filter(|r| r.state == "running")
+            .map(|r| {
+                let slug = serde_json::from_str::<serde_json::Value>(&r.spec_json)
+                    .ok()
+                    .and_then(|v| v.get("slug").and_then(|s| s.as_str()).map(str::to_string))
+                    .unwrap_or_default();
+                (r.child_id, slug)
+            })
+            .collect()
+    }
 }
 
 /// **The resolver bound to ONE caller** — built per session in `Harness::open_with_registry`,
@@ -143,11 +166,37 @@ impl ParentTodos {
     /// **The caller's own children, full ids** — the names the refusal lists, because they are
     /// the names `task`'s reply and `task_result`'s listing already handed the parent.
     fn my_children(&self) -> Vec<String> {
-        self.registry
+        let mut out: Vec<String> = self
+            .registry
             .list()
             .into_iter()
             .filter(|b| b.parent_session_id.as_deref() == Some(self.caller.as_str()))
             .map(|b| letibot_tools::builtins::task::subagent_label(Some(&b.slug), &b.session_id))
+            .collect();
+        // **And the ones still starting**, named as such: a child the store records as running
+        // and the registry does not hold yet is booting its placement, not gone.
+        for (id, slug) in self.starting() {
+            out.push(format!(
+                "{} (still starting)",
+                letibot_tools::builtins::task::subagent_label(Some(&slug), &id)
+            ));
+        }
+        out
+    }
+
+    /// **The caller's children that are recorded as running and not registered yet** — still
+    /// opening, which for a VM-placed child is its whole boot.
+    fn starting(&self) -> Vec<(String, String)> {
+        let live: std::collections::HashSet<String> = self
+            .registry
+            .list()
+            .into_iter()
+            .map(|b| b.session_id)
+            .collect();
+        self.boards
+            .running_children(&self.caller)
+            .into_iter()
+            .filter(|(id, _)| !live.contains(id))
             .collect()
     }
 
@@ -310,6 +359,13 @@ impl ChildTodos for ParentTodos {
     /// [`ParentTodos::resolve`] and the parentage predicate `upsert_child` keeps, and nothing
     /// more: a wait reaches no board but the caller's own, so there is nothing to flush.
     fn own_child(&self, asked: &str) -> Result<String, String> {
+        // **A child still starting is waited on like any other** — by its id, its name or its
+        // short form. Its wait ends when it answers, which it does once it has opened.
+        if let Some((id, _)) = self.starting().into_iter().find(|(id, slug)| {
+            id == asked || (!slug.is_empty() && slug == asked) || short_id(id) == asked
+        }) {
+            return Ok(id);
+        }
         let brief = self.resolve(asked)?;
         if brief.parent_session_id.as_deref() != Some(self.caller.as_str()) {
             return Err(format!(
@@ -703,5 +759,64 @@ mod tests {
             why.contains("s-child-aaaa") && why.contains("s-child-bbbb"),
             "{why}"
         );
+    }
+
+    /// **A child still booting its VM is a child** — the operator's stroppy session, 2026-10-14:
+    /// a `firecode` child is recorded the moment it is spawned and registered only once its VM is
+    /// up, so for the whole boot `wait_on` refused it as *not one of this session's children* and
+    /// listed the children whose VMs had finished booting — never the newest. The model took the
+    /// first run for dead and dispatched a second VM doing the same work.
+    #[test]
+    fn a_child_still_booting_its_vm_can_be_waited_on_by_id_or_name() {
+        let dir = letibot_sessionlog::testing::scratch_root().join(format!(
+            "letibot-booting-child-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("sessions.db");
+        let store = letibot_tokencore::store::Store::open(&db).unwrap();
+        store
+            .put_subagent_run(&letibot_tokencore::store::SubagentRun {
+                child_id: "s-parent-1111-sub-9".into(),
+                parent_id: "s-parent-1111".into(),
+                state: "running".into(),
+                prompt: "run banking end to end".into(),
+                spec_json: r#"{"placement":"firecode","slug":"banking-e2e"}"#.into(),
+                instance: "d-1".into(),
+                resumes: 0,
+                outcome: None,
+                delivered: false,
+                started_ms: 1,
+                updated_ms: 1,
+            })
+            .unwrap();
+        let registry = Registry::new();
+        let hub = registry.new_hub("s-parent-1111".to_string());
+        registry
+            .adopt(hub, "s-parent-1111".to_string(), wiring(), None)
+            .unwrap();
+        let boards = ChildBoards::shared(Some(db.clone()));
+        let resolver = ParentTodos::new("s-parent-1111".into(), registry, boards);
+
+        assert_eq!(
+            resolver.own_child("s-parent-1111-sub-9").unwrap(),
+            "s-parent-1111-sub-9"
+        );
+        assert_eq!(
+            resolver.own_child("banking-e2e").unwrap(),
+            "s-parent-1111-sub-9",
+            "by the name task_start handed back"
+        );
+        let refused = resolver.own_child("nope").unwrap_err();
+        assert!(
+            refused.contains("banking-e2e"),
+            "the list names it: {refused}"
+        );
+        assert!(
+            refused.contains("still starting"),
+            "and says why it is quiet: {refused}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

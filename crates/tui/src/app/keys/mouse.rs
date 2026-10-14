@@ -34,7 +34,7 @@ impl App {
             Target::QuitCard => self.quit_card,
             Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
-            Target::CountLabel(_) => true,
+            Target::CountLabel(_) | Target::GitField => true,
             Target::FlashNotice => self.notice.is_some(),
         }
     }
@@ -81,6 +81,11 @@ impl App {
 
     fn click_on(&mut self, target: Target, stop: Option<usize>) -> ControlFlow<Option<Action>> {
         match (target, stop) {
+            // **The git field opens the repo card** — the same card `/repo` opens.
+            (Target::GitField, _) => {
+                let _ = self.command("repo");
+                return ControlFlow::Break(None);
+            }
             (Target::CountLabel(l), _) => {
                 // **The label's chord, through the one door** — the operator's ask: *"make so that
                 // when i click on running subagents or jobs count labels i get to respective
@@ -199,7 +204,10 @@ impl App {
             Target::Decision | Target::QuitCard | Target::ReseatCard => {
                 self.scroll_card(up, NOTCH);
             }
-            Target::SettingCard | Target::CountLabel(_) | Target::FlashNotice => {}
+            Target::SettingCard
+            | Target::CountLabel(_)
+            | Target::GitField
+            | Target::FlashNotice => {}
         }
         ControlFlow::Break(None)
     }

@@ -101,7 +101,12 @@ fn reseat_now_sends_the_bare_reseat_exactly_as_typing_it_would() {
     );
     // Waiting for the daemon: pinned, saying so, and not sent twice.
     assert!(!a.reseat_card_up());
-    assert!(screen(&mut a).contains("reseat asked for"));
+    // This fixture has a turn running, so the strip says the reseat waits for it.
+    let s = screen(&mut a);
+    assert!(
+        s.contains("reseat queued") || s.contains("reseat asked for"),
+        "{s}"
+    );
     assert_eq!(
         a.key(Key::AltR),
         None,
@@ -416,4 +421,26 @@ fn the_reseat_rows_wrap_on_a_narrow_screen() {
     for l in card.iter().flatten() {
         assert!(rano::width::text::width(l) <= 50, "{l}");
     }
+}
+
+/// **A reseat asked for during a turn says it waits for the turn** — the operator: *"PROMPT IS
+/// STALE yellow thing doesnt go away even when i answered reseat … maybe it will go away when the
+/// turn ends"*. It does: the daemon runs a reseat on its queue, between turns, never inside one.
+/// The strip and the second ask now say so rather than *"waiting for the daemon"*.
+#[test]
+fn a_reseat_asked_for_during_a_turn_says_it_runs_when_the_turn_ends() {
+    let (mut a, hub) = stale();
+    a.apply(ServerFrame::Event(env_at(
+        50,
+        2_000,
+        testing::turn_started("t2"),
+    )));
+    assert!(a.turn.is_some(), "the premise: a turn is running");
+    assert!(a.key(Key::AltR).is_some());
+    let s = screen(&mut a);
+    assert!(s.contains("runs when this turn ends"), "{s}");
+    a.key(Key::AltR);
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("when this turn ends"), "{said}");
+    let _ = hub;
 }

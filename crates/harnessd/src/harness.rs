@@ -11016,16 +11016,43 @@ impl Harness {
         // the head's queue is not flooded (see `FILLING_STRIDE`) — and ended by `total of
         // total`, which is what clears the line. Only for a carry big enough to be a wait.
         let carrying = body.len() >= FILLING_STRIDE;
-        let filling_what = if verbatim {
-            "re-seating: carrying the conversation onto the new prompt"
+        // **Two phases, each with its own bar**: the render onto the new prompt, which is the
+        // long one and used to tick nothing at all — the bar sat at `0 of N` for all of it, then
+        // jumped and cleared as the write below raced through (the operator: *"progress bars do
+        // not work … always at zero"*) — and the write of the rendered rows to the store.
+        let (rendering_what, filling_what) = if verbatim {
+            (
+                "re-seating: rendering the conversation onto the new prompt",
+                "re-seating: writing the carried conversation",
+            )
         } else {
-            "compacting: writing the new transcript"
+            (
+                "compacting: rendering the new transcript",
+                "compacting: writing the new transcript",
+            )
         };
         if carrying {
-            self.filling(filling_what, "rows", 0, body.len() as u64);
+            self.filling(rendering_what, "rows", 0, body.len() as u64);
         }
         let mut sink = CapturingSink::new(self.hub.clone());
-        if let Err(e) = next.append_items(&self.engine, &body, &mut sink) {
+        let hub = self.hub.clone();
+        let rendered =
+            next.append_items_reporting(&self.engine, &body, &mut sink, &mut |done, of| {
+                // Every `FILLING_STRIDE` rows and the last, as every other fill ticks.
+                if carrying && (done % FILLING_STRIDE as u64 == 0 || done == of) {
+                    hub.publish(letibot_sessionlog::SessionEvent::Filling {
+                        what: rendering_what.to_string(),
+                        unit: "rows".to_string(),
+                        done,
+                        total: of,
+                    });
+                }
+            });
+        if carrying {
+            // The write's own bar starts from nothing, so a reader sees the second phase begin.
+            self.filling(filling_what, "rows", 0, body.len() as u64);
+        }
+        if let Err(e) = rendered {
             if carrying {
                 self.filling(filling_what, "rows", body.len() as u64, body.len() as u64);
             }
@@ -17663,6 +17690,18 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             true => Some(self.reopen_parked(handle)?),
             false => live,
         };
+        // **A child still opening has a slot and no session yet** — a `firecode` child is
+        // registered only once its VM has booted and answered, which takes minutes. Saying *no
+        // session is live* there is what made a model take a booting run for dead and start a
+        // second VM doing the same work (the operator's stroppy session, 2026-10-14).
+        if hub.is_none() && self.slot(handle).is_some_and(|s| !s.has_exited()) {
+            return Err(format!(
+                "`{handle}` is still starting — its session opens once its placement is up (a \
+                 VM boots and its tree is copied in first), and a message can only be queued on \
+                 a session that has opened. It is not gone: nothing needs dispatching again. \
+                 Nothing was sent; say it once the child is running, or wait on it."
+            ));
+        }
         let Some(hub) = hub else {
             return Err(format!(
                 "no session `{handle}` is live in this daemon, so there is nothing to say it to: \

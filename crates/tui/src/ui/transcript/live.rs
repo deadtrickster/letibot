@@ -56,47 +56,10 @@ pub(crate) fn push_turn_pane<'a>(
     // the counts belong and where the reader is looking.
     // **And only when no RUN has already carried it** — see `walk_carried_live`, computed
     // above from the same fact the fold uses, so the two cannot disagree.
-    if !superseded
-        && vis.hides_the_working()
-        && live.work() > 0
-        && !live_joins
-        && !walk_carried_live
-    {
-        let painted = Marker::new(
-            live.calls,
-            live.think_lines,
-            // No events — see the sibling call above.
-            0,
-            true,
-            marker_carries_live(live),
-            marker_room(cfg.width),
-        )
-        .painted(&cfg);
-        if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
-            eprintln!("MARKER pane draws: {painted}");
-        }
-        // **Not indented, and that is the operator's own report** — *"plus current thinking
-        // lines while counting are indented by 1 or 2 cells"*. This marker and the walk's are
-        // the same kind of row and now the same row; the walk's is flush with the prose it
-        // continues (`hist_lines`), so this one is flush too. The reasoning block below is
-        // indented because it is the model's *text*, set in under its rail; a count of rows
-        // is punctuation on the sentence, not a quotation under it.
-        segs.push(Seg::Owned(vec![painted]));
-        // **And the air every other block in this pane already carries.** The reasoning
-        // block ends with a blank, and so does the streaming answer — whose comment gives
-        // the reason: *"without it the last line of a running decode touches the top
-        // border of the composer."* The counts had none, so they sat on whatever came
-        // next: the `Responding` row when no text had arrived yet, and the model's own
-        // first line when it had.
-        //
-        // The operator, twice: *"«Responding…» status line appears and [XX Thinking lines]
-        // appeared then right above «Responding» without an empty line"*, and *"this also
-        // sometimes happened when you replied while the turn goes."* One blank fixes both,
-        // and it is the same blank the walk's marker already has — inside `hist_lines`,
-        // where the frame's own `gap` separates it from what follows. The pane's marker
-        // is the same fact with no gap under it, so it brings its own.
-        segs.push(Seg::Owned(vec![String::new()]));
-    }
+    // **The counts are drawn after the reply** — below the streaming text, further down. The
+    // operator's ruling: *all of it after the reply*; this block used to sit here, above the text
+    // the model was still writing, which is the marker *"above the current reply"*.
+
     if !superseded && !reasoning.is_empty() && !vis.hides_the_working() {
         // Narrower by the rail and by the step it is set in. Getting this
         // wrong makes the block one row taller than the space reserved for
@@ -202,6 +165,48 @@ pub(crate) fn push_turn_pane<'a>(
             // grows by a line at the moment the reader finally has time to
             // look. Padding while running is also the shape the transcript
             // row takes over, so nothing reflows at the handoff.
+            segs.push(Seg::Owned(vec![String::new()]));
+        }
+        // **The rung's own count of the work in flight, after the reply it follows.**
+        if !superseded
+            && vis.hides_the_working()
+            && live.work() > 0
+            && !live_joins
+            && !walk_carried_live
+        {
+            let painted = Marker::new(
+                live.calls,
+                live.think_lines,
+                // No events — see the sibling call above.
+                0,
+                true,
+                marker_carries_live(live),
+                marker_room(cfg.width),
+            )
+            .painted(&cfg);
+            if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
+                eprintln!("MARKER pane draws: {painted}");
+            }
+            // **Not indented, and that is the operator's own report** — *"plus current thinking
+            // lines while counting are indented by 1 or 2 cells"*. This marker and the walk's are
+            // the same kind of row and now the same row; the walk's is flush with the prose it
+            // continues (`hist_lines`), so this one is flush too. The reasoning block below is
+            // indented because it is the model's *text*, set in under its rail; a count of rows
+            // is punctuation on the sentence, not a quotation under it.
+            segs.push(Seg::Owned(vec![painted]));
+            // **And the air every other block in this pane already carries.** The reasoning
+            // block ends with a blank, and so does the streaming answer — whose comment gives
+            // the reason: *"without it the last line of a running decode touches the top
+            // border of the composer."* The counts had none, so they sat on whatever came
+            // next: the `Responding` row when no text had arrived yet, and the model's own
+            // first line when it had.
+            //
+            // The operator, twice: *"«Responding…» status line appears and [XX Thinking lines]
+            // appeared then right above «Responding» without an empty line"*, and *"this also
+            // sometimes happened when you replied while the turn goes."* One blank fixes both,
+            // and it is the same blank the walk's marker already has — inside `hist_lines`,
+            // where the frame's own `gap` separates it from what follows. The pane's marker
+            // is the same fact with no gap under it, so it brings its own.
             segs.push(Seg::Owned(vec![String::new()]));
         }
         // The call the model is writing right now. The markup itself is

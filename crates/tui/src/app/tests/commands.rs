@@ -447,7 +447,10 @@ fn every_listed_slash_command_is_one_this_head_answers() {
                 // is a verb that did something — and this closure is where "something"
                 // is defined for the self-documentation check.
                 a.pick == Some(Pick::Verbosity),
-                a.pick == Some(Pick::Diff),
+                // And the repo card, which `/repo` and a click on the git field open — one
+                // entry with the diff card's, both the head's own, because a tuple compares only
+                // up to twelve.
+                matches!(a.pick, Some(Pick::Diff | Pick::Repo)),
                 a.slash_out.is_some(),
             )
         };

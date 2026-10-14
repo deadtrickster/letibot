@@ -171,15 +171,37 @@ pub fn run_turn(
     // off without freeing anything), and `WALL_CONTINUES` caps the cycles the room check
     // cannot see. When either gate closes, the last wall error is the answer.
     let mut walls = 0;
-    while is_wall(&out) && compacted && walls < crate::sessions::WALL_CONTINUES {
+    while is_wall(&out) {
         h.measure_resident();
         // **Not closed on an estimate.** A metered base the provider has not counted is the
         // fork's estimate, and the continuation's first round is what measures it — the
         // estimate said ≈ 1,039,055 for a base deepseek counted at 507,355 (pg-noop,
         // 2026-10-11). Over the window, the provider refuses and the refused door folds,
         // inside `WALL_CONTINUES`.
-        if !h.base_is_unmeasured() && !h.config().room_for_next_turn(h.ledger_len() as u64) {
-            break;
+        let room = h.base_is_unmeasured() || h.config().room_for_next_turn(h.ledger_len() as u64);
+        // **Only the wall that ends the prompt is its failure** — the operator: *"there was a
+        // wall of red 'compaction was attempted blabla'"*. Each wall the daemon compacted and
+        // carries on from was published as the turn's failure, a red six-line footer on a turn
+        // that had not ended; now it is one routine line, and the red is the last wall's alone.
+        match wall_goes_on(compacted, walls, room) {
+            WallNext::Fails => {
+                if let Err(e) = &out {
+                    publish_failure(h.hub(), h.last_turn_id(), e);
+                }
+                break;
+            }
+            WallNext::GoesOn => {
+                h.hub().publish(SessionEvent::Warning {
+                    code: "context_wall_continued".into(),
+                    detail: format!(
+                        "the turn reached the context wall, was compacted, and goes on from \
+                         the summary ({} of at most {})",
+                        walls + 1,
+                        crate::sessions::WALL_CONTINUES
+                    ),
+                    compaction: None,
+                });
+            }
         }
         walls += 1;
         let next = h.continue_after_wall();
@@ -192,6 +214,25 @@ pub fn run_turn(
     h.end_turn_clock();
     owner.turn_ended(h, &door);
     Some(out)
+}
+
+/// What follows a turn stopped at the context wall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallNext {
+    /// It compacted, there is room, and continuations are left: the prompt goes on.
+    GoesOn,
+    /// The prompt ends here, and the wall is its failure.
+    Fails,
+}
+
+/// **Whether a wall is the prompt's end** — compacted (a fork happened), under
+/// [`crate::sessions::WALL_CONTINUES`] continuations, with room for the next turn.
+pub(crate) fn wall_goes_on(compacted: bool, walls: usize, room: bool) -> WallNext {
+    if compacted && walls < crate::sessions::WALL_CONTINUES && room {
+        WallNext::GoesOn
+    } else {
+        WallNext::Fails
+    }
 }
 
 fn is_wall(out: &Result<Reply, HarnessError>) -> bool {
@@ -210,7 +251,11 @@ fn settle(
     owner.arm_wake(h);
     // **The failure reaches the head FIRST**: it is the answer to what was asked, and the
     // tidying after it is not. With its reason — a child's failure used to be `.is_ok()`'d away.
-    if let Err(e) = &out {
+    // **Except the wall**, whose failure is decided after its compaction: a wall the prompt goes
+    // on past is not one (`run_turn`, `wall_goes_on`).
+    if let Err(e) = &out
+        && !is_wall(&out)
+    {
         publish_failure(h.hub(), h.last_turn_id(), e);
     }
     // **The wall is the one failure that must still compact**, and the two outcomes take two
@@ -335,4 +380,33 @@ pub(crate) fn spawn_monitor_wake(
         .map_err(|e| e.to_string())?;
     h.declare_monitor_wake();
     Ok(true)
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::*;
+
+    /// **Only the last wall fails the prompt** — a compacted wall with room and continuations
+    /// left goes on, and is not published as the turn's failure.
+    #[test]
+    fn a_wall_goes_on_only_while_it_compacted_has_room_and_continuations_left() {
+        let cap = crate::sessions::WALL_CONTINUES;
+        assert_eq!(wall_goes_on(true, 0, true), WallNext::GoesOn);
+        assert_eq!(wall_goes_on(true, cap - 1, true), WallNext::GoesOn);
+        assert_eq!(
+            wall_goes_on(true, cap, true),
+            WallNext::Fails,
+            "out of continuations"
+        );
+        assert_eq!(
+            wall_goes_on(false, 0, true),
+            WallNext::Fails,
+            "nothing was compacted"
+        );
+        assert_eq!(
+            wall_goes_on(true, 0, false),
+            WallNext::Fails,
+            "no room after it"
+        );
+    }
 }

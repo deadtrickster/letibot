@@ -1214,6 +1214,19 @@ pub struct App {
     /// **What takes a reading** — [`crate::gitfield::read_state`] in production; a test puts
     /// a reader here it can hold, to prove the loop does not wait for it.
     pub(crate) git_reader: GitReader,
+    /// **The workspace's repositories, as last read** — one for an ordinary workspace, several for
+    /// a folder like `~/Projects/stroppy-io` (`gitfield::repos_in`).
+    pub(crate) git_repos: Vec<std::path::PathBuf>,
+    /// **Which of them the git field reads**: the one pinned from the repo card, else the one the
+    /// session's newest edit or command was in (`App::followed_repo`). `None` with one repository
+    /// (the field reads the workspace as it always did) and with several and nothing to follow.
+    pub(crate) git_dir: Option<std::path::PathBuf>,
+    /// **The repository the operator pinned on the repo card** — `None` follows the work.
+    pub(crate) git_pinned: Option<std::path::PathBuf>,
+    /// **The repo card's rows, read once when it opens** — a `git status` per repository, run
+    /// together, so a card left open is not a reading on every frame (the loop never waits for
+    /// git; see `refresh_git`).
+    pub(crate) repo_rows: Vec<(String, String)>,
     /// **The live marker's join, as the pair that lets it be UNDONE.**
     ///
     /// The marker is glued to the end of the sentence that introduces the work — *"…the last
@@ -1846,6 +1859,10 @@ impl App {
             git_read: (String::new(), 0),
             git_job: None,
             git_reader: std::sync::Arc::new(crate::gitfield::read_state),
+            git_repos: Vec::new(),
+            git_dir: None,
+            git_pinned: None,
+            repo_rows: Vec::new(),
             live_join: None,
             marker_facts: MarkerFacts::default(),
             body_len: 0,
@@ -2079,7 +2096,7 @@ mod editor;
 mod events;
 mod feedback;
 mod hits;
-mod keyhints;
+pub(crate) mod keyhints;
 mod keys;
 mod notes;
 pub(crate) mod one_event;

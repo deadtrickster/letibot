@@ -193,6 +193,9 @@ impl App {
             }
             return rows;
         }
+        if subject == Pick::Repo {
+            return self.repo_rows.clone();
+        }
         if !subject.values().is_empty() {
             return subject
                 .values()
@@ -219,6 +222,11 @@ impl App {
     pub(crate) fn pick_current(&self) -> String {
         match self.pick {
             Some(Pick::Verbosity) => self.visibility.as_str(),
+            Some(Pick::Repo) => self
+                .git_pinned
+                .as_deref()
+                .map(repo_name)
+                .unwrap_or_else(|| FOLLOW.to_string()),
             Some(Pick::Diff) => {
                 if self.diff_split {
                     "split".into()
@@ -295,6 +303,22 @@ impl App {
                 self.pick = None;
                 return self.set_diff(&name);
             }
+            Some(Pick::Repo) => {
+                self.pick = None;
+                self.git_pinned = self
+                    .git_repos
+                    .iter()
+                    .find(|r| repo_name(r) == name)
+                    .cloned();
+                self.git_read.1 = 0;
+                self.refresh_git();
+                self.redraw = true;
+                match &self.git_pinned {
+                    Some(r) => self.say(&format!("the header shows {}", repo_name(r))),
+                    None => self.say("the header follows the work again"),
+                }
+                return None;
+            }
             None => None,
         }
     }
@@ -360,6 +384,10 @@ pub enum Pick {
     Verbosity,
     /// **How a diff is laid out** — R38's new setting.
     Diff,
+    /// **Which repository the header follows**, in a workspace of several — the operator: *"I
+    /// guess we can make git thing clickable with a popup"*. Opened by a click on the git field
+    /// or `/repo`; this head's own setting, and not kept across a restart.
+    Repo,
 }
 
 impl Pick {
@@ -370,6 +398,7 @@ impl Pick {
             Pick::Model => "what answers this conversation",
             Pick::Verbosity => "how much reaches the transcript",
             Pick::Diff => "how a diff is drawn",
+            Pick::Repo => "which repository the header follows",
         }
     }
 
@@ -380,7 +409,7 @@ impl Pick {
         match self {
             Pick::Mode => Some("mode"),
             Pick::Model => Some("model"),
-            Pick::Verbosity | Pick::Diff => None,
+            Pick::Verbosity | Pick::Diff | Pick::Repo => None,
         }
     }
 
@@ -402,6 +431,8 @@ impl Pick {
             // copy was missing `read-edits` entirely, so a rung `/v` cycles onto had no row.
             Pick::Verbosity => &[],
             Pick::Diff => DIFF_VALUES,
+            // The workspace's own repositories, read when the card opens (`App::pick_values`).
+            Pick::Repo => &[],
         }
     }
 
@@ -435,7 +466,57 @@ impl Pick {
                 "every edit card, drawn and future — the excerpt is the same either way; only \
                  the layout changes.",
             ],
+            Pick::Repo => &[
+                "this head's header only — the session works wherever it works; following picks \
+                 the repository of its newest edit or command.",
+            ],
         }
+    }
+}
+
+/// The repo card's first row: no pin — the header follows the newest edit or command.
+pub(crate) const FOLLOW: &str = "follow the work";
+
+/// A repository's name on the card: its folder's.
+pub(crate) fn repo_name(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+impl App {
+    /// **The repo card's rows**: following the work, then each repository with its branch and
+    /// marks as `git status` reads them — one reading per repository, all at once, when the card
+    /// opens (`/repo`); kept in `App::repo_rows` while it is up.
+    pub(crate) fn read_repo_rows(&self) -> Vec<(String, String)> {
+        let ws = self.wiring.workspace.clone();
+        let following = self
+            .followed_repo(&ws)
+            .map(|r| format!("now {}", repo_name(&r)))
+            .unwrap_or_else(|| "nothing to follow yet".into());
+        let mut rows = vec![(
+            FOLLOW.to_string(),
+            format!("the repository of the newest edit or command — {following}"),
+        )];
+        let readings: Vec<_> = self
+            .git_repos
+            .iter()
+            .map(|r| {
+                let r = r.clone();
+                std::thread::spawn(move || {
+                    crate::gitfield::read_state_at(&r).map(|s| crate::gitfield::git_text(&s))
+                })
+            })
+            .collect();
+        for (r, t) in self.git_repos.iter().zip(readings) {
+            let state = t
+                .join()
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "not readable".into());
+            rows.push((repo_name(r), state));
+        }
+        rows
     }
 }
 

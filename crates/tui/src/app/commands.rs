@@ -646,6 +646,17 @@ impl App {
             }
             // **`/diff` — R38's new setting.** It was `slash_refused` until today, and that
             // refusal is the card R29 was filed from.
+            // **`/repo` — the repo card**, which a click on the header's git field also opens.
+            _ if verb_arg(cmd, "repo").is_some() => {
+                self.git_repos = crate::gitfield::repos_in(&self.wiring.workspace);
+                self.repo_rows = self.read_repo_rows();
+                self.pick = Some(Pick::Repo);
+                self.close_surface(Surface::Picker);
+                self.close_surface(Surface::Config);
+                self.seed_pick();
+                self.redraw = true;
+                return None;
+            }
             _ if verb_arg(cmd, "diff").is_some() => {
                 let rest = verb_arg(cmd, "diff").unwrap_or("").trim().to_string();
                 if rest.is_empty() {
@@ -1256,6 +1267,10 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "how much reaches the transcript: the card, or a rung by name",
     ),
     ("diff", "how a diff is drawn: unified or side by side"),
+    (
+        "repo",
+        "which of the workspace's repositories the header follows",
+    ),
     (
         "copy",
         "the open ctrl-v output, or the last reply, onto the clipboard",

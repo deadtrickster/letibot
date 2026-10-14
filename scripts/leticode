@@ -16,6 +16,7 @@
 # --mode, --sessions, --stop, ...). The dashboard is a separate window:
 #   ~/bin/leticode-dash
 #
+# The shell and `web_fetch` are ON by default here (`--no-web-fetch` turns the fetch off).
 # The shell is ON by default here — opencode's coder has bash, and the operator's
 # rule (2026-09-14): "when i do leticode, --bash must be a default". What it may
 # run without asking is the preapproved list (harnessd's `preapproved`
@@ -33,6 +34,12 @@ export LETIBOT_INVOKED_AS=leticode
 export LETIBOT_ROLE=leticode
 : "${LETIBOT_BASH:=1}"
 export LETIBOT_BASH
+# **`web_fetch` is on here too** — what `letibot`'s own comment has always said this wrapper does
+# ("ON for the leticode seat, which sets LETIBOT_WEB_FETCH=1 itself") and it never did, so no
+# leticode daemon ever had the tool: the operator's stroppy session showed `web_fetch (N/A)`.
+# `--no-web-fetch` still turns it off; `letibot` reads that flag itself.
+: "${LETIBOT_WEB_FETCH:=1}"
+export LETIBOT_WEB_FETCH
 for a in "$@"; do
   case "$a" in
     --no-bash) LETIBOT_BASH="" ;;

@@ -140,9 +140,12 @@ impl App {
                 return None;
             }
             Some(c) if c.asked => {
-                self.say(
-                    "a reseat is already on its way — the card goes when the daemon says it landed",
-                );
+                self.say(if self.turn.is_some() {
+                    "a reseat is already queued — it runs when this turn ends, and the card goes \
+                     when the daemon says it landed"
+                } else {
+                    "a reseat is already on its way — the card goes when the daemon says it landed"
+                });
                 return None;
             }
             Some(_) => {}

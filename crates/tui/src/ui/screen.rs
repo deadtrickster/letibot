@@ -591,6 +591,29 @@ impl App {
                 stops: vec![(row, 0)],
             });
         }
+        // **The header's git field, as a target** — found on the drawn header row by its own text,
+        // `(` and the pieces the reader rendered, so wherever the fit put it is where it is.
+        if let Some(pieces) = &self.git {
+            let text: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
+            let want: Vec<char> = format!("({text}").chars().collect();
+            'rows: for (y, row) in out.iter().enumerate().take(2) {
+                let cells = crate::app::keyhints::cells(row);
+                for x in 0..cells.len().saturating_sub(want.len() - 1) {
+                    if cells[x..x + want.len()] == want[..] {
+                        let end = cells[x..]
+                            .iter()
+                            .position(|c| *c == ')')
+                            .map_or(want.len(), |e| e + 1);
+                        self.hits.push(Hit {
+                            rect: Rect { x, y, w: end, h: 1 },
+                            target: Target::GitField,
+                            stops: Vec::new(),
+                        });
+                        break 'rows;
+                    }
+                }
+            }
+        }
         // **And the labels as targets**, from the same record.
         if let Some(b) = self.box_top_hits {
             for (label, at) in [
