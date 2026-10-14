@@ -188,6 +188,9 @@ struct Unwind<'a> {
     project: &'a Path,
     vm: bool,
     armed: bool,
+    /// The project is a copy this backend made, and so is its to remove. `false` for a mounted
+    /// worktree ([`mounts`]): the project is the operator's own worktree.
+    remove: bool,
 }
 
 impl Drop for Unwind<'_> {
@@ -203,7 +206,9 @@ impl Drop for Unwind<'_> {
                 .stdin(Stdio::null())
                 .output();
         }
-        let _ = std::fs::remove_dir_all(self.project);
+        if self.remove {
+            let _ = std::fs::remove_dir_all(self.project);
+        }
     }
 }
 
@@ -281,6 +286,10 @@ pub struct FirecodeBackend {
     /// attached to an ancestor's VM ([`FirecodeBackend::attach`]): the VM is the ancestor's, and a
     /// child that ends must not take its parent's machine with it.
     owns: bool,
+    /// **The project is the source itself, mounted, never a copy** ([`mounts`]): a git worktree
+    /// on a Mac, which firecode shares into the guest read-write. Nothing of it is ever removed
+    /// here, and its work is where it always was.
+    mounted: bool,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -291,6 +300,39 @@ impl std::fmt::Debug for FirecodeBackend {
             self.project.display(),
             self.source.display()
         )
+    }
+}
+
+/// **Whether a VM placement on `source` mounts it rather than copying it.**
+///
+/// A git worktree on a Mac: firecode shares it into the guest read-write, the main checkout
+/// read-only and the repository's `.git` read-write (virtio-fs), so the child works in the real
+/// worktree beside the repository and commits to its branch as an agent on the host would -
+/// nothing copied in, nothing copied out, nothing under the cache. Anything else is copied, as
+/// before. A worktree, not a submodule: both have a `.git` file, and only a worktree's names a
+/// directory under the repository's `worktrees/`.
+pub fn mounts(source: &Path) -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    std::fs::read_to_string(source.join(".git"))
+        .map(|t| {
+            t.lines()
+                .next()
+                .and_then(|l| l.strip_prefix("gitdir:"))
+                .is_some_and(|d| d.contains("/worktrees/"))
+        })
+        .unwrap_or(false)
+}
+
+/// **Where the VM of a session placed on `source` holds its project** — the source itself when it
+/// is mounted ([`mounts`]), the session's copy under the cache otherwise. What a child attaching
+/// to that VM names it by.
+pub fn project_for(source: &Path, session_id: &str) -> PathBuf {
+    if mounts(source) {
+        source.to_path_buf()
+    } else {
+        FirecodeBackend::project_of(session_id)
     }
 }
 
@@ -432,14 +474,21 @@ impl FirecodeBackend {
             }
             None => firecode_available().map_err(BackendError::Io)?,
         };
-        let project = spec.cache.join(&spec.name);
-        if project.exists() {
+        let mounted = mounts(&spec.source);
+        let project = if mounted {
+            spec.source.clone()
+        } else {
+            spec.cache.join(&spec.name)
+        };
+        if !mounted && project.exists() {
             return Err(BackendError::Io(format!(
                 "{} already exists; a child's copy is made once and named by its session",
                 project.display()
             )));
         }
-        std::fs::create_dir_all(&spec.cache).map_err(|e| BackendError::Io(e.to_string()))?;
+        if !mounted {
+            std::fs::create_dir_all(&spec.cache).map_err(|e| BackendError::Io(e.to_string()))?;
+        }
         // **From here every failure takes the copy with it** — and the VM, once there is
         // one. A failed spawn used to leave its copy under the cache (FIRECODE-NOTES: *"the
         // very first attempt left 286 MB"*): the `?` on a spawn error returned past the
@@ -449,8 +498,11 @@ impl FirecodeBackend {
             project: &project,
             vm: false,
             armed: true,
+            remove: !mounted,
         };
-        copy_tree(&spec.source, &project, &spec.exclude, spec.copy_max)?;
+        if !mounted {
+            copy_tree(&spec.source, &project, &spec.exclude, spec.copy_max)?;
+        }
 
         // Layers are attached to a PATH, and the copy has a path of its own. The
         // source's toolchain layers are what the guest needs to build this tree
@@ -461,16 +513,25 @@ impl FirecodeBackend {
         // **And a convenience, not a requirement** (FIRECODE-NOTES item 4): a firecode without
         // the verb, or one that refuses it, still boots the copy on its base image, and the
         // backend says so rather than refusing the placement.
-        let inherit = std::process::Command::new(&bin)
-            .arg("layer")
-            .arg("inherit")
-            .arg(&spec.source)
-            .arg("--project")
-            .arg(&project)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;
-        let layers = (!inherit.status.success()).then(|| {
+        //
+        // Mounted, there is nothing to inherit onto: the worktree's VM inherits its main
+        // checkout's layer itself, read-only, as firecode does for any worktree.
+        let inherit = if mounted {
+            None
+        } else {
+            Some(
+                std::process::Command::new(&bin)
+                    .arg("layer")
+                    .arg("inherit")
+                    .arg(&spec.source)
+                    .arg("--project")
+                    .arg(&project)
+                    .stdin(Stdio::null())
+                    .output()
+                    .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?,
+            )
+        };
+        let layers = inherit.filter(|i| !i.status.success()).map(|inherit| {
             let said = String::from_utf8_lossy(&inherit.stderr);
             let why = if said.contains("usage:") && !said.contains("inherit") {
                 "this firecode has no `layer inherit`".to_string()
@@ -534,6 +595,7 @@ impl FirecodeBackend {
             layers,
             verify: spec.verify.clone(),
             owns: true,
+            mounted,
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
@@ -585,6 +647,7 @@ impl FirecodeBackend {
             layers: None,
             verify: None,
             owns: false,
+            mounted: false,
         };
         // The parent's VM has to be up and taking commands, or there is nothing to run in.
         b.guest("true").map_err(|e| {
@@ -686,9 +749,14 @@ impl FirecodeBackend {
             .run_dir()
             .and_then(|d| std::fs::read_to_string(d.join("verify-status")).ok())
             .map(|t| t.trim().to_string());
+        // On the run when firecode moved it there (a mounted worktree keeps only the work),
+        // in the delivered tree otherwise.
         let log = self
-            .landed()
-            .map(|p| p.join(".firecode-verify.log").display().to_string())
+            .run_dir()
+            .map(|d| d.join("verify.log"))
+            .filter(|l| l.is_file())
+            .or_else(|| self.landed().map(|p| p.join(".firecode-verify.log")))
+            .map(|l| l.display().to_string())
             .unwrap_or_else(|| ".firecode-verify.log in the delivered work".into());
         Some(match status.as_deref() {
             Some("0") => format!("ACCEPTANCE CHECK PASSED: `{check}` exited 0 (log: {log})."),
@@ -774,11 +842,11 @@ impl FirecodeBackend {
                 Some(r) if r.starts_with("done ") => {
                     *self.landed.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(PathBuf::from(r["done ".len()..].trim()));
-                    let _ = std::fs::remove_dir_all(&self.project);
+                    self.remove_copy();
                     return;
                 }
                 Some(r) if r == "none" => {
-                    let _ = std::fs::remove_dir_all(&self.project);
+                    self.remove_copy();
                     return;
                 }
                 Some(_failed) => return,
@@ -797,6 +865,14 @@ impl FirecodeBackend {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
         if self.landed().is_some() || self.run_finished() {
+            self.remove_copy();
+        }
+    }
+
+    /// The copy the VM was booted on, gone once its work has landed - and never a mounted
+    /// worktree, which is the operator's own and is where the work landed.
+    fn remove_copy(&self) {
+        if !self.mounted {
             let _ = std::fs::remove_dir_all(&self.project);
         }
     }
@@ -948,6 +1024,13 @@ impl ExecBackend for FirecodeBackend {
         // Said as what happened to the work, not as the VM's state: "the VM is
         // down" was read by the first model to see it as "the placement failed".
         let work = match self.landed() {
+            Some(p) if self.mounted => format!(
+                "the subagent's VM finished normally. It worked in the worktree {} itself - \
+                 mounted, not copied - so its edits are there and its commits are on that \
+                 worktree's branch (`git -C {} log`). Nothing was copied",
+                p.display(),
+                p.display()
+            ),
             Some(p) => format!(
                 "the subagent's VM finished normally. Everything it wrote is in {} — a copy \
                  of {} as the guest left it. Nothing was applied to the source tree: diff \
@@ -1100,6 +1183,26 @@ impl ExecBackend for FirecodeBackend {
     }
 
     fn describe(&self) -> String {
+        if self.mounted {
+            return format!(
+                "firecode VM (run {}) with the worktree {} mounted read-write: edits land in it \
+                 as they are made, and commits go to its branch in the real repository. The \
+                 main checkout is mounted read-only, the repository's .git read-write; nothing \
+                 else of the host is reachable - no other files, processes or devices. {}{}",
+                if self.run.is_empty() { "?" } else { &self.run },
+                self.project.display(),
+                if self.writable {
+                    "Writable"
+                } else {
+                    "READ-ONLY (downgraded)"
+                },
+                if self.processes.is_some() {
+                    ", exec through `firecode in`"
+                } else {
+                    ", NO exec (downgraded)"
+                },
+            );
+        }
         format!(
             "firecode VM (run {}) holding a copy of {} at {}: the VM is the boundary — \
              no host filesystem, processes or devices; the network is the guest's. \
@@ -1450,6 +1553,11 @@ mod tests {
         std::fs::write(p, vec![b'x'; bytes]).unwrap();
     }
 
+    /// **`down_all` brings down every live backend in the process**, other tests' included - so
+    /// the test of it and a test that asserts a VM stays up must not run at the same time. The
+    /// attach test failed about one run in five on the parent's VM being "downed" under it.
+    static DOWN_ALL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// **A stub firecode**: `<root>/bin/firecode`, a shell script whose `case "$1"` arms are
     /// `arms`, with `<root>/runs/` beside it the way the real checkout lays them out (the
     /// backend finds a run's record there through the binary's own path). Returns the binary.
@@ -1488,6 +1596,7 @@ mod tests {
     /// does not own the VM; dropping it calls no `down`, and the parent's own drop still does.
     #[test]
     fn a_child_attached_to_its_parents_vm_leaves_it_up() {
+        let _alone = DOWN_ALL.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp("attach");
         let src = root.join("src");
         file(&src.join("a.txt"), 10);
@@ -1644,6 +1753,68 @@ mod tests {
         );
     }
 
+    /// **A worktree is mounted, a submodule and a plain tree are copied** - both a worktree and a
+    /// submodule have a `.git` file, and only a worktree's names `worktrees/`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_worktree_is_mounted_and_a_submodule_is_not() {
+        let root = tmp("mounts");
+        let wt = root.join("repo-x");
+        let sub = root.join("sub");
+        let plain = root.join("plain");
+        for d in [&wt, &sub, &plain] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(wt.join(".git"), "gitdir: /p/repo/.git/worktrees/repo-x\n").unwrap();
+        std::fs::write(sub.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        assert!(mounts(&wt));
+        assert!(!mounts(&sub));
+        assert!(!mounts(&plain));
+        assert_eq!(
+            project_for(&wt, "s1"),
+            wt,
+            "a mounted VM's project is the worktree"
+        );
+        assert_ne!(
+            project_for(&plain, "s1"),
+            plain,
+            "a copied one's is the copy"
+        );
+    }
+
+    /// **A mounted placement copies nothing and never deletes the worktree** - the project IS the
+    /// operator's worktree, so the copy-and-clean-up path must not reach it, on success or after
+    /// `down`, and the answer says the work is in the worktree rather than in a copy.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mounted_worktree_is_neither_copied_nor_removed() {
+        let root = tmp("mounted");
+        let wt = root.join("repo-x");
+        file(&wt.join("work.txt"), 10);
+        std::fs::write(wt.join(".git"), "gitdir: /p/repo/.git/worktrees/repo-x\n").unwrap();
+        let fc = root.join("fc");
+        let arms = format!(
+            "{HAPPY}\n\
+             down) mkdir -p \"$ROOT/runs/r1\"; echo 'done {w}' > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;",
+            w = wt.display()
+        );
+        let bin = stub_firecode(&fc, &arms);
+        let b = FirecodeBackend::up(&spec_with(&wt, &root.join("cache"), &bin)).unwrap();
+        assert_eq!(
+            b.project(),
+            wt.as_path(),
+            "the VM's project is the worktree itself"
+        );
+        assert!(
+            !root.join("cache").join("child").exists(),
+            "nothing was copied"
+        );
+        let answer = b.close().unwrap();
+        assert!(wt.join("work.txt").exists(), "the worktree survives down");
+        assert!(answer.contains("worked in the worktree"), "{answer}");
+        assert!(answer.contains("Nothing was copied"), "{answer}");
+    }
+
     /// **The parent's acceptance check reaches `firecode up`**, as `--verify <command>`, so it is
     /// firecode - not the child - that runs it when the VM comes down.
     #[test]
@@ -1739,6 +1910,7 @@ mod tests {
     /// explicit half the daemon calls on its way out.
     #[test]
     fn down_all_brings_down_a_vm_whose_backend_is_still_alive() {
+        let _alone = DOWN_ALL.lock().unwrap_or_else(|e| e.into_inner());
         let root = tmp("downall");
         let src = root.join("src");
         file(&src.join("a.txt"), 10);

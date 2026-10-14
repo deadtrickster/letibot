@@ -176,3 +176,78 @@ fn a_vm_backends_acceptance_check_decides_what_close_says() {
     let _ = std::fs::remove_dir_all(&cache);
     let _ = std::fs::remove_dir_all(&src);
 }
+
+/// **A worktree is mounted, not copied** (a Mac): the backend boots on the worktree itself, a write
+/// lands in it while the VM runs, nothing is copied under the cache, and after `close` the worktree
+/// is intact and the answer says the work is there.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_vm_backend_on_a_worktree_works_in_it_directly() {
+    if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");
+        return;
+    }
+    let base = std::env::temp_dir().join(format!("letibot-fc-wt-{}", std::process::id()));
+    let repo = base.join("repo");
+    let wt = base.join("repo-feat");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["-C", repo.to_str().unwrap(), "init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+    git(&["-C", repo.to_str().unwrap(), "add", "a.txt"]);
+    git(&[
+        "-C",
+        repo.to_str().unwrap(),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        "base",
+    ]);
+    git(&[
+        "-C",
+        repo.to_str().unwrap(),
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "feat",
+        wt.to_str().unwrap(),
+    ]);
+    assert!(letibot_tools::firecode::mounts(&wt));
+
+    let cache = base.join("cache");
+    let mut spec = FirecodeSpec::new(&wt, "wt-child");
+    spec.cache = cache.clone();
+    let b = FirecodeBackend::up(&spec).expect("up");
+    eprintln!("{}", b.describe());
+    assert_eq!(b.project(), wt.as_path());
+    assert!(
+        !cache.join("wt-child").exists(),
+        "nothing was copied under the cache"
+    );
+    b.write("from-vm.txt", b"written in the guest\n").unwrap();
+    assert_eq!(
+        std::fs::read(wt.join("from-vm.txt")).unwrap(),
+        b"written in the guest\n",
+        "the write is in the worktree on the host while the VM runs"
+    );
+    let answer = b.close().expect("an answer");
+    eprintln!("{answer}");
+    assert!(answer.contains("worked in the worktree"), "{answer}");
+    assert!(
+        wt.join("a.txt").exists() && wt.join("from-vm.txt").exists(),
+        "the worktree is intact"
+    );
+    drop(b);
+    let _ = std::fs::remove_dir_all(&base);
+}

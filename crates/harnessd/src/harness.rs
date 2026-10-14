@@ -18957,9 +18957,14 @@ impl HarnessTaskRunner {
         // is the VM; the stroppy grandchild that read *"You are in a firecode microVM"* in its
         // prompt ran on the operator's Mac instead, asking for every command. The same VM down a
         // whole chain: an attached session's children attach to the VM it is attached to.
+        // Named the way the parent's backend named it: its worktree when that was mounted, its
+        // copy under the cache otherwise (`firecode::project_for`).
         let parent_vm = self.base.vm_attach.clone().or_else(|| {
             (self.base.placement == Placement::Firecode).then(|| {
-                letibot_tools::firecode::FirecodeBackend::project_of(&self.base.session_id)
+                letibot_tools::firecode::project_for(
+                    &self.base.vm_copy_source(),
+                    &self.base.session_id,
+                )
             })
         });
         sub_cfg.vm_attach = match placement {

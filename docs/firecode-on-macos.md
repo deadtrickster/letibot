@@ -110,7 +110,29 @@ The work is NOT done, whatever the subagent said.
 
 `verify` without `where: firecode` is refused, because nothing would run it.
 
-**Nothing is applied for you.** The work is a sibling directory: diff it and take what you want.
+**Where the work goes depends on what the child works in.**
+
+- **A worktree** (a `task_start` child, or any session whose workspace is a git worktree) is
+  **mounted, not copied**: the worktree read-write, the main checkout read-only, the repository's
+  `.git` read-write. The child edits the real worktree and commits to its branch as an agent on
+  the host would - `git log <branch>` shows its work while it runs - and nothing is copied in or
+  out. Its answer says so: *"It worked in the worktree … itself - mounted, not copied"*.
+- **Anything else** is copied, and the work comes back as a sibling directory: diff it and take
+  what you want. Nothing is applied for you.
+
+### Just a shell, or just a test run
+
+Not every use needs an agent. From inside a project:
+
+```sh
+firecode sh                                   # a contained Linux shell; exit and it is gone
+firecode sh -c 'GOARCH=386 go test ./...'     # one command, its exit status
+```
+
+The project is mounted read-only with a throwaway layer over it, so tests can write scratch files
+and nothing reaches your tree, and nothing is kept afterwards - no copy, no result directory, no
+per-project disk. x86 binaries (`GOARCH=386`, amd64 containers) run under qemu-user in the arm64
+guest.
 
 ## 5. Containers in a VM
 

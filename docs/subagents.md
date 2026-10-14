@@ -62,6 +62,16 @@ Until the backend below existed, `where: firecode` was refused by name and the
 subagent was **not** run on the host in its place — running here and calling
 it a VM is the boundary claim this design exists not to make.
 
+### A child in a worktree is mounted, not copied
+
+On a Mac a VM-placed child whose workspace is a git worktree - every `task_start` child - is
+booted on that worktree itself (`firecode::mounts`): firecode shares it into the guest
+read-write, with the main checkout read-only and the repository's `.git` read-write. Nothing is
+copied under `~/.cache/letibot/firecode`, its edits and commits are in the worktree and on its
+branch as they happen, and the backend never removes the project (`mounted`), since it is the
+operator's own. Its children attach to the VM by the worktree's path (`firecode::project_for`).
+Anything that is not a worktree is still copied, and on Linux everything is.
+
 ### Holding a placed child to a check
 
 `task` / `task_start` take `verify` with `where: firecode`: a shell command firecode runs in the
