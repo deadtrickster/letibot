@@ -1133,7 +1133,7 @@ impl App {
         // just arrived is the whole session, again, for every row in it. From
         // the head of its ROUND, because a round is what renders as a unit; see
         // `round_head`.
-        let k = self.round_head(idx);
+        let k = self.round_head(idx).min(self.run_head(idx));
         self.invalidate_history_from(k);
         // The pane's accumulated prose, handed over the same way its calls are.
         //

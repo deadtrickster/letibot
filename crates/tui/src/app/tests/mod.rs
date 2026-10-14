@@ -1416,6 +1416,7 @@ mod hits;
 mod jobcard;
 mod jobs;
 mod markerclick;
+mod markerorder;
 mod misc;
 mod notes;
 mod oneliners;
