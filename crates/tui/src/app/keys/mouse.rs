@@ -35,7 +35,7 @@ impl App {
             Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
             Target::CountLabel(_) | Target::GitField => true,
-            Target::FlashNotice => self.notice.is_some(),
+            Target::FlashNotice => self.status_click.is_some(),
         }
     }
 
@@ -120,10 +120,11 @@ impl App {
             // **A todo row's `waits on j97 · pg-timing` opens the job** — the operator: *"\"waits
             // on j97\" - make j97 a link to the real job, also render job slug"*. A button, like
             // the notice: the click is the act, and `w` on the row is the same act.
-            // **The flash notice, cut to its line, opens whole** (R89).
+            // **The flash notice, cut to its line, opens whole** (R89) — and so does a progress
+            // the status row could not say all of.
             (Target::FlashNotice, _) => {
-                if let Some(text) = self.notice.clone() {
-                    self.open_text_popup(text, ("notice".to_string(), rano::style::Role::Pending));
+                if let Some((title, text)) = self.status_click.clone() {
+                    self.open_text_popup(text, (title, rano::style::Role::Pending));
                 }
                 return ControlFlow::Break(None);
             }

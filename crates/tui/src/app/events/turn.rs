@@ -29,6 +29,12 @@ impl App {
                 done,
                 total,
             } => {
+                // **A new operation starts the clock; a tick of the same one does not.** The
+                // fork names its render and its write separately (`re-seating: rendering …`, then
+                // `re-seating: writing …`), and each is its own bar from zero.
+                if done < total && self.filling.as_ref().is_none_or(|f| f.0 != what) {
+                    self.filling_since = self.now_ms;
+                }
                 self.filling = (done < total).then_some((what, unit, done, total));
                 self.redraw = true;
                 Disposition::Rendered
@@ -58,6 +64,9 @@ impl App {
                 // a scratch summary's numbers landing there is exactly the mislabel the
                 // old suppression traded away the progress line to avoid. Nothing else
                 // writes `self.compacting`, so the two cannot be confused.
+                if self.compacting.is_none() {
+                    self.compacting_since = self.now_ms;
+                }
                 self.compacting = Some(CompactionLine {
                     half,
                     halves,

@@ -660,6 +660,7 @@ impl App {
                 .map(|i| i.item_id.clone())
                 .collect();
             (!ids.is_empty()).then(|| Bulk {
+                announced: ids.len(),
                 ids,
                 at_ms: self.now_ms,
             })

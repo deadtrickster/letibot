@@ -1633,7 +1633,7 @@ fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
     )));
     assert!(a.filling.is_some(), "the tick armed the bar");
     let armed = a.screen(100, 30).join("\n");
-    assert!(armed.contains("897 of 2000 rows"), "{armed}");
+    assert!(armed.contains("897/2000 rows"), "{armed}");
 
     // **The demotion's own delivery**: a snapshot, with the reason it happened.
     a.apply(ServerFrame::Resync {
@@ -1648,11 +1648,14 @@ fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
     );
     let after = a.screen(100, 30).join("\n");
     assert!(
-        !after.contains("of 2000 rows"),
+        !after.contains("/2000 rows"),
         "and it must leave the screen: {after}"
     );
     // A fill that is still running re-arms itself on its next tick, which is what makes
-    // clearing here safe rather than lossy.
+    // clearing here safe rather than lossy. (Past the resync's flash notice: while it is up the
+    // progress gives up its counts to keep the notice whole — `App::status_row`.)
+    a.clock(1);
+    a.clock(2 + NOTICE_MS);
     a.apply(ServerFrame::Event(env(
         2,
         SessionEvent::Filling {
@@ -1664,7 +1667,7 @@ fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
     )));
     let again = a.screen(100, 30).join("\n");
     assert!(
-        again.contains("960 of 2000 rows"),
+        again.contains("960/2000 rows"),
         "a fill still going comes back on its next tick: {again}"
     );
 }

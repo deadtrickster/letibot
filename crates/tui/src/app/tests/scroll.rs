@@ -1723,35 +1723,32 @@ fn a_row_without_a_body_draws_nothing_and_renders_its_body_when_it_lands() {
 /// **Nothing on the line may move sideways except the bar's own edge.**
 ///
 /// The operator: *"move cat to the right most position or thngs jump
-/// around"*. Two fields change width as the carry runs — the cat, whose
-/// frames are 7 and 8 columns, and the numerator, which grows from `0` to its
-/// denominator. Either one shifts whatever is drawn to its right, and a
+/// around"*. Two fields change width as the carry runs — the animation (the
+/// cat once, the status row's spinner now), and the numerator, which grows
+/// from `0` to its denominator. Either one shifts whatever is drawn to its right, and a
 /// progress indicator that shuffles reads as a fault.
 ///
 /// Rendered width is the assertion, not the byte length: these rows are
 /// painted, and `width::width` is what skips the escapes.
 #[test]
 fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
-    let cfg = RenderConfig {
-        width: 100,
-        ..Default::default()
-    };
     // **The premise**: something on this line has to actually change across
     // the sample, or a constant width below proves nothing at all.
     //
-    // The cat is no longer one of those things — every frame is one width now,
-    // which `cat_frames_are_one_width_with_the_face_in_one_place` is what
-    // guarantees, and this test leans on it rather than re-proving it. What is
-    // asserted here is that the sample really does walk the animation, and
-    // that the NUMERATOR changes width, which is the variable field this line
-    // has to hold still around.
-    let ticks: Vec<u64> = (0..8).map(|t| t * 400).collect();
-    let mut frames: Vec<&str> = ticks.iter().map(|t| cat_frame(*t)).collect();
+    // The line's animation is the status row's spinner now (the cat stayed on the attach
+    // screen), one column in every frame. What is asserted here is that the sample really
+    // does walk the animation, and that the NUMERATOR changes width, which is the variable
+    // field this line has to hold still around.
+    let ticks: Vec<u64> = (0..8).map(|t| t * 120).collect();
+    let mut frames: Vec<char> = ticks
+        .iter()
+        .map(|t| rano::agent::text::spinner(*t))
+        .collect();
     frames.sort_unstable();
     frames.dedup();
     assert!(
         frames.len() > 1,
-        "the sampled ticks must hit more than one cat frame, or the line is \
+        "the sampled ticks must hit more than one spinner frame, or the line is \
              never redrawn in this test: {frames:?}"
     );
     assert_ne!(
@@ -1761,12 +1758,18 @@ fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
              below says nothing about the count either"
     );
 
+    // **The line is the status row's now** (`ui::progress_row`): one line, label · bar ·
+    // count · clock, and the rule is the same — the count must not shove the clock about.
+    let mut a = app();
     let mut seen: Vec<usize> = Vec::new();
-    // Across the whole run, and across a full cycle of cat frames.
-    for done in [0u64, 7, 99, 100, 999, 1000, 2702] {
+    // Across the whole run, and across a full cycle of spinner frames.
+    for done in [0u64, 7, 99, 100, 999, 1000, 2701] {
         for tick in &ticks {
-            let line = filling_line("carrying", "rows", done, 2702, *tick, &cfg);
-            seen.push(rano::width::text::width(&line[1]));
+            a.filling = Some(("carrying".into(), "rows".into(), done, 2702));
+            a.clock(*tick);
+            // The clock reads the same at every sample, so what is measured is the count.
+            a.filling_since = *tick;
+            seen.push(rano::width::text::width(&a.status_row(100).0));
         }
     }
     seen.dedup();
@@ -1791,18 +1794,18 @@ fn a_replaced_item_vector_cannot_invert_the_count() {
     a.clock(0);
     a.apply(snapshot_hello("big", 40));
     let first = a.screen(80, 40).join("\n");
-    assert!(first.contains("40 row(s) announced"), "{first}");
+    assert!(first.contains("0/40 rows"), "{first}");
 
     // A second snapshot replaces the vector with a SMALLER carry. A remembered peak
     // would still say 40 here.
     a.apply(snapshot_hello("small", 4));
     let after = a.screen(80, 40).join("\n");
     assert!(
-        after.contains("4 row(s) announced"),
+        after.contains("0/4 rows"),
         "the count follows the rows the head now holds: {after}"
     );
     assert!(
-        !after.contains("40 row(s)") && !after.contains("44 row(s)"),
+        !after.contains("/40 rows") && !after.contains("/44 rows"),
         "a replaced vector must not leave a number bigger than the whole: {after}"
     );
 }
@@ -1838,9 +1841,9 @@ fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
             total: n,
         },
     )));
-    let screen = a.screen(80, 40).join("\n");
+    let screen = a.screen(120, 40).join("\n");
     assert_eq!(
-        screen.matches("carrying the conversation").count(),
+        screen.matches("arrying the conversation").count(),
         1,
         "exactly one line for the whole carry: {screen}"
     );
@@ -1848,7 +1851,7 @@ fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
         !screen.contains("waiting for the body"),
         "and not one placeholder among them: {screen}"
     );
-    assert!(screen.contains(&format!("  0 of {n} rows")), "{screen}");
+    assert!(screen.contains(&format!("  0/{n} rows")), "{screen}");
 
     // Bodies land and the daemon's count follows them.
     for i in 0..(n / 2) {
@@ -1862,9 +1865,9 @@ fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
             },
         )));
     }
-    let half = a.screen(80, 40).join("\n");
+    let half = a.screen(120, 40).join("\n");
     assert!(
-        half.contains(&format!("{} of {n} rows", n / 2)),
+        half.contains(&format!("{}/{n} rows", n / 2)),
         "the numerator is what the daemon says has arrived: {half}"
     );
 
@@ -1878,9 +1881,9 @@ fn a_fork_announces_three_hundred_rows_and_draws_one_progress_line() {
             total: n,
         },
     )));
-    let done = a.screen(80, 40).join("\n");
+    let done = a.screen(120, 40).join("\n");
     assert!(
-        !done.contains("carrying the conversation"),
+        !done.contains("arrying the conversation"),
         "the fill is done, so nothing is drawn: {done}"
     );
 }

@@ -379,7 +379,7 @@ fn a_head_survives_its_daemon_and_resumes_from_the_seq_it_had() {
     // ANY string, including one that said every row was missing. A test that looks for text the
     // code no longer has is a green test about nothing.
     assert!(
-        !recovered.contains("announced to this head and never filled"),
+        !recovered.contains("never filled"),
         "a resume left a row with no body: {recovered}"
     );
     assert!(

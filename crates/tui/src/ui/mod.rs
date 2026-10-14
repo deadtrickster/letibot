@@ -11,6 +11,7 @@ pub mod hint_bar;
 pub mod loading;
 pub mod paint;
 pub mod panes;
+pub mod progress_row;
 pub mod render;
 pub mod rows;
 pub mod screen;

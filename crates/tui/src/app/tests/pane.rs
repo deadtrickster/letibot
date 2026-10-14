@@ -797,9 +797,11 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
             total: 2_702,
         },
     )));
-    let carried = a.screen(80, 20).join("\n");
+    // Wide enough for the whole one-line form: at 80 columns the long label keeps the bar
+    // and gives up the counts (`ui::progress_row`).
+    let carried = a.screen(120, 20).join("\n");
     assert!(
-        carried.contains("carrying the conversation") && carried.contains("of 2702 rows"),
+        carried.contains("Carrying the conversation") && carried.contains("/2702 rows"),
         "a named fill draws the bar: {carried}"
     );
     // **A small one draws no bar** — under `MIN_FILLING` — and still no sentence, because
@@ -813,9 +815,9 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
             total: 40,
         },
     )));
-    let small = a.screen(80, 20).join("\n");
+    let small = a.screen(120, 20).join("\n");
     assert!(
-        !small.contains("of 40 rows") && !small.contains("announced"),
+        !small.contains("/40 rows") && !small.contains("Rows arriving"),
         "a 40-row fill gets no bar and needs no sentence: {small}"
     );
 
@@ -825,7 +827,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     b.apply(snapshot_hello("snap", 4));
     let waiting = b.screen(80, 20).join("\n");
     assert!(
-        waiting.contains("4 row(s) announced, waiting for the daemon to send them"),
+        waiting.contains("Rows arriving") && waiting.contains("0/4 rows"),
         "a snapshot with no bodies is a bulk announcement and is said: {waiting}"
     );
     // **Past the patience it stops claiming to be progress** — and this is the sentence
@@ -834,7 +836,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     b.clock(1_000 + BODY_PATIENCE + 1);
     let stalled = b.screen(80, 20).join("\n");
     assert!(
-        stalled.contains("4 row(s) announced to this head and never filled"),
+        stalled.contains("4 row(s) never filled"),
         "after the patience it says they are not coming: {stalled}"
     );
     // **And it NAMES them.** A count is the least useful form of this fact and the ids are
@@ -878,7 +880,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     }
     let filed = b.screen(80, 20).join("\n");
     assert!(
-        !filed.contains("announced"),
+        !filed.contains("never filled") && !filed.contains("Rows arriving"),
         "the bulk announcement is complete, so the line goes: {filed}"
     );
 
@@ -905,7 +907,10 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     }
     // The snapshot is complete, so the trigger is gone.
     let clean = d.screen(80, 20).join("\n");
-    assert!(!clean.contains("announced"), "premise: {clean}");
+    assert!(
+        !clean.contains("never filled") && !clean.contains("Rows arriving"),
+        "premise: {clean}"
+    );
 
     // Now one live row, body-less, and no body ever comes.
     d.apply(ServerFrame::Event(env(
@@ -915,7 +920,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     d.clock(1_000 + BODY_PATIENCE + 1);
     let after = d.screen(80, 20).join("\n");
     assert!(
-        !after.contains("announced and never filled in"),
+        !after.contains("never filled"),
         "a live body-less row is the R2 window, and the daemon never announced it in a \
              snapshot — the sentence must not blame the daemon for it:\n{after}"
     );
@@ -939,7 +944,7 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     e.clock(2_000 + BODY_PATIENCE + 1);
     let mixed = e.screen(80, 20).join("\n");
     assert!(
-        mixed.contains("1 row(s) announced to this head and never filled"),
+        mixed.contains("1 row(s) never filled"),
         "the count must be the SNAPSHOT's unlanded rows (1), not every body-less row the \
              head holds (2) — the extra one was never announced:\n{mixed}"
     );
@@ -955,13 +960,13 @@ fn a_named_fill_draws_the_bar_and_an_unnamed_snapshot_is_said_but_a_live_append_
     }
     let ordinary = c.screen(80, 20).join("\n");
     assert!(
-        !ordinary.contains("announced"),
+        !ordinary.contains("Rows arriving"),
         "a live body-less row is the R2 window, not a carry: {ordinary}"
     );
     c.clock(BODY_PATIENCE + 1);
     let ordinary_late = c.screen(80, 20).join("\n");
     assert!(
-        !ordinary_late.contains("never filled in"),
+        !ordinary_late.contains("never filled"),
         "and it never becomes a stall however long it sits: {ordinary_late}"
     );
 }

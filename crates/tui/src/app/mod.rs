@@ -1530,9 +1530,20 @@ pub struct App {
     /// **A fill the daemon named** ([`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)):
     /// `what`, `unit`, `done`, `total`, or `None` when nothing is running. Cleared the
     /// moment `done >= total`, because the finish is a durable note, not a line that
-    /// stays. See [`filling_line`] for why this is the daemon's count and not a count of
-    /// the rows still lacking a body.
+    /// stays.
+    ///
+    /// **The daemon's count, not a count of the rows still lacking a body.** The head used to
+    /// draw this from the body-less rows, which meant inferring the *operation* from the
+    /// *symptom*: four things produce body-less rows (an ordinary reply, a reseat, a compaction,
+    /// an import) and only some are a carry, so the line said *"carrying the conversation onto
+    /// the new prompt"* over every ordinary message. Only the layer doing the operation knows
+    /// which one it is. Drawn as one line of the status row ([`App::progresses`]).
     pub(crate) filling: Option<(String, String, u64, u64)>,
+    /// **When the fill in [`App::filling`] started**, on this head's clock: the first tick of an
+    /// operation, re-armed when the daemon names a different one (a reseat's render, then its
+    /// write). The status row's clock reads from it, and when two progresses are live the one
+    /// that started last is the one the row shows ([`App::progresses`]).
+    pub(crate) filling_since: u64,
     /// **The daemon is still starting** (TODO R92.2): the last `daemon_starting` step it named
     /// (`starting: loading the vocabulary`, `starting: resuming the session (N rows)` …), until
     /// `daemon_started`. The socket listens before the worker runs, so a head can be attached
@@ -1556,6 +1567,13 @@ pub struct App {
     /// had not changed (2026-09-20). Nothing here can be confused with the session's
     /// figures however alike they look, because nothing else writes this field.
     pub(crate) compacting: Option<CompactionLine>,
+    /// **When the fold in [`App::compacting`] started**, on this head's clock — its first
+    /// `CompactionProgress`. See [`App::filling_since`].
+    pub(crate) compacting_since: u64,
+    /// **What a click on the status row opens, as the last frame drew it**: `(title, text)`, or
+    /// `None` when the row said everything it had. A cut flash notice (R89), or a progress whose
+    /// row form left something out — see [`App::status_row`].
+    pub(crate) status_click: Option<(String, String)>,
     /// **Pre-emptive compaction is OFF for this session, and why** — the
     /// no-progress guard's finding, as the daemon rendered it on the
     /// `auto-compact` settings row or in its `auto_compact_no_progress`
@@ -1876,8 +1894,11 @@ impl App {
             cursor: None,
             bulk: None,
             filling: None,
+            filling_since: 0,
             booting: None,
             compacting: None,
+            compacting_since: 0,
+            status_click: None,
             held: None,
             auto_compact_off: None,
             nags_paused: None,

@@ -1,9 +1,9 @@
-//! **Waiting, drawn**: the cat while a session arrives, and the lines for a transcript still
-//! filling or being compacted — drawn by `rano::agent::loading`.
+//! **Waiting, measured**: how long an unfilled announcement may wait and how big a fill must be
+//! to be drawn. The fill, fold and announced-rows progress itself is one line of the status row
+//! now (`ui::progress_row`); the cat survives on the attach screen (`rano::agent::screens`).
 
+#[cfg(doc)]
 use crate::app::*;
-use crate::ui::render::{RenderConfig, row_strings};
-use rano::agent::loading::{Compacting, Filling};
 
 /// **How long a bulk announcement may stay unfilled before the head says it is not
 /// coming**, in milliseconds.
@@ -45,63 +45,6 @@ pub(crate) const BODY_PATIENCE: u64 = 5_000;
 /// deserve a cat but a three-row batch that never lands is exactly what the sentence is
 /// for.
 pub(crate) const MIN_FILLING: u64 = 256;
-
-/// **One line for a fill the DAEMON named**: the cat, the bar, and the count.
-///
-/// The numbers are the daemon's — `what` in its own words, and `done` of `total` in the
-/// `unit` it named — so this draws the fact rather than a rendering of it. The head used
-/// to draw this line from the rows still lacking a body, which meant inferring the
-/// *operation* from the *symptom*: four things produce body-less rows (an ordinary
-/// reply, a reseat, a compaction, an import) and only some are a carry, so the line said
-/// *"carrying the conversation onto the new prompt"* over every ordinary message. Only
-/// the layer doing the operation knows which one it is; that is `SessionEvent::Filling`,
-/// and this is the one renderer for all of them.
-///
-/// A free function for the same reason `filling_line` is: by the time the tail is
-/// assembled, `screen` has already borrowed `self` mutably.
-pub(crate) fn filling_line(
-    what: &str,
-    unit: &str,
-    done: u64,
-    total: u64,
-    now_ms: u64,
-    cfg: &RenderConfig,
-) -> Vec<String> {
-    let f = Filling {
-        what: what.to_string(),
-        unit: unit.to_string(),
-        done,
-        total,
-        now_ms,
-    };
-    row_strings(&f.lines(cfg.width), cfg.palette())
-}
-
-/// **A fold, in the compaction's own units** — the renderer for
-/// [`SessionEvent::CompactionProgress`](letibot_sessionlog::SessionEvent::CompactionProgress).
-///
-/// A free function for `filling_line`'s reason: by the time the tail is assembled,
-/// `screen` has already borrowed `self` mutably.
-///
-/// **Two phases, because a fold has two and they are minutes apart.** While the server
-/// is still reading the half's prompt it draws the prefill bar the ordinary turn draws —
-/// the same three-valued bar, so a reader who has watched one recognises this one — and
-/// the count is *read*. Once it starts writing, the count is *written* and the bar is
-/// gone: there is no total to draw a fraction of, which is why that number is a count and
-/// not a percentage. A bar that invented a total would be an indicator that is not the
-/// fact.
-pub(crate) fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
-    let line = Compacting {
-        half: c.half,
-        halves: c.halves,
-        prompt_tokens: c.prompt_tokens,
-        processed: c.processed,
-        written: c.written,
-        unit: c.unit.to_string(),
-        now_ms,
-    };
-    row_strings(&line.lines(cfg.width), cfg.palette())
-}
 
 /// How long an attach may go unanswered before the waiting screen says how to get out —
 /// rano's (`rano::agent::screens`), named here for the tests that drive the clock past it.

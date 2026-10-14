@@ -260,9 +260,9 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         //
         // A row with no body is not information, and a screen full of identical
         // placeholders is not a diagnostic — it is noise with the shape of one. What
-        // IS worth saying is how far along the carry is, and that is one line at the
-        // tail with the cat and the bar the prefill already uses; see
-        // `App::filling_line`. Both callers drop a render with no lines, so
+        // IS worth saying is how far along the carry is, and that is one line of the
+        // status row with the bar the prefill already uses; see
+        // `App::progresses`. Both callers drop a render with no lines, so
         // returning none is how a row says "not yet".
         return (RowClass::Other, Vec::new());
     };

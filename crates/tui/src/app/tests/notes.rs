@@ -1542,15 +1542,15 @@ fn an_import_draws_the_importers_own_counter_and_clears_when_it_is_done() {
 
     a.apply(ServerFrame::Event(env(1, tick(0))));
     let start = a.screen(100, 30).join("\n");
-    assert!(start.contains("0 of 9570 parts"), "{start}");
+    assert!(start.contains("0/9570 parts"), "{start}");
     assert!(
-        start.contains("importing an opencode conversation"),
+        start.contains("Importing an opencode conversation"),
         "{start}"
     );
 
     a.apply(ServerFrame::Event(env(2, tick(4_790))));
     let mid = a.screen(100, 30).join("\n");
-    assert!(mid.contains("4790 of 9570 parts"), "{mid}");
+    assert!(mid.contains("4790/9570 parts"), "{mid}");
 
     // **The last tick clears the line.** The daemon's durable finish note is what
     // says the fill finished, and a bar left at `total of total` would sit on the

@@ -304,8 +304,11 @@ impl App {
         //
         // **A flash notice too long for the room it has says so, and a click reads it whole**
         // (R89): cut, it ends in the hint every notice line ends in, and the row is a click
-        // target (`Target::FlashNotice`).
-        let (status, notice_cut) = self.status_row(w);
+        // target (`Target::FlashNotice`). **So is a progress whose one-line form left something
+        // out** — the block it replaced said more than a row holds, and the click opens all of it.
+        let (status, click) = self.status_row(w);
+        let row_clicks = click.is_some();
+        self.status_click = click;
         let mut notice_at: Option<usize> = None;
         // Live slash-command matches, one dim row above the composer. It is a
         // typing aid, not a message.
@@ -574,7 +577,7 @@ impl App {
         });
         // **The cut flash notice, as a target** — where this frame put it, if the backstop and the
         // truncate left it on the frame.
-        if notice_cut
+        if row_clicks
             && let Some(row) = notice_at
                 .and_then(|at| at.checked_sub(drained))
                 .map(|at| body_rows + at)

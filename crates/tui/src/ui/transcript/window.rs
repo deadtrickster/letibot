@@ -499,93 +499,13 @@ impl App {
             segs.push(Seg::Owned(tail_echo));
         }
 
-        // **A fill the daemon NAMED, with a bar when it is big enough to want one.**
-        // The numbers are the daemon's (`Filling`); the threshold gates only whether it is
-        // worth a bar with a cat on it (`MIN_FILLING`), not whether the line appears at
-        // all. The bar carries settled-vs-to-come in the **glyph** (`█`/`░`, never the
-        // prefill's `▓` *being computed now*) because nothing here is being computed — so
-        // the distinction survives a terminal with no colour.
-        // **The daemon is still starting** (R92.2): the step it named, until its worker runs —
-        // drawn in the status row now (`App::status_row`), not as a row here: a line at the foot
-        // of the conversation that comes and goes moves every row above it.
-
-        if let Some((what, unit, done, total)) = self.filling.clone()
-            && total >= MIN_FILLING
-        {
-            segs.push(Seg::Owned(filling_line(
-                &what, &unit, done, total, now_ms, &cfg,
-            )));
-        }
-
-        // **A compaction's own progress, drawn without a threshold.** A fill is gated by
-        // `MIN_FILLING` because a three-row carry does not deserve a cat; a fold is never
-        // small, never ordinary and never optional — it runs only when the session is at
-        // the wall, and it is the longest wait in the program, so there is nothing to
-        // weigh. This is the line the operator asked for twice: *"leticl compacts but why
-        // no progress bar?"*
-        if let Some(c) = self.compacting.clone() {
-            segs.push(Seg::Owned(compacting_line(&c, now_ms, &cfg)));
-        }
-
-        // **An unnamed bulk announcement: the head says only what it observed.**
-        //
-        // Nobody told this head what the operation is, so it **names no cause** — the
-        // defect this replaces announced *"carrying the conversation onto the new prompt"*
-        // over every ordinary message, because the trigger was a body-less row and every
-        // message has one for the R2 window. The trigger is now the snapshot's bulk
-        // announcement ([`Bulk`]), and the sentence is only ever *how many rows are
-        // missing*; past [`BODY_PATIENCE`] it stops claiming to be progress.
-        //
-        // **Not gated by `MIN_FILLING`.** A three-row batch does not deserve a bar, but a
-        // three-row batch that never lands is exactly what this sentence is for — the
-        // operator learned about a real daemon-side hole from `2 row(s) announced and
-        // never filled in` fired outside any carry.
-        if self.filling.is_none()
-            && let Some(b) = &self.bulk
-        {
-            // **The count is the ANNOUNCEMENT's, and it used to be every body-less row.**
-            //
-            // `outstanding` is `items.len() - arrived`: every body-less row this head holds,
-            // live ones included. The trigger is `bulk`, which is the ids a *snapshot*
-            // announced. Those are different sets, and the mismatch was measured on the
-            // operator's own screen 2026-09-23 — it read `2 row(s) announced and never filled
-            // in` where the snapshot had announced **one** and a live row with no body made up
-            // the difference. The sentence then attributed the live row to the daemon.
-            //
-            // Reproduced in `a_named_fill_draws_the_bar…`'s own test: a good snapshot plus one
-            // live body-less row, and the mixed case prints the snapshot's count.
-            let announced = b.ids.len();
-            let said = if now_ms.saturating_sub(b.at_ms) >= BODY_PATIENCE {
-                // **What this head OBSERVED, and no cause it cannot see.** The head was told
-                // these rows exist — a snapshot carried them — and the bodies never arrived.
-                // Whether the daemon withheld them or sent them and they were lost is not
-                // knowable from here: a head sees what arrives. So the sentence says the fact
-                // and then names the ROWS, because a count is the least useful form of it and
-                // the ids are what make it checkable.
-                // **The ids first, because the line is trimmed to the frame.** The sentence
-                // used to spend its whole width on a cause and leave the count — the one fact
-                // it had — as the last thing on a line that gets cut. So the naming comes
-                // immediately after the count, and the cause and the remedy follow for a
-                // frame wide enough to hold them.
-                let mut ids: Vec<&str> = b.ids.iter().map(String::as_str).collect();
-                ids.sort_unstable();
-                let named = if announced <= 4 {
-                    format!(": {}", ids.join(", "))
-                } else {
-                    format!(": {}, … ({} more)", ids[..3].join(", "), announced - 3)
-                };
-                format!(
-                    "  {announced} row(s) announced to this head and never filled{named} \
-                     — `/resync` clears this"
-                )
-            } else {
-                format!("  {announced} row(s) announced, waiting for the daemon to send them")
-            };
-            segs.push(Seg::Owned(vec![
-                String::new(),
-                row(&rano::agent::pane::faint(said), cfg.palette()),
-            ]));
-        }
+        // **The daemon is still starting** (R92.2), **a fill the daemon named, a fold, and a
+        // snapshot's announced rows still arriving** are all drawn in the status row now
+        // (`App::status_row`, `ui::progress_row`), not as rows here. Each was a line or a block of
+        // two or three at the foot of the conversation that came when the operation started,
+        // changed height when a fold went from reading to writing, and went when it ended — and a
+        // row at the foot that comes and goes moves every row above it. The operator, 2026-10-14:
+        // *"yes, move the compacting progress blocks too"*.
 
         // **The wait, as a walking cat at the centre of the conversation.**
         //

@@ -74,8 +74,9 @@ impl App {
         line
     }
 
-    /// **The status row whole: the turn's words, then the transients** — and whether the flash
-    /// notice in it was cut, which makes the row a click target (`Target::FlashNotice`, R89).
+    /// **The status row whole: the turn's words, then a progress, then the transients** — and what
+    /// a click on the row opens, `(title, text)`, when the row left something out: a cut flash
+    /// notice (`Target::FlashNotice`, R89), or a progress whose one-line form is not all of it.
     ///
     /// The operator, 2026-10-14: *"it showed me "resync..." in violet and "reading job output"
     /// very nice! but they were on their bottom lines and conversation was jumping back and forth.
@@ -84,24 +85,85 @@ impl App {
     /// counted by the fit ladder as `notice`) or at the foot of the conversation (the boot step),
     /// so it took a line from the transcript when it appeared and handed it back when it went —
     /// and with the jobs pane re-reading once a second against a daemon that acknowledges each
-    /// read, that was a jump every second.
+    /// read, that was a jump every second. And then, the same day: *"yes, move the compacting
+    /// progress blocks too"* — the fill, fold and announced-rows blocks, which did the same thing
+    /// on the operations that last minutes ([`crate::ui::progress_row`]).
     ///
     /// This row is the one that never changes height: the fit ladder reserves it whether or not a
     /// turn runs (`rano::agent::fit`, *"the row is RESERVED, not conditional"*). So the transients
-    /// are drawn IN it and the transcript's budget is the same with or without them. The rules:
+    /// and the progress are drawn IN it and the transcript's budget is the same with or without
+    /// them. The rules:
     ///
-    /// * **A turn is running**: each transient follows the turn's clock after ` · `
-    ///   (`⠸ Responding · 2m30s · resync: …`), and the transients are what give way when the
-    ///   row is too narrow — the turn's own words are never cut for them.
-    /// * **Idle**: the transients are the row's content, each in its own colour.
+    /// * **A turn is running**: everything follows the turn's clock after ` · `
+    ///   (`⠸ Responding · 2m30s · Compacting half 1 of 2 · ▐██░░▌ 40% · …`), and the turn's own
+    ///   words are never cut for any of it.
+    /// * **Idle**: the progress leads behind a spinner of its own, then the transients.
+    /// * **The progress gives way piece by piece** — the clock, then the counts, then the bar —
+    ///   to keep the transients after it whole, and never gives up its label: a flash notice is
+    ///   over in seconds and the progress gets its numbers back when it goes.
     ///
-    /// The order is how much a reader loses by losing it: the link being down, then the daemon's
-    /// boot step, then the notice. One that does not fit whole is cut to the room left if at least
-    /// [`TRANSIENT_MIN`] columns remain, and dropped otherwise; nothing after it is drawn.
-    pub(crate) fn status_row(&self, w: usize) -> (String, bool) {
+    /// The transients' order is how much a reader loses by losing it: the link being down, then
+    /// the daemon's boot step, then the notice. One that does not fit whole is cut to the room
+    /// left if at least [`TRANSIENT_MIN`] columns remain, and dropped otherwise; nothing after it
+    /// is drawn.
+    pub(crate) fn status_row(&self, w: usize) -> (String, Option<(String, String)>) {
+        let turn = self.turn_line(w);
+        let progress = self.progress_shown();
+        let Some((forms, detail, more)) = progress else {
+            let (line, cut, _) = self.with_transients(turn, w);
+            let click = cut.then(|| {
+                (
+                    "notice".to_string(),
+                    self.notice.clone().unwrap_or_default(),
+                )
+            });
+            return (row(&line, self.cfg.palette()), click);
+        };
+        let last = forms.len() - 1;
+        for (i, form) in forms.iter().enumerate() {
+            let Some((line, label_cut)) =
+                crate::ui::progress_row::with_progress(&turn, form, w, self.now_ms)
+            else {
+                // Not even the label fits after the turn's words: the row is the turn's.
+                let (line, cut, _) = self.with_transients(turn, w);
+                let click = if cut {
+                    Some((
+                        "notice".to_string(),
+                        self.notice.clone().unwrap_or_default(),
+                    ))
+                } else {
+                    Some(("progress".to_string(), detail))
+                };
+                return (row(&line, self.cfg.palette()), click);
+            };
+            // A fuller form that does not fit whole is passed over for the next one.
+            if i < last && label_cut {
+                continue;
+            }
+            let (line, cut, whole) = self.with_transients(line, w);
+            if whole || i == last {
+                let click = if cut {
+                    Some((
+                        "notice".to_string(),
+                        self.notice.clone().unwrap_or_default(),
+                    ))
+                } else if i > 0 || more || label_cut {
+                    Some(("progress".to_string(), detail))
+                } else {
+                    None
+                };
+                return (row(&line, self.cfg.palette()), click);
+            }
+        }
+        unreachable!("the last form always returns")
+    }
+
+    /// `line` with the transients after it, by [`App::status_row`]'s rules: the line, whether the
+    /// flash notice was cut, and whether every transient was drawn whole.
+    fn with_transients(&self, mut line: Line, w: usize) -> (Line, bool, bool) {
         use rano::render::Span;
-        let mut line = self.turn_line(w);
         let mut notice_cut = false;
+        let mut whole = true;
         let hint = format!(" · {}", crate::ui::transcript::line_cards::CLICK);
         for (text, role, is_notice) in self.transients() {
             // The notice carries its own `· ` mark; the others are joined by one.
@@ -116,10 +178,13 @@ impl App {
                 text
             } else if is_notice && room >= visible_width(&hint) + TRANSIENT_MIN {
                 notice_cut = true;
+                whole = false;
                 format!("{}{hint}", trim_to(&text, room - visible_width(&hint)))
             } else if !is_notice && room >= TRANSIENT_MIN {
+                whole = false;
                 trim_to(&text, room)
             } else {
+                whole = false;
                 break;
             };
             if !sep.is_empty() {
@@ -130,7 +195,7 @@ impl App {
                 break;
             }
         }
-        (row(&line, self.cfg.palette()), notice_cut)
+        (line, notice_cut, whole)
     }
 
     /// **The transient one-line statuses, in the order the status row gives them up last-first**:

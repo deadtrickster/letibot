@@ -764,11 +764,10 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
 /// pending one.
 #[test]
 fn landed_rows_paint_as_settled_and_not_as_pending() {
-    let cfg = RenderConfig {
-        width: 100,
-        ..Default::default()
-    };
-    let line = filling_line("carrying", "rows", 3, 4, 0, &cfg).join("");
+    // The fill's one line in the status row (`ui::progress_row`): three of four rows landed.
+    let mut a = app();
+    a.filling = Some(("carrying".into(), "rows".into(), 300, 400));
+    let (line, _) = a.status_row(100);
     assert!(
         line.contains('█'),
         "three landed rows are settled: {line:?}"

@@ -197,6 +197,9 @@ pub(crate) struct Bulk {
     /// The ids the snapshot announced with no body. A body landing removes its id; an
     /// empty set means the announcement is complete and the trigger clears itself.
     pub(crate) ids: std::collections::HashSet<String>,
+    /// How many the snapshot announced — `ids` as it was when it landed, so the status row can
+    /// say how many of them have arrived rather than only how many are still missing.
+    pub(crate) announced: usize,
     /// When the snapshot landed, on this head's clock — [`BODY_PATIENCE`]'s origin.
     pub(crate) at_ms: u64,
 }
