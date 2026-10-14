@@ -2180,10 +2180,11 @@ impl QueueService {
     /// it, and the first one that starts there takes the lease and re-gates what was judged
     /// (`regate_at_start`).
     fn repositories(&self, _store: &Store) -> Result<Vec<PathBuf>, StoreError> {
-        Ok(super::repository_of_workspace(&self.workspace)
+        // **Every repository of the workspace** — one, or each of a one-org project folder's.
+        Ok(super::repositories_of_workspace(&self.workspace)
+            .into_iter()
             .map(PathBuf::from)
             .filter(|p| p.exists())
-            .into_iter()
             .collect())
     }
 

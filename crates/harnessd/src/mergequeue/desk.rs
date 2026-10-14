@@ -34,6 +34,21 @@ pub fn resolve(
         None => git::repo_of_workspace(workspace)
             .and_then(|r| git::repo_of_worktree(&r))
             .ok_or_else(|| {
+                // **A project of several repositories names them**, so the one to name is a
+                // choice among the right ones rather than a path to go and find.
+                let many = git::repos_of_workspace(workspace);
+                if many.len() > 1 {
+                    let names: Vec<String> =
+                        many.iter().map(|r| format!("`{}`", r.display())).collect();
+                    return format!(
+                        "the workspace {} is one project of {} repositories — {} — so which one is \
+                         not something this can know; name it (`/queue regate /path/to/repo \
+                         [TARGET]`, or the tool's `repository`)",
+                        workspace.display(),
+                        many.len(),
+                        names.join(", ")
+                    );
+                }
                 format!(
                     "the workspace {} names no one git repository; name it (`/queue regate \
                      /path/to/repo [TARGET]`, or the tool's `repository`)",

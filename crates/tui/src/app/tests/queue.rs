@@ -364,6 +364,7 @@ fn here_in(repo: &str) -> letibot_sessionlog::event::QueueHere {
     letibot_sessionlog::event::QueueHere {
         workspace: repo.into(),
         repository: Some(repo.into()),
+        repositories: vec![repo.into()],
     }
 }
 
@@ -472,6 +473,7 @@ fn a_session_outside_every_repository_is_told_and_offered_all() {
     snap.here = Some(letibot_sessionlog::event::QueueHere {
         workspace: "/home/dead".into(),
         repository: None,
+        repositories: Vec::new(),
     });
     a.apply(queue_frame(snap));
     let screen = a.screen(160, 40).join("\n");
@@ -648,4 +650,29 @@ fn a_running_gate_is_said_and_the_queued_landings_wait_for_it() {
         screen.contains("waits: gate running on fedcba9876 for 1m"),
         "the queued row says why: {screen}"
     );
+}
+
+/// **A folder that is one project of several repositories sees each of their queues** — the
+/// operator's `~/Projects/stroppy-io`, whose repositories share the `stroppy-io` org: the edge and
+/// the pane hold every one of them, and nothing of a repository outside it.
+#[test]
+fn a_one_project_folder_sees_the_queues_of_each_of_its_repositories() {
+    let mut a = app();
+    a.command("queue");
+    let mut snap = two_repositories();
+    snap.here = Some(letibot_sessionlog::event::QueueHere {
+        workspace: "/home/dead/Projects".into(),
+        repository: None,
+        repositories: vec![LETIBOT.into(), OTHER.into()],
+    });
+    a.apply(queue_frame(snap));
+    let f = a.queue_filter(&a.queue_scope);
+    assert!(f.keeps(LETIBOT) && f.keeps(OTHER), "{f:?}");
+    assert!(!f.keeps("/home/dead/Projects/elsewhere"), "{f:?}");
+    let screen = a.screen(160, 40).join("\n");
+    assert!(
+        screen.contains("this session's repositories, one project"),
+        "{screen}"
+    );
+    assert!(!screen.contains("is in no repository"), "{screen}");
 }

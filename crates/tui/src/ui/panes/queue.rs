@@ -164,6 +164,17 @@ impl App {
                 ),
                 w,
             ))),
+            Filter::Repos(rs) => out.push(pane::faint(&trim_to(
+                &format!(
+                    "    {} — this session's repositories, one project · `/queue all` shows every \
+                     repository",
+                    rs.iter()
+                        .map(|r| repo_name(r))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                w,
+            ))),
             Filter::Path(p) => out.push(pane::faint(&trim_to(
                 &format!(
                     "    {} — named · `/queue` alone is this session's repository",
@@ -769,6 +780,8 @@ pub(crate) enum Filter {
     Every,
     /// The queues' key of this session's repository.
     Repo(String),
+    /// **The repositories of a folder that is one project of several** — the edge shows each.
+    Repos(Vec<String>),
     /// A path the operator named: a row's repository is it, or holds it.
     Path(std::path::PathBuf),
     /// This session's workspace is in no repository.
@@ -780,6 +793,7 @@ impl Filter {
         match self {
             Filter::Every => true,
             Filter::Repo(r) => r == repository,
+            Filter::Repos(rs) => rs.iter().any(|r| r == repository),
             Filter::Path(p) => !repository.is_empty() && p.starts_with(repository),
             Filter::Nowhere(_) => false,
         }
@@ -840,9 +854,10 @@ impl App {
             ),
             QueueScope::Here => match &self.queues_all.here {
                 None => Filter::Every,
-                Some(h) => match &h.repository {
-                    Some(r) => Filter::Repo(r.clone()),
-                    None => Filter::Nowhere(h.workspace.clone()),
+                Some(h) => match (&h.repository, h.repositories.as_slice()) {
+                    (Some(r), _) => Filter::Repo(r.clone()),
+                    (None, []) => Filter::Nowhere(h.workspace.clone()),
+                    (None, many) => Filter::Repos(many.to_vec()),
                 },
             },
         }

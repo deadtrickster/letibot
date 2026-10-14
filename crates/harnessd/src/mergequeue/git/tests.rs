@@ -144,3 +144,78 @@ fn only_jsonl_directly_under_letibot_is_a_daemon_leftover() {
     assert!(!daemon_leftover(".letibot/notes/a.md"));
     assert!(!daemon_leftover("src/x.jsonl"));
 }
+
+/// **One host, one owner, whatever the URL's spelling.**
+#[test]
+fn a_remote_names_its_host_and_owner() {
+    let want = Some(("github.com".to_string(), "stroppy-io".to_string()));
+    assert_eq!(
+        remote_owner("https://github.com/stroppy-io/stroppy.git"),
+        want
+    );
+    assert_eq!(remote_owner("git@github.com:stroppy-io/stroppy.git"), want);
+    assert_eq!(
+        remote_owner("ssh://git@github.com/Stroppy-IO/website"),
+        want
+    );
+    assert_eq!(remote_owner("/srv/git/stroppy.git"), None);
+    assert_eq!(
+        remote_owner("https://github.com/stroppy-io"),
+        None,
+        "no repository segment"
+    );
+}
+
+/// **A folder of one org's repositories is one project; a folder of unrelated ones is not.**
+#[test]
+fn a_folder_is_one_project_when_its_repositories_share_an_owner() {
+    let root = letibot_sessionlog::testing::scratch_root().join(format!(
+        "letibot-repos-of-{}-{}",
+        std::process::id(),
+        letibot_sessionlog::registry::now_ms()
+    ));
+    let repo = |dir: &Path, url: Option<&str>| {
+        std::fs::create_dir_all(dir).unwrap();
+        git(dir, &["init", "-q"]).unwrap();
+        if let Some(u) = url {
+            git(dir, &["remote", "add", "origin", u]).unwrap();
+        }
+    };
+    let org = root.join("stroppy-io");
+    repo(
+        &org.join("stroppy"),
+        Some("git@github.com:stroppy-io/stroppy.git"),
+    );
+    repo(
+        &org.join("website"),
+        Some("https://github.com/stroppy-io/stroppy-io.github.io"),
+    );
+    let got: Vec<String> = repos_of_workspace(&org)
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(got, ["stroppy", "website"]);
+
+    let mixed = root.join("Projects");
+    repo(
+        &mixed.join("peerdb"),
+        Some("https://github.com/peerdb-io/peerdb.git"),
+    );
+    repo(
+        &mixed.join("letim"),
+        Some("https://github.com/deadtrickster/letim.git"),
+    );
+    assert!(
+        repos_of_workspace(&mixed).is_empty(),
+        "mixed owners are no project"
+    );
+
+    let bare = root.join("scratch");
+    repo(&bare.join("a"), None);
+    repo(&bare.join("b"), None);
+    assert!(
+        repos_of_workspace(&bare).is_empty(),
+        "no remote, no owner, no project"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

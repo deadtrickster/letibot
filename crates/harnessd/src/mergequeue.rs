@@ -425,12 +425,11 @@ impl RegistryDoor {
             .filter(|id| self.registry.parent_of(id).is_none())
             .filter(|id| !matches!(store.session_parent(id), Ok(Some(Some(p))) if !p.is_empty()))
             .filter(|id| {
-                store
-                    .session_workspace(id)
-                    .ok()
-                    .flatten()
-                    .and_then(|w| repository_of_workspace(Path::new(&w)))
-                    .is_some_and(|r| r == repository)
+                store.session_workspace(id).ok().flatten().is_some_and(|w| {
+                    repositories_of_workspace(Path::new(&w))
+                        .iter()
+                        .any(|r| r == repository)
+                })
             })
             .collect()
     }
@@ -498,6 +497,17 @@ pub fn repository_of_workspace(workspace: &Path) -> Option<String> {
     repo_of_workspace(workspace).and_then(|r| git::repository_key(&r))
 }
 
+/// **Every repository a workspace is a session of**, as the queues key them — the one
+/// [`repository_of_workspace`] names, or each repository of a folder that is one project of
+/// several (`git::repos_of_workspace`: children sharing an `origin` owner). What a daemon serves,
+/// whose alarms a session hears, and which sessions are a repository's roots.
+pub fn repositories_of_workspace(workspace: &Path) -> Vec<String> {
+    git::repos_of_workspace(workspace)
+        .iter()
+        .filter_map(|r| git::repository_key(r))
+        .collect()
+}
+
 /// **[`repository_of_workspace`], remembered for a minute** — a head asks for the queues on
 /// every move (R92 item 5), and each answer names the asking session's repository; the answer
 /// for one workspace does not change between two moves, and git need not be asked each time.
@@ -524,6 +534,32 @@ pub fn repository_of_workspace_cached(workspace: &Path) -> Option<String> {
     r
 }
 
+/// **[`repositories_of_workspace`], remembered for a minute** — see the single form below. — a head asks for the queues on
+/// every move (R92 item 5), and each answer names the asking session's repository; the answer
+/// for one workspace does not change between two moves, and git need not be asked each time.
+pub fn repositories_of_workspace_cached(workspace: &Path) -> Vec<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    type Memo = Mutex<HashMap<std::path::PathBuf, (Instant, Vec<String>)>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    const KEEP: Duration = Duration::from_secs(60);
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some((at, r)) = memo
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(workspace)
+        && at.elapsed() < KEEP
+    {
+        return r.clone();
+    }
+    let r = repositories_of_workspace(workspace);
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(workspace.to_path_buf(), (Instant::now(), r.clone()));
+    r
+}
+
 /// **Whether a daemon seated at `workspace` is one of `repo`'s session daemons** — its workspace
 /// is that repository (or under it, or one of its worktrees). An ancestor directory that merely
 /// contains the repository is NOT: on 2026-10-12 a daemon seated at `/home/dead` took letibot's
@@ -531,7 +567,9 @@ pub fn repository_of_workspace_cached(workspace: &Path) -> Option<String> {
 /// the old rule was *the repository is under the workspace, or holds it*.
 pub fn serves(workspace: &Path, repo: &Path) -> bool {
     let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
-    repository_of_workspace(workspace).is_some_and(|mine| Path::new(&mine) == key)
+    repositories_of_workspace(workspace)
+        .iter()
+        .any(|mine| Path::new(mine) == key)
 }
 
 /// **The hubs a repository's queue alert goes to** — the sessions this registry holds whose
@@ -550,8 +588,11 @@ pub fn hubs_of_repository(
             id == crate::sessions::gatekeeper::SESSION
                 || store
                     .and_then(|s| s.session_workspace(id).ok().flatten())
-                    .and_then(|w| repository_of_workspace(Path::new(&w)))
-                    .is_some_and(|r| r == repository)
+                    .is_some_and(|w| {
+                        repositories_of_workspace(Path::new(&w))
+                            .iter()
+                            .any(|r| r == repository)
+                    })
         })
         .collect()
 }

@@ -1176,9 +1176,11 @@ impl<'a> Sessions<'a> {
                 // **Scoped to this session's repository unless the line names another** (R92
                 // item 5). `regate` resolves its own repository (it was already the session's
                 // by default); a named scope stands in for its `/REPO`.
-                let repo = match (&verb, &scope) {
-                    (QueueVerb::Regate { .. }, _) => None,
-                    _ => match h.queue_scope(&scope) {
+                // **A session of a one-org project folder acts in each of its repositories**: a
+                // row verb in the one holding the row, a sweep once per repository.
+                let scopes = match (&verb, &scope) {
+                    (QueueVerb::Regate { .. }, _) => vec![None],
+                    _ => match h.queue_scopes(&scope) {
                         Ok(r) => r,
                         Err(why) => {
                             return SlashReply {
@@ -1187,6 +1189,38 @@ impl<'a> Sessions<'a> {
                             };
                         }
                     },
+                };
+                let entry_id = match &verb {
+                    QueueVerb::Restart { entry }
+                    | QueueVerb::Approve { entry }
+                    | QueueVerb::Veto { entry, .. }
+                    | QueueVerb::Rm { entry } => Some(entry.clone()),
+                    QueueVerb::Reset { entry } | QueueVerb::Clean { entry } => entry.clone(),
+                    QueueVerb::Regate { .. } => None,
+                };
+                // A sweep of the whole queue across several repositories: once per repository.
+                if entry_id.is_none() && scopes.len() > 1 {
+                    let mut lines = Vec::new();
+                    let mut ok = true;
+                    for s in &scopes {
+                        let said = match &verb {
+                            QueueVerb::Reset { .. } => h.reset_reviews(None, s.as_deref()),
+                            QueueVerb::Clean { .. } => h.clean_entries(None, s.as_deref()),
+                            _ => continue,
+                        };
+                        match said {
+                            Ok(l) => lines.push(l),
+                            Err(e) => {
+                                ok = false;
+                                lines.push(e);
+                            }
+                        }
+                    }
+                    return SlashReply { lines, ok };
+                }
+                let repo = match &entry_id {
+                    Some(id) => h.queue_scope_of_row(&scopes, id),
+                    None => scopes.first().cloned().flatten(),
                 };
                 let repo = repo.as_deref();
                 // **`session_id` is passed to `approve` and not to the others**, because it is the
@@ -4663,10 +4697,14 @@ impl SessionSource for StoreSessions {
             let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
             g.session_workspace(session_id).ok().flatten()?
         };
+        let repositories =
+            crate::mergequeue::repositories_of_workspace_cached(std::path::Path::new(&workspace));
         Some(letibot_sessionlog::event::QueueHere {
-            repository: crate::mergequeue::repository_of_workspace_cached(std::path::Path::new(
-                &workspace,
-            )),
+            repository: match repositories.as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            },
+            repositories,
             workspace,
         })
     }

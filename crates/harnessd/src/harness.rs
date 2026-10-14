@@ -8501,14 +8501,13 @@ impl Harness {
             })
             .collect();
         // The repository this session is the project of — read only when there is news.
-        let mine = crate::mergequeue::repo_of_workspace(&self.cfg.workspace)
-            .and_then(|r| crate::mergequeue::repo_of_worktree(&r))
-            .map(|r| r.display().to_string());
+        // Every repository of the workspace — one, or each of a one-org project folder's.
+        let mine = crate::mergequeue::repositories_of_workspace(&self.cfg.workspace);
         let mut out = Vec::new();
         // **Green again** (R92.6): an emergency this session was told about is over — said once,
         // and forgotten, so the next red of the same tip is news again (R92.31).
         for h in &greens {
-            if mine.as_deref() != Some(h.repository.as_str()) {
+            if !mine.contains(&h.repository) {
                 continue;
             }
             let prefix = format!("emergency:{}:{}:", h.repository, h.target);
@@ -8525,7 +8524,7 @@ impl Harness {
             return out;
         }
         for h in healths {
-            if mine.as_deref() != Some(h.repository.as_str())
+            if !mine.contains(&h.repository)
                 || !told_once(
                     &mut self.gate_told,
                     store,
@@ -8545,9 +8544,7 @@ impl Harness {
         }
         for r in &parked {
             let ours = match r.kind {
-                letibot_tokencore::store::ReviewKind::Target => {
-                    mine.as_deref() == Some(r.repository.as_str())
-                }
+                letibot_tokencore::store::ReviewKind::Target => mine.contains(&r.repository),
                 letibot_tokencore::store::ReviewKind::Branch => {
                     !r.session_id.is_empty()
                         && crate::mergequeue::root_session(store, &r.session_id) == me
@@ -8711,6 +8708,32 @@ impl Harness {
     /// of no repository is told so with the line that reaches every repository.
     pub fn queue_scope(&self, scope: &crate::slash::QueueScope) -> Result<Option<String>, String> {
         crate::mergequeue::verbs::scope_repository(&self.cfg.workspace, scope)
+    }
+
+    /// **[`Harness::queue_scope`] for a session of several repositories** — see
+    /// [`crate::mergequeue::verbs::scope_repositories`].
+    pub fn queue_scopes(
+        &self,
+        scope: &crate::slash::QueueScope,
+    ) -> Result<Vec<Option<String>>, String> {
+        crate::mergequeue::verbs::scope_repositories(&self.cfg.workspace, scope)
+    }
+
+    /// **Which of `scopes` holds the row `id`** — the first when there is one scope (the verb
+    /// refuses a row outside it by name), else the one whose repository the row is of.
+    pub fn queue_scope_of_row(&self, scopes: &[Option<String>], id: &str) -> Option<String> {
+        if scopes.len() == 1 {
+            return scopes[0].clone();
+        }
+        let its = self
+            .store
+            .as_ref()
+            .and_then(|s| crate::mergequeue::verbs::row_repository(s, id));
+        match its {
+            Some(r) if scopes.iter().any(|s| s.as_deref() == Some(r.as_str())) => Some(r),
+            // A row of none of them: the first scope, whose verb refuses it naming its repository.
+            _ => scopes.first().cloned().flatten(),
+        }
     }
 
     /// `/queue restart ID` — a parked review back to waiting, a parked landing back in line.
@@ -20073,16 +20096,22 @@ pub fn confined_grants(
             why: "granted on the command line with --grant-ro".into(),
         })
         .collect();
-    let landing = landing_root.and_then(|root| {
-        crate::mergequeue::git::guard_not_real(root);
-        let repo = crate::mergequeue::git::repo_of_workspace(&cfg.workspace)?;
-        let dir = crate::mergequeue::git::landing_dir_in(root, &repo);
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir)
-    });
-    if let Some(dir) = landing
-        && !out.iter().any(|g| g.path() == dir)
-    {
+    // **A landing tree per repository of the workspace** — one, or each of a one-org project
+    // folder's, since the queue serves every one of them there.
+    let landings: Vec<PathBuf> = landing_root
+        .map(|root| {
+            crate::mergequeue::git::guard_not_real(root);
+            crate::mergequeue::git::repos_of_workspace(&cfg.workspace)
+                .iter()
+                .map(|repo| crate::mergequeue::git::landing_dir_in(root, repo))
+                .filter(|dir| std::fs::create_dir_all(dir).is_ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    for dir in landings {
+        if out.iter().any(|g| g.path() == dir) {
+            continue;
+        }
         out.push(Grant::ReadOnly {
             path: dir,
             why: "the merge queue's landing tree for this repository, where its gate runs: \

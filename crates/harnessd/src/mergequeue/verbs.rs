@@ -83,6 +83,35 @@ pub fn scope_repository(workspace: &Path, scope: &QueueScope) -> Result<Option<S
     }
 }
 
+/// **Every repository a `/queue` verb may act in** — [`scope_repository`] for several: `[None]` is
+/// every repository, a session of one repository is `[Some(it)]`, and a session of a folder that
+/// is one project of several (`git::repos_of_workspace`) is each of them. The dispatch runs a
+/// sweep once per entry, and a row verb in the one entry that holds the row ([`row_repository`]).
+pub fn scope_repositories(
+    workspace: &Path,
+    scope: &QueueScope,
+) -> Result<Vec<Option<String>>, String> {
+    match scope {
+        QueueScope::Here => {
+            let many = super::repositories_of_workspace(workspace);
+            if many.len() > 1 {
+                return Ok(many.into_iter().map(Some).collect());
+            }
+            scope_repository(workspace, scope).map(|r| vec![r])
+        }
+        _ => scope_repository(workspace, scope).map(|r| vec![r]),
+    }
+}
+
+/// **The repository the row `id` is a row of** — for a verb in a session of several to act in
+/// the right one. `None` for a row no queue holds, which the verb itself refuses by name.
+pub fn row_repository(store: &Store, id: &str) -> Option<String> {
+    match find(store, id).ok()? {
+        Found::Review(r) => Some(r.repository),
+        Found::Merge(m) => Some(m.repository),
+    }
+}
+
 /// **Whether the row `id` names is in `repository`** (R92 item 5) — `None` is every repository.
 /// A row of another repository is refused with the line that acts on it, so a verb typed in one
 /// project's session never moves another project's row by accident.
@@ -740,6 +769,47 @@ mod tests {
         assert!(
             why.contains("in no repository") && why.contains("/queue all"),
             "{why}"
+        );
+    }
+
+    /// **A session of a one-org project folder acts in each of its repositories** — the operator's
+    /// `~/Projects/stroppy-io`. Both repositories are the session's scope; a row of either is in
+    /// scope in its own; a row of a repository outside the folder is still refused.
+    #[test]
+    fn a_one_org_folder_scopes_a_verb_to_each_of_its_repositories() {
+        let dir = TempDir::new("verbs-many");
+        let org = dir.0.join("stroppy-io");
+        let child = |name: &str, url: &str| {
+            let p = org.join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            git::git(&p, &["init", "-q", "-b", "main"]).unwrap();
+            git::git(&p, &["remote", "add", "origin", url]).unwrap();
+            std::fs::canonicalize(p).unwrap()
+        };
+        let a = child("a", "https://github.com/stroppy-io/a.git");
+        let b = child("b", "git@github.com:stroppy-io/b.git");
+        let (ka, kb) = (
+            git::repository_key(&a).unwrap(),
+            git::repository_key(&b).unwrap(),
+        );
+        let store = Store::open(&dir.0.join("sessions.db")).unwrap();
+        parked_review(&store, "r-a", &ka);
+        parked_review(&store, "r-b", &kb);
+        parked_review(&store, "r-theirs", "/elsewhere/other");
+
+        let scopes = scope_repositories(&org, &QueueScope::Here).unwrap();
+        assert_eq!(scopes.len(), 2, "{scopes:?}");
+        assert!(scopes.contains(&Some(ka.clone())) && scopes.contains(&Some(kb.clone())));
+        assert_eq!(row_repository(&store, "r-b").as_deref(), Some(kb.as_str()));
+        assert!(in_scope(&store, "r-b", Some(&kb)).is_ok());
+        let theirs = row_repository(&store, "r-theirs").unwrap();
+        assert!(
+            !scopes.contains(&Some(theirs)),
+            "a row of a repository outside the folder is in none of its scopes"
+        );
+        assert!(
+            scope_repository(&org, &QueueScope::Here).is_err(),
+            "no single one"
         );
     }
 }

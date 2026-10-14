@@ -167,6 +167,71 @@ pub fn repo_of_workspace(workspace: &Path) -> Option<PathBuf> {
     }
 }
 
+/// **The repositories a workspace is a session of** — the one [`repo_of_workspace`] reads it as,
+/// or, for a folder that is ONE PROJECT of several repositories, every one of them.
+///
+/// The operator, of `~/Projects/stroppy-io` (`stroppy`, `stroppy-contrib`, `website`, none the
+/// main one): its session served no queue and heard no alarm. And the reason a folder of
+/// repositories is NOT read as serving them stands — on 2026-10-12 a daemon seated at
+/// `/home/dead` took letibot's lease and showed `main RED` to a session about the box's memory —
+/// so what makes a folder one project is a fact, not a guess, and the operator named it: *"they
+/// usually belong to the same org"*. Two or more child repositories whose `origin` remotes all
+/// share one host and owner (`github.com/stroppy-io/…`) are one project; mixed owners, or a child
+/// with no remote, are a folder of unrelated checkouts, and the answer is what it was.
+pub fn repos_of_workspace(workspace: &Path) -> Vec<PathBuf> {
+    if let Some(one) = repo_of_workspace(workspace) {
+        return vec![one];
+    }
+    let mut children: Vec<PathBuf> = workspace
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| p.join(".git").exists())
+        .collect();
+    children.sort();
+    if children.len() < 2 {
+        return Vec::new();
+    }
+    let owners: Vec<Option<(String, String)>> = children
+        .iter()
+        .map(|c| {
+            git(c, &["remote", "get-url", "origin"])
+                .ok()
+                .and_then(|u| remote_owner(u.trim()))
+        })
+        .collect();
+    match owners.first() {
+        Some(Some(first)) if owners.iter().all(|o| o.as_ref() == Some(first)) => children,
+        _ => Vec::new(),
+    }
+}
+
+/// **The host and owner a remote URL names** — `("github.com", "stroppy-io")` for
+/// `https://github.com/stroppy-io/stroppy.git` and `git@github.com:stroppy-io/stroppy.git` alike,
+/// case-folded. `None` for a path remote or anything without an owner segment.
+pub fn remote_owner(url: &str) -> Option<(String, String)> {
+    let rest = if let Some(r) = url.split_once("://").map(|(_, r)| r) {
+        let r = r.rsplit_once('@').map_or(r, |(_, h)| h);
+        r.to_string()
+    } else if let Some((user_host, path)) = url.split_once(':') {
+        let host = user_host.rsplit_once('@').map_or(user_host, |(_, h)| h);
+        if host.contains('/') {
+            return None;
+        }
+        format!("{host}/{path}")
+    } else {
+        return None;
+    };
+    let mut parts = rest.split('/').filter(|p| !p.is_empty());
+    let host = parts.next()?.split(':').next()?.to_ascii_lowercase();
+    let owner = parts.next()?.to_ascii_lowercase();
+    parts.next()?;
+    Some((host, owner))
+}
+
 /// **The queues' name for a repository** — the canonical path of its main checkout, so two
 /// daemons seated at two depths of one repository agree on one lease.
 pub fn repository_key(any_path_in_it: &Path) -> Option<String> {

@@ -412,6 +412,12 @@ pub struct QueueHere {
     /// session of no repository.
     #[serde(default)]
     pub repository: Option<String>,
+    /// **Every repository the workspace is a session of** — one, or each of a folder that is one
+    /// project of several (children sharing an `origin` owner). Defaulted, so an older daemon's
+    /// snapshot reads as empty and the head falls back to `repository`; `repository` is still set
+    /// when there is exactly one, so an older head reads this one.
+    #[serde(default)]
+    pub repositories: Vec<String>,
 }
 
 /// **One review row on the wire** — see `letibot_tokencore::store::ReviewRow`.
