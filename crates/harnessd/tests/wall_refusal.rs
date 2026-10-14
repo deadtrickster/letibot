@@ -209,7 +209,14 @@ fn a_turn_of_ten_reads(vocab: &letibot_tokencore::Vocab, rel: &str) -> Vec<canne
 /// renders them. Ten of those past a 32768-token window is the `Cut` state —
 /// a history that does not fit with any room for a tail, which is exactly the
 /// state `plan_overrun` exists for and the one the wedge never reached.
-fn write_the_big_file(dir: &TempDir) -> String {
+///
+/// **It also seats the session at `dir`**, and returns the path `read` is given relative to
+/// it. `config` seats every session at `/tmp`, and this used to strip `/tmp` off the file's
+/// path on the assumption that the temp dir was under it — true only while `TMPDIR` was
+/// unset. Under `TMPDIR=$HOME/.cache/…` the path stayed absolute, the tool refused all ten
+/// reads as outside the session root (correctly), nothing overran, and four tests here
+/// failed at their wall assertions for a reason that had nothing to do with the wall.
+fn write_the_big_file(dir: &TempDir, cfg: &mut Config) -> String {
     let big = dir.path().join("big.txt");
     let mut body = String::new();
     for i in 0..260 {
@@ -218,9 +225,8 @@ fn write_the_big_file(dir: &TempDir) -> String {
         ));
     }
     std::fs::write(&big, body).expect("the file to read is written");
-    big.strip_prefix("/tmp")
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| big.display().to_string())
+    cfg.workspace = dir.path().to_path_buf();
+    "big.txt".to_string()
 }
 
 /// The session row a resumed daemon needs, carrying the guard's stood-down
@@ -232,7 +238,13 @@ fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str) {
         title: Some("the wedged session".into()),
         model_id: "m".into(),
         dialect_sha: "sha".into(),
-        workspace_root: "/tmp".into(),
+        // The scratch dir, where `write_the_big_file` puts the file a resumed
+        // session reads: a resume seats the session at its ROW's root, not the config's.
+        workspace_root: path
+            .parent()
+            .expect("the store is in a dir")
+            .display()
+            .to_string(),
         owner: "dead".into(),
         role: None,
         approvers: vec![],
@@ -286,13 +298,13 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     let dir = TempDir::new("harnessd-refused-daemon");
     let path = dir.path().join("sessions.db");
     let session_id = "refused-daemon-test";
-    let rel = write_the_big_file(&dir);
 
     // The guard's finding is on the row BEFORE the daemon opens, exactly as a
     // restart would find it — which also proves the restore (asserted below).
     seed_a_stood_down_session(&path, session_id);
 
     let mut cfg = config(&path, session_id);
+    let rel = write_the_big_file(&dir, &mut cfg);
     // The window that makes ten reads an overrun, at the scale the real ones
     // are: headroom 2048, wall 30720, prefix ~3634 + ten ~3950-token results
     // ≈ 43000 — past the wall and past the window, which is the `Cut` state.
@@ -558,9 +570,9 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
     let dir = TempDir::new("harnessd-refused-child");
     let path = dir.path().join("sessions.db");
     let session_id = "refused-child-test";
-    let rel = write_the_big_file(&dir);
 
     let mut cfg = config(&path, session_id);
+    let rel = write_the_big_file(&dir, &mut cfg);
     cfg.context_window = Some(32768);
     // The wedge's own state: the guard has fired, the flag is off. The child
     // has no store row here because a spawned child is a NEW session — the
@@ -720,7 +732,7 @@ fn a_session_at_the_wall(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Par
             title: None,
             model_id: "m".into(),
             dialect_sha: "sha".into(),
-            workspace_root: "/tmp".into(),
+            workspace_root: dir.path().display().to_string(),
             owner: "dead".into(),
             role: None,
             approvers: vec![],
@@ -752,7 +764,7 @@ fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
             needs: Vec::new(),
         }],
     );
-    let rel = write_the_big_file(&dir);
+    let rel = write_the_big_file(&dir, &mut cfg);
 
     let vocab = &parts.vocab;
     let half = a_plain_answer_turn(
@@ -837,7 +849,7 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
             needs: Vec::new(),
         }],
     );
-    let rel = write_the_big_file(&dir);
+    let rel = write_the_big_file(&dir, &mut cfg);
 
     let vocab = &parts.vocab;
     let half = a_plain_answer_turn(

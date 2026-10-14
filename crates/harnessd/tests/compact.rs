@@ -1277,13 +1277,16 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
         ));
     }
     std::fs::write(&big, body).expect("the file to read is written");
-    // `read` takes a path relative to the session root, and the root is `/tmp`
-    // (`Config::for_this_box("/tmp")` in `config` above) — which is where this
-    // temp dir already is.
-    let rel = big
-        .strip_prefix("/tmp")
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| big.display().to_string());
+    // **The session root is this test's own temp dir**, so `read` is handed a path
+    // inside it whatever `TMPDIR` says. `config` above seats every session at `/tmp`,
+    // and this test used to assume its temp dir was under it and strip that prefix —
+    // which held only while `TMPDIR` was unset. Under `TMPDIR=$HOME/.cache/…` the
+    // path stayed absolute, every one of the ten reads was refused with "path
+    // resolves outside the session root" (correctly: the tool's root check is doing
+    // its job), no tool result overran anything, and the test failed at its
+    // `context_wall` assertion for a reason that had nothing to do with compaction.
+    cfg.workspace = dir.path().to_path_buf();
+    let rel = "big.txt";
 
     let parts = load_parts(&cfg);
     let vocab = &parts.vocab;
