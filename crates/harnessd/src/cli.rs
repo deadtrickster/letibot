@@ -646,6 +646,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `--list-sessions` hide rows without saying it had.
     let mut scope: Option<PathBuf> = None;
 
+    // `--vm-copy` said anywhere on the line wins over `--where firecode`'s mount, before it or
+    // after: the operator who asked for a copy must never get the folder itself read-write.
+    let mut vm_copy = false;
+
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -861,10 +865,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     other => return Err(format!("--where {other}: host or firecode")),
                 };
                 // The session's VM works in the workspace itself, mounted (a Mac).
-                cfg.vm_mount = cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
+                cfg.vm_mount =
+                    !vm_copy && cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
             }
             // A copy of one repository instead of the workspace mounted - the old placement.
-            "--vm-copy" => cfg.vm_mount = false,
+            "--vm-copy" => {
+                vm_copy = true;
+                cfg.vm_mount = false;
+            }
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
             "--vm-arg" => cfg.vm_args.push(next()?),
             // What is behind `web_search`. Without it the tool refuses and names

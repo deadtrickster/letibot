@@ -1794,6 +1794,18 @@ impl Config {
         }
     }
 
+    /// **Whether this session's VM mounts its workspace read-write instead of copying a tree.**
+    /// A session placed with `--vm` on a Mac, booting its own VM: not one attached to an
+    /// ancestor's (that is the ancestor's mount), and not one whose caller named the tree to copy
+    /// (`vm_source`: a reviewer is booted on its entry's repository, as a copy).
+    pub fn vm_mounts_workspace(&self) -> bool {
+        cfg!(target_os = "macos")
+            && self.vm_mount
+            && self.placement == letibot_tools::builtins::task::Placement::Firecode
+            && self.vm_attach.is_none()
+            && self.vm_source.is_none()
+    }
+
     /// **The tree a `firecode` placement copies, as one answer** — the session's own
     /// [`Config::vm_source`] when the caller that knows named one, the REPOSITORY its workspace is
     /// about when it did not, and the workspace itself when there is no repository to name.
@@ -1840,18 +1852,6 @@ impl Config {
     /// `repo_root("/home/dead/Projects/letibot")` fails — the queue's own log says `serving
     /// /home/dead/Projects/letibot toward main` — and the same-named child below it is what this
     /// resolves, which is why the queue's own session no longer copies the folder.
-    /// **Whether this session's VM mounts its workspace read-write instead of copying a tree.**
-    /// A session placed with `--vm` on a Mac, booting its own VM: not one attached to an
-    /// ancestor's (that is the ancestor's mount), and not one whose caller named the tree to copy
-    /// (`vm_source`: a reviewer is booted on its entry's repository, as a copy).
-    pub fn vm_mounts_workspace(&self) -> bool {
-        cfg!(target_os = "macos")
-            && self.vm_mount
-            && self.placement == letibot_tools::builtins::task::Placement::Firecode
-            && self.vm_attach.is_none()
-            && self.vm_source.is_none()
-    }
-
     pub fn vm_copy_source(&self) -> PathBuf {
         self.vm_source
             .clone()

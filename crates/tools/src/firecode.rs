@@ -513,19 +513,15 @@ impl FirecodeBackend {
         };
         // **The folder itself, read-write**: joined if a VM already holds it mounted, booted with
         // `--mount-rw` otherwise. Never a copy, never removed - it is the operator's folder.
-        if spec.mount_rw {
-            if let Some(run) = running_rw(&bin, &spec.source) {
-                let mut b = FirecodeBackend::attach(
-                    Some(bin),
-                    spec.source.clone(),
-                    spec.writable,
-                    spec.exec,
-                )?;
-                b.mounted = true;
-                b.mount_rw = true;
-                b.joined = Some(run);
-                return Ok(b);
-            }
+        if spec.mount_rw
+            && let Some(run) = running_rw(&bin, &spec.source)
+        {
+            let mut b =
+                FirecodeBackend::attach(Some(bin), spec.source.clone(), spec.writable, spec.exec)?;
+            b.mounted = true;
+            b.mount_rw = true;
+            b.joined = Some(run);
+            return Ok(b);
         }
         let mounted = spec.mount_rw || mounts(&spec.source);
         let project = if mounted {
