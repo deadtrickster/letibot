@@ -244,3 +244,29 @@ fn detach_takes_the_operator_question_off() {
     assert!(board.snapshot()[0].needs.is_empty());
     assert!(board.operator_ask(DEPLOY, QUESTION).is_err());
 }
+
+/// **The call an expired question offers is one `todo_write` takes** — the offer is the way an
+/// unanswered `ask_user_question` unblocks the model, so it is fed back here exactly as written.
+#[test]
+fn the_call_an_expired_question_offers_is_one_todo_write_takes() {
+    let q = crate::builtins::intent::Question {
+        text: "should I refactor the parser while I am here?".into(),
+        options: vec!["yes, now".into(), "no, later".into()],
+        ..Default::default()
+    };
+    let offer = crate::builtins::intent::ask::todo_offer(&q);
+    let call = offer
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("the offer writes the call out");
+    let (mut rt, board) = runtime();
+    let r = invoke(&mut rt, call);
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{call}\n{}", r.payload);
+    let rows = board.snapshot();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        r.payload.contains("waiting on the OPERATOR"),
+        "the row waits on the operator: {}",
+        r.payload
+    );
+}

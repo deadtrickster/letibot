@@ -554,6 +554,9 @@ impl Tool for AskUserQuestion {
                     body.push_str(&format!("options offered: {}\n", q.options.join(" | ")));
                 }
                 body.push_str(&e.to_string());
+                if matches!(e, AskError::Expired(_)) {
+                    body.push_str(&todo_offer(&q));
+                }
                 Invocation {
                     outcome: e.outcome(),
                     payload: body,
@@ -573,6 +576,33 @@ impl Tool for AskUserQuestion {
         }
         inv
     }
+}
+
+/// **The way out of a question nobody answered in time** — the operator: *"after some time we can
+/// offer model to switch it to a todo that depends on me, so it can unblock itself. for example if
+/// it does something and thinks there is a refactor opportunity. it asks if it should proceed and
+/// gets blocked."* The question goes on the board as a row waiting on the operator, the same words
+/// and options, written out as the exact call; the rest of the plan keeps going, and the answer
+/// reaches the model when it is given. `todos` adds a row and removes none, so the call is safe to
+/// make as it stands.
+pub(crate) fn todo_offer(q: &Question) -> String {
+    let json = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    let title: String = q.text.chars().take(135).collect();
+    let options: Vec<String> = q.options.iter().map(|o| json(o)).collect();
+    let too_few = if q.options.len() < 2 {
+        " (a row waiting on the operator needs at least two options — add them)"
+    } else {
+        ""
+    };
+    format!(
+        "\nTo keep working instead of waiting, put it on the board as a row that waits on the \
+         operator{too_few} — `todo_write` with:\n{{\"todos\": [{{\"content\": {}, \"status\": \
+         \"pending\", \"needs\": [{{\"kind\": \"operator\", \"question\": {}, \"options\": [{}]}}]}}]}}\n\
+         then go on with what does not need the answer; theirs reaches you when they give it.",
+        json(&title),
+        json(&q.text),
+        options.join(", ")
+    )
 }
 
 /// **The model's own default, taken** — said to be the model's, never the person's.
@@ -837,6 +867,32 @@ mod tests {
             "{}",
             r.render()
         );
+    }
+
+    /// **A question nobody answered offers the way out** — the operator: *"after some time we can
+    /// offer model to switch it to a todo that depends on me, so it can unblock itself"*. The
+    /// expired question comes back with the `todo_write` call that puts it on the board as a
+    /// row waiting on the operator, the same question and options, so the model can go on.
+    #[test]
+    fn an_expired_question_offers_to_become_a_row_waiting_on_the_operator() {
+        let r = ask(Arc::new(ScriptedQuestioner::silent()), Q);
+        assert!(
+            matches!(r.outcome, ToolOutcome::NotRun { .. }),
+            "still nobody's answer"
+        );
+        let text = r.render();
+        assert!(text.contains("todo_write"), "{text}");
+        assert!(text.contains(r#""kind": "operator""#), "{text}");
+        assert!(text.contains(r#""question": "which approach?""#), "{text}");
+        assert!(text.contains(r#""options": ["a", "b"]"#), "{text}");
+        // An interrupt is the operator being there: no offer.
+        let r = ask(
+            Arc::new(ScriptedQuestioner(Err(AskError::Unanswered(
+                "cancelled".into(),
+            )))),
+            Q,
+        );
+        assert!(!r.render().contains("todo_write"), "{}", r.render());
     }
 
     /// The default must be one of the options, and a timeout needs a default.
