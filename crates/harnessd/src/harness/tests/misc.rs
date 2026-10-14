@@ -270,3 +270,28 @@ fn a_vm_child_of_a_folder_of_repositories_copies_the_one_it_names() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **What a held answer waits on: this session's children still on their task** — not one that
+/// has answered and sits idle (it would hold for ever), not one whose thread has ended, and not
+/// a child of another session.
+#[test]
+fn the_hold_waits_on_children_still_on_their_task_and_no_others() {
+    use crate::harness::{TaskSlot, unsettled_children};
+    use letibot_tools::builtins::task::TaskStatus;
+    let working = Arc::new(TaskSlot::new("me"));
+    let answered = Arc::new(TaskSlot::new("me"));
+    answered.settle(TaskStatus::Done {
+        answer: "done".into(),
+        child: None,
+    });
+    let gone = Arc::new(TaskSlot::new("me"));
+    gone.mark_exited();
+    let theirs = Arc::new(TaskSlot::new("someone-else"));
+    let slots = vec![
+        ("a".to_string(), working),
+        ("b".to_string(), answered),
+        ("c".to_string(), gone),
+        ("d".to_string(), theirs),
+    ];
+    assert_eq!(unsettled_children(&slots, "me"), vec!["a".to_string()]);
+}

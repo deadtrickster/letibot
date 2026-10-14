@@ -964,6 +964,13 @@ pub trait TaskRunner: Send + Sync {
         0
     }
 
+    /// **How many of this session's children have not answered yet** — still on their task, as
+    /// opposed to answered and idle. A child with any is not done (the operator's ruling): its
+    /// answer is held until they have. Zero for a runner that keeps no slots.
+    fn unsettled_children(&self) -> usize {
+        0
+    }
+
     /// **Bring back the children a daemon that is gone left running** — called once, when this
     /// session is opened by a daemon.
     ///

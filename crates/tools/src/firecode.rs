@@ -277,6 +277,10 @@ pub struct FirecodeBackend {
     layers: Option<String>,
     /// [`FirecodeSpec::verify`], kept to name the check beside its verdict.
     verify: Option<String>,
+    /// **Whether this backend brought the VM up and so brings it down.** `false` for a session
+    /// attached to an ancestor's VM ([`FirecodeBackend::attach`]): the VM is the ancestor's, and a
+    /// child that ends must not take its parent's machine with it.
+    owns: bool,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -529,12 +533,78 @@ impl FirecodeBackend {
             run,
             layers,
             verify: spec.verify.clone(),
+            owns: true,
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
         b.guest("true")
             .map_err(|e| BackendError::Io(format!("the VM is up but takes no command: {e}")))?;
         Ok(b)
+    }
+
+    /// **A session in a VM another session brought up** — a child of a VM-placed session runs in
+    /// that same VM: the operator, *"children live in the _same_ vm"*, and the tool's own word for
+    /// the default placement, *"your own boundary"*, which for a child in a VM is its VM. No copy,
+    /// no boot, no layers of its own: the tree, the toolchain and what the parent installed are
+    /// the parent's, and so is the memory. Never brought down by this backend ([`Self::owns`]).
+    pub fn attach(
+        bin: Option<PathBuf>,
+        project: PathBuf,
+        writable: bool,
+        exec: bool,
+    ) -> Result<FirecodeBackend, BackendError> {
+        let bin = match bin {
+            Some(b) if runnable(&b) => b,
+            Some(b) => {
+                return Err(BackendError::Io(format!(
+                    "{} is not a program this host can run",
+                    b.display()
+                )));
+            }
+            None => firecode_available().map_err(BackendError::Io)?,
+        };
+        let run = run_id(&bin, &project).unwrap_or_default();
+        let processes = if exec {
+            let confine = FirecodeConfinement::new(bin.clone(), project.clone());
+            let host = HostProcesses::confined(project.clone(), Box::new(confine))
+                .map_err(|e| BackendError::Io(format!("process host for the VM: {e}")))?
+                .with_shell(Vec::new())
+                .with_console_shell(Vec::new());
+            Some(Arc::new(host))
+        } else {
+            None
+        };
+        let b = FirecodeBackend {
+            bin,
+            source: project.clone(),
+            project,
+            processes,
+            writable,
+            landed: std::sync::Mutex::new(None),
+            run,
+            layers: None,
+            verify: None,
+            owns: false,
+        };
+        // The parent's VM has to be up and taking commands, or there is nothing to run in.
+        b.guest("true").map_err(|e| {
+            BackendError::Io(format!(
+                "the parent's VM takes no command (is it still up?): {e}"
+            ))
+        })?;
+        Ok(b)
+    }
+
+    /// **Where a session's own VM's copy lives** — the project `up` names after it.
+    pub fn project_of(session_id: &str) -> PathBuf {
+        FirecodeSpec::new(PathBuf::new(), session_id)
+            .cache
+            .join(session_id)
+    }
+
+    /// Whether this backend brought its VM up — `false` when attached to an ancestor's.
+    pub fn owns_vm(&self) -> bool {
+        self.owns
     }
 
     pub fn project(&self) -> &Path {
@@ -668,6 +738,10 @@ impl FirecodeBackend {
     /// on is removed afterwards: the result directory beside it is the record,
     /// and a copy per child would otherwise accumulate under the cache.
     pub fn down(&self) {
+        // **Not ours to bring down**: an attached session's VM is its ancestor's.
+        if !self.owns {
+            return;
+        }
         LIVE.lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(_, p)| *p != self.project);
@@ -1407,6 +1481,39 @@ mod tests {
         spec.exec = false;
         spec.bin = Some(bin.to_path_buf());
         spec
+    }
+
+    /// **A child in its parent's VM never brings it down** — the operator: *"children live in
+    /// the _same_ vm"*. An attached backend runs in the parent's project and reports that it
+    /// does not own the VM; dropping it calls no `down`, and the parent's own drop still does.
+    #[test]
+    fn a_child_attached_to_its_parents_vm_leaves_it_up() {
+        let root = tmp("attach");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let arms = format!("{HAPPY}\ndown) touch \"$ROOT/downed\" ;;");
+        let bin = stub_firecode(&root.join("fc"), &arms);
+        let downed = root.join("fc").join("downed");
+        let parent = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin))
+            .expect("the parent's VM is placed");
+        assert!(parent.owns_vm());
+        let child = FirecodeBackend::attach(
+            Some(bin.clone()),
+            parent.project().to_path_buf(),
+            true,
+            false,
+        )
+        .expect("the child attaches to the parent's VM");
+        assert!(!child.owns_vm(), "the VM is the parent's");
+        assert_eq!(child.project(), parent.project(), "the same tree");
+        drop(child);
+        assert!(
+            !downed.exists(),
+            "the child's end took the parent's VM down"
+        );
+        drop(parent);
+        assert!(downed.exists(), "the parent's own end still brings it down");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **A placement that fails leaves no copy behind** — FIRECODE-NOTES: *"A failed spawn leaks

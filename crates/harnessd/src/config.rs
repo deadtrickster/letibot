@@ -579,6 +579,12 @@ pub struct Config {
     /// applied to the child's config at the spawn — and [`Config::vm_copy_source`] is the single
     /// spelling of the decision, read by `Harness::open` when it boots the VM.
     pub vm_source: Option<PathBuf>,
+    /// **The VM this session runs in when it is not its own** — the project of an ancestor's
+    /// firecode VM. A child of a VM-placed session placed on `host` — the tool's *"your own
+    /// boundary"* — runs in its parent's VM, on the parent's tree and toolchain (the operator:
+    /// *"children live in the _same_ vm"*). `None` for every other session. Set by the spawn;
+    /// read by `Harness::open`, which attaches rather than boots (`FirecodeBackend::attach`).
+    pub vm_attach: Option<PathBuf>,
     /// **The acceptance check this session's VM runs when it is brought down** —
     /// [`letibot_tools::builtins::task::TaskSpec::vm_verify`], applied at the spawn. Not inherited:
     /// it is set from each spawn's own spec, so a child's gate is never its parent's by accident.
@@ -1965,6 +1971,7 @@ impl Config {
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             vm_source: None,
+            vm_attach: None,
             vm_verify: None,
             build_env: Vec::new(),
             // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**

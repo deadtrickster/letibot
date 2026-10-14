@@ -3041,7 +3041,10 @@ impl Harness {
         // no decision is made because the action is inside. The downgrade still
         // composes on top — it is the caller's explicit ask. Set here, before the
         // gate is built from `cfg.mode`, and disclosed by `placement`.
-        let in_vm = cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
+        // **A session attached to an ancestor's VM is inside that VM too** — the same boundary,
+        // the same allow-all inside it (`Config::vm_attach`).
+        let in_vm = cfg.placement == letibot_tools::builtins::task::Placement::Firecode
+            || cfg.vm_attach.is_some();
         if in_vm {
             cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
         }
@@ -3181,15 +3184,29 @@ impl Harness {
             // through `copy_tree` and got it refused, three times in one night, for two branches.
             // See `crates/tools/src/firecode.rs`'s `FirecodeSpec::source`, and
             // `mergequeue::repo_of_workspace` for the resolution itself.
-            let mut spec =
-                letibot_tools::firecode::FirecodeSpec::new(cfg.vm_copy_source(), &cfg.session_id);
-            spec.writable = may_write;
-            spec.exec = may_exec;
-            spec.up_args = cfg.vm_args.clone();
-            spec.verify = cfg.vm_verify.clone();
-            let fc = letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
-                HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
-            })?;
+            let fc = if let Some(project) = &cfg.vm_attach {
+                letibot_tools::firecode::FirecodeBackend::attach(
+                    None,
+                    project.clone(),
+                    may_write,
+                    may_exec,
+                )
+                .map_err(|e| {
+                    HarnessError::Setup(format!("running this session in its parent's VM: {e}"))
+                })?
+            } else {
+                let mut spec = letibot_tools::firecode::FirecodeSpec::new(
+                    cfg.vm_copy_source(),
+                    &cfg.session_id,
+                );
+                spec.writable = may_write;
+                spec.exec = may_exec;
+                spec.up_args = cfg.vm_args.clone();
+                spec.verify = cfg.vm_verify.clone();
+                letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
+                    HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
+                })?
+            };
             let described = fc.describe();
             let writable = fc.is_writable();
             let monitors = fc.host_processes().and_then(|h| h.monitors().cloned());
@@ -8422,6 +8439,13 @@ impl Harness {
     /// reader), and a job still running in this session's process host (dropping the host ends
     /// it). Asked of the facts' owners — the runner's slots and the process table — rather than
     /// remembered, so a job that ended a second ago does not keep a session alive.
+    /// **This session's children that have not answered yet** — see
+    /// [`letibot_tools::builtins::task::TaskRunner::unsettled_children`]. Non-zero is a child
+    /// holding its answer for them.
+    pub fn unsettled_children(&self) -> usize {
+        self.subagents.unsettled_children()
+    }
+
     pub fn park_refusal(&self) -> Option<&'static str> {
         if self.subagents.live_children() > 0 {
             return Some("a subagent it started is still alive");
@@ -15855,8 +15879,8 @@ fn stop_children_first(
 ///
 /// **Every door here is the shared turn tail** ([`crate::turn_tail::run_turn`], R68.4), with
 /// [`ChildTurns`] as its owner — the loop itself is in [`serve_child_with`].
-fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str, turns: ChildTurns) -> ChildExit {
-    serve_child_with(sub, hub, sub_id, turns)
+fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str, mut turns: ChildTurns) -> ChildExit {
+    serve_child_with(sub, hub, sub_id, &mut turns, false)
 }
 
 /// **The one exit every subagent thread takes** (R68.2): closes the child's hub and removes the
@@ -15886,6 +15910,9 @@ pub enum ChildExit {
     /// **Idle past the park window with nothing alive under it** — parked as store-only. See
     /// `Config::child_park_after` for the policy and what reopens it.
     Parked,
+    /// **Held for its children, and none is left unsettled** — the hold's own end
+    /// (`serve_child_with`'s `hold`): the caller now gives the child's newest answer.
+    Settled,
 }
 
 /// [`serve_child`] with the clock handed in — the tests' door, and the only difference between
@@ -15897,8 +15924,8 @@ pub fn serve_child_under(
     sub_id: &str,
     nag: crate::sessions::TodoNagClock,
 ) -> ChildExit {
-    let turns = ChildTurns::new(sub, sub_id, nag);
-    serve_child_with(sub, hub, sub_id, turns)
+    let mut turns = ChildTurns::new(sub, sub_id, nag);
+    serve_child_with(sub, hub, sub_id, &mut turns, false)
 }
 
 /// **A subagent's own half of the shared turn tail** (R68.4) — the [`TurnOwner`] for a session
@@ -16052,7 +16079,8 @@ fn serve_child_with(
     sub: &mut Harness,
     hub: &Hub,
     sub_id: &str,
-    mut turns: ChildTurns,
+    turns: &mut ChildTurns,
+    hold: bool,
 ) -> ChildExit {
     use crate::turn_tail::Door;
     use letibot_sessionlog::hub::OwnWork;
@@ -16067,6 +16095,12 @@ fn serve_child_with(
     // last turn left work open.
     turns.rearm(sub, true);
     loop {
+        // **Holding its answer for its children** (the operator: a child with live children is
+        // not done): back to the caller the moment none is left unsettled, which is when its
+        // newest answer is the one to give.
+        if hold && sub.unsettled_children() == 0 {
+            return ChildExit::Settled;
+        }
         let deadline = [turns.nag.due_at(), park_at, turns.sweep_at]
             .into_iter()
             .flatten()
@@ -16114,7 +16148,7 @@ fn serve_child_with(
                 // answers `Ignored` for the same case. A board that MOVED under the wake does
                 // re-arm, which is the parent's write: the daemon's `SetOperatorTodos` arm does
                 // the same for a session it holds.
-                if later_turn(sub, &mut turns, Door::Wake, |h| h.wake()).is_none() {
+                if later_turn(sub, turns, Door::Wake, |h| h.wake()).is_none() {
                     turns.rearm(sub, false);
                 }
                 continue;
@@ -16139,7 +16173,7 @@ fn serve_child_with(
                 }
                 // Recorded as the clock reads the plan, not as the wording sent (`nag_said_as`).
                 let notice = sub.nag_said_as();
-                if later_turn(sub, &mut turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
+                if later_turn(sub, turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
                     turns.rearm(sub, false);
                 }
                 continue;
@@ -16162,7 +16196,7 @@ fn serve_child_with(
                 };
                 match sub.answer_operator_ask(content, question, answer) {
                     Ok(line) => {
-                        later_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&line).map(Some));
+                        later_turn(sub, turns, Door::Prompt, |h| h.submit(&line).map(Some));
                     }
                     Err(why) => {
                         hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -16182,7 +16216,7 @@ fn serve_child_with(
                     letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                later_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&text).map(Some));
+                later_turn(sub, turns, Door::Prompt, |h| h.submit(&text).map(Some));
             }
             // **A parent's message, and there is no turn to steer it into — so one is started.**
             // The between-turns half of the operator's ruling (*"fix task_message - it should
@@ -16197,7 +16231,7 @@ fn serve_child_with(
                     }
                     _ => unreachable!("`child_command` hears a Message and nothing else"),
                 };
-                later_turn(sub, &mut turns, Door::Message, |h| {
+                later_turn(sub, turns, Door::Message, |h| {
                     h.parents_message_turn(&from, &text).map(Some)
                 });
             }
@@ -18229,6 +18263,14 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         .len()
     }
 
+    fn unsettled_children(&self) -> usize {
+        unsettled_children(
+            &self.slots.lock().expect("task slots"),
+            &self.base.session_id,
+        )
+        .len()
+    }
+
     fn wait_for_children(&self, timeout: std::time::Duration) -> bool {
         let slots: Vec<Arc<TaskSlot>> = self
             .slots
@@ -18264,6 +18306,25 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
 ///   "settled" cannot mean "gone". A child whose thread has ended is skipped: there is no
 ///   reader left for an interrupt, and a stop reported for one would be a claim with nothing
 ///   behind it.
+/// **The children `me` started that have not answered yet** — still on their task. Not
+/// [`stoppable_children`]: a child that has answered and sits idle between turns has not exited,
+/// and holding for it would hold for ever. What the hold waits on (a child with live children is
+/// not done).
+fn unsettled_children(slots: &[(String, Arc<TaskSlot>)], me: &str) -> Vec<String> {
+    slots
+        .iter()
+        .filter(|(_, slot)| {
+            slot.owner == me
+                && !slot.has_exited()
+                && matches!(
+                    *slot.state.lock().unwrap_or_else(|e| e.into_inner()),
+                    letibot_tools::builtins::task::TaskStatus::Running { .. }
+                )
+        })
+        .map(|(handle, _)| handle.clone())
+        .collect()
+}
+
 fn stoppable_children(slots: &[(String, Arc<TaskSlot>)], me: &str) -> Vec<String> {
     slots
         .iter()
@@ -18890,6 +18951,21 @@ impl HarnessTaskRunner {
         if let Some(src) = &vm_copy {
             sub_cfg.vm_source = Some(src.clone());
         }
+        // **A child of a session in a VM lives in that VM** unless it asks for one of its own —
+        // the operator: *"children live in the _same_ vm"*, and *"child starts grandchild based
+        // on its world"*. `host` is the tool's *"your own boundary"*, which for a session in a VM
+        // is the VM; the stroppy grandchild that read *"You are in a firecode microVM"* in its
+        // prompt ran on the operator's Mac instead, asking for every command. The same VM down a
+        // whole chain: an attached session's children attach to the VM it is attached to.
+        let parent_vm = self.base.vm_attach.clone().or_else(|| {
+            (self.base.placement == Placement::Firecode).then(|| {
+                letibot_tools::firecode::FirecodeBackend::project_of(&self.base.session_id)
+            })
+        });
+        sub_cfg.vm_attach = match placement {
+            Placement::Host => parent_vm,
+            Placement::Firecode => None,
+        };
         // The parent's acceptance check rides to the child's VM the same way: on the spec, into
         // the child's config at the spawn, and from there onto `firecode up` (`Harness::open`).
         sub_cfg.vm_verify = spec.vm_verify.clone();
@@ -18949,6 +19025,11 @@ impl HarnessTaskRunner {
             _ => format!(" on {sub_model}"),
         };
         progress(&match placement {
+            Placement::Host if sub_cfg.vm_attach.is_some() => format!(
+                "opening subagent {} inside this session's own VM — the same tree, toolchain and \
+                 memory{on_window}",
+                letibot_sessionlog::registry::short_id(&sub_id)
+            ),
             Placement::Firecode => format!(
                 "opening subagent {} in a firecode VM: copying {}, booting{on_window}",
                 letibot_sessionlog::registry::short_id(&sub_id),
@@ -19186,6 +19267,33 @@ impl HarnessTaskRunner {
                 return Err(fail(e.to_string()));
             }
         };
+        // **A child with children still on their task is not done** — the operator, of a
+        // `kinds-e2e` that answered while its `tidb-kinds-e2e` ran on: *"it is strange that agent
+        // marked as done and grandchildren kinda stays detached"*, and their ruling that it
+        // waits. Its answer is held: each child's result reaches it as a turn of its own (the
+        // ordinary wake), it is served as any child is meanwhile, and it is done when none is
+        // left unsettled — with its NEWEST answer, the one that read their results. A VM child's
+        // VM stays up for the hold, which is what a child running inside it needs.
+        let mut reply = reply;
+        if sub.unsettled_children() > 0 {
+            publish(
+                "running",
+                &format!(
+                    "{title} — answered, and holding its answer until its own subagents have \
+                     answered"
+                ),
+                None,
+            );
+            let _ = serve_child_with(&mut sub, &sub_hub, &sub_id, &mut turns, true);
+            if let Some(newest) = sub.items().iter().rev().find_map(|i| match i {
+                TranscriptItem::Assistant { text, .. } if !text.trim().is_empty() => {
+                    Some(text.clone())
+                }
+                _ => None,
+            }) {
+                reply.text = newest;
+            }
+        }
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
         self.tasks.record(crate::tasks::TaskEntry {
