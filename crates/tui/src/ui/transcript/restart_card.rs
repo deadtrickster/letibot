@@ -205,7 +205,20 @@ pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
 pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
     let mut lines = text.lines();
     let mut r = empty(down_of(lines.next()?)?);
+    // **Inside a `[task]` group the restart carries** (`SESSION.carries`): the children it handed
+    // over, one bullet each — what the warning says as `had finished … delivering it`.
+    let mut handed_over = false;
     for l in lines {
+        if l.starts_with("[task] ") {
+            handed_over = true;
+            continue;
+        }
+        if handed_over {
+            if l.starts_with("  - `") {
+                r.restored.add(Kind::Subagent);
+            }
+            continue;
+        }
         if let Some(s) = l.strip_prefix("[restart] subagent ") {
             if s.contains("has been resumed") {
                 r.restored.add(Kind::Subagent);
@@ -233,11 +246,14 @@ pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
 
 /// **The restart notice in the card registry** (`line_cards`). It is one paragraph (its lines
 /// are joined by single newlines), so it ends at the first full stop or colon a blank line and
-/// another notice follow.
+/// another notice follow — **except the `[task]` groups it carries**: the children a restart
+/// handed over are counted on its line (`restored: 12 subagents`), not drawn as a fold under it
+/// (pg-noop, 2026-10-14: twelve `Agent …` lines under a card that already said it).
 pub(crate) const SESSION: SessionKind = SessionKind {
     opens: opens_notice,
     ends: &[".", ":"],
     read: notice_card,
+    carries: &["[task] "],
 };
 
 /// **And its hub warnings.**

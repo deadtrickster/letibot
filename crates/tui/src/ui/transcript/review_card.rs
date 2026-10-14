@@ -195,6 +195,7 @@ pub(crate) const SESSION: SessionKind = SessionKind {
         "which lands it through the queue's own gate.",
     ],
     read: notice_card,
+    carries: &[],
 };
 
 /// **And its hub warnings.**

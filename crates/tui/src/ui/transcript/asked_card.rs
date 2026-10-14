@@ -75,6 +75,7 @@ pub(crate) const SESSION: SessionKind = SessionKind {
     opens: opens_question,
     ends: &[],
     read: question_card,
+    carries: &[],
 };
 
 fn opens_question(text: &str) -> bool {

@@ -18,8 +18,9 @@
 //! | `prefix_stale` | the stale-prompt sentence for the same session |
 //!
 //! A row holding several notices (a todo check with the stale paragraph under it) is never
-//! absorbed — hiding it would hide the others with it. A note the reader retired gives its rows
-//! back.
+//! absorbed — hiding it would hide the others with it — save a `[restart]` notice followed only
+//! by the `[task]` groups it carries (the children that restart handed over, which its warning
+//! counts). A note the reader retired gives its rows back.
 
 use super::*;
 use crate::ui::transcript::{job_card, red_card, stale_card};
@@ -62,7 +63,15 @@ pub(crate) fn of_row(it: &SnapshotItem) -> Option<(Event, String, bool)> {
             .then_some((Event::Reseat, text, true));
     }
     let text = crate::ui::transcript::user::agent_row_text(it)?;
-    if job_card::notice_groups(&text).len() != 1 {
+    // **One notice, or a restart and the deliveries it carries.** A row holding other notices is
+    // never absorbed — hiding it would hide them with it — but a restart's `[task]` groups are the
+    // children that restart handed over, which its warning already counts (`had finished …
+    // delivering it`): left out, the row drew a second `restarted` line and a line per child
+    // under it (pg-noop, 2026-10-14, one restart drawn as two cards and twelve lines).
+    let groups = job_card::notice_groups(&text);
+    let one_event = groups.len() == 1
+        || (text.starts_with("[restart] ") && groups[1..].iter().all(|g| g.starts_with("[task] ")));
+    if !one_event {
         return None;
     }
     let e = if text.starts_with("[reseat] ") {

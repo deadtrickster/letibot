@@ -29,6 +29,11 @@ const JOBS_ONLY_WARNING: &str = include_str!("fixtures/restart_jobs_only_warning
 /// reads it; not pinned, because no daemon from this build writes it.
 const PASTED_NOTICE: &str = include_str!("fixtures/restart_pasted_notice.txt");
 const PASTED_WARNING: &str = include_str!("fixtures/restart_pasted_warning.txt");
+/// **pg-noop's restart of 2026-10-14, as its store and its daemon log hold it** — the notice the
+/// model got (the restart's header and the `[task]` group of the twelve children it handed over)
+/// and the warning the daemon raised. Not pinned: real text, from the build before this change.
+const DELIVERED_NOTICE: &str = include_str!("fixtures/restart_with_deliveries_notice.txt");
+const DELIVERED_WARNING: &str = include_str!("fixtures/restart_with_deliveries_warning.txt");
 /// The `prefix_stale` sentence pg-noop's head drew as a wall.
 const STALE: &str = include_str!("fixtures/prefix_stale_warning.txt");
 const STALE_MANY: &str = include_str!("fixtures/prefix_stale_many_warning.txt");
@@ -355,4 +360,122 @@ fn a_restart_warning_and_its_notice_are_one_line() {
             "the notice is in the popup: {whole}"
         );
     }
+}
+
+/// **A restart and the children it handed over are ONE line** — pg-noop, 2026-10-14: one restart
+/// drew `session · restarted · down 2s · restored: 12 subagents · click for details` from the
+/// warning, then `session · restarted · down 2s · click for details` from the notice with an
+/// `Agent you-are-reading-part · …` line per child under it — twelve of them. The `[task]` group
+/// is the restart's own: counted on its line, and in the popup, never drawn as a fold.
+#[test]
+fn a_restart_and_the_children_it_handed_over_are_one_line() {
+    let line = "restarted · down 2s · restored: 12 subagents · click for details";
+    assert_eq!(
+        warning_restart(DELIVERED_WARNING)
+            .expect("the warning parses")
+            .line(),
+        line
+    );
+    assert_eq!(
+        notice_restart(DELIVERED_NOTICE)
+            .expect("the notice parses")
+            .line(),
+        line,
+        "the notice counts the children it carries"
+    );
+
+    // The notice alone: one session line, no child lines, the whole of it a click away.
+    let mut a = with_notice(DELIVERED_NOTICE);
+    let screen = a.screen(200, 40);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, &format!("session · {line}")).len(),
+        1,
+        "{joined}"
+    );
+    assert!(!joined.contains("you-are-reading-part"), "{joined}");
+    assert!(!joined.contains("Agent "), "{joined}");
+    assert_eq!(a.notice_rows.len(), 1, "{:?}", a.notice_rows);
+    let (y, _) = a.notice_rows[0];
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let whole = popup_text(&mut a);
+    assert!(
+        holds(&whole, "12 subagents you started have finished"),
+        "{whole}"
+    );
+
+    // With its warning, either order: one row for the one restart.
+    for warning_first in [false, true] {
+        let mut a = if warning_first {
+            let mut a = with_warning("restart_restored", DELIVERED_WARNING);
+            a.apply(ServerFrame::Event(env(
+                2,
+                SessionEvent::TranscriptAppended {
+                    item_id: "s.0".into(),
+                    kind: "user".into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::TranscriptContent {
+                    item_id: "s.0".into(),
+                    item: Box::new(TranscriptItem::User {
+                        speaker: letibot_transcript::Speaker::Agent,
+                        parts: vec![UserPart::Text {
+                            text: DELIVERED_NOTICE.into(),
+                        }],
+                    }),
+                },
+            )));
+            a
+        } else {
+            let mut a = with_notice(DELIVERED_NOTICE);
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::Warning {
+                    code: "restart_restored".into(),
+                    detail: DELIVERED_WARNING.into(),
+                    compaction: None,
+                },
+            )));
+            a
+        };
+        let screen = a.screen(200, 40);
+        let joined = screen.join("\n");
+        assert_eq!(
+            rows_with(&screen, "restarted · down 2s").len(),
+            1,
+            "warning first: {warning_first}\n{joined}"
+        );
+        assert!(!joined.contains("you-are-reading-part"), "{joined}");
+        assert_eq!(a.notice_rows.len(), 0, "{:?}", a.notice_rows);
+        assert_eq!(a.card_rows.len(), 1, "{:?}", a.card_rows);
+    }
+}
+
+/// **A restart carries `[task]` groups and nothing else** — a `[job]` that ended in the same wake
+/// is still its own two lines, and a row with one is not absorbed into the warning.
+#[test]
+fn a_restart_with_a_job_beside_its_deliveries_keeps_the_job() {
+    const JOB: &str = "[job] a job you backgrounded has ended:\n  - `build · j7` exited 0 after \
+                       4.4s, wrote 0 bytes: cargo build\nOutput: `job_output` job=\"j7\".";
+    let mut a = with_notice(&format!("{DELIVERED_NOTICE}\n\n{JOB}"));
+    let screen = a.screen(200, 40);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(
+            &screen,
+            "session · restarted · down 2s · restored: 12 subagents · click for details"
+        )
+        .len(),
+        1,
+        "{joined}"
+    );
+    assert_eq!(
+        rows_with(&screen, "j7 · build · exited 0 4.4s").len(),
+        1,
+        "{joined}"
+    );
+    assert!(!joined.contains("you-are-reading-part"), "{joined}");
 }

@@ -131,6 +131,13 @@ pub(crate) struct SessionKind {
     pub(crate) opens: fn(&str) -> bool,
     /// The last words this kind's notices end with: where a row of several is split.
     pub(crate) ends: &'static [&'static str],
+    /// **The labelled groups this kind's notice CARRIES** — tags (`[task] `) whose groups, when
+    /// they follow the notice, are part of the same event and are read and drawn with it as its
+    /// one line, never split off. A restart's own deliveries (the children it handed over) are
+    /// the restart: drawn after its line as a fold, twelve of them were twelve more lines under
+    /// a card that already said *restored* (pg-noop, 2026-10-14). Empty for a kind that carries
+    /// nothing.
+    pub(crate) carries: &'static [&'static str],
     /// The whole notice, read; `None` for a shape this head does not know.
     pub(crate) read: fn(&str) -> Option<Card>,
 }
@@ -178,6 +185,8 @@ pub(crate) fn split_card(text: &str) -> Option<(&str, &str, &'static SessionKind
             let e = at + end.len();
             if let Some(next) = text[e..].strip_prefix("\n\n")
                 && (next.starts_with('[') || kind_of(next).is_some())
+                // A group this kind carries is the notice's own, not the next notice.
+                && !kind.carries.iter().any(|t| next.starts_with(t))
             {
                 split = Some(split.map_or(e, |s| s.min(e)));
                 break;
