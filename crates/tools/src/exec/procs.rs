@@ -480,7 +480,14 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        // **Until the shell's fork has become `sleep`.** `sh -c "sleep 30; :"` forks a child for
+        // `sleep`, and until that child execs it still carries the shell's command line, marker
+        // and all — so a fixed 200 ms read two matches on a loaded box (a full workspace run). The
+        // count settles at one when the exec lands; waited for, not assumed.
+        let started = std::time::Instant::now();
+        while find(&marker, &[]).len() != 1 && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         assert_eq!(find(&marker, &[]).len(), 1);
         assert!(find(&marker, &[child.id()]).is_empty());
         let _ = child.kill();
