@@ -2174,6 +2174,24 @@ impl<'a> Sessions<'a> {
                 "session {session_id} is not open, so nothing could be run in it"
             ))));
         };
+        // **A child this worker holds** — a parked child a parent's message reopened — runs its
+        // later turns here rather than on its own thread, and its record moves for the turn's
+        // length exactly as there (`harness::later_turn`): `running` while it runs, its settled
+        // state again after, `running` still if the daemon stopped under it.
+        let record = h
+            .config()
+            .parent_session_id
+            .as_ref()
+            .and(h.config().store.clone())
+            .map(|path| crate::subagent_record::SubagentRecord {
+                store: crate::subagent_record::RunStore {
+                    path,
+                    cell: Default::default(),
+                },
+                child: session_id.to_string(),
+                registry: self.registry.clone(),
+            });
+        let prior = record.as_ref().and_then(|r| r.later_turn_began());
         let out = run_turn(
             &mut h,
             &mut DaemonTurn {
@@ -2183,6 +2201,9 @@ impl<'a> Sessions<'a> {
             door,
             f,
         );
+        if let (Some(r), Some(prior)) = (&record, &prior) {
+            r.later_turn_ended(prior);
+        }
         self.open.insert(session_id.to_string(), h);
         out
     }
@@ -4656,13 +4677,22 @@ impl SessionSource for StoreSessions {
         // is the question's one home, so a session nobody has opened since a restart is marked
         // as surely as a live one.
         let waiting = g.sessions_waiting_on_operator().unwrap_or_default();
-        // **Every child's name, from its record** (`subagent_record::recorded_slug`), so a child
-        // listed after a restart is named as it was when it was spawned.
-        let slugs: std::collections::HashMap<String, String> = g
-            .subagent_runs()
-            .unwrap_or_default()
-            .iter()
-            .map(|r| (r.child_id.clone(), crate::subagent_record::recorded_slug(r)))
+        // **Every child's name, from its record** (`subagent_record::recorded_slugs`), so a child
+        // listed after a restart is named as it was when it was spawned — and a name derived for
+        // a record from before names is unique among its parent's children, as the runner's own
+        // listing makes it.
+        let mut by_parent: std::collections::BTreeMap<String, Vec<_>> = Default::default();
+        for r in g.subagent_runs().unwrap_or_default() {
+            by_parent.entry(r.parent_id.clone()).or_default().push(r);
+        }
+        let slugs: std::collections::HashMap<String, String> = by_parent
+            .values()
+            .flat_map(|runs| {
+                runs.iter()
+                    .map(|r| r.child_id.clone())
+                    .zip(crate::subagent_record::recorded_slugs(runs))
+                    .collect::<Vec<_>>()
+            })
             .collect();
         g.list_sessions()
             .unwrap_or_default()

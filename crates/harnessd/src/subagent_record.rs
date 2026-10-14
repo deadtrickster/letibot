@@ -88,6 +88,55 @@ pub struct RecordedSpec {
     /// brought back is still named the way a fresh one would have been.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+    /// **A tool's helper** ([`TaskSpec::helper`]): never resumed, never re-delivered, never listed
+    /// after a restart. Absent (false) in every record written before helpers were marked;
+    /// [`is_helper`] recognises those by their brief.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub helper: bool,
+}
+
+/// **Whether a recorded child is a tool's helper rather than the model's child** — its record
+/// says so, or (for a record from before helpers were marked) it was briefed as `digest`'s part
+/// reader is: *"You are reading part N of M of a longer body of text on somebody else's
+/// behalf"*. pg-noop's twelve readers of 2026-10-13 are such records.
+pub fn is_helper(run: &SubagentRun) -> bool {
+    RecordedSpec::from_json(&run.spec_json).is_ok_and(|r| r.helper)
+        || letibot_tools::builtins::digest::is_part_reader_brief(&run.prompt)
+}
+
+/// **Every recorded child's name, unique among its parent's children** — in the order given
+/// (the store's: oldest first). A name the record CARRIES is kept as it is: it was made unique
+/// when the child was spawned. A name DERIVED for a record from before names
+/// ([`recorded_slug`]'s fallback) is made unique the way a fresh spawn's is (`-2`, `-3`, …,
+/// [`letibot_tools::builtins::task::unique_slug`]): pg-noop's twelve part readers all derived
+/// `you-are-reading-part` from their identical opening, and a name twelve children answer to
+/// names none of them.
+pub fn recorded_slugs(runs: &[SubagentRun]) -> Vec<String> {
+    let carried: Vec<Option<String>> = runs
+        .iter()
+        .map(|r| {
+            RecordedSpec::from_json(&r.spec_json)
+                .ok()
+                .and_then(|s| s.slug)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .collect();
+    let mut taken: Vec<String> = carried.iter().flatten().cloned().collect();
+    let mut out = Vec::with_capacity(runs.len());
+    for (run, carried) in runs.iter().zip(carried) {
+        let slug = match carried {
+            Some(s) => s,
+            None => {
+                let s = letibot_tools::builtins::task::unique_slug(&recorded_slug(run), |s| {
+                    taken.iter().any(|t| t == s)
+                });
+                taken.push(s.clone());
+                s
+            }
+        };
+        out.push(slug);
+    }
+    out
 }
 
 /// **The name a recorded child answers to**: the slug its record carries, or — for a record from
@@ -135,6 +184,7 @@ impl RecordedSpec {
             vm_source: spec.vm_source.clone(),
             vm_verify: spec.vm_verify.clone(),
             slug: spec.slug.clone(),
+            helper: spec.helper,
         }
     }
 
@@ -153,6 +203,7 @@ impl RecordedSpec {
             vm_source: self.vm_source.clone(),
             vm_verify: self.vm_verify.clone(),
             slug: self.slug.clone(),
+            helper: self.helper,
         })
     }
 
@@ -189,6 +240,7 @@ impl RunStore {
 
 /// **One child's row, as the slot that settles it holds it.** See the module docs for which
 /// endings write what.
+#[derive(Clone)]
 pub struct SubagentRecord {
     pub store: RunStore,
     pub child: String,
@@ -241,6 +293,58 @@ impl SubagentRecord {
         }
     }
 
+    /// **A later turn of this child begins** — after its first answer, on its own thread: a
+    /// parent's `task_message`, a later prompt, a wake, its plan-check. The row goes back to
+    /// `running` for the length of the turn ([`letibot_tokencore::store::Store::reopen_subagent_run`]),
+    /// so a daemon that stops mid-turn leaves a child the next one resumes. Answers the state to
+    /// put back when the turn ends ([`Self::later_turn_ended`]); `None` when the row was not
+    /// settled and nothing moved.
+    ///
+    /// pg-noop, 2026-10-14: `slt-current-number` answered at 01:57, was woken by its parent at
+    /// 02:01:41 to collect its sweep, and was mid-turn when the daemon restarted at 02:06:05 —
+    /// its row still said `done`, so the next daemon left it, every door then disagreed about it,
+    /// and the sweep it was waiting on was never mentioned again.
+    pub fn later_turn_began(&self) -> Option<String> {
+        match self.store.with(|s| {
+            s.reopen_subagent_run(&self.child)
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(prior) => prior,
+            Err(why) => {
+                eprintln!(
+                    "  {} · its later turn was not recorded ({why}); a restart during it will \
+                     not resume it",
+                    self.child
+                );
+                None
+            }
+        }
+    }
+
+    /// **That later turn ended** — on its own, the row goes back to `prior`. Ended by the daemon
+    /// stopping (`Registry::is_stopping`), it stays `running` with its crash count reset, exactly
+    /// as a first turn does in [`Self::settled`], and the next daemon resumes it.
+    pub fn later_turn_ended(&self, prior: &str) {
+        let wrote = if self.registry.is_stopping() {
+            self.store.with(|s| {
+                s.interrupt_subagent_run(&self.child)
+                    .map_err(|e| e.to_string())
+            })
+        } else {
+            self.store.with(|s| {
+                s.rest_subagent_run(&self.child, prior)
+                    .map_err(|e| e.to_string())
+            })
+        };
+        if let Err(why) = wrote {
+            eprintln!(
+                "  {} · the end of its later turn was not recorded ({why}); a restart may resume \
+                 it",
+                self.child
+            );
+        }
+    }
+
     /// **A person or a parent stopped this child** — written at the moment the stop is
     /// accepted, so a daemon that dies before the child's turn winds down does not bring back a
     /// child somebody stopped. During an orderly shutdown the stop is the daemon's, not a
@@ -273,6 +377,10 @@ pub enum Decision {
     /// Mid-task, and the daemon was down past the restore threshold: mark it `paused` and remind
     /// the parent, which brings it back with `task_resume` if it still matters.
     Remind { spec: TaskSpec },
+    /// **A tool's helper caught mid-task** ([`is_helper`]): the tool call that was waiting for its
+    /// answer ended with the old daemon, so there is nobody to resume it for and nobody to tell.
+    /// Marked `abandoned` with `why`, and said to no one.
+    Retire { why: String },
 }
 
 /// **The rule.** `instance` is this daemon's; `held` is whether this daemon already has the child
@@ -289,6 +397,20 @@ pub fn decide(
     // parked session, a `/resume`) must not spawn a second copy of a child that is running.
     if run.instance == instance || held {
         return Decision::Leave;
+    }
+    // **A tool's helper is never the model's news.** Settled, its answer was read by the tool
+    // that started it (or was never going to be — that call is gone); mid-task, nothing waits for
+    // it any more. pg-noop, 2026-10-14: twelve `digest` readers finished the morning before were
+    // handed to the model by a restart as *"12 subagents you started have finished"*.
+    if is_helper(run) {
+        return match run.state.as_str() {
+            "running" => Decision::Retire {
+                why: "a tool's helper whose call ended with the daemon that ran it — nothing \
+                      waits for its answer"
+                    .into(),
+            },
+            _ => Decision::Leave,
+        };
     }
     match run.state.as_str() {
         "running" => {}
@@ -348,6 +470,58 @@ pub fn decide(
         };
     }
     Decision::Resume { spec }
+}
+
+/// **A recorded child's state, as `task_result` reads it** — for a child of this session that has
+/// no slot in this daemon (a restart left it without one). The one source is the record, and the
+/// sentences agree with [`resumable`]'s: a finished child's answer IS readable, and a child that
+/// is not running says why and names the door that brings it back.
+pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
+    let outcome = run.outcome.clone().unwrap_or_default();
+    let resume = format!(
+        "`task_resume` with task=\"{}\" brings it back in its own session{}",
+        run.child_id,
+        RecordedSpec::from_json(&run.spec_json)
+            .ok()
+            .and_then(|r| r.worktree)
+            .filter(|w| !w.main_tree)
+            .map(|w| format!(" and worktree `{}`", w.path))
+            .unwrap_or_default()
+    );
+    match run.state.as_str() {
+        "done" => TaskStatus::Done {
+            answer: outcome,
+            child: None,
+        },
+        "failed" => TaskStatus::Failed { why: outcome },
+        "killed" => TaskStatus::Failed {
+            why: "it was stopped by a person or by its parent, and is not brought back".into(),
+        },
+        "running" if run.instance != instance => TaskStatus::Failed {
+            why: format!(
+                "it was running when the daemon that ran it stopped, and nothing is running it \
+                 now; {resume}"
+            ),
+        },
+        "running" => TaskStatus::Failed {
+            why: format!(
+                "its record says it is running in this daemon, but nothing here holds it; \
+                 {resume}"
+            ),
+        },
+        "paused" => TaskStatus::Failed {
+            why: format!(
+                "it was running when the daemon stopped and was down past the restore \
+                 threshold, so it was left paused; {resume}"
+            ),
+        },
+        "abandoned" => TaskStatus::Failed {
+            why: format!("it was not brought back after a daemon restart: {outcome}"),
+        },
+        other => TaskStatus::Failed {
+            why: format!("its record says `{other}`: {outcome}"),
+        },
+    }
 }
 
 /// **Whether `task_resume` may bring this child back** — the explicit, one-call door (the
@@ -616,6 +790,118 @@ mod tests {
         );
     }
 
+    /// **pg-noop's twelve part readers** (2026-10-14): settled and never marked delivered,
+    /// because `digest` read their answers itself — a restart handed all twelve to the model as
+    /// just finished. A helper, old record or new, is left when settled and retired, silently,
+    /// when caught mid-task.
+    #[test]
+    fn a_tools_helper_is_never_delivered_or_resumed() {
+        let mut old = run("done");
+        old.prompt = "You are reading part 3 of 12 of a longer body of text on somebody else's \
+                      behalf. They asked:\n\n  why"
+            .into();
+        old.spec_json = r#"{"role":"researcher","placement":"host"}"#.into();
+        old.outcome = Some("part 3 says".into());
+        assert!(is_helper(&old));
+        for mode in [RestoreMode::Resume, RestoreMode::Remind] {
+            assert_eq!(decide(&old, NEW, false, |_| true, mode), Decision::Leave);
+        }
+        let mut marked = run("running");
+        marked.spec_json = RecordedSpec::of(&TaskSpec {
+            role: "researcher".into(),
+            helper: true,
+            ..TaskSpec::default()
+        })
+        .to_json();
+        assert!(is_helper(&marked));
+        assert!(matches!(
+            decide(&marked, NEW, false, |_| true, RestoreMode::Resume),
+            Decision::Retire { .. }
+        ));
+        // The model's own child with the same words in its brief, further in, is not one.
+        let mut mine = run("done");
+        mine.prompt = "Summarise it. You are reading part 1 of 2 of a longer body of text on \
+                       somebody else's behalf."
+            .into();
+        mine.outcome = Some("x".into());
+        assert!(!is_helper(&mine));
+        assert!(matches!(
+            decide(&mine, NEW, false, |_| true, RestoreMode::Resume),
+            Decision::Deliver(_)
+        ));
+    }
+
+    /// **Derived names are unique among a parent's children; carried names are kept** — the
+    /// twelve readers that all derived `you-are-reading-part`.
+    #[test]
+    fn derived_names_are_made_unique_and_carried_ones_kept() {
+        let reader = |n: u32| {
+            let mut r = run("done");
+            r.child_id = format!("s-1-sub-{n}");
+            r.prompt = format!(
+                "You are reading part {n} of 3 of a longer body of text on somebody else's \
+                 behalf."
+            );
+            r.spec_json = r#"{"role":"researcher","placement":"host"}"#.into();
+            r
+        };
+        let mut named = run("done");
+        named.spec_json = RecordedSpec::of(&TaskSpec {
+            slug: Some("you-are-reading-part-2".into()),
+            ..TaskSpec::default()
+        })
+        .to_json();
+        let runs = vec![reader(1), named, reader(2), reader(3)];
+        assert_eq!(
+            recorded_slugs(&runs),
+            vec![
+                "you-are-reading-part",
+                "you-are-reading-part-2",
+                "you-are-reading-part-3",
+                "you-are-reading-part-4",
+            ]
+        );
+    }
+
+    /// **One state for one child, whichever door asks** — pg-noop, 2026-10-14: `task_result`
+    /// listed `slt-current-number` as `unknown`, refused it as *"no subagent called … was started
+    /// here"*, and `task_resume` refused it as *"finished its task (done); read its answer with
+    /// `task_result`"*. The record answers `task_result` now, in words that agree with
+    /// `resumable`'s.
+    #[test]
+    fn a_recorded_child_reads_the_same_to_task_result_and_task_resume() {
+        let mut done = run("done");
+        done.outcome = Some("Committed as `dce7cca`.".into());
+        assert_eq!(
+            recorded_status(&done, NEW),
+            TaskStatus::Done {
+                answer: "Committed as `dce7cca`.".into(),
+                child: None
+            }
+        );
+        assert!(
+            resumable(&done, NEW, false, |_| true)
+                .unwrap_err()
+                .contains("read its answer with `task_result`")
+        );
+        // Not running anywhere: the record says why, and both doors name `task_resume`.
+        for state in ["running", "paused"] {
+            let r = run(state);
+            match recorded_status(&r, NEW) {
+                TaskStatus::Failed { why } => {
+                    assert!(why.contains("task_resume"), "{state}: {why}");
+                    assert!(why.contains("/wt/agent-fix"), "{state}: {why}");
+                }
+                other => panic!("{state}: {other:?}"),
+            }
+            assert!(resumable(&r, NEW, false, |_| true).is_ok(), "{state}");
+        }
+        match recorded_status(&run("killed"), NEW) {
+            TaskStatus::Failed { why } => assert!(why.contains("stopped by a person"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn a_killed_child_is_never_resumed() {
         assert_eq!(
@@ -668,6 +954,7 @@ mod tests {
             vm_source: Some("/src".into()),
             vm_verify: None,
             slug: Some("survey-the-store".into()),
+            helper: true,
         };
         let back = RecordedSpec::from_json(&RecordedSpec::of(&spec).to_json())
             .unwrap()

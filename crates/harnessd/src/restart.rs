@@ -413,6 +413,12 @@ pub mod said {
     }
 }
 
+/// **What a job row reads when the old daemon's orderly stop ended it** — `Registry::close` runs
+/// every session's `end_running("the daemon stopping")` before the process exits, and the row
+/// says `killed by` that. Such a job was running at the stop as surely as one a crash left
+/// `running`, and is reminded the same way ([`job_line`]).
+pub const STOPPED_WITH_THE_DAEMON: &str = "killed by the daemon stopping";
+
 /// **One background job that was running at the stop, as the model is reminded of it.**
 ///
 /// `ran_ms` is how long it had run when the daemon stopped. `waiting` is the open rows that waited
@@ -439,11 +445,19 @@ pub fn job_line(
         line.push_str(&format!(" ({})", about.join(", ")));
     }
     // **One sentence of why**, and the command said once — in the call that runs it again.
-    line.push_str(
-        ": NOT run again — its process was the old daemon's, and a crash may have left it \
-         running (check with `pkill` pattern=\"<a fragment of its command>\" action=\"list\", \
-         which kills nothing).",
-    );
+    if job.state == STOPPED_WITH_THE_DAEMON {
+        // The orderly stop ended it: there is nothing left running to look for.
+        line.push_str(
+            ": ENDED by the old daemon's orderly stop, unfinished, and NOT run again — its \
+             process was the old daemon's.",
+        );
+    } else {
+        line.push_str(
+            ": NOT run again — its process was the old daemon's, and a crash may have left it \
+             running (check with `pkill` pattern=\"<a fragment of its command>\" \
+             action=\"list\", which kills nothing).",
+        );
+    }
     // **Where its output went, read out of the command** — the record's own `redirect` was
     // never filled for a running row by the builds before this one, and the operator's job
     // `cd … && … > /tmp/acceptance-child.log 2>&1` was reminded as having written no file.
@@ -773,6 +787,22 @@ mod tests {
         assert!(line.contains("Their wait is RELEASED"), "{line}");
         // **Said once** — the command is in the call that runs it again, not repeated before it.
         assert_eq!(line.matches("cargo test").count(), 1, "{line}");
+    }
+
+    /// **A job the old daemon's orderly stop ended is said to have been ended**, not to be
+    /// possibly still running — pg-noop's `slt-sweep`, `killed by the daemon stopping`.
+    #[test]
+    fn a_job_the_stop_ended_is_said_to_be_ended() {
+        let mut j = job("bash criterion-slt.sh > run0/out.txt 2>&1", None);
+        j.state = STOPPED_WITH_THE_DAEMON.into();
+        let line = job_line(&j, Some("slt-sweep"), Some("/w"), Some(468_000), &[]);
+        assert!(
+            line.contains("ENDED by the old daemon's orderly stop"),
+            "{line}"
+        );
+        assert!(!line.contains("may have left it running"), "{line}");
+        assert!(line.contains("`run0/out.txt`, which survives"), "{line}");
+        assert!(line.contains("To run it again: `bash {"), "{line}");
     }
 
     /// **The operator's job, whose record had no redirect** (a running row written by a build

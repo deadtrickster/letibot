@@ -9125,10 +9125,22 @@ impl Harness {
             .into_iter()
             .filter(|r| {
                 r.instance != me
+                    // A tool's helper is never restored or re-delivered (`decide`); a running one
+                    // is only closed, which needs no notice.
+                    && !crate::subagent_record::is_helper(r)
                     && (r.state == "running"
                         || (matches!(r.state.as_str(), "done" | "failed") && !r.delivered))
             })
             .collect();
+        // Helpers caught mid-task by the stop are closed quietly by the runner's pass below even
+        // when nothing else in this session needs a notice.
+        let retire_helpers = store
+            .subagent_runs_of(&sid)
+            .unwrap_or_default()
+            .iter()
+            .any(|r| {
+                r.instance != me && r.state == "running" && crate::subagent_record::is_helper(r)
+            });
         let monitors: Vec<_> = store
             .monitors_of(&sid)
             .unwrap_or_default()
@@ -9137,7 +9149,13 @@ impl Harness {
             .collect();
         let mut jobs = Vec::new();
         for job in store.jobs(&sid).unwrap_or_default() {
-            if job.state != "running" {
+            // **A job the old daemon's ORDERLY stop ended is a job that was running at the
+            // stop**, and is reminded like one. `Registry::close` ends every run in flight
+            // (`end_running`, *"killed by the daemon stopping"*) before the process exits, so
+            // after a clean restart no job row reads `running` at all — and the reminder this
+            // pass exists to give was never given: pg-noop's `slt-sweep` (j17239), 4,262 of
+            // 4,771 files into its measurement, killed at 02:05:55 and mentioned to nobody.
+            if job.state != "running" && job.state != crate::restart::STOPPED_WITH_THE_DAEMON {
                 continue;
             }
             // A subagent's handle is backgrounded through the same sink and has a `job` row too;
@@ -9171,6 +9189,9 @@ impl Harness {
             settled.push((job, ctx));
         }
         if runs.is_empty() && monitors.is_empty() && jobs.is_empty() && settled.is_empty() {
+            if retire_helpers {
+                let _ = self.subagents.resume_recorded(RestoreMode::Remind);
+            }
             return None;
         }
 
@@ -15833,6 +15854,11 @@ pub struct ChildTurns {
     /// Whether this child's monitor waiter is running — one per session, `Sessions::armed`'s
     /// rule.
     wake_armed: bool,
+    /// **The child's row in the store**, which every turn AFTER its first moves back to `running`
+    /// for its length (`SubagentRecord::later_turn_began`) — so a daemon restart in the middle of
+    /// a parent's `task_message` turn resumes the child instead of reading its first answer as
+    /// its state. `None` for a child with no record (a test, a storeless run, a reviewer).
+    record: Option<crate::subagent_record::SubagentRecord>,
 }
 
 impl ChildTurns {
@@ -15850,7 +15876,14 @@ impl ChildTurns {
             board_version: sub.todo_board_version(),
             sweep_at: None,
             wake_armed: false,
+            record: None,
         }
+    }
+
+    /// The child's record, for its later turns to move — see the field.
+    fn with_record(mut self, record: Option<crate::subagent_record::SubagentRecord>) -> Self {
+        self.record = record;
+        self
     }
 
     /// **Re-arm the idle plan-check from NOW, when a turn ran or the board moved.**
@@ -15946,7 +15979,7 @@ fn serve_child_with(
     sub_id: &str,
     mut turns: ChildTurns,
 ) -> ChildExit {
-    use crate::turn_tail::{Door, run_turn};
+    use crate::turn_tail::Door;
     use letibot_sessionlog::hub::OwnWork;
     // **The park clock** (R68's idle-child policy, `Config::child_park_after`): restarted by
     // every piece of work this loop takes, so it measures idleness and not age. `None` is the
@@ -16006,7 +16039,7 @@ fn serve_child_with(
                 // answers `Ignored` for the same case. A board that MOVED under the wake does
                 // re-arm, which is the parent's write: the daemon's `SetOperatorTodos` arm does
                 // the same for a session it holds.
-                if run_turn(sub, &mut turns, Door::Wake, |h| h.wake()).is_none() {
+                if later_turn(sub, &mut turns, Door::Wake, |h| h.wake()).is_none() {
                     turns.rearm(sub, false);
                 }
                 continue;
@@ -16031,7 +16064,7 @@ fn serve_child_with(
                 }
                 // Recorded as the clock reads the plan, not as the wording sent (`nag_said_as`).
                 let notice = sub.nag_said_as();
-                if run_turn(sub, &mut turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
+                if later_turn(sub, &mut turns, Door::Nag(notice), |h| h.nag_turn()).is_none() {
                     turns.rearm(sub, false);
                 }
                 continue;
@@ -16054,7 +16087,7 @@ fn serve_child_with(
                 };
                 match sub.answer_operator_ask(content, question, answer) {
                     Ok(line) => {
-                        run_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&line).map(Some));
+                        later_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&line).map(Some));
                     }
                     Err(why) => {
                         hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -16074,7 +16107,7 @@ fn serve_child_with(
                     letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                run_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&text).map(Some));
+                later_turn(sub, &mut turns, Door::Prompt, |h| h.submit(&text).map(Some));
             }
             // **A parent's message, and there is no turn to steer it into — so one is started.**
             // The between-turns half of the operator's ruling (*"fix task_message - it should
@@ -16089,7 +16122,7 @@ fn serve_child_with(
                     }
                     _ => unreachable!("`child_command` hears a Message and nothing else"),
                 };
-                run_turn(sub, &mut turns, Door::Message, |h| {
+                later_turn(sub, &mut turns, Door::Message, |h| {
                     h.parents_message_turn(&from, &text).map(Some)
                 });
             }
@@ -16170,6 +16203,25 @@ fn serve_child_with(
             }
         }
     }
+}
+
+/// **A turn of a child after its first** — [`run_turn`](crate::turn_tail::run_turn), with the
+/// child's record moved to `running` for its length and put back when it ends (or left running
+/// when it ended because the daemon is stopping, which is what the next daemon resumes). See
+/// [`ChildTurns::record`].
+fn later_turn(
+    sub: &mut Harness,
+    turns: &mut ChildTurns,
+    door: crate::turn_tail::Door,
+    turn: impl FnOnce(&mut Harness) -> Result<Option<Reply>, HarnessError>,
+) -> Option<Result<Reply, HarnessError>> {
+    let record = turns.record.clone();
+    let prior = record.as_ref().and_then(|r| r.later_turn_began());
+    let out = crate::turn_tail::run_turn(sub, turns, door, turn);
+    if let (Some(r), Some(prior)) = (&record, &prior) {
+        r.later_turn_ended(prior);
+    }
+    out
 }
 
 /// **The session's children, and the whole of the supervision edge between them.**
@@ -17016,8 +17068,24 @@ impl HarnessTaskRunner {
         &self,
         store: &crate::subagent_record::RunStore,
         run: &letibot_tokencore::store::SubagentRun,
-        spec: letibot_tools::builtins::task::TaskSpec,
+        mut spec: letibot_tools::builtins::task::TaskSpec,
     ) -> Result<(), String> {
+        // **A record from before names comes back under the name its listing gives it** — unique
+        // among its parent's children (`recorded_slugs`), not the bare derivation two siblings
+        // may share.
+        if spec.slug.is_none() {
+            let runs = store
+                .with(|s| {
+                    s.subagent_runs_of(&run.parent_id)
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap_or_default();
+            spec.slug = runs
+                .iter()
+                .zip(crate::subagent_record::recorded_slugs(&runs))
+                .find(|(r, _)| r.child_id == run.child_id)
+                .map(|(_, slug)| slug);
+        }
         let mut row = run.clone();
         row.state = "running".into();
         row.instance = self.registry.instance().to_string();
@@ -17110,6 +17178,10 @@ impl HarnessTaskRunner {
                         title,
                         fate: RestartFate::Settled,
                     });
+                }
+                // A tool's helper caught mid-task: closed, and said to nobody.
+                Decision::Retire { why } => {
+                    restamp("abandoned", run.resumes, Some(why));
                 }
                 Decision::Abandon { why } => {
                     restamp("abandoned", run.resumes, Some(why.clone()));
@@ -17849,6 +17921,66 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         }
     }
 
+    /// **Where a child has got to, for a reader** — [`Self::collect`], and for a child of this
+    /// session that a restart left without a slot, what its record says.
+    ///
+    /// No slot is not "never started here". Such a child is still this session's: `task_result`
+    /// with no `task` LISTS it (`children`), and `task_resume` refuses it with *"finished its task
+    /// (done); read its answer with `task_result`"*. Answering `Unknown` made the third door say
+    /// *"no subagent called … was started here"* about the same child (pg-noop, 2026-10-14). So
+    /// the record answers ([`crate::subagent_record::recorded_status`]). The watcher keeps
+    /// `collect`'s `Unknown`: a record is not a settlement arriving now, and a recorded answer
+    /// handed to a watcher would be announced to the model as news.
+    fn look(
+        &self,
+        handle: &str,
+        timeout: std::time::Duration,
+    ) -> letibot_tools::builtins::task::TaskStatus {
+        if self.slot(handle).is_some() {
+            return self.collect(handle, timeout);
+        }
+        let me = self.base.session_id.clone();
+        let run = self
+            .run_store()
+            .and_then(|store| {
+                store
+                    .with(|s| s.subagent_run(handle).map_err(|e| e.to_string()))
+                    .ok()
+            })
+            .flatten()
+            .filter(|r| r.parent_id == me);
+        match run {
+            Some(run) => crate::subagent_record::recorded_status(&run, self.registry.instance()),
+            None => letibot_tools::builtins::task::TaskStatus::Unknown,
+        }
+    }
+
+    /// **A child's settlement was read** — `task_result` handed it to the model, or `digest` read
+    /// its part reader — so its record is marked delivered and a restart does not announce it
+    /// again. Only this session's own children are marked: a handle in the tree that another
+    /// session started is that session's to be told about.
+    fn consumed(&self, handle: &str) {
+        let Some(store) = self.run_store() else {
+            return;
+        };
+        let me = self.base.session_id.clone();
+        if let Err(why) =
+            store.with(
+                |s| match s.subagent_run(handle).map_err(|e| e.to_string())? {
+                    Some(run) if run.parent_id == me => {
+                        s.deliver_subagent_run(handle).map_err(|e| e.to_string())
+                    }
+                    _ => Ok(()),
+                },
+            )
+        {
+            eprintln!(
+                "  {handle} · that its answer was read was not recorded ({why}); a restart may \
+                 hand it over again"
+            );
+        }
+    }
+
     fn started(&self) -> Vec<String> {
         self.slots
             .lock()
@@ -17885,11 +18017,18 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     .ok()
             })
             .unwrap_or_default();
-        for run in runs {
-            let slug = crate::subagent_record::recorded_slug(&run);
+        // **Names unique among this session's children** (`recorded_slugs`): twelve records from
+        // before names all derived `you-are-reading-part`, and a name twelve children answer to
+        // resolves to none of them.
+        let slugs = crate::subagent_record::recorded_slugs(&runs);
+        for (run, slug) in runs.into_iter().zip(slugs) {
             match out.iter_mut().find(|c| c.handle == run.child_id) {
                 Some(c) if c.slug.is_none() => c.slug = Some(slug),
                 Some(_) => {}
+                // **A tool's helper is not listed from its record** — it was never the model's
+                // child (`TaskSpec::helper`), and twelve `digest` readers listed after a restart
+                // were twelve rows the model had never heard of.
+                None if crate::subagent_record::is_helper(&run) => {}
                 None => out.push(ChildName {
                     handle: run.child_id,
                     slug: Some(slug),
@@ -18906,7 +19045,8 @@ impl HarnessTaskRunner {
         // **The task is the child's first turn, through the shared tail with the child's own
         // owner** (R68.4) — the same owner every later turn of this thread uses, so its title,
         // its monitors and its sweep are the child's from the first turn on.
-        let mut turns = ChildTurns::new(&sub, &sub_id, crate::sessions::TodoNagClock::new());
+        let mut turns = ChildTurns::new(&sub, &sub_id, crate::sessions::TodoNagClock::new())
+            .with_record(slot.record.clone());
         // **The branch is the deliverable, said in the brief and checked as each turn ends.** The
         // rule rides the child's task (see `worktree_brief`), and the same fact is read when the
         // turn is about to end (`Harness::set_deliverable`): one nudge if the tree is dirty.

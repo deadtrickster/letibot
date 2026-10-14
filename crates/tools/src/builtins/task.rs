@@ -224,6 +224,16 @@ pub struct TaskSpec {
     /// [`unique_slug`] does for a worktree). `Some` is `task_start`'s slug, already made unique
     /// against the repository's branches, or a plain `task`'s named one.
     pub slug: Option<String>,
+    /// **A tool's own helper, not the model's child** — `digest`'s part readers. The tool that
+    /// starts one waits for it and reads its answer itself ([`TaskRunner::consumed`]); the model
+    /// never asked for it, never got its handle and is never handed its settlement. So a daemon
+    /// restart neither resumes it (the call that wanted its answer is gone) nor re-delivers it,
+    /// and it is not listed among the session's children afterwards.
+    ///
+    /// The operator, 2026-10-14, of a restart that handed the model twelve readers' answers
+    /// eighteen hours after their `digest` had read them: *"finished helper/reader children
+    /// shouldn't appear in the restored set at all"*.
+    pub helper: bool,
 }
 
 /// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
@@ -756,6 +766,22 @@ pub trait TaskRunner: Send + Sync {
     /// finish. A zero timeout is a poll.
     fn collect(&self, handle: &str, timeout: std::time::Duration) -> TaskStatus;
 
+    /// **Where a child has got to, for a READER** (`task_result`) — [`Self::collect`] by default.
+    /// A runner that records children answers here for one a daemon restart left without a
+    /// slot, from its record, so the listing, the single answer and `task_resume` read one
+    /// state. Not for a watcher: a recorded settlement is not one arriving now.
+    fn look(&self, handle: &str, timeout: std::time::Duration) -> TaskStatus {
+        self.collect(handle, timeout)
+    }
+
+    /// **This child's settlement has been read** — by `task_result`, which hands the answer to
+    /// the model, or by the tool that started a helper and waited for it (`digest`). A runner
+    /// that records children marks the record delivered, so a daemon restart does not hand the
+    /// same answer over a second time as if it were news (2026-10-14: twelve `digest` readers,
+    /// read by their tool the morning before, were announced to the model as just finished).
+    /// A runner that records nothing has nothing to mark.
+    fn consumed(&self, _handle: &str) {}
+
     /// The handles this session has started, oldest first — what `task_result`
     /// lists when it is called with no handle, so a model that lost one can find
     /// it without the operator.
@@ -1165,6 +1191,8 @@ impl Tool for TaskTool {
             vm_source: None,
             vm_verify,
             slug,
+            // A child the model started is the model's, never a tool's helper.
+            helper: false,
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
@@ -1457,6 +1485,8 @@ impl Tool for TaskStartTool {
             // cut from, already made unique against the repository above. A main-tree child has
             // no branch of its own and is still named by the same slug.
             slug: Some(slug.clone()),
+            // A child the model started is the model's, never a tool's helper.
+            helper: false,
         };
         let worktree_spec = WorktreeSpec {
             slug,
@@ -1581,7 +1611,7 @@ impl Tool for TaskResultTool {
             let mut out = format!("{} subagent(s) started here:\n", started.len());
             for c in &started {
                 let h = &c.handle;
-                let status = self.runner.collect(h, std::time::Duration::ZERO);
+                let status = self.runner.look(h, std::time::Duration::ZERO);
                 // **The listing says the STATE, not liveness** — a row that says `running` about a
                 // child between turns is the sentence this change exists to stop printing, and the
                 // word comes from the same judgement the single-handle answer uses
@@ -1631,7 +1661,7 @@ impl Tool for TaskResultTool {
             // delivered the moment it lands rather than held for the next break, which is the
             // promise the sentence below makes.
             ctx.want_completion(handle, crate::runtime::WantedNow::Awaited);
-            let status = self.runner.collect(handle, std::time::Duration::ZERO);
+            let status = self.runner.look(handle, std::time::Duration::ZERO);
             match &status {
                 TaskStatus::Running { note, .. } => {
                     // **The steering clause, in a value rather than inside the `format!`**: the
@@ -1662,7 +1692,13 @@ impl Tool for TaskResultTool {
         } else {
             timeout
         };
-        let status = self.runner.collect(handle, timeout);
+        let status = self.runner.look(handle, timeout);
+        // **An answer or a failure read here has been handed to the model** — the delivery the
+        // watcher would otherwise make — so the runner marks it read, and a daemon restart does
+        // not announce it again as news.
+        if matches!(status, TaskStatus::Done { .. } | TaskStatus::Failed { .. }) {
+            self.runner.consumed(handle);
+        }
         match status {
             TaskStatus::Done { ref answer, .. } => {
                 // **The child has finished, so its branch goes to be landed.** This is the one

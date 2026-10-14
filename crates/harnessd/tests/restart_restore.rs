@@ -278,6 +278,12 @@ struct Stub {
 impl Stub {
     /// Every turn answered with `frames`; the first `hold` turns wait for [`Stub::release`].
     fn new(frames: Vec<Frame>, hold: usize) -> Stub {
+        Stub::holding(frames, 0..hold)
+    }
+
+    /// Every turn answered with `frames`; the turns whose arrival index is in `held` wait for
+    /// [`Stub::release`].
+    fn holding(frames: Vec<Frame>, held: std::ops::Range<usize>) -> Stub {
         let body = Arc::new(canned::sse_body(&frames));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -293,13 +299,14 @@ impl Stub {
                 }
                 let body = body.clone();
                 let g = g.clone();
+                let held = held.clone();
                 std::thread::spawn(move || {
                     let (lock, cv) = &*g;
                     let mut st = lock.lock().unwrap();
                     let n = st.0;
                     st.0 += 1;
                     cv.notify_all();
-                    while n < hold && st.1 <= n {
+                    while held.contains(&n) && st.1 <= n {
                         st = cv.wait(st).unwrap();
                     }
                     drop(st);
@@ -626,6 +633,337 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         store.subagent_run(&handle).unwrap().unwrap().delivered
     });
     two.stop(None);
+}
+
+/// **A child that had answered and was mid-way through a LATER turn when the daemon stopped is
+/// resumed too** — pg-noop, 2026-10-14: `slt-current-number` answered at 01:57, its parent's
+/// `task_message` woke it at 02:01:41 to collect its sweep, and the restart at 02:06:05 found its
+/// row reading `done` from the first answer. The next daemon left it, `task_result` said it was
+/// never started, `task_resume` said it had finished, and the parent read the worktree to find
+/// out. A later turn moves the row back to `running` for its length, so the stop leaves a child
+/// to resume — and a later turn that ends on its own puts it back.
+#[test]
+fn a_child_stopped_in_a_later_turn_is_resumed_not_left_as_finished() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-later-turn");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    // The first answer goes through; every request after it waits.
+    let stub = Stub::holding(plain(&parts.vocab, ANSWER), 1..usize::MAX);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    let one = a_daemon(&parts, &cfg);
+    let life = Lifeline::start(cfg.store.clone(), one.registry.clone());
+    let started = one.call(
+        "task_start",
+        serde_json::json!({"prompt": "take the sweep's number", "slug": "slt-sweep"}),
+    );
+    let handle = match &started.outcome {
+        letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!("task_start did not start: {other:?} {}", started.payload),
+    };
+    wait_until("the child's first answer", || answered(&one, &handle));
+    let store = Store::open(&dir.store()).unwrap();
+    wait_until("the first answer to be recorded", || {
+        store.subagent_run(&handle).unwrap().unwrap().state == "done"
+    });
+
+    // The parent wakes it between turns: a later turn starts, and the row says it runs.
+    let told = one.call(
+        "task_message",
+        serde_json::json!({"task": handle, "text": "collect the sweep and finish"}),
+    );
+    assert_eq!(
+        told.outcome,
+        letibot_transcript::ToolOutcome::Ok,
+        "{}",
+        told.payload
+    );
+    let arrived = stub.arrived();
+    wait_until("the later turn to reach the model", || {
+        stub.arrived() > arrived
+    });
+    assert_eq!(
+        store.subagent_run(&handle).unwrap().unwrap().state,
+        "running",
+        "a child mid-way through a later turn is running, whatever its first turn said"
+    );
+
+    // The orderly stop interrupts that turn: the daemon's ending, not the child's.
+    std::thread::spawn({
+        let gate = stub.gate.clone();
+        move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let (lock, cv) = &*gate;
+            lock.lock().unwrap().1 = usize::MAX;
+            cv.notify_all();
+        }
+    });
+    one.stop(Some(&life));
+    let after = store.subagent_run(&handle).unwrap().unwrap();
+    assert_eq!(after.state, "running", "{after:?}");
+
+    // The next daemon resumes it, and every door reads it the same way.
+    let stub2 = Stub::new(plain(&parts.vocab, ANSWER), 0);
+    let cfg2 = config(&dir.repo(), &dir.store(), stub2.endpoint.clone());
+    let mut two = a_daemon(&parts, &cfg2);
+    let notice = two
+        .parent
+        .restore_after_restart()
+        .expect("the child mid-turn is brought back");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.contains(&format!("`slt-sweep · {handle}`")) && notice.contains("has been resumed"),
+        "{notice}"
+    );
+    wait_until("the resumed child to answer", || answered(&two, &handle));
+    let listed = two.call("task_result", serde_json::json!({})).payload;
+    assert!(
+        listed.contains(&format!("slt-sweep · {handle} — ")) && !listed.contains("unknown"),
+        "{listed}"
+    );
+    two.stop(None);
+}
+
+/// **A later turn that ends on its own puts the row back** — the child is between turns again,
+/// its first answer delivered, and a restart now has nothing to resume or re-deliver.
+#[test]
+fn a_later_turn_that_ends_on_its_own_leaves_the_row_settled() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-later-turn-ends");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, ANSWER), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    let one = a_daemon(&parts, &cfg);
+    let started = one.call(
+        "task_start",
+        serde_json::json!({"prompt": "answer twice", "slug": "twice"}),
+    );
+    let handle = match &started.outcome {
+        letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!("task_start did not start: {other:?} {}", started.payload),
+    };
+    wait_until("the child's first answer", || answered(&one, &handle));
+    let store = Store::open(&dir.store()).unwrap();
+    wait_until("the first answer to be recorded", || {
+        store.subagent_run(&handle).unwrap().unwrap().state == "done"
+    });
+    let arrived = stub.arrived();
+    let told = one.call(
+        "task_message",
+        serde_json::json!({"task": handle, "text": "and once more"}),
+    );
+    assert_eq!(
+        told.outcome,
+        letibot_transcript::ToolOutcome::Ok,
+        "{}",
+        told.payload
+    );
+    wait_until("the later turn to reach the model", || {
+        stub.arrived() > arrived
+    });
+    wait_until("the later turn to end and the row to rest", || {
+        store.subagent_run(&handle).unwrap().unwrap().state == "done"
+    });
+    let row = store.subagent_run(&handle).unwrap().unwrap();
+    assert_eq!(
+        row.outcome.as_deref().map(|o| o.contains(ANSWER)),
+        Some(true)
+    );
+    one.stop(None);
+}
+
+/// **A tool's helpers are never the model's news, and a recorded child reads one way through
+/// every door** — pg-noop, 2026-10-14, staged as its store held it: twelve `digest` part readers
+/// from the day before, settled and never marked delivered (their tool read them), all deriving
+/// the one name `you-are-reading-part`; and a finished, delivered child left without a slot.
+/// The restart announced the twelve as *"12 subagents you started have finished"*, listed every
+/// other child as `unknown`, and `task_result` refused the finished one as never started while
+/// `task_resume` called it finished.
+#[test]
+fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-helpers");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    let store = Store::open(&dir.store()).unwrap();
+    old_daemon_stopped(&store, Duration::from_secs(2));
+    // The readers, as a build before helpers were marked wrote them.
+    let reader_spec = r#"{"role":"researcher","downgrade":"read-only","placement":"host"}"#;
+    for n in 1..=3 {
+        let mut r = run(
+            &format!("s-restart-parent-sub-read{n}"),
+            PARENT,
+            "done",
+            &TaskSpec::default(),
+        );
+        r.prompt = format!(
+            "You are reading part {n} of 3 of a longer body of text on somebody else's behalf. \
+             They asked:\n\n  what did it measure"
+        );
+        r.spec_json = reader_spec.into();
+        r.outcome = Some(format!("Part {n} says little"));
+        store.put_subagent_run(&r).unwrap();
+    }
+    // One caught mid-read by the stop, marked as a helper by this build.
+    let mut reading = run(
+        "s-restart-parent-sub-read4",
+        PARENT,
+        "running",
+        &TaskSpec {
+            role: "researcher".into(),
+            helper: true,
+            slug: Some("read-part-1-of-1".into()),
+            ..TaskSpec::default()
+        },
+    );
+    reading.prompt = "You are reading part 1 of 1 of a longer body of text on somebody else's \
+                      behalf."
+        .into();
+    store.put_subagent_run(&reading).unwrap();
+    // The model's own child: finished, its answer already told, no slot after the restart.
+    let mut done = run(
+        "s-restart-parent-sub-slt",
+        PARENT,
+        "done",
+        &TaskSpec {
+            slug: Some("slt-current-number".into()),
+            ..TaskSpec::default()
+        },
+    );
+    done.outcome = Some("Committed as `dce7cca`; the sweep is still in flight.".into());
+    done.delivered = true;
+    store.put_subagent_run(&done).unwrap();
+
+    let mut d = a_daemon(&parts, &cfg);
+    assert_eq!(
+        d.parent.restore_after_restart(),
+        None,
+        "nothing here is the model's news"
+    );
+    assert!(warnings(&d.hub(), "restart_restored").is_empty());
+    assert!(warnings(&d.hub(), "restart_reminded").is_empty());
+    assert_eq!(
+        store
+            .subagent_run("s-restart-parent-sub-read4")
+            .unwrap()
+            .unwrap()
+            .state,
+        "abandoned",
+        "a helper caught mid-read is closed"
+    );
+    for n in 1..=3 {
+        let r = store
+            .subagent_run(&format!("s-restart-parent-sub-read{n}"))
+            .unwrap()
+            .unwrap();
+        assert_eq!((r.state.as_str(), r.delivered), ("done", false));
+    }
+    // The listing: no helper, and the finished child reads as answered.
+    let listed = d.call("task_result", serde_json::json!({})).payload;
+    assert!(!listed.contains("read"), "{listed}");
+    assert!(
+        listed.contains("slt-current-number · s-restart-parent-sub-slt — answered"),
+        "{listed}"
+    );
+    // By handle and by name, its recorded answer — the sentence `task_resume` points at.
+    for asked in ["s-restart-parent-sub-slt", "slt-current-number"] {
+        let r = task_result(&d, asked);
+        assert_eq!(
+            r.outcome,
+            letibot_transcript::ToolOutcome::Ok,
+            "{}",
+            r.payload
+        );
+        assert!(
+            r.payload.contains("Committed as `dce7cca`"),
+            "{}",
+            r.payload
+        );
+    }
+    let resumed = d.call(
+        "task_resume",
+        serde_json::json!({"task": "s-restart-parent-sub-slt"}),
+    );
+    assert!(
+        resumed
+            .payload
+            .contains("read its answer with `task_result`"),
+        "{}",
+        resumed.payload
+    );
+    // Nothing was delivered to the model.
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = d.parent.wake();
+    assert!(
+        !user_rows(&d.hub()).iter().any(|r| r.contains("[task]")),
+        "{:?}",
+        user_rows(&d.hub())
+    );
+    d.stop(None);
+}
+
+/// **A job the old daemon's orderly stop ended is reminded** — pg-noop's `slt-sweep` (j17239),
+/// killed at 02:05:55 by `end_running("the daemon stopping")`: after a clean restart no job row
+/// reads `running`, so the reminder was never given.
+#[test]
+fn a_job_the_orderly_stop_ended_is_reminded() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-job-stopped");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        let mut j = a_job(
+            "j17239",
+            letibot_harnessd::restart::STOPPED_WITH_THE_DAEMON,
+            "cd /data/slt && bash criterion-slt.sh > run0/out.txt 2>&1",
+        );
+        j.produced = 0;
+        store.put_job(PARENT, &j).unwrap();
+        store.deliver_job(PARENT, "j17239").unwrap();
+        the_old_daemons(&store, "j17239");
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d.parent.restore_after_restart().expect("a reminder");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.contains("- job `j17239`")
+            && notice.contains("ENDED by the old daemon's orderly stop")
+            && notice.contains("`run0/out.txt`"),
+        "{notice}"
+    );
+    assert!(
+        d.parent.restore_after_restart().is_none(),
+        "the ended job was reminded a second time"
+    );
+    d.stop(None);
 }
 
 /// **Past the threshold nothing comes back on its own** — the model is told how long the daemon

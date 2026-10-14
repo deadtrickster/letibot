@@ -217,6 +217,44 @@ impl Store {
         Ok(())
     }
 
+    /// **A settled child has started another turn** — a parent's `task_message`, a later prompt,
+    /// a wake or its plan-check, served on the child's own thread after its first answer. The row
+    /// goes back to `running` so that a daemon stopping in the middle of that turn leaves a child
+    /// the next daemon resumes, instead of a `done` row that says nothing was in flight (the SLT
+    /// sweep of 2026-10-14: woken by its parent at 02:01:41, interrupted by the restart at
+    /// 02:06:05, and left by the next daemon as finished). The outcome and the delivered flag are
+    /// the first turn's and are kept.
+    ///
+    /// Answers the state it was in (`done` or `failed`) when it moved, so the turn's end can put it
+    /// back; `None` when nothing moved — no row, or a row that is not settled (still running from
+    /// its first turn, killed, abandoned, paused).
+    pub fn reopen_subagent_run(&self, child_id: &str) -> Result<Option<String>> {
+        let Some(run) = self.subagent_run(child_id)? else {
+            return Ok(None);
+        };
+        if !matches!(run.state.as_str(), "done" | "failed") {
+            return Ok(None);
+        }
+        let moved = self.exec(
+            "UPDATE subagent_run SET state = 'running', resumes = 0, updated_ms = ?3
+              WHERE child_id = ?1 AND state = ?2",
+            params![child_id, run.state, now_ms()],
+        )?;
+        Ok((moved > 0).then_some(run.state))
+    }
+
+    /// **A later turn of a settled child ended on its own** (not by the daemon stopping): the row
+    /// goes back to the state it had before [`Store::reopen_subagent_run`] moved it. Only a row
+    /// still `running` is touched — one a stop, a kill or a restart has moved since is theirs.
+    pub fn rest_subagent_run(&self, child_id: &str, state: &str) -> Result<()> {
+        self.exec(
+            "UPDATE subagent_run SET state = ?2, updated_ms = ?3
+              WHERE child_id = ?1 AND state = 'running'",
+            params![child_id, state, now_ms()],
+        )?;
+        Ok(())
+    }
+
     /// **The parent's model has been handed this child's settlement.**
     pub fn deliver_subagent_run(&self, child_id: &str) -> Result<()> {
         self.exec(
@@ -488,6 +526,47 @@ mod tests {
         assert!(store.subagent_run("nobody").unwrap().is_none());
     }
 
+    /// **A later turn of a settled child is in flight, and the row says so** — and puts the
+    /// settlement back when the turn ends, with the first answer and its delivery untouched. A row
+    /// that is not settled is never moved.
+    #[test]
+    fn a_later_turn_reopens_a_settled_row_and_rests_it_again() {
+        let store = Store::open_in_memory().unwrap();
+        store.put_subagent_run(&run("s-1-sub-1", "s-1")).unwrap();
+        // Still on its first turn: nothing to reopen.
+        assert_eq!(store.reopen_subagent_run("s-1-sub-1").unwrap(), None);
+        store
+            .settle_subagent_run("s-1-sub-1", "done", Some("first answer"))
+            .unwrap();
+        store.deliver_subagent_run("s-1-sub-1").unwrap();
+
+        assert_eq!(
+            store.reopen_subagent_run("s-1-sub-1").unwrap().as_deref(),
+            Some("done")
+        );
+        let got = store.subagent_run("s-1-sub-1").unwrap().unwrap();
+        assert_eq!(got.state, "running");
+        assert_eq!(got.outcome.as_deref(), Some("first answer"));
+        assert!(got.delivered, "the first answer was told and stays told");
+
+        store.rest_subagent_run("s-1-sub-1", "done").unwrap();
+        let got = store.subagent_run("s-1-sub-1").unwrap().unwrap();
+        assert_eq!((got.state.as_str(), got.delivered), ("done", true));
+
+        // A row moved by something else in between is not put back.
+        store.reopen_subagent_run("s-1-sub-1").unwrap();
+        store
+            .settle_subagent_run("s-1-sub-1", "killed", Some("stopped"))
+            .unwrap();
+        store.rest_subagent_run("s-1-sub-1", "done").unwrap();
+        assert_eq!(
+            store.subagent_run("s-1-sub-1").unwrap().unwrap().state,
+            "killed"
+        );
+        assert_eq!(store.reopen_subagent_run("s-1-sub-1").unwrap(), None);
+        assert_eq!(store.reopen_subagent_run("nobody").unwrap(), None);
+    }
+
     #[test]
     fn monitors_contexts_and_lives_round_trip() {
         let store = Store::open_in_memory().unwrap();
@@ -567,6 +646,14 @@ mod tests {
             (
                 "deliver_subagent_run",
                 Box::new(|s| s.deliver_subagent_run("s-1-sub-1")),
+            ),
+            (
+                "reopen_subagent_run",
+                Box::new(|s| s.reopen_subagent_run("s-1-sub-1").map(|_| ())),
+            ),
+            (
+                "rest_subagent_run",
+                Box::new(|s| s.rest_subagent_run("s-1-sub-1", "done")),
             ),
             (
                 "put_monitor",

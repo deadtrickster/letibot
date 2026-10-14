@@ -71,6 +71,27 @@ pub trait DigestRunner: Send + Sync {
     ) -> Result<String, String>;
 }
 
+/// **What every part reader's brief says of itself**, after its part number — the words
+/// [`is_part_reader_brief`] knows a reader by.
+const PART_READER_SAYS: &str = "of a longer body of text on somebody else's behalf.";
+
+/// **Whether a subagent's brief is a `digest` part reader's** — how a record written before
+/// helpers were marked ([`TaskSpec::helper`]) is still known for one: *"You are reading part 3 of
+/// 12 of a longer body of text on somebody else's behalf."*
+pub fn is_part_reader_brief(prompt: &str) -> bool {
+    let Some(rest) = prompt.strip_prefix("You are reading part ") else {
+        return false;
+    };
+    let head = rest.lines().next().unwrap_or("");
+    let Some((n, rest)) = head.split_once(" of ") else {
+        return false;
+    };
+    let Some((of, rest)) = rest.split_once(' ') else {
+        return false;
+    };
+    n.parse::<usize>().is_ok() && of.parse::<usize>().is_ok() && rest.starts_with(PART_READER_SAYS)
+}
+
 /// The shipping fold: one subagent per chunk, over [`TaskRunner`].
 ///
 /// A subagent per chunk rather than one long-lived child, because `TaskRunner`'s
@@ -109,8 +130,8 @@ impl DigestRunner for SubagentDigest {
         of: usize,
     ) -> Result<String, String> {
         let prompt = format!(
-            "You are reading part {n} of {of} of a longer body of text on somebody \
-             else's behalf. They asked:\n\n  {question}\n\n{}\
+            "You are reading part {n} of {of} {PART_READER_SAYS} They asked:\n\n  \
+             {question}\n\n{}\
              Answer ONLY from the text below. If this part does not bear on the \
              question, say so in one line and repeat what was already known — do not \
              pad, and do not answer from your own knowledge. Quote the exact words \
@@ -128,10 +149,22 @@ impl DigestRunner for SubagentDigest {
         let spec = TaskSpec {
             role: "researcher".into(),
             downgrade: crate::schema::Downgrade::parse("read-only").unwrap_or_default(),
+            // **This tool's helper, not the model's child**: its answer is read right here and
+            // nowhere else, so a daemon restart must neither resume it nor hand its answer to the
+            // model as news (see [`TaskSpec::helper`]).
+            helper: true,
+            // **Named for what it is**, and made unique among the session's children by the
+            // runner (`-2` for a second digest's part 1). Every part read under the prompt's own
+            // derivation, `you-are-reading-part`, so twelve parts answered to one name.
+            slug: Some(format!("read-part-{n}-of-{of}")),
             ..Default::default()
         };
         let handle = self.runner.start(&prompt, &spec)?;
-        match self.runner.collect(&handle, self.per_chunk) {
+        let status = self.runner.collect(&handle, self.per_chunk);
+        if matches!(status, TaskStatus::Done { .. } | TaskStatus::Failed { .. }) {
+            self.runner.consumed(&handle);
+        }
+        match status {
             TaskStatus::Done { answer, .. } => Ok(answer),
             TaskStatus::Failed { why } => Err(format!("part {n} of {of}: {why}")),
             TaskStatus::Running { .. } => Err(format!(
@@ -749,5 +782,93 @@ mod tests {
                 if reason.contains("nobody to read"))
             }
         );
+    }
+
+    /// **A part reader is the tool's helper, named for its part, and its answer is marked read
+    /// where the tool reads it** — 2026-10-14, pg-noop: twelve readers started without either
+    /// were brought back by a daemon restart eighteen hours later and announced to the model as
+    /// twelve subagents it had started, all called `you-are-reading-part`.
+    #[test]
+    fn a_part_reader_is_a_named_helper_whose_answer_is_marked_read() {
+        #[derive(Default)]
+        struct Fake {
+            started: Mutex<Vec<TaskSpec>>,
+            consumed: Mutex<Vec<String>>,
+        }
+        impl TaskRunner for Fake {
+            fn start(&self, _prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+                let mut s = self.started.lock().unwrap();
+                s.push(spec.clone());
+                Ok(format!("s-1-sub-{}", s.len()))
+            }
+            fn collect(&self, handle: &str, _t: std::time::Duration) -> TaskStatus {
+                if handle.ends_with("-2") {
+                    TaskStatus::Running {
+                        note: None,
+                        child: None,
+                    }
+                } else {
+                    TaskStatus::Done {
+                        answer: "read".into(),
+                        child: None,
+                    }
+                }
+            }
+            fn consumed(&self, handle: &str) {
+                self.consumed.lock().unwrap().push(handle.to_string());
+            }
+        }
+        let fake = Arc::new(Fake::default());
+        let digest = SubagentDigest::new(fake.clone());
+        assert_eq!(digest.fold("q", "", "rows", 1, 12).unwrap(), "read");
+        // A part still running when the fold gives up has not been read, and is not marked.
+        assert!(digest.fold("q", "read", "rows", 2, 12).is_err());
+        let started = fake.started.lock().unwrap();
+        assert!(started.iter().all(|s| s.helper), "{started:?}");
+        assert_eq!(started[0].slug.as_deref(), Some("read-part-1-of-12"));
+        assert_eq!(started[1].slug.as_deref(), Some("read-part-2-of-12"));
+        assert_eq!(
+            *fake.consumed.lock().unwrap(),
+            vec!["s-1-sub-1".to_string()]
+        );
+    }
+
+    /// **A reader's brief is known by its words**, so a record from before helpers were marked
+    /// is still known for one — and the words are the ones `fold` writes.
+    #[test]
+    fn a_part_readers_brief_is_known_by_its_words() {
+        #[derive(Default)]
+        struct Briefs(Mutex<Vec<String>>);
+        impl TaskRunner for Briefs {
+            fn start(&self, prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+                self.0.lock().unwrap().push(prompt.to_string());
+                Ok("s-1-sub-1".into())
+            }
+            fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+                TaskStatus::Done {
+                    answer: "a".into(),
+                    child: None,
+                }
+            }
+        }
+        let b = Arc::new(Briefs::default());
+        SubagentDigest::new(b.clone())
+            .fold("why", "", "rows", 3, 12)
+            .unwrap();
+        let brief = b.0.lock().unwrap()[0].clone();
+        assert!(is_part_reader_brief(&brief), "{brief}");
+        // pg-noop's records, verbatim openings.
+        assert!(is_part_reader_brief(
+            "You are reading part 1 of 12 of a longer body of text on somebody else's behalf. \
+             They asked:\n\n  (1) what did it measure"
+        ));
+        for not in [
+            "You are reading part of the design doc; fix the parser",
+            "Fix the thing. You are reading part 1 of 12 of a longer body of text on somebody \
+             else's behalf.",
+            "",
+        ] {
+            assert!(!is_part_reader_brief(not), "{not}");
+        }
     }
 }
