@@ -821,6 +821,20 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
         r#"{"prompt": "run the suite", "where": "firecode", "verify": "make e2e"}"#,
     );
     assert!(gated.contains("started subagent"), "{gated}");
+    // **`repo` names a VM's copy**, and is refused for a child on the host — the operator: *"VMs
+    // are per repo"*. With `where: firecode` the spec carries it, resolved by the spawn.
+    let refused = run(
+        &mut rt,
+        &mut sink,
+        r#"{"prompt": "run the suite", "repo": "stroppy"}"#,
+    );
+    assert!(refused.contains("drop `repo`"), "{refused}");
+    let placed = run(
+        &mut rt,
+        &mut sink,
+        r#"{"prompt": "run the suite", "where": "firecode", "repo": "stroppy"}"#,
+    );
+    assert!(placed.contains("started subagent"), "{placed}");
     let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "access": "root"}"#);
     assert!(p.contains("not a downgrade"), "{p}");
     let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "moon"}"#);

@@ -2358,6 +2358,58 @@ pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
 ///
 /// **R93.E8**: no token count, no request to restate the re-seat in a line (a restatement is not
 /// work), and no *"stop asking for `/reseat`"*, which planted the word it forbade.
+/// **What a VM-placed child copies**, or why it cannot be placed — `Ok(None)` is "the session's
+/// own copy source" (`Config::vm_copy_source`), as before.
+///
+/// * a named `vm_source` (the model's `repo`, the review queue's entry) is resolved against the
+///   session's workspace and must be a repository;
+/// * a `task_start` child copies its own worktree, so it names nothing;
+/// * a plain VM child of a session that is one project of several repositories (children
+///   sharing an `origin` owner, `mergequeue::git::repos_of_workspace`) is refused naming them:
+///   a VM holds one repository, and copying the folder is what the operator's stroppy session did.
+pub fn vm_copy_for(
+    in_vm: bool,
+    has_worktree: bool,
+    named: Option<&std::path::Path>,
+    workspace: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if !in_vm {
+        return Ok(named.map(std::path::Path::to_path_buf));
+    }
+    if let Some(n) = named {
+        let full = if n.is_absolute() {
+            n.to_path_buf()
+        } else {
+            workspace.join(n)
+        };
+        return match crate::mergequeue::git::repo_root(&full) {
+            Ok(top) => Ok(Some(top)),
+            Err(_) => Err(format!(
+                "`{}` is not a git repository, so there is no one tree for the VM to copy. Name \
+                 one of the session's repositories with `repo`.",
+                n.display()
+            )),
+        };
+    }
+    if has_worktree || crate::mergequeue::git::repo_of_workspace(workspace).is_some() {
+        return Ok(None);
+    }
+    let many = crate::mergequeue::git::repos_of_workspace(workspace);
+    if many.len() > 1 {
+        let names: Vec<String> = many
+            .iter()
+            .filter_map(|r| r.file_name().map(|n| format!("`{}`", n.to_string_lossy())))
+            .collect();
+        return Err(format!(
+            "a VM holds one repository, and this session is one project of {} — {}. Name the one \
+             it copies with `repo`; nothing was spawned.",
+            many.len(),
+            names.join(", ")
+        ));
+    }
+    Ok(None)
+}
+
 pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
     let mut said = String::from("[reseat] Your system prompt and tools were updated");
     if summarise {
@@ -18511,6 +18563,19 @@ impl HarnessTaskRunner {
         // fails, named — never a subagent run on the host and called a VM.
         let placement = spec.placement;
         let _ = Placement::Host;
+        // **A VM holds one repository** — the operator: *"VMs are per repo anyway — at least must
+        // be"*. A plain `task` placed in a VM copies the session's workspace, and a session above
+        // several repositories has no one tree to copy: the stroppy children copied the folder.
+        // So the model names it (`repo`), and the copy is that repository or nothing.
+        let vm_copy = match vm_copy_for(
+            placement == Placement::Firecode,
+            spec.worktree.is_some(),
+            spec.vm_source.as_deref(),
+            &self.base.workspace,
+        ) {
+            Ok(c) => c,
+            Err(why) => return Err(why),
+        };
         // A subagent is a real session: mint its id and create its hub. **The id was already
         // minted by [`HarnessTaskRunner::start`]** — it is what that call returned — so what
         // arrives here is a handle, and it is unique because [`mint_sub_id`] made it so. The
@@ -18822,7 +18887,7 @@ impl HarnessTaskRunner {
         // through `Config::vm_copy_source`. `None` is every other caller, and it leaves the field
         // as the parent had it — which for a plain `task` is nothing at all, so the child copies
         // its own workspace exactly as it did before this field existed.
-        if let Some(src) = &spec.vm_source {
+        if let Some(src) = &vm_copy {
             sub_cfg.vm_source = Some(src.clone());
         }
         // The parent's acceptance check rides to the child's VM the same way: on the spec, into

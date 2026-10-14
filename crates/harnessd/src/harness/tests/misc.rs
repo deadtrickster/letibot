@@ -217,3 +217,56 @@ fn a_confined_session_reads_its_repositorys_landing_tree_and_cannot_write_it() {
     let cfg = Config::for_this_box(&plain.0);
     assert!(confined_grants(&cfg, Some(&root)).is_empty());
 }
+
+/// **A VM holds one repository** — the operator: *"VMs are per repo anyway — at least must be"*.
+/// In a folder that is one project of several repositories a VM child with nothing named is
+/// refused naming them; a named one is copied; a name that is not a repository is refused; and a
+/// child on the host, or of a session of one repository, is left as it was.
+#[test]
+fn a_vm_child_of_a_folder_of_repositories_copies_the_one_it_names() {
+    use crate::harness::vm_copy_for;
+    let root = letibot_sessionlog::testing::scratch_root().join(format!(
+        "letibot-vm-copy-{}-{}",
+        std::process::id(),
+        letibot_sessionlog::registry::now_ms()
+    ));
+    let org = root.join("stroppy-io");
+    for (name, url) in [
+        ("stroppy", "git@github.com:stroppy-io/stroppy.git"),
+        (
+            "website",
+            "https://github.com/stroppy-io/stroppy-io.github.io",
+        ),
+    ] {
+        let d = org.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        crate::mergequeue::git::git(&d, &["init", "-q"]).unwrap();
+        crate::mergequeue::git::git(&d, &["remote", "add", "origin", url]).unwrap();
+    }
+    let refused = vm_copy_for(true, false, None, &org).unwrap_err();
+    assert!(
+        refused.contains("`stroppy`") && refused.contains("`website`") && refused.contains("repo"),
+        "{refused}"
+    );
+    let named = vm_copy_for(true, false, Some(std::path::Path::new("stroppy")), &org)
+        .unwrap()
+        .unwrap();
+    assert!(named.ends_with("stroppy"), "{}", named.display());
+    assert!(vm_copy_for(true, false, Some(std::path::Path::new("nope")), &org).is_err());
+    assert_eq!(
+        vm_copy_for(false, false, None, &org).unwrap(),
+        None,
+        "the host"
+    );
+    assert_eq!(
+        vm_copy_for(true, true, None, &org).unwrap(),
+        None,
+        "a task_start child copies its own worktree"
+    );
+    assert_eq!(
+        vm_copy_for(true, false, None, &org.join("stroppy")).unwrap(),
+        None,
+        "a session of one repository copies it, as before"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

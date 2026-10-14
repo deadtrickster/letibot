@@ -1107,6 +1107,7 @@ impl Tool for TaskTool {
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
                     "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
+                    "repo": {"type": "string", "description": "With `where: firecode`: the repository the VM copies, relative to the session root or absolute. A VM holds one repository, so it is required when the session root holds several. Refused without `where: firecode`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "slug": {"type": "string", "description": "A short name for the child (letters, digits, `-`), your word for the work — `task_result`, `task_message` and `job_kill` take it in place of the handle. Defaults to a derivation from the prompt; made unique among your subagents."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG}
@@ -1150,6 +1151,20 @@ impl Tool for TaskTool {
             Ok(v) => v,
             Err(refused) => return refused,
         };
+        // **The repository a VM copies**, when the model names one — only for a VM.
+        let vm_repo = args
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(|r| r.trim().trim_end_matches('/').to_string())
+            .filter(|r| !r.is_empty() && r != ".")
+            .map(std::path::PathBuf::from);
+        if vm_repo.is_some() && placement != Placement::Firecode {
+            return Invocation::failed(
+                "`repo` names the repository a VM copies, and this child is not placed in one",
+                "add `where: firecode`, or drop `repo` — a child on the host works in your own \
+                 tree, and `task_start` takes `repo` for a worktree.",
+            );
+        }
         // R79: when the child's answer reaches the model — refused by name before anything
         // spawns, as `bash` does.
         let wake = match super::bash::wake_arg(args) {
@@ -1184,11 +1199,11 @@ impl Tool for TaskTool {
             // A plain `task` works in the parent's workspace: no worktree is arranged.
             worktree: None,
             // And a VM placement copies that workspace's own copy source, which is the repository
-            // it is about whenever there is one to name (`Config::vm_copy_source`). The one caller
-            // that knows a tree the resolution would not name sets it itself
-            // (`Harness::serve_reviews`); a model's `where: firecode` has no way to name a tree it
-            // has not looked at.
-            vm_source: None,
+            // it is about whenever there is one to name (`Config::vm_copy_source`) — or the one the
+            // model NAMES with `repo`, which a session above several repositories must: a VM holds
+            // one repository (the operator: *"VMs are per repo anyway — at least must be"*). The
+            // spawn resolves it against the session root and refuses one that is not a repository.
+            vm_source: vm_repo,
             vm_verify,
             slug,
             // A child the model started is the model's, never a tool's helper.
