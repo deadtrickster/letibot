@@ -1118,7 +1118,9 @@ mod probe_tests {
     use letibot_sessionlog::server::{self, ServerHandle};
 
     fn socket_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
+        // `scratch_root`, not `temp_dir`: a socket path must fit `sun_path`, and a long
+        // `TMPDIR` made this one too long to bind (see `scratch_root`).
+        let mut p = letibot_sessionlog::testing::scratch_root();
         p.push(format!("letibot-probe-{tag}-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&p);
         p

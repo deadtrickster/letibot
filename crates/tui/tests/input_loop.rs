@@ -28,7 +28,9 @@ const SESSION: &str = "s-input";
 const SIZE: (usize, usize) = (100, 30);
 
 fn socket_path(tag: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
+    // `scratch_root`, not `temp_dir`: a socket path must fit `sun_path`, and a long
+    // `TMPDIR` made this one too long to bind (see `scratch_root`).
+    let mut p = letibot_sessionlog::testing::scratch_root();
     p.push(format!("letibot-input-{tag}-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&p);
     p

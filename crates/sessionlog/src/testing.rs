@@ -506,8 +506,8 @@ behaviour on a hybrid model, which is a measurement of llama.cpp and not a
 violation of the invariant.
 ";
 
-/// **Where a test's scratch directory goes**: the system temp dir — except on macOS, where it is
-/// `/tmp`.
+/// **Where a test's scratch directory goes**: the system temp dir — reached through a short path
+/// when the temp dir's own is long, and on macOS `/tmp`.
 ///
 /// A Unix socket's path has to fit `sockaddr_un.sun_path`: 104 bytes on macOS, 108 on Linux. On
 /// macOS `std::env::temp_dir()` is the per-user `/var/folders/…/T/`, about fifty of those bytes
@@ -515,6 +515,18 @@ violation of the invariant.
 /// `harnessd.sock` inside runs past the limit and `bind` refuses it — a test that passes on Linux
 /// and fails on a Mac for a reason that has nothing to do with what it tests. The same length
 /// pushes a path drawn in a pane past the pane's width. `/tmp` is short on both counts.
+///
+/// **Linux has the same failure under a long `TMPDIR`.** MEASURED 2026-10-14: with `TMPDIR` a
+/// 41-byte directory in `$HOME`, eight tests across `restart_seats`, `sudo_ask_live` and
+/// `stop_force` failed `path must be shorter than SUN_LEN`, and with `TMPDIR` inside a worktree
+/// another run counted about sixty. Which tests fail depends only on how long each one's tag is,
+/// so a per-test fix is a list that is never finished. So when the temp dir's path is longer
+/// than [`SHORT_ROOT`] bytes, this returns `/tmp/lbt-<pid>`, a symlink to it: every scratch path
+/// is short, and every file still lands where `TMPDIR` put it — a `TMPDIR` on disk is usually
+/// there to keep a test run's files out of a RAM-backed `/tmp`, and moving them back would undo
+/// the reason it was set. One link per process; links whose process is gone are removed when
+/// the next one is made (symlinks of exactly that name only). Under the default `/tmp` nothing
+/// changes.
 pub fn scratch_root() -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -522,7 +534,41 @@ pub fn scratch_root() -> std::path::PathBuf {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        std::env::temp_dir()
+        static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        ROOT.get_or_init(|| short_alias(std::env::temp_dir()))
+            .clone()
+    }
+}
+
+/// The longest temp dir [`scratch_root`] uses as it is. `/tmp` and `/var/tmp` pass; a directory
+/// in `$HOME` does not. Sixteen leaves ninety bytes for a test's own names and its socket.
+pub const SHORT_ROOT: usize = 16;
+
+/// `temp` itself when it is short, else `/tmp/lbt-<pid>` linked to it — or `temp` again if the
+/// link cannot be made, which leaves the old behaviour rather than a new failure.
+#[cfg(not(target_os = "macos"))]
+fn short_alias(temp: std::path::PathBuf) -> std::path::PathBuf {
+    short_alias_at(temp, &format!("/tmp/lbt-{}", std::process::id()))
+}
+
+/// [`short_alias`] with the link's name handed in, so its test cannot replace the link the
+/// process's own [`scratch_root`] is using.
+#[cfg(not(target_os = "macos"))]
+fn short_alias_at(temp: std::path::PathBuf, link: &str) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    if temp.as_os_str().as_bytes().len() <= SHORT_ROOT {
+        return temp;
+    }
+    sweep_dead_links("lbt-");
+    let link = std::path::PathBuf::from(link);
+    let _ = std::fs::create_dir_all(&temp);
+    if std::fs::read_link(&link).is_ok_and(|to| to == temp) {
+        return link;
+    }
+    let _ = std::fs::remove_file(&link);
+    match std::os::unix::fs::symlink(&temp, &link) {
+        Ok(()) => link,
+        Err(_) => temp,
     }
 }
 
@@ -541,6 +587,8 @@ pub fn scratch_root() -> std::path::PathBuf {
 /// at `dir`, the socket is bound through it, and the socket file itself lands in `dir` and goes
 /// when `dir` does. Only the dangling link is left, a few bytes; each call removes the links of
 /// processes that no longer exist (Linux, by `/proc`; elsewhere they stay rather than guess).
+/// [`scratch_root`] already keeps the common case short; this covers a dir made elsewhere and a
+/// socket name longer than `harnessd.sock`.
 pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStrExt;
     // sun_path minus its NUL: 104 on macOS, 108 on Linux.
@@ -549,7 +597,7 @@ pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     if direct.as_os_str().as_bytes().len() <= ROOM {
         return direct;
     }
-    sweep_dead_socket_links();
+    sweep_dead_links("letibot-sk-");
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let link = std::path::PathBuf::from("/tmp").join(format!(
         "letibot-sk-{}-{}",
@@ -562,24 +610,22 @@ pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     link.join(name)
 }
 
-/// Remove `/tmp/letibot-sk-<pid>-<n>` SYMLINKS whose process is gone — never a file or a
-/// directory, never a live pid's.
-fn sweep_dead_socket_links() {
+/// Remove the `/tmp/<prefix><pid>[-<n>]` SYMLINKS whose process is gone — never a file or a
+/// directory, never a live pid's. Linux only, because `/proc` is the probe.
+fn sweep_dead_links(prefix: &str) {
     if !std::path::Path::new("/proc/self").exists() {
         return;
     }
     let Ok(entries) = std::fs::read_dir("/tmp") else {
         return;
     };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix("letibot-sk-")) else {
+        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix(prefix)) else {
             continue;
         };
-        let Some((pid, n)) = rest.split_once('-') else {
-            continue;
-        };
-        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let (pid, n) = rest.split_once('-').unwrap_or((rest, "0"));
         if !digits(pid) || !digits(n) {
             continue;
         }
@@ -617,6 +663,33 @@ mod socket_path_tests {
         );
         drop(listener);
         let _ = std::fs::remove_file(p.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&long);
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod short_alias_tests {
+    use super::short_alias_at;
+
+    /// A short temp dir is itself; a long one is reached through a short link to the same dir.
+    #[test]
+    fn a_long_temp_dir_is_reached_through_a_short_link_to_itself() {
+        let name = format!("/tmp/lbt-{}-1", std::process::id());
+        assert_eq!(
+            short_alias_at("/tmp".into(), &name),
+            std::path::PathBuf::from("/tmp")
+        );
+        let long = std::env::temp_dir().join(format!(
+            "letibot-short-alias-test-{}-{}",
+            std::process::id(),
+            "y".repeat(40)
+        ));
+        let got = short_alias_at(long.clone(), &name);
+        assert_eq!(got, std::path::PathBuf::from(&name));
+        assert_eq!(std::fs::read_link(&got).unwrap(), long);
+        std::fs::write(got.join("f"), "x").unwrap();
+        assert!(long.join("f").is_file(), "the files land in the long dir");
+        let _ = std::fs::remove_file(&got);
         let _ = std::fs::remove_dir_all(&long);
     }
 }
