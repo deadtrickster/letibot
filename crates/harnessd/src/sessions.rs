@@ -164,6 +164,12 @@ pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
 /// parked on a condvar.
 pub(crate) const REVIEW_PASS_EVERY: Duration = Duration::from_secs(REVIEW_PASS_SECS);
 
+/// **How often a daemon that is still busy is looked at again for the idle exit** — the error in
+/// the hour it counts (`Sessions::idle_exit_due`): a head that detaches is noticed within this, so
+/// the daemon leaves an hour and at most five minutes after it was last busy. A window shorter
+/// than four of these is looked at four times in it instead.
+pub(crate) const IDLE_EXIT_RECHECK: Duration = Duration::from_secs(300);
+
 /// **The same number in seconds, for the reader that has no `Duration`** — the merge queue's own
 /// grace, [`crate::mergequeue::GATEKEEPER_GRACE_MS`], which is counted in milliseconds and is
 /// expressed in PASSES rather than in seconds so that the two cannot drift apart: a grace shorter
@@ -824,6 +830,15 @@ pub struct Sessions<'a> {
     /// serves it on its first idle pass rather than after a window, and spent by
     /// [`Sessions::reviews_due`]. See [`REVIEW_PASS_EVERY`] for why this is a clock at all.
     reviews_at: Option<Instant>,
+    /// **When to next ask whether this daemon has anything left to do** — the idle exit
+    /// (`Config::idle_exit_after`). `None` when the daemon never exits on its own. See
+    /// [`Sessions::idle_exit_due`].
+    idle_exit_at: Option<Instant>,
+    /// **The last instant this worker saw the daemon busy** — a head attached, a turn, a job.
+    /// The idle window counts from the later of this and the newest event, because a head that
+    /// detaches may say nothing: a tab closed after two quiet hours would otherwise read as two
+    /// hours idle, and the daemon would leave the moment its terminal did.
+    busy_seen: Instant,
     /// **The operator's run, per session**: whether one is in flight on its own thread,
     /// and the lines queued behind it. See [`crate::bangrun::State`] — this map only holds
     /// the handle; the harness gets a clone of the same `Arc`, because the round boundary's
@@ -1000,6 +1015,8 @@ impl<'a> Sessions<'a> {
             // Due at once: the first idle pass looks. A daemon that started between a review's
             // ask and its wake has the row and nothing else, and this is what finds it.
             reviews_at: Some(Instant::now()),
+            idle_exit_at: cfg.idle_exit_after.map(|w| Instant::now() + w),
+            busy_seen: Instant::now(),
             bangs: HashMap::new(),
             gatekeeper_said: None,
         };
@@ -2425,10 +2442,15 @@ impl<'a> Sessions<'a> {
     /// SESSION's — the review queue's own — and the store is the only thing they share, so the ring
     /// between them is a bell and a bell is per-daemon. See [`REVIEW_PASS_EVERY`].
     pub fn next_idle_at(&self) -> Option<Instant> {
-        [self.next_nag_at(), self.reviews_at, self.park_at]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.next_nag_at(),
+            self.reviews_at,
+            self.park_at,
+            self.idle_exit_at,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// **Whether the store read for owed reviews is due, spending the deadline when it is** —
@@ -2805,6 +2827,96 @@ impl<'a> Sessions<'a> {
         }
         self.park_at = again;
         parked
+    }
+
+    /// **What keeps this daemon up**, or `None` when nothing does — the idle exit's test
+    /// (`Config::idle_exit_after`), asked of each fact's owner rather than remembered.
+    ///
+    /// Every session in the registry: no head attached, no turn in flight. Every session with a
+    /// harness: no subagent alive, no job running (`Harness::park_refusal`, the child-park rule's
+    /// own test, so the two policies cannot disagree about what "its work is done" means), no
+    /// monitor watching, no plan-check armed, no `!` run in flight. And the daemon's own: no flowy
+    /// seat held (a seat is an inbox someone may write to), and no queue work it serves
+    /// ([`crate::mergequeue::busy_here`]).
+    pub fn idle_exit_refusal(&self) -> Option<String> {
+        if self.seat.is_some() {
+            return Some("it holds a flowy seat".into());
+        }
+        for id in self.registry.ids() {
+            let Some(hub) = self.registry.get(&id) else {
+                continue;
+            };
+            if hub.attached_heads() > 0 {
+                return Some(format!("{id} has a head attached"));
+            }
+            if hub.turn_in_flight() {
+                return Some(format!("{id} has a turn in flight"));
+            }
+        }
+        for (id, h) in &self.open {
+            if let Some(why) = h.park_refusal() {
+                return Some(format!("{id}: {why}"));
+            }
+            if h.monitors().is_some_and(|m| !m.list().is_empty()) {
+                return Some(format!("{id} has a monitor watching"));
+            }
+            if self.nags.get(id).and_then(|c| c.due_at()).is_some() {
+                return Some(format!("{id} has a plan-check armed"));
+            }
+            if self.bang_run_in_flight(id) {
+                return Some(format!("{id} has a `!` run in flight"));
+            }
+        }
+        self.base
+            .store
+            .as_deref()
+            .and_then(crate::mergequeue::busy_here)
+    }
+
+    /// The idle exit's window, `None` when this daemon never exits on its own.
+    pub fn idle_window(&self) -> Option<Duration> {
+        self.base.idle_exit_after
+    }
+
+    /// **Whether the daemon has been idle for its whole window** — and so should exit — spending
+    /// the deadline as [`Sessions::reviews_due`] does. `false` before the deadline, and `false`
+    /// with the clock re-armed whenever something still holds it: a look every
+    /// [`IDLE_EXIT_RECHECK`] while it is busy, so the hour is counted from about when it last was
+    /// rather than from when this pass happened to run.
+    ///
+    /// Idle means [`Sessions::idle_exit_refusal`] has nothing to say AND the window has passed
+    /// since the later of the newest event in any session and the last pass that saw it busy.
+    pub fn idle_exit_due(&mut self) -> bool {
+        let Some(window) = self.base.idle_exit_after else {
+            self.idle_exit_at = None;
+            return false;
+        };
+        let now = Instant::now();
+        if self.idle_exit_at.is_none_or(|at| at > now) {
+            return false;
+        }
+        if self.idle_exit_refusal().is_some() {
+            self.busy_seen = now;
+            self.idle_exit_at = Some(now + IDLE_EXIT_RECHECK.min(window / 4));
+            return false;
+        }
+        let now_ms = letibot_sessionlog::registry::now_ms();
+        let newest_ms = self
+            .registry
+            .ids()
+            .iter()
+            .filter_map(|id| self.registry.get(id))
+            .map(|h| h.status().last_ms)
+            .max()
+            .unwrap_or(0);
+        let since_event = Duration::from_millis(now_ms.saturating_sub(newest_ms));
+        match idle_left(window, since_event, now.duration_since(self.busy_seen)) {
+            None => true,
+            Some(left) => {
+                self.idle_exit_at = Some(now + left);
+                false
+            }
+        }
     }
 
     /// Send every check whose deadline has passed, and answer how many ran.
@@ -4788,6 +4900,45 @@ fn stored_end(last: &letibot_transcript::TranscriptItem) -> letibot_sessionlog::
             None => StoredEnd::MidTurn,
         },
         _ => StoredEnd::MidTurn,
+    }
+}
+
+/// **How much of the idle window is left** — `None` when it has all passed. The daemon has been
+/// quiet for the shorter of the time since the newest event and the time since a look last found
+/// it busy: a head's leaving is an event (`HeadDetached`), but a job that finishes or a monitor
+/// that expires says nothing to any session's log, so the event clock alone would read a daemon
+/// that was busy a minute ago as idle for as long as its last event is old.
+fn idle_left(window: Duration, since_event: Duration, since_busy: Duration) -> Option<Duration> {
+    let quiet = since_event.min(since_busy);
+    (quiet < window).then(|| window - quiet)
+}
+
+#[cfg(test)]
+mod idle_exit_clock {
+    use super::idle_left;
+    use std::time::Duration;
+
+    const HOUR: Duration = Duration::from_secs(3600);
+    const MIN: Duration = Duration::from_secs(60);
+
+    /// A job that ran for two silent hours and finished a minute ago: the last event is two hours
+    /// old, the daemon was busy a minute ago, and 59 minutes of the window are left.
+    #[test]
+    fn a_holder_that_ends_silently_restarts_the_window() {
+        assert_eq!(idle_left(HOUR, 2 * HOUR, MIN), Some(59 * MIN));
+    }
+
+    /// The other way about: a look found it busy long ago, but an event five minutes old (a head
+    /// that left) is the newer fact.
+    #[test]
+    fn a_newer_event_restarts_it_too() {
+        assert_eq!(idle_left(HOUR, 5 * MIN, 3 * HOUR), Some(55 * MIN));
+    }
+
+    #[test]
+    fn a_whole_window_of_both_is_idle() {
+        assert_eq!(idle_left(HOUR, HOUR, 2 * HOUR), None);
+        assert_eq!(idle_left(HOUR, 3 * HOUR, HOUR + MIN), None);
     }
 }
 

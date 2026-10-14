@@ -1471,6 +1471,15 @@ impl Registry {
         self.source()?.lookup(session_id)
     }
 
+    /// Every session this registry holds a hub for, live ones only — the store's are not here.
+    pub fn ids(&self) -> Vec<String> {
+        self.lock()
+            .entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     pub fn get(&self, session_id: &str) -> Option<Arc<Hub>> {
         self.lock().entry(session_id).map(|e| e.hub.clone())
     }

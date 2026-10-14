@@ -348,6 +348,9 @@ fn usage() -> String {
      \x20                           session's subagents and monitors to be restored on\n\
      \x20                           their own at the next start; past it the model is\n\
      \x20                           only reminded of what was running\n\
+     \x20 --idle-exit 3600          seconds with no head, turn, job, subagent, monitor\n\
+     \x20                           or queue work after which the daemon exits; its\n\
+     \x20                           sessions stay in the store. 0 never exits\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
@@ -765,6 +768,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                         .parse()
                         .map_err(|e| format!("--restore-within: {e}"))?,
                 )
+            }
+            // **How long the daemon stays up with nothing to do** — see `Config::idle_exit_after`.
+            // Seconds, and `0` for never, because a daemon an operator wants kept is one flag.
+            "--idle-exit" => {
+                let secs: u64 = next()?.parse().map_err(|e| format!("--idle-exit: {e}"))?;
+                cfg.idle_exit_after = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not

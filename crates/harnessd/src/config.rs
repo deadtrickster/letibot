@@ -752,6 +752,15 @@ pub struct Config {
     /// simply remind the model"*. Default [`crate::restart::RESTORE_WITHIN`], one hour;
     /// `--restore-within SECONDS` sets it.
     pub restore_within: std::time::Duration,
+    /// **How long a daemon with nothing to do stays up** — no head attached, no turn, no job, no
+    /// live subagent, no monitor, no plan-check armed and no queue work it serves, for this long,
+    /// and the daemon exits (`Sessions::idle_exit_due`). A daemon is detached on purpose, so
+    /// closing the terminal that started it does not end a turn — and without this nothing ever
+    /// ended it: the operator found seven of them, days old, each holding a build that had since
+    /// been replaced on disk. Everything a session is lives in the store, so the next `leticode`
+    /// in that folder starts a daemon and resumes it. Default one hour, the operator's choice;
+    /// `--idle-exit SECONDS` sets it, and `0` keeps the daemon up until it is stopped.
+    pub idle_exit_after: Option<std::time::Duration>,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
@@ -1985,6 +1994,7 @@ impl Config {
             child_park_after: Some(std::time::Duration::from_secs(600)),
             held_results_cap: crate::delivery::HELD_RESULTS_CAP,
             restore_within: crate::restart::RESTORE_WITHIN,
+            idle_exit_after: Some(std::time::Duration::from_secs(3600)),
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,

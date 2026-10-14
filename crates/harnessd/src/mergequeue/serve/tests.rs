@@ -2200,3 +2200,73 @@ fn a_landed_branch_whose_session_is_live_keeps_its_tree_and_says_so() {
         said[0]
     );
 }
+
+// ===== The idle exit's queue half =====
+
+/// **A daemon serving a queue with a review in line is not idle; one whose only row is blocked
+/// is** (`crate::mergequeue::busy_here`, the idle exit's queue test). The blocked row waits on a
+/// person, and the lease's next holder re-gates it at start — so holding the daemon up for it
+/// would keep every daemon with a parked row up forever, which is the leak the idle exit closes.
+/// And a queue another daemon serves is that daemon's business, whatever is in it.
+#[test]
+fn a_queue_holds_its_daemon_up_only_while_it_has_work_in_line() {
+    let dir = TempDir::new("idle-exit-queue");
+    let path = dir.0.join("sessions.db");
+    let store = Store::open(&path).expect("the store");
+    let repo = "/the/repository";
+    assert_eq!(crate::mergequeue::busy_here(&path), None, "an empty store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "r1".into(),
+                repository: repo.into(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: "s-child".into(),
+                branch: "topic".into(),
+                worktree: None,
+                base_sha: "base".into(),
+                head_sha: "head".into(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert_eq!(
+        crate::mergequeue::busy_here(&path),
+        None,
+        "a queue nobody's lease covers is not this daemon's work"
+    );
+    let me = crate::mergequeue::lease::this_daemon();
+    assert!(matches!(
+        store
+            .acquire_queue_lease(repo, me, gate::now_ms(), LEASE_TTL_MS)
+            .expect("the lease"),
+        LeaseOutcome::Held { .. }
+    ));
+    assert_eq!(
+        crate::mergequeue::busy_here(&path).as_deref(),
+        Some("the merge queue of /the/repository has work in line"),
+        "a waiting review in a queue this daemon serves"
+    );
+    assert!(
+        store
+            .move_review(
+                "r1",
+                ReviewState::Waiting,
+                ReviewState::Blocked,
+                &Move::new("test", "raised for a person"),
+                2,
+            )
+            .expect("the move")
+    );
+    assert_eq!(
+        crate::mergequeue::busy_here(&path),
+        None,
+        "a blocked row waits on a person, not on this daemon"
+    );
+}

@@ -487,6 +487,39 @@ pub fn spawn_for(
     }
 }
 
+/// **Why this daemon's queues still need it, if they do** — the merge queue's half of the idle
+/// exit (`Sessions::idle_exit_due`). A repository whose lease this daemon holds and that has a row
+/// in line (queued or gating to land, waiting or under review) is work this daemon is serving, and
+/// exiting would leave it until some other daemon took the lease. A BLOCKED row does not hold it:
+/// that row waits on a person, and the lease's next holder re-gates it at start (R76 item 3), which
+/// is what a restart already is. `None` when the store cannot be read either — an unreadable store
+/// is not work, and the worker loop says so on its own.
+pub fn busy_here(store_path: &Path) -> Option<String> {
+    use letibot_tokencore::store::{MergeState, ReviewState};
+    let store = Store::open(store_path).ok()?;
+    let me = &lease::this_daemon().owner;
+    for l in store.queue_leases().ok()? {
+        if &l.owner != me {
+            continue;
+        }
+        let key = l.repository.as_str();
+        let landing = store
+            .merge_rows(Some(key))
+            .ok()?
+            .into_iter()
+            .any(|m| matches!(m.state, MergeState::Queued | MergeState::Gating));
+        let reviewing = store
+            .review_rows(Some(key))
+            .ok()?
+            .into_iter()
+            .any(|r| matches!(r.state, ReviewState::Waiting | ReviewState::Reviewing));
+        if landing || reviewing {
+            return Some(format!("the merge queue of {key} has work in line"));
+        }
+    }
+    None
+}
+
 /// **The repository a workspace is a session OF** — the queues' key (the canonical main
 /// checkout) of the repository [`repo_of_workspace`] reads the workspace as: the checkout it is
 /// in (a worktree counts as its repository), a same-named child (`~/Projects/letibot` means

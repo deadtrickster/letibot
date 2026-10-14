@@ -804,3 +804,74 @@ fn opening_a_session_lists_nothing_from_the_store() {
     );
     registry.close();
 }
+
+// ---------------------------------------------------------------------------
+// The idle exit — a daemon nothing needs leaves (`Config::idle_exit_after`)
+// ---------------------------------------------------------------------------
+
+/// **A daemon with nothing to do exits after its window, and a head attached holds it up for as
+/// long as it is attached** — through the daemon's own `Sessions`, a real hub and a real attach.
+///
+/// The operator found seven daemons, days old, nobody attached to any of them: closing a tab ends
+/// the head and not the detached daemon, and nothing ever ended the daemon. The head here stays
+/// attached past the window with nothing said, and its leaving starts the window over — a quarter
+/// window on is not a window, and a whole one is. (A holder that ends WITHOUT an event is the
+/// clock's own unit test, `sessions::idle_exit_clock`.)
+#[test]
+fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let _one = serial();
+    let window = Duration::from_millis(800);
+    let mut d = a_daemon("harnessd-idle-exit", None);
+    d.cfg.idle_exit_after = Some(window);
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    assert!(
+        !sessions.idle_exit_due(),
+        "a daemon that has just started has not been idle for its window"
+    );
+    let hub = d.registry.get(ROOT).expect("the root's hub");
+    let head = hub.attach("tui", "test", Caps::default(), 0);
+    std::thread::sleep(window + Duration::from_millis(100));
+    assert_eq!(
+        sessions.idle_exit_refusal(),
+        Some(format!("{ROOT} has a head attached"))
+    );
+    assert!(!sessions.idle_exit_due(), "a head attached holds it up");
+    hub.detach(&head.head_id);
+    assert_eq!(sessions.idle_exit_refusal(), None, "nothing holds it now");
+    // The next look, a quarter window on: the last event is older than the window, the head was
+    // seen a quarter window ago.
+    std::thread::sleep(window / 4 + Duration::from_millis(50));
+    assert!(
+        !sessions.idle_exit_due(),
+        "a quarter window after the head was last seen is not a window"
+    );
+    // A whole window after that look: past the look it re-armed, and a window since the head was
+    // last seen.
+    std::thread::sleep(window);
+    assert!(
+        sessions.idle_exit_due(),
+        "a whole window with nothing to do"
+    );
+    d.registry.close();
+}
+
+/// **`--idle-exit 0` keeps the daemon up** — never due, however long it sits with nothing to do.
+#[test]
+fn a_daemon_with_no_idle_window_never_exits_on_its_own() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let _one = serial();
+    let mut d = a_daemon("harnessd-no-idle-exit", None);
+    d.cfg.idle_exit_after = None;
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(sessions.idle_exit_refusal(), None, "nothing holds it");
+    assert!(!sessions.idle_exit_due(), "and still it stays");
+    d.registry.close();
+}

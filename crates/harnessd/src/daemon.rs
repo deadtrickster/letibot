@@ -231,6 +231,19 @@ impl Daemon {
                             eprintln!("  reviews -> {served} gatekeeper(s)");
                         }
                     }
+                    // **And the daemon itself goes when nothing has needed it for its window**
+                    // (`Config::idle_exit_after`) — last on the pass, so a review or a nag that
+                    // the pass just started holds it. The registry is closed exactly as a signal
+                    // closes it, so the stop that follows is the ordinary one.
+                    if sessions.idle_exit_due() {
+                        eprintln!(
+                            "  idle for {} min: no head, turn, job, subagent, monitor or queue work \
+                             — exiting; every session is in the store",
+                            sessions.idle_window().map_or(0, |w| w.as_secs() / 60)
+                        );
+                        self.registry().close();
+                        break;
+                    }
                     continue;
                 }
                 WorkOrIdle::Closed => break,
