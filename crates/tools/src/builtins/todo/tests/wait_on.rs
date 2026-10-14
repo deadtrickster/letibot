@@ -566,3 +566,52 @@ fn a_job_need_naming_no_job_or_two_is_refused_and_nothing_is_written() {
     );
     assert!(ok(&r), "{}", refusal(&r));
 }
+
+/// **A row waits on ALL of what it names** — the operator: *"i think we can allow waiting on
+/// multiple things - so AND"*. Two entries for one row put two edges on it, and the row stays
+/// quiet until both jobs have ended; one ending is not enough.
+#[test]
+fn a_row_waits_on_every_job_it_names_until_all_of_them_end() {
+    let board = Arc::new(TodoBoard::new(vec![item(
+        CRITERION,
+        TodoStatus::InProgress,
+    )]));
+    let tool = TodoWriteTool::new(board.clone());
+    let jobs = vec![
+        job("j1", Some("build"), JobState::Running),
+        job("j2", Some("test"), JobState::Running),
+    ];
+    let r = tool.wait_on(
+        &json!([
+            {"content": CRITERION, "job": "build"},
+            {"content": CRITERION, "job": "test"}
+        ]),
+        Some(&jobs),
+    );
+    assert!(ok(&r), "{}", refusal(&r));
+    let row = &board.snapshot()[0];
+    assert_eq!(
+        row.needs,
+        vec![
+            TodoNeed::Job {
+                handle: "j1".into()
+            },
+            TodoNeed::Job {
+                handle: "j2".into()
+            }
+        ],
+        "both edges, the first not replaced by the second"
+    );
+    assert!(waits_on_a_running_job(
+        row,
+        &RunningJobs::none().running("j1").running("j2")
+    ));
+    assert!(
+        waits_on_a_running_job(row, &RunningJobs::none().running("j2")),
+        "one job ending is not the row's wait ending"
+    );
+    assert!(
+        !waits_on_a_running_job(row, &RunningJobs::none()),
+        "both ended"
+    );
+}
