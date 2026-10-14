@@ -1224,8 +1224,20 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
     a.refresh_git();
     assert!(a.git_job.is_none(), "re-read inside the interval");
     assert_eq!(a.git_read.1, 1_000, "re-read inside the interval");
+    // **A repository of the test's own**, not a path on this box: since e207349 a directory
+    // holding several repositories reads as "N repos" and starts no reading at all, and the
+    // operator's own Projects/letibot is exactly that — the test passed or failed by what was
+    // checked out beside it.
+    let repo = dir.with_extension("repo");
+    std::fs::create_dir_all(&repo).expect("scratch repo");
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&repo)
+        .status()
+        .expect("git init");
+    assert!(init.success(), "git init");
     a.clock(1_600);
-    a.wiring.workspace = "/home/dead/Projects/letibot".into();
+    a.wiring.workspace = repo.display().to_string();
     a.refresh_git();
     assert!(
         a.git_job.is_some(),
@@ -1237,6 +1249,7 @@ fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remember
         "a workspace that changed is read at once"
     );
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&repo);
 }
 
 /// **The loop never waits for `git status`** — the serenedb head, 2026-10-13: *"laggy as hell
