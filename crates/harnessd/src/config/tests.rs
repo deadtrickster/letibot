@@ -1904,3 +1904,33 @@ fn the_daemons_logs_go_under_the_logs_root_one_directory_per_session() {
     cfg.logs_root = Some(PathBuf::from("/data/letibot/logs"));
     assert_eq!(cfg.daemon_logs(), PathBuf::from("/data/letibot/logs/s-7"));
 }
+
+/// **Only the session `--vm` placed mounts its workspace** - not a child attached to an ancestor's
+/// VM (that is the ancestor's mount), not one whose caller named a tree to copy (a reviewer), and
+/// not with `--vm-copy`. On a Mac; elsewhere nothing mounts.
+#[test]
+fn only_the_vm_placed_session_itself_mounts_its_workspace() {
+    let mut cfg = Config::for_this_box("/tmp/the-org");
+    cfg.placement = letibot_tools::builtins::task::Placement::Firecode;
+    cfg.vm_mount = true;
+    assert_eq!(
+        cfg.vm_mounts_workspace(),
+        cfg!(target_os = "macos"),
+        "--vm on a Mac"
+    );
+    let mut attached = cfg.clone();
+    attached.vm_attach = Some(PathBuf::from("/tmp/the-org"));
+    assert!(
+        !attached.vm_mounts_workspace(),
+        "an attached child uses its ancestor's VM"
+    );
+    let mut named = cfg.clone();
+    named.vm_source = Some(PathBuf::from("/tmp/the-org/repo"));
+    assert!(
+        !named.vm_mounts_workspace(),
+        "a caller that named a tree gets a copy of it"
+    );
+    let mut copied = cfg.clone();
+    copied.vm_mount = false;
+    assert!(!copied.vm_mounts_workspace(), "--vm-copy");
+}

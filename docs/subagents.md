@@ -62,6 +62,17 @@ Until the backend below existed, `where: firecode` was refused by name and the
 subagent was **not** run on the host in its place — running here and calling
 it a VM is the boundary claim this design exists not to make.
 
+### `--vm`: the session's folder, mounted read-write
+
+On a Mac a session placed with `--vm` (`--where firecode`) boots its VM on its workspace folder
+itself, mounted read-write (`firecode up --mount-rw`, `Config::vm_mounts_workspace`): every
+repository in it, nothing else of the host. Everything is allowed inside, as for any VM
+placement. Its children attach to that VM by the folder's path, so the whole tree works in one
+machine on one folder. A VM already up with the folder mounted (firecode's `info --json` says
+`"mount": "rw"`) is joined rather than doubled: a joiner neither boots nor brings it down. A
+child explicitly given a VM of its own, and a reviewer booted on its entry's repository, are
+copied (or mounted as a worktree) as before; `--vm-copy` restores the copy for the session too.
+
 ### A child in a worktree is mounted, not copied
 
 On a Mac a VM-placed child whose workspace is a git worktree - every `task_start` child - is

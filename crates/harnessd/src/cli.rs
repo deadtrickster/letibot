@@ -412,10 +412,13 @@ fn usage() -> String {
      \x20                           Never implied: `no inbox reader` is also what a\n\
      \x20                           SWITCHED token says, and re-declaring there loses\n\
      \x20                           every message since the switch\n\
-     \x20 --where host|firecode     where this session's tools run. firecode boots a\n\
-     \x20                           VM on a COPY of the workspace; the VM is the\n\
-     \x20                           boundary, the mode inside is allow-all, and the\n\
-     \x20                           writes land in a sibling directory when it ends\n\
+     \x20 --where host|firecode     where this session's tools run. firecode runs them\n\
+     \x20                           in a VM, the boundary: everything is allowed inside.\n\
+     \x20                           On a Mac the workspace itself is mounted read-write\n\
+     \x20                           (every repository in it; nothing else of the host),\n\
+     \x20                           joining a VM already up for it; elsewhere it is a\n\
+     \x20                           COPY, delivered as a sibling directory at the end\n\
+     \x20 --vm-copy                 a copy even on a Mac, as before\n\
      \x20 --vm-arg ARG              passed to `firecode up` verbatim, repeatable:\n\
      \x20                           --vm-arg --mem --vm-arg 8192 --vm-arg --add-dir\n\
      \x20                           --vm-arg ~/.rustup (a toolchain the guest lacks)\n\
@@ -856,8 +859,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     "host" => letibot_tools::builtins::task::Placement::Host,
                     "firecode" | "vm" => letibot_tools::builtins::task::Placement::Firecode,
                     other => return Err(format!("--where {other}: host or firecode")),
-                }
+                };
+                // The session's VM works in the workspace itself, mounted (a Mac).
+                cfg.vm_mount = cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
             }
+            // A copy of one repository instead of the workspace mounted - the old placement.
+            "--vm-copy" => cfg.vm_mount = false,
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
             "--vm-arg" => cfg.vm_args.push(next()?),
             // What is behind `web_search`. Without it the tool refuses and names

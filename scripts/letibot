@@ -372,9 +372,13 @@ already up, then attaches the TUI head to it.
                               is the usual way. The guard's address is config, not a
                               flag: [gatekeeper] endpoint in providers.toml
   letibot --no-bash           seat no shell (the shell is on by default)
-  letibot --vm                run the session's tools in a firecode VM on a COPY of
-                              the workspace: the VM is the boundary, allow-all inside,
-                              writes land in a sibling directory when it ends
+  letibot --vm                run the session - and its subagents - in a firecode VM:
+                              the VM is the boundary, everything allowed inside. On a
+                              Mac the workspace folder is mounted read-write (all its
+                              repositories, nothing else of the host) and a VM already
+                              up for it is joined; elsewhere it is a copy, delivered as
+                              a sibling directory when it ends
+  letibot --vm-copy           with --vm: a copy even on a Mac
   letibot --vm-arg ARG        passed to `firecode up`, repeatable (--mem, --vcpu, --add-dir)
   letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered
   letibot --web-search brave  attach Brave behind `web_search` (else the tool refuses).
@@ -743,6 +747,8 @@ while [ $# -gt 0 ]; do
     # owns the meaning (see `harnessd --help`).
     --vm)
       EXTRA_ARGS+=(--where firecode); shift ;;
+    --vm-copy)
+      EXTRA_ARGS+=(--vm-copy); shift ;;
     --vm-arg)
       [ $# -ge 2 ] || die "--vm-arg ARG"
       EXTRA_ARGS+=(--vm-arg "$2"); shift 2 ;;

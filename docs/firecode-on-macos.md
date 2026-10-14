@@ -85,9 +85,25 @@ naming `PATH` and `$FIRECODE_BIN`. If you see that, the daemon cannot find it.
 **A whole session in a VM:**
 
 ```sh
-letibot --vm                                    # tools run in a VM on a copy of the workspace
+cd ~/Projects/stroppy-io
+letibot --vm                                    # the session and all its subagents, in one VM
 letibot --vm --vm-arg --mem --vm-arg 16384      # anything after --vm-arg goes to `firecode up`
 ```
+
+With `--vm` the session lives in a VM, and everything is allowed there: no permission
+prompts, for it or for any subagent. On a Mac the workspace folder is **mounted read-write**:
+every repository in it can be read and changed, and agents create worktrees beside a repository
+(`stroppy-fix-x`) and commit to them exactly as they would on the host. All of it lands in
+`~/Projects/stroppy-io` as it is made, so nothing is copied and nothing comes back. Nothing
+outside that folder is reachable: not your home directory, your keys or other projects.
+
+Subagents, and theirs in turn, run in the **same VM** unless one is explicitly given a VM of
+its own. A second `letibot --vm` in the same folder **joins** the VM that is already up instead
+of booting another. The VM is brought down by the session that started it.
+
+The trade-off is the point: anything in that VM can change anything in the folder, every
+repository included, as an agent on the host could. `--vm-copy` gives the older placement, a
+copy of one repository with the work delivered as a sibling directory at the end.
 
 **A subagent in a VM**, from inside a session. The model calls `task` (or `task_start`) with
 `where: firecode`, and can hold the child to a check:

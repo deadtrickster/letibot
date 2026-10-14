@@ -290,6 +290,12 @@ pub struct FirecodeBackend {
     /// on a Mac, which firecode shares into the guest read-write. Nothing of it is ever removed
     /// here, and its work is where it always was.
     mounted: bool,
+    /// The project is a whole folder mounted read-write ([`FirecodeSpec::mount_rw`]), not a
+    /// worktree - said differently in the answer.
+    mount_rw: bool,
+    /// The run of an already-running VM this backend joined instead of booting one, when it did.
+    /// Joined is not owned: the VM is brought down by whoever started it.
+    joined: Option<String>,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -334,6 +340,30 @@ pub fn project_for(source: &Path, session_id: &str) -> PathBuf {
     } else {
         FirecodeBackend::project_of(session_id)
     }
+}
+
+/// **The run of a VM already up with `folder` itself mounted read-write**, if there is one - asked
+/// of firecode (`info --json`, whose `mount` says how a run holds its project), so a VM holding a
+/// COPY of the folder is never mistaken for one holding the folder.
+fn running_rw(bin: &Path, folder: &Path) -> Option<String> {
+    let out = std::process::Command::new(bin)
+        .args(["info", "--json", "--project"])
+        .arg(folder)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    if v.get("mount").and_then(|m| m.as_str()) != Some("rw") {
+        return None;
+    }
+    let held = v.get("project").and_then(|p| p.as_str())?;
+    let same = std::fs::canonicalize(held).ok()? == std::fs::canonicalize(folder).ok()?;
+    let run = v.get("run").and_then(|r| r.as_str()).unwrap_or_default();
+    (same && !run.is_empty()).then(|| run.to_string())
 }
 
 /// What to boot.
@@ -398,6 +428,12 @@ pub struct FirecodeSpec {
     /// status on the run (`runs/<run>/verify-status`). [`ExecBackend::close`] reports that
     /// verdict, so a placed child's "done" is something the harness ran and not the child's word.
     pub verify: Option<String>,
+    /// **The source itself, mounted read-write, never a copy** (`firecode up --mount-rw`): the
+    /// folder the session works in - every repository in it - as `letibot --vm` gives it on a
+    /// Mac. Edits, worktrees beside a repository and commits land on the host as they are made;
+    /// nothing else of the host is reachable. A VM already running with this folder mounted is
+    /// joined rather than a second booted ([`FirecodeBackend::up`]).
+    pub mount_rw: bool,
 }
 
 impl FirecodeSpec {
@@ -432,6 +468,7 @@ impl FirecodeSpec {
             exec: true,
             bin: None,
             verify: None,
+            mount_rw: false,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -474,7 +511,23 @@ impl FirecodeBackend {
             }
             None => firecode_available().map_err(BackendError::Io)?,
         };
-        let mounted = mounts(&spec.source);
+        // **The folder itself, read-write**: joined if a VM already holds it mounted, booted with
+        // `--mount-rw` otherwise. Never a copy, never removed - it is the operator's folder.
+        if spec.mount_rw {
+            if let Some(run) = running_rw(&bin, &spec.source) {
+                let mut b = FirecodeBackend::attach(
+                    Some(bin),
+                    spec.source.clone(),
+                    spec.writable,
+                    spec.exec,
+                )?;
+                b.mounted = true;
+                b.mount_rw = true;
+                b.joined = Some(run);
+                return Ok(b);
+            }
+        }
+        let mounted = spec.mount_rw || mounts(&spec.source);
         let project = if mounted {
             spec.source.clone()
         } else {
@@ -546,6 +599,9 @@ impl FirecodeBackend {
             .arg("--project")
             .arg(&project)
             .args(&spec.up_args);
+        if spec.mount_rw {
+            up.arg("--mount-rw");
+        }
         if let Some(check) = &spec.verify {
             up.arg("--verify").arg(check);
         }
@@ -596,6 +652,8 @@ impl FirecodeBackend {
             verify: spec.verify.clone(),
             owns: true,
             mounted,
+            mount_rw: spec.mount_rw,
+            joined: None,
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
@@ -648,6 +706,8 @@ impl FirecodeBackend {
             verify: None,
             owns: false,
             mounted: false,
+            mount_rw: false,
+            joined: None,
         };
         // The parent's VM has to be up and taking commands, or there is nothing to run in.
         b.guest("true").map_err(|e| {
@@ -1021,9 +1081,35 @@ impl ExecBackend for FirecodeBackend {
 
     fn close(&self) -> Option<String> {
         self.down();
+        // In a VM this session did not start: nothing is brought down, nothing is copied out.
+        // It used to fall through to "neither a result directory ... appeared", which is about
+        // a copy-out this session was never going to see.
+        if !self.owns {
+            return Some(if self.mounted {
+                format!(
+                    "the session ran in a VM it joined (run {}), with {} mounted read-write: \
+                     everything it did is already there. The VM stays up for the session that \
+                     started it",
+                    self.joined.as_deref().unwrap_or(&self.run),
+                    self.project.display()
+                )
+            } else {
+                format!(
+                    "the subagent ran in its parent's VM, in {}: its work is in that tree and \
+                     comes out when the parent's VM does",
+                    self.project.display()
+                )
+            });
+        }
         // Said as what happened to the work, not as the VM's state: "the VM is
         // down" was read by the first model to see it as "the placement failed".
         let work = match self.landed() {
+            Some(p) if self.mount_rw => format!(
+                "the session's VM finished normally. It worked in {} itself - mounted \
+                 read-write, not copied - so every edit, worktree and commit it made is already \
+                 there. Nothing was copied",
+                p.display()
+            ),
             Some(p) if self.mounted => format!(
                 "the subagent's VM finished normally. It worked in the worktree {} itself - \
                  mounted, not copied - so its edits are there and its commits are on that \
@@ -1183,6 +1269,26 @@ impl ExecBackend for FirecodeBackend {
     }
 
     fn describe(&self) -> String {
+        if self.mount_rw {
+            return format!(
+                "firecode VM (run {}{}) with {} mounted read-write: every repository in it can be \
+                 read and changed, new worktrees beside a repository included, and all of it \
+                 lands on the host as it is made. Nothing else of the host is reachable - no other \
+                 files, processes or devices. Everything is allowed inside{}",
+                if self.run.is_empty() { "?" } else { &self.run },
+                if self.joined.is_some() {
+                    ", joined - started by another session"
+                } else {
+                    ""
+                },
+                self.project.display(),
+                if self.processes.is_some() {
+                    ", exec through `firecode in`"
+                } else {
+                    ", NO exec (downgraded)"
+                },
+            );
+        }
         if self.mounted {
             return format!(
                 "firecode VM (run {}) with the worktree {} mounted read-write: edits land in it \
@@ -1813,6 +1919,92 @@ mod tests {
         assert!(wt.join("work.txt").exists(), "the worktree survives down");
         assert!(answer.contains("worked in the worktree"), "{answer}");
         assert!(answer.contains("Nothing was copied"), "{answer}");
+    }
+
+    /// **`--vm`'s folder is mounted read-write and never copied or removed** - booted with
+    /// `--mount-rw` on the folder itself, nothing under the cache, the folder intact after close,
+    /// and the answer says the work is already there.
+    #[test]
+    fn a_folder_placement_mounts_it_and_copies_nothing() {
+        let root = tmp("mountrw");
+        let folder = root.join("org");
+        file(&folder.join("repo/a.txt"), 10);
+        let fc = root.join("fc");
+        let argv = root.join("up-argv");
+        let arms = format!(
+            "up) printf '%s\\n' \"$@\" > '{a}'; exit 0 ;;\n\
+             info) [ \"$2\" = --json ] && exit 1; echo '{{\"run\":\"r1\"}}' ;;\n\
+             down) mkdir -p \"$ROOT/runs/r1\"; echo 'done {f}' > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;",
+            a = argv.display(),
+            f = folder.display()
+        );
+        let bin = stub_firecode(&fc, &arms);
+        let mut spec = spec_with(&folder, &root.join("cache"), &bin);
+        spec.mount_rw = true;
+        let b = FirecodeBackend::up(&spec).unwrap();
+        assert!(
+            std::fs::read_to_string(&argv)
+                .unwrap()
+                .lines()
+                .any(|l| l == "--mount-rw")
+        );
+        assert_eq!(b.project(), folder.as_path());
+        assert!(
+            !root.join("cache").join("child").exists(),
+            "nothing was copied"
+        );
+        assert!(
+            b.describe().contains("mounted read-write"),
+            "{}",
+            b.describe()
+        );
+        let answer = b.close().unwrap();
+        assert!(
+            folder.join("repo/a.txt").exists(),
+            "the folder survives down"
+        );
+        assert!(answer.contains("already there"), "{answer}");
+    }
+
+    /// **A VM already up with the folder mounted is joined, not doubled** - and a joiner neither
+    /// boots one nor brings the joined one down. One holding only a COPY of the folder is not
+    /// joined: its tree is not the folder.
+    #[test]
+    fn a_running_vm_with_the_folder_mounted_is_joined_and_one_with_a_copy_is_not() {
+        for (mount, joins) in [("rw", true), ("copy", false)] {
+            let root = tmp(&format!("join-{mount}"));
+            let folder = root.join("org");
+            file(&folder.join("a.txt"), 10);
+            let fc = root.join("fc");
+            let booted = root.join("booted");
+            let downed = root.join("downed");
+            let arms = format!(
+                "up) touch '{b}'; exit 0 ;;\n\
+                 info) printf '{{\"run\":\"r9\",\"project\":\"%s\",\"mount\":\"{mount}\"}}' '{f}' ;;\n\
+                 layer) exit 0 ;;\n\
+                 down) touch '{d}'; exit 0 ;;",
+                b = booted.display(),
+                d = downed.display(),
+                f = folder.display()
+            );
+            let bin = stub_firecode(&fc, &arms);
+            let mut spec = spec_with(&folder, &root.join("cache"), &bin);
+            spec.mount_rw = true;
+            let b = FirecodeBackend::up(&spec).unwrap();
+            assert_eq!(
+                !booted.exists(),
+                joins,
+                "mount {mount}: booted={}",
+                booted.exists()
+            );
+            assert_eq!(!b.owns_vm(), joins, "a joined VM is not ours");
+            if joins {
+                let answer = b.close().unwrap();
+                assert!(answer.contains("joined"), "{answer}");
+                drop(b);
+                assert!(!downed.exists(), "a joiner never brings the VM down");
+            }
+        }
     }
 
     /// **The parent's acceptance check reaches `firecode up`**, as `--verify <command>`, so it is

@@ -251,3 +251,63 @@ fn a_vm_backend_on_a_worktree_works_in_it_directly() {
     drop(b);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// **`--vm`'s folder, mounted and shared** (a Mac): a session's VM boots on the folder itself,
+/// read-write; a second session joins that VM instead of booting another; a write through either
+/// lands in the folder on the host as it is made; the joiner's end leaves the VM up, and the
+/// starter's end brings it down with the folder intact.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_vm_is_mounted_shared_and_joined() {
+    if std::env::var("FIRECODE_LIVE").ok().as_deref() != Some("1") {
+        eprintln!("SKIPPED: FIRECODE_LIVE is not 1 — the check did not run and this is not a pass");
+        return;
+    }
+    let base = std::env::temp_dir().join(format!("letibot-fc-org-{}", std::process::id()));
+    let folder = base.join("org");
+    std::fs::create_dir_all(folder.join("repo")).unwrap();
+    std::fs::write(folder.join("repo/a.txt"), "base\n").unwrap();
+    let cache = base.join("cache");
+
+    let mut first = FirecodeSpec::new(&folder, "starter");
+    first.cache = cache.clone();
+    first.mount_rw = true;
+    let starter = FirecodeBackend::up(&first).expect("up");
+    assert!(starter.owns_vm());
+
+    let mut second = FirecodeSpec::new(&folder, "joiner");
+    second.cache = cache.clone();
+    second.mount_rw = true;
+    let joiner = FirecodeBackend::up(&second).expect("join");
+    eprintln!("{}", joiner.describe());
+    assert!(
+        !joiner.owns_vm(),
+        "the second session joined the VM rather than booting one"
+    );
+    assert_eq!(joiner.run_id(), starter.run_id(), "the same VM");
+
+    joiner.write("repo/from-joiner.txt", b"joined\n").unwrap();
+    assert_eq!(
+        std::fs::read(folder.join("repo/from-joiner.txt")).unwrap(),
+        b"joined\n"
+    );
+    assert!(!cache.exists(), "nothing was copied");
+
+    let said = joiner.close().unwrap();
+    eprintln!("{said}");
+    drop(joiner);
+    assert_eq!(
+        starter
+            .read("repo/a.txt")
+            .expect("the joiner's end left the VM up"),
+        b"base\n"
+    );
+    let said = starter.close().unwrap();
+    eprintln!("{said}");
+    assert!(
+        folder.join("repo/from-joiner.txt").exists(),
+        "the folder is intact"
+    );
+    drop(starter);
+    let _ = std::fs::remove_dir_all(&base);
+}

@@ -589,6 +589,12 @@ pub struct Config {
     /// [`letibot_tools::builtins::task::TaskSpec::vm_verify`], applied at the spawn. Not inherited:
     /// it is set from each spawn's own spec, so a child's gate is never its parent's by accident.
     pub vm_verify: Option<String>,
+    /// **A VM session works in its workspace itself, mounted read-write** (`firecode up
+    /// --mount-rw`) - on a Mac, where firecode can mount. Set by `--where firecode` (the
+    /// launcher's `--vm`); `--vm-copy` turns it off. Read through
+    /// [`Config::vm_mounts_workspace`], which narrows it to the sessions it is for. Never
+    /// inherited by a child that gets a VM of its own (the spawn clears it).
+    pub vm_mount: bool,
     /// **Pairs every command this session runs carries, beside the daemon's standing ones** —
     /// set at a spawn, read by `Harness::open` into the exec host's standing environment (the
     /// one set of pairs that survives `env_clear`).
@@ -1834,6 +1840,18 @@ impl Config {
     /// `repo_root("/home/dead/Projects/letibot")` fails — the queue's own log says `serving
     /// /home/dead/Projects/letibot toward main` — and the same-named child below it is what this
     /// resolves, which is why the queue's own session no longer copies the folder.
+    /// **Whether this session's VM mounts its workspace read-write instead of copying a tree.**
+    /// A session placed with `--vm` on a Mac, booting its own VM: not one attached to an
+    /// ancestor's (that is the ancestor's mount), and not one whose caller named the tree to copy
+    /// (`vm_source`: a reviewer is booted on its entry's repository, as a copy).
+    pub fn vm_mounts_workspace(&self) -> bool {
+        cfg!(target_os = "macos")
+            && self.vm_mount
+            && self.placement == letibot_tools::builtins::task::Placement::Firecode
+            && self.vm_attach.is_none()
+            && self.vm_source.is_none()
+    }
+
     pub fn vm_copy_source(&self) -> PathBuf {
         self.vm_source
             .clone()
@@ -1982,6 +2000,7 @@ impl Config {
             vm_source: None,
             vm_attach: None,
             vm_verify: None,
+            vm_mount: false,
             build_env: Vec::new(),
             // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**
             // `for_this_box` is what every test in this tree builds from, and the daemon — the one

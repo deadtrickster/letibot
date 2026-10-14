@@ -3195,10 +3195,18 @@ impl Harness {
                     HarnessError::Setup(format!("running this session in its parent's VM: {e}"))
                 })?
             } else {
+                // `--vm` on a Mac: the workspace itself, mounted read-write, every repository in
+                // it - not a copy of one. A copy otherwise, as before.
+                let mounts = cfg.vm_mounts_workspace();
                 let mut spec = letibot_tools::firecode::FirecodeSpec::new(
-                    cfg.vm_copy_source(),
+                    if mounts {
+                        cfg.workspace.clone()
+                    } else {
+                        cfg.vm_copy_source()
+                    },
                     &cfg.session_id,
                 );
+                spec.mount_rw = mounts;
                 spec.writable = may_write;
                 spec.exec = may_exec;
                 spec.up_args = cfg.vm_args.clone();
@@ -18961,16 +18969,23 @@ impl HarnessTaskRunner {
         // copy under the cache otherwise (`firecode::project_for`).
         let parent_vm = self.base.vm_attach.clone().or_else(|| {
             (self.base.placement == Placement::Firecode).then(|| {
-                letibot_tools::firecode::project_for(
-                    &self.base.vm_copy_source(),
-                    &self.base.session_id,
-                )
+                if self.base.vm_mounts_workspace() {
+                    self.base.workspace.clone()
+                } else {
+                    letibot_tools::firecode::project_for(
+                        &self.base.vm_copy_source(),
+                        &self.base.session_id,
+                    )
+                }
             })
         });
         sub_cfg.vm_attach = match placement {
             Placement::Host => parent_vm,
             Placement::Firecode => None,
         };
+        // A child given a VM of its own copies (or mounts its worktree), as before - only the
+        // session `--vm` placed works in the folder itself, and its attached children with it.
+        sub_cfg.vm_mount = false;
         // The parent's acceptance check rides to the child's VM the same way: on the spec, into
         // the child's config at the spawn, and from there onto `firecode up` (`Harness::open`).
         sub_cfg.vm_verify = spec.vm_verify.clone();
