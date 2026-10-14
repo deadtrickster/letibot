@@ -525,3 +525,98 @@ pub fn scratch_root() -> std::path::PathBuf {
         std::env::temp_dir()
     }
 }
+
+/// **Where a test binds `dir`'s socket**: `dir/<name>` when that fits `sun_path`, otherwise the
+/// same file reached through a short symlink in `/tmp`.
+///
+/// [`scratch_root`] is the system temp dir, and a test's scratch dir name carries a tag, a pid
+/// and a nanosecond clock. Under the default `/tmp` that leaves room for `harnessd.sock`; under
+/// `TMPDIR=$HOME/.cache/letibot-test-tmp-…` it does not. MEASURED 2026-10-14 with a 41-byte
+/// `TMPDIR`: `restart_seats`, `sudo_ask_live` and `tui`'s `stop_force` all failed binding
+/// (`path must be shorter than SUN_LEN`), for a reason that has nothing to do with what they
+/// test. The limit is the KERNEL's — 108 bytes with the NUL on Linux, 104 on macOS — so the
+/// product refusing such a path is correct, and the fix belongs here.
+///
+/// The symlink keeps the scratch dir where `TMPDIR` put it: `/tmp/letibot-sk-<pid>-<n>` points
+/// at `dir`, the socket is bound through it, and the socket file itself lands in `dir` and goes
+/// when `dir` does. Only the dangling link is left, a few bytes; each call removes the links of
+/// processes that no longer exist (Linux, by `/proc`; elsewhere they stay rather than guess).
+pub fn socket_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    // sun_path minus its NUL: 104 on macOS, 108 on Linux.
+    const ROOM: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
+    let direct = dir.join(name);
+    if direct.as_os_str().as_bytes().len() <= ROOM {
+        return direct;
+    }
+    sweep_dead_socket_links();
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let link = std::path::PathBuf::from("/tmp").join(format!(
+        "letibot-sk-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(dir, &link)
+        .unwrap_or_else(|e| panic!("linking {} at {}: {e}", dir.display(), link.display()));
+    link.join(name)
+}
+
+/// Remove `/tmp/letibot-sk-<pid>-<n>` SYMLINKS whose process is gone — never a file or a
+/// directory, never a live pid's.
+fn sweep_dead_socket_links() {
+    if !std::path::Path::new("/proc/self").exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir("/tmp") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(rest) = name.to_str().and_then(|n| n.strip_prefix("letibot-sk-")) else {
+            continue;
+        };
+        let Some((pid, n)) = rest.split_once('-') else {
+            continue;
+        };
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        if !digits(pid) || !digits(n) {
+            continue;
+        }
+        let is_link = std::fs::symlink_metadata(entry.path())
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_link && !std::path::Path::new("/proc").join(pid).exists() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod socket_path_tests {
+    use super::socket_path;
+
+    /// A short dir is used as it is; a long one is reached through a link that binds.
+    #[test]
+    fn a_socket_path_always_fits_and_a_long_one_still_lands_in_its_dir() {
+        let short = std::path::Path::new("/tmp/x");
+        assert_eq!(socket_path(short, "h.sock"), short.join("h.sock"));
+
+        let long = std::env::temp_dir().join(format!(
+            "letibot-socket-path-test-{}-{}",
+            std::process::id(),
+            "x".repeat(90)
+        ));
+        std::fs::create_dir_all(&long).unwrap();
+        let p = socket_path(&long, "harnessd.sock");
+        assert!(p.as_os_str().len() <= 107, "{}", p.display());
+        let listener = std::os::unix::net::UnixListener::bind(&p).expect("it binds");
+        assert!(
+            long.join("harnessd.sock").exists(),
+            "the socket is in the dir"
+        );
+        drop(listener);
+        let _ = std::fs::remove_file(p.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&long);
+    }
+}

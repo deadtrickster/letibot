@@ -195,7 +195,7 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     };
     let dir = scratch("live");
     let log = dir.join("harnessd.stderr");
-    let socket = dir.join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let store = dir.join("sessions.db");
     let session = "sudo-ask-live";
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
@@ -359,7 +359,7 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
     }
     let dir = scratch("root");
     let log = dir.join("harnessd.stderr");
-    let socket = dir.join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let store = dir.join("sessions.db");
     let session = "sudo-ask-root";
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
@@ -466,7 +466,7 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     }
     let dir = scratch("sudo");
     let log = dir.join("harnessd.stderr");
-    let socket = dir.join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let store = dir.join("sessions.db");
     let session = "sudo-ask-own";
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
@@ -573,7 +573,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     };
     let dir = scratch("ticker");
     let log = dir.join("harnessd.stderr");
-    let socket = dir.join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let store = dir.join("sessions.db");
     let session = "sudo-ask-ticker";
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
@@ -700,7 +700,7 @@ fn the_operators_own_run_outlives_the_models_deadline() {
     }
     let dir = scratch("deadline");
     let log = dir.join("harnessd.stderr");
-    let socket = dir.join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let store = dir.join("sessions.db");
     let session = "sudo-ask-deadline";
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);

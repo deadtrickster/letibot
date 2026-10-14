@@ -340,7 +340,7 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
     registry
         .create(session_id.to_string(), "", Sessions::wiring(&cfg))
         .expect("a fresh registry has no session by that name");
-    let socket = dir.path().join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(dir.path(), "harnessd.sock");
     let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
@@ -423,7 +423,7 @@ fn a_ring_seats_the_firing_at_once() {
     registry
         .create(session_id.to_string(), "", Sessions::wiring(&cfg))
         .expect("a fresh registry has no session by that name");
-    let socket = dir.path().join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(dir.path(), "harnessd.sock");
     let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");

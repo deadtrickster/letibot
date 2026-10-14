@@ -98,7 +98,13 @@ fn fixture_daemon() {
             }
         }
         "older" => {
-            let inner = socket.with_extension("inner");
+            // Through `socket_path` too: `harnessd.inner` is one byte longer than the
+            // socket the head was given, so beside a socket that JUST fit it does not, and
+            // this failed `bind` about half the time under a long `TMPDIR`, by the pid's width.
+            let inner = letibot_sessionlog::testing::socket_path(
+                socket.parent().expect("the socket is in a dir"),
+                "harnessd.inner",
+            );
             let server = serve_registry(registry.clone(), &inner).expect("bind");
             relay(&socket, inner);
             wait_closed(&registry);
@@ -178,7 +184,7 @@ fn scratch(tag: &str) -> PathBuf {
 
 /// Start the fixture daemon and wait for its socket to answer.
 fn spawn_daemon(mode: &str, dir: &Path) -> (Child, PathBuf) {
-    let socket = dir.join("harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let child = Command::new(std::env::current_exe().expect("this test executable"))
         .args([
             "--exact",
