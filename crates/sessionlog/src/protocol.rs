@@ -1403,6 +1403,32 @@ pub struct JobEntry {
     pub elapsed_ms: u64,
 }
 
+/// **One monitor, as the daemon's monitor table has it** — a watch the model armed with
+/// `monitor`, live or ended. T24 requirement 2: *"the head can show what is watching and for whom
+/// … an invisible watcher is an unreapable one."* Until this a head saw a monitor only when it
+/// fired.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorEntry {
+    /// The model's name for it, which `monitor`'s `renew` and `retire` take.
+    pub name: String,
+    /// What it watches, in the daemon's words (`Watch::describe`).
+    pub watching: String,
+    /// Which scope reaps it.
+    pub owner: String,
+    /// Who armed it: `turn 12`.
+    pub declared_by: String,
+    /// Continuous rather than one-shot.
+    pub repeat: bool,
+    /// Still watching; an ended one carries `ended`.
+    pub live: bool,
+    /// When its time runs out, unix milliseconds; `0` for an ended one.
+    pub ends_at_ms: u64,
+    /// How many times it has fired.
+    pub fired: u32,
+    /// How it ended (`Fired::word`), empty while live.
+    pub ended: String,
+}
+
 /// **One standing note, as the section the harness builds has it.**
 ///
 /// The pane's row, and the fourth consumer of one shape: the digest in the prompt, the
@@ -2485,6 +2511,13 @@ pub enum ServerFrame {
     Jobs {
         session_id: String,
         jobs: Vec<JobEntry>,
+        /// **The session's monitors, live and ended** — the monitors pane's rows and the
+        /// composer edge's count, on the frame that already answers *what is this session
+        /// running*. Defaulted and no `PROTOCOL_VERSION` bump: an older daemon says nothing and
+        /// a head reads that as none, which is all an older head could ever show; an older head
+        /// ignores the key.
+        #[serde(default)]
+        monitors: Vec<MonitorEntry>,
     },
     /// **The answer to [`ClientFrame::ListNotes`]: the standing notes, one row each, in the
     /// order the section carries them.**
@@ -3341,6 +3374,7 @@ mod tests {
     #[test]
     fn a_jobs_frame_carries_the_name_and_a_row_without_one_still_reads() {
         let f = ServerFrame::Jobs {
+            monitors: Vec::new(),
             session_id: "s-1".into(),
             jobs: vec![JobEntry {
                 id: "j65".into(),

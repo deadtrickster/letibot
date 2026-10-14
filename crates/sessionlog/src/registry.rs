@@ -579,6 +579,8 @@ pub trait SessionSource: Send + Sync {
 
 struct Entry {
     jobs: Vec<crate::protocol::JobEntry>,
+    /// The session's monitors, published beside its jobs (`Registry::set_jobs`).
+    monitors: Vec<crate::protocol::MonitorEntry>,
     hub: Arc<Hub>,
     title: String,
     created_ms: u64,
@@ -1209,6 +1211,7 @@ impl Registry {
                 id,
                 Entry {
                     jobs: Vec::new(),
+                    monitors: Vec::new(),
                     hub,
                     title: String::new(),
                     created_ms: now_ms(),
@@ -1271,6 +1274,7 @@ impl Registry {
             id.clone(),
             Entry {
                 jobs: Vec::new(),
+                monitors: Vec::new(),
                 hub: hub.clone(),
                 title: title.into(),
                 created_ms: now_ms(),
@@ -1330,6 +1334,7 @@ impl Registry {
             id,
             Entry {
                 jobs: Vec::new(),
+                monitors: Vec::new(),
                 hub,
                 title: title.into(),
                 created_ms: now_ms(),
@@ -1737,6 +1742,23 @@ impl Registry {
         if let Some(e) = g.entry_mut(session_id) {
             e.jobs = jobs;
         }
+    }
+
+    /// **The monitors a session's harness last published** — the job table's mailbox, for
+    /// the same reason: the monitors are the harness's, and this is answered on a head's
+    /// connection. Answered beside the jobs, on the same frame.
+    pub fn set_monitors(&self, session_id: &str, monitors: Vec<crate::protocol::MonitorEntry>) {
+        let mut g = self.lock();
+        if let Some(e) = g.entry_mut(session_id) {
+            e.monitors = monitors;
+        }
+    }
+
+    pub fn monitors(&self, session_id: &str) -> Vec<crate::protocol::MonitorEntry> {
+        let g = self.lock();
+        g.entry(session_id)
+            .map(|e| e.monitors.clone())
+            .unwrap_or_default()
     }
 
     pub fn jobs(&self, session_id: &str) -> Vec<crate::protocol::JobEntry> {

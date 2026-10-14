@@ -445,6 +445,11 @@ impl Monitor {
         self.started.elapsed()
     }
 
+    /// Continuous: it re-arms after each firing rather than settling.
+    pub fn repeats(&self) -> bool {
+        self.repeat
+    }
+
     /// T24 requirement 5's other half: an **explicit** renewal. Nothing renews a
     /// monitor by looking at it, because a monitor that lives as long as somebody
     /// keeps listing it is a monitor with no bound.

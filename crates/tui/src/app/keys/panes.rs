@@ -118,6 +118,12 @@ impl App {
                 None => ControlFlow::Continue(()),
             },
             Act::Peek => self.subagents_peek(),
+            // **`x` retires the monitor under the cursor**; with none live the letter is the
+            // composer's.
+            Act::Retire => match self.retire_selected_monitor() {
+                Some(a) => ControlFlow::Break(Some(a)),
+                None => ControlFlow::Continue(()),
+            },
             // **Enter reads the same subagent again**, because a running one has new output.
             Act::Reread => match self.sub_out.as_ref() {
                 Some(v) => {
@@ -219,6 +225,14 @@ impl App {
                 }
                 self.jobs_sel = step(self.jobs_sel.min(n - 1), n, up);
                 self.scroll_into_view(self.jobs_row_of());
+            }
+            Surface::Monitors => {
+                let n = self.monitor_stops().len();
+                if n == 0 {
+                    return ControlFlow::Continue(());
+                }
+                self.monitors_sel = step(self.monitors_sel.min(n - 1), n, up);
+                self.scroll_into_view(self.monitors_row_of());
             }
             _ => return ControlFlow::Continue(()),
         }

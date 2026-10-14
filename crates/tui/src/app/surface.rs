@@ -60,6 +60,9 @@ pub(crate) enum Surface {
     Jobs,
     /// One job's output, opened by the jobs pane's Enter.
     JobOut,
+    /// The monitors the model armed, live and ended — `/monitors`, or a click on the edge's
+    /// `N monitors watching`.
+    Monitors,
     /// A slash command's listing (`/notes`, a diagnostic, a long warning).
     Listing,
 }
@@ -92,7 +95,7 @@ impl Surface {
     }
 
     /// Every surface, for the tests and the generated help that walk them.
-    pub(crate) const ALL: [Surface; 14] = [
+    pub(crate) const ALL: [Surface; 15] = [
         Surface::Help,
         Surface::Stats,
         Surface::Picker,
@@ -106,6 +109,7 @@ impl Surface {
         Surface::SubOut,
         Surface::Jobs,
         Surface::JobOut,
+        Surface::Monitors,
         Surface::Listing,
     ];
 }
@@ -311,6 +315,8 @@ impl App {
                 None
             }
             Surface::Jobs => Some(Action::ListJobs),
+            // The monitors come on the job table's answer.
+            Surface::Monitors => Some(Action::ListJobs),
             Surface::Stats => {
                 // **Opening the screen IS the acknowledgement** (R51 item 17) — and only on the
                 // way in; see the `/status` verb.

@@ -93,6 +93,7 @@ impl App {
                 return ControlFlow::Break(self.toggle_surface(match l {
                     CountLabel::Subagents => Surface::Subagents,
                     CountLabel::Jobs => Surface::Jobs,
+                    CountLabel::Monitors => Surface::Monitors,
                 }));
             }
             (Target::QueueTab(view), _) => self.queue_view = view,
@@ -145,6 +146,7 @@ impl App {
                 Surface::Queue => self.queue_sel = k,
                 Surface::Subagents => self.subagents_sel = k,
                 Surface::Jobs => self.jobs_sel = k,
+                Surface::Monitors => self.monitors_sel = k,
                 Surface::Standing => self.standing_sel = k,
                 Surface::Config => self.config_sel = k,
                 _ => return ControlFlow::Break(None),

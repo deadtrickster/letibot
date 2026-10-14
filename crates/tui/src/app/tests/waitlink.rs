@@ -39,6 +39,7 @@ fn board() -> App {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(ServerFrame::Jobs {
+        monitors: Vec::new(),
         session_id: "s1".into(),
         jobs: vec![job("j97", "pg-timing"), job("j96", "bench"), job("j95", "")],
     });

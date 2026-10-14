@@ -146,6 +146,7 @@ impl App {
                     Surface::Queue => self.pane_stops(&self.queue_stop_rows, top, room),
                     Surface::Subagents => self.pane_stops(&self.subagents_stop_rows, top, room),
                     Surface::Jobs => self.pane_stops(&self.jobs_stop_rows, top, room),
+                    Surface::Monitors => self.pane_stops(&self.monitors_stop_rows, top, room),
                     Surface::Standing => self.pane_stops(&self.standing_stop_rows, top, room),
                     Surface::Config => self.pane_stops(&self.config_stop_rows(), top, room),
                     _ => Vec::new(),

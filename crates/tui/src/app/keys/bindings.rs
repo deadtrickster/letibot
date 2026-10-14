@@ -115,6 +115,8 @@ pub(crate) enum Act {
     /// The todos pane's `w`: open the job or the child the selected row waits on — the keyboard's
     /// half of a click on the row's `waits on …` link.
     WaitsOn,
+    /// The monitors pane's `x`: retire the monitor under the cursor (`/monitor retire NAME`).
+    Retire,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
 }
@@ -261,6 +263,17 @@ const SUB_OUT: &[Binding] = &[
     WHEEL,
 ];
 const JOBS: &[Binding] = &[LIST, b(&[On::Enter], Always, Act::Open, Row), PAGE, WHEEL];
+const MONITORS: &[Binding] = &[
+    LIST,
+    b(
+        &[On::Char('x')],
+        Empty,
+        Act::Retire,
+        Text("retires the one under the cursor"),
+    ),
+    PAGE,
+    WHEEL,
+];
 const JOB_OUT: &[Binding] = &[
     b(UPDOWN, Always, Act::Scroll, Text("scroll")),
     b(&[On::Right], Empty, Act::PageOut, Text("next page")),
@@ -287,6 +300,7 @@ impl Surface {
             Surface::SubOut => SUB_OUT,
             Surface::Jobs => JOBS,
             Surface::JobOut => JOB_OUT,
+            Surface::Monitors => MONITORS,
             Surface::Listing => LISTING,
         }
     }
@@ -319,6 +333,7 @@ impl Surface {
             Surface::SubOut => "subagent's output",
             Surface::Jobs => "jobs",
             Surface::JobOut => "job's output",
+            Surface::Monitors => "monitors",
             Surface::Listing => "listing",
         }
     }
@@ -363,6 +378,7 @@ impl Surface {
             Surface::Standing => Some("/standing"),
             Surface::Subagents => Some("/subagents"),
             Surface::Jobs => Some("/jobs"),
+            Surface::Monitors => Some("/monitors"),
             Surface::SubOut => Some("/peek ID"),
             _ => None,
         }
@@ -401,6 +417,11 @@ impl Surface {
             Surface::SubOut => "one subagent's output, read without leaving",
             Surface::Jobs => "the background jobs this session started",
             Surface::JobOut => "one job's output",
+            Surface::Monitors => {
+                "what this session is watching: the monitors the model armed — a timer, a job, a \
+                 file, a port, a process or a command — with the time each has left, and the \
+                 ones that ended and how"
+            }
             Surface::Listing => "a slash command's listing",
         }
     }

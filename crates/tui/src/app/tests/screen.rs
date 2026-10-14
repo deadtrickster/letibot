@@ -435,6 +435,7 @@ fn a_click_on_the_jobs_label_opens_the_jobs_pane_and_asks_for_its_table() {
         Hub::new("s").snapshot(),
     ));
     a.apply(ServerFrame::Jobs {
+        monitors: Vec::new(),
         session_id: "s".into(),
         jobs: vec![letibot_sessionlog::protocol::JobEntry {
             id: "j1".into(),
@@ -503,6 +504,7 @@ fn a_click_one_column_off_the_labels_opens_nothing() {
         },
     )));
     a.apply(ServerFrame::Jobs {
+        monitors: Vec::new(),
         session_id: "s".into(),
         jobs: vec![letibot_sessionlog::protocol::JobEntry {
             id: "j1".into(),
@@ -601,6 +603,7 @@ fn a_narrow_edge_keeps_only_the_labels_it_drew() {
         },
     )));
     a.apply(ServerFrame::Jobs {
+        monitors: Vec::new(),
         session_id: "s".into(),
         jobs: vec![letibot_sessionlog::protocol::JobEntry {
             id: "j1".into(),

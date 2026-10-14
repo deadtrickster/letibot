@@ -57,10 +57,19 @@ impl App {
             // the head used to fold them out of the event stream and join the
             // command against whichever turn it happened to be showing, which is
             // how a job that outlived its turn lost its name.
-            ServerFrame::Jobs { session_id, jobs } => {
+            ServerFrame::Jobs {
+                session_id,
+                jobs,
+                monitors,
+            } => {
                 if session_id == self.session_id {
                     self.jobs = jobs;
                     self.jobs_sel = self.jobs_sel.min(self.job_stops().len().saturating_sub(1));
+                    // **And the monitors, from the same answer** — what this session is watching.
+                    self.monitors = monitors;
+                    self.monitors_sel = self
+                        .monitors_sel
+                        .min(self.monitor_stops().len().saturating_sub(1));
                     self.redraw = true;
                 }
                 Disposition::Control

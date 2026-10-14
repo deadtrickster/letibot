@@ -103,7 +103,9 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::Event(e) => format!("Event({})", e.event.kind()),
         ServerFrame::Sessions { current, .. } => format!("Sessions(current={current})"),
         ServerFrame::Todos { session_id, .. } => format!("Todos({session_id})"),
-        ServerFrame::Jobs { session_id, jobs } => {
+        ServerFrame::Jobs {
+            session_id, jobs, ..
+        } => {
             format!("Jobs({session_id}, {} entries)", jobs.len())
         }
         ServerFrame::StandingNotes { session_id, notes } => {

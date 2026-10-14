@@ -682,6 +682,8 @@ impl App {
             // **`/jobs` is `ctrl-q`'s other spelling** — the same function the chord and a click
             // on the count label run, so the three cannot drift.
             "jobs" => self.toggle_surface(Surface::Jobs),
+            // **What this session is watching** — the monitors the model armed.
+            "monitors" => self.toggle_surface(Surface::Monitors),
             // **The merge queue**, and it is not this session's: there is one `main` and one
             // queue, so the pane asks for the whole thing and the daemon answers with it.
             //
@@ -1282,6 +1284,10 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("mode", "the mode picker — or /mode NAME to type it"),
     ("jobs", "open or close the background-jobs pane"),
+    (
+        "monitors",
+        "open or close the monitors pane: what this session is watching",
+    ),
     (
         "queue",
         "open or close the merge-queue pane: what is landing on main, and why it is not",

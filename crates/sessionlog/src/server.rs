@@ -887,6 +887,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 let f = ServerFrame::Jobs {
                     session_id: seat.hub.session_id().to_string(),
                     jobs: registry.jobs(&seat.hub.session_id()),
+                    monitors: registry.monitors(&seat.hub.session_id()),
                 };
                 writer.lock().unwrap().write(&f)?;
             }

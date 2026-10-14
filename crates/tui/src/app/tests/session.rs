@@ -1095,6 +1095,7 @@ fn a_switch_re_asks_for_the_jobs_and_the_daemons_answer_refills_the_pane() {
     );
     a.jobs = Vec::new();
     a.apply(ServerFrame::Jobs {
+        monitors: Vec::new(),
         session_id: "s-sub-1".into(),
         jobs: vec![daemon_job("j1", "cargo test", true)],
     });

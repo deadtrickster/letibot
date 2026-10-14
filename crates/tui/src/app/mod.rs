@@ -44,6 +44,7 @@ use crate::ui::*;
 pub(crate) enum CountLabel {
     Subagents,
     Jobs,
+    Monitors,
 }
 
 /// **The count labels' columns in the composer's top edge, as rano's own line drew them**
@@ -58,6 +59,7 @@ pub(crate) enum CountLabel {
 pub(crate) struct BoxTopLabels {
     pub(crate) subagents: Option<(usize, usize)>,
     pub(crate) jobs: Option<(usize, usize)>,
+    pub(crate) monitors: Option<(usize, usize)>,
 }
 
 /// **The composer's top edge as a click target**: the screen row the last frame drew it
@@ -80,6 +82,8 @@ pub(crate) struct BoxTopHits {
     /// The `N job(s) running · M to a file` label — the tail included, because it is that
     /// fact's own second half and names no pane of its own.
     pub(crate) jobs: Option<(usize, usize)>,
+    /// The `N monitor(s) watching` label, which opens the monitors pane.
+    pub(crate) monitors: Option<(usize, usize)>,
 }
 
 /// **What reads the workspace's git state** — a function of the workspace path, run on a
@@ -213,6 +217,15 @@ pub struct App {
     /// by harnessd not the heads"*. A `JobSettled` still folds onto a row for
     /// liveness; anything it does not recognise waits for the next answer.
     pub(crate) jobs: Vec<letibot_sessionlog::protocol::JobEntry>,
+    /// **The daemon's monitor table**, as it last answered `ListJobs` — the monitors pane's rows
+    /// and the composer edge's `N monitors watching`. Live ones first, then the ended ones.
+    pub(crate) monitors: Vec<letibot_sessionlog::protocol::MonitorEntry>,
+    /// **An index into [`App::monitor_stops`]** — the live monitors — so the drawn cursor and the
+    /// `x` that retires cannot disagree about which watch is selected.
+    pub(crate) monitors_sel: usize,
+    /// **The pane row each monitor stop was DRAWN on**, which the arrows scroll by and a click is
+    /// tested against. See [`App::jobs_stop_rows`].
+    pub(crate) monitors_stop_rows: Vec<usize>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
@@ -1707,6 +1720,9 @@ impl App {
             sessions: Vec::new(),
             subagents: Vec::new(),
             jobs: Vec::new(),
+            monitors: Vec::new(),
+            monitors_sel: 0,
+            monitors_stop_rows: Vec::new(),
             picker_sel: 0,
             picker_hits: Vec::new(),
             screen_rows: 0,

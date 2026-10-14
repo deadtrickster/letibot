@@ -310,6 +310,7 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
         Hub::new("s").snapshot(),
     ));
     let jobs = |cs: Vec<letibot_sessionlog::protocol::JobEntry>| ServerFrame::Jobs {
+        monitors: Vec::new(),
         session_id: "s".into(),
         jobs: cs,
     };

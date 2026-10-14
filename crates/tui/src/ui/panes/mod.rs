@@ -3,6 +3,7 @@
 pub mod config;
 pub mod help;
 pub mod jobs;
+pub mod monitors;
 pub mod notes;
 pub mod picker;
 pub mod queue;

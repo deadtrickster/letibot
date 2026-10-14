@@ -74,6 +74,7 @@ pub const VERBS: &[&str] = &[
     "job",
     "login",
     "models",
+    "monitor",
     "nag",
     "queue",
     "supervise",
@@ -107,6 +108,9 @@ pub enum Slash {
         job: Option<String>,
         offset: u64,
     },
+    /// `/monitor retire NAME`: end a monitor the model armed — the monitors pane's `x`. The
+    /// model is told it was retired, and by whom, on its next turn.
+    MonitorRetire(String),
     /// **What this conversation can call**, and what it only looks like it can.
     Tools,
     Models,
@@ -360,6 +364,14 @@ impl Slash {
                     .unwrap_or(0);
                 Slash::Job { job, offset }
             }
+            Some("monitor") => match (words.get(1).copied(), words.get(2)) {
+                (Some("retire"), Some(name)) => Slash::MonitorRetire((*name).to_string()),
+                _ => Slash::Help(
+                    "/monitor retire NAME ends a monitor; /monitors (or the count on the box's \
+                     edge) shows them"
+                        .into(),
+                ),
+            },
             Some("models") | Some("model") => match words.get(1).copied() {
                 None | Some("list") => Slash::Models,
                 Some(spec) => {
@@ -1232,6 +1244,16 @@ mod tests {
                 offset: 10
             }
         ));
+    }
+
+    #[test]
+    fn monitor_retire_takes_a_name_and_anything_else_says_how() {
+        assert!(matches!(
+            Slash::parse("monitor retire tick"),
+            Slash::MonitorRetire(n) if n == "tick"
+        ));
+        assert!(matches!(Slash::parse("monitor retire"), Slash::Help(_)));
+        assert!(matches!(Slash::parse("monitor"), Slash::Help(_)));
     }
 
     /// `/tools` is the listing, not the fold. The fold kept ctrl-t and `/t`.

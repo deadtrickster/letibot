@@ -1046,9 +1046,160 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<Stri
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// **How many ended monitors the pane lists** — the newest. A session that ran a repeating watch
+/// all day would otherwise ship its whole history with every job-table refill.
+pub const MONITORS_ENDED_SHOWN: usize = 20;
+
+/// [`Harness::monitor_entries`] over its inputs, so the rows are assertable without a session.
+pub fn monitor_entries_of(
+    live: &[std::sync::Arc<letibot_tools::exec::monitor::Monitor>],
+    firings: &[letibot_tools::exec::monitor::Firing],
+    now_ms: u64,
+) -> Vec<letibot_sessionlog::protocol::MonitorEntry> {
+    use letibot_tools::exec::monitor::Fired;
+    let fired_count = |name: &str| {
+        firings
+            .iter()
+            .filter(|f| f.name == name && matches!(f.fired, Fired::Fired { .. }))
+            .count() as u32
+    };
+    let mut out: Vec<letibot_sessionlog::protocol::MonitorEntry> = live
+        .iter()
+        .map(|m| letibot_sessionlog::protocol::MonitorEntry {
+            name: m.name.clone(),
+            watching: m.watch.describe(),
+            owner: m.owner.to_string(),
+            declared_by: m.declared_by.clone(),
+            repeat: m.repeats(),
+            live: true,
+            ends_at_ms: now_ms + m.remaining().map_or(0, |r| r.as_millis() as u64),
+            fired: fired_count(&m.name),
+            ended: String::new(),
+        })
+        .collect();
+    // The last event of each name that is no longer live is how it ended; a name armed again
+    // later is live and listed above, and its earlier end is history the pane does not repeat.
+    let mut ended: Vec<&letibot_tools::exec::monitor::Firing> = Vec::new();
+    for f in firings.iter().rev() {
+        if live.iter().any(|m| m.name == f.name) || ended.iter().any(|e| e.name == f.name) {
+            continue;
+        }
+        // A repeating monitor's firing is not its end; its end is the record that took it.
+        ended.push(f);
+        if ended.len() == MONITORS_ENDED_SHOWN {
+            break;
+        }
+    }
+    ended.reverse();
+    out.extend(
+        ended
+            .into_iter()
+            .map(|f| letibot_sessionlog::protocol::MonitorEntry {
+                name: f.name.clone(),
+                watching: f.watch.clone(),
+                owner: String::new(),
+                declared_by: f.declared_by.clone(),
+                repeat: false,
+                live: false,
+                ends_at_ms: 0,
+                fired: fired_count(&f.name),
+                ended: f.fired.word(),
+            }),
+    );
+    out
+}
+
+#[cfg(test)]
+mod monitor_rows {
+    use super::*;
+    use letibot_tools::exec::monitor::{DEFAULT_TTL, Monitors, Watch};
+    use letibot_tools::exec::scope::{ScopeId, ScopeKind};
+
+    /// **The monitors pane's rows** — a live repeating watch is one row with its firing count and
+    /// its deadline; a one-shot that fired and one the operator retired are ended rows saying how,
+    /// in the order they ended.
+    #[test]
+    fn live_monitors_come_first_and_ended_ones_say_how_they_ended() {
+        let dir = std::env::temp_dir().join(format!("letibot-monrows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let scope = ScopeId {
+            kind: ScopeKind::Session,
+            name: "s".into(),
+            path: dir.clone(),
+        };
+        let ms = Arc::new(Monitors::new());
+        let watch = |f: &str| Watch::Path(dir.join(f));
+        ms.declare(
+            "tick",
+            scope.clone(),
+            watch("a"),
+            None,
+            "turn 1",
+            DEFAULT_TTL,
+            true,
+        )
+        .unwrap();
+        ms.declare(
+            "once",
+            scope.clone(),
+            watch("b"),
+            None,
+            "turn 2",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        ms.declare(
+            "gone",
+            scope.clone(),
+            watch("c"),
+            None,
+            "turn 3",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        std::fs::write(dir.join("a"), b"1").unwrap();
+        std::fs::write(dir.join("b"), b"1").unwrap();
+        assert_eq!(ms.tick().len(), 2, "both watched files changed");
+        ms.retire("gone", OPERATOR_RETIRE).unwrap();
+
+        let now = 1_000_000;
+        let rows = monitor_entries_of(&ms.list(), &ms.firings(), now);
+        let names: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.live)).collect();
+        assert_eq!(
+            names,
+            vec![("tick", true), ("once", false), ("gone", false)]
+        );
+        let tick = &rows[0];
+        assert!(tick.repeat && tick.fired == 1, "{tick:?}");
+        assert!(
+            tick.ends_at_ms > now && tick.ends_at_ms <= now + 300_000,
+            "{tick:?}"
+        );
+        assert!(
+            tick.ended.is_empty() && tick.watching.contains('a'),
+            "{tick:?}"
+        );
+        assert!(rows[1].ended.starts_with("FIRED"), "{:?}", rows[1]);
+        assert_eq!(rows[1].fired, 1);
+        assert!(
+            rows[2].ended.starts_with("retired by the operator"),
+            "{:?}",
+            rows[2]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Who `monitor`'s own `retire` op says retired a watch (`builtins::monitor`) — the model's act,
 /// which [`monitor_notice`] does not announce back to it.
 const MODEL_RETIRE: &str = "the model";
+
+/// Who a retire from the monitors pane says retired a watch — announced to the model, unlike its
+/// own ([`MODEL_RETIRE`]).
+const OPERATOR_RETIRE: &str = "the operator";
 
 /// **The completion of a background job, as the sentence the model is handed (R7).**
 ///
@@ -6620,6 +6771,31 @@ impl Harness {
         self.monitors.as_ref()
     }
 
+    /// **The operator ends a monitor** — the monitors pane's `x`, as `/monitor retire NAME`. The
+    /// record says who (`retired by the operator`), so the model's next notice says so, and the
+    /// pane's table is refilled at once.
+    pub fn retire_monitor_for_operator(&self, name: &str) -> crate::slash::SlashReply {
+        let Some(monitors) = self.monitors.as_ref() else {
+            return crate::slash::SlashReply {
+                lines: vec!["this session has no monitors to retire".into()],
+                ok: false,
+            };
+        };
+        let Some(f) = monitors.retire(name, OPERATOR_RETIRE) else {
+            return crate::slash::SlashReply {
+                lines: vec![format!(
+                    "no monitor named `{name}` is watching — it may have fired or expired already"
+                )],
+                ok: false,
+            };
+        };
+        self.publish_jobs();
+        crate::slash::SlashReply {
+            lines: vec![format!("monitor `{}` retired; the model is told", f.name)],
+            ok: true,
+        }
+    }
+
     /// **Switch to a model this fleet hosts** — `/models dense78`, `/models local.glm`.
     ///
     /// Declared in `providers.toml` as a `[model."…"]` block with an address; see
@@ -7668,6 +7844,24 @@ impl Harness {
     pub fn publish_jobs(&self) {
         self.session_registry
             .set_jobs(&self.cfg.session_id, self.job_entries());
+        // **And the monitors, on the same refill** — the monitors pane's rows, so a head that
+        // asks after a round, a firing or a retire reads this moment's table.
+        self.session_registry
+            .set_monitors(&self.cfg.session_id, self.monitor_entries());
+    }
+
+    /// **This session's monitors as the wire carries them**: every live one, then the ended ones
+    /// newest last ([`MONITORS_ENDED_SHOWN`] of them), each with how it ended. A continuous monitor
+    /// is one row however often it fired, with the count.
+    pub fn monitor_entries(&self) -> Vec<letibot_sessionlog::protocol::MonitorEntry> {
+        let Some(monitors) = self.monitors.as_ref() else {
+            return Vec::new();
+        };
+        monitor_entries_of(
+            &monitors.list(),
+            &monitors.firings(),
+            letibot_sessionlog::registry::now_ms(),
+        )
     }
 
     /// **One job, as `/job` draws it** — `release-build · j65  running  4096 bytes  cargo test`,
@@ -9015,6 +9209,8 @@ impl Harness {
             if settled > since {
                 let fired: Vec<_> = monitors.firings().into_iter().skip(since).collect();
                 self.monitor_cursor.store(settled, Ordering::SeqCst);
+                // The monitors pane's table moved with it: a fire, an expiry or a retire.
+                self.publish_jobs();
                 if !fired.is_empty() {
                     // Immediate by R79's rules, and recorded as such.
                     if let Some(d) = self.deliveries() {

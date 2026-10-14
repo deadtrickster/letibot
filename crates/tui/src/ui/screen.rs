@@ -573,6 +573,7 @@ impl App {
                 row,
                 subagents: labels.subagents.map(|(col, w)| (col + gutter, w)),
                 jobs: labels.jobs.map(|(col, w)| (col + gutter, w)),
+                monitors: labels.monitors.map(|(col, w)| (col + gutter, w)),
             })
         });
         // **The cut flash notice, as a target** — where this frame put it, if the backstop and the
@@ -622,6 +623,7 @@ impl App {
             for (label, at) in [
                 (CountLabel::Subagents, b.subagents),
                 (CountLabel::Jobs, b.jobs),
+                (CountLabel::Monitors, b.monitors),
             ] {
                 if let Some((x, lw)) = at {
                     self.hits.push(Hit {
@@ -764,11 +766,13 @@ impl App {
                 .iter()
                 .filter(|j| j.running && j.redirect.is_some())
                 .count(),
+            monitors_live: self.monitors.iter().filter(|m| m.live).count(),
         };
         let line = top.line(w);
         let labels = BoxTopLabels {
             subagents: box_top_label(&line, "subagent"),
             jobs: box_top_label(&line, "job"),
+            monitors: box_top_label(&line, "monitor"),
         };
         (crate::ui::rows::row(&line, self.cfg.palette()), labels)
     }
@@ -1010,6 +1014,10 @@ impl App {
             }
             Drawn::Surface(Surface::Jobs) => {
                 let rows = self.jobs_lines(w);
+                self.pane_window(rows, room)
+            }
+            Drawn::Surface(Surface::Monitors) => {
+                let rows = self.monitors_lines(w);
                 self.pane_window(rows, room)
             }
             Drawn::Conversation => {

@@ -179,6 +179,9 @@ impl App {
             // a carried row is a question about a job that was never here.
             self.jobs.clear();
             self.jobs_sel = 0;
+            // And its monitors: a carried row would retire a watch in a session not on screen.
+            self.monitors.clear();
+            self.monitors_sel = 0;
             // The queue is the old session's. Whatever was queued there stays
             // queued *there* — the hub drains it into that session's transcript —
             // but this head is no longer looking at that session, and an echo of
