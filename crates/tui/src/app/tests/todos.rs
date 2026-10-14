@@ -2752,3 +2752,65 @@ fn the_picker_marks_a_session_waiting_on_the_operator() {
     );
     assert!(!lines.contains("the quiet one · WAITING"), "{lines}");
 }
+
+/// **The model taking its wait on the operator back takes the card down** — the operator: *"we
+/// need a way for models to retract user selects or todo selects … retracting wait_on user and
+/// that the card goes"*. `wait_on`'s `detach` takes the question off the row; the board that comes
+/// back no longer asks it, and the card that was open for it — and the resident line — go with
+/// it, whether the card was on the screen or put away.
+#[test]
+fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    waiting_board(&mut a);
+    a.open_operator_ask(None);
+    assert!(
+        a.open
+            .iter()
+            .any(|d| d.req_id.starts_with(crate::app::todos::TODO_ASK)),
+        "the premise: the card is open"
+    );
+    // The model detaches: the same rows, the question gone.
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            TodoEntry {
+                content: "deploy the staging box".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+            TodoEntry {
+                content: "write the release notes".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+        ],
+    });
+    assert!(
+        !a.open
+            .iter()
+            .any(|d| d.req_id.starts_with(crate::app::todos::TODO_ASK)),
+        "the card went with the question"
+    );
+    assert!(
+        a.waiting_line(200).is_empty(),
+        "and so did the resident line"
+    );
+
+    // Put away with Esc first, then taken back: gone from the away list too.
+    waiting_board(&mut a);
+    a.open_operator_ask(None);
+    a.key(Key::Esc);
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: Vec::new(),
+    });
+    assert!(
+        a.away.iter().all(|w| !w.is_todo()),
+        "the put-away card went too"
+    );
+}
