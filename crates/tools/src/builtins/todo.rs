@@ -2746,8 +2746,10 @@ impl Tool for TodoWriteTool {
                                         `job_list` prints), `child` (a session id `task` handed \
                                         back), `operator` ({\"question\": \"…\", \"options\": \
                                         [at least two choices]}) or `detach: true` (take its \
-                                        waits off, the operator's question included). Words \
-                                        and status are never changed. A call of its own.",
+                                        waits off, the operator's question included). Several \
+                                        entries quoting one row make it wait on ALL of them — \
+                                        two jobs, a job and a child, any mix. Words and status \
+                                        are never changed. A call of its own.",
                         "items": {
                             "type": "object",
                             "properties": {
