@@ -1047,6 +1047,38 @@ fn git_in(d: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
+/// **Make `d` a directory no enclosing repository can claim.**
+///
+/// `auto_decision` finds its repository with `git rev-parse --show-toplevel`, which walks UP.
+/// A scratch dir is not a repository only while the temp dir is outside one: with `TMPDIR`
+/// inside a checkout — a worktree's `target/`, say — the two tests below that mean "no
+/// repository here" found the CHECKOUT, wrote `AUTO-DECISIONS.md` (session `s-1` and `s`) at
+/// its root and appended `/AUTO-DECISIONS.md` to its `.gitignore`. Reproduced 2026-10-14 with
+/// `TMPDIR=<a git repo>/tt`.
+///
+/// A `.git` FILE naming a gitdir that does not exist stops discovery here: git reports "not a
+/// git repository" rather than looking further up. The assertion is the fact this rests on,
+/// checked rather than assumed.
+fn not_in_any_repository(d: &std::path::Path) {
+    std::fs::write(
+        d.join(".git"),
+        "gitdir: /nonexistent/letibot-test-barrier\n",
+    )
+    .unwrap();
+    let found = std::process::Command::new("git")
+        .arg("-C")
+        .arg(d)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .expect("git");
+    assert!(
+        !found.status.success(),
+        "{} is still inside a repository: {}",
+        d.display(),
+        String::from_utf8_lossy(&found.stdout)
+    );
+}
+
 fn with_default() -> Question {
     Question {
         default: Some(1),
@@ -1113,6 +1145,7 @@ fn a_default_taken_in_a_repository_is_logged_with_its_commit() {
 #[test]
 fn a_default_taken_outside_a_repository_is_a_note_and_no_file() {
     let d = dir("norepo");
+    not_in_any_repository(&d.0);
     let said = auto_decision(&d.0, "s-1", &with_default(), Duration::from_secs(300), 0);
     assert!(!d.0.join("AUTO-DECISIONS.md").exists());
     assert!(said.contains("\"sqlite\" was taken"), "{said}");
@@ -1123,7 +1156,10 @@ fn a_default_taken_outside_a_repository_is_a_note_and_no_file() {
 /// questioner says it expired (not cancelled), and taking the default publishes the note.
 #[test]
 fn a_question_with_a_default_expires_and_its_default_is_noted() {
+    // Its own repository, so the note it logs lands HERE and never in whatever repository
+    // the temp dir happens to sit in — see `not_in_any_repository`.
     let d = dir("e2e");
+    git_in(&d.0, &["init", "-q"]);
     let hub = Hub::new("s");
     let answers = Arc::new(Answers::new());
     hub.set_answer_sink(answers.clone());
@@ -1136,6 +1172,10 @@ fn a_question_with_a_default_expires_and_its_default_is_noted() {
         .defaulted(&q, Duration::from_secs(60))
         .expect("a workspace to log in");
     assert!(said.contains("sqlite"), "{said}");
+    assert!(
+        d.0.join("AUTO-DECISIONS.md").is_file(),
+        "the note is logged in the session's own repository"
+    );
     let w = hub.snapshot().warnings;
     assert!(
         w.iter()
