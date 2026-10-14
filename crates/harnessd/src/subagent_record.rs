@@ -460,9 +460,9 @@ pub fn decide(
             ),
         };
     }
-    if spec.placement == Placement::Firecode {
+    if spec.placement == Placement::Firecode && !vm_work_survives(&spec) {
         return Decision::Abandon {
-            why: "it ran in a firecode VM, and the VM's copy of the tree did not survive the \
+            why: "it ran in a firecode VM on a copy of the tree, and the copy did not survive the \
                   restart — a resumed child would read a conversation about edits its new copy \
                   does not have. Its work, if firecode delivered it at shutdown, is in a \
                   directory beside the copy"
@@ -470,6 +470,20 @@ pub fn decide(
         };
     }
     Decision::Resume { spec }
+}
+
+/// **Whether a VM child's work outlives its VM** — it worked in its worktree MOUNTED, not on a
+/// copy (`letibot_tools::firecode::mounts`: a git worktree, on a Mac), so every edit and commit it
+/// made is in that worktree on the host, and a fresh VM booted on the same worktree is the same
+/// tree its conversation is about. A child whose caller named a tree to copy (`vm_source`, a
+/// reviewer's repository or `task`'s `repo`) worked on a copy, as does every VM child off a Mac.
+/// The worktree's existence is checked before this, by the caller's own rule.
+fn vm_work_survives(spec: &TaskSpec) -> bool {
+    spec.vm_source.is_none()
+        && spec
+            .worktree
+            .as_ref()
+            .is_some_and(|wt| letibot_tools::firecode::mounts(std::path::Path::new(&wt.path)))
 }
 
 /// **A recorded child's state, as `task_result` reads it** — for a child of this session that has
@@ -528,7 +542,8 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
 /// operator: *"this is what you wre running and how to restart that"*). `Ok` is its spec.
 ///
 /// Refused by name: a child that finished (read it, or message it), one a person or a parent
-/// stopped, one that is live in this daemon, one whose worktree is gone, and a VM child.
+/// stopped, one that is live in this daemon, one whose worktree is gone, and a VM child that
+/// worked on a copy (one that worked in its mounted worktree comes back: [`vm_work_survives`]).
 pub fn resumable(
     run: &SubagentRun,
     instance: &str,
@@ -569,10 +584,10 @@ pub fn resumable(
             wt.path, wt.branch
         ));
     }
-    if spec.placement == Placement::Firecode {
+    if spec.placement == Placement::Firecode && !vm_work_survives(&spec) {
         return Err(format!(
-            "`{h}` ran in a firecode VM whose copy of the tree did not survive the restart. \
-             Nothing was spawned; start the work again with `task_start`."
+            "`{h}` ran in a firecode VM on a copy of the tree, and the copy did not survive the \
+             restart. Nothing was spawned; start the work again with `task_start`."
         ));
     }
     Ok(spec)
@@ -941,6 +956,60 @@ mod tests {
             decide(&r, NEW, false, |_| true, RestoreMode::Resume),
             Decision::Abandon { .. }
         ));
+    }
+
+    /// **A VM child that worked in its worktree MOUNTED comes back; one that worked on a copy does
+    /// not** — on a Mac a VM child given a worktree works in it directly (`firecode::mounts`), so its
+    /// edits and commits are on the host and survive the restart, and a fresh VM on the same
+    /// worktree is the tree its conversation is about. Through both doors: the restart's own
+    /// decision and `task_resume`. A caller-named tree (`vm_source`) is a copy even with a
+    /// worktree, and off a Mac nothing mounts.
+    #[test]
+    fn a_vm_child_in_its_mounted_worktree_is_resumed_and_one_on_a_copy_is_not() {
+        let base = std::env::temp_dir().join(format!("letibot-vm-resume-{}", std::process::id()));
+        let wt = base.join("agent-fix");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}/repo/.git/worktrees/agent-fix\n", base.display()),
+        )
+        .unwrap();
+        let record = |vm_source: Option<PathBuf>| {
+            let mut r = run("running");
+            r.spec_json = RecordedSpec::of(&TaskSpec {
+                role: "coder".into(),
+                placement: Placement::Firecode,
+                worktree: Some(WorktreePlacement {
+                    path: wt.display().to_string(),
+                    branch: "agent/fix".into(),
+                    base_sha: "abc".into(),
+                    main_tree: false,
+                }),
+                vm_source,
+                ..TaskSpec::default()
+            })
+            .to_json();
+            r
+        };
+        let mounted = record(None);
+        let resumed = matches!(
+            decide(&mounted, NEW, false, |_| true, RestoreMode::Resume),
+            Decision::Resume { .. }
+        );
+        assert_eq!(resumed, cfg!(target_os = "macos"), "the mounted worktree");
+        assert_eq!(
+            resumable(&mounted, NEW, false, |_| true).is_ok(),
+            cfg!(target_os = "macos"),
+            "task_resume on the mounted worktree"
+        );
+        let copied = record(Some(base.join("repo")));
+        match decide(&copied, NEW, false, |_| true, RestoreMode::Resume) {
+            Decision::Abandon { why } => assert!(why.contains("on a copy"), "{why}"),
+            other => panic!("a caller-named tree is a copy: {other:?}"),
+        }
+        let why = resumable(&copied, NEW, false, |_| true).unwrap_err();
+        assert!(why.contains("on a copy"), "{why}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

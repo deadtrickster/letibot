@@ -2559,7 +2559,9 @@ own open), crash loop (3 resumes without an orderly stop → abandoned, parent t
 **Still open:**
 1. Only children started on a build with this change are recorded; a daemon of an older build left
    no rows, so its children are not brought back by the first restart onto this build.
-2. A firecode (VM) child is not resumed: its VM copy does not survive. It is reported instead.
+2. A firecode (VM) child that worked on a COPY is not resumed: the copy does not survive, and it
+   is reported instead. One that worked in its mounted worktree (a Mac) is resumed in a fresh VM
+   on the same worktree (`subagent_record::vm_work_survives`).
 3. A re-armed monitor's TTL starts again from the restart (it is the same call made again).
 4. Monitor re-arm runs without the permission gate (the declaration was gated when the model made
    it); the operator may want that the other way.
