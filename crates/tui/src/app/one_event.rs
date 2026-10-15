@@ -202,3 +202,29 @@ pub(crate) fn absorbed_texts(
         .filter_map(|r| items.get(r).and_then(of_row).map(|(_, t, _)| t))
         .collect()
 }
+
+/// **A card's popup: its own text and the rows it stands for — the event said ONCE.**
+///
+/// A restart's warning is the notice's header and one `  - KIND NAME: VERDICT` line per thing;
+/// the notice is the same header and one line per thing in the model's words, which say more.
+/// Both under one another drew the header twice — pg-noop, 2026-10-15: *"[restart] the daemon
+/// restarted at 2026-10-15 10:38:05 UTC; when the previous one stopped is unknown … bring back
+/// only that:"*, its four `reminded (not re-run)` lines, then the same header again. When a row
+/// the card absorbed opens with the warning's own first line, the warning's text IS that row's
+/// summary, and the popup is the rows alone. Anything else keeps both, the warning's first.
+pub(crate) fn card_popup_text(own: &str, absorbed: &[String]) -> String {
+    let head = own.lines().next().unwrap_or("");
+    let repeated = !head.is_empty() && absorbed.iter().any(|t| t.lines().next() == Some(head));
+    let mut text = if repeated {
+        String::new()
+    } else {
+        own.to_string()
+    };
+    for t in absorbed {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(t);
+    }
+    text
+}

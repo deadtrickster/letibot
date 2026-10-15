@@ -362,6 +362,80 @@ fn a_restart_warning_and_its_notice_are_one_line() {
     }
 }
 
+/// **One restart, one header** — pg-noop, 2026-10-15: the card's popup drew the warning (the
+/// header and its four `reminded (not re-run)` lines) and, under it, the notice it absorbed,
+/// which opens with the SAME header. The notice is the warning's text in more words, so the popup
+/// is the notice alone: the header once, every job's line, nothing lost.
+#[test]
+fn a_restart_card_opens_with_its_header_once() {
+    for warning_first in [false, true] {
+        let mut a = if warning_first {
+            let mut a = with_warning("restart_reminded", UNKNOWN_WARNING);
+            a.apply(ServerFrame::Event(env(
+                2,
+                SessionEvent::TranscriptAppended {
+                    item_id: "s.0".into(),
+                    kind: "user".into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::TranscriptContent {
+                    item_id: "s.0".into(),
+                    item: Box::new(TranscriptItem::User {
+                        speaker: letibot_transcript::Speaker::Agent,
+                        parts: vec![UserPart::Text {
+                            text: UNKNOWN_NOTICE.into(),
+                        }],
+                    }),
+                },
+            )));
+            a
+        } else {
+            let mut a = with_notice(UNKNOWN_NOTICE);
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::Warning {
+                    code: "restart_reminded".into(),
+                    detail: UNKNOWN_WARNING.into(),
+                    compaction: None,
+                },
+            )));
+            a
+        };
+        let screen = a.screen(200, 40);
+        assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
+        let (y, _) = a.card_rows[0];
+        a.key(Key::Click { x: 10, y: y as u16 });
+        let whole = popup_text(&mut a);
+        let flat = whole.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            flat.matches("[restart] the daemon restarted at").count(),
+            1,
+            "warning first: {warning_first} — the header twice:\n{whole}"
+        );
+        assert!(holds(&whole, "To run it again: `bash {"), "{whole}");
+        assert!(holds(&whole, "- job `j46`: NOT run again"), "{whole}");
+    }
+}
+
+/// **A card whose rows open some other way keeps its own text first** — only a row that repeats
+/// the card's header replaces it.
+#[test]
+fn a_card_popup_keeps_its_text_when_no_row_repeats_its_header() {
+    use crate::app::one_event::card_popup_text;
+    assert_eq!(
+        card_popup_text("head\n  - a", &["other\nline".into()]),
+        "head\n  - a\n\nother\nline"
+    );
+    assert_eq!(
+        card_popup_text("head\n  - a", &["head\n- a, in more words".into()]),
+        "head\n- a, in more words"
+    );
+    assert_eq!(card_popup_text("head", &[]), "head");
+}
+
 /// **A restart and the children it handed over are ONE line** — pg-noop, 2026-10-14: one restart
 /// drew `session · restarted · down 2s · restored: 12 subagents · click for details` from the
 /// warning, then `session · restarted · down 2s · click for details` from the notice with an

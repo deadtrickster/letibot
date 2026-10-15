@@ -1658,6 +1658,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             Err(e) => {
                 let why = boot.failed(e.to_string());
                 daemon.shutdown();
+                // A start that failed is a stop too: the next daemon reads it as one, not a crash.
+                lifeline.stopped();
                 return Err(why);
             }
         };
@@ -1869,6 +1871,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             Err(e) => {
                 let why = boot.failed(format!("--http {addr}: {e}"));
                 daemon.shutdown();
+                lifeline.stopped();
                 return Err(why);
             }
         }

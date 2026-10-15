@@ -74,24 +74,38 @@ pub const BEAT: Duration = Duration::from_secs(30);
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
 
 /// **This daemon's life, written down** — started now, a heartbeat every [`BEAT`] until the
-/// registry closes, and the stop when [`Lifeline::stopped`] is called on the orderly path.
+/// registry closes, and the stop: when the registry closes (the heartbeat sees it), and again
+/// with its exact time when [`Lifeline::stopped`] is called at the end of the orderly path.
+///
+/// **The stop is written through a connection opened at the START**, never a fresh one. pg-noop's
+/// daemon `d-840951`, stopped on purpose on 2026-10-15, logged *"this daemon's stop was not
+/// recorded (store schema is version 30; this build knows 29)"*: the store is shared by every
+/// daemon on the box, a newer build had migrated it while this one ran, and `Store::open` refuses
+/// a schema newer than its own. The heartbeat, on the connection it opened at the start, had kept
+/// beating until 10:37:44 — so the next daemon read a crash, and with the session's other records
+/// that came out as a stop nobody could date. A connection opened before the migration still
+/// writes `daemon_life`, which no migration changes the shape of.
 pub struct Lifeline {
-    path: Option<PathBuf>,
+    store: Option<Store>,
     registry: Arc<Registry>,
 }
 
 impl Lifeline {
     pub fn start(path: Option<PathBuf>, registry: Arc<Registry>) -> Lifeline {
+        let mut store = None;
         if let Some(p) = &path {
             let instance = registry.instance().to_string();
             let started = registry.started_ms();
-            match Store::open(p).and_then(|s| s.life_started(&instance, started)) {
-                Ok(()) => {
-                    let p = p.clone();
-                    let reg = registry.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("daemon-heartbeat".into())
-                        .spawn(move || heartbeat(p, reg));
+            match Store::open(p).and_then(|s| s.life_started(&instance, started).map(|()| s)) {
+                Ok(s) => {
+                    store = Some(s);
+                    // The heartbeat's own connection, opened here and now for the same reason.
+                    if let Ok(beat) = Store::open(p) {
+                        let reg = registry.clone();
+                        let _ = std::thread::Builder::new()
+                            .name("daemon-heartbeat".into())
+                            .spawn(move || heartbeat(beat, reg));
+                    }
                 }
                 Err(e) => eprintln!(
                     "  this daemon's start was not recorded ({e}); a restart after it cannot \
@@ -99,25 +113,32 @@ impl Lifeline {
                 ),
             }
         }
-        Lifeline { path, registry }
+        Lifeline { store, registry }
     }
 
     /// **The orderly stop**, said with its exact time.
     pub fn stopped(&self) {
-        let Some(p) = &self.path else {
+        let Some(store) = &self.store else {
             return;
         };
         let now = letibot_sessionlog::registry::now_ms();
-        if let Err(e) = Store::open(p).and_then(|s| s.life_stopped(self.registry.instance(), now)) {
+        if let Err(e) = store.life_stopped(self.registry.instance(), now) {
             eprintln!("  this daemon's stop was not recorded ({e})");
         }
     }
 }
 
-fn heartbeat(path: PathBuf, registry: Arc<Registry>) {
-    let Ok(store) = Store::open(&path) else {
-        return;
-    };
+/// **A beat every [`BEAT`] while the daemon serves — and the stop, the moment it stops serving.**
+///
+/// Every way a daemon is stopped on purpose closes its registry first: SIGINT and SIGTERM
+/// (`Daemon::catch_signals`), a head's `Stop` frame, the merge queue's stop. What follows the
+/// close is bounded but not short — the merge queue joined, the VMs brought down, the children
+/// drained, five seconds each at worst — and a head that forces the stop sends SIGKILL five
+/// seconds after SIGTERM (`letibot --stop --force`, the head's own force path). A stop written
+/// only at the end of that path is lost to the SIGKILL, and the next daemon reads a crash. So the
+/// stop is written here as soon as the close is seen, unless the orderly path has already said
+/// it; [`Lifeline::stopped`] writes the exact time over it when the path does reach its end.
+fn heartbeat(store: Store, registry: Arc<Registry>) {
     let mut last = std::time::Instant::now();
     while !registry.is_closed() {
         std::thread::sleep(Duration::from_millis(500));
@@ -125,6 +146,14 @@ fn heartbeat(path: PathBuf, registry: Arc<Registry>) {
             last = std::time::Instant::now();
             let _ = store.life_beat(registry.instance(), letibot_sessionlog::registry::now_ms());
         }
+    }
+    let said = store
+        .life(registry.instance())
+        .ok()
+        .flatten()
+        .is_some_and(|l| l.stopped_ms.is_some());
+    if !said {
+        let _ = store.life_stopped(registry.instance(), letibot_sessionlog::registry::now_ms());
     }
 }
 
@@ -892,5 +921,108 @@ mod tests {
             none.contains("Its output was in the old daemon's memory and is gone."),
             "{none}"
         );
+    }
+
+    /// A store in a scratch directory that removes itself.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Scratch {
+            let p = letibot_sessionlog::testing::scratch_root().join(format!(
+                "{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Scratch(p)
+        }
+
+        fn store(&self) -> PathBuf {
+            self.0.join("sessions.db")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// **The orderly stop is recorded although a newer build migrated the store meanwhile** —
+    /// pg-noop's `d-840951`, stopped on purpose on 2026-10-15, logged *"this daemon's stop was
+    /// not recorded (store schema is version 30; this build knows 29)"*, and the next daemon read
+    /// a crash. The store every daemon on the box shares moved to a newer schema while this one
+    /// ran; the stop goes through the connection the start opened, which still writes.
+    #[test]
+    fn the_stop_is_recorded_after_a_newer_build_migrated_the_store() {
+        let dir = Scratch::new("lifeline-newer-schema");
+        let registry = Registry::new();
+        let life = Lifeline::start(Some(dir.store()), registry.clone());
+        let reader = Store::open(&dir.store()).unwrap();
+        // A newer daemon, started beside this one, migrates the shared file.
+        reader
+            .connection()
+            .execute(
+                "UPDATE schema_version SET version = ?1",
+                [letibot_tokencore::store::SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+        assert!(
+            Store::open(&dir.store()).is_err(),
+            "a fresh open refuses the newer schema — the stop must not depend on one"
+        );
+        registry.close();
+        life.stopped();
+        let l = reader
+            .life(registry.instance())
+            .unwrap()
+            .expect("a life row");
+        assert!(l.stopped_ms.is_some(), "the stop was not recorded: {l:?}");
+    }
+
+    /// **A stop the force path cuts short is still a stop** — the registry closes first on every
+    /// stop asked for (a signal, a head's `Stop`), and a SIGKILL during the drain that follows
+    /// never reaches [`Lifeline::stopped`]. The heartbeat writes the stop when it sees the close.
+    #[test]
+    fn the_stop_is_recorded_when_the_registry_closes_even_if_the_end_never_comes() {
+        let dir = Scratch::new("lifeline-close");
+        let registry = Registry::new();
+        let life = Lifeline::start(Some(dir.store()), registry.clone());
+        let reader = Store::open(&dir.store()).unwrap();
+        let before = letibot_sessionlog::registry::now_ms();
+        registry.close();
+        let began = std::time::Instant::now();
+        let stopped = loop {
+            let l = reader
+                .life(registry.instance())
+                .unwrap()
+                .expect("a life row");
+            if let Some(at) = l.stopped_ms {
+                break at;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(10),
+                "the close was never written as the stop"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(stopped >= before, "{stopped} < {before}");
+        assert_eq!(
+            stop_of(&reader, registry.instance(), 0).at_ms(),
+            Some(stopped),
+            "the next daemon reads an orderly stop, not a heartbeat estimate"
+        );
+        // The orderly end, when it does come, says the exact time over it.
+        std::thread::sleep(Duration::from_millis(5));
+        life.stopped();
+        let end = reader
+            .life(registry.instance())
+            .unwrap()
+            .and_then(|l| l.stopped_ms)
+            .unwrap();
+        assert!(end >= stopped, "{end} < {stopped}");
     }
 }

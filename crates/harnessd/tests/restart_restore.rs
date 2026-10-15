@@ -966,6 +966,128 @@ fn a_job_the_orderly_stop_ended_is_reminded() {
     d.stop(None);
 }
 
+/// A job row as a build before `job_context` left it: a command, ended by that daemon's stop (or
+/// left `running` by its crash), and no context naming any daemon.
+fn a_relic(store: &Store, handle: &str) {
+    store
+        .put_job(
+            PARENT,
+            &a_job(
+                handle,
+                letibot_harnessd::restart::STOPPED_WITH_THE_DAEMON,
+                "cd /data && ./target/release/letidb --port 5509 > /tmp/tpcds-server2.log 2>&1",
+            ),
+        )
+        .unwrap();
+    store.deliver_job(PARENT, handle).unwrap();
+}
+
+fn job_state(store: &Store, handle: &str) -> String {
+    store
+        .jobs(PARENT)
+        .unwrap()
+        .into_iter()
+        .find(|j| j.handle == handle)
+        .map(|j| j.state)
+        .unwrap_or_default()
+}
+
+/// **A relic says nothing** — pg-noop, 2026-10-15: a daemon down a couple of seconds told the
+/// model *"when the previous one stopped is unknown … NOTHING was restored automatically"* over
+/// four jobs (j900, j610, j624, j2437) that builds long gone had left with no `job_context`. They
+/// were the session's only records, they name no daemon, and `Stopped::latest` over no daemon is
+/// unknown. Such a row is closed quietly, and with nothing else to say, nothing is said.
+#[test]
+fn relics_alone_draw_no_notice_and_are_closed_quietly() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-relics-only");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        // The daemon that really stopped did so a moment ago, in order — and left nothing here.
+        old_daemon_stopped(&store, Duration::from_secs(2));
+        for h in ["j900", "j610", "j624", "j2437"] {
+            a_relic(&store, h);
+        }
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d.parent.restore_after_restart();
+    assert_eq!(notice, None, "a relic drew a notice");
+    assert!(warnings(&d.hub(), "restart_reminded").is_empty());
+    assert!(warnings(&d.hub(), "restart_restored").is_empty());
+    let store = Store::open(&dir.store()).unwrap();
+    for h in ["j900", "j610", "j624", "j2437"] {
+        assert_eq!(job_state(&store, h), "lost at restart", "{h}");
+    }
+    assert!(
+        store.undelivered_jobs(PARENT).unwrap().is_empty(),
+        "a closed relic is not an ending the next open announces"
+    );
+    assert!(d.parent.restore_after_restart().is_none());
+    d.stop(None);
+}
+
+/// **Beside a real record, a relic neither dates the stop nor is reminded** — the down time is
+/// the real record's daemon's, under the threshold, and only the real job is in the notice.
+#[test]
+fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = Scratch::new("restart-relic-and-real");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        old_daemon_stopped(&store, Duration::from_secs(4));
+        a_relic(&store, "j900");
+        store
+            .put_job(
+                PARENT,
+                &a_job("j9", "running", "cargo build > build.log 2>&1"),
+            )
+            .unwrap();
+        store.deliver_job(PARENT, "j9").unwrap();
+        the_old_daemons(&store, "j9");
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d.parent.restore_after_restart().expect("a reminder");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.starts_with("[restart] the daemon was down for "),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("under the 1h00m restore threshold"),
+        "{notice}"
+    );
+    assert!(!notice.contains("unknown"), "{notice}");
+    assert!(notice.contains("- job `j9`"), "{notice}");
+    assert!(!notice.contains("j900"), "the relic was reminded: {notice}");
+    let reminded = warnings(&d.hub(), "restart_reminded");
+    assert_eq!(reminded.len(), 1, "{reminded:?}");
+    assert!(!reminded[0].contains("j900"), "{reminded:?}");
+    let store = Store::open(&dir.store()).unwrap();
+    assert_eq!(job_state(&store, "j900"), "lost at restart");
+    assert_eq!(job_state(&store, "j9"), "lost at restart");
+    d.stop(None);
+}
+
 /// **Past the threshold nothing comes back on its own** — the model is told how long the daemon
 /// was down and given the one call per child — and `task_resume` brings the child back in that
 /// one call.
@@ -1528,8 +1650,8 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
 /// **A stop no record dates is UNKNOWN, and an unknown down time restores nothing** — the
 /// operator, pasting the first restart onto a new build: *"the daemon was down for 0s (stopped
 /// at …, estimated from nothing (no record said when); back at …)"*, *"these gray walls are
-/// hilarious"*. The old daemon here kept no `daemon_life` row (a build before the lifeline), and
-/// its job row has no context — exactly what that daemon left.
+/// hilarious"*. The old daemon here kept no `daemon_life` row (a build before the lifeline); its
+/// monitor and its job name it, so the stop is truly unknown — not merely undated by a relic.
 #[test]
 fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1573,6 +1695,7 @@ fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
                 },
             )
             .unwrap();
+        the_old_daemons(&store, "j46");
     }
     let mut d = a_daemon(&parts, &cfg);
     let notice = d.parent.restore_after_restart().expect("a reminder");

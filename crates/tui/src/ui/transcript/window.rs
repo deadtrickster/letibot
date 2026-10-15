@@ -850,16 +850,17 @@ impl App {
                     // it opens the text whole: where it is, kept for the click map, with the
                     // popup's title — the card's, since the popup no longer has the code.
                     let drawn = note_lines(&cfg, &notes[*note_upto].1);
-                    if let Some((card, mut text, _)) = note_card(&notes[*note_upto].1) {
-                        // R89: the session rows this card stands for, under its own text.
-                        for t in crate::app::one_event::absorbed_texts(
-                            absorbed,
-                            items,
-                            &note_key(&notes[*note_upto].1),
-                        ) {
-                            text.push_str("\n\n");
-                            text.push_str(&t);
-                        }
+                    if let Some((card, text, _)) = note_card(&notes[*note_upto].1) {
+                        // R89: the session rows this card stands for, under its own text — and
+                        // the event said once (`one_event::card_popup_text`).
+                        let text = crate::app::one_event::card_popup_text(
+                            &text,
+                            &crate::app::one_event::absorbed_texts(
+                                absorbed,
+                                items,
+                                &note_key(&notes[*note_upto].1),
+                            ),
+                        );
                         note_cards.push(crate::app::diff_popup::NoteCard {
                             at: hist_lines.len(),
                             lines: drawn.len(),

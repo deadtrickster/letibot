@@ -9457,6 +9457,15 @@ impl Harness {
             .filter(|m| m.live && m.instance != me)
             .collect();
         let mut jobs = Vec::new();
+        // **A job row with no context is a relic of a build before `job_context`**, not a job
+        // that was running at THIS stop: it names no daemon, so it cannot say when anything
+        // stopped, and reminding the model of it as running is false. pg-noop, 2026-10-15: four
+        // such rows (j900, j610, j624, j2437, from builds long gone) were the session's only
+        // records, `Stopped::latest` over no daemon at all said the stop was unknown, and a
+        // daemon down a couple of seconds told the model *"when the previous one stopped is
+        // unknown … NOTHING was restored automatically"* over four jobs nobody was running.
+        // They are closed quietly below, the way a reminded job is, and said to nobody.
+        let mut relics = Vec::new();
         for job in store.jobs(&sid).unwrap_or_default() {
             // **A job the old daemon's ORDERLY stop ended is a job that was running at the
             // stop**, and is reminded like one. `Registry::close` ends every run in flight
@@ -9479,7 +9488,10 @@ impl Harness {
             if ctx.is_none() && job.command.is_empty() {
                 continue;
             }
-            jobs.push((job, ctx));
+            match ctx {
+                Some(ctx) => jobs.push((job, ctx)),
+                None => relics.push(job),
+            }
         }
         // **Jobs that ENDED and were never delivered** (TODO.md R91.5): a result held under R79,
         // or queued, when the daemon stopped. Only a gone daemon's — one this daemon holds is
@@ -9497,6 +9509,12 @@ impl Harness {
             }
             settled.push((job, ctx));
         }
+        for job in relics {
+            let mut lost = job.clone();
+            lost.state = "lost at restart".into();
+            let _ = store.put_job(&sid, &lost);
+            let _ = store.deliver_job(&sid, &job.handle);
+        }
         if runs.is_empty() && monitors.is_empty() && jobs.is_empty() && settled.is_empty() {
             if retire_helpers {
                 let _ = self.subagents.resume_recorded(RestoreMode::Remind);
@@ -9511,10 +9529,7 @@ impl Harness {
             .iter()
             .map(|r| (r.instance.clone(), r.updated_ms))
             .chain(monitors.iter().map(|m| (m.instance.clone(), m.updated_ms)))
-            .chain(
-                jobs.iter()
-                    .filter_map(|(_, c)| c.as_ref().map(|c| (c.instance.clone(), c.started_ms))),
-            )
+            .chain(jobs.iter().map(|(_, c)| (c.instance.clone(), c.started_ms)))
             .chain(
                 settled
                     .iter()
@@ -9526,9 +9541,9 @@ impl Harness {
                 None => instances.push((inst, at)),
             }
         }
-        // **No record at all — not "down for 0s"**: a job row with no context names no daemon,
-        // and a daemon with no life row kept no clock. Either way the stop is UNKNOWN, and an
-        // unknown down time restores nothing (`restart` module docs).
+        // **Every record here names a daemon** (a relic does not, and was closed above), so the
+        // stop is UNKNOWN only when one of those daemons kept no life row — no clock, not "down
+        // for 0s" — and an unknown down time restores nothing (`restart` module docs).
         let stop = crate::restart::Stopped::latest(
             instances
                 .iter()
@@ -9634,16 +9649,13 @@ impl Harness {
         // **Jobs: reminded, never re-run.**
         let rows = self.todos.snapshot();
         for (job, ctx) in jobs {
-            let slug = ctx.as_ref().and_then(|c| c.slug.clone());
+            let slug = ctx.slug.clone();
             let waiting = crate::restart::rows_waiting_on(&rows, &job.handle, slug.as_deref());
-            let ran = ctx
-                .as_ref()
-                .zip(stop.at_ms())
-                .map(|(c, at)| at.saturating_sub(c.started_ms));
+            let ran = stop.at_ms().map(|at| at.saturating_sub(ctx.started_ms));
             lines.push(crate::restart::job_line(
                 &job,
                 slug.as_deref(),
-                ctx.as_ref().map(|c| c.cwd.as_str()),
+                Some(ctx.cwd.as_str()),
                 ran,
                 &waiting,
             ));
