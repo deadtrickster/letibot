@@ -2442,6 +2442,124 @@ pub struct ReseatReport {
     /// gained/lost pair is silent about. Named here so the re-seat's report, and the model's
     /// copy of it, can say the schema the model now reads is not the one it was using.
     pub grew: Vec<String>,
+    /// **What changed in each of `grew`, in a phrase** — `monitor (new \`github\`)`,
+    /// `todo_write (\`todos[].needs[].kind\` gains \`monitor\`)` — so the model is told what to
+    /// look for and not only that something moved. See [`schema_change`].
+    pub grew_how: Vec<String>,
+}
+
+/// **Each grown tool, named with what changed in it** — [`grown_schemas`]'s names, each with
+/// [`schema_change`]'s phrase when there is one.
+fn grown_with_how(was: &[String], is: &[String]) -> Vec<String> {
+    let (old, new) = (tool_schemas(was), tool_schemas(is));
+    grown_schemas(was, is)
+        .into_iter()
+        .map(|name| match (old.get(&name), new.get(&name)) {
+            (Some(a), Some(b)) => match schema_change(a, b) {
+                Some(how) => format!("{name} ({how})"),
+                None => name,
+            },
+            _ => name,
+        })
+        .collect()
+}
+
+/// **What changed between two versions of one tool's schema, in a phrase** — new and removed
+/// parameters at any depth (`todos[].needs[].name`), values an enum gained or lost, and
+/// `wording` when only the text describing it moved. `None` when the two cannot be read.
+///
+/// The operator: *"trying to name a change inside a tool is nice to have"* — a re-seat used to
+/// say only `Changed: monitor`, and the model had to find the `github` argument by itself.
+pub fn schema_change(was: &str, is: &str) -> Option<String> {
+    let parse = |s: &str| -> Option<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        ["/function/parameters", "/parameters", "/input_schema"]
+            .iter()
+            .find_map(|p| v.pointer(p).cloned())
+    };
+    let (a, b) = (parse(was)?, parse(is)?);
+    let mut out = Vec::new();
+    schema_walk("", &a, &b, &mut out);
+    if out.is_empty() {
+        out.push("wording".to_string());
+    }
+    const MOST: usize = 6;
+    if out.len() > MOST {
+        let more = out.len() - MOST;
+        out.truncate(MOST);
+        out.push(format!("{more} more"));
+    }
+    Some(out.join("; "))
+}
+
+fn schema_walk(path: &str, a: &serde_json::Value, b: &serde_json::Value, out: &mut Vec<String>) {
+    use serde_json::Value;
+    let at = |k: &str| {
+        if path.is_empty() {
+            k.to_string()
+        } else {
+            format!("{path}.{k}")
+        }
+    };
+    if let (Some(Value::Object(pa)), Some(Value::Object(pb))) =
+        (a.get("properties"), b.get("properties"))
+    {
+        for (k, vb) in pb {
+            match pa.get(k) {
+                None => out.push(format!("new `{}`", at(k))),
+                Some(va) => schema_walk(&at(k), va, vb, out),
+            }
+        }
+        for k in pa.keys().filter(|k| !pb.contains_key(*k)) {
+            out.push(format!("no `{}`", at(k)));
+        }
+    }
+    if let (Some(ia), Some(ib)) = (a.get("items"), b.get("items")) {
+        schema_walk(&format!("{path}[]"), ia, ib, out);
+    }
+    // A union of shapes (`anyOf`/`oneOf`): its object variants, compared in order.
+    for key in ["anyOf", "oneOf"] {
+        if let (Some(Value::Array(va)), Some(Value::Array(vb))) = (a.get(key), b.get(key)) {
+            let objects = |v: &Vec<Value>| -> Vec<Value> {
+                v.iter()
+                    .filter(|x| x.get("properties").is_some())
+                    .cloned()
+                    .collect()
+            };
+            for (x, y) in objects(va).iter().zip(objects(vb).iter()) {
+                schema_walk(path, x, y, out);
+            }
+        }
+    }
+    if let (Some(Value::Array(ea)), Some(Value::Array(eb))) = (a.get("enum"), b.get("enum")) {
+        let name = if path.is_empty() { "it" } else { path };
+        let word = |v: &Value| {
+            v.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string())
+        };
+        let gained: Vec<String> = eb.iter().filter(|v| !ea.contains(v)).map(word).collect();
+        let lost: Vec<String> = ea.iter().filter(|v| !eb.contains(v)).map(word).collect();
+        if !gained.is_empty() {
+            out.push(format!(
+                "`{name}` gains {}",
+                gained
+                    .iter()
+                    .map(|g| format!("`{g}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !lost.is_empty() {
+            out.push(format!(
+                "`{name}` loses {}",
+                lost.iter()
+                    .map(|g| format!("`{g}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
 }
 
 /// **Tools seated on both sides whose schema text differs**, sorted — the `grew` half of the
@@ -2579,9 +2697,14 @@ pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
         said.push_str(&format!(" Removed: {}.", r.lost.join(", ")));
     }
     if !r.grew.is_empty() {
+        let named = if r.grew_how.is_empty() {
+            &r.grew
+        } else {
+            &r.grew_how
+        };
         said.push_str(&format!(
             " Changed (read before calling): {}.",
-            r.grew.join(", ")
+            named.join(", ")
         ));
     }
     said.push_str(" Carry on.");
@@ -10628,6 +10751,7 @@ impl Harness {
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
         let grew = grown_schemas(&self.prefix.tools_json, &next.tools_json);
+        let grew_how = grown_with_how(&self.prefix.tools_json, &next.tools_json);
         let items: Vec<TranscriptItem> = self.session.items.clone();
 
         // No summary turn at all — that is the whole point — so the outcome is
@@ -10664,6 +10788,7 @@ impl Harness {
                 gained: after.difference(&before).cloned().collect(),
                 lost: before.difference(&after).cloned().collect(),
                 grew: grew.clone(),
+                grew_how: grew_how.clone(),
             })
         })();
         self.compacting = false;
@@ -10736,6 +10861,7 @@ impl Harness {
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
         let grew = grown_schemas(&self.prefix.tools_json, &next.tools_json);
+        let grew_how = grown_with_how(&self.prefix.tools_json, &next.tools_json);
 
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
@@ -10767,6 +10893,7 @@ impl Harness {
                 gained: after.difference(&before).cloned().collect(),
                 lost: before.difference(&after).cloned().collect(),
                 grew: grew.clone(),
+                grew_how: grew_how.clone(),
             })
         })();
         self.compacting = false;
