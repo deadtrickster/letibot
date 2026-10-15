@@ -149,6 +149,8 @@ struct Seen {
     /// `None` while any check is pending or there are none; `Some((passed, failed names))` once all
     /// have finished.
     checks: Option<(usize, Vec<String>)>,
+    /// GitHub says the pull request conflicts with its base (`mergeable: CONFLICTING`).
+    conflict: bool,
 }
 
 #[derive(Debug, Default)]
@@ -160,6 +162,8 @@ struct State {
     latest: Option<Seen>,
     /// The head whose finished checks were already reported.
     checks_told: Option<String>,
+    /// The head whose conflict with the base was already reported.
+    conflict_told: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,7 +216,7 @@ impl GithubCondition {
                     .arg(&self.target.repo)
                     .args([
                         "--json",
-                        "state,headRefOid,reviews,comments,statusCheckRollup",
+                        "state,headRefOid,mergeable,reviews,comments,statusCheckRollup",
                     ]);
             }
             Step::View => {
@@ -238,6 +242,24 @@ impl GithubCondition {
         let first = st.base.is_none();
         let base = st.base.get_or_insert_with(|| seen.clone()).clone();
         let what = self.target.describe();
+        // **A pull request in conflict will not merge and will not be checked** — GitHub runs no
+        // CI on a branch that conflicts with its base — so a watch for its merging or its checks
+        // is waiting on something that cannot happen. Measured on stroppy-io/stroppy#206: a
+        // `merged` watch and a model "waiting for CI" over `mergeable: CONFLICTING`. Said once
+        // per head, including at arming: resolving and pushing is the next step either way.
+        if matches!(self.until, Until::Merged | Until::Checks)
+            && seen.state == "OPEN"
+            && seen.conflict
+            && st.conflict_told.as_deref() != Some(seen.head.as_str())
+        {
+            st.conflict_told = Some(seen.head.clone());
+            return Some(format!(
+                "{what} has merge CONFLICTS with its base — it cannot be merged, and GitHub runs \
+                 no checks on it until they are resolved (merge or rebase onto the base, push). \
+                 Watching for {} goes on nowhere until then",
+                self.until.word()
+            ));
+        }
         match self.until {
             Until::Closed if seen.state != "OPEN" => {
                 Some(format!("{what} is {}", seen.state.to_lowercase()))
@@ -348,6 +370,7 @@ fn parse(json: &str, viewer: Option<&str>) -> Option<Seen> {
             .and_then(|h| h.as_str())
             .unwrap_or("")
             .to_string(),
+        conflict: v.get("mergeable").and_then(|m| m.as_str()) == Some("CONFLICTING"),
         ..Seen::default()
     };
     let mine = |who: &str| viewer.is_some_and(|me| me.eq_ignore_ascii_case(who));
@@ -647,6 +670,31 @@ mod tests {
                 && said.contains("gh pr view 206 --repo stroppy-io/stroppy --comments"),
             "{said}"
         );
+    }
+
+    /// **A pull request in conflict says so to a watch for its merging or its checks** — once per
+    /// head, at arming too — and a watch for reviews is not told.
+    #[test]
+    fn a_conflicting_pull_request_is_said_once_per_head() {
+        let t = Target::from_url("https://github.com/stroppy-io/stroppy/pull/206").unwrap();
+        let dirty = r#"{"state":"OPEN","headRefOid":"abc","mergeable":"CONFLICTING","reviews":[],"comments":[],"statusCheckRollup":[]}"#;
+        for until in [Until::Merged, Until::Checks] {
+            let c = GithubCondition::with_gh(t.clone(), until, "gh");
+            let mut st = State::default();
+            let said = c.evaluate(&mut st, parse(dirty, None).unwrap()).unwrap();
+            assert!(
+                said.contains("merge CONFLICTS") && said.contains("no checks"),
+                "{said}"
+            );
+            assert_eq!(
+                c.evaluate(&mut st, parse(dirty, None).unwrap()),
+                None,
+                "once per head"
+            );
+        }
+        let c = GithubCondition::with_gh(t, Until::Review, "gh");
+        let mut st = State::default();
+        assert_eq!(c.evaluate(&mut st, parse(dirty, None).unwrap()), None);
     }
 
     #[test]
