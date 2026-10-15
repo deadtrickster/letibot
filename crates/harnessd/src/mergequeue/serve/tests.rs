@@ -2044,6 +2044,10 @@ fn a_gate_verdict_is_applied_exactly_once() {
         env(held.clone(), w.door.clone(), "a"),
     );
     let stop = AtomicBool::new(false);
+    // The gate runs on its own thread: under load the passes below can all return before it
+    // starts, and the count then reads 0 (seen twice in full workspace runs). Wait for it to be
+    // running, then pass again — the claim is that more passes do not start a second one.
+    pass_until(&q, || held.runs() >= 1);
     for _ in 0..5 {
         q.pass(&stop).unwrap();
     }
