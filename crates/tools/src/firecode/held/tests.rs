@@ -108,6 +108,11 @@ fn a_runs_start_is_read_off_its_id() {
     assert_eq!(started_of("firecode-2026101-003911-1"), None);
 }
 
+// **On the host's real `/proc`, so Linux only.** firecracker is a Linux VMM, and this is the
+// half of the reap that finds and signals real processes: macOS has no `/proc`, where `reap` sees
+// no firecracker at all, answers `Down` at once, and the stand-in it should have killed is then
+// waited on for ever (the operator's Mac: the workspace run hung on the first of these).
+#[cfg(target_os = "linux")]
 /// **A stand-in firecracker**: a script NAMED `firecracker`, run with `--id RUN`, that ignores
 /// SIGTERM the way a jailed VM (pid 1 of its namespace) does. Returns the child and its pid.
 fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
@@ -136,6 +141,8 @@ fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
     child
 }
 
+// Used only by the Linux-only reap tests below.
+#[cfg(target_os = "linux")]
 fn stub_firecode(dir: &Path, down: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("firecode");
@@ -151,6 +158,8 @@ fn stub_firecode(dir: &Path, down: &str) -> PathBuf {
     bin
 }
 
+// Used only by the Linux-only reap tests below.
+#[cfg(target_os = "linux")]
 fn quick() -> Patience {
     Patience {
         down: Duration::from_secs(10),
@@ -159,6 +168,11 @@ fn quick() -> Patience {
     }
 }
 
+// **On the host's real `/proc`, so Linux only.** firecracker is a Linux VMM, and this is the
+// half of the reap that finds and signals real processes: macOS has no `/proc`, where `reap` sees
+// no firecracker at all, answers `Down` at once, and the stand-in it should have killed is then
+// waited on for ever (the operator's Mac: the workspace run hung on the first of these).
+#[cfg(target_os = "linux")]
 /// **A VM that ignores `down` is killed, and the reap says so only when `/proc` agrees** — the
 /// operator's measurement of 2026-10-15: SIGTERM ended the nine unjailed orphans and none of the
 /// four jailed tap holders. The stand-in ignores SIGTERM; `down` (the stub) does nothing; the
@@ -204,6 +218,11 @@ fn a_vm_that_ignores_down_is_killed_and_seen_gone() {
     );
 }
 
+// **On the host's real `/proc`, so Linux only.** firecracker is a Linux VMM, and this is the
+// half of the reap that finds and signals real processes: macOS has no `/proc`, where `reap` sees
+// no firecracker at all, answers `Down` at once, and the stand-in it should have killed is then
+// waited on for ever (the operator's Mac: the workspace run hung on the first of these).
+#[cfg(target_os = "linux")]
 /// **A VM `down` brings down is `Down`, and nothing is killed.**
 #[test]
 fn a_vm_that_down_brings_down_is_not_killed() {
@@ -225,6 +244,11 @@ fn a_vm_that_down_brings_down_is_not_killed() {
     assert_eq!(said, Reaped::Down, "{}", said.said());
 }
 
+// **On the host's real `/proc`, so Linux only.** firecracker is a Linux VMM, and this is the
+// half of the reap that finds and signals real processes: macOS has no `/proc`, where `reap` sees
+// no firecracker at all, answers `Down` at once, and the stand-in it should have killed is then
+// waited on for ever (the operator's Mac: the workspace run hung on the first of these).
+#[cfg(target_os = "linux")]
 /// **A pid that is no longer this run's firecracker is never signalled** — a pid reused by
 /// something else between the listing and the reap is not the VM.
 #[test]
