@@ -62,6 +62,8 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::Char('p') if m == Mods::ALT => Key::AltP,
         // alt-n: open the newest notice line whole — the key for what a click on one does (R89).
         KeyCode::Char('n') if m == Mods::ALT => Key::AltN,
+        // alt-h: fold the questions waiting on you away, and back (`app/asks.rs`).
+        KeyCode::Char('h') if m == Mods::ALT => Key::AltH,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
         // In many terminals Ctrl+Shift+Z arrives byte-identical to Ctrl+Z, so redo needs a
         // second binding.
@@ -388,6 +390,7 @@ mod tests {
             (b"\x1bp", Key::AltP),
             // The newest notice, opened whole (R89).
             (b"\x1bn", Key::AltN),
+            (b"\x1bh", Key::AltH),
             (b"\x01", Key::Home),
             (b"\x09", Key::Tab),
             // Its own key now: end-of-line in the composer, the editor on an empty prompt. The

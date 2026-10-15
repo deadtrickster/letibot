@@ -206,6 +206,12 @@ impl App {
                 self.open_latest_notice();
                 return None;
             }
+            // **alt-h folds the questions waiting on you away, and back** — not Esc, which already
+            // means "stop" and "back to the bottom" (the operator: *"esc is ambigous here"*).
+            Key::AltH => {
+                self.toggle_asks_folded();
+                return None;
+            }
             k => k,
         };
         // **A wheel notch goes to the surface under the pointer** — see [`App::wheel_at`]. One
@@ -1224,6 +1230,9 @@ pub enum Key {
     /// **alt-n: open the newest notice whole** — the popup a click on its one line opens (R89):
     /// every notice is one line, and the keyboard needs a way to the rest of it.
     AltN,
+    /// **alt-h: fold what is waiting on you away, or back** — the questions' yellow line goes,
+    /// and the composer's bottom edge counts them (`app/waiting.rs`).
+    AltH,
     Backspace,
     Delete,
     Left,
@@ -1420,6 +1429,7 @@ impl Key {
             | Key::AltR
             | Key::AltP
             | Key::AltN
+            | Key::AltH
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

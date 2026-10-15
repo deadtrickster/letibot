@@ -40,6 +40,12 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              it back; alt-a also opens a todo row's question waiting on you",
         ),
         (
+            "alt-h",
+            "fold the yellow line of what waits on you away while you dig: the box's bottom edge \
+             counts them instead (`N waiting · alt-h`), alt-h brings the line back, and a new \
+             question shows itself. `/asks` lists every one whole, answering none",
+        ),
+        (
             "alt-r alt-p",
             "a stale prompt (the PROMPT IS STALE strip): alt-r reseats now — `/reseat` typed is \
              the same — and alt-p shows the reseat card again. In the editor alt-p is the \

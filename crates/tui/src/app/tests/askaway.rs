@@ -434,3 +434,55 @@ fn the_question_card_and_its_bar_name_esc_and_alt_a() {
         "{screen}"
     );
 }
+
+/// **alt-h folds the yellow line away and the box's edge counts what waits instead** — the
+/// operator: *"sometimes i need to do additional digging and they just keep space and irritate.
+/// we need some counter in the right bottom corner near triangle - yellow and visible"*. alt-h
+/// again brings the line back, and a question that arrives after the fold shows itself.
+#[test]
+fn alt_h_folds_the_waiting_line_into_a_count_on_the_edge_and_news_unfolds_it() {
+    let mut a = App::new(plain_cfg(100));
+    board(&mut a, &THREE[..2]);
+    assert!(
+        line(&a).contains("WAITING ON YOU"),
+        "the premise: {}",
+        line(&a)
+    );
+    a.key(Key::AltH);
+    assert!(line(&a).is_empty(), "folded: {}", line(&a));
+    let edge = a.box_bottom(100, None);
+    assert!(edge.contains("2 waiting · alt-h"), "{edge}");
+    a.key(Key::AltH);
+    assert!(line(&a).contains("WAITING ON YOU"), "alt-h again unfolds");
+    assert!(!a.box_bottom(100, None).contains("waiting"));
+    // Folded, and then a third question arrives: it is news, so the line is back.
+    a.key(Key::AltH);
+    assert!(line(&a).is_empty());
+    board(&mut a, THREE);
+    assert!(
+        line(&a).contains("WAITING ON YOU"),
+        "a new question unfolds the line: {}",
+        line(&a)
+    );
+}
+
+/// **`/asks` lists every question waiting, answering none** — *"a way for me to see all
+/// questions without answering them"*.
+#[test]
+fn slash_asks_lists_every_question_and_answers_none() {
+    let mut a = App::new(plain_cfg(100));
+    board(&mut a, THREE);
+    model_question(&mut a, "q1", None);
+    a.key(Key::Esc);
+    assert_eq!(a.command("asks"), None, "nothing is sent");
+    assert!(a.is_open(Surface::Listing));
+    let shown = a.screen(100, 40).join("\n");
+    for want in [
+        "question, put away: \"which branch should I base this on?\"",
+        "· release",
+        "on `pick the db`: \"postgres or sqlite?\"",
+        "on `ship it`: \"ship on friday?\"",
+    ] {
+        assert!(shown.contains(want), "{want} in:\n{shown}");
+    }
+}

@@ -682,6 +682,12 @@ impl App {
             // **`/jobs` is `ctrl-q`'s other spelling** — the same function the chord and a click
             // on the count label run, so the three cannot drift.
             "jobs" => self.toggle_surface(Surface::Jobs),
+            // **Every question waiting on you, answering none** — see `app/waiting.rs`.
+            "asks" => {
+                self.slash_out = Some(("/asks".to_string(), self.asks_lines()));
+                self.push_surface(Surface::Listing);
+                None
+            }
             // **What this session is watching** — the monitors the model armed.
             "monitors" => self.toggle_surface(Surface::Monitors),
             // **The merge queue**, and it is not this session's: there is one `main` and one
@@ -1284,6 +1290,10 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("mode", "the mode picker — or /mode NAME to type it"),
     ("jobs", "open or close the background-jobs pane"),
+    (
+        "asks",
+        "every question waiting on you, listed whole without answering any",
+    ),
     (
         "monitors",
         "open or close the monitors pane: what this session is watching",
