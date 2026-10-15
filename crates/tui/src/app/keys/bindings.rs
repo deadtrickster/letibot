@@ -266,6 +266,12 @@ const JOBS: &[Binding] = &[LIST, b(&[On::Enter], Always, Act::Open, Row), PAGE, 
 const MONITORS: &[Binding] = &[
     LIST,
     b(
+        &[On::Enter],
+        Always,
+        Act::Open,
+        Text("shows it whole, and the call that armed it"),
+    ),
+    b(
         &[On::Char('x')],
         Empty,
         Act::Retire,

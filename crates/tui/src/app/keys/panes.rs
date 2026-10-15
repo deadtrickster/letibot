@@ -277,6 +277,11 @@ impl App {
             }
             Surface::Subagents => self.subagents_enter(),
             Surface::Jobs => self.jobs_enter(),
+            Surface::Monitors => {
+                self.open_monitor_details();
+                self.redraw = true;
+                ControlFlow::Break(None)
+            }
             _ => ControlFlow::Continue(()),
         }
     }

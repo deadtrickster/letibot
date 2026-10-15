@@ -71,10 +71,8 @@ fn a_watching_monitor_is_counted_and_the_count_opens_its_pane() {
     assert!(a.is_open(Surface::Monitors));
     assert!(!a.is_open(Surface::Jobs), "its own pane, not the jobs pane");
     let pane = a.screen(120, 30).join("\n");
-    assert!(
-        pane.contains("▸ [~] tick · watching a timer of 60s"),
-        "{pane}"
-    );
+    assert!(pane.contains("▸ [~] tick"), "{pane}");
+    assert!(pane.contains("watching a timer of 60s"), "{pane}");
     assert!(pane.contains("repeats · fired 2×"), "{pane}");
     assert!(
         pane.contains("[x] build — FIRED after 3.0s — exited 0"),
@@ -106,4 +104,41 @@ fn x_retires_the_monitor_under_the_cursor() {
         !a.box_top(100).0.contains("monitor"),
         "an ended monitor is not counted"
     );
+}
+
+/// **Enter shows a monitor whole, with the call that armed it** — the operator: *"i want to see
+/// monitor command in the details"*, looking at a timer whose row said nothing of what it was for.
+#[test]
+fn enter_shows_the_monitor_and_the_call_that_armed_it() {
+    let mut a = attached();
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("r.1", "assistant"),
+    )));
+    a.record_item(
+        "r.1",
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "monitor".into(),
+                arguments: r#"{"name":"tick","timer_ms":60000,"repeat":true,"owner":"session"}"#
+                    .into(),
+            }],
+            truncated: false,
+        },
+    );
+    a.apply(table(vec![live("tick")]));
+    a.command("monitors");
+    a.key(Key::Enter);
+    assert!(
+        a.is_open(Surface::Listing),
+        "the details opened over the pane"
+    );
+    let shown = a.screen(100, 40).join("\n");
+    assert!(shown.contains("watching   a timer of 60s"), "{shown}");
+    assert!(shown.contains("the call that armed it:"), "{shown}");
+    assert!(shown.contains("\"timer_ms\": 60000"), "{shown}");
+    a.key(Key::Esc);
+    assert!(a.is_open(Surface::Monitors), "esc comes back to the pane");
 }
