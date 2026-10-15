@@ -4,6 +4,7 @@ pub mod asked_card;
 pub mod assistant;
 pub mod blocks;
 pub mod call;
+pub mod cite;
 pub mod item;
 pub mod job_card;
 pub mod line_cards;

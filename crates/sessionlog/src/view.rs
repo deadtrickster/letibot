@@ -75,6 +75,11 @@ pub struct SnapshotItem {
     /// event was seen and the item was not reconciled, which a head should render
     /// as a placeholder rather than as an empty message.
     pub item: Option<TranscriptItem>,
+    /// **The lines this reply cited**, as the daemon read them when it landed
+    /// ([`crate::SessionEvent::Citations`]) — empty for every row that cited nothing, and for a
+    /// snapshot from a daemon built before citations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<crate::event::Citation>,
 }
 
 /// A decision that is still owed an answer.
@@ -753,6 +758,7 @@ impl SessionView {
                 ledger_head,
             } => {
                 self.items.push(SnapshotItem {
+                    citations: Vec::new(),
                     item_id: item_id.clone(),
                     kind: kind.clone(),
                     ledger_head: ledger_head.clone(),
@@ -774,6 +780,15 @@ impl SessionView {
             SessionEvent::TranscriptContent { item_id, item } => {
                 if let Some(row) = self.items.iter_mut().find(|r| &r.item_id == item_id) {
                     row.item = Some((**item).clone());
+                }
+            }
+            // What the row's reply cited, beside its content — the same contract.
+            SessionEvent::Citations {
+                item_id,
+                citations,
+            } => {
+                if let Some(row) = self.items.iter_mut().find(|r| &r.item_id == item_id) {
+                    row.citations = citations.clone();
                 }
             }
             // **A fork replaces the rows of the transcript it replaced, and the daemon says
@@ -1215,6 +1230,7 @@ mod tests {
             // Announce, then fill — the real order, and it is what `trim` has to cope
             // with: the count is checked at the announcement and the bytes at the fill.
             v.items.push(SnapshotItem {
+                citations: Vec::new(),
                 item_id: id.clone(),
                 kind: "assistant".into(),
                 ledger_head: String::new(),
@@ -1259,6 +1275,7 @@ mod tests {
         };
         let mut v = SessionView::new("s", bounds);
         v.items.push(SnapshotItem {
+            citations: Vec::new(),
             item_id: "big".into(),
             kind: "tool_result".into(),
             ledger_head: String::new(),
@@ -1299,6 +1316,7 @@ mod tests {
         let mut v = SessionView::new("s", bounds);
         for i in 0..3 {
             v.items.push(SnapshotItem {
+                citations: Vec::new(),
                 item_id: format!("i{i}"),
                 kind: "assistant".into(),
                 ledger_head: String::new(),

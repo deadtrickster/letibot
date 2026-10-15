@@ -582,6 +582,7 @@ impl App {
             | SessionEvent::DenialRaised { .. }) => self.on_ask_event(e, ts),
             e @ (SessionEvent::TranscriptAppended { .. }
             | SessionEvent::TranscriptContent { .. }
+            | SessionEvent::Citations { .. }
             | SessionEvent::TranscriptForked { .. }) => self.on_transcript_event(e, ts),
             e @ SessionEvent::Warning { .. } => self.on_warning(e, ts),
         }

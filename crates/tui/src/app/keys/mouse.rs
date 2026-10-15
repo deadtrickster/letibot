@@ -102,7 +102,13 @@ impl App {
             // conversation is nobody's and falls through.
             (Target::Conversation, Some(k)) => {
                 if let Some((_, f)) = self.file_rows.get(k).cloned() {
-                    self.open_diff_popup(&f);
+                    // A change opens to be reviewed; a cited line has none, and opens the file
+                    // there.
+                    if f.change.is_some() {
+                        self.open_diff_popup(&f);
+                    } else {
+                        self.open_in_editor(&f);
+                    }
                 }
                 return ControlFlow::Break(None);
             }

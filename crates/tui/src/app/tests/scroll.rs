@@ -258,6 +258,7 @@ fn a_replacement_holds_the_view_or_says_the_row_is_gone() {
         snap.items = ids
             .iter()
             .map(|id| letibot_sessionlog::view::SnapshotItem {
+                citations: Vec::new(),
                 item_id: (*id).to_string(),
                 kind: "assistant".into(),
                 ledger_head: "beef".into(),
@@ -2066,6 +2067,7 @@ fn a_card_that_fits_is_whole_and_leaves_the_transcript_its_scroll() {
     // fits, so nothing here takes them.
     a.items = (0..80)
         .map(|i| SnapshotItem {
+            citations: Vec::new(),
             item_id: format!("i{i}"),
             kind: "row".into(),
             ledger_head: String::new(),
@@ -2974,6 +2976,7 @@ fn carried_snapshot(ids: &[String], text: impl Fn(usize) -> String) -> Snapshot 
         .iter()
         .enumerate()
         .map(|(i, id)| SnapshotItem {
+            citations: Vec::new(),
             item_id: id.clone(),
             kind: "assistant".into(),
             ledger_head: "beef".into(),
@@ -3081,6 +3084,7 @@ fn a_carry_that_lengthens_the_transcript_leaves_the_reader_on_their_row() {
 fn a_rows_words_are_what_the_carry_matches_it_by() {
     fn row(item: Option<TranscriptItem>, kind: &str) -> SnapshotItem {
         SnapshotItem {
+            citations: Vec::new(),
             item_id: "x".into(),
             kind: kind.into(),
             ledger_head: "beef".into(),

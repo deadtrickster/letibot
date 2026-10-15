@@ -1064,6 +1064,7 @@ impl App {
                             elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
                             edit: call_edits.get(&items[*hist_upto].item_id),
                             decision: call_decisions.get(&items[*hist_upto].item_id),
+                            workspace: &self.wiring.workspace,
                             bound: bound_prompts
                                 .get(&items[*hist_upto].item_id)
                                 .map(String::as_str),

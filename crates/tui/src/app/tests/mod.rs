@@ -465,6 +465,7 @@ fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<Stri
     };
     let edit = item_kind_is_edit(&item).then_some(&excerpt);
     let it = SnapshotItem {
+        citations: Vec::new(),
         item_id: "s.1".into(),
         kind: "row".into(),
         ledger_head: String::new(),
@@ -484,6 +485,7 @@ fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<Stri
         elapsed_ms: None,
         edit,
         decision: None,
+        workspace: "",
         bound: None,
         echo_mark: QUEUED,
         echo_open: false,
@@ -1407,6 +1409,7 @@ mod asks;
 mod attention;
 mod bindings;
 mod cardkeys;
+mod cite;
 mod commands;
 mod composer;
 mod decisions;

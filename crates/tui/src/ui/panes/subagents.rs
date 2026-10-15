@@ -115,6 +115,8 @@ impl App {
                 // and the maps that carry them are keyed by THIS session's item ids. The renderer
                 // already says *replayed* for all three rather than inventing one.
                 drawn_live: false,
+                // Not this head's session: its cited files are compared with nothing.
+                workspace: "",
                 elapsed_ms: None,
                 edit: None,
                 decision: None,

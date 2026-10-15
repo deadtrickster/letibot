@@ -710,7 +710,13 @@ use crate::view::Snapshot;
 /// blocked on, by `req_id`, and a row's question has neither — it outlives turns and restarts on
 /// the board. A version-46 daemon would fail to parse it — the version-4 argument — so the number
 /// moves.
-pub const PROTOCOL_VERSION: u32 = 47;
+///
+/// # 48: the lines a reply cited ([`crate::SessionEvent::Citations`])
+///
+/// A reply's empty `path:start-end` fences, filled by the daemon from the file when the reply
+/// lands and sent after the row's content. A new variant, so a version-47 head would fail to
+/// decode the first one — the version-4 argument — and the number moves.
+pub const PROTOCOL_VERSION: u32 = 48;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2941,6 +2947,7 @@ mod tests {
                 | crate::SessionEvent::ToolStarted { .. }
                 | crate::SessionEvent::TranscriptAppended { .. }
                 | crate::SessionEvent::TranscriptContent { .. }
+                | crate::SessionEvent::Citations { .. }
                 | crate::SessionEvent::TranscriptForked { .. }
                 | crate::SessionEvent::TurnFailed { .. }
                 | crate::SessionEvent::TurnFinished { .. }
@@ -2987,9 +2994,10 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 47,
-            "the match above was last reconciled with the frame list at 47 — \
-             `ClientFrame::AnswerTodo`, the operator's answer to a todo row's question (a \
+            PROTOCOL_VERSION, 48,
+            "the match above was last reconciled with the frame list at 48 — \
+             `SessionEvent::Citations`, the lines a reply cited (a version-47 head cannot decode \
+             it). 47 was `ClientFrame::AnswerTodo`, the operator's answer to a todo row's question (a \
              version-46 daemon cannot parse it). 46 was `SessionEvent::HeldResults`, the counts of what a session holds back from its model \
              (a version-45 head cannot decode it). 45 was `ClientFrame::Feedback`, \
              an operator's mark answered on the connection thread (a version-44 daemon cannot parse \

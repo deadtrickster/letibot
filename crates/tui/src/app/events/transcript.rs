@@ -77,6 +77,7 @@ impl App {
                     self.bind_echo(&item_id);
                 }
                 self.items.push(SnapshotItem {
+                    citations: Vec::new(),
                     item_id,
                     kind,
                     ledger_head,
@@ -98,6 +99,15 @@ impl App {
             // session — including for the operator's own prompt.
             SessionEvent::TranscriptContent { item_id, item } => {
                 self.record_item(&item_id, *item);
+                Disposition::Rendered
+            }
+            // **What a reply cited, read by the daemon when it landed** — put on the row, and the
+            // row drawn again so its fences show the lines.
+            SessionEvent::Citations { item_id, citations } => {
+                if let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) {
+                    self.items[idx].citations = citations;
+                    self.invalidate_history_from(idx);
+                }
                 Disposition::Rendered
             }
             // **The daemon has forked the transcript, so the rows this head holds are not

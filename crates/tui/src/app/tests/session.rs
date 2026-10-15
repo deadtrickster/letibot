@@ -1119,6 +1119,7 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
     let mut snap = Hub::new("s-sub-1").snapshot();
     snap.items = vec![
         letibot_sessionlog::view::SnapshotItem {
+            citations: Vec::new(),
             item_id: "s-sub-1.a".into(),
             kind: "assistant".into(),
             ledger_head: "beef".into(),
@@ -1134,6 +1135,7 @@ fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degra
             }),
         },
         letibot_sessionlog::view::SnapshotItem {
+            citations: Vec::new(),
             item_id: "s-sub-1.r".into(),
             kind: "tool_result".into(),
             ledger_head: "beef".into(),

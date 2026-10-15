@@ -69,7 +69,7 @@ pub mod lift_tools;
 
 pub use cursor::{Batch, ReadMark};
 pub use event::{
-    COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, CompactionReport, CompactionSection,
+    COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, Citation, CompactionReport, CompactionSection,
     CompactionTail, CompactionTurn, Decider, DecisionOption, DecisionOutcome, DeltaTarget,
     Envelope, FinishReason, OnTimeout, OptionKind, PromptProgress, PromptReading, SessionEvent,
     TARGET_MAX_BYTES, Timings, Usage, display_target,

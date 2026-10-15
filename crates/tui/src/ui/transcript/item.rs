@@ -132,6 +132,9 @@ pub(crate) struct ItemCtx<'a> {
     /// The settled decision this row's call was gated by, when there was one.
     /// See `App::call_decisions`.
     pub(crate) decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
+    /// **The session's workspace**, which a citation's path is relative to — read to tell whether
+    /// the cited lines still say what they said. Empty where there is no file to compare with.
+    pub(crate) workspace: &'a str,
     /// The echo this head bound to this row, when the row is a `user` row whose body
     /// has not arrived. See `App::bound_prompts`: it is drawn **in the row's place**,
     /// which is what puts the prompt above the reply it caused instead of below it

@@ -182,8 +182,57 @@ impl App {
             };
             if let Some(f) = place {
                 out.push((line - start, f));
+            } else if !self.items[sp.row].citations.is_empty() {
+                // **A cited line opens its file there** — the header at the range's first line,
+                // each numbered line at its own. Read off the drawn row, so the line clicked is
+                // the line named.
+                if let Some(f) = self.cited_line(sp.at, line) {
+                    out.push((line - start, f));
+                }
             }
         }
         out
+    }
+
+    /// **The file and line a drawn line of a citation names**, walking up from `line` to the
+    /// header of the block it is in — `None` for a line outside any citation (the reply's prose).
+    fn cited_line(&self, row_at: usize, line: usize) -> Option<FileRef> {
+        let plain = |l: usize| -> String {
+            crate::app::keyhints::cells(&self.hist_lines[l])
+                .into_iter()
+                .collect::<String>()
+        };
+        let here = plain(line);
+        let body = here.trim_start();
+        let mut at = None;
+        if let Some(label) = body.strip_prefix("┌─ ") {
+            let (path, first) = rano::markdown::citation(label)?;
+            return Some(FileRef {
+                path: path.to_string(),
+                line: first as usize,
+                change: None,
+            });
+        }
+        if let Some(rest) = body.strip_prefix("│ ") {
+            at = rest.split_whitespace().next()?.parse::<usize>().ok();
+        }
+        let n = at?;
+        // The header above names the file; the walk stops at the row's top or another block's end.
+        for up in (row_at..line).rev() {
+            let l = plain(up);
+            let b = l.trim_start();
+            if b.starts_with("└─") {
+                return None;
+            }
+            if let Some(label) = b.strip_prefix("┌─ ") {
+                let (path, _) = rano::markdown::citation(label)?;
+                return Some(FileRef {
+                    path: path.to_string(),
+                    line: n,
+                    change: None,
+                });
+            }
+        }
+        None
     }
 }

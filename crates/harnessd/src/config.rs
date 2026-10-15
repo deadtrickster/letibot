@@ -1144,7 +1144,10 @@ pub fn default_section(name: &str, f: &SeatFacts) -> Option<String> {
             format!(
                 "Find with `grep` and read with `read`{}. `grep` takes a `context` count and \
                  returns the numbered region around each match; `read` takes a `ranges` list for \
-                 several windows of one file.",
+                 several windows of one file. To show the user lines of a file, cite them rather \
+                 than copying them: an empty code fence labelled with the path and the line range \
+                 (```src/main.rs:12-30, then the closing ```, nothing between) is filled with \
+                 those lines, numbered as the file numbers them.",
                 if f.has("bash") {
                     ", not by piping `grep -n` into `sed`"
                 } else {

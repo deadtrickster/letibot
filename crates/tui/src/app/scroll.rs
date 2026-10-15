@@ -498,6 +498,7 @@ impl App {
                         elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
                         edit: self.call_edits.get(&self.items[k].item_id),
                         decision: self.call_decisions.get(&self.items[k].item_id),
+                        workspace: &self.wiring.workspace,
                         bound: self
                             .bound_prompts
                             .get(&self.items[k].item_id)

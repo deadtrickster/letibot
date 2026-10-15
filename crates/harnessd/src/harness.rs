@@ -509,7 +509,11 @@ impl EventSink for CapturingSink {
 /// The ids come off the events rather than being recomputed; see point 1 in the
 /// module header. A count mismatch is a bug in the pairing, not something to paper
 /// over, so it is announced as a warning on the same log the head reads.
-fn reconcile_rows(hub: &Arc<Hub>, sink: &mut CapturingSink, items: &[TranscriptItem]) {
+fn reconcile_rows(
+    hub: &Arc<Hub>,
+    sink: &mut CapturingSink,
+    items: &[TranscriptItem],
+) -> Vec<String> {
     let ids = sink.take_ids();
     if ids.len() != items.len() {
         hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -527,6 +531,7 @@ fn reconcile_rows(hub: &Arc<Hub>, sink: &mut CapturingSink, items: &[TranscriptI
     for (id, item) in ids.iter().zip(items) {
         hub.record_item(id, item.clone());
     }
+    ids
 }
 
 // ---------------------------------------------------------------------------
@@ -6042,6 +6047,7 @@ impl Harness {
                     ledger_head: hex32(h_k),
                 });
             self.hub.record_item(item_id, item.clone());
+            self.publish_citations(item_id, item);
         }
         // **THE WALK ENDING IS THE OPERATION ENDING, SO SAY SO.**
         //
@@ -13253,7 +13259,60 @@ impl Harness {
         // `messages_scanned` has to be what was **looked at**, and this is the one
         // place that knows how much there is.
         self.trail.note_items(items.len());
-        reconcile_rows(&self.hub, sink, items);
+        let ids = reconcile_rows(&self.hub, sink, items);
+        // **And what each reply cited**, read now — the moment it landed.
+        for (id, item) in ids.iter().zip(items) {
+            self.publish_citations(id, item);
+        }
+    }
+
+    /// **The lines a reply cites, published after its row** ([`crate::citations`]). The stored
+    /// snapshot when there is one — a reply restored or carried by a fork shows what it cited
+    /// when it was written — and otherwise the file as it is now, read through this session's
+    /// backend and stored. Silent for a row that cites nothing.
+    pub(crate) fn publish_citations(&self, item_id: &str, item: &TranscriptItem) {
+        let TranscriptItem::Assistant { text, .. } = item else {
+            return;
+        };
+        let cited = crate::citations::cited_fences(text);
+        if cited.is_empty() {
+            return;
+        }
+        let hash = hex32(&Sha256::digest(text.as_bytes()).into());
+        let session = &self.cfg.session_id;
+        let stored = self
+            .store
+            .as_ref()
+            .and_then(|s| s.citations(session, &hash).ok().flatten())
+            .and_then(|j| serde_json::from_str::<Vec<letibot_sessionlog::Citation>>(&j).ok());
+        let citations = match stored {
+            Some(c) => c,
+            None => {
+                let backend = &self.runtime.backend;
+                let read = |p: &str| backend.read(p).map_err(|e| e.to_string());
+                let fresh: Vec<letibot_sessionlog::Citation> = cited
+                    .iter()
+                    .map(|c| crate::citations::snapshot(c, read))
+                    .collect();
+                if let Some(s) = self.store.as_ref()
+                    && let Ok(json) = serde_json::to_string(&fresh)
+                    && let Err(e) = s.put_citations(
+                        session,
+                        &hash,
+                        &json,
+                        letibot_sessionlog::registry::now_ms(),
+                    )
+                {
+                    eprintln!("  {session} · a reply's citations were not stored: {e}");
+                }
+                fresh
+            }
+        };
+        self.hub
+            .publish(letibot_sessionlog::SessionEvent::Citations {
+                item_id: item_id.to_string(),
+                citations,
+            });
     }
 
     /// **Run the summary turn and pair every row it appended** — the one door both

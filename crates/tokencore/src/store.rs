@@ -89,6 +89,7 @@ mod modes;
 pub use modes::ProjectMode;
 mod subagents;
 pub use subagents::*;
+mod citations;
 mod told;
 pub use told::Told;
 
@@ -371,7 +372,11 @@ pub struct ShapelessAdmit {
 /// **29** since what the queues have SAID is a row — `queue_told`, a new table, additive,
 /// described at [`told`]. The rings and the notices were deduped in the daemon's memory, so every
 /// restart re-rang the same red tip and resumed dormant sessions to re-tell it (TODO R92.7).
-pub const SCHEMA_VERSION: i64 = 29;
+///
+/// **30** since the lines a reply cited are a row — `citation`, a new table, additive, described
+/// at [`citations`]. A citation is a snapshot taken when the reply lands, kept beside the reply so
+/// the model's own text is never rewritten.
+pub const SCHEMA_VERSION: i64 = 30;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -1775,6 +1780,7 @@ impl Store {
         self.conn.execute_batch(subagents::SUBAGENTS_SQL)?;
         self.conn.execute_batch(modes::MODES_SQL)?;
         self.conn.execute_batch(told::TOLD_SQL)?;
+        self.conn.execute_batch(citations::CITATIONS_SQL)?;
         self.conn.execute("DELETE FROM schema_version", [])?;
         self.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2498,6 +2504,12 @@ impl Store {
             // no record of what was rung, so the first daemon on this build may say each
             // standing alert once more — and then never again across a restart.
             self.conn.execute_batch(told::TOLD_SQL)?;
+        }
+        if from < 30 {
+            // v30: **the lines a reply cited** — see [`citations`]. One new table, `IF NOT
+            // EXISTS`; a reply from before it has no snapshot, and one is taken the first time
+            // it is shown.
+            self.conn.execute_batch(citations::CITATIONS_SQL)?;
         }
         Ok(())
     }

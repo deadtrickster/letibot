@@ -90,6 +90,7 @@ pub mod backfill;
 pub mod bangrun;
 pub mod calibrate;
 pub mod child_todos;
+pub mod citations;
 pub mod cli;
 pub mod config;
 pub mod context_claim;

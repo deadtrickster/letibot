@@ -20,6 +20,7 @@ pub(crate) fn assistant_row_lines(
         answered,
         drawn_live,
         vis,
+        workspace,
         ..
     } = *ctx;
     let TranscriptItem::Assistant {
@@ -40,6 +41,9 @@ pub(crate) fn assistant_row_lines(
     // control byte becomes a space, which keeps every column count the same and
     // is the same trade `without_control`'s doc records for tool payloads.
     let text = without_control_lines(text);
+    // **The lines it cited, in the fences that name them** — before the lexer, so rano draws them
+    // as a citation (see `cite`). A row that cites nothing is borrowed straight through.
+    let text = crate::ui::transcript::cite::fill(&text, &it.citations, workspace);
     // A `Cow`, and the borrow is what the change bought: this used to force the
     // allocation even when the sanitiser had nothing to do.
     let text: &str = &text;

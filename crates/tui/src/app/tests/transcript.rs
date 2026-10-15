@@ -400,6 +400,7 @@ fn the_live_and_snapshot_paths_retire_the_same_echoes() {
     let mut s = Hub::new("s").snapshot();
     s.seq = 3;
     s.items.push(letibot_sessionlog::view::SnapshotItem {
+        citations: Vec::new(),
         item_id: "s.0".into(),
         kind: "user".into(),
         ledger_head: "beef".into(),
@@ -819,6 +820,7 @@ fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
     let mut snap = Hub::new("s").snapshot();
     snap.seq = 5;
     snap.items.push(letibot_sessionlog::view::SnapshotItem {
+        citations: Vec::new(),
         item_id: "s.10".into(),
         kind: "user".into(),
         ledger_head: "beef".into(),

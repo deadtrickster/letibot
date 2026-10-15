@@ -1231,6 +1231,25 @@ pub enum PromptReading {
     Unreadable,
 }
 
+/// **One cited range** — what [`SessionEvent::Citations`] carries for each empty fence labelled
+/// `path:start-end` (or `path:line`) in a reply, in the order they appear.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Citation {
+    /// The fence's label as the model wrote it — what a head matches the fence by.
+    pub label: String,
+    /// The path as cited, relative to the session's workspace or absolute.
+    pub path: String,
+    /// The first and last line, 1-based and inclusive, as cited.
+    pub start: u32,
+    pub end: u32,
+    /// The lines themselves, `start..=end` (fewer when the file is shorter; see `error`).
+    pub lines: Vec<String>,
+    /// Why the lines are not there, or not all there: the file could not be read, the range
+    /// starts past its end. `None` when every cited line was read.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
@@ -1574,6 +1593,17 @@ pub enum SessionEvent {
     TranscriptContent {
         item_id: String,
         item: Box<letibot_transcript::TranscriptItem>,
+    },
+    /// **The lines a reply cited, as the file had them when the reply landed.**
+    ///
+    /// A model citing code writes an empty fence labelled `path:start-end` and the daemon fills
+    /// it — the operator: *"model wants to cite me a file with line range … and it is manually
+    /// extracting the code and line numbers lost"*. The reply's own text is never rewritten (the
+    /// prompt cache is keyed on it); the snapshot travels here, after the row's content, and a
+    /// head puts it into the fence it names. Durable: the row it fills is.
+    Citations {
+        item_id: String,
+        citations: Vec<Citation>,
     },
     /// **The transcript this session speaks is not the one the rows you hold belong to.**
     ///
@@ -2241,6 +2271,7 @@ impl SessionEvent {
             SessionEvent::TurnFailed { .. } => "TurnFailed",
             SessionEvent::TranscriptAppended { .. } => "TranscriptAppended",
             SessionEvent::TranscriptContent { .. } => "TranscriptContent",
+            SessionEvent::Citations { .. } => "Citations",
             SessionEvent::TranscriptForked { .. } => "TranscriptForked",
             SessionEvent::HeadAttached { .. } => "HeadAttached",
             SessionEvent::HeadDetached { .. } => "HeadDetached",
