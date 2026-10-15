@@ -61,6 +61,11 @@ pub struct Pool<'a> {
     pub settings: &'a dyn Fn(&Path) -> Result<QueueSettings, String>,
     /// Where a VM reviewer's fresh clone is made.
     pub clones: PathBuf,
+    /// **What holds each busy VM slot**, one line per tap (`crate::vm_reap::slot_holders`): the
+    /// firecracker pid, when its run started, and its owner's handle and state — and the reaper
+    /// is asked to look now when an owner is known to be finished or gone. Read when a capacity
+    /// wait is raised as long, so the notice says what to free instead of only that all are busy.
+    pub slots: &'a dyn Fn() -> Vec<String>,
 }
 
 /// What one pass of [`serve`] did.
@@ -174,12 +179,20 @@ impl Pool<'_> {
     fn wait_for_slot(&self, r: &ReviewRow, cap: &capacity::VmCapacity) -> Result<bool, StoreError> {
         let history = self.store.transitions("review", &r.id)?;
         let streak = capacity::streak(&history);
+        // **The wait is the branch's, not the row's.** A red branch gets a new row per red tip
+        // (`red-<branch>-<sha>`), and each row's own streak raised its own two notices: pg-noop's
+        // `feat/memory-engine`, 2026-10-15, drew a fresh "waiting for a VM slot" at 16:10, 16:16,
+        // 16:34, 16:48, … and a fresh "VM slots exhausted" half an hour after each, for one wait
+        // that never ended. So the rows of the same branch that are in a capacity wait of their own
+        // are read too ([`capacity::branch_wait`]), and the wait is said once while any of them is.
+        let others = self.branch_streaks(r)?;
+        let wait = capacity::branch_wait(streak, &others);
         let nth = streak.refusals + 1;
         let now = now_ms();
-        let since = streak.since_ms.unwrap_or(now);
+        let since = wait.since_ms.unwrap_or(now);
         let waited = now.saturating_sub(since);
         let delay = capacity::retry_after_ms(nth);
-        let long = waited >= capacity::LONG_WAIT_MS && !streak.raised;
+        let long = waited >= capacity::LONG_WAIT_MS && !wait.raised;
         let why = notices::capacity_wait(
             r,
             &cap.busy_line(),
@@ -200,7 +213,7 @@ impl Pool<'_> {
         if !ok {
             return Ok(false);
         }
-        if nth == 1 {
+        if wait.first {
             self.raise(
                 &r.repository,
                 "queue_waiting_for_vm",
@@ -216,10 +229,31 @@ impl Pool<'_> {
                     waited / 60_000,
                     &cap.busy_line(),
                     &cap.raise_ceiling,
+                    &(self.slots)(),
                 ),
             );
         }
         Ok(true)
+    }
+
+    /// **The capacity streaks of the OTHER rows of `r`'s branch** that are still in line
+    /// (`waiting` or `reviewing`) — what [`capacity::branch_wait`] reads.
+    fn branch_streaks(&self, r: &ReviewRow) -> Result<Vec<capacity::Streak>, StoreError> {
+        let mut out = Vec::new();
+        for o in self.store.review_rows(None)? {
+            if o.id == r.id
+                || o.repository != r.repository
+                || o.branch != r.branch
+                || !matches!(o.state, ReviewState::Waiting | ReviewState::Reviewing)
+            {
+                continue;
+            }
+            let s = capacity::streak(&self.store.transitions("review", &o.id)?);
+            if s.refusals > 0 {
+                out.push(s);
+            }
+        }
+        Ok(out)
     }
 }
 

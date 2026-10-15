@@ -156,6 +156,33 @@ pub fn streak(history: &[QueueTransition]) -> Streak {
     s
 }
 
+/// **The capacity wait of a branch, across its rows** — `own` is the row being refused now, and
+/// `others` the streaks of the branch's other rows still in line. One wait while any of them is in
+/// one: `first` only when none was, `since_ms` the earliest refusal of any, and `raised` when any
+/// of them already raised the long wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BranchWait {
+    /// This refusal opens the wait: no row of the branch was in one.
+    pub first: bool,
+    /// When the branch's wait began.
+    pub since_ms: Option<u64>,
+    /// The long wait was already raised for it.
+    pub raised: bool,
+}
+
+pub fn branch_wait(own: Streak, others: &[Streak]) -> BranchWait {
+    let waiting: Vec<&Streak> = others.iter().filter(|s| s.refusals > 0).collect();
+    BranchWait {
+        first: own.refusals == 0 && waiting.is_empty(),
+        since_ms: own
+            .since_ms
+            .into_iter()
+            .chain(waiting.iter().filter_map(|s| s.since_ms))
+            .min(),
+        raised: own.raised || waiting.iter().any(|s| s.raised),
+    }
+}
+
 /// **Is a waiting row held back by a capacity wait?** — its `failure` leads with
 /// [`WAITING_FOR_SLOT`] and its not-before time is still ahead.
 pub fn held_until(failure: &str, deadline_ms: Option<u64>, now_ms: u64) -> bool {

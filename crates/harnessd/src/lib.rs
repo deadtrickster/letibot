@@ -130,6 +130,7 @@ pub mod tasks;
 pub mod term;
 pub mod transcript_source;
 pub mod turn_tail;
+pub mod vm_reap;
 pub mod wall;
 
 pub use answers::{Answers, HeadAdjudicator};

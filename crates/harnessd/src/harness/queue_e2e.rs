@@ -863,6 +863,7 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         deliver: &deliver,
         settings: &settings,
         clones: std::env::temp_dir(),
+        slots: &Vec::new,
     };
     for _ in 0..3 {
         crate::mergequeue::review::serve(&pool).expect("a pass");

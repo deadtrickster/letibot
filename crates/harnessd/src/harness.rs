@@ -8919,6 +8919,7 @@ impl Harness {
             deliver: &deliver,
             settings: &crate::mergequeue::settings::for_repository,
             clones: std::env::temp_dir().join("letibot-review-clones"),
+            slots: &|| crate::vm_reap::slot_holders(store, self.session_registry.instance()),
         };
         let served = match crate::mergequeue::review::serve(&pool) {
             Ok(s) => s,
@@ -16124,6 +16125,20 @@ fn stop_children_first(
     Some(said)
 }
 
+/// **A child that ends while its own children are still on their task stops them** — `None`, and
+/// nothing is stopped, when none is. The edge a hold does not cover: a child that ANSWERS waits
+/// for its children (`serve_child_with`'s `hold`), but one whose turn FAILS has no answer to hold,
+/// and its children used to run on — in a VM, holding a slot — with nobody left to report to.
+pub(crate) fn a_child_that_ends_stops_its_own(
+    runner: Option<&Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
+    hub: &Hub,
+) -> Option<String> {
+    if runner?.unsettled_children() == 0 {
+        return None;
+    }
+    stop_children_first(runner, hub)
+}
+
 /// **A child's own turns, after the task it was spawned for** — and the door its parent's
 /// stop comes through.
 ///
@@ -19556,6 +19571,14 @@ impl HarnessTaskRunner {
         let reply = match first {
             Ok(reply) => reply,
             Err(e) => {
+                // **Its own children end with it.** A child whose first turn FAILED while its
+                // children still worked left them running with nobody to report to — and a child
+                // placed in a VM keeps its VM up for as long as it runs. pg-noop, 2026-10-14:
+                // `…-sub-1791998134948544726` failed on a store error at 17:18:21, its children
+                // went on to boot two VM grandchildren, and those held two of the four VM slots
+                // for a day (`crate::vm_reap`). Stopped before the backend is closed, the same
+                // order a stop takes: children first.
+                a_child_that_ends_stops_its_own(Some(&sub.subagents), &sub.hub);
                 // The backend is closed on this exit too — the other two close it below — so a
                 // child whose first turn failed does not leave its watchers and cgroups behind.
                 sub.close_backend();

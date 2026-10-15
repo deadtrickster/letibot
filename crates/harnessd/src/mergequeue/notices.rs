@@ -489,11 +489,17 @@ pub fn waiting_for_vm(r: &ReviewRow, busy: &str) -> String {
 
 /// **`queue_vm_slots_exhausted`** (once, past `capacity::LONG_WAIT_MS`): slots are not freeing
 /// on their own; `ceiling` is firecode's own `sudo` lines, verbatim, when its refusal had them.
+///
+/// `holders` is what holds each busy slot (`crate::vm_reap::slot_holders`), one line per tap; the
+/// notice names them after its own sentence, so a person reads what to free rather than only that
+/// every slot is busy (2026-10-15: four taps, four orphans, and a notice that said "every slot is
+/// busy" for hours).
 pub fn vm_slots_exhausted(
     r: &ReviewRow,
     waited_min: u64,
     busy: &str,
     ceiling: &[String],
+    holders: &[String],
 ) -> String {
     let ceiling = if ceiling.is_empty() {
         "firecode's refusal names the `sudo ip tuntap add` lines that raise it".to_string()
@@ -507,7 +513,7 @@ pub fn vm_slots_exhausted(
                 .join(" then ")
         )
     };
-    format!(
+    let mut said = format!(
         "{}: the review of `{}` (`{}`) has waited {waited_min} min for a free VM slot ({busy}). \
          Free a slot (`firecode ps`; a tap keeps carrier while ANY VM holds it, an orphaned one \
          included), or raise the ceiling — {ceiling}. The review keeps waiting and is asked \
@@ -515,7 +521,20 @@ pub fn vm_slots_exhausted(
         super::capacity::SLOTS_EXHAUSTED.to_uppercase(),
         r.branch,
         r.id,
-    )
+    );
+    if !holders.is_empty() {
+        said.push_str(" What holds the slots: ");
+        said.push_str(
+            &holders
+                .iter()
+                .enumerate()
+                .map(|(i, h)| format!("({}) {h}", i + 1))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        said.push('.');
+    }
+    said
 }
 
 /// **`queue_blocked`**: a reviewer that could not start (`review::serve`); `why` already says
@@ -898,6 +917,7 @@ mod tests {
                         "sudo ip addr add 172.16.5.1/30 dev fccode5 && sudo ip link set fccode5 up"
                             .to_string(),
                     ],
+                    &[],
                 ),
             ),
             (

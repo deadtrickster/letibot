@@ -243,6 +243,7 @@ fn judge(
         deliver,
         settings: &settings,
         clones: std::env::temp_dir(),
+        slots: &Vec::new,
     };
     for _ in 0..passes {
         serve(&pool).expect("a pass");

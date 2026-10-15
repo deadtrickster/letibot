@@ -1648,6 +1648,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // (`crate::restart`). Before the first session opens, because that open reads the LAST
     // daemon's life to decide what to restore.
     let lifeline = crate::restart::Lifeline::start(cfg.store.clone(), registry.clone());
+    // **The VM reaper, from the start** — a VM whose owner is finished, or whose owner's daemon
+    // is gone, is brought down rather than left holding a slot every review then waits on
+    // (`crate::vm_reap`). Its own thread and its own connection: a reap can take minutes.
+    crate::vm_reap::spawn(cfg.store.clone(), registry.clone());
     boot.step(match resume_rows(&cfg) {
         Some(n) if n > 0 => format!("resuming the session ({n} rows)"),
         _ => "opening the session".to_string(),
@@ -1904,6 +1908,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
         Outcome::HandedOn => {}
     });
+    // **Every subagent's VM comes down with the daemon — first.** Their backends live on threads
+    // the process's exit does not unwind, so their `Drop` never ran and the VMs outlived it — two
+    // of the acceptance suite's own runs, 2026-10-08. firecode's `down` delivers the work. FIRST,
+    // and all at once (`down_all`), because what follows is bounded but not short and a forced
+    // stop's SIGKILL comes five seconds after its SIGTERM: three of the four VMs that held every
+    // slot on 2026-10-15 were children of a daemon that ended with no stop written. Whatever a
+    // SIGKILL still interrupts here, the next daemon's reaper finds (`crate::vm_reap`).
+    letibot_tools::firecode::down_all();
     // **The queues are told to stop.**
     merge_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // **Joined, and bounded**: a gate in flight is killed with its whole process group (SIGTERM,
@@ -1913,10 +1925,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(h) = merge_queue {
         let _ = h.join();
     }
-    // **Every subagent's VM comes down with the daemon.** Their backends live on threads the
-    // process's exit does not unwind, so their `Drop` never ran and the VMs outlived it —
-    // two of the acceptance suite's own runs, 2026-10-08. firecode's `down` delivers the work.
-    letibot_tools::firecode::down_all();
 
     daemon.shutdown();
     // The seat after the daemon: the listener's next poll window sees the stop and

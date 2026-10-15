@@ -196,3 +196,45 @@ fn the_heads_reviewers_could_not_decide_at_are_read_off_the_history() {
     ];
     assert_eq!(undecided_heads(&h), vec!["2cefd4b97b", "8e4b727"]);
 }
+
+/// **The branch's wait, across its rows**: the first refusal of a row opens it only when no row
+/// of the branch is already waiting; it began at the earliest refusal of any; and a raise by any
+/// row is the branch's raise.
+#[test]
+fn a_branch_waits_once_across_its_rows() {
+    let none = Streak::default();
+    let waiting = |since: u64, raised: bool| Streak {
+        refusals: 3,
+        since_ms: Some(since),
+        raised,
+    };
+    assert_eq!(
+        branch_wait(none, &[]),
+        BranchWait {
+            first: true,
+            since_ms: None,
+            raised: false
+        }
+    );
+    assert_eq!(
+        branch_wait(none, &[waiting(100, false), none]),
+        BranchWait {
+            first: false,
+            since_ms: Some(100),
+            raised: false
+        }
+    );
+    assert_eq!(
+        branch_wait(waiting(300, false), &[waiting(100, true)]),
+        BranchWait {
+            first: false,
+            since_ms: Some(100),
+            raised: true
+        }
+    );
+    assert_eq!(
+        branch_wait(waiting(300, false), &[]).since_ms,
+        Some(300),
+        "a row alone is its own wait"
+    );
+}

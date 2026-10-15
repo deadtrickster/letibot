@@ -68,6 +68,8 @@ use std::sync::Arc;
 use crate::backend::{BackendError, Command, DirEntry, ExecBackend, Output};
 use crate::exec::{Boundary, ConfinePlan, Confinement, ExecError, HostProcesses};
 
+pub mod held;
+
 /// Where the `firecode` CLI is. `$FIRECODE_BIN`, else `firecode` on `PATH`.
 pub fn firecode_bin() -> PathBuf {
     std::env::var_os("FIRECODE_BIN")
@@ -137,15 +139,28 @@ static LIVE: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(V
 /// never runs and its VM outlived the daemon. firecode's own `down` delivers the work; the copy
 /// is left where it is (the work may be in it), and a backend that is dropped later finds its
 /// VM already down, which `down` takes.
+///
+/// **All at once, not one after another.** One `down` waits up to a minute for its guest and
+/// then on the copy-out; four in a row were minutes, and a forced stop sends SIGKILL five seconds
+/// after SIGTERM (`letibot --stop --force`). Whatever a SIGKILL interrupts here is left to the
+/// next daemon's reaper (`harnessd`'s `vm_reap`), which finds the VM by its run record.
 pub fn down_all() {
     let live = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|e| e.into_inner()));
-    for (bin, project) in live {
-        let _ = std::process::Command::new(&bin)
-            .arg("down")
-            .arg("--project")
-            .arg(&project)
-            .stdin(Stdio::null())
-            .output();
+    let downs: Vec<_> = live
+        .into_iter()
+        .map(|(bin, project)| {
+            std::thread::spawn(move || {
+                let _ = std::process::Command::new(&bin)
+                    .arg("down")
+                    .arg("--project")
+                    .arg(&project)
+                    .stdin(Stdio::null())
+                    .output();
+            })
+        })
+        .collect();
+    for d in downs {
+        let _ = d.join();
     }
 }
 

@@ -116,6 +116,8 @@ struct World {
     desk: ReviewDesk,
     placer: Placer,
     raised: Arc<Mutex<Vec<(String, String)>>>,
+    /// What the pool's `slots` answers — the holders a long wait names.
+    holders: Vec<String>,
 }
 
 impl World {
@@ -171,6 +173,7 @@ impl World {
             desk: ReviewDesk::new(),
             placer: Placer::new(script),
             raised: Arc::new(Mutex::new(Vec::new())),
+            holders: Vec::new(),
         }
     }
     /// This daemon's lease identity — the owner `env` names (`serve::tests::me`).
@@ -212,6 +215,7 @@ impl World {
             deliver: &deliver,
             settings: &settings,
             clones: std::env::temp_dir(),
+            slots: &|| self.holders.clone(),
         };
         serve(&pool).unwrap();
     }
@@ -410,6 +414,117 @@ fn a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines() {
         "the wait was already announced"
     );
     assert!(w.raised("queue_blocked").is_empty());
+}
+
+/// **Another row of the same branch, already in a capacity wait** — enqueued beside `pg`, its
+/// wait begun `ago_min` minutes ago (and raised as long when `raised`), and held back so the queue
+/// does not claim it. What a red branch looks like: one row per red tip, all for one branch.
+fn a_sibling_waiting(w: &World, ago_min: u64, raised: bool) {
+    let s = w.store();
+    let first = w.row();
+    s.enqueue_review(
+        &NewReview {
+            id: "pg-red-2".into(),
+            repository: first.repository.clone(),
+            target: "main".into(),
+            kind: ReviewKind::Branch,
+            session_id: first.session_id.clone(),
+            branch: first.branch.clone(),
+            worktree: first.worktree.clone(),
+            base_sha: first.base_sha.clone(),
+            head_sha: first.head_sha.clone(),
+            brief: "the red tip".into(),
+            priority: MergePriority::Subagent,
+            fixes: None,
+            evidence: "enqueued".into(),
+        },
+        "test",
+        gate::now_ms(),
+    )
+    .unwrap();
+    let then = gate::now_ms() - ago_min * 60_000;
+    let me = w.me();
+    assert!(
+        s.move_review(
+            "pg-red-2",
+            ReviewState::Waiting,
+            ReviewState::Reviewing,
+            &Move::new(&me, "claimed").set("owner", me.clone()),
+            then,
+        )
+        .unwrap()
+    );
+    let why = format!(
+        "{WAITING_FOR_SLOT} for `agent/pg`: …{}",
+        if raised {
+            format!("; {}", capacity::SLOTS_EXHAUSTED)
+        } else {
+            String::new()
+        }
+    );
+    assert!(
+        s.move_review(
+            "pg-red-2",
+            ReviewState::Reviewing,
+            ReviewState::Waiting,
+            &Move::new(&me, why.clone())
+                .owned_by(me.clone())
+                .set("owner", "")
+                .set("deadline_ms", gate::now_ms() + 3_600_000)
+                .set("failure", why),
+            then + 1,
+        )
+        .unwrap()
+    );
+}
+
+/// **A wait is the branch's, said once while any of its rows is in it** — pg-noop's
+/// `feat/memory-engine`, 2026-10-15: one row per red tip, and each new row drew its own "waiting
+/// for a VM slot" (16:10, 16:16, 16:34, 16:48, …) and its own "VM slots exhausted" half an hour
+/// later, for one wait that never ended. A new row joining a wait its branch is already in says
+/// nothing new; when the branch's wait passes half an hour it is raised once — and the raise
+/// names what holds each slot.
+#[test]
+fn a_new_row_of_a_branch_already_waiting_does_not_say_it_again() {
+    let mut w = World::new("branch", &[Next::NoSlot]);
+    w.holders = vec![
+        "fccode1: firecracker pid 861706, run firecode-20261014-191759-812644 started \
+         2026-10-14 19:17:59; its owner `s-1-sub-2` is recorded `running` under daemon \
+         `d-404553-1-0`, which is gone — being reaped"
+            .into(),
+    ];
+    a_sibling_waiting(&w, 31, false);
+    w.one_reviewer();
+    assert_eq!(w.row().state, ReviewState::Waiting, "{:?}", w.row());
+    assert!(
+        w.raised("queue_waiting_for_vm").is_empty(),
+        "the branch was already waiting: {:?}",
+        w.raised("queue_waiting_for_vm")
+    );
+    let long = w.raised("queue_vm_slots_exhausted");
+    assert_eq!(long.len(), 1, "the branch's wait is 31 min old: {long:?}");
+    for said in [
+        "has waited 31 min",
+        "What holds the slots: (1) fccode1: firecracker pid 861706",
+        "under daemon `d-404553-1-0`, which is gone — being reaped",
+    ] {
+        assert!(long[0].contains(said), "`{said}` missing from: {}", long[0]);
+    }
+}
+
+/// **…and a branch whose wait was already raised is not raised again by its next row.**
+#[test]
+fn a_branch_whose_wait_was_raised_is_not_raised_again_by_a_new_row() {
+    let w = World::new("raised", &[Next::NoSlot]);
+    a_sibling_waiting(&w, 45, true);
+    w.one_reviewer();
+    assert_eq!(w.row().state, ReviewState::Waiting, "{:?}", w.row());
+    assert!(w.raised("queue_waiting_for_vm").is_empty());
+    assert!(
+        w.raised("queue_vm_slots_exhausted").is_empty(),
+        "{:?}",
+        w.raised("queue_vm_slots_exhausted")
+    );
 }
 
 /// **A real placement failure still counts** — and a capacity wait between them does not; the

@@ -1058,3 +1058,64 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
     assert!(!runner.tools.iter().any(|t| t == "flowy"));
     assert!(runner.tools.len() <= runner.max_tools);
 }
+
+/// **A child that ends while its own children are still on their task stops them** — the edge a
+/// hold does not cover. pg-noop, 2026-10-14: `…-sub-1791998134948544726` failed its first turn on
+/// a store error at 17:18:21 while its children worked; they went on to boot two VM grandchildren,
+/// whose VMs held two of the four VM slots for a day. A child with nothing unsettled stops
+/// nothing and says nothing.
+#[test]
+fn a_child_that_ends_with_children_on_their_task_stops_them() {
+    struct Children {
+        unsettled: usize,
+        stops: Arc<Mutex<usize>>,
+    }
+    impl letibot_tools::builtins::task::TaskRunner for Children {
+        fn start(
+            &self,
+            _prompt: &str,
+            _spec: &letibot_tools::builtins::task::TaskSpec,
+        ) -> Result<String, String> {
+            Err("this runner starts nothing".into())
+        }
+        fn collect(
+            &self,
+            _handle: &str,
+            _timeout: std::time::Duration,
+        ) -> letibot_tools::builtins::task::TaskStatus {
+            letibot_tools::builtins::task::TaskStatus::Unknown
+        }
+        fn unsettled_children(&self) -> usize {
+            self.unsettled
+        }
+        fn stop_all(&self) -> Vec<(String, Result<String, String>)> {
+            *self.stops.lock().expect("stops") += 1;
+            vec![(
+                "s-c-sub-1".into(),
+                Ok("the daemon accepted the interrupt".into()),
+            )]
+        }
+    }
+    let stops = Arc::new(Mutex::new(0));
+    let hub = Hub::new("s-c");
+    let working: Arc<dyn letibot_tools::builtins::task::TaskRunner> = Arc::new(Children {
+        unsettled: 2,
+        stops: stops.clone(),
+    });
+    let said = a_child_that_ends_stops_its_own(Some(&working), &hub)
+        .expect("children on their task are stopped, and it is said");
+    assert!(said.contains("s-c-sub-1"), "{said}");
+    assert_eq!(*stops.lock().expect("stops"), 1);
+
+    let idle: Arc<dyn letibot_tools::builtins::task::TaskRunner> = Arc::new(Children {
+        unsettled: 0,
+        stops: stops.clone(),
+    });
+    assert_eq!(a_child_that_ends_stops_its_own(Some(&idle), &hub), None);
+    assert_eq!(a_child_that_ends_stops_its_own(None, &hub), None);
+    assert_eq!(
+        *stops.lock().expect("stops"),
+        1,
+        "nothing unsettled, nothing stopped"
+    );
+}
