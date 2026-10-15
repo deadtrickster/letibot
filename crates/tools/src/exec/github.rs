@@ -273,18 +273,34 @@ impl GithubCondition {
             Until::Comment if !first && seen.comments.len() > base.comments.len() => {
                 let new = &seen.comments[base.comments.len()..];
                 let (_, who, said) = new.last()?;
+                let quoted = if said.is_empty() {
+                    String::new()
+                } else {
+                    format!(": \"{said}\"")
+                };
                 Some(format!(
-                    "{} new comment{} on {what} — the latest by {who}: \"{said}\"",
+                    "{} new comment{} on {what} — the latest by {who}{quoted}",
                     new.len(),
                     if new.len() == 1 { "" } else { "s" }
                 ))
             }
             Until::CodeRabbit if !first && seen.rabbit.len() > base.rabbit.len() => {
                 let (how, said) = seen.rabbit.last()?;
-                Some(format!(
-                    "CodeRabbit reviewed {what} ({}): \"{said}\"",
-                    how.to_lowercase().replace('_', " ")
-                ))
+                let how = how.to_lowercase().replace('_', " ");
+                // **A review whose own text is empty has said everything on the diff** — CodeRabbit
+                // posts its findings as inline comments and often leaves the review body blank, and
+                // quoting `""` read as a review that said nothing (the operator: *"empty line looks
+                // suspicious"*). Say where its words are instead.
+                Some(if said.is_empty() {
+                    format!(
+                        "CodeRabbit reviewed {what} ({how}); its review has no summary text, so what \
+                         it found is in its inline comments on the diff — `gh pr view {} --repo {} \
+                         --comments`, or the review threads on GitHub",
+                        self.target.number, self.target.repo
+                    )
+                } else {
+                    format!("CodeRabbit reviewed {what} ({how}): \"{said}\"")
+                })
             }
             _ => None,
         }
@@ -597,6 +613,40 @@ mod tests {
                 "{until:?}"
             );
         }
+    }
+
+    /// **A CodeRabbit review with no text of its own says where its findings are** — the
+    /// operator, on `pr206-coderabbit` firing with `: ""`: *"empty line looks suspicious"*.
+    #[test]
+    fn an_empty_rabbit_review_points_at_its_inline_comments() {
+        let t = Target::from_url("https://github.com/stroppy-io/stroppy/pull/206").unwrap();
+        let c = GithubCondition::with_gh(t, Until::CodeRabbit, "gh");
+        let mut st = State::default();
+        assert_eq!(
+            c.evaluate(&mut st, parse(&pr("OPEN", "", "", ""), None).unwrap()),
+            None
+        );
+        let said = c
+            .evaluate(
+                &mut st,
+                parse(
+                    &pr(
+                        "OPEN",
+                        r#"{"author":{"login":"coderabbitai"},"state":"COMMENTED","body":"","submittedAt":"2026-10-16T08:00:00Z"}"#,
+                        "",
+                        "",
+                    ),
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(!said.contains("\"\""), "nothing empty is quoted: {said}");
+        assert!(
+            said.contains("no summary text")
+                && said.contains("gh pr view 206 --repo stroppy-io/stroppy --comments"),
+            "{said}"
+        );
     }
 
     #[test]
