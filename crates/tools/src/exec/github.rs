@@ -337,7 +337,8 @@ fn parse(json: &str, viewer: Option<&str>) -> Option<Seen> {
     let mine = |who: &str| viewer.is_some_and(|me| me.eq_ignore_ascii_case(who));
     for c in arr("comments") {
         let who = login(&c);
-        if !mine(&who) {
+        // CodeRabbit's summary comment is its own watch's news, not "a new comment".
+        if !mine(&who) && !is_rabbit(&who) {
             let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
             let at = c.get("createdAt").and_then(|t| t.as_str()).unwrap_or("");
             seen.comments.push((at.to_string(), who, first_line(body)));

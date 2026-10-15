@@ -8706,6 +8706,40 @@ impl Harness {
     /// `blocked` because its `AGENTS.md` has no `Merge gate` section — once per daemon. The
     /// sentence names the repository and what to do: `merge_gate` for the choices, the operator to
     /// pick, the section committed on the target.
+    /// **Arm the watches on a pull request this session just opened** (`pr_watch`), through the
+    /// operator's door (the model did not ask for them, so no gate is owed them), and answer the
+    /// sentence the model reads. A watch already armed under the same name is left as it is.
+    pub(crate) fn watch_opened_pr(&self, url: &str, n: u64) -> String {
+        let mut armed = Vec::new();
+        let mut refused = Vec::new();
+        for (name, call) in crate::pr_watch::watch_calls(url, n) {
+            if self
+                .monitors
+                .as_ref()
+                .is_some_and(|m| m.get(&name).is_some())
+            {
+                continue;
+            }
+            let r =
+                self.runtime
+                    .invoke_operator("pr-watch", &call, &mut letibot_tools::NullToolSink);
+            if r.outcome == letibot_transcript::ToolOutcome::Ok {
+                armed.push(name);
+            } else {
+                let why = r.payload.lines().next().unwrap_or("").to_string();
+                refused.push((name, why));
+            }
+        }
+        if !armed.is_empty() {
+            eprintln!(
+                "  {} · watching {url}: {}",
+                self.cfg.session_id,
+                armed.join(", ")
+            );
+        }
+        crate::pr_watch::told(url, &armed, &refused)
+    }
+
     pub fn queue_notices(&mut self) -> Vec<String> {
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
@@ -12605,6 +12639,18 @@ impl Harness {
                 // session writes it down, here, where every other result is appended.
                 if call.name == ASK_USER_QUESTION {
                     asked.extend(self.settle_asked(&mut item));
+                }
+                // **A pull request this call opened is watched from here on** (`pr_watch`), and
+                // the call's own result says so.
+                if let TranscriptItem::ToolResult {
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload,
+                    ..
+                } = &mut item
+                    && let Some((url, n)) = crate::pr_watch::opened(call, payload)
+                {
+                    let said = self.watch_opened_pr(&url, n);
+                    payload.push_str(&said);
                 }
                 // The progress encoder reads the *rendered* result, which is the
                 // string the model will actually get to read. Digesting anything
