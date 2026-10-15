@@ -331,6 +331,30 @@ pub fn monitor_not_rearmed_line(m: &StoredMonitor, why: &str) -> String {
     )
 }
 
+/// **The named scope a monitor was owned by**, when it was — not `turn`, not `session`, not left
+/// to the default. Such a scope is something the model set up (a background job started under
+/// that name) and only the daemon that stopped knew about it, so a restart cannot tell what it
+/// was for or whether what ran in it still runs.
+pub fn named_owner(m: &StoredMonitor) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&m.args_json).ok()?;
+    let owner = v.get("owner")?.as_str()?.trim();
+    (!owner.is_empty() && owner != "turn" && owner != "session").then(|| owner.to_string())
+}
+
+/// **A monitor owned by a named scope, as the model is told** — never re-armed on its own: the
+/// operator, *"if scopes are involved we should tell model, who knows wtf was setup and how
+/// relevant it still is"*.
+pub fn monitor_scoped_line(m: &StoredMonitor, scope: &str) -> String {
+    format!(
+        "- monitor `{}` was owned by the scope `{scope}`, which the stopped daemon held — it was \
+         NOT re-armed: what that scope was set up for, and whether anything in it still runs, is \
+         yours to check (`job_list`). If it still matters, re-arm it with {}, naming an owner \
+         that exists now or leaving `owner` out for this session.",
+        m.name,
+        monitor_call(m)
+    )
+}
+
 /// A monitor over the threshold, as the model is told.
 pub fn monitor_reminded_line(m: &StoredMonitor) -> String {
     format!(
@@ -398,6 +422,10 @@ pub mod said {
 
     pub fn monitor_reminded(name: &str) -> String {
         format!("monitor `{name}`: reminded, not re-armed")
+    }
+
+    pub fn monitor_scoped(name: &str, scope: &str) -> String {
+        format!("monitor `{name}`: not re-armed — owned by the scope `{scope}`; the model is told")
     }
 
     pub fn job_settled(handle: &str) -> String {
@@ -638,6 +666,40 @@ fn ttl_of(args: &serde_json::Value) -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Only a scope the model named is a named owner** — `turn`, `session` and no owner at all
+    /// are the daemon's own lifetimes, and a monitor on them is re-armed as before.
+    #[test]
+    fn a_named_owner_is_the_models_own_scope() {
+        let m = |args: &str| StoredMonitor {
+            session_id: "s".into(),
+            name: "m".into(),
+            args_json: args.into(),
+            instance: "i".into(),
+            ttl_ms: 1,
+            live: true,
+            declared_ms: 0,
+            updated_ms: 0,
+        };
+        assert_eq!(
+            named_owner(&m(r#"{"name":"m","owner":"lubuntu2-soak"}"#)).as_deref(),
+            Some("lubuntu2-soak")
+        );
+        for plain in [
+            r#"{"name":"m"}"#,
+            r#"{"name":"m","owner":"session"}"#,
+            r#"{"name":"m","owner":"turn"}"#,
+            r#"{"name":"m","owner":""}"#,
+        ] {
+            assert_eq!(named_owner(&m(plain)), None, "{plain}");
+        }
+        let line = monitor_scoped_line(&m(r#"{"name":"m","owner":"x"}"#), "x");
+        assert!(
+            line.contains("NOT re-armed") && line.contains("`job_list`"),
+            "{line}"
+        );
+    }
+
     use super::*;
 
     const AT: u64 = 1_791_806_400_000;

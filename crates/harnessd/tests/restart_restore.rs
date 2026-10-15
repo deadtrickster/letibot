@@ -1258,6 +1258,16 @@ fn stage_monitors_and_jobs(store: &Store) {
             300_000,
         )
         .unwrap();
+    // A reminder the model hung on a scope of its own — the soak's `lubuntu2-soak`.
+    store
+        .put_monitor(
+            PARENT,
+            "soak-reminder",
+            r#"{"name":"soak-reminder","owner":"lubuntu2-soak","repeat":true,"timer_ms":1800000,"ttl_ms":3600000}"#,
+            OLD,
+            3_600_000,
+        )
+        .unwrap();
     store
         .put_job(
             PARENT,
@@ -1337,6 +1347,11 @@ fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
         "{restored:?}"
     );
     assert!(restored[0].contains("job `j9`: reminded (not re-run), 1 waiting row(s) released"));
+    assert!(
+        restored[0]
+            .contains("monitor `soak-reminder`: not re-armed — owned by the scope `lubuntu2-soak`"),
+        "a scoped monitor is the model's to bring back: {restored:?}"
+    );
 
     // The open rang the session: the reminder is a turn.
     let woke = loop {
@@ -1364,6 +1379,13 @@ fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
     );
     assert!(
         notice.contains(
+            "- monitor `soak-reminder` was owned by the scope `lubuntu2-soak`, which the stopped \
+             daemon held — it was NOT re-armed"
+        ),
+        "{notice}"
+    );
+    assert!(
+        notice.contains(
             r#"To run it again: `bash {"command":"cargo build > build.log","background":true,"cwd":"/somewhere","slug":"build"}`"#
         ),
         "{notice}"
@@ -1384,6 +1406,14 @@ fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
         "{built:?}"
     );
     assert!(!monitors.iter().find(|m| m.name == "on-build").unwrap().live);
+    assert!(
+        !monitors
+            .iter()
+            .find(|m| m.name == "soak-reminder")
+            .unwrap()
+            .live,
+        "nothing armed it again"
+    );
     registry.close();
 }
 

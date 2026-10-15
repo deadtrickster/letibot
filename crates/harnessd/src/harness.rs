@@ -9596,6 +9596,14 @@ impl Harness {
                 said.push(crate::restart::said::monitor_reminded(&m.name));
                 continue;
             }
+            // **A monitor a named scope owned is the model's to bring back**, however short the
+            // stop: the scope was something it set up, the stopped daemon was the only one that
+            // knew it, and whether it still matters is a judgement, not a replay.
+            if let Some(scope) = crate::restart::named_owner(&m) {
+                lines.push(crate::restart::monitor_scoped_line(&m, &scope));
+                said.push(crate::restart::said::monitor_scoped(&m.name, &scope));
+                continue;
+            }
             // **The same call, made again.** It was gated when the model first made it; this
             // re-establishes that declaration rather than making a new one, so it goes through the
             // door with no gate (the operator's own runs use it for the same reason: nobody is
