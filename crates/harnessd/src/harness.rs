@@ -8325,6 +8325,18 @@ impl Harness {
         let mut jobs = letibot_tools::builtins::todo::RunningJobs::none();
         for row in rows {
             for need in &row.needs {
+                // **A monitor still watching** is the job's sibling: the row waits on it, and the
+                // check is quiet about it, until it ends.
+                if let letibot_tokencore::store::TodoNeed::Monitor { name } = need {
+                    if self
+                        .monitors
+                        .as_ref()
+                        .is_some_and(|m| m.get(name).is_some())
+                    {
+                        jobs = jobs.watching(name.clone());
+                    }
+                    continue;
+                }
                 let letibot_tokencore::store::TodoNeed::Job { handle } = need else {
                     continue;
                 };
@@ -13513,6 +13525,9 @@ impl Harness {
                     // to be able to carry an edge into a job rather than only draw one.
                     letibot_tokencore::store::TodoNeed::Job { handle } => {
                         letibot_sessionlog::event::TodoNeed::Job { handle }
+                    }
+                    letibot_tokencore::store::TodoNeed::Monitor { name } => {
+                        letibot_sessionlog::event::TodoNeed::Monitor { name }
                     }
                     // **An unknown kind stays unknown on the wire**, which is what lets a head
                     // that does not know one pass it back to a daemon that does rather than

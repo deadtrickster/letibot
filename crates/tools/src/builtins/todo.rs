@@ -450,6 +450,7 @@ impl TodoBoard {
                         !matches!(
                             n,
                             TodoNeed::Job { .. }
+                                | TodoNeed::Monitor { .. }
                                 | TodoNeed::Child { .. }
                                 | TodoNeed::Operator { .. }
                         )
@@ -1182,6 +1183,8 @@ impl ChildSessions {
 #[derive(Debug, Clone, Default)]
 pub struct RunningJobs {
     live: BTreeSet<String>,
+    /// **Monitors still watching**, by name — what a `monitor` need waits on (`TodoNeed::Monitor`).
+    watching: BTreeSet<String>,
     subagents: BTreeSet<String>,
     /// **What each one is about**, by handle: a job's slug and command, a child's prompt. Read only
     /// by [`RunningJobs::likeliest_wait`], so the check's offer names the job a row is LIKE rather
@@ -1212,6 +1215,17 @@ impl RunningJobs {
     /// narrowing both take.
     pub fn is_running(&self, handle: &str) -> bool {
         self.live.contains(handle)
+    }
+
+    /// **A monitor that is still watching here**, by its name — a builder, like [`Self::running`].
+    pub fn watching(mut self, name: impl Into<String>) -> Self {
+        self.watching.insert(name.into());
+        self
+    }
+
+    /// Whether the monitor named `name` is still watching.
+    pub fn is_watching(&self, name: &str) -> bool {
+        self.watching.contains(name)
     }
 
     /// **A job or child that has ENDED, whose completion the model has not digested yet** — by its
@@ -1428,6 +1442,8 @@ pub fn waits_on_a_child_with_room_to_breathe(row: &TodoItem, children: &ChildSes
 pub fn waits_on_a_running_job(row: &TodoItem, jobs: &RunningJobs) -> bool {
     row.needs.iter().any(|need| match need {
         TodoNeed::Job { handle } => jobs.is_running(handle),
+        // A monitor still watching is the same silence: its firing wakes the session itself.
+        TodoNeed::Monitor { name } => jobs.is_watching(name),
         _ => false,
     })
 }
@@ -1884,7 +1900,7 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
             // the check is silent about everywhere else (`todo_write` promises it), so a plan
             // blocked only on them is not a plan to fix either.
             let rooted = unmet.iter().all(|(name, fate)| match fate {
-                NeedFate::OperatorAsked | NeedFate::JobRunning => true,
+                NeedFate::OperatorAsked | NeedFate::JobRunning | NeedFate::MonitorWatching => true,
                 NeedFate::ChildRunning(child) => child.age < CHILD_ROOM_TO_BREATHE,
                 NeedFate::NotDone => on.contains(name.trim()),
                 _ => false,
@@ -1982,6 +1998,9 @@ pub enum NeedFate {
     /// daemon already watches it and delivers its settlement as a turn of its own. All a reader of
     /// this line has to know is that the blocker is still there and is not the plan's to move.
     JobRunning,
+    /// **A monitor still watching** — [`NeedFate::JobRunning`]'s sibling: the row cannot start
+    /// until it ends, and the check is silent about the row while it watches.
+    MonitorWatching,
     /// **A job or child that has ENDED and whose completion the model has not digested yet** —
     /// [`waits_on_an_undigested_ending`]'s state, which keeps the idle check SILENT about the row;
     /// what is here is the fate for a caller that did not narrow. Not met yet, because the row's
@@ -2103,6 +2122,13 @@ fn unmet_needs(
             // a child's id is: it is what `job_output` and `job_kill` are given, so the model has
             // to be able to quote it back. A handle that is not in the snapshot is a job that
             // ENDED, and nothing is pushed for it: see this function's own doc.
+            // **A monitor still watching is NOT met**; one that ended (fired, expired, retired — or
+            // a name this session does not hold, which is what one looks like after a restart) is.
+            TodoNeed::Monitor { name } => {
+                if jobs.is_watching(name) {
+                    out.push((name.clone(), NeedFate::MonitorWatching));
+                }
+            }
             TodoNeed::Job { handle } => {
                 if jobs.is_running(handle) {
                     out.push((handle.clone(), NeedFate::JobRunning));
@@ -2158,6 +2184,9 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             // still there, and it is not theirs to move — the settlement is already on its way.
             NeedFate::JobRunning => format!(
                 "the job `{name}`, still running — its completion reaches you as soon as it ends"
+            ),
+            NeedFate::MonitorWatching => format!(
+                "the monitor `{name}`, still watching — its firing reaches you as soon as it fires"
             ),
             NeedFate::EndedUnread => format!(
                 "`{name}`, which has ended — its completion is reaching you; read it before \
@@ -2699,7 +2728,8 @@ impl Tool for TodoWriteTool {
                                     "items": {"anyOf": [
                                         {"type": "string"},
                                         {"type": "object", "properties": {
-                                            "kind": {"type": "string", "enum": ["row", "child", "job", "operator"]},
+                                            "kind": {"type": "string", "enum": ["row", "child", "job", "monitor", "operator"]},
+                                            "name": {"type": "string"},
                                             "content": {"type": "string"},
                                             "id": {"type": "string"},
                                             "handle": {"type": "string"},
@@ -2718,7 +2748,12 @@ impl Tool for TodoWriteTool {
                                                      BACKGROUND JOB by the handle `job_list` \
                                                      prints, and waits for it to END, any ending — \
                                                      the check is silent about the row while the \
-                                                     job runs. {\"kind\": \"operator\", \
+                                                     job runs. {\"kind\": \"monitor\", \
+                                                     \"name\": \"…\"} names a MONITOR you armed \
+                                                     with `monitor` and waits for it to fire or \
+                                                     end, silently while it watches — a one-shot \
+                                                     timer monitor is how a row says come back \
+                                                     to this later. {\"kind\": \"operator\", \
                                                      \"question\": \"…\", \"options\": [\"…\", \
                                                      \"…\"]} waits on the OPERATOR's answer to a \
                                                      question (at least two options; they can \
@@ -3649,6 +3684,18 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
         }
         Ok(TodoNeed::Child { id: id.to_string() })
     };
+    let monitor = |name: &str| -> Result<TodoNeed, Invocation> {
+        if name.trim().is_empty() {
+            return Err(Invocation::failed(
+                format!("{where_} names an empty monitor"),
+                "a `monitor` need names a monitor by the `name` it was armed under with `monitor`; \
+                 an empty name waits for nothing while saying it waits.",
+            ));
+        }
+        Ok(TodoNeed::Monitor {
+            name: name.trim().to_string(),
+        })
+    };
     let job = |handle: &str| -> Result<TodoNeed, Invocation> {
         if handle.trim().is_empty() {
             return Err(Invocation::failed(
@@ -3689,6 +3736,14 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                      `background: true` and `job_list` print.",
                 )),
             },
+            Some("monitor") => match o.get("name").and_then(|n| n.as_str()) {
+                Some(name) => monitor(name),
+                None => Err(Invocation::failed(
+                    format!("{where_} has kind `monitor` and no `name`"),
+                    "a `monitor` need names a monitor by the `name` it was armed under with \
+                     `monitor` — the one `job_list` and the monitors pane show.",
+                )),
+            },
             Some("operator") => {
                 let question = o.get("question").and_then(|q| q.as_str()).unwrap_or("");
                 operator_need(question, o.get("options")).map_err(|why| {
@@ -3708,7 +3763,8 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                 format!("{where_} has kind `{other}`, which this build cannot evaluate"),
                 "the kinds of need are `row` — another row on this list, by its exact `content` — \
                  `child` — a subagent you started with `task`, by the session id it gave you — and \
-                 `job` — a background job, by the handle `job_list` prints — and `operator` — a \
+                 `job` — a background job, by the handle `job_list` prints — `monitor` — a monitor \
+                 you armed, by its name, until it fires or ends — and `operator` — a \
                  question for the operator, with at least two `options`. Send a row's name as a \
                  plain string, or the tagged form {\"kind\": \"row\", \"content\": \"…\"}, \
                  {\"kind\": \"child\", \"id\": \"s-…\"} or {\"kind\": \"job\", \"handle\": \"j…\"}. \
@@ -3855,6 +3911,7 @@ fn render(todos: &[TodoItem]) -> String {
                         // `job_output` or `job_kill` — the same rule the child's id keeps, and the
                         // same rule the nag's own line keeps.
                         TodoNeed::Job { handle } => format!("the job `{handle}`"),
+                        TodoNeed::Monitor { name } => format!("the monitor `{name}`"),
                         // **The operator, by the question** — the words they were asked, so the
                         // model can see what it is waiting for and try to work it out itself.
                         TodoNeed::Operator { question, .. } => {

@@ -1394,6 +1394,13 @@ pub enum TodoNeed {
     /// what a handle looks like after a restart — is a job that ended**, which is
     /// [`TodoCondition::Job`]'s own ruling one variant up and the reason the two cannot disagree.
     Job { handle: String },
+    /// **A MONITOR, by the name it was armed under** — the row cannot start until that monitor
+    /// ENDS: fires, expires or is retired. A timer, a file, a port, a pull request: whatever a
+    /// monitor watches, a row can wait on it, and while it watches the idle check is silent about
+    /// the row (its firing wakes the session by itself). The operator's *"come with it later"* is a
+    /// row waiting on a one-shot timer. **A name that is not watching is a monitor that ended**,
+    /// [`TodoNeed::Job`]'s own ruling for a handle after a restart.
+    Monitor { name: String },
     /// **The OPERATOR, asked a question** — the row cannot start until a person answers it.
     ///
     /// The operator's ask, verbatim: *"a todo can be dependent on todo, and todo can be dependend
