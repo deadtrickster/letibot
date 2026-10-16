@@ -14,14 +14,9 @@
 
 use letibot_transcript::ToolCall;
 
-/// The watches armed on a pull request: a name suffix, the `until`, and whether it repeats.
-pub const WATCHES: &[(&str, &str, bool)] = &[
-    ("checks", "checks", true),
-    ("review", "review", true),
-    ("coderabbit", "coderabbit", true),
-    ("comment", "comment", true),
-    ("closed", "closed", false),
-];
+/// **What a pull request is watched for** — one watch, one `gh` look a time for all of them
+/// (the operator: *"we can coalesce monitors sets like these"*, of the five it used to be).
+pub const WATCHED: &[&str] = &["checks", "review", "coderabbit", "comment", "closed"];
 
 /// **The pull request a successful `gh pr create` opened**, as `(url, number)` — `None` for any
 /// other call, and for one whose output names no pull request.
@@ -50,27 +45,23 @@ pub fn opened(call: &ToolCall, payload: &str) -> Option<(String, u64)> {
         .last()
 }
 
-/// The `monitor` calls that watch pull request `n` at `url`.
+/// **The `monitor` call that watches pull request `n` at `url`** — named `pr-N`, repeating until
+/// its day is out or the pull request is closed.
 pub fn watch_calls(url: &str, n: u64) -> Vec<(String, ToolCall)> {
-    WATCHES
-        .iter()
-        .map(|(suffix, until, repeat)| {
-            let name = format!("pr-{n}-{suffix}");
-            let args = serde_json::json!({
-                "name": name,
-                "github": {"url": url, "until": until},
-                "repeat": repeat,
-            });
-            (
-                name.clone(),
-                ToolCall {
-                    id: format!("pr-watch-{name}"),
-                    name: "monitor".into(),
-                    arguments: args.to_string(),
-                },
-            )
-        })
-        .collect()
+    let name = format!("pr-{n}");
+    let args = serde_json::json!({
+        "name": name,
+        "github": {"url": url, "until": WATCHED},
+        "repeat": true,
+    });
+    vec![(
+        name.clone(),
+        ToolCall {
+            id: format!("pr-watch-{name}"),
+            name: "monitor".into(),
+            arguments: args.to_string(),
+        },
+    )]
 }
 
 /// **What the model reads, appended to the `gh pr create` result** — what is now watched, and
@@ -79,9 +70,9 @@ pub fn told(url: &str, armed: &[String], refused: &[(String, String)]) -> String
     let mut out = String::new();
     if !armed.is_empty() {
         out.push_str(&format!(
-            "\n\n[harness] {url} is now watched for you — {} (monitors {}). Each wakes you when \
-             it fires; a todo row can wait on one with {{\"kind\": \"monitor\", \"name\": …}}; \
-             `monitor` with action \"retire\" ends one.",
+            "\n\n[harness] {url} is now watched for you — {} (monitor {}). It wakes you each time \
+             one of them happens; a todo row can wait on it with {{\"kind\": \"monitor\", \
+             \"name\": …}}; `monitor` with action \"retire\" ends it.",
             "its checks, reviews, CodeRabbit's review, new comments, and its merging or closing",
             armed
                 .iter()
@@ -142,19 +133,13 @@ mod tests {
     #[test]
     fn the_watches_are_monitor_calls_and_the_model_is_told() {
         let calls = watch_calls("https://github.com/o/r/pull/7", 7);
-        let names: Vec<&str> = calls.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "pr-7-checks",
-                "pr-7-review",
-                "pr-7-coderabbit",
-                "pr-7-comment",
-                "pr-7-closed"
-            ]
-        );
+        assert_eq!(calls.len(), 1, "one watch, one look, for everything");
+        assert_eq!(calls[0].0, "pr-7");
         let v: serde_json::Value = serde_json::from_str(&calls[0].1.arguments).unwrap();
-        assert_eq!(v["github"]["until"], "checks");
+        assert_eq!(
+            v["github"]["until"],
+            serde_json::json!(["checks", "review", "coderabbit", "comment", "closed"])
+        );
         assert_eq!(v["repeat"], true);
         let said = told(
             "https://github.com/o/r/pull/7",

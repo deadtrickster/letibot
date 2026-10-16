@@ -1055,6 +1055,28 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<Stri
 /// all day would otherwise ship its whole history with every job-table refill.
 pub const MONITORS_ENDED_SHOWN: usize = 20;
 
+/// **What reaps a monitor, as a person says it** — `session`, `turn`, or a named scope's own name;
+/// the scope's id (`session.s0`) is the daemon's, not the reader's.
+fn owner_words(s: &letibot_tools::exec::scope::ScopeId) -> String {
+    use letibot_tools::exec::scope::ScopeKind;
+    match s.kind {
+        ScopeKind::Session => "session".into(),
+        ScopeKind::Turn => "turn".into(),
+        ScopeKind::Explicit => format!("scope `{}`", s.name),
+    }
+}
+
+/// **Who armed a monitor, as a person says it** — `turn pr-watch` was the harness on a
+/// `gh pr create`, `turn restart` a restart re-arming its stored call; a model's own turn is
+/// said as it is.
+fn declared_words(by: &str) -> String {
+    match by {
+        "turn pr-watch" => "the harness, when the pull request was opened".into(),
+        "turn restart" => "a restart, from the call that armed it".into(),
+        other => other.to_string(),
+    }
+}
+
 /// [`Harness::monitor_entries`] over its inputs, so the rows are assertable without a session.
 pub fn monitor_entries_of(
     live: &[std::sync::Arc<letibot_tools::exec::monitor::Monitor>],
@@ -1073,8 +1095,8 @@ pub fn monitor_entries_of(
         .map(|m| letibot_sessionlog::protocol::MonitorEntry {
             name: m.name.clone(),
             watching: m.watch.describe(),
-            owner: m.owner.to_string(),
-            declared_by: m.declared_by.clone(),
+            owner: owner_words(&m.owner),
+            declared_by: declared_words(&m.declared_by),
             repeat: m.repeats(),
             live: true,
             ends_at_ms: now_ms + m.remaining().map_or(0, |r| r.as_millis() as u64),
@@ -1103,7 +1125,7 @@ pub fn monitor_entries_of(
                 name: f.name.clone(),
                 watching: f.watch.clone(),
                 owner: String::new(),
-                declared_by: f.declared_by.clone(),
+                declared_by: declared_words(&f.declared_by),
                 repeat: false,
                 live: false,
                 ends_at_ms: 0,

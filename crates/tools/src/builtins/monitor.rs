@@ -94,7 +94,7 @@ impl Tool for Monitor {
                     "pid": {"type": "integer", "description": "Watch one process leave, by pid. Resolved to (pid, start time) now; this daemon and its ancestors are refused."},
                     "process": {"type": "string", "description": "Watch every process of this user whose command line contains this string leave. Found once, now, never including this daemon or its ancestors; then watched by handle. Fires when all are gone."},
                     "command": {"type": "string", "description": "Watch a command: fire when it exits (any exit code). A health check, not a shell you run work in."},
-                    "github": {"type": "object", "description": "Watch a GitHub pull request or issue through the operator's `gh`: {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \"until\": \"closed\"|\"merged\"|\"checks\"|\"review\"|\"comment\"|\"coderabbit\"} (or `repo` with `pr`/`issue` instead of `url`), optionally `every_s` (how often it looks, default 90, at least 30). A review, comment or CodeRabbit pass counts only after the watch is armed; a state already true (merged, checks done) fires at once. Lives a day by default, up to a week; with `repeat` it fires again for the next one (the next push's checks, the next review).", "properties": {"url": {"type": "string"}, "repo": {"type": "string"}, "pr": {"type": "integer"}, "issue": {"type": "integer"}, "until": {"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}, "every_s": {"type": "integer"}}},
+                    "github": {"type": "object", "description": "Watch a GitHub pull request or issue through the operator's `gh`: {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \"until\": \"closed\"|\"merged\"|\"checks\"|\"review\"|\"comment\"|\"coderabbit\"} (or `repo` with `pr`/`issue` instead of `url`); `until` may be a list — one watch, one look, for all of them — optionally `every_s` (how often it looks, default 90, at least 30). A review, comment or CodeRabbit pass counts only after the watch is armed; a state already true (merged, checks done) fires at once. Lives a day by default, up to a week; with `repeat` it fires again for the next one (the next push's checks, the next review).", "properties": {"url": {"type": "string"}, "repo": {"type": "string"}, "pr": {"type": "integer"}, "issue": {"type": "integer"}, "until": {"anyOf": [{"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}, {"type": "array", "items": {"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}}]}, "every_s": {"type": "integer"}}},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
                     "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
                     "repeat": {"type": "boolean", "description": "Continuous rather than one-shot: after it fires it re-arms and keeps watching for the next occurrence (a path changing again, a port flapping, a timer on an interval). A one-shot monitor settles the first time its condition is met."}
@@ -505,9 +505,9 @@ fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
     use crate::exec::github::{EVERY, EVERY_MIN, GithubCondition, Target, Until};
     const SHAPE: &str = "give `github` as {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \
                          \"until\": \"…\"} (an issue URL works too), or {\"repo\": \"OWNER/REPO\", \
-                         \"pr\": N} / {\"repo\": …, \"issue\": N} with `until`. `until` is one of \
-                         `closed`, `merged`, `checks`, `review`, `comment`, `coderabbit`. Nothing was \
-                         declared.";
+                         \"pr\": N} / {\"repo\": …, \"issue\": N} with `until`. `until` is one of, \
+                         or a list of, `closed`, `merged`, `checks`, `review`, `comment`, \
+                         `coderabbit`. Nothing was declared.";
     let target = if let Some(url) = g.get("url").and_then(|u| u.as_str()) {
         Target::from_url(url).ok_or_else(|| {
             Box::new(Invocation::failed(
@@ -542,19 +542,34 @@ fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
             pr,
         }
     };
-    let Some(until) = g
-        .get("until")
-        .and_then(|u| u.as_str())
-        .and_then(Until::parse)
-    else {
+    // **One `until`, or several**: one look at a pull request answers all of them, so a
+    // `["checks", "review", "closed"]` is one watch and one `gh` call rather than three.
+    let words: Vec<&str> = match g.get("until") {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    let mut untils: Vec<Until> = Vec::new();
+    for w in &words {
+        let Some(u) = Until::parse(w) else {
+            return Err(Box::new(Invocation::failed(
+                format!("`{w}` is not something a GitHub watch waits for"),
+                SHAPE,
+            )));
+        };
+        if !untils.contains(&u) {
+            untils.push(u);
+        }
+    }
+    if untils.is_empty() {
         return Err(Box::new(Invocation::failed(
             "`github` needs `until`",
             SHAPE,
         )));
-    };
-    if until.needs_pr() && !target.pr {
+    }
+    if let Some(u) = untils.iter().find(|u| u.needs_pr()).filter(|_| !target.pr) {
         return Err(Box::new(Invocation::failed(
-            format!("an issue has no {}", until.word()),
+            format!("an issue has no {}", u.word()),
             "`merged`, `checks`, `review` and `coderabbit` are a pull request's; an issue can \
              be watched for `closed` or `comment`. Nothing was declared.",
         )));
@@ -566,7 +581,7 @@ fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
         .unwrap_or(EVERY)
         .max(EVERY_MIN);
     Ok(Watch::Custom(CustomWatch(GithubCondition::new(
-        target, until, every,
+        target, untils, every,
     ))))
 }
 

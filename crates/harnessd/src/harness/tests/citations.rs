@@ -122,15 +122,11 @@ fn an_opened_pull_request_gets_its_watches() {
         .monitors()
         .expect("a session with a process host has monitors")
         .live_names();
-    for want in [
-        "pr-7-checks",
-        "pr-7-review",
-        "pr-7-coderabbit",
-        "pr-7-comment",
-        "pr-7-closed",
-    ] {
-        assert!(live.iter().any(|n| n == want), "{want} armed: {live:?}");
-    }
+    assert_eq!(
+        live,
+        vec!["pr-7".to_string()],
+        "one watch for the pull request"
+    );
     let again = h.watch_opened_pr("https://github.com/o/r/pull/7", 7);
     assert!(
         !again.contains("is now watched"),

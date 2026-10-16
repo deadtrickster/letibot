@@ -167,6 +167,9 @@ struct State {
     checks_told: Option<String>,
     /// The head whose conflict with the base was already reported.
     conflict_told: Option<String>,
+    /// **The pull request is closed and that has been said** — nothing more can happen on it, so
+    /// GitHub is not asked again for the rest of the watch's life.
+    done: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,17 +182,20 @@ enum Step {
 #[derive(Debug)]
 pub struct GithubCondition {
     target: Target,
-    until: Until,
+    /// **What it waits for — one look serves them all**: a pull request's checks, reviews,
+    /// CodeRabbit, comments and closing are one `gh` call, not five (the operator: *"we can
+    /// coalesce monitors sets like these"*).
+    untils: Vec<Until>,
     every: Duration,
     gh: String,
     state: Mutex<State>,
 }
 
 impl GithubCondition {
-    pub fn new(target: Target, until: Until, every: Duration) -> std::sync::Arc<Self> {
+    pub fn new(target: Target, untils: Vec<Until>, every: Duration) -> std::sync::Arc<Self> {
         std::sync::Arc::new(GithubCondition {
             target,
-            until,
+            untils,
             every: every.max(EVERY_MIN),
             // The operator's `gh`; a test points this at a stub.
             gh: std::env::var("LETIBOT_GH").unwrap_or_else(|_| "gh".into()),
@@ -199,9 +205,14 @@ impl GithubCondition {
 
     #[cfg(test)]
     fn with_gh(target: Target, until: Until, gh: &str) -> std::sync::Arc<Self> {
+        Self::with_gh_all(target, vec![until], gh)
+    }
+
+    #[cfg(test)]
+    fn with_gh_all(target: Target, untils: Vec<Until>, gh: &str) -> std::sync::Arc<Self> {
         std::sync::Arc::new(GithubCondition {
             target,
-            until,
+            untils,
             every: Duration::ZERO,
             gh: gh.into(),
             state: Mutex::new(State::default()),
@@ -250,7 +261,10 @@ impl GithubCondition {
         // is waiting on something that cannot happen. Measured on stroppy-io/stroppy#206: a
         // `merged` watch and a model "waiting for CI" over `mergeable: CONFLICTING`. Said once
         // per head, including at arming: resolving and pushing is the next step either way.
-        if matches!(self.until, Until::Merged | Until::Checks)
+        if self
+            .untils
+            .iter()
+            .any(|u| matches!(u, Until::Merged | Until::Checks))
             && seen.state == "OPEN"
             && seen.conflict
             && st.conflict_told.as_deref() != Some(seen.head.as_str())
@@ -260,10 +274,53 @@ impl GithubCondition {
                 "{what} has merge CONFLICTS with its base — it cannot be merged, and GitHub runs \
                  no checks on it until they are resolved (merge or rebase onto the base, push). \
                  Watching for {} goes on nowhere until then",
-                self.until.word()
+                self.words()
             ));
         }
-        match self.until {
+        let untils = self.untils.clone();
+        let mut said: Vec<String> = untils
+            .iter()
+            .filter_map(|u| self.evaluate_one(*u, st, &seen, &base, first))
+            .collect();
+        // **A pull request that is no longer open is the end of every watch on it** — said once,
+        // even to a watch that never asked about closing, and then nothing more is asked of
+        // GitHub (`State::done`).
+        if seen.state != "OPEN" && !st.done {
+            st.done = true;
+            if !untils
+                .iter()
+                .any(|u| matches!(u, Until::Closed | Until::Merged))
+            {
+                said.push(format!(
+                    "{what} is {}; nothing more will come of it, and this watch stops looking",
+                    seen.state.to_lowercase()
+                ));
+            }
+        }
+        (!said.is_empty()).then(|| said.join("; "))
+    }
+
+    /// The `untils`, as the description and a firing say them.
+    fn words(&self) -> String {
+        let w: Vec<&str> = self.untils.iter().map(|u| u.word()).collect();
+        match w.len() {
+            0 => String::new(),
+            1 => w[0].to_string(),
+            n => format!("{} or {}", w[..n - 1].join(", "), w[n - 1]),
+        }
+    }
+
+    fn evaluate_one(
+        &self,
+        until: Until,
+        st: &mut State,
+        seen: &Seen,
+        base: &Seen,
+        first: bool,
+    ) -> Option<String> {
+        let what = self.target.describe();
+        let seen = seen.clone();
+        match until {
             Until::Closed if seen.state != "OPEN" => {
                 Some(format!("{what} is {}", seen.state.to_lowercase()))
             }
@@ -556,10 +613,15 @@ impl Condition for GithubCondition {
                 }
             }
         }
-        if st.child.is_some() || st.last.is_some_and(|t| t.elapsed() < self.every) {
+        if st.done || st.child.is_some() || st.last.is_some_and(|t| t.elapsed() < self.every) {
             return None;
         }
-        let step = if st.viewer.is_none() && matches!(self.until, Until::Comment | Until::Review) {
+        let step = if st.viewer.is_none()
+            && self
+                .untils
+                .iter()
+                .any(|u| matches!(u, Until::Comment | Until::Review))
+        {
             Step::Viewer
         } else {
             Step::View
@@ -581,7 +643,7 @@ impl Condition for GithubCondition {
     }
 
     fn describe(&self) -> String {
-        format!("{} until {}", self.target.describe(), self.until.word())
+        format!("{} until {}", self.target.describe(), self.words())
     }
 
     fn max_ttl(&self) -> Option<Duration> {
@@ -782,6 +844,76 @@ mod tests {
              commented (its comments are inline on the diff); you (deadtrickster) commented: \
              \"nit: rename this\". Read them with `gh pr view 206 --repo stroppy-io/stroppy \
              --comments`. Still requested from: zoe"
+        );
+    }
+
+    /// **One watch for several things** — the operator: *"we can coalesce monitors sets like
+    /// these"*. Two that happen in one look are one firing; the pull request closing is said once,
+    /// after which GitHub is not asked again; and a watch that never asked about closing is still
+    /// told the pull request is gone.
+    #[test]
+    fn one_watch_serves_several_and_stops_when_the_pull_request_closes() {
+        let t = Target::from_url("https://github.com/o/r/pull/24").unwrap();
+        let c = GithubCondition::with_gh_all(
+            t.clone(),
+            vec![Until::Checks, Until::Review, Until::Closed],
+            "gh",
+        );
+        assert_eq!(
+            c.describe(),
+            "pull request o/r#24 until its checks finishing, a review or closing"
+        );
+        let mut st = State::default();
+        let open = pr(
+            "OPEN",
+            "",
+            "",
+            r#"{"name":"ci","status":"IN_PROGRESS","conclusion":""}"#,
+        );
+        assert_eq!(c.evaluate(&mut st, parse(&open, None).unwrap()), None);
+        let both = pr(
+            "OPEN",
+            r#"{"author":{"login":"zoe"},"state":"APPROVED","body":"","submittedAt":"2026-10-16T09:00:00Z"}"#,
+            "",
+            r#"{"name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}"#,
+        );
+        let said = c.evaluate(&mut st, parse(&both, None).unwrap()).unwrap();
+        assert_eq!(
+            said,
+            "pull request o/r#24: every check passed on abcdef12 (1); 1 new review on pull request \
+             o/r#24 — zoe approved"
+        );
+        st.base = st.latest.clone();
+        let merged = pr("MERGED", "", "", "");
+        assert_eq!(
+            c.evaluate(&mut st, parse(&merged, None).unwrap())
+                .as_deref(),
+            Some("pull request o/r#24 is merged")
+        );
+        assert!(st.done, "nothing more can happen on it");
+        // And a done watch asks GitHub nothing: its own state, marked done, spawns no `gh` (the
+        // program here does not exist, so a spawn would fire with that error).
+        let spent = GithubCondition::with_gh(
+            Target::from_url("https://github.com/o/r/pull/24").unwrap(),
+            Until::Checks,
+            "/nonexistent/gh",
+        );
+        spent.state.lock().unwrap().done = true;
+        assert_eq!(spent.met(), None, "GitHub is not asked again");
+        assert!(spent.state.lock().unwrap().child.is_none());
+
+        let checks_only = GithubCondition::with_gh(t, Until::Checks, "gh");
+        let mut st = State::default();
+        assert_eq!(
+            checks_only.evaluate(&mut st, parse(&open, None).unwrap()),
+            None
+        );
+        let said = checks_only
+            .evaluate(&mut st, parse(&pr("CLOSED", "", "", ""), None).unwrap())
+            .unwrap();
+        assert!(
+            said.contains("is closed; nothing more will come of it"),
+            "{said}"
         );
     }
 
