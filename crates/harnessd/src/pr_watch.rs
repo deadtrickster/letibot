@@ -34,13 +34,20 @@ pub fn opened(call: &ToolCall, payload: &str) -> Option<(String, u64)> {
     if !(command.contains("gh pr create") || command.contains("gh pr new")) {
         return None;
     }
-    let at = payload.find("https://github.com/")?;
-    let url: String = payload[at..]
-        .chars()
-        .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | ')' | '>' | '`'))
-        .collect();
-    let target = letibot_tools::exec::github::Target::from_url(&url)?;
-    target.pr.then_some((url, target.number))
+    // **The LAST pull request URL in the output**, not the first GitHub URL: a command that pushes
+    // before it creates prints git's `set up to track 'https://github.com/o/r.git/…'` first, and
+    // stopping there missed stroppy-io/stroppy#212. `gh pr create` prints the pull request last.
+    payload
+        .match_indices("https://github.com/")
+        .filter_map(|(at, _)| {
+            let url: String = payload[at..]
+                .chars()
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | ')' | '>' | '`'))
+                .collect();
+            let target = letibot_tools::exec::github::Target::from_url(&url)?;
+            target.pr.then_some((url, target.number))
+        })
+        .last()
 }
 
 /// The `monitor` calls that watch pull request `n` at `url`.
@@ -109,6 +116,18 @@ mod tests {
             Some(("https://github.com/o/r/pull/412".into(), 412))
         );
         assert_eq!(opened(&bash("gh pr view 412"), out), None, "not a create");
+        // **stroppy-io/stroppy#212, as it was created**: a push first, whose tracking line names
+        // the repository's URL before the pull request's.
+        let pushed = " * [new branch]      fix/x -> fix/x\nbranch 'fix/x' set up to track \
+                      'https://github.com/stroppy-io/stroppy.git/fix/x'.\n\
+                      https://github.com/stroppy-io/stroppy/pull/212\n";
+        assert_eq!(
+            opened(
+                &bash("git push -u origin fix/x && gh pr create --fill"),
+                pushed
+            ),
+            Some(("https://github.com/stroppy-io/stroppy/pull/212".into(), 212))
+        );
         assert_eq!(
             opened(&bash("gh pr create --fill"), "error: no commits"),
             None
