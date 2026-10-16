@@ -1976,6 +1976,9 @@ struct OwnServer {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness {
     cfg: Config,
+    /// **The daemon's mode rows**, which a `/mode` taken by a running turn writes
+    /// (`apply_queued_mode`, through [`crate::modes::record`]).
+    mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
     /// **The worktree and branch this session's work must end up on**, when it is a
     /// `task_start` child with a fresh worktree; `None` for every other session. Read as a turn
     /// is about to end ([`deliverable::EndOfWork`]): a dirty tree is told once, in the harness's
@@ -5284,6 +5287,7 @@ impl Harness {
             wiring: parts.wiring.clone(),
         };
         let mut h = Harness {
+            mode_store: parts.mode_store.clone(),
             deliverable: None,
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
@@ -13054,14 +13058,33 @@ impl Harness {
                 return;
             }
         };
-        // **The row is `Sessions`' business; the RECORDING happens where the row is written.**
-        // This session's point has moved, and that is all this function does — see
-        // `sessions::Sessions`' mode path, which writes the project row and, for a consented
-        // `allow-all`, the operator's answer beside it. It lives there because that is where
-        // the store is reachable and where the `consented` flag already arrives; a second
-        // writer here would be a second source of truth about one row.
+        // **The rows are written here too** (`modes::record`, the worker's writes). This said the
+        // worker's path would write them; it never saw this command, which this turn had already
+        // taken off the queue.
         let consented = *consented;
-        match self.set_mode_consented(mode, consented) {
+        let moved = self.set_mode_consented(mode, consented);
+        // **And written down, as the worker's door writes it** — this door used to apply the
+        // point and write nothing, so a `/mode` typed while the session worked was gone at the
+        // next restart.
+        if let Err(e) = crate::modes::record(
+            &self.mode_store,
+            &self.workspace().to_path_buf(),
+            &self.cfg.session_id,
+            mode,
+            consented,
+            moved.is_ok(),
+        ) {
+            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "mode_unpersisted".into(),
+                detail: format!(
+                    "`{}` applies to this session now, but could not be recorded, so a restart \
+                     will not bring it back: {e}",
+                    mode.name
+                ),
+                compaction: None,
+            });
+        }
+        match moved {
             Ok(said) => {
                 let applied = self.cfg.mode;
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {

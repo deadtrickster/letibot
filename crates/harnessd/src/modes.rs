@@ -327,6 +327,35 @@ impl ModeStore {
 /// is not overwritten (the store's is newer), and the file is left exactly where it is: the
 /// store records that it was imported, so a row removed later is not brought back by it.
 /// Returns how many rows were imported.
+/// **A mode the operator set, written down** — the project's row (with the operator's answer
+/// beside a consented `allow-all`) and the session's own: the writes the worker's door
+/// (`Sessions`' `CommandKind::Mode`, a `/mode` between turns) makes, for the running turn's door
+/// (`Harness::apply_queued_mode`, a `/mode` typed while the session works). That door applied the
+/// mode and wrote nothing, its comment trusting the worker's to — which never saw the command,
+/// because the turn had taken it. The operator, twice: *"i restart stroppy and allow-all goes"*.
+/// `session_moved` is whether the session itself took the point; the project row is written
+/// either way, because a later session may carry a point this one cannot.
+pub fn record(
+    store: &std::sync::RwLock<ModeStore>,
+    workspace: &Path,
+    session_id: &str,
+    mode: Mode,
+    consented: bool,
+    session_moved: bool,
+) -> std::io::Result<()> {
+    let consented_here = consented && mode.name == Mode::ALLOW_ALL.name;
+    let when = consented_here.then(letibot_flowy::seat::rfc3339_now);
+    let mut st = store.write().unwrap_or_else(|e| e.into_inner());
+    st.set(workspace, mode)?;
+    if let Some(when) = &when {
+        st.set_consent(workspace, when)?;
+    }
+    if session_moved {
+        st.set_session(session_id, mode, when.as_deref())?;
+    }
+    Ok(())
+}
+
 pub fn import_tsv(db: &Path, tsv: &Path) -> std::io::Result<usize> {
     let Ok(text) = std::fs::read_to_string(tsv) else {
         return Ok(0);

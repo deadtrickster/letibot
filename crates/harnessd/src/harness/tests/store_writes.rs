@@ -122,3 +122,38 @@ fn a_busy_store_write_is_waited_out_and_said() {
     assert!(r.is_err());
     assert_eq!(n, 1, "a failure that is not busy is not waited for");
 }
+
+/// **A `/mode` taken by a running turn is written down** — the operator, twice: *"i restart stroppy
+/// and allow-all goes"*. The running turn's door (`apply_queued_mode`) applied the point and wrote
+/// nothing, trusting the worker's door, which never saw the command. Read back the way a restart
+/// reads it: a fresh store, the session's own row and the project's.
+#[test]
+fn a_mode_set_mid_turn_survives_a_restart() {
+    let dir = Scratch::new("mode-midturn");
+    let Some((mut h, path)) = harness_on_a_store(&dir, "s-midturn") else {
+        return;
+    };
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    h.hub.submit(
+        &head.head_id,
+        "m1",
+        0,
+        letibot_sessionlog::hub::CommandKind::Mode {
+            name: "writes-allowed".into(),
+            consented: false,
+        },
+    );
+    h.apply_queued_mode();
+    assert_eq!(h.config().mode.name, "writes allowed", "the session moved");
+    let fresh = crate::modes::ModeStore::load(&path);
+    assert_eq!(
+        fresh.session("s-midturn").map(|(m, _)| m.name),
+        Some("writes allowed"),
+        "the session's own row is there for the next open"
+    );
+    assert_eq!(
+        fresh.for_project(h.workspace()).name,
+        "writes allowed",
+        "and the project's"
+    );
+}
