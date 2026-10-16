@@ -758,7 +758,28 @@ impl App {
             line: self.held_line(),
             arriving,
         });
+        // **The rows before the first one that goes keep their places; every index from it on is
+        // about to mean a row of the new transcript.**
+        let kept = self
+            .items
+            .iter()
+            .position(|r| r.item_id.starts_with(gone.as_str()))
+            .unwrap_or(self.items.len());
         self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
+        // **So the two things this head keeps by row INDEX go with the rows, as `load` drops
+        // them** — the pairings R89 made (`one_event`) and the seams its notes were filed at.
+        // pg-noop, 2026-10-16: a `target_red` warning filed at seam 566 of `#t50` had absorbed
+        // that transcript's `EMERGENCY` notice, row 566; two compactions later row 566 of `#t52`
+        // was the operator's *"how we are doing"*, which drew nothing, and the red card stood
+        // where it should have been with a time seven hours old — *"my latest message simply not
+        // rendered"*. A seam into the rows that went joins the history (`/notes` lists it), the
+        // rule `load` applies to a seam the new transcript no longer has.
+        self.absorbed.clear();
+        for (place, _) in &mut self.notes {
+            if matches!(place, Placed::Seam(at) if *at > kept) {
+                *place = Placed::Before;
+            }
+        }
         // **And the offset goes with the rows it was measured against.**
         //
         // `scroll` is lines hidden below the window, so it is the barest offset this head keeps

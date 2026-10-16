@@ -515,3 +515,101 @@ fn a_red_warning_and_its_emergency_notice_are_one_line() {
     let first = NOTICE.lines().next().unwrap();
     assert!(holds(&whole, first), "the notice is in the popup: {whole}");
 }
+
+/// **A fork takes the pairing with the rows it was made on** — the operator's `"my latest message
+/// simply not rendered"` (pg-noop, 2026-10-16).
+///
+/// The `target_red` warning for `feat/memory-engine` reached the head at 09:18:06 while the
+/// session's `EMERGENCY —` notice for the same tip was row 566 of `#t50`, so the warning was filed
+/// at seam 566 and row 566 was absorbed into its card. Two compactions later row 566 of `#t52` was
+/// the operator's `how we are doing` — and the head still held `absorbed[566]` and the note's
+/// seam, both indices into a transcript that had gone: the operator's line drew nothing, and the
+/// red card stood in its place with the time of an event from seven hours before.
+///
+/// The same shape, small: the notice at row 2, the warning paired with it, a fork that carries two
+/// rows, and the operator's message arriving live as row 2 of the new transcript.
+#[test]
+fn a_fork_does_not_carry_a_red_cards_pairing_onto_the_operators_next_message() {
+    let assistant = |text: &str| -> TranscriptItem {
+        serde_json::from_value(serde_json::json!({ "type": "assistant", "text": text }))
+            .expect("an assistant row")
+    };
+    let notice = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Agent,
+        parts: vec![UserPart::Text {
+            text: NOTICE.into(),
+        }],
+    };
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    shell_row(&mut a, 1, "s.0", "assistant", assistant("an answer before"));
+    shell_row(&mut a, 3, "s.1", "assistant", assistant("another answer"));
+    shell_row(&mut a, 5, "s.2", "user", notice);
+    a.apply(ServerFrame::Event(env(
+        7,
+        SessionEvent::Warning {
+            code: "target_red".into(),
+            detail: WARNING.into(),
+            compaction: None,
+        },
+    )));
+    shell_row(&mut a, 8, "s.3", "assistant", assistant("red by design"));
+    // The premise: the warning's card stands for the notice, which draws nothing of its own.
+    let screen = a.screen(200, 60);
+    assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
+    assert_eq!(a.notice_rows.len(), 0, "{}", screen.join("\n"));
+    assert!(
+        a.absorbed.contains_key(&2),
+        "the premise: row 2 is absorbed"
+    );
+
+    // The compaction: the summary and the newest answer, under the new transcript's ids.
+    a.apply(ServerFrame::Event(env(20, testing::forked("s#t1", "s"))));
+    shell_row(
+        &mut a,
+        21,
+        "s#t1.0",
+        "assistant",
+        assistant("This conversation was compacted: the summary is below."),
+    );
+    shell_row(
+        &mut a,
+        23,
+        "s#t1.1",
+        "assistant",
+        assistant("The formatting gap is fourteen lines"),
+    );
+    a.screen(200, 60);
+    // And the operator speaks: row 2 of the new transcript, then the answer to it.
+    shell_row(
+        &mut a,
+        25,
+        "s#t1.2",
+        "user",
+        operator_row("how we are doing"),
+    );
+    shell_row(
+        &mut a,
+        27,
+        "s#t1.3",
+        "assistant",
+        assistant("Short version: the engine keeps getting better"),
+    );
+    let screen = a.screen(200, 60);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, "how we are doing").len(),
+        1,
+        "the operator's message is drawn once:\n{joined}"
+    );
+    // And the card of a row that went is not drawn at a seam of a transcript it was never in.
+    assert_eq!(
+        a.card_rows.len(),
+        0,
+        "the red card of the replaced transcript is drawn in the new one:\n{joined}"
+    );
+}
