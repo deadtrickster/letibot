@@ -139,8 +139,11 @@ impl Target {
 struct Seen {
     state: String,
     head: String,
-    /// Reviews that approve or ask for changes, not CodeRabbit's: `(author, state)`, oldest first.
-    reviews: Vec<(String, String)>,
+    /// **Every submitted review but CodeRabbit's** — approving, asking for changes, or commenting,
+    /// the operator's own included: `(when, author, state, first line)`, oldest first.
+    reviews: Vec<(String, String, String, String)>,
+    /// Who a review is still requested from.
+    requested: Vec<String>,
     /// Comments and review bodies by anyone but the operator: `(when, author, first line)`, in
     /// the order they were written — two lists merged, so "the latest" is the latest.
     comments: Vec<(String, String, String)>,
@@ -216,7 +219,7 @@ impl GithubCondition {
                     .arg(&self.target.repo)
                     .args([
                         "--json",
-                        "state,headRefOid,mergeable,reviews,comments,statusCheckRollup",
+                        "state,headRefOid,mergeable,reviews,reviewRequests,comments,statusCheckRollup",
                     ]);
             }
             Step::View => {
@@ -285,12 +288,56 @@ impl GithubCondition {
                     )
                 })
             }
+            // **Any review, by whoever was asked** — the operator: *"reviews can come via normal
+            // reviewers route"*. A review submitted as a COMMENT, which is how review bots and
+            // many people review, findings inline and maybe no text of its own, is a review too.
             Until::Review if !first && seen.reviews.len() > base.reviews.len() => {
-                let (who, how) = seen.reviews.last()?;
-                Some(match how.as_str() {
-                    "APPROVED" => format!("{what} was approved by {who}"),
-                    _ => format!("{who} asked for changes on {what}"),
-                })
+                let new = &seen.reviews[base.reviews.len()..];
+                let me = st.viewer.clone();
+                let each: Vec<String> = new
+                    .iter()
+                    .map(|(_, who, how, said)| {
+                        let who = if me.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(who)) {
+                            format!("you ({who})")
+                        } else {
+                            who.clone()
+                        };
+                        let verb = match how.as_str() {
+                            "APPROVED" => "approved",
+                            "CHANGES_REQUESTED" => "asked for changes",
+                            _ => "commented",
+                        };
+                        if said.is_empty() && how != "APPROVED" {
+                            format!("{who} {verb} (its comments are inline on the diff)")
+                        } else if said.is_empty() {
+                            format!("{who} {verb}")
+                        } else {
+                            format!("{who} {verb}: \"{said}\"")
+                        }
+                    })
+                    .collect();
+                let mut out = format!(
+                    "{} new review{} on {what} — {}",
+                    new.len(),
+                    if new.len() == 1 { "" } else { "s" },
+                    each.join("; ")
+                );
+                if new
+                    .iter()
+                    .any(|(_, _, how, said)| said.is_empty() && how != "APPROVED")
+                {
+                    out.push_str(&format!(
+                        ". Read them with `gh pr view {} --repo {} --comments`",
+                        self.target.number, self.target.repo
+                    ));
+                }
+                if !seen.requested.is_empty() {
+                    out.push_str(&format!(
+                        ". Still requested from: {}",
+                        seen.requested.join(", ")
+                    ));
+                }
+                Some(out)
             }
             Until::Comment if !first && seen.comments.len() > base.comments.len() => {
                 let new = &seen.comments[base.comments.len()..];
@@ -395,16 +442,26 @@ fn parse(json: &str, viewer: Option<&str>) -> Option<Seen> {
             seen.rabbit.push((how, first_line(body)));
             continue;
         }
-        if how == "APPROVED" || how == "CHANGES_REQUESTED" {
-            seen.reviews.push((who.clone(), how.clone()));
-        }
-        if !body.trim().is_empty() && !mine(&who) {
+        // A review is a review's news, not "a new comment" — the `comment` watch is the
+        // conversation; a dismissed or pending review is not one anybody submitted.
+        if matches!(how.as_str(), "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED") {
             let at = r.get("submittedAt").and_then(|t| t.as_str()).unwrap_or("");
-            seen.comments.push((at.to_string(), who, first_line(body)));
+            seen.reviews
+                .push((at.to_string(), who, how, first_line(body)));
         }
     }
     // RFC 3339 stamps from one API sort as text; a stable sort keeps a missing one in place.
     seen.comments.sort_by(|a, b| a.0.cmp(&b.0));
+    seen.reviews.sort_by(|a, b| a.0.cmp(&b.0));
+    seen.requested = arr("reviewRequests")
+        .iter()
+        .filter_map(|r| {
+            ["login", "name", "slug"]
+                .iter()
+                .find_map(|k| r.get(*k).and_then(|v| v.as_str()))
+                .map(str::to_string)
+        })
+        .collect();
     let checks = arr("statusCheckRollup");
     if !checks.is_empty() {
         let mut passed = 0;
@@ -502,7 +559,7 @@ impl Condition for GithubCondition {
         if st.child.is_some() || st.last.is_some_and(|t| t.elapsed() < self.every) {
             return None;
         }
-        let step = if st.viewer.is_none() && self.until == Until::Comment {
+        let step = if st.viewer.is_none() && matches!(self.until, Until::Comment | Until::Review) {
             Step::Viewer
         } else {
             Step::View
@@ -612,7 +669,10 @@ mod tests {
             "",
         );
         for (until, want) in [
-            (Until::Review, "pull request o/r#1 was approved by bob"),
+            (
+                Until::Review,
+                "1 new review on pull request o/r#1 — bob approved",
+            ),
             (
                 Until::Comment,
                 "1 new comment on pull request o/r#1 — the latest by carl: \"looks off\"",
@@ -695,6 +755,34 @@ mod tests {
         let c = GithubCondition::with_gh(t, Until::Review, "gh");
         let mut st = State::default();
         assert_eq!(c.evaluate(&mut st, parse(dirty, None).unwrap()), None);
+    }
+
+    /// **A review is any review** — a reviewer's comment-only review with nothing but inline
+    /// comments is one (the operator: *"reviews can come via normal reviewers route"*), the
+    /// operator's own is named as theirs, CodeRabbit's stays its own watch's, and who is still
+    /// asked is said.
+    #[test]
+    fn every_submitted_review_is_news_whatever_its_kind() {
+        let t = Target::from_url("https://github.com/stroppy-io/stroppy/pull/206").unwrap();
+        let c = GithubCondition::with_gh(t, Until::Review, "gh");
+        let mut st = State {
+            viewer: Some("deadtrickster".into()),
+            ..State::default()
+        };
+        let before = r#"{"state":"OPEN","headRefOid":"a","reviews":[],"reviewRequests":[{"login":"zoe"}],"comments":[],"statusCheckRollup":[]}"#;
+        assert_eq!(c.evaluate(&mut st, parse(before, None).unwrap()), None);
+        let after = r#"{"state":"OPEN","headRefOid":"a","reviewRequests":[{"login":"zoe"}],"comments":[],"statusCheckRollup":[],"reviews":[
+            {"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","body":"","submittedAt":"2026-10-16T10:00:00Z"},
+            {"author":{"login":"coderabbitai"},"state":"COMMENTED","body":"","submittedAt":"2026-10-16T10:01:00Z"},
+            {"author":{"login":"deadtrickster"},"state":"COMMENTED","body":"nit: rename this","submittedAt":"2026-10-16T10:02:00Z"}]}"#;
+        let said = c.evaluate(&mut st, parse(after, None).unwrap()).unwrap();
+        assert_eq!(
+            said,
+            "2 new reviews on pull request stroppy-io/stroppy#206 — copilot-pull-request-reviewer \
+             commented (its comments are inline on the diff); you (deadtrickster) commented: \
+             \"nit: rename this\". Read them with `gh pr view 206 --repo stroppy-io/stroppy \
+             --comments`. Still requested from: zoe"
+        );
     }
 
     #[test]
