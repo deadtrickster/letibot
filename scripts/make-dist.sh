@@ -101,7 +101,7 @@ set -eu
 #
 # It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
 # rather than from `target/release` — see the copy loop below.
-ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot"
+ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot leticode"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
 # must match (`check-dist-names.sh` holds the two to each other).
@@ -184,7 +184,7 @@ for want in $ARCHIVE_BINARIES; do
     # `letibot --sessions` answered "no such role: --sessions". A file that exists and
     # is the wrong THING is worse than one that is missing: only the missing one gets
     # noticed.
-    if [ "$want" = "letibot" ]; then
+    if [ "$want" = "letibot" ] || [ "$want" = "leticode" ]; then
         if head -c 2 "$stage/$want" 2>/dev/null | grep -q '^#!'; then
             :
         else

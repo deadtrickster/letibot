@@ -8,6 +8,8 @@
 #   $PREFIX/harnessd           the daemon — the session, the gate, the model connection
 #   $PREFIX/letibot-tui        the head — the terminal interface you look at
 #   $PREFIX/letibot-askpass    what `sudo` runs inside a session to ask for a password
+#   $PREFIX/letibot            the command you type: starts the daemon if needed, attaches a head
+#   $PREFIX/leticode           the same, seated as leticode (shell and web_fetch on, automode-edits)
 #   $PREFIX/libllama.so.0      the tokenizer, which the daemon links
 #   $PREFIX/libggml.so.0       llama.cpp's compute layer, which libllama links
 #   $PREFIX/libggml-cpu.so.0   the CPU backend, which libggml links
@@ -72,7 +74,19 @@ VERSION="${LETIBOT_VERSION:-}"
 #
 # It ships in the archive with everything else (see `make-dist.sh`, which decides
 # that) so the script and the binaries come from ONE ref.
-BINARIES="harnessd letibot-tui letibot-askpass letibot"
+#
+# **`leticode` is the second launcher, and it was missing the same way.** The operator,
+# 2026-10-18: *"install script in repo doesnt install leticode"* — `scripts/leticode`
+# (letibot seated as leticode, the default seat) was tracked and never copied, so a fresh
+# install answered `leticode: command not found`. It is a script beside `letibot`, which
+# it execs; every rule below for the launcher holds for it ([`is_launcher`]).
+BINARIES="harnessd letibot-tui letibot-askpass letibot leticode"
+# The names in BINARIES that are repository scripts, not build products.
+LAUNCHERS="letibot leticode"
+is_launcher() {
+    case " $LAUNCHERS " in *" $1 "*) return 0 ;; esac
+    return 1
+}
 LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # **The same four on macOS, in Mach-O's spelling.** MEASURED 2026-10-07 with `otool -L` on
 # a CPU-only llama.cpp build: libllama needs libggml, libggml-base and libggml-cpu, all
@@ -369,6 +383,7 @@ build_from_source() {
             -p letibot-tui --bin letibot-tui -p letibot --bin letibot >&2
         out="$src/target/release"
         for want in $BINARIES; do
+            [ "$want" = leticode ] && continue
             [ -x "$out/$want" ] || die "the build produced no $out/$want"
         done
         # Nothing to carry: no binary of this build links a llama library. (`main` empties
@@ -387,6 +402,7 @@ build_from_source() {
         --bin harnessd --bin letibot-tui --bin letibot-askpass --bin letibot >&2
     out="$src/target/release"
     for want in $BINARIES; do
+        [ "$want" = leticode ] && continue
         [ -x "$out/$want" ] || die "the build produced no $out/$want"
     done
     printf '%s' "$out"
@@ -480,7 +496,7 @@ main() {
     have_launcher=1
     for want in $BINARIES; do
         src_file="$from/$want"
-        if [ "$want" = "letibot" ]; then
+        if is_launcher "$want"; then
             # The checkout's copy wins in a source install; the archive is the only
             # source otherwise. Then the resolved file must be a SCRIPT — see
             # `launcher_from` above for why an ELF here is the failure to avoid.
@@ -488,13 +504,17 @@ main() {
                 src_file="$launcher_from/$want"
             fi
             if [ ! -f "$src_file" ]; then
-                have_launcher=0
+                if [ "$want" = letibot ]; then
+                    have_launcher=0
+                else
+                    say "  (this release carries no $want; letibot is the same program, seated otherwise)"
+                fi
                 continue
             fi
             if head -c 2 "$src_file" 2>/dev/null | grep -q '^#!'; then
                 :
             else
-                die "$src_file is not a script, and \`letibot\` must be one.
+                die "$src_file is not a script, and \`$want\` must be one.
   That file is a compiled binary — most likely the multicall at
   target/release/letibot, which does not implement the launcher yet. Install the
   release asset, or run this from a checkout whose scripts/letibot is present."
