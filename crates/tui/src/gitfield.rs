@@ -29,8 +29,9 @@
 //! **Read from the LOOP, never from a paint.** This spawns a process, and the rule is the dash
 //! collectors': a measurement never runs where the frame is drawn. `App::refresh_git` is called
 //! by `driver::tick`, and [`GIT_REFRESH_MS`] is leticl's own interval — chosen to hold the process
-//! rate down rather than because a frame could not afford it. It is wrapped in coreutils'
-//! `timeout`, because a `wait` with no deadline is what turns a slow mount into a frozen head.
+//! rate down rather than because a frame could not afford it. It runs under a deadline
+//! ([`run_with_deadline`]), because a `wait` with no deadline is what turns a slow mount into a
+//! frozen head.
 //!
 //! **And the loop does not run it, it starts it.** The reading is taken on a thread of its own
 //! and collected on a later tick: a `wait` *with* a deadline still holds every key for as long
@@ -477,22 +478,117 @@ pub fn repo_holding(ws: &str, path: &str) -> Option<std::path::PathBuf> {
 
 /// **One reading of the repository at `dir`**, or `None` — see [`read_state`].
 pub fn read_state_at(dir: &std::path::Path) -> Option<GitState> {
-    let out = Command::new("timeout")
-        .arg(GIT_TIMEOUT_SECS.to_string())
-        .arg("git")
-        .arg("-C")
+    let mut git = Command::new("git");
+    git.arg("-C")
         .arg(dir)
         // A reader writes nothing to the repository it reports on.
         .arg("--no-optional-locks")
-        .args(["status", "--porcelain=v2", "--branch", "--show-stash"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
+        .args(["status", "--porcelain=v2", "--branch", "--show-stash"]);
+    let stdout = run_with_deadline(git, std::time::Duration::from_secs(GIT_TIMEOUT_SECS))?;
+    let text = String::from_utf8_lossy(&stdout);
     let action = git_action(dir.to_str()?);
     git_parts(&text, action)
+}
+
+/// **A command's stdout if it succeeds within `limit`, else `None`** — and a command past its
+/// limit is killed, not waited for.
+///
+/// This was coreutils' `timeout git …`, and macOS has no `timeout`: every reading failed to
+/// spawn, so a Mac's header never showed a branch, and CI's macOS job failed the two `repos`
+/// tests that look for `(main` (run 39131941988). The output is drained on a thread so a reading
+/// larger than the pipe cannot stall the child while the deadline is watched.
+pub fn run_with_deadline(mut cmd: Command, limit: std::time::Duration) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut pipe = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        buf
+    });
+    let until = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                // Killed, and the reader is NOT joined: what git started (a submodule's own
+                // status) can hold the pipe open past git, and joining would wait for it — the
+                // very wait the deadline exists to bound. The thread ends when the pipe does.
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok()?;
+    status.filter(|s| s.success()).map(|_| out)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::run_with_deadline;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    fn sh(script: &str) -> Command {
+        let mut c = Command::new("sh");
+        c.args(["-c", script]);
+        c
+    }
+
+    #[test]
+    fn a_command_within_its_limit_gives_its_output() {
+        let out = run_with_deadline(sh("printf hello"), Duration::from_secs(5));
+        assert_eq!(out.as_deref(), Some(&b"hello"[..]));
+    }
+
+    #[test]
+    fn a_failing_command_gives_nothing() {
+        assert_eq!(
+            run_with_deadline(sh("echo no; exit 3"), Duration::from_secs(5)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_command_past_its_limit_is_killed_rather_than_waited_for() {
+        let t = Instant::now();
+        assert_eq!(
+            run_with_deadline(sh("sleep 30"), Duration::from_millis(200)),
+            None
+        );
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    /// A grandchild holding the pipe past the killed child does not hold the caller.
+    #[test]
+    fn a_grandchild_keeping_the_pipe_does_not_outlast_the_limit() {
+        let t = Instant::now();
+        assert_eq!(
+            run_with_deadline(sh("sleep 30 & sleep 30"), Duration::from_millis(200)),
+            None
+        );
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    /// Output larger than a pipe's buffer is drained while the deadline is watched.
+    #[test]
+    fn output_larger_than_the_pipe_is_read_whole() {
+        let out = run_with_deadline(
+            sh("i=0; while [ $i -lt 20000 ]; do echo 0123456789; i=$((i+1)); done"),
+            Duration::from_secs(20),
+        )
+        .expect("it finished");
+        assert_eq!(out.len(), 20000 * 11);
+    }
 }
 
 /// **The path a tool call is about, from its arguments** — `path`, `file_path` or `file` (what
