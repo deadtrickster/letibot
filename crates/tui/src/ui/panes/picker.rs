@@ -197,10 +197,16 @@ impl App {
                 "green: this box holds a key for it; the others ask for one when you take them"
                     .to_string()
             }),
-            consequence: subject
-                .consequence()
+            // **Why the card is up, first, when the head opened it** — the model a message was
+            // about to go to could not be reached (`app::reach`). Under the list with the other
+            // lines, not in the title: the click arithmetic counts the title as one row.
+            consequence: self
+                .reach
+                .reason
                 .iter()
-                .map(|l| l.to_string())
+                .filter(|_| subject == Pick::Model)
+                .cloned()
+                .chain(subject.consequence().iter().map(|l| l.to_string()))
                 .collect(),
         };
         // The keys line, then the legend and the consequence, each one line — see

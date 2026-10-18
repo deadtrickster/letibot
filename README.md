@@ -92,12 +92,12 @@ silicon); other platforms take the source path. On a Mac the libraries are the s
 until a model is reachable, and a fresh box reaches this point and stops here — the gap is a model
 rather than a package, and no amount of installing closes it.
 
-**A running chat.** `letibot` brings up a daemon and attaches the head; with no model behind it, the
-first thing you see is a connection error rather than a conversation. Start one first:
-
-```sh
-llama-server -m MODEL.gguf --port 8080      # or: --provider deepseek|glm|grok
-```
+**A model chosen.** `letibot` brings up a daemon and attaches the head whatever is serving; on the
+first message, if the session's model cannot be reached, the head opens the `/models` chooser with
+the reason. A cloud model asks for its key once, saves it (mode 600) and becomes this box's default.
+A local llama-server is the other door — give it a `[model."local.NAME"]` block with its `url` in
+`~/.config/letibot/providers.toml`. `--provider deepseek|glm|grok` is a shortcut past the chooser,
+not a requirement.
 
 **An older release may not carry the launcher.** It joined the archive after `v0.1.1`, so an install
 from that release says so and points at the head directly instead of telling you to run a command it

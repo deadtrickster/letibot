@@ -576,6 +576,9 @@ impl Link {
         // measurement never runs where the frame is drawn. Two seconds between readings
         // (`GIT_REFRESH_MS`) is leticl's own interval, kept so the process rate stays low.
         app.refresh_git();
+        // **And the model check a held message waits on** (`app::reach`) — collected here for the
+        // same reason: a probe is a network round trip, and the loop never waits on one.
+        app.poll_reach();
 
         // 1. Drain. Nothing is sent in this phase.
         let mut rendered = 0u64;

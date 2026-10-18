@@ -288,6 +288,11 @@ impl App {
                 // the daemon honours, so the header names what answers now rather than what
                 // answered a moment ago.
                 self.queued.push(Action::Settings);
+                // **A cloud row taken because the local model could not be reached** becomes the
+                // default, and the message held for it follows the switch — `app::reach`.
+                if !self.keyless_choices().iter().any(|k| k == &name) {
+                    self.took_cloud_row(&name);
+                }
                 return Some(Action::Slash {
                     line: format!("models {name}"),
                 });

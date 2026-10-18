@@ -664,26 +664,23 @@ main() {
     # error. The operator measured the same gap from the other side on
     # `debian:stable-slim`: the install lands, and the first thing that stops you is
     # a model rather than a package.
+    #
+    # **But the next step is `letibot`, not a flag.** This used to send a bare box to
+    # llama-server or `--provider`, and the launcher refused without one; the operator,
+    # 2026-10-18: *"idk why i even have to do --provider. horrible ux - we already have
+    # models chooser and keys asker"*. The head asks now, on the first message, and saves
+    # the answer — so the advice is to run it, with the local server as the other door.
     if [ -z "$LIBRARIES" ]; then
-        # The cloud-only build: the next step is a key, not a model server.
-        say "What you have now: a daemon and a head for CLOUD models. Give it a key in"
-        say "~/.config/letibot/providers.toml and make that provider the default:"
-        say ""
-        say "  [deepseek]"
-        say "  key = \"sk-…\""
-        say ""
-        say "  [default]"
-        say "  provider = \"deepseek\""
-        say ""
-        say "(or [glm] / [grok]; \$DEEPSEEK_API_KEY works too, with --provider deepseek)."
+        # The cloud-only build: the next step is a key, and the head asks for it.
+        say "What you have now: a daemon and a head for CLOUD models. On the first"
+        say "message letibot asks which model, and for its key once (saved, mode 600,"
+        say "in ~/.config/letibot/providers.toml as this box's default)."
         say ""
     else
-        say "What you have now: a daemon, a head, and the libraries they link. They do"
-        say "not include a MODEL — nothing will answer a turn until one is reachable."
-        say ""
-        say "Point them at one with a llama.cpp llama-server on 127.0.0.1:8080:"
-        say "  llama-server -m MODEL.gguf --port 8080"
-        say "or use a cloud provider instead (--provider deepseek|glm|grok)."
+        say "What you have now: a daemon, a head, and the libraries they link — not a"
+        say "MODEL. On the first message letibot asks for one: a cloud model, whose key it"
+        say "asks for once and saves, or a local llama-server you give a home in"
+        say "~/.config/letibot/providers.toml ([model.\"local.NAME\"] with its url)."
         say ""
     fi
     if [ "$have_launcher" = 1 ]; then

@@ -380,7 +380,9 @@ already up, then attaches the TUI head to it.
                               a sibling directory when it ends
   letibot --vm-copy           with --vm: a copy even on a Mac
   letibot --vm-arg ARG        passed to `firecode up`, repeatable (--mem, --vcpu, --add-dir)
-  letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered
+  letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered.
+                              Optional: with no model reachable, letibot asks on the
+                              first message and saves the answer as the default
   letibot --web-search brave  attach Brave behind `web_search` (else the tool refuses).
                               Key: --brave-key, $BRAVE_API_KEY, or [brave] key= in
                               ~/.config/letibot/providers.toml
@@ -887,15 +889,19 @@ if [ -z "$ENDPOINT" ]; then
   fi
 fi
 
-# The refusal, once, for both readers of it (the health gate below and --status's
-# local line). A missing FILE is a different fact from a missing ENTRY, and each
-# sentence says which; every sentence names what asked for the model, the model
-# value searched for, and the file searched, and leaves two doors: give the model
-# a home in the file, or name a server by hand for this run. `127.0.0.1:8080` is
-# deliberately NOT fallen back to: a silent default here would send token ids to
-# whatever 8080 is serving -- the 2026-09-10 incident further down -- while
-# reading as though the flag had worked.
-endpoint_refusal() {
+# Why this run's model has no home. A missing FILE is a different fact from a missing
+# ENTRY, and each sentence says which; every sentence names what asked for the model,
+# the model value searched for, and the file searched, and leaves two doors: give the
+# model a home in the file, or name a server by hand for this run. `127.0.0.1:8080` is
+# deliberately NOT fallen back to WITH IDS: a daemon given this model's vocabulary and
+# no address would send token ids to whatever 8080 is serving -- the 2026-09-10
+# incident further down -- while reading as though the flag had worked.
+#
+# **A note now, not a refusal** (see "THE LAUNCHER NEVER GATES ON A MODEL"): said when a
+# flag or LETIBOT_MODEL asked for the model by name, because then the operator meant
+# something the file does not carry; the default with no home is a bare box, and the
+# head's chooser says that better than this does.
+endpoint_missing() {
   case "$PROV_MISSING" in
     file)
       cat <<EOF
@@ -1674,9 +1680,14 @@ SESSIONS_EOF
     # No resolved address is a refusal here too, not a quiet skip of the line:
     # "what would answer locally" is half of what --status exists to say.
     if [ -z "$ENDPOINT" ]; then
-      # A provider answers the turns, so no local home is a fact to report, not a refusal.
-      [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ] || die "$(endpoint_refusal)"
-      echo "local    none  ('$LOOKUP_MODEL' has no [model.\"…\"] block in $PROVIDERS; the turns go to the provider)"
+      # No local home is a fact to report, never a refusal: a provider answers the turns,
+      # or nothing does yet and `letibot` asks for a model on the first message (see "THE
+      # LAUNCHER NEVER GATES ON A MODEL").
+      if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
+        echo "local    none  ('$LOOKUP_MODEL' has no [model.\"…\"] block in $PROVIDERS; the turns go to the provider)"
+      else
+        echo "local    none  ('$LOOKUP_MODEL' has no [model.\"…\"] block in $PROVIDERS; letibot asks for a model on first use)"
+      fi
       exit 0
     fi
     printf 'local    %s ' "$ENDPOINT"
@@ -1755,83 +1766,52 @@ esac
   From an install the binaries should be beside this script, so re-install, or
   point LETIBOT_BIN at the directory holding them."
 
-# **The remedy has to be one a reader can carry out.** This said
-# `systemctl --user start qwen-flash-next`, which names a unit that exists on
-# exactly one machine — the same shape as the `BIN` default above and as the
-# `cargo build --release` this script used to recommend to an installed box: a
-# message that is true where it was written and unusable everywhere else.
+# **THE LAUNCHER NEVER GATES ON A MODEL.**
 #
-# What is true for everyone: a model server has to be running, it speaks the OpenAI
-# shape, and the address is whatever `$ENDPOINT` says -- which since the providers.toml
-# lookup is the home of THIS run's model, so the example port below is the endpoint's
-# own rather than a literal. (install.sh still prints the generic `--port 8080` line:
-# it advises a bare box before any providers.toml exists.)
+# There was a gate here, in three layers: no `[model."…"]` home and no provider died on
+# `endpoint_refusal` (now `endpoint_missing`, a note); nothing answering `/health` and no
+# provider died on *"nothing serving on …"*; and at a terminal that second death became a
+# question, *"1) deepseek 2) glm 3) grok"*. Each layer was a fix for the one before it,
+# and together they were a second model chooser — three rows, in shell, before the screen
+# exists — beside the one the head already has. The operator, 2026-10-18, after `leticode` on a box with no local model
+# refused that way: *"idk why i even have to do --provider. horrible ux - we already have
+# models chooser and keys asker"*.
 #
-# **Only when the turns go there.** A provider — `--provider`, or the `[default]` block in
-# providers.toml — answers over the network, and a box that has only a key (a laptop, a Mac
-# with no llama-server) died here on the very remedy the message below suggests. MEASURED
-# 2026-10-07 on macOS: `letibot --provider deepseek` with nothing on 8080 refused to start.
+# So a run starts whatever answers or does not, and the HEAD asks: the first message sent
+# while the session's model cannot be reached — nothing on the local `/health`, or no local
+# model on this box at all — opens the `/models` chooser with the reason on it, and a cloud
+# row with no key goes through the head's key card and becomes `[default]` in providers.toml,
+# so the question is asked once per box. The check is per attempt, so a llama-server that
+# comes up later simply answers. `--provider` stays, as a shortcut past the chooser.
+#
+# **With no home for the model, the daemon keeps its own default endpoint** — no
+# `--endpoint` is invented here. And no `--vocab` either: a local server takes TOKEN IDS, and
+# ids rendered for a model nobody gave an address to would be sent to whatever the daemon's
+# default port is serving — the 2026-09-10 incident `endpoint_missing`'s comment names. A
+# daemon started with no GGUF and no provider has no model chosen; it refuses a TURN on the
+# local route by name (`NO_MODEL_CHOSEN` in harness.rs) and the head's chooser is the way on.
+#
 # **The vocabulary goes with the same question.** A local model needs the GGUF it serves,
-# so `--vocab` is always passed then. A provider needs none — the daemon keeps its ledger
-# in the byte vocabulary (`letibot_tokencore::Vocab::bytes`) — so it is passed only when
-# it names a file that is there (a box with the model keeps using it, and its sessions
-# keep their ids) or when LETIBOT_VOCAB asked for it by name.
+# so `--vocab` is passed when it names a file that is there (a box with the model keeps
+# using it, and its sessions keep their ids) or when LETIBOT_VOCAB asked for it by name. A
+# provider needs none — the daemon keeps its ledger in the byte vocabulary
+# (`letibot_tokencore::Vocab::bytes`). A GGUF named by default and missing used to be
+# passed anyway and refused by the daemon at start; it is the no-model case above now.
 #
-# **And the address is a LOOKUP now, so it can be ABSENT.** A model whose block is missing,
-# or whose block carries no url, has no home — refused here, once, by `endpoint_refusal`,
-# naming the flag that asked, the model it wanted and the file it read. Before the health
-# gate, because a gate needs an address to curl.
-#
-# **But only a run whose turns go to the local model needs that home.** With a provider
-# (`--provider`, or `[default] provider` in providers.toml) the local alias answers nothing,
-# so a missing block is no reason to refuse -- and refusing was a regression: a box whose
-# providers.toml is a `[default]` and a key, and no `[model."…"]` block at all, worked
-# before the lookup and died after it. MEASURED 2026-10-08, the operator's `leticode` with
-# deepseek as the default. The daemon then keeps its own default endpoint, which no turn
-# reaches; `tests/launcher.sh` holds both halves.
-if [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ]; then
-  die "$(endpoint_refusal)"
+# `tests/launcher.sh` holds the cases: nothing serving and no provider starts, and the head
+# runs.
+if [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
+  && [ "$MODEL_FROM" != "the default (no flag chose one)" ]; then
+  { endpoint_missing; echo "Starting anyway: the head asks for a model on the first message."; } \
+    | sed 's/^/letibot: /' >&2
 fi
 ENDPOINT_ARGS=()
 [ -z "$ENDPOINT" ] || ENDPOINT_ARGS=(--endpoint "$ENDPOINT")
-if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
-  && ! curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
-  # **Nothing to answer, and a person at the keyboard: ask, rather than die.** The
-  # operator: *"id prefer leticode to ask me of course"*. The choice becomes `--provider`;
-  # the KEY is not asked here — the daemon asks for it on the first turn, on the masked
-  # card sudo's password uses, and saves it (0600) with this provider as the default, so
-  # this question is asked once per box. Without a terminal there is nobody to ask, and
-  # the refusal stands as it was.
-  if [ -t 0 ] && [ -t 1 ]; then
-    printf '%s\n' "letibot: nothing is serving a local model on $ENDPOINT, and no cloud provider is set up." \
-      "  Use a cloud provider? Its key is asked for on the first turn and saved." \
-      "    1) deepseek    2) glm    3) grok        (enter quits)" >&2
-    printf '  > ' >&2
-    _choice=""
-    read -r _choice || _choice=""
-    case "$_choice" in
-      1 | deepseek) PROVIDER_NAME=deepseek ;;
-      2 | glm) PROVIDER_NAME=glm ;;
-      3 | grok) PROVIDER_NAME=grok ;;
-      *) die "no provider chosen, and nothing serving on $ENDPOINT — nothing was started." ;;
-    esac
-    PROVIDER_SET=1
-    EXTRA_ARGS+=(--provider "$PROVIDER_NAME")
-    # The local alias is a LOCAL binding; handed to a provider it is a 400 naming models
-    # the provider has (the reason MODEL_ARGS is empty for `--provider` above).
-    [ -n "$MODEL_OVERRIDE" ] || MODEL_ARGS=()
-  else
-    die "nothing serving on $ENDPOINT
-  Start a model server first — letibot is a harness, and a turn needs one:
-    llama-server -m MODEL.gguf --port ${ENDPOINT##*:}
-  or a cloud provider instead:  --provider deepseek|glm|grok
-  Point this launcher elsewhere with LETIBOT_ENDPOINT=host:port."
-  fi
-fi
-
 VOCAB_ARGS=(--vocab "$VOCAB")
-if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
-  if [ -z "${LETIBOT_VOCAB:-}" ] && [ ! -f "$VOCAB" ]; then
+if [ -z "${LETIBOT_VOCAB:-}" ]; then
+  if [ ! -f "$VOCAB" ]; then
+    VOCAB_ARGS=()
+  elif [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ]; then
     VOCAB_ARGS=()
   fi
 fi

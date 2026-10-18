@@ -232,8 +232,17 @@ impl Parts {
         // **Which vocabulary, decided by what the turns need.** A GGUF named on the command
         // line is read by llama.cpp — the only vocabulary a local llama-server can take ids
         // from. None named and a provider answering: the byte vocabulary, because there
-        // the ids never leave this machine (see `letibot_tokencore::vocab`). None named and
-        // no provider: a refusal naming both ways out, rather than a guessed path.
+        // the ids never leave this machine (see `letibot_tokencore::vocab`).
+        //
+        // **None named and no provider: the byte vocabulary too, and no refusal.** This was a
+        // refusal naming both ways out, and it was the daemon's half of the launcher's model
+        // gate — a box with no GGUF and no key could not start a session at all. The operator,
+        // 2026-10-18, after `leticode` on such a box refused: *"idk why i even have to do
+        // --provider. horrible ux - we already have models chooser and keys asker"*. So the
+        // daemon starts with no model chosen, the head opens its chooser when the first message
+        // is sent (the `vocab` row says `none`), and a TURN on the local route is what is refused
+        // — in `rounds`, before anything is sent (`NO_MODEL_CHOSEN`), because a llama-server
+        // cannot read byte ids and the guess this used to refuse would still be a guess there.
         let vocab = match &cfg.vocab_gguf {
             Some(path) => {
                 if !path.is_file() {
@@ -245,7 +254,7 @@ impl Parts {
                 load_gguf(path)
                     .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?
             }
-            None if cfg.provider.is_some() => {
+            None => {
                 let spec = wiring.spec();
                 Vocab::bytes(
                     spec.control_tokens
@@ -255,14 +264,6 @@ impl Parts {
                         .chain(spec.stop_tokens.iter().map(|t| t.literal.as_ref())),
                     spec.stop_tokens.iter().map(|t| t.literal.as_ref()),
                 )
-            }
-            None => {
-                return Err(HarnessError::Setup(
-                    "no vocabulary: a local model needs the GGUF it serves (--vocab PATH, the \
-                     first shard of a split model), and a cloud provider needs none \
-                     (--provider deepseek|glm|grok, or [default] in providers.toml)"
-                        .into(),
-                ));
             }
         };
         let skills =
@@ -11956,6 +11957,14 @@ impl Harness {
         if self.key_wanted.is_some() {
             self.obtain_key(None)?;
         }
+        // **And no model at all is said here too, at the same point and for the same reason.**
+        // A daemon started with no GGUF and no provider (`Parts::load`) has nothing a turn can
+        // go to: its own server would be sent byte ids it cannot read. The head opens its
+        // model chooser before this is reached; this is the floor under a head that did not
+        // (a one-shot, an older head), and it names the verb that ends it.
+        if self.provider.is_none() && self.engine.vocab().is_bytes() {
+            return Err(HarnessError::Setup(NO_MODEL_CHOSEN.to_string()));
+        }
         // How many times this turn has asked again after a refused key. Bounded, so a
         // provider that refuses every key does not hold the worker in a loop of cards.
         let mut key_asks = 0usize;
@@ -20465,6 +20474,11 @@ const KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(600);
 const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary — it was started for a cloud provider, whose \
      turns need none — and a local llama-server reads token ids computed here. Start a \
      daemon with --vocab <the served model's GGUF> to run on a local model.";
+
+/// Why a turn on a daemon with no model chosen is refused — see `Parts::load`.
+const NO_MODEL_CHOSEN: &str = "no model is chosen for this session: this box has no local \
+     model's vocabulary (GGUF) and no cloud provider. `/models` picks one — a cloud model asks \
+     for its key once, and becomes this box's default.";
 
 /// Read a GGUF's vocabulary — llama.cpp's job, so only in a build with the `local`
 /// feature. Without it the answer is a sentence saying so, and a cloud provider still works.

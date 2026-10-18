@@ -329,6 +329,9 @@ impl App {
                     // The switch, then a re-read of the rows it changed — the same order the
                     // plain switch keeps, so the header names what answers now.
                     self.queued.push(Action::Settings);
+                    // And, when the chooser was opened because the local model could not be
+                    // reached, the default and the held message after it — `app::reach`.
+                    self.took_cloud_row(&ask.choice);
                     return ControlFlow::Break(Some(Action::Slash {
                         line: format!("models {} --key {}", ask.choice, key),
                     }));

@@ -1,4 +1,5 @@
-//! **A daemon for a cloud provider needs no GGUF** — and one without a provider is refused.
+//! **A daemon for a cloud provider needs no GGUF** — and one with neither opens, and refuses
+//! the turn by name.
 //!
 //! The operator's ask: *"say i want to just install leticode, give it my deepseek/glm key
 //! and continue"*. Before this, `Parts::load` read a GGUF on every start and the engine
@@ -49,16 +50,35 @@ fn each_dialect_has_its_own_byte_vocabulary() {
     assert_ne!(q.vocab.source(), g.vocab.source());
 }
 
-/// No GGUF and no provider: nothing could answer a turn, and the refusal names both ways
-/// out rather than guessing a path.
+/// **No GGUF and no provider: the daemon opens, and the TURN is refused by name.**
+///
+/// This was a refusal at load — the daemon's half of the launcher's model gate, so a box with
+/// no GGUF and no key could not start a session at all. The operator, 2026-10-18: *"idk why i
+/// even have to do --provider. horrible ux - we already have models chooser and keys asker"*.
+/// Now the session opens on the byte vocabulary with no model chosen, the head's chooser is the
+/// way on, and a turn that reaches the daemon anyway (a one-shot, an older head) is refused
+/// naming `/models` — before anything is sent, because a llama-server cannot read byte ids.
 #[test]
-fn no_vocabulary_and_no_provider_is_refused_by_name() {
+fn no_vocabulary_and_no_provider_opens_and_refuses_the_turn_by_name() {
+    use letibot_harnessd::Harness;
+    use letibot_sessionlog::hub::Hub;
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-no-model-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
     let mut cfg = provider_cfg(Dialect::Qwen);
     cfg.provider = None;
-    let e = match Parts::load(&cfg) {
-        Ok(_) => panic!("a local session with no vocabulary was opened"),
-        Err(e) => format!("{e:?}"),
+    cfg.store = Some(dir.join("s.db"));
+    cfg.session_id = "none".into();
+    let parts = Parts::load(&cfg).unwrap_or_else(|e| panic!("no model chosen still opens: {e:?}"));
+    assert!(parts.vocab.is_bytes());
+    let mut h =
+        Harness::open_with(&parts, cfg, Hub::new("none"), None, None).expect("the session opens");
+    let e = match h.submit("hello") {
+        Ok(_) => panic!("a turn went to a model nobody chose"),
+        Err(e) => e.to_string(),
     };
-    assert!(e.contains("--vocab"), "{e}");
-    assert!(e.contains("--provider"), "{e}");
+    assert!(e.contains("no model is chosen"), "{e}");
+    assert!(e.contains("/models"), "the refusal names the way on: {e}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

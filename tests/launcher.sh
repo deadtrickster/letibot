@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# **The launcher's model-to-endpoint gate, run for real against stub binaries.**
+# **The launcher's model-to-endpoint lookup, run for real against stub binaries** — and the
+# proof that it no longer GATES on a model: nothing serving and no provider starts, and the
+# head runs (the operator, 2026-10-18: *"idk why i even have to do --provider. horrible ux -
+# we already have models chooser and keys asker"*; the head asks now, see `app::reach`).
 #
 # `scripts/letibot` decides where a run's turns go before any Rust runs, so nothing in
 # `cargo test` reaches it. This runs it one-shot (`letibot "q"` execs harnessd) with a
@@ -36,7 +39,7 @@ for d in /usr/sbin /sbin; do [ -d "$d" ] && RUN_PATH="$RUN_PATH:$d"; done
 run() {
   local toml="$1"; shift
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
-  (cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
+  (cd "${RUN_WS:-$T/ws}" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 </dev/null)
 }
 expect() { # expect NAME OUTPUT PATTERN -- the output must match
@@ -62,9 +65,25 @@ refuse "  ...with no local endpoint invented for it" "$out" "--endpoint"
 out="$(run "$DEFAULT_ONLY" --status)"
 expect "--status says there is no local home rather than refusing" "$out" "^local +none"
 
+# **No provider, no local model block, nothing serving: started, not refused.** The daemon
+# keeps its own default endpoint, and is handed no vocabulary to send ids from — a daemon with
+# no model chosen refuses a TURN by name, and the head's chooser is the way on.
 out="$(run '' "one question")"
-expect "no provider and no local model block is still refused" "$out" "no endpoint for this run"
-refuse "  ...and nothing is started" "$out" "^harnessd "
+refuse "no provider and no local model block is not refused" "$out" "no endpoint for this run"
+refuse "  ...nor refused for nothing serving" "$out" "nothing serving"
+expect "  ...and the daemon is started" "$out" "^harnessd "
+refuse "  ...with no endpoint invented for it" "$out" "--endpoint"
+refuse "  ...and no vocabulary to send ids from" "$out" "--vocab"
+
+out="$(run '' --status)"
+refuse "--status with no provider and no home reports rather than refusing" "$out" "no endpoint for this run"
+expect "  ...and says a model is asked for" "$out" "^local +none.*asks for a model on first use"
+
+# **A model asked for by name with no home is SAID, and still started** — the flag meant
+# something the file does not carry, which is worth a sentence and not a refusal.
+out="$(run '' --dense "one question")"
+expect "a flag's model with no home is named" "$out" "no endpoint for this run: --dense asked"
+expect "  ...and the daemon is started anyway" "$out" "^harnessd "
 
 LOCAL='[model."local.flash"]
 url = "http://127.0.0.1:59999"
@@ -75,6 +94,17 @@ provider = "deepseek"
 '
 out="$(run "$LOCAL" "one question")"
 expect "a local model with a home passes its endpoint on" "$out" "--endpoint 127.0.0.1:59999"
+
+# **The health gate is gone too**: a home whose server is not answering, and no provider —
+# what died on *"nothing serving on …"* (or asked *"1) deepseek 2) glm 3) grok"* at a
+# terminal). Nothing listens on 59999 here.
+LOCAL_ONLY='[model."local.flash"]
+url = "http://127.0.0.1:59999"
+model = "qwen-3.8-flash-next"
+'
+out="$(run "$LOCAL_ONLY" "one question")"
+refuse "a home with nothing serving and no provider is not refused" "$out" "nothing serving"
+expect "  ...and the daemon is started on that home" "$out" "^harnessd .*--endpoint 127.0.0.1:59999"
 
 # ---------------------------------------------------------------------------
 # **A daemon that is LISTENING but does not speak this build's protocol is refused
@@ -228,6 +258,20 @@ STUB
   expect "a daemon that is still going is waited for" "$out" "is still going - waiting for it"
   refuse "  ...and nothing is started over it" "$out" "already served by a live daemon"
   expect "  ...and the session opens once it is gone" "$out" "THE HEAD RAN"
+
+  # **The launcher's endpoint gate is gone: nothing serving and no provider, and the head
+  # runs.** The case the operator met: `leticode` on a box with no local model and no
+  # `--provider`, refused with *"nothing serving on 127.0.0.1:8080 ... --provider
+  # deepseek|glm|grok"*. A folder of its own, so the waiting case's record is not this one's.
+  mkdir -p "$T/bare"
+  bare_out="$(RUN_WS="$T/bare" run '')"
+  refuse "a bare box is not refused for nothing serving" "$bare_out" "nothing serving"
+  refuse "  ...nor asked to pick a provider in the shell" "$bare_out" "1\\) deepseek"
+  refuse "  ...nor for a missing model home" "$bare_out" "no endpoint for this run"
+  expect "  ...and the head runs" "$bare_out" "THE HEAD RAN"
+  bare_key="$(printf '%s' "$(cd "$T/bare" && pwd -P)" | key12)"
+  kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$T/run/letibot/$bare_key.json" 2>/dev/null | head -1)" 2>/dev/null || true
 
   # The stub daemon the launcher started is a real one for this case; it does not exit.
   # (Read with the same sed the launcher's own `json_num` is, because that is a function of

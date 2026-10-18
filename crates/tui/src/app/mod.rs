@@ -544,6 +544,9 @@ pub struct App {
     /// `req_id` that does not exist.
     pub(crate) key_ask: Option<KeyAsk>,
     pub(crate) key_buf: String,
+    /// **The model check a sent message waits on**, and the message it holds — see
+    /// [`reach`]: the launcher no longer gates on a model, so the head asks.
+    pub(crate) reach: reach::Reach,
     /// Screen requests this head has not answered yet. Answered by the DRIVER,
     /// after the frame is built, with the rows it actually drew.
     pub(crate) screen_requests: Vec<String>,
@@ -1776,6 +1779,7 @@ impl App {
             prompt_away: false,
             key_ask: None,
             key_buf: String::new(),
+            reach: Default::default(),
             screen_requests: Vec::new(),
             term_cols: 0,
             sel: 0,
@@ -2145,6 +2149,7 @@ mod panes;
 mod pick;
 mod pointer;
 mod prefs;
+mod reach;
 pub(crate) mod reseat;
 pub(crate) mod runclick;
 mod scroll;

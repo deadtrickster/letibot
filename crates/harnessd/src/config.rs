@@ -2420,7 +2420,8 @@ impl Config {
             "vocab",
             match &self.vocab_gguf {
                 Some(p) => p.display().to_string(),
-                None => "none — the byte vocabulary, for a cloud provider".to_string(),
+                None => "none — the byte vocabulary: a cloud provider's, or no model chosen yet"
+                    .to_string(),
             },
             "--vocab",
             "",

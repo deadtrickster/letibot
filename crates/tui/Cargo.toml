@@ -18,6 +18,9 @@ letibot-ui.workspace = true
 # half — a screen's cells drawn as this head's roles — is `letibot_ui::ansi`'s, which is why both
 # are here.
 letibot-vt.workspace = true
+# **`/health` on the session's local model**, asked off the loop before a message is sent
+# (`app::reach`) — the daemon's own client, so there is no second HTTP framing in the head.
+letibot-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The daemon's pid off the socket (`getsockopt`, in the driver) and the local clock

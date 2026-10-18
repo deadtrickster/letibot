@@ -828,17 +828,12 @@ impl App {
                 // and `/models X --key K` need. The operator: *"for starters i
                 // want it to be usual menu, like /mode"*.
                 if matches!(verb, "models" | "model") && other.trim() == verb {
-                    if self.session_id.is_empty() {
-                        self.say("not attached to a session yet");
+                    // Seeded to what answers now, so Enter on an untouched list
+                    // is a no-op — the same courtesy the mode picker pays. One
+                    // opener, shared with the unreachable-model check (`app::reach`).
+                    if !self.open_model_pick() {
                         return None;
                     }
-                    self.pick = Some(Pick::Model);
-                    self.close_surface(Surface::Picker);
-                    self.close_surface(Surface::Config);
-                    // Seeded to what answers now, so Enter on an untouched list
-                    // is a no-op — the same courtesy the mode picker pays.
-                    self.seed_pick();
-                    self.redraw = true;
                     // **`Settings`, not the `models` verb.** Asking the daemon to
                     // refresh is right — a session whose model moved in another
                     // head would draw a stale `← now` — but `/models` with no

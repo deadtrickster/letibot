@@ -334,6 +334,11 @@ impl App {
             self.redraw = true;
             return None;
         }
+        // **The model is checked before the words leave** — see `app::reach`. Held there, not
+        // here: a message the chooser does not take comes back to this field.
+        if self.hold_for_model(&text) {
+            return None;
+        }
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.
