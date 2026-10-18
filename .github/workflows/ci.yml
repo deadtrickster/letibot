@@ -483,7 +483,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-x86_64-unknown-linux-gnu.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 8 || { echo "::error::archive holds $n entries, expected 8"; ls -la "$d"; exit 1; }
+          test "$n" -eq 9 || { echo "::error::archive holds $n entries, expected 9 (5 programs: harnessd letibot-tui letibot-askpass letibot leticode; 4 libraries)"; ls -la "$d"; exit 1; }
           for want in harnessd letibot-tui letibot-askpass; do
             test -x "$d/$want" || { echo "::error::$want is not executable in the archive"; exit 1; }
           done
@@ -615,7 +615,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-aarch64-apple-darwin.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l | tr -d ' ')
-          test "$n" -eq 8 || { echo "::error::archive holds $n entries, expected 8"; ls -la "$d"; exit 1; }
+          test "$n" -eq 9 || { echo "::error::archive holds $n entries, expected 9 (5 programs: harnessd letibot-tui letibot-askpass letibot leticode; 4 libraries)"; ls -la "$d"; exit 1; }
           ( cd "$d" && env -u DYLD_LIBRARY_PATH ./harnessd --version )
           ( cd "$d" && env -u DYLD_LIBRARY_PATH ./letibot-tui --version )
           # Every llama library must come from beside the binary, not from the build tree
