@@ -346,7 +346,42 @@ try_prebuilt() {
     mkdir -p "$tmp/unpacked" || return 1
     tar -xzf "$tmp/$name" -C "$tmp/unpacked" 2>/dev/null || return 1
     [ -x "$tmp/unpacked/harnessd" ] || return 1
+    launchers_from_the_tag "$tmp/unpacked"
     printf '%s' "$tmp/unpacked"
+}
+
+# **A launcher the archive does not carry is fetched from the repository at the
+# release's own tag.** The operator, 2026-10-18, after `leticode` joined BINARIES:
+# *"leticode appeared but didnt make its way into ~/.local/bin"* — `releases/latest`
+# was v0.3.0, packaged before leticode was, so the install said it was absent and
+# left it out. The scripts are repository files (`make-dist.sh` stages them from
+# `scripts/`), and `scripts/leticode` is in the tree at v0.3.0, so the copy at the
+# TAG is the one that archive would have held: the script and the binaries still
+# come from one ref. `releases/latest` is resolved to its tag first for the same
+# reason — `main`'s copy could expect a flag that release's binaries do not have.
+#
+# Best effort: a name the tag does not have either stays absent, and the install
+# loop says so exactly as before.
+launchers_from_the_tag() {
+    dir="$1"
+    tag="$VERSION"
+    for want in $LAUNCHERS; do
+        [ -f "$dir/$want" ] && continue
+        if [ -z "$tag" ]; then
+            tag=$(curl -q -fsSLI --proto '=https' --proto-redir '=https' -o /dev/null \
+                -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null |
+                sed -n 's|.*/releases/tag/||p')
+            [ -n "$tag" ] || return 0
+        fi
+        if curl -q -fsSL --proto '=https' --proto-redir '=https' -o "$dir/$want.part" \
+            "https://raw.githubusercontent.com/$REPO/$tag/scripts/$want" 2>/dev/null &&
+            head -c 2 "$dir/$want.part" | grep -q '^#!'; then
+            mv "$dir/$want.part" "$dir/$want"
+            warn "  + $want  (not in the $tag archive; scripts/$want at $tag)"
+        else
+            rm -f "$dir/$want.part"
+        fi
+    done
 }
 
 # Build a checkout and print the directory holding what was built, or fail naming
