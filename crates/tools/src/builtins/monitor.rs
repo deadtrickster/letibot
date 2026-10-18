@@ -72,7 +72,9 @@ impl Tool for Monitor {
              the string, found ONCE now — this daemon, its ancestors and its protected \
              processes are removed before matching, so it cannot find itself — and \
              then watched by pid and start time until all are gone; `pkill` lists the \
-             same set). Optionally `owner` to say which scope reaps it (`turn`, \
+             same set) or `github` (a pull request or issue, through the operator's `gh`: \
+             closed, merged, its checks finishing, a review, a new comment, or CodeRabbit's \
+             review). Optionally `owner` to say which scope reaps it (`turn`, \
              `session` — the default — or a named scope that already exists), \
              `ttl_ms`, which is capped, and `repeat`; `action: \"renew\"` extends it \
              and `action: \"retire\"` ends it. `job_list` shows every monitor, who \
@@ -92,6 +94,7 @@ impl Tool for Monitor {
                     "pid": {"type": "integer", "description": "Watch one process leave, by pid. Resolved to (pid, start time) now; this daemon and its ancestors are refused."},
                     "process": {"type": "string", "description": "Watch every process of this user whose command line contains this string leave. Found once, now, never including this daemon or its ancestors; then watched by handle. Fires when all are gone."},
                     "command": {"type": "string", "description": "Watch a command: fire when it exits (any exit code). A health check, not a shell you run work in."},
+                    "github": {"type": "object", "description": "Watch a GitHub pull request or issue through the operator's `gh`: {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \"until\": \"closed\"|\"merged\"|\"checks\"|\"review\"|\"comment\"|\"coderabbit\"} (or `repo` with `pr`/`issue` instead of `url`); `until` may be a list — one watch, one look, for all of them — optionally `every_s` (how often it looks, default 90, at least 30). A review, comment or CodeRabbit pass counts only after the watch is armed; a state already true (merged, checks done) fires at once. Lives a day by default, up to a week; with `repeat` it fires again for the next one (the next push's checks, the next review).", "properties": {"url": {"type": "string"}, "repo": {"type": "string"}, "pr": {"type": "integer"}, "issue": {"type": "integer"}, "until": {"anyOf": [{"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}, {"type": "array", "items": {"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}}]}, "every_s": {"type": "integer"}}},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
                     "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
                     "repeat": {"type": "boolean", "description": "Continuous rather than one-shot: after it fires it re-arms and keeps watching for the next occurrence (a path changing again, a port flapping, a timer on an interval). A one-shot monitor settles the first time its condition is met."}
@@ -148,7 +151,17 @@ impl Tool for Monitor {
                 return Invocation::ok(format!("retired `{name}` (watching {}){age}.", f.watch));
             }
             "renew" => {
-                let ttl = match ttl_of(args) {
+                // A watch with a cap of its own (GitHub's) renews within it, and to its default.
+                let own = monitors
+                    .get(name)
+                    .map(|m| m.watch.max_ttl())
+                    .unwrap_or(MAX_TTL);
+                let (default, cap) = if own > MAX_TTL {
+                    (crate::exec::github::GITHUB_DEFAULT_TTL, own)
+                } else {
+                    (DEFAULT_TTL, MAX_TTL)
+                };
+                let ttl = match ttl_within(args, default, cap) {
                     Ok(t) => t,
                     Err(inv) => return *inv,
                 };
@@ -176,7 +189,15 @@ impl Tool for Monitor {
 
         // --- declare -------------------------------------------------------
 
-        let ttl = match ttl_of(args) {
+        let ttl = match if args.get("github").is_some() {
+            ttl_within(
+                args,
+                crate::exec::github::GITHUB_DEFAULT_TTL,
+                crate::exec::github::GITHUB_MAX_TTL,
+            )
+        } else {
+            ttl_of(args)
+        } {
             Ok(t) => t,
             Err(inv) => return *inv,
         };
@@ -185,7 +206,7 @@ impl Tool for Monitor {
         // questions, which is `job_wait`'s job/scope rule and the same reasoning:
         // a single answer to two questions tells you neither.
         let asked: Vec<&str> = [
-            "job", "scope", "path", "port", "timer_ms", "command", "pid", "process",
+            "job", "scope", "path", "port", "timer_ms", "command", "pid", "process", "github",
         ]
         .into_iter()
         .filter(|k| args.get(*k).is_some())
@@ -203,8 +224,9 @@ impl Tool for Monitor {
                 "give exactly one of `job` (a job id), `scope` (a cgroup), `path` (a \
                  file or directory), `port` (a loopback TCP port), `timer_ms` (a \
                  timer), `command` (a command whose exit is the condition), `pid` (a \
-                 process by pid) or `process` (processes found by a string in their \
-                 command line, once, never this daemon). Nothing was declared.",
+                 process by pid), `process` (processes found by a string in their \
+                 command line, once, never this daemon) or `github` (a pull request or issue). \
+                 Nothing was declared.",
             );
         }
 
@@ -316,6 +338,11 @@ impl Tool for Monitor {
             Watch::Custom(CustomWatch(crate::exec::procs::ProcessCondition::over(
                 found, what,
             )))
+        } else if let Some(g) = args.get("github") {
+            match github_watch(g) {
+                Ok(w) => w,
+                Err(inv) => return *inv,
+            }
         } else if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
             let argv: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
             if argv.is_empty() {
@@ -471,17 +498,110 @@ fn inside(path: &str) -> bool {
     depth > 0
 }
 
+/// **A `github` watch, read** — `{"url": "https://github.com/o/r/pull/12", "until": "checks"}`, or
+/// `repo` with `pr` or `issue` in place of the URL; `every_s` how often to look. See
+/// `exec::github`.
+fn github_watch(g: &Value) -> Result<Watch, Box<Invocation>> {
+    use crate::exec::github::{EVERY, EVERY_MIN, GithubCondition, Target, Until};
+    const SHAPE: &str = "give `github` as {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \
+                         \"until\": \"…\"} (an issue URL works too), or {\"repo\": \"OWNER/REPO\", \
+                         \"pr\": N} / {\"repo\": …, \"issue\": N} with `until`. `until` is one of, \
+                         or a list of, `closed`, `merged`, `checks`, `review`, `comment`, \
+                         `coderabbit`. Nothing was declared.";
+    let target = if let Some(url) = g.get("url").and_then(|u| u.as_str()) {
+        Target::from_url(url).ok_or_else(|| {
+            Box::new(Invocation::failed(
+                format!("`{url}` is not a pull request or issue URL"),
+                SHAPE,
+            ))
+        })?
+    } else {
+        let repo = g.get("repo").and_then(|r| r.as_str()).unwrap_or("").trim();
+        let (number, pr) = match (
+            g.get("pr").and_then(|n| n.as_u64()),
+            g.get("issue").and_then(|n| n.as_u64()),
+        ) {
+            (Some(n), None) => (n, true),
+            (None, Some(n)) => (n, false),
+            _ => {
+                return Err(Box::new(Invocation::failed(
+                    "`github` needs one of `pr` or `issue`",
+                    SHAPE,
+                )));
+            }
+        };
+        if repo.split('/').filter(|p| !p.is_empty()).count() != 2 {
+            return Err(Box::new(Invocation::failed(
+                format!("`{repo}` is not OWNER/REPO"),
+                SHAPE,
+            )));
+        }
+        Target {
+            repo: repo.to_string(),
+            number,
+            pr,
+        }
+    };
+    // **One `until`, or several**: one look at a pull request answers all of them, so a
+    // `["checks", "review", "closed"]` is one watch and one `gh` call rather than three.
+    let words: Vec<&str> = match g.get("until") {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    let mut untils: Vec<Until> = Vec::new();
+    for w in &words {
+        let Some(u) = Until::parse(w) else {
+            return Err(Box::new(Invocation::failed(
+                format!("`{w}` is not something a GitHub watch waits for"),
+                SHAPE,
+            )));
+        };
+        if !untils.contains(&u) {
+            untils.push(u);
+        }
+    }
+    if untils.is_empty() {
+        return Err(Box::new(Invocation::failed(
+            "`github` needs `until`",
+            SHAPE,
+        )));
+    }
+    if let Some(u) = untils.iter().find(|u| u.needs_pr()).filter(|_| !target.pr) {
+        return Err(Box::new(Invocation::failed(
+            format!("an issue has no {}", u.word()),
+            "`merged`, `checks`, `review` and `coderabbit` are a pull request's; an issue can \
+             be watched for `closed` or `comment`. Nothing was declared.",
+        )));
+    }
+    let every = g
+        .get("every_s")
+        .and_then(|s| s.as_u64())
+        .map(Duration::from_secs)
+        .unwrap_or(EVERY)
+        .max(EVERY_MIN);
+    Ok(Watch::Custom(CustomWatch(GithubCondition::new(
+        target, untils, every,
+    ))))
+}
+
 /// The TTL, bounded — and **refused rather than clamped** when it is over.
 ///
 /// Clamping would leave the caller believing a number the monitor does not have,
 /// which is the silent-rewrite failure clause 1 forbids. The refusal names the
 /// cap so the retry succeeds.
 fn ttl_of(args: &Value) -> Result<Duration, Box<Invocation>> {
+    ttl_within(args, DEFAULT_TTL, MAX_TTL)
+}
+
+/// [`ttl_of`] for a watch with caps of its own — a GitHub watch lives for days
+/// (`exec::github`).
+fn ttl_within(args: &Value, default: Duration, cap: Duration) -> Result<Duration, Box<Invocation>> {
     let Some(ms) = args.get("ttl_ms").and_then(|v| v.as_u64()) else {
-        return Ok(DEFAULT_TTL);
+        return Ok(default);
     };
     let d = Duration::from_millis(ms.max(1));
-    if d > MAX_TTL {
+    if d > cap {
         return Err(Box::new(Invocation::failed(
             format!("a ttl of {:.0}s is past the cap", d.as_secs_f32()),
             format!(
@@ -489,8 +609,8 @@ fn ttl_of(args: &Value) -> Result<Duration, Box<Invocation>> {
                  that one whose reason has passed dies without anybody remembering \
                  it, and a ttl nobody caps is not a bound. Ask for {} ms or less, and \
                  renew it with action=\"renew\" if the reason is still live.",
-                MAX_TTL.as_secs_f32(),
-                MAX_TTL.as_millis()
+                cap.as_secs_f32(),
+                cap.as_millis()
             ),
         )));
     }
@@ -602,7 +722,7 @@ mod tests {
     fn the_description_names_every_condition_in_the_schema() {
         let s = Monitor.schema();
         for k in [
-            "job", "scope", "path", "port", "timer_ms", "command", "pid", "process",
+            "job", "scope", "path", "port", "timer_ms", "command", "pid", "process", "github",
         ] {
             assert!(s.param_names().contains(&k), "schema lacks `{k}`");
             assert!(
@@ -621,5 +741,41 @@ mod tests {
         assert!(e.payload.contains("nothing was declared"), "{}", e.payload);
         // And the default is what an absent argument gets, not the cap.
         assert_eq!(ttl_of(&serde_json::json!({})).unwrap(), DEFAULT_TTL);
+    }
+
+    /// **A `github` watch is read from a URL or a repo and number**, refuses what an issue cannot
+    /// have, and lives within its own week rather than the ordinary hour.
+    #[test]
+    fn a_github_watch_is_read_and_bounded_by_its_own_cap() {
+        use crate::exec::github::{GITHUB_DEFAULT_TTL, GITHUB_MAX_TTL};
+        let w = github_watch(&serde_json::json!({
+            "url": "https://github.com/stroppy-io/stroppy/pull/412", "until": "checks"
+        }))
+        .unwrap();
+        assert_eq!(
+            w.describe(),
+            "pull request stroppy-io/stroppy#412 until its checks finishing"
+        );
+        assert_eq!(w.max_ttl(), GITHUB_MAX_TTL);
+        let w = github_watch(&serde_json::json!({"repo": "o/r", "issue": 7, "until": "comment"}))
+            .unwrap();
+        assert_eq!(w.describe(), "issue o/r#7 until a new comment");
+        let e = github_watch(&serde_json::json!({"repo": "o/r", "issue": 7, "until": "checks"}))
+            .unwrap_err();
+        assert!(e.payload.contains("pull request's"), "{}", e.payload);
+        assert!(
+            github_watch(&serde_json::json!({"url": "https://github.com/o/r/pull/1"})).is_err()
+        );
+        assert!(
+            github_watch(&serde_json::json!({"repo": "nope", "pr": 1, "until": "closed"})).is_err()
+        );
+        let day = ttl_within(&serde_json::json!({}), GITHUB_DEFAULT_TTL, GITHUB_MAX_TTL).unwrap();
+        assert_eq!(day, GITHUB_DEFAULT_TTL);
+        let two_days = serde_json::json!({"ttl_ms": 2 * 24 * 3600 * 1000u64});
+        assert!(ttl_within(&two_days, GITHUB_DEFAULT_TTL, GITHUB_MAX_TTL).is_ok());
+        assert!(
+            ttl_of(&two_days).is_err(),
+            "the ordinary cap still holds for other watches"
+        );
     }
 }

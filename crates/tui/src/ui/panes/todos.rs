@@ -404,6 +404,7 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Row { content } => format!("row `{}`", clean_line(content)),
         TodoNeed::Child { id } => format!("child {}", clean_line(id)),
         TodoNeed::Job { handle } => format!("job {}", clean_line(handle)),
+        TodoNeed::Monitor { name } => format!("monitor {}", clean_line(name)),
         TodoNeed::Operator { question, options } => format!(
             "YOU — \"{}\" ({}) — enter on the row answers it",
             clean_line(question),

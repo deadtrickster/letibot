@@ -688,13 +688,30 @@ impl letibot_tools::Tool for RecordingMonitor {
 }
 
 fn ttl_of(args: &serde_json::Value) -> u64 {
+    // **A GitHub watch's default is a day**, not a monitor's five minutes — recorded as five, a
+    // restart would close a live watch as one that had already run out.
+    let default = if args.get("github").is_some() {
+        letibot_tools::exec::github::GITHUB_DEFAULT_TTL
+    } else {
+        letibot_tools::exec::monitor::DEFAULT_TTL
+    };
     args.get("ttl_ms")
         .and_then(|v| v.as_u64())
-        .unwrap_or(letibot_tools::exec::monitor::DEFAULT_TTL.as_millis() as u64)
+        .unwrap_or(default.as_millis() as u64)
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// **A GitHub watch is recorded with its own default life**, so a restart inside it re-arms it.
+    #[test]
+    fn a_github_watch_is_recorded_for_a_day() {
+        assert_eq!(
+            super::ttl_of(&serde_json::json!({"github": {"url": "u", "until": "checks"}})),
+            24 * 3600 * 1000
+        );
+        assert_eq!(super::ttl_of(&serde_json::json!({"timer_ms": 5})), 300_000);
+    }
 
     /// **Only a scope the model named is a named owner** — `turn`, `session` and no owner at all
     /// are the daemon's own lifetimes, and a monitor on them is re-armed as before.

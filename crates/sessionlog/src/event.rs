@@ -320,6 +320,8 @@ pub enum TodoNeed {
     /// [`TodoNeed::Child`]'s sibling one layer down: an EDGE, where a `when` of the same handle is
     /// the operator's clock. See `TodoNeed::Job` in the store for the whole of the distinction.
     Job { handle: String },
+    /// **A MONITOR, by the name it was armed under** — see `TodoNeed::Monitor` in the store.
+    Monitor { name: String },
     /// **The OPERATOR, asked a question with these choices** — the row waits until a person
     /// answers. See `TodoNeed::Operator` in the store; a head draws it as `waits on you` and
     /// opens the question card from it.

@@ -138,6 +138,10 @@ impl App {
     /// let the card stay"*, and the time to think is not unlimited. A todo row's card put away
     /// needs no line of its own: the row is still on the board, and the line below names it.
     pub(crate) fn waiting_line(&self, w: usize) -> Vec<String> {
+        // **Folded away with alt-h** — the bottom edge counts them instead (`app/waiting.rs`).
+        if self.asks_folded() {
+            return Vec::new();
+        }
         // **The operator's own command, its card put away** (R90.5) — the run is blocked on a
         // line and nothing on the screen said so once Esc had taken the card down.
         if let Some(p) = self.prompt.as_ref().filter(|_| self.prompt_away) {
@@ -200,7 +204,7 @@ impl App {
             };
             // `·` before the key, so the key hint is its own segment and a button (R90.33).
             let said = format!(
-                "{} PUT AWAY: \"{}\"{clock}{more} · alt-a brings it back",
+                "{} PUT AWAY: \"{}\"{clock}{more} · alt-a brings it back · alt-h hides",
                 if question { "QUESTION" } else { "PERMISSION" },
                 d.summary.trim()
             );
@@ -235,12 +239,14 @@ impl App {
                 };
                 // `·` before the key, so the key hint is its own segment and a button (R90.33).
                 format!(
-                    "WAITING ON YOU: \"{}\" on `{}`{more} · alt-a to answer",
+                    "WAITING ON YOU: \"{}\" on `{}`{more} · alt-a to answer · alt-h hides",
                     first.question.trim(),
                     letibot_sessionlog::event::todo_title(&first.content)
                 )
             }
-            (None, Some(setting)) => format!("WAITING ON YOU: {setting} · alt-a to answer"),
+            (None, Some(setting)) => {
+                format!("WAITING ON YOU: {setting} · alt-a to answer · alt-h hides")
+            }
             (None, None) => return Vec::new(),
         };
         row_strings(&facts::warning(&said, w), self.cfg.palette())

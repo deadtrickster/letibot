@@ -1624,6 +1624,9 @@ pub struct App {
     /// be able to escape the selection card. sometimes i need time to think and just let the card
     /// stay"*.
     pub(crate) away: Vec<AwayCard>,
+    /// **What alt-h folded away**, by [`App::waiting_keys`] — `None` while nothing is folded. See
+    /// `app/waiting.rs`: the fold holds while everything waiting is something it hid.
+    pub(crate) asks_hidden: Option<Vec<String>>,
     /// **Question and permission cards answered from this head and not yet settled** (R90.29) —
     /// closed the moment the answer left, so a second Enter cannot send it again, and kept here
     /// until the daemon settles them (`DecisionAnswered`) or refuses the answer (`Rejected`, which
@@ -1920,6 +1923,7 @@ impl App {
             nags_paused: None,
             asks_setting: None,
             away: Vec::new(),
+            asks_hidden: None,
             answering: Vec::new(),
             absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
@@ -2151,6 +2155,7 @@ mod term_pane;
 mod todos;
 mod turn;
 mod visibility;
+mod waiting;
 pub use action::*;
 pub(crate) use asks::*;
 pub(crate) use attention::*;

@@ -82,6 +82,7 @@ pub mod confine;
 pub mod console;
 #[cfg(target_os = "macos")]
 pub mod darwin;
+pub mod github;
 pub mod host;
 pub mod jobs;
 pub mod memory;

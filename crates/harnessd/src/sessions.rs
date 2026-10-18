@@ -3686,6 +3686,11 @@ impl<'a> Sessions<'a> {
                                         handle: handle.clone(),
                                     }
                                 }
+                                letibot_sessionlog::event::TodoNeed::Monitor { name } => {
+                                    letibot_tokencore::store::TodoNeed::Monitor {
+                                        name: name.clone(),
+                                    }
+                                }
                                 // **The operator's question, and their answer, cross whole** — the
                                 // head echoes its own rows back on every push, and a question it
                                 // dropped here would be a person no longer waited on for nothing.

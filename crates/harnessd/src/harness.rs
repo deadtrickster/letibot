@@ -1055,6 +1055,28 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> Option<Stri
 /// all day would otherwise ship its whole history with every job-table refill.
 pub const MONITORS_ENDED_SHOWN: usize = 20;
 
+/// **What reaps a monitor, as a person says it** — `session`, `turn`, or a named scope's own name;
+/// the scope's id (`session.s0`) is the daemon's, not the reader's.
+fn owner_words(s: &letibot_tools::exec::scope::ScopeId) -> String {
+    use letibot_tools::exec::scope::ScopeKind;
+    match s.kind {
+        ScopeKind::Session => "session".into(),
+        ScopeKind::Turn => "turn".into(),
+        ScopeKind::Explicit => format!("scope `{}`", s.name),
+    }
+}
+
+/// **Who armed a monitor, as a person says it** — `turn pr-watch` was the harness on a
+/// `gh pr create`, `turn restart` a restart re-arming its stored call; a model's own turn is
+/// said as it is.
+fn declared_words(by: &str) -> String {
+    match by {
+        "turn pr-watch" => "the harness, when the pull request was opened".into(),
+        "turn restart" => "a restart, from the call that armed it".into(),
+        other => other.to_string(),
+    }
+}
+
 /// [`Harness::monitor_entries`] over its inputs, so the rows are assertable without a session.
 pub fn monitor_entries_of(
     live: &[std::sync::Arc<letibot_tools::exec::monitor::Monitor>],
@@ -1073,8 +1095,8 @@ pub fn monitor_entries_of(
         .map(|m| letibot_sessionlog::protocol::MonitorEntry {
             name: m.name.clone(),
             watching: m.watch.describe(),
-            owner: m.owner.to_string(),
-            declared_by: m.declared_by.clone(),
+            owner: owner_words(&m.owner),
+            declared_by: declared_words(&m.declared_by),
             repeat: m.repeats(),
             live: true,
             ends_at_ms: now_ms + m.remaining().map_or(0, |r| r.as_millis() as u64),
@@ -1103,7 +1125,7 @@ pub fn monitor_entries_of(
                 name: f.name.clone(),
                 watching: f.watch.clone(),
                 owner: String::new(),
-                declared_by: f.declared_by.clone(),
+                declared_by: declared_words(&f.declared_by),
                 repeat: false,
                 live: false,
                 ends_at_ms: 0,
@@ -1976,6 +1998,9 @@ struct OwnServer {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness {
     cfg: Config,
+    /// **The daemon's mode rows**, which a `/mode` taken by a running turn writes
+    /// (`apply_queued_mode`, through [`crate::modes::record`]).
+    mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
     /// **The worktree and branch this session's work must end up on**, when it is a
     /// `task_start` child with a fresh worktree; `None` for every other session. Read as a turn
     /// is about to end ([`deliverable::EndOfWork`]): a dirty tree is told once, in the harness's
@@ -2442,6 +2467,124 @@ pub struct ReseatReport {
     /// gained/lost pair is silent about. Named here so the re-seat's report, and the model's
     /// copy of it, can say the schema the model now reads is not the one it was using.
     pub grew: Vec<String>,
+    /// **What changed in each of `grew`, in a phrase** — `monitor (new \`github\`)`,
+    /// `todo_write (\`todos[].needs[].kind\` gains \`monitor\`)` — so the model is told what to
+    /// look for and not only that something moved. See [`schema_change`].
+    pub grew_how: Vec<String>,
+}
+
+/// **Each grown tool, named with what changed in it** — [`grown_schemas`]'s names, each with
+/// [`schema_change`]'s phrase when there is one.
+fn grown_with_how(was: &[String], is: &[String]) -> Vec<String> {
+    let (old, new) = (tool_schemas(was), tool_schemas(is));
+    grown_schemas(was, is)
+        .into_iter()
+        .map(|name| match (old.get(&name), new.get(&name)) {
+            (Some(a), Some(b)) => match schema_change(a, b) {
+                Some(how) => format!("{name} ({how})"),
+                None => name,
+            },
+            _ => name,
+        })
+        .collect()
+}
+
+/// **What changed between two versions of one tool's schema, in a phrase** — new and removed
+/// parameters at any depth (`todos[].needs[].name`), values an enum gained or lost, and
+/// `wording` when only the text describing it moved. `None` when the two cannot be read.
+///
+/// The operator: *"trying to name a change inside a tool is nice to have"* — a re-seat used to
+/// say only `Changed: monitor`, and the model had to find the `github` argument by itself.
+pub fn schema_change(was: &str, is: &str) -> Option<String> {
+    let parse = |s: &str| -> Option<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        ["/function/parameters", "/parameters", "/input_schema"]
+            .iter()
+            .find_map(|p| v.pointer(p).cloned())
+    };
+    let (a, b) = (parse(was)?, parse(is)?);
+    let mut out = Vec::new();
+    schema_walk("", &a, &b, &mut out);
+    if out.is_empty() {
+        out.push("wording".to_string());
+    }
+    const MOST: usize = 6;
+    if out.len() > MOST {
+        let more = out.len() - MOST;
+        out.truncate(MOST);
+        out.push(format!("{more} more"));
+    }
+    Some(out.join("; "))
+}
+
+fn schema_walk(path: &str, a: &serde_json::Value, b: &serde_json::Value, out: &mut Vec<String>) {
+    use serde_json::Value;
+    let at = |k: &str| {
+        if path.is_empty() {
+            k.to_string()
+        } else {
+            format!("{path}.{k}")
+        }
+    };
+    if let (Some(Value::Object(pa)), Some(Value::Object(pb))) =
+        (a.get("properties"), b.get("properties"))
+    {
+        for (k, vb) in pb {
+            match pa.get(k) {
+                None => out.push(format!("new `{}`", at(k))),
+                Some(va) => schema_walk(&at(k), va, vb, out),
+            }
+        }
+        for k in pa.keys().filter(|k| !pb.contains_key(*k)) {
+            out.push(format!("no `{}`", at(k)));
+        }
+    }
+    if let (Some(ia), Some(ib)) = (a.get("items"), b.get("items")) {
+        schema_walk(&format!("{path}[]"), ia, ib, out);
+    }
+    // A union of shapes (`anyOf`/`oneOf`): its object variants, compared in order.
+    for key in ["anyOf", "oneOf"] {
+        if let (Some(Value::Array(va)), Some(Value::Array(vb))) = (a.get(key), b.get(key)) {
+            let objects = |v: &Vec<Value>| -> Vec<Value> {
+                v.iter()
+                    .filter(|x| x.get("properties").is_some())
+                    .cloned()
+                    .collect()
+            };
+            for (x, y) in objects(va).iter().zip(objects(vb).iter()) {
+                schema_walk(path, x, y, out);
+            }
+        }
+    }
+    if let (Some(Value::Array(ea)), Some(Value::Array(eb))) = (a.get("enum"), b.get("enum")) {
+        let name = if path.is_empty() { "it" } else { path };
+        let word = |v: &Value| {
+            v.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string())
+        };
+        let gained: Vec<String> = eb.iter().filter(|v| !ea.contains(v)).map(word).collect();
+        let lost: Vec<String> = ea.iter().filter(|v| !eb.contains(v)).map(word).collect();
+        if !gained.is_empty() {
+            out.push(format!(
+                "`{name}` gains {}",
+                gained
+                    .iter()
+                    .map(|g| format!("`{g}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !lost.is_empty() {
+            out.push(format!(
+                "`{name}` loses {}",
+                lost.iter()
+                    .map(|g| format!("`{g}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
 }
 
 /// **Tools seated on both sides whose schema text differs**, sorted — the `grew` half of the
@@ -2579,9 +2722,14 @@ pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
         said.push_str(&format!(" Removed: {}.", r.lost.join(", ")));
     }
     if !r.grew.is_empty() {
+        let named = if r.grew_how.is_empty() {
+            &r.grew
+        } else {
+            &r.grew_how
+        };
         said.push_str(&format!(
             " Changed (read before calling): {}.",
-            r.grew.join(", ")
+            named.join(", ")
         ));
     }
     said.push_str(" Carry on.");
@@ -5161,6 +5309,7 @@ impl Harness {
             wiring: parts.wiring.clone(),
         };
         let mut h = Harness {
+            mode_store: parts.mode_store.clone(),
             deliverable: None,
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
@@ -8325,6 +8474,18 @@ impl Harness {
         let mut jobs = letibot_tools::builtins::todo::RunningJobs::none();
         for row in rows {
             for need in &row.needs {
+                // **A monitor still watching** is the job's sibling: the row waits on it, and the
+                // check is quiet about it, until it ends.
+                if let letibot_tokencore::store::TodoNeed::Monitor { name } = need {
+                    if self
+                        .monitors
+                        .as_ref()
+                        .is_some_and(|m| m.get(name).is_some())
+                    {
+                        jobs = jobs.watching(name.clone());
+                    }
+                    continue;
+                }
                 let letibot_tokencore::store::TodoNeed::Job { handle } = need else {
                     continue;
                 };
@@ -8694,6 +8855,40 @@ impl Harness {
     /// `blocked` because its `AGENTS.md` has no `Merge gate` section — once per daemon. The
     /// sentence names the repository and what to do: `merge_gate` for the choices, the operator to
     /// pick, the section committed on the target.
+    /// **Arm the watches on a pull request this session just opened** (`pr_watch`), through the
+    /// operator's door (the model did not ask for them, so no gate is owed them), and answer the
+    /// sentence the model reads. A watch already armed under the same name is left as it is.
+    pub(crate) fn watch_opened_pr(&self, url: &str, n: u64) -> String {
+        let mut armed = Vec::new();
+        let mut refused = Vec::new();
+        for (name, call) in crate::pr_watch::watch_calls(url, n) {
+            if self
+                .monitors
+                .as_ref()
+                .is_some_and(|m| m.get(&name).is_some())
+            {
+                continue;
+            }
+            let r =
+                self.runtime
+                    .invoke_operator("pr-watch", &call, &mut letibot_tools::NullToolSink);
+            if r.outcome == letibot_transcript::ToolOutcome::Ok {
+                armed.push(name);
+            } else {
+                let why = r.payload.lines().next().unwrap_or("").to_string();
+                refused.push((name, why));
+            }
+        }
+        if !armed.is_empty() {
+            eprintln!(
+                "  {} · watching {url}: {}",
+                self.cfg.session_id,
+                armed.join(", ")
+            );
+        }
+        crate::pr_watch::told(url, &armed, &refused)
+    }
+
     pub fn queue_notices(&mut self) -> Vec<String> {
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
@@ -10582,6 +10777,7 @@ impl Harness {
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
         let grew = grown_schemas(&self.prefix.tools_json, &next.tools_json);
+        let grew_how = grown_with_how(&self.prefix.tools_json, &next.tools_json);
         let items: Vec<TranscriptItem> = self.session.items.clone();
 
         // No summary turn at all — that is the whole point — so the outcome is
@@ -10618,6 +10814,7 @@ impl Harness {
                 gained: after.difference(&before).cloned().collect(),
                 lost: before.difference(&after).cloned().collect(),
                 grew: grew.clone(),
+                grew_how: grew_how.clone(),
             })
         })();
         self.compacting = false;
@@ -10690,6 +10887,7 @@ impl Harness {
         let before = tool_names(&self.prefix.tools_json);
         let after = tool_names(&next.tools_json);
         let grew = grown_schemas(&self.prefix.tools_json, &next.tools_json);
+        let grew_how = grown_with_how(&self.prefix.tools_json, &next.tools_json);
 
         self.compacting = true;
         let out = (|| -> Result<ReseatReport, HarnessError> {
@@ -10721,6 +10919,7 @@ impl Harness {
                 gained: after.difference(&before).cloned().collect(),
                 lost: before.difference(&after).cloned().collect(),
                 grew: grew.clone(),
+                grew_how: grew_how.clone(),
             })
         })();
         self.compacting = false;
@@ -12594,6 +12793,18 @@ impl Harness {
                 if call.name == ASK_USER_QUESTION {
                     asked.extend(self.settle_asked(&mut item));
                 }
+                // **A pull request this call opened is watched from here on** (`pr_watch`), and
+                // the call's own result says so.
+                if let TranscriptItem::ToolResult {
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload,
+                    ..
+                } = &mut item
+                    && let Some((url, n)) = crate::pr_watch::opened(call, payload)
+                {
+                    let said = self.watch_opened_pr(&url, n);
+                    payload.push_str(&said);
+                }
                 // The progress encoder reads the *rendered* result, which is the
                 // string the model will actually get to read. Digesting anything
                 // else would measure novelty the model never saw.
@@ -12869,14 +13080,33 @@ impl Harness {
                 return;
             }
         };
-        // **The row is `Sessions`' business; the RECORDING happens where the row is written.**
-        // This session's point has moved, and that is all this function does — see
-        // `sessions::Sessions`' mode path, which writes the project row and, for a consented
-        // `allow-all`, the operator's answer beside it. It lives there because that is where
-        // the store is reachable and where the `consented` flag already arrives; a second
-        // writer here would be a second source of truth about one row.
+        // **The rows are written here too** (`modes::record`, the worker's writes). This said the
+        // worker's path would write them; it never saw this command, which this turn had already
+        // taken off the queue.
         let consented = *consented;
-        match self.set_mode_consented(mode, consented) {
+        let moved = self.set_mode_consented(mode, consented);
+        // **And written down, as the worker's door writes it** — this door used to apply the
+        // point and write nothing, so a `/mode` typed while the session worked was gone at the
+        // next restart.
+        if let Err(e) = crate::modes::record(
+            &self.mode_store,
+            &self.workspace().to_path_buf(),
+            &self.cfg.session_id,
+            mode,
+            consented,
+            moved.is_ok(),
+        ) {
+            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "mode_unpersisted".into(),
+                detail: format!(
+                    "`{}` applies to this session now, but could not be recorded, so a restart \
+                     will not bring it back: {e}",
+                    mode.name
+                ),
+                compaction: None,
+            });
+        }
+        match moved {
             Ok(said) => {
                 let applied = self.cfg.mode;
                 self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -13513,6 +13743,9 @@ impl Harness {
                     // to be able to carry an edge into a job rather than only draw one.
                     letibot_tokencore::store::TodoNeed::Job { handle } => {
                         letibot_sessionlog::event::TodoNeed::Job { handle }
+                    }
+                    letibot_tokencore::store::TodoNeed::Monitor { name } => {
+                        letibot_sessionlog::event::TodoNeed::Monitor { name }
                     }
                     // **An unknown kind stays unknown on the wire**, which is what lets a head
                     // that does not know one pass it back to a daemon that does rather than

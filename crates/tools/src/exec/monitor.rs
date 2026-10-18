@@ -178,6 +178,12 @@ pub trait Condition: Send + Sync {
     /// `self: Arc<Self>` so an implementation can move itself into a notifier
     /// thread.
     fn install(self: Arc<Self>, _signal: Arc<dyn Fn() + Send + Sync>) {}
+
+    /// **This condition's own cap on how long it may watch**, when it is not [`MAX_TTL`]: a
+    /// pull request's review takes days (`exec::github`). `None` is the ordinary cap.
+    fn max_ttl(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// How a runner waits before the next evaluation.
@@ -232,6 +238,14 @@ impl Watch {
                 format!("loopback port {port} becoming {}", want.as_str())
             }
             Watch::Custom(c) => c.0.describe(),
+        }
+    }
+
+    /// **The longest this watch may live** — [`MAX_TTL`], or its condition's own cap.
+    pub fn max_ttl(&self) -> Duration {
+        match self {
+            Watch::Custom(c) => c.0.max_ttl().unwrap_or(MAX_TTL),
+            _ => MAX_TTL,
         }
     }
 }
@@ -755,11 +769,9 @@ impl Monitors {
         ttl: Duration,
         repeat: bool,
     ) -> Result<Arc<Monitor>, Box<MonitorError>> {
-        if ttl > MAX_TTL {
-            return Err(Box::new(MonitorError::Unbounded {
-                asked: ttl,
-                cap: MAX_TTL,
-            }));
+        let cap = watch.max_ttl();
+        if ttl > cap {
+            return Err(Box::new(MonitorError::Unbounded { asked: ttl, cap }));
         }
         let probe = match (&watch, job) {
             (Watch::Job(_), Some(j)) => Probe::Job(j),
@@ -819,12 +831,6 @@ impl Monitors {
 
     /// Extend a monitor's TTL. T24 requirement 5's explicit renewal.
     pub fn renew(&self, name: &str, ttl: Duration) -> Result<Arc<Monitor>, Box<MonitorError>> {
-        if ttl > MAX_TTL {
-            return Err(Box::new(MonitorError::Unbounded {
-                asked: ttl,
-                cap: MAX_TTL,
-            }));
-        }
         let reg = self.inner.lock().expect("monitors");
         let Some(m) = reg.live.get(name).cloned() else {
             return Err(Box::new(MonitorError::NoSuchMonitor {
@@ -832,6 +838,10 @@ impl Monitors {
                 live: reg.live.keys().cloned().collect(),
             }));
         };
+        let cap = m.watch.max_ttl();
+        if ttl > cap {
+            return Err(Box::new(MonitorError::Unbounded { asked: ttl, cap }));
+        }
         m.renew(ttl);
         Ok(m)
     }

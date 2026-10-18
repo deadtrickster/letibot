@@ -1084,3 +1084,68 @@ fn a_child_named_in_needs_by_its_slug_is_stored_as_its_id() {
     assert!(r.payload.contains("no-such-child"), "{}", r.payload);
     assert_eq!(own.snapshot(), rows, "nothing was written");
 }
+
+/// **A row can wait on a MONITOR** — a timer, a file, a pull request: whatever a monitor watches.
+/// While it watches the row is quiet (its firing wakes the session by itself); once it has ended,
+/// or for a name this session does not hold (a restart), the row is ready. The operator's *"come
+/// with it later"* is a row waiting on a one-shot timer.
+#[test]
+fn a_row_waits_on_a_monitor_until_it_ends() {
+    let (mut rt, board) = runtime();
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke(
+        "t1",
+        &call(
+            r#"{"todos": [{"content": "look at the soak again", "status": "pending",
+                     "needs": [{"kind": "monitor", "name": "soak-reminder"}]}]}"#,
+        ),
+        &mut sink,
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+    let plan = board.snapshot();
+    assert_eq!(
+        plan[0].needs,
+        vec![TodoNeed::Monitor {
+            name: "soak-reminder".into()
+        }]
+    );
+    assert!(
+        r.payload
+            .contains("(waiting on the monitor `soak-reminder`)"),
+        "{}",
+        r.payload
+    );
+    let watching = RunningJobs::none().watching("soak-reminder");
+    assert!(
+        waits_on_a_running_job(&plan[0], &watching),
+        "quiet while it watches"
+    );
+    assert_eq!(
+        unmet_needs(&plan, &plan[0], &ChildSessions::none(), &watching),
+        vec![("soak-reminder".to_string(), NeedFate::MonitorWatching)]
+    );
+    assert_eq!(
+        nag_with(&plan, &ChildSessions::none(), &watching),
+        None,
+        "a plan waiting only on a monitor is not a plan to fix"
+    );
+    let ended = RunningJobs::none();
+    assert!(!waits_on_a_running_job(&plan[0], &ended));
+    let msg = nag_with(&plan, &ChildSessions::none(), &ended).expect("ready once it ended");
+    assert!(msg.contains("look at the soak again"), "{msg}");
+
+    let r = rt.invoke(
+        "t2",
+        &call(
+            r#"{"todos": [{"content": "x", "status": "pending",
+                     "needs": [{"kind": "monitor"}]}]}"#,
+        ),
+        &mut sink,
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Failed { .. })
+            && r.payload.contains("names a monitor by the `name`"),
+        "{}",
+        r.payload
+    );
+}

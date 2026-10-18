@@ -295,3 +295,58 @@ fn the_hold_waits_on_children_still_on_their_task_and_no_others() {
     ];
     assert_eq!(unsettled_children(&slots, "me"), vec!["a".to_string()]);
 }
+
+/// **A re-seat names what changed inside a tool**, not only that it did — the two changes of
+/// 2026-10-15: `monitor` gained `github`, and `todo_write`'s needs gained the `monitor` kind and its
+/// `name`. Only wording moved: `wording`.
+#[test]
+fn a_reseat_names_what_changed_inside_a_tool() {
+    let tool = |name: &str, params: serde_json::Value| {
+        serde_json::json!({"type": "function", "function": {"name": name, "parameters": params}})
+            .to_string()
+    };
+    let monitor_was = tool(
+        "monitor",
+        serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}, "timer_ms": {"type": "integer"}}}),
+    );
+    let monitor_is = tool(
+        "monitor",
+        serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}, "timer_ms": {"type": "integer"}, "github": {"type": "object"}}}),
+    );
+    let needs = |kinds: &[&str], extra: bool| {
+        let mut props = serde_json::json!({"kind": {"type": "string", "enum": kinds}, "handle": {"type": "string"}});
+        if extra {
+            props["name"] = serde_json::json!({"type": "string"});
+        }
+        serde_json::json!({"type": "object", "properties": {"todos": {"type": "array", "items": {"type": "object", "properties": {
+            "needs": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": props}]}}
+        }}}}})
+    };
+    let todo_was = tool("todo_write", needs(&["row", "job"], false));
+    let todo_is = tool("todo_write", needs(&["row", "job", "monitor"], true));
+    assert_eq!(
+        schema_change(&monitor_was, &monitor_is).as_deref(),
+        Some("new `github`")
+    );
+    assert_eq!(
+        schema_change(&todo_was, &todo_is).as_deref(),
+        Some("`todos[].needs[].kind` gains `monitor`; new `todos[].needs[].name`")
+    );
+    let reworded = tool(
+        "monitor",
+        serde_json::json!({"type": "object", "description": "now said better", "properties": {"name": {"type": "string"}, "timer_ms": {"type": "integer"}}}),
+    );
+    assert_eq!(
+        schema_change(&monitor_was, &reworded).as_deref(),
+        Some("wording")
+    );
+    let grew = grown_with_how(&[monitor_was, todo_was], &[monitor_is, todo_is]);
+    assert_eq!(
+        grew,
+        vec![
+            "monitor (new `github`)".to_string(),
+            "todo_write (`todos[].needs[].kind` gains `monitor`; new `todos[].needs[].name`)"
+                .to_string(),
+        ]
+    );
+}

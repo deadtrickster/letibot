@@ -792,7 +792,7 @@ impl App {
             rung: self.rung_state(),
         };
         let standings = self.queue_standings();
-        let right = bottom_markers(&bottom, &standings);
+        let right = bottom_markers(&bottom, &standings, self.asks_folded_count());
         let p = self.cfg.palette();
         let Some(legend) = completions.filter(|l| l.width() > 0) else {
             // **One builder for both paths.** rano's `BoxBottom::line` composes this same right
@@ -1045,7 +1045,11 @@ impl App {
 /// **The standings are last, and they are the one piece here that is not about this head.**
 /// The other three are states of the reader's own screen; this one is the queue's, which is
 /// why it is drawn from the daemon's own states and never from a count this head keeps.
-fn bottom_markers(b: &BoxBottom, standings: &Standings) -> Option<rano::render::Line> {
+fn bottom_markers(
+    b: &BoxBottom,
+    standings: &Standings,
+    folded: Option<usize>,
+) -> Option<rano::render::Line> {
     use rano::render::{Line, Span};
     use rano::style::Role;
     let mut right = Line::default();
@@ -1056,6 +1060,12 @@ fn bottom_markers(b: &BoxBottom, standings: &Standings) -> Option<rano::render::
     };
     if b.alarmed {
         right.push(Span::role("⚠", Role::Attention));
+    }
+    // **What waits on you, folded away** — counted where the eye already goes, in the register
+    // the line it replaces was in, and with the key that brings it back.
+    if let Some(n) = folded {
+        sep(&mut right);
+        right.push(Span::role(format!("{n} waiting · alt-h"), Role::Pending));
     }
     if b.holding {
         sep(&mut right);
