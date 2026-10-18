@@ -1768,6 +1768,17 @@ mod tests {
     /// job watcher for a firecode session and a finished background job was never announced.
     #[test]
     fn a_vm_that_runs_processes_hands_its_host_to_the_job_watcher() {
+        // An exec VM builds its process host on a process-lifetime tree, and CI's runner has
+        // none: *"cgroup mkdir failed on `/sys/fs/cgroup/system.slice/hosted-compute-agent.service/
+        // letibot.17403.0`: Permission denied"* (run 39124634128, main red since 2026-10-15 on
+        // this test alone). Said, and refused under `LETIBOT_REQUIRE_APPARATUS=1`, like the
+        // other host-spawning tests (`exec/host.rs`).
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            crate::host_tree().is_ok(),
+        ) else {
+            return;
+        };
         let root = tmp("procarc");
         let src = root.join("src");
         file(&src.join("a.txt"), 10);
