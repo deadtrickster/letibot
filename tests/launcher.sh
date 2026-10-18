@@ -201,7 +201,12 @@ while True: time.sleep(0.2)
 STUB
   chmod +x "$T/bin/harnessd"
 
-  key="$(printf '%s' "$T/ws" | key12)"
+  # **The folder as the launcher names it — resolved.** macOS's `mktemp -d` is under `/var`,
+  # a symlink to `/private/var`, and the launcher keys its record by `pwd -P`; keyed by
+  # `$T/ws` the record sat where the launcher never looked, so it started a daemon instead of
+  # waiting (CI run 39127760909, macOS: "starting one ... /private/var/folders/.../ws").
+  ws_p="$(cd "$T/ws" && pwd -P)"
+  key="$(printf '%s' "$ws_p" | key12)"
   mkdir -p "$T/run/letibot"
   sock="$T/run/letibot/$key.sock"
   # **A daemon of THIS folder, on its way out**: its argv names our socket, which is how the
@@ -209,7 +214,7 @@ STUB
   # until this test lets it go.
   bash -c 'while [ ! -e "$1" ]; do sleep 0.05; done' _ "$T/let-go" bash --socket "$sock" &
   going=$!
-  printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$going" "$T/ws" "$sock" \
+  printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$going" "$ws_p" "$sock" \
     > "$T/run/letibot/$key.json"
 
   ( run "$DEFAULT_ONLY" --session s-x > "$T/going.out" 2>&1 ) &
