@@ -124,11 +124,22 @@ fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let child = std::process::Command::new(&script)
-        .args(["--id", run])
-        .stdin(Stdio::null())
-        .spawn()
-        .unwrap();
+    // Retried through `Text file busy`, not probed: this stub never exits on its own, so the
+    // probe `crate::testing::write_stub` runs would never return. See that function for the race.
+    let mut tries = 0;
+    let child = loop {
+        match std::process::Command::new(&script)
+            .args(["--id", run])
+            .stdin(Stdio::null())
+            .spawn()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.unwrap(),
+        }
+    };
     // Until the shell has exec'd, /proc shows the spawning process's cmdline.
     let began = Instant::now();
     while firecrackers(Path::new("/proc"))
@@ -144,17 +155,14 @@ fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
 // Used only by the Linux-only reap tests below.
 #[cfg(target_os = "linux")]
 fn stub_firecode(dir: &Path, down: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("firecode");
-    std::fs::write(
+    crate::testing::write_stub(
         &bin,
-        format!(
+        &format!(
             "#!/bin/sh\ncase \"$1\" in\ndown) echo \"$2\" >> '{}/downs'; {down} ;;\nesac\n",
             dir.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     bin
 }
 

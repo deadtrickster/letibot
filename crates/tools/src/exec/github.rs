@@ -937,17 +937,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let gh = dir.join("gh");
-        std::fs::write(
+        crate::testing::write_stub(
             &gh,
             "#!/bin/sh\necho '{\"state\":\"MERGED\",\"headRefOid\":\"x\",\"reviews\":[],\"comments\":[],\"statusCheckRollup\":[]}'\n",
-        )
-        .unwrap();
+        );
         let bad = dir.join("gh-bad");
-        std::fs::write(&bad, "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n").unwrap();
-        for p in [&gh, &bad] {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        crate::testing::write_stub(
+            &bad,
+            "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n",
+        );
         let t = Target::from_url("https://github.com/o/r/pull/9").unwrap();
         let run = |c: &GithubCondition| {
             for _ in 0..200 {

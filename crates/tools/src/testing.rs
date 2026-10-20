@@ -650,3 +650,34 @@ impl Retrieval for Scripted {
         "scripted".into()
     }
 }
+
+/// **Write an executable stub and return only once it can be exec'd.**
+///
+/// Writing a script and then exec'ing it races every other test thread that forks: a child
+/// forked while the write descriptor was open holds it until its own exec, and an exec of the
+/// file in that window fails with `Text file busy`. The stub is then handed to code that spawns
+/// it once and reads the failure as an answer — `gh` "could not be run", a `firecode down` that
+/// did nothing — so the race shows up as a wrong result, not as a retry. Measured 2026-10-20 in a
+/// full workspace run, both tests passing alone. One successful exec proves no process holds a
+/// write descriptor any more, and none can get one after it, so the window is closed for good.
+/// The probe runs the stub with no arguments; a stub must do nothing harmful when given none.
+#[cfg(unix)]
+pub fn write_stub(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body).expect("stub");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("stub mode");
+    for _ in 0..100 {
+        match std::process::Command::new(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => return,
+        }
+    }
+    panic!("{} stayed busy for two seconds", path.display())
+}
