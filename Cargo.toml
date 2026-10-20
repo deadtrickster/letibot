@@ -66,7 +66,12 @@ members = [
 # break invisible in a number that promised compatibility. leticl pins this tree by tag
 # (`LETIBOT_REF`) and must move that pin either way, so the number costs nobody a
 # mechanism; it is read by a human, and it has exactly one job.
-version = "0.3.0"
+#
+# **0.4.0 rather than 0.3.1, by the same rule.** `v0.3.0` spoke `PROTOCOL_VERSION` 36 and
+# this tree speaks 48, so a v0.3.0 head and this daemon refuse each other by name. The
+# release exists for the launcher (no `--provider` gate, `leticode` installed) and those
+# would have been a patch on their own; the protocol is what makes it a minor.
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
