@@ -359,7 +359,7 @@ pub fn slug_from_prompt(prompt: &str) -> String {
 /// `.claude/worktrees`, a space made a branch git refuses after the directory was already made.
 pub fn slug_refusal(slug: &str) -> Option<String> {
     let why = if slug.contains("..") {
-        "it contains `..`, which would leave `.claude/worktrees`"
+        "it contains `..`, which would leave the worktrees folder"
     } else if slug.contains('/') {
         "it contains `/`, which would nest the worktree's directory and the branch's ref"
     } else if slug.chars().any(char::is_whitespace) {
@@ -559,7 +559,35 @@ fn slug_taken(under: &str, slug: &str) -> bool {
 /// path from the same inputs: a tool that reported a path the runner did not create
 /// would be the same claim-versus-fact defect the rest of this tree refuses.
 pub fn worktree_path(workspace: &str, slug: &str) -> String {
-    format!("{workspace}/.claude/worktrees/agent-{slug}")
+    match worktree_home(std::path::Path::new(workspace)) {
+        Some(home) => format!("{}/agent-{slug}", home.display()),
+        None => format!("{workspace}/.claude/worktrees/agent-{slug}"),
+    }
+}
+
+/// **Where a repository's worktrees live, when its layout says** — the operator: *"default path
+/// for worktrees is not in .claude but in ~/Projects/<name>/worktrees. if the repos in the
+/// ~/Projects/<name>/<name> or like in stroppy - inside the org path"*.
+///
+/// * a repository in a folder of its own name (`~/Projects/letibot/letibot`) keeps them beside it,
+///   in that folder's `worktrees` (`~/Projects/letibot/worktrees`);
+/// * a repository in an org folder of several (`~/Projects/stroppy-io/stroppy`) keeps them in the
+///   org's `worktrees`, one folder per repository so two repositories' slugs cannot collide
+///   (`~/Projects/stroppy-io/worktrees/stroppy`).
+///
+/// `None` for any other layout, which keeps `.claude/worktrees` inside the repository.
+pub fn worktree_home(repo: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = repo.file_name()?;
+    let parent = repo.parent()?;
+    if parent.file_name() == Some(name) {
+        return Some(parent.join("worktrees"));
+    }
+    let repos = std::fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().join(".git").is_dir())
+        .count();
+    (repos >= 2).then(|| parent.join("worktrees").join(name))
 }
 
 /// **The branch a `task_start` worktree is cut onto**, from the slug.
@@ -1341,7 +1369,9 @@ impl Tool for TaskStartTool {
              current HEAD), `slug` (the worktree and branch name, default derived from \
              the prompt), and `main_tree` (work in the main checkout instead of a fresh \
              worktree — the exception, off by default). By default the child works in \
-             a fresh worktree at `<workspace>/.claude/worktrees/agent-<slug>` on branch \
+             a fresh worktree named `agent-<slug>` — beside the repository in its \
+             project's `worktrees` folder when it lives in one (`~/Projects/x/x`, or an org \
+             folder of several), in `.claude/worktrees` otherwise — on branch \
              `agent/<slug>`, sharing the main tree's cargo build cache; a path that \
              already exists is refused by name and nothing is spawned. The branch is \
              the deliverable and is NEVER pushed — it is to be landed by a merge queue. \

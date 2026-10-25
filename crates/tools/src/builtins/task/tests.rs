@@ -1519,3 +1519,34 @@ fn the_task_tools_take_a_slug_and_name_the_child_by_it() {
         list.payload
     );
 }
+
+/// **A worktree lives beside its repository when the layout says where** — the operator's rule:
+/// `~/Projects/<name>/<name>` keeps them in `~/Projects/<name>/worktrees`, an org folder of several
+/// repositories in its own `worktrees/<repo>`, anything else in `.claude/worktrees` as before.
+#[test]
+fn a_worktree_goes_where_the_layout_says() {
+    let root = std::env::temp_dir().join(format!("letibot-wthome-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let named = root.join("letibot/letibot");
+    std::fs::create_dir_all(named.join(".git")).unwrap();
+    assert_eq!(
+        worktree_path(named.to_str().unwrap(), "fix"),
+        format!("{}/letibot/worktrees/agent-fix", root.display())
+    );
+    let org = root.join("stroppy-io");
+    for r in ["stroppy", "stroppy-io.github.io"] {
+        std::fs::create_dir_all(org.join(r).join(".git")).unwrap();
+    }
+    assert_eq!(
+        worktree_path(org.join("stroppy").to_str().unwrap(), "fix"),
+        format!("{}/stroppy-io/worktrees/stroppy/agent-fix", root.display())
+    );
+    let lone = root.join("solo/tool");
+    std::fs::create_dir_all(lone.join(".git")).unwrap();
+    assert_eq!(
+        worktree_path(lone.to_str().unwrap(), "fix"),
+        format!("{}/.claude/worktrees/agent-fix", lone.display()),
+        "any other layout keeps them inside the repository"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
