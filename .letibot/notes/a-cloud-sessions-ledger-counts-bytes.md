@@ -50,3 +50,24 @@ but nothing says which model produced them. A daemon restarted after a switch to
 provider recovers the OLD model's pair and labels it as the new one's measurement — the
 same numbers, said as measured rather than as an estimate. `CarriedScale` says it
 correctly only for switches made inside one daemon life (`set_provider`).
+
+# UPDATE 2026-10-25 (later the same day) — Unknown no longer withholds pictures
+
+The operator reviewed the first cut and reversed the conservative branch: **`Eyes::Unknown`
+SENDS** the image, and only a catalogue that says `Some(false)` — or a provider that refused
+one — turns it into a placeholder. The argument is the one in `messages.rs`'s `Eyes` doc: a
+harness that will not risk an `image_url` turns every attached chart into prose about a
+chart, silently. The paragraph above about what runs on this box is therefore stale in its
+conclusion, not in its evidence: the snapshot still carries no `modalities` (true until
+somebody with network runs `scripts/refresh-models-snapshot.sh`), and what that now means is
+that every preset model is *unknown*, i.e. **sent** the picture.
+
+What replaces the conservatism is measurement: `OpenAiProvider::complete` retries the same
+request ONCE with placeholders when a 400's body is `messages::text_only_refusal` AND the
+request actually carried a picture (`carries_pictures`), and records the model in
+`messages::TEXT_ONLY` (process-wide, so it is per daemon run — the store has no column and
+this is not worth a schema version). The notice reaches the operator through the
+`Notes` closure `build_provider` installs (`provider_notes` in harness.rs publishes
+`model_refused_images`), because `letibot-provider` sits below `letibot-sessionlog` and stays
+there. The compaction takes the same path, which is the whole point: the request that failed
+at the wall is the one the retry makes succeed.

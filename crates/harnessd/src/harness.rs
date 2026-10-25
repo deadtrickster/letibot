@@ -5238,7 +5238,7 @@ impl Harness {
         let mut key_wanted = None;
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
-            Some(pc) => match build_provider(pc, &cfg.sampling) {
+            Some(pc) => match build_provider(pc, &cfg.sampling, provider_notes(&hub)) {
                 Ok(p) => Some(p),
                 Err(_) if key_is_missing(pc) => {
                     key_wanted = Some(pc.clone());
@@ -7574,7 +7574,8 @@ impl Harness {
             // clear. `set_own_server` is this arm; see its doc for the re-seat half.
             None => self.set_own_server(true),
             Some(pc) => {
-                let p = build_provider(&pc, &self.cfg.sampling).map_err(HarnessError::Setup)?;
+                let p = build_provider(&pc, &self.cfg.sampling, provider_notes(&self.hub))
+                    .map_err(HarnessError::Setup)?;
                 let mut line = format!(
                     "turns go to {}/{} from the next one on — METERED; the prefix check is \
                      skipped, the ledger stays the record",
@@ -15750,40 +15751,6 @@ struct ContextLengthRefusal {
     limit: Option<u64>,
 }
 
-/// **Is this HTTP failure the context wall, spoken by the thing that owns it?**
-///
-/// A provider refuses an over-long prompt with a STATUS, not with a wall event —
-/// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
-/// so every recovery gated on `HarnessError::ContextWall` (the turn tail's
-/// `out.is_ok() || wall`) reads false and no door reacts. MEASURED 2026-10-09,
-/// session `s-1789919514688401228` on `deepseek/deepseek-flash`: thirty consecutive
-/// 400s, the first attributed to `monitor`, the last to `todo check`, none recovered.
-///
-/// The two measured shapes, verbatim, because a matcher is only as narrow as its
-/// fixtures:
-///
-/// * **llama.cpp**, JSON with a type field — the structured signal, preferred:
-///
-///   ```text
-///   {"error":{"code":400,"message":"request (1504198 tokens) exceeds the available context size (262144 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":1504198,"n_ctx":262144}}
-///   ```
-///
-/// * **an OpenAI-shaped provider**, plain text naming a context length —
-///   `error.code` is absent and the numbers live in the sentence:
-///
-///   ```text
-///   This model's maximum context length is 1048576 tokens. However, you requested 1463497 tokens (1463497 in the messages, 0 in the completion). Please reduce the length of the messages or completion. (request_id: 8a448ce7-fabf-4ffa-b350-16e6ddeed6ac)
-///   ```
-///
-/// The rule this implements, and the reason it is ONE function rather than a `contains`
-/// at the call site: parse the body as JSON first and read FIELDS
-/// (`error.type = "exceed_context_size_error"`, with `n_prompt_tokens`/`n_ctx`; or
-/// `error.code = "context_length_exceeded"`, with the numbers parsed out of
-/// `error.message`); only a body that is not JSON at all falls back to the text shape,
-/// matched by its two anchors (`maximum context length is` and `However, you requested`)
-/// and NOT by a bare substring the operator has ruled against (*"prompt-text matching
-/// is an overfit"*). Anything else — a 400 about invalid tokens, a 500 about a slot —
-/// is a backend error and stays one: if this cannot parse, it does not guess.
 /// **The HTTP status a failure names, when it is a provider refusing what was SENT.**
 ///
 /// 4xx is that class: the request reached a model that read it and said no. 429 is not
@@ -20789,17 +20756,42 @@ fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) -> String {
 
 /// A provider backend from its config: the preset, the key (a missing one is a
 /// refusal naming the variable and the file), the model, the switches.
+///
+/// `notes` is where a provider says something a person has to read — a model refusing a
+/// picture, today. Passed in rather than found, because this crate's session log is one
+/// level above the provider and the provider must stay below it; see
+/// [`provider_notes`], which is the only caller with a hub.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
+    notes: letibot_provider::openai::Notes,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::Preset::parse(&pc.name)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
         .map_err(|e| format!("provider {}: {e}", pc.name))?;
-    let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds);
+    let mut p =
+        letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds).with_notes(notes);
     p.thinking = pc.thinking;
     p.sampling = provider_sampling(sampling);
     Ok(Box::new(p))
+}
+
+/// **Where a provider's own note reaches the operator** — the session's hub, one crate up.
+///
+/// One closure, so the fact a provider learns ("this model refused an image") arrives as
+/// the warning a head already draws, and `letibot_provider` keeps needing no session log.
+/// The code is the one a grep for this behaviour looks for.
+fn provider_notes(
+    hub: &std::sync::Arc<letibot_sessionlog::Hub>,
+) -> letibot_provider::openai::Notes {
+    let hub = hub.clone();
+    std::sync::Arc::new(move |said: String| {
+        hub.publish(letibot_sessionlog::SessionEvent::Warning {
+            code: "model_refused_images".into(),
+            detail: said,
+            compaction: None,
+        });
+    })
 }
 
 /// The sampling the operator configured, as a provider's body fields. The local

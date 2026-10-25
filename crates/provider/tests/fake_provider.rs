@@ -16,6 +16,14 @@ struct Fake {
 }
 
 fn fake(script: &'static str, status: u16) -> Fake {
+    fake_answering(move |_| (status, script.to_string()))
+}
+
+/// **A fake that decides per REQUEST** — the body it was sent is the argument, and the
+/// answer is what the real provider would say to that body. `fake` is this with one answer
+/// for everything; the learn-on-refusal test needs the other shape, because the whole
+/// question is whether the second request is different from the first.
+fn fake_answering(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> Fake {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -51,10 +59,9 @@ fn fake(script: &'static str, status: u16) -> Fake {
             }
             let mut body = vec![0u8; len];
             reader.read_exact(&mut body).unwrap();
-            seen2
-                .lock()
-                .unwrap()
-                .push((auth, String::from_utf8_lossy(&body).into_owned()));
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let (status, script) = answer(&body);
+            seen2.lock().unwrap().push((auth, body));
             let _ = write!(
                 conn,
                 "HTTP/1.1 {status} X\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{script}",
@@ -205,6 +212,109 @@ fn a_refusal_carries_the_providers_own_message() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// **A model that refuses the picture is LEARNED, and the same request goes again
+/// without it** — the operator's rule: *"when a provider answers http 400 and the body
+/// says the content type is invalid … mark this model text-only for the rest of the
+/// session, say so once, and retry the same request once with placeholders."*
+///
+/// MEASURED 2026-10-25, `~/logs/harnessd-2000f08acfaa.log`: `glm-5.3` answered
+/// `http 400: messages.content.type is invalid, allowed values: ['text']` to the round,
+/// to the compaction that would have made room, and to every turn after — because the
+/// pictures were `read` charts in the HISTORY. The request that failed is the request
+/// this retries, so the compaction succeeds too; it goes through the same `complete`.
+///
+/// What this pins, in order: the FIRST request carried an `image_url` and the second did
+/// not, the retry happened exactly once, the model is recorded as text-only for the rest
+/// of the process, the operator was told exactly once — and a LATER request already goes
+/// out in the shape that works, so the daemon never earns that 400 again.
+#[test]
+fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders() {
+    // The model name is this test's own: the mark is process-wide, and a name another
+    // test uses would make the order the two run in matter.
+    const MODEL: &str = "glm-5.3-image-probe";
+    const REFUSAL: &str =
+        "{\"error\":{\"message\":\"messages.content.type is invalid, allowed values: ['text']\"}}";
+    let f = fake_answering(|body| match body.contains("image_url") {
+        true => (400, REFUSAL.to_string()),
+        false => (200, SCRIPT.to_string()),
+    });
+    let notices: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = notices.clone();
+    let creds = Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(f.url.clone()),
+    };
+    let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds).with_notes(
+        Arc::new(move |said: String| sink.lock().unwrap().push(said)),
+    );
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![
+            UserPart::Text {
+                text: "what does this chart say?".into(),
+            },
+            UserPart::Image {
+                media_type: "image/png".into(),
+                data_ref: "data:image/png;base64,iVBORw0KGgo=".into(),
+            },
+        ],
+    }];
+    let req = TurnRequest {
+        system: "be terse",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let done = p
+        .complete(&req, &mut |_| StreamFlow::Continue)
+        .expect("the retry answered");
+    assert_eq!(done.text, "Hello", "the answer is the retried round's");
+
+    {
+        let seen = f.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "exactly one retry, not a ladder");
+        assert!(
+            seen[0].1.contains("image_url"),
+            "the first request did not carry the picture: {}",
+            seen[0].1
+        );
+        assert!(
+            !seen[1].1.contains("image_url"),
+            "the retry sent the picture again: {}",
+            seen[1].1
+        );
+        assert!(
+            seen[1].1.contains(&format!(
+                "[image 1 · image/png · 8 B — not sent: {MODEL} takes text only]"
+            )),
+            "the retry said nothing about the picture it withheld: {}",
+            seen[1].1
+        );
+    }
+    // **The mark, and the notice said once.** The mark is what makes every later request
+    // skip the refusal.
+    assert!(
+        letibot_provider::messages::known_text_only("glm", MODEL),
+        "the refusal was not learned"
+    );
+    {
+        let said = notices.lock().unwrap();
+        assert_eq!(said.len(), 1, "the operator was told {said:?}");
+        assert!(said[0].contains("refused an image"), "{}", said[0]);
+        assert!(said[0].contains("placeholders"), "{}", said[0]);
+    }
+
+    // And the next request needs no lesson: one connection, placeholders already.
+    p.complete(&req, &mut |_| StreamFlow::Continue)
+        .expect("the marked model is answered first time");
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.len(), 3, "the third request was refused and retried");
+    assert!(!seen[2].1.contains("image_url"), "{}", seen[2].1);
 }
 
 #[test]
