@@ -971,14 +971,14 @@ fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
     }
 
     let d = crate::backend::tempdir::TempDir::new();
+    // The workspace in a folder of its own: where worktrees go depends on the
+    // workspace's siblings (`worktree_home`), and the temp dir's siblings are the
+    // other tests' repositories, made and removed while this one runs.
+    let ws = d.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
     // The backend canonicalises its root, so the workspace the tool sees is the
     // canonicalised path — use the same one to compute the path the tool checks.
-    let workspace = d
-        .path()
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .to_string();
+    let workspace = ws.canonicalize().unwrap().to_string_lossy().to_string();
     // Create the path the tool would try to use, so the refusal fires.
     let slug = "existing";
     let path = worktree_path(&workspace, slug);
@@ -990,7 +990,7 @@ fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
     });
     let mut reg = Registry::new();
     reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
-    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let backend = crate::backend::HostBackend::new(&ws).unwrap();
     let mut rt = ToolRuntime::new(reg, Box::new(backend));
     let mut sink = crate::NullToolSink;
     let r = rt.invoke(
