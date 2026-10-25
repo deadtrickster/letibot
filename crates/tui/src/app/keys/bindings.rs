@@ -117,6 +117,8 @@ pub(crate) enum Act {
     WaitsOn,
     /// The monitors pane's `x`: retire the monitor under the cursor (`/monitor retire NAME`).
     Retire,
+    /// The queue's `o`: go into the session of the reviewer working the row.
+    Reviewer,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
 }
@@ -233,10 +235,26 @@ const QUEUE: &[Binding] = &[
         Act::Verb(Verb::Regate),
         Text("re-gates the row's target"),
     ),
+    b(
+        &[On::Char('o')],
+        Empty,
+        Act::Reviewer,
+        Text("goes into the reviewer's session"),
+    ),
     PAGE,
     WHEEL,
 ];
-const QUEUE_ENTRY: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
+const QUEUE_ENTRY: &[Binding] = &[
+    b(UPDOWN, Always, Act::Scroll, Text("scroll")),
+    b(
+        &[On::Char('o')],
+        Empty,
+        Act::Reviewer,
+        Text("goes into the reviewer's session"),
+    ),
+    PAGE,
+    WHEEL,
+];
 const STANDING: &[Binding] = &[
     LIST,
     b(

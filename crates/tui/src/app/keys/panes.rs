@@ -118,6 +118,9 @@ impl App {
                 None => ControlFlow::Continue(()),
             },
             Act::Peek => self.subagents_peek(),
+            // **`o` goes into the reviewer's session** — the operator: *"no way to reach reviewer
+            // session from here"*. The row under the cursor, or the one opened whole.
+            Act::Reviewer => ControlFlow::Break(self.go_to_reviewer()),
             // **`x` retires the monitor under the cursor**; with none live the letter is the
             // composer's.
             Act::Retire => match self.retire_selected_monitor() {

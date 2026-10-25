@@ -676,3 +676,42 @@ fn a_one_project_folder_sees_the_queues_of_each_of_its_repositories() {
     );
     assert!(!screen.contains("is in no repository"), "{screen}");
 }
+
+/// **`o` goes into the reviewer's session** — the operator: *"there is also problem with /queue -
+/// no way to reach reviewer session from here"*. From the list, and from a row opened whole; a row
+/// nobody is reviewing says so.
+#[test]
+fn o_goes_into_the_reviewers_session() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut reviewing = queue_review_row("one", "reviewing");
+    reviewing.reviewer = Some("s-gatekeeper-sub-7".into());
+    a.apply(queue_frame(queues(
+        vec![reviewing, queue_review_row("two", "waiting")],
+        Vec::new(),
+    )));
+    a.screen(160, 40);
+    let went = a.key(Key::Char('o'));
+    assert!(
+        matches!(&went, Some(Action::Switch(id)) if id == "s-gatekeeper-sub-7"),
+        "{went:?}"
+    );
+    let mut b = app();
+    b.session_id = "s1".into();
+    b.command("queue");
+    b.apply(queue_frame(queues(
+        vec![queue_review_row("two", "waiting")],
+        Vec::new(),
+    )));
+    b.screen(160, 40);
+    assert_eq!(b.key(Key::Char('o')), None);
+    assert!(
+        b.notice
+            .as_deref()
+            .unwrap_or("")
+            .contains("no reviewer working it"),
+        "{:?}",
+        b.notice
+    );
+}

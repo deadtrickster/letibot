@@ -104,6 +104,32 @@ impl App {
             .copied()
     }
 
+    /// **Into the session of the reviewer working the row** — the row opened whole, else the one
+    /// under the cursor. A row nobody is reviewing says so and goes nowhere.
+    pub(crate) fn go_to_reviewer(&mut self) -> Option<Action> {
+        let review = match (&self.queue_open, self.queue_selected()) {
+            (Some(id), _) => self.queues.reviews.iter().find(|r| &r.id == id),
+            (None, Some(QRow::Review(i))) => self.queues.reviews.get(i),
+            (None, _) => None,
+        };
+        let Some(r) = review else {
+            self.say("that row is a landing, not a review — it has no reviewer");
+            self.redraw = true;
+            return None;
+        };
+        let Some(id) = r.reviewer.clone().filter(|s| !s.is_empty()) else {
+            let said = format!(
+                "`{}` has no reviewer working it now ({})",
+                r.branch, r.state
+            );
+            self.say(&said);
+            self.redraw = true;
+            return None;
+        };
+        self.queue_open = None;
+        self.switch_to(id)
+    }
+
     /// The id of a row — what `/queue VERB ID` and the overlay take.
     pub(crate) fn queue_row_id(&self, row: QRow) -> String {
         match row {
