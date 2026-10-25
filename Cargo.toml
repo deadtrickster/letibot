@@ -36,6 +36,11 @@ members = [
     "crates/letibot",
 ]
 
+# **The example plugins are not crates of this workspace.** `plugins/examples/*` are guest modules
+# for another host's ABI, copied into a project's `.letibot/plugins/`; each has its own empty
+# `[workspace]` table as well, so `cargo test --workspace` neither builds nor gates them.
+exclude = ["plugins"]
+
 [workspace.package]
 # **ONE version for the whole tree, and it is the release tag's other half.**
 #

@@ -1,0 +1,5 @@
+name = "plan-dashboard"
+purpose = "a project plan's tiers, stages, agents and hosts at a glance"
+hooks = ["pane_dashboard"]
+capabilities = ["read"]
+contract = 1
