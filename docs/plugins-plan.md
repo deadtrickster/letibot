@@ -107,8 +107,8 @@ reviewed; the `.wasm` is rebuilt when stale.
 Messy is fine because cleaning up is cheap:
 
 - **`plugin squash s1..s3`** merges session layers into one, in the session, keeping the stack's
-  answers the same (the model writes the merged source; `plugin test` replays recorded hook inputs
-  against old stack and new, and the squash is refused while they differ).
+  answers the same (the model writes the merged source; the shadow gate, §2.4, replays the recorded
+  hook inputs against old stack and new, and the squash is refused while they differ).
 - **Promotion is a commit**: a layer moved to `.letibot/plugins/` on the session's branch goes
   through the merge queue, and the reviewers see the source and the capability list in the diff.
   Nothing else promotes.
@@ -123,19 +123,53 @@ session and on every reload, so a replay or a review knows which policy was in f
 
 A layer's change takes effect on the next hook call, with no restart:
 
-- **Detected by the host**: the plugin directories are watched (the build writes `plugin.wasm`;
-  `plugin load` also reloads explicitly). A changed module is compiled off the hot path — cranelift
-  compiles a small module in milliseconds — and swapped in atomically.
+- **Detected by the host, applied after the shadow gate**: the plugin directories are watched (the
+  build writes `plugin.wasm`; `plugin load` asks explicitly). A changed module is a *candidate*: it
+  goes through the dry run of §2.4, and only a candidate that passes is swapped in, atomically.
+  Cranelift compiles a small module in milliseconds, so the gate, not the compile, is the wait.
 - **In-flight calls finish on the version they started on.** The swap replaces the module for the
   next call; nothing is interrupted.
 - **State survives the swap**: host-held state (§1, principle 5) is keyed by layer and hook, not by module, so
   a reloaded condition keeps its watch's baseline.
-- **A bad reload keeps the good one.** A module that fails to compile, fails the ABI check, or
-  claims a capability it was not granted is refused with the reason, and the previous version keeps
-  answering. The model is told either way.
+- **A bad candidate never replaces the good one.** One that fails the gate is refused with the
+  gate's report, and the previous version keeps answering. The model is told either way.
 - **Tools are the exception**: a plugin tool's schema is in the cached prompt prefix, so a change to
   a tool's *schema* waits for a reseat (which already announces tool changes); a change to its
   *behaviour* is hot like any other hook.
+
+### 2.4 The shadow gate: a dry run on a copy of the session
+
+The operator: *"and then mechanical thing - before applying we must check compilation etc on a
+shadow session - do a dry run when a temporary session copy has changes applied"*.
+
+Before any change to a stack takes effect — a new layer, a rebuilt one, a disable, a squash — the
+daemon runs it on a **shadow**: a temporary copy of the session with the change applied, beside
+the live session, which is not touched. It is the merge gate's role for layers: **mechanical, run
+by the daemon, not by an agent**, and the butler's reviewer reads its report rather than redoing
+it. The steps, first failure stops:
+
+1. **Build** — `cargo build --offline --release --target wasm32-unknown-unknown` from the layer's
+   source, so what is applied is what the source says (a committed or hand-copied `.wasm` that
+   does not match its source is refused).
+2. **Load** — compile, the ABI check (`rano_abi`), every export a known hook with a contract
+   version this host speaks, the capabilities in `plugin.toml` granted and no import beyond them.
+3. **Shadow** — fork the session's state into a hidden copy (its stack, its host-held hook state,
+   its recorded hook inputs, its monitors as data) and apply the change there. The shadow has **no
+   effects**: no model is called, no notice reaches anyone, no monitor is armed for real, and a
+   look a hook declares is answered from the recorded look results where they exist and otherwise
+   run only if it is read-only (`read`; `exec` against an allowlist of reading commands such as
+   `gh pr view`, `git log`), else answered *skipped*.
+4. **Replay** — every recorded input of every hook the change touches, through the live stack and
+   the shadow stack. Traps, fuel exhausted, malformed output and contract violations fail; outputs
+   are diffed.
+5. **Report** — the build log, the load result, the fuel per hook, and the diff: *these inputs now
+   answer differently, like this*. A change meant to alter behaviour has a diff and the diff is the
+   point; a squash or a refactor must have none, and the gate refuses it otherwise.
+
+Then the butler's reviewer reads the source with the report, and on a pass the daemon applies the
+change to the live session, hot. On a box with a session VM the build and the shadow can run in
+it; the shadow is discarded either way. Layers the session's model writes itself take the same
+path — there is no way to apply a change that skips the gate.
 
 ## 3. Capabilities
 
@@ -269,13 +303,15 @@ adjudication, the merge queue's landing, sudo and VMs.
     letibot plugin SDK, `plugin.toml`, a test).
   - `build` — `cargo build --offline --release --target wasm32-unknown-unknown` in the plugin's
     directory, through the gate like any `bash` call; errors come back verbatim.
-  - `load` — hot, for this session (a rebuilt `plugin.wasm` reloads by itself too, §2.3).
+  - `load` — submit to the shadow gate (§2.4) and apply on a pass (a rebuilt `plugin.wasm` is
+    submitted by itself too, §2.3).
   - `stack` — the layers, newest first, with each hook's answering layer, masks, disabled layers,
     recent answers and recent failures.
   - `disable` / `enable` — a layer, without deleting it (the bisect).
   - `test` — call a hook with a given input through the whole stack or one layer, and show the
     output, which layer answered, fuel used and any trap; or replay the session's recorded inputs.
-  - `squash` — merge session layers into one, refused while the replay differs (§2.2).
+  - `squash` — merge session layers into one, through the gate, refused while the replay differs
+    (§2.2).
   - `promote` — move a layer into `.letibot/plugins/` on the session's branch.
 - **`plugin_hooks`** — the contracts of §4 with a worked example each, read from the host itself so
   it cannot drift from what the host accepts.
@@ -288,11 +324,88 @@ adjudication, the merge queue's landing, sudo and VMs.
 The SDK is `letibot-plugin`, in this repository: rano's `rano-plugin` ABI plus serde types for
 each hook's input and output, so a plugin is `#[hook] fn condition(i: ConditionIn) -> ConditionOut`.
 
-## 6. Build order
+## 6. The harness butler
+
+The operator: *"which means harness core should help its agents to modify itself, maybe we can have
+a new role - harness butler - the thing that sits in the background of every session, created
+automatically with configured (and default) model and orchestrates and reviews the changes"*.
+
+**Why a separate agent.** The session's model is there for the project. Every turn it spends
+patching the harness is a turn off the task and context spent on the harness's internals; and a
+model reviewing the layer it just wrote reviews nothing. The butler owns the harness side, so the
+session asks for a fix and gets back to work while the fix happens beside it.
+
+And: *"not dissimilar to reviewers in queue"*.
+
+**What it is: the gatekeeper's shape, for the harness.** The review queue already has the
+structure (`crates/harnessd/src/sessions/gatekeeper.rs`): one hard-coded session the daemon starts
+on the default or a configured model, a normal self-driving session whose **todo board is the
+queue** (so nags and all), whose reviews are its own `task` children, and which the operator can
+attach to and steer through its prompt. The butler is the same thing, for the harness instead of
+for branches:
+
+| | review queue | harness butler |
+|---|---|---|
+| the session | `s-gatekeeper`, one per daemon, a root | `s-butler`, one per daemon, a root |
+| its board | one row per branch waiting for a verdict | one row per harness request, naming the session it is for |
+| its children | reviewers (`Gatekeeper` role) | a **fitter** that writes the layer into the requesting session's stack, and a **reviewer** that passes or refuses it — never the same child |
+| its model | default, or configured | default, or `butler.model` |
+| the daemon's part | fills the queue, worktrees, gates, landing — does not review | records hook inputs, runs the shadow gate, applies layers, enforces capabilities — does not write layers |
+
+One butler, not one per session: like the gatekeeper it is a **peer** of the working sessions,
+with no tree edge, and it sits behind every session by serving all of their requests from one
+board. That sees friction across sessions at once (three sessions hitting the same bug is one row
+with three requesters) and costs one context, not one per session. The working session's head
+shows its requests' rows, and opening one goes into the butler's child, as the queue's `o` does.
+
+New roles beside `Gatekeeper` and the notes keeper: **`Fitter`** (`plugin`, `read` over the
+session's recorded hook inputs and over letibot's own source and docs, no tool that edits the
+project) and **`Butler`** for the session itself (the board, `task`, `plugin stack`/`disable`, no
+authoring). Never seats a person picks; the daemon starts them.
+
+**What wakes it.** It costs nothing while asleep. It wakes on:
+
+- **the operator** — `/butler <what is wrong>`, or a harness complaint in the conversation that
+  the session's model hands over with a `butler` call (*"the monitor pane doesn't show X"*);
+- **the session's model** — asking for a change it needs (*"watch this project's Buildkite"*);
+- **friction the harness sees itself** — a layer that traps or keeps failing, the same tool refused
+  several times in a row, a monitor armed twice for the same thing, a notice the model answers with
+  confusion. These are suggestions, not orders: the butler says what it saw and what it would do.
+
+**What it does.**
+
+1. **Writes the layer** (through a fitter child). Finds the hook the problem lives at, writes the
+   layer, tests it against the recorded input that misbehaved (`plugin test`), and submits it to
+   the shadow gate (§2.4). The session's model and the
+   operator get one line saying what changed and how to undo it (`plugin disable s4`).
+2. **Reviews every layer** (through a reviewer child, never the fitter that wrote it) — the
+   fitter's, and any the session's model writes itself — after the gate passes it: the source
+   against the claimed purpose, the capabilities against what the purpose needs, and the gate's
+   diff against what the change was for. A refusal says why; the operator can override the
+   review, never the gate.
+3. **Keeps the stack healthy.** Disables a layer that keeps failing and says so; offers a
+   `squash` when the session's layers pile up; and at the end of a session proposes what is worth
+   promoting to the project.
+4. **Remembers across sessions.** Through session discovery it sees that three sessions wrote the
+   same fix, and proposes the project layer — or, when the fix belongs in Rust, writes up the core
+   change for us, with the layer as the reproduction.
+
+**What it may not do.** Everything §1 says of a plugin holds of the butler's layers, whoever asked
+for them: tighten only, capabilities through the gate, fail down. A capability on a session layer
+still asks the operator once, unless allow-all. The butler never promotes on its own — promotion
+is a commit through the merge queue, reviewed by the queue's reviewers, not by the butler that
+wrote it.
+
+**The cost to watch.** On a box with one local model server, a butler on the same model competes
+with the session for the GPU. That is why it sleeps until woken, why its model is a setting, and
+why its work runs between the session's turns when the two share a server.
+
+## 7. Build order
 
 1. **Host in harnessd.** The layer stack (scopes, per-hook resolution, call-below, mask,
-   disable), `plugin.toml`, capability checks, fail-down, **hot reload** (watch, swap, keep state,
-   keep the good version), recorded inputs, the transcript record. Engine: `rano::plugin` (ABI v1; letibot-side hook
+   disable), `plugin.toml`, capability checks, fail-down, recorded inputs, the transcript record,
+   **the shadow gate** (build, load, shadow copy with no effects, replay and diff, report) and
+   **hot reload** behind it (watch, gate, swap, keep state, keep the good version). Engine: `rano::plugin` (ABI v1; letibot-side hook
    kinds and JSON contracts). Tests with WAT fixtures, as rano's are, so no test needs a wasm
    toolchain.
 2. **The four patch points — `on_tool_call`, `on_tool_result`, `notice`, `condition`** — the
@@ -302,13 +415,15 @@ each hook's input and output, so a plugin is `#[hook] fn condition(i: ConditionI
    merged, conflict) and `coderabbit` as conditions, `pr-create` as `on_tool_result`. Delete
    `GithubCondition`'s decision half and `pr_watch`'s; keep the host's `gh` look runner and the
    coalescing. The existing GitHub tests move to the plugins and must pass unchanged in meaning.
-4. **Consolidation**: `squash`, `promote`, and session discovery over layers.
-5. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
+4. **The butler**: the role, its creation with the session, `/butler`, the `butler` call, the
+   review gate on layers it did not write, and the friction signals.
+5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
+6. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
    or bot), with the operator watching where it gets stuck. What it trips on is the next work.
-6. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
-7. `tool`, at reseat.
+7. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
+8. `tool`, at reseat.
 
-## 7. Open questions
+## 8. Open questions
 
 - **Toolchain on the other machines**: `wasm32-unknown-unknown` on lab2x1 and lubuntu1, and inside
   firecode VMs if plugin builds run there.
@@ -319,5 +434,9 @@ each hook's input and output, so a plugin is `#[hook] fn condition(i: ConditionI
 - **Recorded inputs and privacy**: how many inputs per hook are kept, and for how long — they hold
   tool output.
 - **A child session** (`task_start`) inherits the parent's session layers, or only the project's.
+- **Per daemon or per box**: the gatekeeper is per daemon; a butler per box would share one
+  board across folders, but a layer is about a project, and the daemon is per folder.
+- **The butler's default model** when the session runs on the local server: the same model (free,
+  contends for the GPU) or a remote one (no contention, network egress, the operator's call).
 - **The TUI's plugins** (`link`) load from the same scopes, read by the head from the session's
   workspace — or the daemon sends them.
