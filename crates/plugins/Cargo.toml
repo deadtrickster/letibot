@@ -1,0 +1,19 @@
+[package]
+name = "letibot-plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+# `plugin.toml` is a real TOML file with arrays and a quoted purpose, so it is parsed with the
+# parser the tree already uses for `prompts.toml` rather than with the flat `key = "value"`
+# scanner the config files use. A hand-rolled parser for plugin bytes would be the mangled
+# prompt defect again, one layer along.
+toml.workspace = true
+# The layer's identity in the stack view, in the transcript and in the gate's "is this still the
+# module I replayed" check is the SHA-256 of `plugin.wasm` — the hash the ledger and the spill
+# locator already use, so a reader of either recognises it.
+sha2 = "0.10"
