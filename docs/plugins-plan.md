@@ -361,6 +361,70 @@ branches, whatever scheduler the project runs). The first one is a generic examp
 repository, `plugins/examples/plan-dashboard` (C5 in `docs/plugins-slice1.md`), reading
 `<project>/.letibot/status.json`; a project with a richer source writes its own.
 
+### 4.11 Scripts that accrete, promoted to tools
+
+The operator: *"per project/session scripts. those little things that accrete - maybe they should
+be promoted to session/project local tools - maybe there must be similarity checks"*.
+
+Every long session grows them: the `ssh … remote.sh state` typed for the tenth time, the
+`for h in …; do …; done` that checks every host, the five-line `jq` over a report, the
+`bin/fleet.sh` a project ends up owning. They live in the model's memory of the session, in a
+`bin/` nobody indexes, or nowhere — retyped, slightly differently, each time. They are tools in all
+but name, and the harness can see them, because every one passed through `bash`.
+
+**A script tool is not wasm.** It is a descriptor around a command the harness already knows how
+to run, through the same gate as `bash`:
+
+```toml
+# .letibot/scripts/host-state.toml   (project)  — or the session's scripts/ dir (session)
+name = "host_state"
+purpose = "the state of every campaign host's newest fleet job"
+args = { host = "optional; one host instead of all" }
+run = ["bin/remote.sh", "-H", "{host}", "state"]   # argv, no shell; or script = "host-state.sh"
+replaces = ["ssh * remote.sh * state", "bin/remote.sh -n * state"]   # the shapes it absorbed
+```
+
+The same scopes and layering as plugins (§2): session, project, user; promotion is a commit and
+the merge queue reviews it; the same name in a higher layer overrides.
+
+**One tool for all of them, so the prompt cache never moves.** Each script is not its own tool
+schema — that would re-prefill the conversation every time one is added (§4.8). The model gets one
+stable tool, `script {name, args}`, and the catalog (name, purpose, args, one line each) travels as
+a resident notice that is refreshed when it changes, the way standing notes are. Adding a script
+costs a notice, not a prefix.
+
+**Finding them: similarity over what `bash` ran.** The store already has every command. The
+harness normalises each one into a shape (argv tokens, with paths, numbers, hashes, hostnames and
+quoted strings replaced by typed holes: `ssh <host> <path>/remote.sh -n <id> state`) and clusters
+shapes within the session and across the project's sessions:
+
+- **Repetition** — the same shape run N times (default 3) in a session, or in M sessions of the
+  project, is a *candidate*. The holes that varied become the script's args; the ones that never
+  varied stay literal.
+- **Near-duplicates** — shapes that differ by a flag or an argument order, or token-level
+  similarity above a threshold (shingled tokens, Jaccard), cluster together; the candidate is the
+  cluster, with its variants listed, not five scripts.
+- **Against what exists** — a candidate is compared with the existing scripts' `run` and
+  `replaces` shapes and with the files in the project's `bin/` and `scripts/`. A match is reported
+  as *"this is `host_state` again"* (the model is pointed at the script it is reinventing), not
+  offered as a new one. The same check runs when a script is *written*: a new script whose shape
+  matches an existing one is refused with the name of the one it duplicates, unless it says what it
+  does differently.
+- **Drift** — a script whose calls keep being followed by the same hand-typed fix-up (`| jq …`, a
+  retry) is a candidate for a new version, not a new script.
+
+**Who promotes.** The butler (§6) owns it: friction it watches for includes *"the same shape
+again"*. It writes the descriptor into the session's scripts, tells the model *"`host_state` now
+does what you typed four times"*, and at the end of the session proposes the ones worth promoting
+to the project — with the sessions that used them as the evidence. The shadow gate (§2.4) applies:
+a script is built (its `run` resolves, the file exists, it is executable), loaded (the descriptor
+parses, its name and args are unique, its shape does not duplicate another's), and replayed against
+the recorded commands it claims to replace (each one must map onto the script with some args).
+
+**A script that outgrows its descriptor becomes a plugin.** When it needs state, a look loop or a
+pane, the butler turns it into a wasm layer; the descriptor's `replaces` shapes carry over, so the
+similarity check keeps pointing at it.
+
 ## 5. What the model gets
 
 - **`plugin` tool** with actions:
@@ -482,6 +546,8 @@ why its work runs between the session's turns when the two share a server.
    coalescing. The existing GitHub tests move to the plugins and must pass unchanged in meaning.
 4. **The butler**: the role, its creation with the session, `/butler`, the `butler` call, the
    review gate on layers it did not write, and the friction signals.
+   **Scripts** (§4.11) with it: the `script` tool and its resident catalog, command shapes and the
+   similarity clustering over the store's `bash` history, candidates, duplicate refusal, promotion.
 5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
 6. **`pane`** (§4.9) and **the example plan dashboard** (§4.10).
 7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
