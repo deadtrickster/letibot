@@ -342,6 +342,157 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
     assert!(!super::wall_stops_round(0, 5_600, 5_443, 128, 512));
 }
 
+/// **A fresh provider is not a reason to refuse** — the wall on a count nothing has
+/// measured, and the ratio a switch carries.
+///
+/// MEASURED 2026-10-25, `s-1791394076177451000`, on the way from deepseek to
+/// `glm-coding`:
+///
+/// ```text
+/// context wall: stopped after 0 round(s) at 2708271 of 1000000 ledger tokens
+///               (unscaled: no round on glm-coding has measured yet)
+/// ```
+///
+/// The ledger of a metered session is `Vocab::bytes` — one id per byte of the rendered
+/// history — so 2,708,271 of them is not a token count and comparing it with a token
+/// window says nothing. The session had measured the ratio minutes before, on the model
+/// it had just left: 2,704,409 ledger tokens for 792,991 prompt tokens. Carried, that
+/// same history is ~794,000 of glm's 1,000,000-token window, which fits.
+///
+/// Two different rules are pinned here and they must not become one:
+///
+///   * a ratio measured on the model before the switch is an ESTIMATE that may decide;
+///   * nothing measured anywhere is not a count at all, so round 0 is attempted and the
+///     provider's own refusal is what folds — the door that already compacts on evidence.
+#[test]
+fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
+    // The session's own numbers.
+    let ledger = 2_708_271u64;
+    let measured = crate::config::CarriedScale {
+        model: "deepseek/deepseek-flash".into(),
+        ledger: 2_704_409,
+        provider: 792_991,
+    };
+    let mut cfg = deepseek_window();
+    cfg.provider = Some(crate::config::ProviderConfig {
+        name: "glm-coding".into(),
+        model: Some("glm-5.3".into()),
+        ..Default::default()
+    });
+    assert_eq!(
+        cfg.wall_basis(),
+        crate::config::WallBasis::Unmeasured,
+        "a switch clears the measurement"
+    );
+
+    // **One `if` for the whole of it.** The arithmetic still says the prompt is past the
+    // window — that is the log line above — so the decision has to be about the count,
+    // not about the arithmetic.
+    let window = cfg.planning_window().expect("the provider's window");
+    assert_eq!(
+        window, 1_000_000,
+        "with nothing measured it is the raw window"
+    );
+    assert!(
+        super::wall_stops_round(0, ledger, 20_000, cfg.headroom(), window),
+        "the arithmetic that stopped the session"
+    );
+    assert!(
+        !super::wall_stops_this_round(0, ledger, 20_000, cfg.headroom(), window, cfg.wall_basis()),
+        "an unmeasured count must not stop the first round: it is bytes against tokens"
+    );
+    // Between rounds it is the reserve again, and the wall still fires there.
+    assert!(super::wall_stops_this_round(
+        1,
+        ledger,
+        20_000,
+        cfg.headroom(),
+        window,
+        crate::config::WallBasis::Unmeasured
+    ));
+
+    // **Now the same session with the ratio it had measured a moment earlier.**
+    cfg.carried_scale = Some(measured.clone());
+    assert_eq!(
+        cfg.wall_basis(),
+        crate::config::WallBasis::Carried("deepseek/deepseek-flash")
+    );
+    assert_eq!(cfg.carried_note(), Some("deepseek/deepseek-flash"));
+    assert!(!cfg.tokens_are_unscaled(), "carried is not unmeasured");
+    let shown = cfg.shown_tokens(ledger);
+    assert!(
+        shown < 1_000_000,
+        "the same history on glm's side of the window: {shown}"
+    );
+    let window = cfg.planning_window().expect("the provider's window");
+    assert!(
+        window > ledger,
+        "the window in the ledger's units is the whole point: {window}"
+    );
+    assert!(
+        !super::wall_stops_this_round(0, ledger, 20_000, cfg.headroom(), window, cfg.wall_basis()),
+        "an estimate may decide, and this one says the prompt fits"
+    );
+    // **And the pre-emptive door still stands down on it**: a fold nobody measured is not
+    // a fold an inherited ratio gets to order. The refused door — the provider's own
+    // answer — is untouched by this and compacts when it is refused.
+    assert!(!cfg.pre_emptive_compact(ledger, true));
+
+    // A measurement on the new model replaces the estimate, which is the whole design.
+    cfg.ledger_scale = Some((ledger, shown));
+    assert_eq!(cfg.carried_note(), None);
+    assert_eq!(cfg.wall_basis(), crate::config::WallBasis::Measured);
+
+    // **And a carried pair never converts a LOCAL session.** Coming home means the engine
+    // sends its own token ids and the ledger IS the prompt: a cloud ratio applied there
+    // would be a conversion of a count into something it is not.
+    let mut local = deepseek_window();
+    local.carried_scale = Some(measured);
+    assert_eq!(local.scale(), None);
+    assert_eq!(local.shown_tokens(1_000), 1_000);
+    assert!(
+        !local.tokens_are_unscaled(),
+        "a local session is not unscaled"
+    );
+}
+
+/// **A switch that fails says how to go back** — the notice, its 4xx gate, and the
+/// command an operator can type.
+///
+/// MEASURED 2026-10-25: the screen said `FAILED — http 400: messages.content.type is
+/// invalid`, and the way back was the operator's memory of what the session had been on.
+#[test]
+fn a_switch_that_fails_names_the_model_before_it_and_the_command_back() {
+    let said = super::switch_back_said("deepseek/deepseek-flash", "glm-coding/glm-5.3", 400);
+    assert!(
+        said.contains("`/models deepseek/deepseek-flash`"),
+        "the command is spelled the way `/models` takes it: {said}"
+    );
+    assert!(said.contains("glm-coding/glm-5.3"), "{said}");
+    assert!(said.contains("http 400"), "{said}");
+
+    // **A refusal of what was sent is 4xx and not 429.** Everything else is a fact
+    // about the endpoint or about patience, and neither is a reason to leave a model.
+    let status = |code: u16| {
+        super::HarnessError::Turn(super::TurnFailure::Http(letibot_turn::HttpError::Status {
+            code,
+            body: "messages.content.type is invalid".into(),
+        }))
+    };
+    assert_eq!(super::provider_refusal(&status(400)), Some(400));
+    assert_eq!(super::provider_refusal(&status(404)), Some(404));
+    assert_eq!(super::provider_refusal(&status(429)), None, "the ladder's");
+    assert_eq!(
+        super::provider_refusal(&status(500)),
+        None,
+        "the endpoint's"
+    );
+    assert_eq!(
+        super::provider_refusal(&super::HarnessError::Setup("no key".into())),
+        None
+    );
+}
+
 /// **Infinity is `0`, and it is one line, so it gets one test.**
 ///
 /// The operator: *"make 200 tool calls limit configurable and set it to

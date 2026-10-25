@@ -45,6 +45,14 @@ for pid in WANT:
         cost = m.get("cost")
         if cost:
             e["cost"] = {k: cost[k] for k in ("input", "output", "cache_read") if k in cost}
+        # **What the model takes, because the floor is asked this question and a
+        # snapshot that drops the answer makes every model unknown.** Until 2026-10-25
+        # this filter carried `limit` and `cost` only, so no vendored row could say
+        # "text only" — and `letibot_provider::messages` sent `image_url` to a model
+        # that answers `messages.content.type is invalid, allowed values: ['text']`.
+        mod = m.get("modalities") or {}
+        if mod.get("input"):
+            e["modalities"] = {"input": mod["input"]}
         if e:
             ms[name] = e
     trimmed[pid] = {"models": ms}

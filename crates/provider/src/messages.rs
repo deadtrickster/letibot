@@ -6,8 +6,10 @@
 //!   update mid-session is a second system message, which every provider
 //!   accepts.
 //! - `User` → `{"role":"user","content":"…"}` with the text parts joined by a
-//!   blank line. Images are not sent (none of the three is asked to see one
-//!   here) and are named in the text so the model knows something was there.
+//!   blank line. **An image part is sent as an image to a model that takes pictures, and
+//!   as one text part naming it to a model that does not** — see [`Eyes`]. The distinction
+//!   is not tidiness: sending `image_url` to a text-only model refuses the whole request,
+//!   and history does not change, so every later turn is refused the same way.
 //! - `Reasoning` → attached to the assistant message it belongs to, as
 //!   `reasoning_content`, **when the request carries `tools`.** See below: this is
 //!   a REQUEST-level rule, not a provider one, and getting it wrong wedged a head.
@@ -141,6 +143,102 @@
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use serde_json::{Value, json};
 
+/// **Whether the model this request is going to takes pictures** — the one fact about the
+/// model that changes the bytes [`convert`] produces.
+///
+/// A parameter rather than a lookup here for the same reason `echo_reasoning` is: the
+/// caller is where the request is assembled and where the provider is known
+/// (`OpenAiProvider::body`), and a conversion that quietly read the catalogue itself would
+/// be a second place for the answer to come from.
+///
+/// # Why an unknown model is sent no picture
+///
+/// The two mistakes are not the same size. A model given a placeholder it can read has
+/// lost a picture it might have used; a text-only model given `{"type":"image_url"}`
+/// answers, MEASURED 2026-10-25 in `~/logs/harnessd-2000f08acfaa.log`,
+///
+/// ```text
+/// http 400: messages.content.type is invalid, allowed values: ['text']
+/// ```
+///
+/// for the round, for the compaction that would have made room, and for every turn after —
+/// the images are history, so nothing about the request can change. So the safe end is the
+/// default: a picture goes on the wire only when the catalogue says this model takes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eyes<'a> {
+    /// The catalogue says this model takes image input.
+    Sees,
+    /// It says this model takes text only.
+    TextOnly(&'a str),
+    /// It does not carry this model at all.
+    Unknown(&'a str),
+}
+
+impl Eyes<'_> {
+    /// Whether an image part becomes `image_url` or a placeholder.
+    pub fn takes_images(&self) -> bool {
+        matches!(self, Eyes::Sees)
+    }
+
+    /// **Why this picture is not being sent**, in the words the placeholder uses — or
+    /// `None` when it is sent.
+    ///
+    /// Deterministic per model on purpose: these bytes are the prompt prefix, and a
+    /// reason that varied between two requests would re-prefill every cached turn.
+    fn why_not(&self) -> Option<String> {
+        match self {
+            Eyes::Sees => None,
+            Eyes::TextOnly(model) => Some(format!("{model} takes text only")),
+            Eyes::Unknown(model) => {
+                Some(format!("the catalogue does not know {model} takes images"))
+            }
+        }
+    }
+}
+
+/// **One picture, said as one text part**, for a model that will not be given it.
+///
+/// The part carries no name — `UserPart::Image` is a mime and a `data:` URI and nothing
+/// else — so it is named by its position among the images of its own message, which is
+/// deterministic and is enough to tell two charts in one message apart. A tool result's
+/// media is the same fact with a different carrier, and the payload beside it is what
+/// names the file.
+///
+/// The size is the DECODED size, because base64 is 4/3 of it and the ratio is an encoding
+/// detail rather than a fact about the picture (the same rule [`letibot_transcript::media`]
+/// states for `Media::bytes`).
+fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, eyes: Eyes<'_>) -> String {
+    let size = match bytes {
+        Some(n) => size_said(n),
+        None => "size unknown".to_string(),
+    };
+    let why = eyes.why_not().unwrap_or_default();
+    format!("[image {nth} · {mime} · {size} — not sent: {why}]")
+}
+
+/// The decoded length of a `data:<mime>;base64,<payload>` reference.
+fn data_ref_bytes(data_ref: &str) -> Option<usize> {
+    let payload = data_ref.split_once(";base64,")?.1;
+    if payload.len() % 4 != 0 {
+        return None;
+    }
+    let padding = payload.bytes().rev().take_while(|b| *b == b'=').count();
+    Some(payload.len() / 4 * 3 - padding)
+}
+
+/// A byte count a person reads: `128 KiB`, `1.4 MiB`. Whole kilobytes, because the
+/// placeholder is about how much was withheld rather than about the file.
+fn size_said(bytes: usize) -> String {
+    const K: usize = 1024;
+    if bytes >= K * K {
+        format!("{:.1} MiB", bytes as f64 / (K * K) as f64)
+    } else if bytes >= K {
+        format!("{} KiB", bytes / K)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 /// The `messages` array. `system` is prepended when non-empty and no `System`
 /// item leads the transcript — the harness keeps the system prompt in item 0,
 /// so normally it is already there and `system` is the same text.
@@ -151,8 +249,13 @@ use serde_json::{Value, json};
 /// — `OpenAiProvider::body`, which knows whether it is about to send `tools` — so the
 /// decision is made once, where the request is assembled, rather than guessed at here
 /// from a provider name.
-pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
-    convert_with_tail(system, items, &[], echo_reasoning)
+pub fn convert(
+    system: &str,
+    items: &[TranscriptItem],
+    echo_reasoning: bool,
+    eyes: Eyes<'_>,
+) -> Vec<Value> {
+    convert_with_tail(system, items, &[], echo_reasoning, eyes)
 }
 
 /// **The same conversion, with items the request carries and the transcript does
@@ -169,6 +272,7 @@ pub fn convert_with_tail(
     items: &[TranscriptItem],
     tail: &[TranscriptItem],
     echo_reasoning: bool,
+    eyes: Eyes<'_>,
 ) -> Vec<Value> {
     let mut out = Vec::with_capacity(items.len() + tail.len() + 1);
     let leads_with_system = matches!(items.first(), Some(TranscriptItem::System { .. }));
@@ -204,28 +308,52 @@ pub fn convert_with_tail(
                 out.push(json!({"role": "system", "content": text}));
             }
             TranscriptItem::User { parts, .. } => {
-                // **An image part is SENT, not described.**
+                // **An image part is SENT to a model that takes pictures, and NAMED to one
+                // that does not.**
                 //
                 // This arm used to render every image as *"[an image (image/png) was attached here
                 // and is not sent to this provider]"* — a sentence that was true only because
-                // nothing in the tree could produce an image part. The moment `read` could, the
-                // sentence became the defect it described: a model told a picture exists and given
-                // no picture is a model that answers as though the picture were uninteresting,
-                // which is the failure R54 §7's third clause is about.
+                // nothing in the tree could produce an image part. Then it sent every image to
+                // every model, which was true only until a session was switched to one that takes
+                // text: MEASURED 2026-10-25, `glm-5.3` answered
+                // `messages.content.type is invalid, allowed values: ['text']` to the round, to the
+                // compaction that would have made room, and to every turn after it. See [`Eyes`]
+                // for why the unknown case goes the safe way.
                 //
-                // The shape is opencode's and the OpenAI-compatible one: a content ARRAY of typed
-                // parts, the image as `{"type":"image_url","image_url":{"url":"data:…"}}`. A
-                // text-only message keeps the plain string, so nothing about an ordinary turn
-                // changes — which matters beyond tidiness: these bytes are the prompt prefix, and
-                // an array where a string was would re-prefill every cached turn.
+                // The shape for a model that sees is opencode's and the OpenAI-compatible one: a
+                // content ARRAY of typed parts, the image as
+                // `{"type":"image_url","image_url":{"url":"data:…"}}`. A text-only message keeps
+                // the plain string, so nothing about an ordinary turn changes — which matters
+                // beyond tidiness: these bytes are the prompt prefix, and an array where a string
+                // was would re-prefill every cached turn.
                 let mut content: Vec<Value> = Vec::new();
+                let mut images = 0usize;
                 for p in parts {
                     match p {
                         UserPart::Text { text } => {
                             content.push(json!({"type": "text", "text": text}))
                         }
-                        UserPart::Image { data_ref, .. } => content
-                            .push(json!({"type": "image_url", "image_url": {"url": data_ref}})),
+                        UserPart::Image {
+                            media_type,
+                            data_ref,
+                        } => {
+                            images += 1;
+                            if eyes.takes_images() {
+                                content.push(
+                                    json!({"type": "image_url", "image_url": {"url": data_ref}}),
+                                );
+                            } else {
+                                content.push(json!({
+                                    "type": "text",
+                                    "text": not_sent_said(
+                                        images,
+                                        media_type,
+                                        data_ref_bytes(data_ref),
+                                        eyes,
+                                    ),
+                                }));
+                            }
+                        }
                         UserPart::FileRef { path, .. } => {
                             content.push(json!({"type": "text", "text": path}))
                         }
@@ -326,14 +454,32 @@ pub fn convert_with_tail(
                 // everywhere: an ordinary user message is the one shape every vision API accepts.
                 // When a provider is measured to take tool-result media, this is the arm to branch
                 // on, and the branch is one `if`.
+                //
+                // **This is the arm that actually 400'd, and it is the one that is all text now.**
+                // The history that wedged the session carried fourteen images this way, all of them
+                // read by `read`, and a model that takes text only refuses the request whole. So a
+                // model that does not see gets the sentence and ONE plain-string message — not an
+                // array with a placeholder in it — because a message that is all text should be a
+                // string, and a `content` array where a string was is a re-prefill of every cached
+                // turn after it.
                 if let Some(m) = media {
-                    out.push(json!({
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Attached media from tool result:"},
-                            {"type": "image_url", "image_url": {"url": m.data_ref}},
-                        ]
-                    }));
+                    if eyes.takes_images() {
+                        out.push(json!({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Attached media from tool result:"},
+                                {"type": "image_url", "image_url": {"url": m.data_ref}},
+                            ]
+                        }));
+                    } else {
+                        out.push(json!({
+                            "role": "user",
+                            "content": format!(
+                                "Attached media from tool result: {}",
+                                not_sent_said(1, &m.mime, Some(m.bytes), eyes)
+                            ),
+                        }));
+                    }
                 }
             }
         }
@@ -574,7 +720,15 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use letibot_transcript::{ReasoningField, SystemOrigin, ToolCall};
+    use letibot_transcript::{SystemOrigin, ToolCall};
+
+    /// [`super::convert`] for a model that SEES — what every test in this module means
+    /// unless it says otherwise. The module's question is the SHAPE of a request, and a
+    /// model's eyes are an input to that shape rather than the subject of most of these
+    /// tests; the two that are about it call `super::convert` with their own [`Eyes`].
+    fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
+        super::convert(system, items, echo_reasoning, Eyes::Sees)
+    }
 
     /// **The request's tail is the LAST message, and it is not in the transcript.**
     ///
@@ -598,7 +752,7 @@ mod tests {
                 text: "[standing-notes offer] `.letibot/notes/x.md` looks relevant".into(),
             }],
         }];
-        let msgs = convert_with_tail("be terse", &items, &tail, true);
+        let msgs = convert_with_tail("be terse", &items, &tail, true, Eyes::Sees);
         assert_eq!(msgs.len(), 3, "system, the prompt, the offer");
         let last = msgs.last().expect("messages");
         assert_eq!(last["role"], "user");
@@ -888,6 +1042,109 @@ mod tests {
         );
     }
 
+    /// **A model that takes text only is sent the PLACEHOLDER, and the message is a
+    /// string again.**
+    ///
+    /// MEASURED 2026-10-25 in `~/logs/harnessd-2000f08acfaa.log`: a long session switched
+    /// to `glm-5.3` on the coding plan, and every request — the round first, then the
+    /// compaction that would have made room — came back
+    /// `http 400: messages.content.type is invalid, allowed values: ['text']`. The images
+    /// were `read` charts in the HISTORY, so nothing the operator could type would have
+    /// helped: the request had to stop carrying them, and the model had to be told what it
+    /// was not being given.
+    ///
+    /// The determinism matters as much as the placeholder: these bytes are the prompt
+    /// prefix, so the same part must produce the same sentence on every request.
+    #[test]
+    fn a_text_only_model_gets_a_placeholder_and_plain_string_content() {
+        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let items = vec![TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![
+                UserPart::Text {
+                    text: "what is this?".into(),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: uri.into(),
+                },
+            ],
+        }];
+        let m = super::convert("be terse", &items, false, Eyes::TextOnly("glm-5.3"));
+        let user = m
+            .iter()
+            .find(|x| x["role"] == "user")
+            .expect("the user message");
+        // **A plain string, not an array of one part.** An array where a string was is a
+        // re-prefill of every cached turn in the conversation.
+        let content = user["content"]
+            .as_str()
+            .unwrap_or_else(|| panic!("an all-text message came out as {user}"));
+        assert_eq!(
+            content,
+            "what is this?\n\n[image 1 · image/png · 8 B — not sent: glm-5.3 takes text only]",
+            "{content}"
+        );
+        assert!(
+            !m.iter().any(|x| x.to_string().contains("image_url")),
+            "an image_url reached a text-only model: {m:?}"
+        );
+        // And the same bytes twice: the prefix has to be stable per model.
+        assert_eq!(
+            m,
+            super::convert("be terse", &items, false, Eyes::TextOnly("glm-5.3"))
+        );
+    }
+
+    /// **An image a tool result read is a plain-string message when the model cannot see
+    /// it** — the arm the fourteen images of the measured history actually took.
+    #[test]
+    fn a_tool_results_image_becomes_a_placeholder_message_for_a_text_only_model() {
+        let proposed = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        let items = vec![
+            proposed,
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
+                edit: None,
+                origin: None,
+                media: Some(letibot_transcript::media::Media {
+                    mime: "image/png".into(),
+                    bytes: 131_072,
+                    width: Some(2),
+                    height: Some(2),
+                    data_ref: "data:image/png;base64,iVBORw0KGgo=".into(),
+                    delivered: false,
+                }),
+            },
+        ];
+        let m = super::convert("be terse", &items, false, Eyes::Unknown("glm-5.3"));
+        let att = m
+            .iter()
+            .find(|x| x["role"] == "user")
+            .expect("the attachment notice");
+        assert_eq!(
+            att["content"],
+            "Attached media from tool result: [image 1 · image/png · 128 KiB — not sent: \
+             the catalogue does not know glm-5.3 takes images]",
+            "{att}"
+        );
+        assert!(
+            !m.iter().any(|x| x.to_string().contains("image_url")),
+            "an image_url reached a model nobody knows the eyes of: {m:?}"
+        );
+    }
+
     #[test]
     fn tool_schemas_pass_through_and_a_bare_string_is_refused() {
         let ok =
@@ -905,6 +1162,11 @@ mod tests {
 mod pairing_tests {
     use super::*;
     use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
+
+    /// [`super::convert`] for a model that SEES — see the sibling module's helper.
+    fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
+        super::convert(system, items, echo_reasoning, Eyes::Sees)
+    }
 
     fn user(t: &str) -> TranscriptItem {
         TranscriptItem::User {

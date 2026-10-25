@@ -72,9 +72,31 @@ impl OpenAiProvider {
         // request's shape so the next one can be read rather than guessed at.
         let tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
         let carries_tools = !tools.is_empty();
+        // **Whether this model will be given the pictures in the conversation.** The
+        // catalogue is the authority (`crate::catalogue`), and NOT knowing is treated as
+        // *no* — a text-only model refuses the request whole, and the conversation's
+        // images are history, so a wrong "yes" refuses every turn after it. MEASURED
+        // 2026-10-25: `glm-5.3` answered `messages.content.type is invalid, allowed
+        // values: ['text']`, to the round and to the compaction alike.
+        //
+        // The catalogue is loaded once here rather than inside the conversion: the
+        // conversion is one walk over the items and has no business reading files, and
+        // `load` is a `stat` on an unchanged file.
+        let catalogue = crate::catalogue::Catalogue::load();
+        let eyes = match catalogue.takes_images(self.preset.catalogue_id, &self.model) {
+            Some(true) => crate::messages::Eyes::Sees,
+            Some(false) => crate::messages::Eyes::TextOnly(&self.model),
+            None => crate::messages::Eyes::Unknown(&self.model),
+        };
         let mut body = json!({
             "model": self.model,
-            "messages": crate::messages::convert_with_tail(req.system, req.items, req.tail, carries_tools),
+            "messages": crate::messages::convert_with_tail(
+                req.system,
+                req.items,
+                req.tail,
+                carries_tools,
+                eyes,
+            ),
             "stream": true,
             "stream_options": {"include_usage": true},
         });
