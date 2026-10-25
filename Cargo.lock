@@ -1044,6 +1044,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-plugins"
+version = "0.4.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "letibot-provider"
 version = "0.4.0"
 dependencies = [

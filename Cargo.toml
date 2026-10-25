@@ -27,6 +27,10 @@ members = [
     "crates/ui",
     "crates/tools",
     "crates/code",
+    # The plugin layer stack: scope resolution, hot reload and the shadow gate. It carries no
+    # wasm engine — a `Loader` is the seam — so it is testable with fakes and its tests never
+    # compile a module.
+    "crates/plugins",
     "crates/harnessd",
     "crates/opencode",
     # **The one binary, last, because it depends on the roles' crates.** Everything
@@ -109,5 +113,6 @@ letibot-tui = { path = "crates/tui" }
 letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
+letibot-plugins = { path = "crates/plugins" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
