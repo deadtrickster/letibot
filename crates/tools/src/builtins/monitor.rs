@@ -94,7 +94,7 @@ impl Tool for Monitor {
                     "pid": {"type": "integer", "description": "Watch one process leave, by pid. Resolved to (pid, start time) now; this daemon and its ancestors are refused."},
                     "process": {"type": "string", "description": "Watch every process of this user whose command line contains this string leave. Found once, now, never including this daemon or its ancestors; then watched by handle. Fires when all are gone."},
                     "command": {"type": "string", "description": "Watch a command: fire when it exits (any exit code). A health check, not a shell you run work in."},
-                    "github": {"type": "object", "description": "Watch a GitHub pull request or issue through the operator's `gh`: {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \"until\": \"closed\"|\"merged\"|\"checks\"|\"review\"|\"comment\"|\"coderabbit\"} (or `repo` with `pr`/`issue` instead of `url`); `until` may be a list — one watch, one look, for all of them — optionally `every_s` (how often it looks, default 90, at least 30). A review, comment or CodeRabbit pass counts only after the watch is armed; a state already true (merged, checks done) fires at once. Lives a day by default, up to a week; with `repeat` it fires again for the next one (the next push's checks, the next review).", "properties": {"url": {"type": "string"}, "repo": {"type": "string"}, "pr": {"type": "integer"}, "issue": {"type": "integer"}, "until": {"anyOf": [{"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}, {"type": "array", "items": {"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}}]}, "every_s": {"type": "integer"}}},
+                    "github": {"type": "object", "description": "Watch a GitHub pull request or issue through the operator's `gh`: {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \"until\": \"closed\"|\"merged\"|\"checks\"|\"review\"|\"comment\"|\"coderabbit\"} (or `repo` with `pr`/`issue` instead of `url`); `until` may be a list — ONE watch per pull request, one look, for all of them: a second watch on the same one is refused — optionally `every_s` (how often it looks, default 90, at least 30). A review, comment or CodeRabbit pass counts only after the watch is armed; a state already true (merged, checks done) fires at once. Lives a day by default, up to a week; with `repeat` it fires again for the next one (the next push's checks, the next review).", "properties": {"url": {"type": "string"}, "repo": {"type": "string"}, "pr": {"type": "integer"}, "issue": {"type": "integer"}, "until": {"anyOf": [{"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}, {"type": "array", "items": {"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}}]}, "every_s": {"type": "integer"}}},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
                     "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
                     "repeat": {"type": "boolean", "description": "Continuous rather than one-shot: after it fires it re-arms and keeps watching for the next occurrence (a path changing again, a port flapping, a timer on an interval). A one-shot monitor settles the first time its condition is met."}
@@ -339,10 +339,18 @@ impl Tool for Monitor {
                 found, what,
             )))
         } else if let Some(g) = args.get("github") {
-            match github_watch(g) {
+            let w = match github_watch(g) {
                 Ok(w) => w,
                 Err(inv) => return *inv,
+            };
+            // **One watch per pull request** — a second on one already watched is refused, and
+            // the refusal is the one call that watches all of it. Measured on stroppy: nine
+            // watches, three conditions apiece, for three pull requests — nine `gh` calls a look
+            // where three would do.
+            if let Some(inv) = already_watched(monitors, &w, name, args) {
+                return inv;
             }
+            w
         } else if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
             let argv: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
             if argv.is_empty() {
@@ -496,6 +504,43 @@ fn inside(path: &str) -> bool {
         }
     }
     depth > 0
+}
+
+/// **The refusal of a second watch on a pull request already watched** — naming the watch that
+/// has it, and the one `monitor` call that covers both its conditions and these.
+fn already_watched(
+    monitors: &crate::exec::monitor::Monitors,
+    w: &Watch,
+    name: &str,
+    args: &Value,
+) -> Option<Invocation> {
+    let (target, mine) = w.github()?;
+    let (held, theirs) = monitors.list().into_iter().find_map(|m| {
+        let (t, theirs) = m.watch.github()?;
+        (t == target && m.name != name).then(|| (m.name.clone(), theirs))
+    })?;
+    let mut all: Vec<&str> = theirs.clone();
+    for u in &mine {
+        if !all.contains(u) {
+            all.push(u);
+        }
+    }
+    let mut github = args.get("github").cloned().unwrap_or_default();
+    github["until"] = serde_json::json!(all);
+    let arm = serde_json::json!({"name": held, "github": github, "repeat": true});
+    let retire = serde_json::json!({"name": held, "action": "retire"});
+    Some(Invocation::failed(
+        format!(
+            "`{target}` is already watched, by `{held}` ({}) — nothing was declared",
+            theirs.join(", ")
+        ),
+        format!(
+            "one watch serves several conditions with one look, so a pull request gets one \
+             watch. To watch {} together: retire `{held}` with `monitor {retire}`, then arm \
+             `monitor {arm}`. Or leave `{held}` as it is.",
+            all.join(", ")
+        ),
+    ))
 }
 
 /// **A `github` watch, read** — `{"url": "https://github.com/o/r/pull/12", "until": "checks"}`, or
@@ -776,6 +821,62 @@ mod tests {
         assert!(
             ttl_of(&two_days).is_err(),
             "the ordinary cap still holds for other watches"
+        );
+    }
+
+    /// **A pull request already watched gets no second watch** — the refusal names the one that
+    /// has it and gives the single call for both: stroppy armed nine watches for three pull
+    /// requests, three conditions apiece.
+    #[test]
+    fn a_second_watch_on_a_watched_pull_request_is_refused_with_the_one_call() {
+        use crate::exec::monitor::{DEFAULT_TTL, Monitors};
+        use crate::exec::scope::{ScopeId, ScopeKind};
+        let ms = std::sync::Arc::new(Monitors::new());
+        let scope = ScopeId {
+            kind: ScopeKind::Session,
+            name: "s".into(),
+            path: std::env::temp_dir(),
+        };
+        let first = github_watch(&serde_json::json!({
+            "repo": "stroppy-io/stroppy", "pr": 226, "until": "review"
+        }))
+        .unwrap();
+        ms.declare(
+            "pr226-review",
+            scope,
+            first,
+            None,
+            "turn 1",
+            DEFAULT_TTL,
+            false,
+        )
+        .unwrap();
+        let args = serde_json::json!({
+            "name": "pr226-checks",
+            "github": {"repo": "stroppy-io/stroppy", "pr": 226, "until": ["checks", "closed"]}
+        });
+        let second = github_watch(&args["github"]).unwrap();
+        let inv = already_watched(&ms, &second, "pr226-checks", &args).expect("refused");
+        assert!(
+            inv.payload
+                .contains("is already watched, by `pr226-review` (review)")
+                || inv.payload.contains("pr226-review"),
+            "{}",
+            inv.payload
+        );
+        assert!(
+            inv.payload
+                .contains(r#""until":["review","checks","closed"]"#),
+            "the one call covers all of it: {}",
+            inv.payload
+        );
+        let other = github_watch(&serde_json::json!({
+            "repo": "stroppy-io/stroppy", "pr": 227, "until": "checks"
+        }))
+        .unwrap();
+        assert!(
+            already_watched(&ms, &other, "pr227", &serde_json::json!({})).is_none(),
+            "another pull request is its own watch"
         );
     }
 }

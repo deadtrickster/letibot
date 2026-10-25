@@ -71,6 +71,18 @@ impl Until {
         })
     }
 
+    /// The word a call names it by: `checks`, `review`, …
+    pub fn key(self) -> &'static str {
+        match self {
+            Until::Closed => "closed",
+            Until::Merged => "merged",
+            Until::Checks => "checks",
+            Until::Review => "review",
+            Until::Comment => "comment",
+            Until::CodeRabbit => "coderabbit",
+        }
+    }
+
     pub fn word(self) -> &'static str {
         match self {
             Until::Closed => "closing",
@@ -648,6 +660,13 @@ impl Condition for GithubCondition {
 
     fn max_ttl(&self) -> Option<Duration> {
         Some(GITHUB_MAX_TTL)
+    }
+
+    fn github(&self) -> Option<(String, Vec<&'static str>)> {
+        Some((
+            format!("{}#{}", self.target.repo, self.target.number),
+            self.untils.iter().map(|u| u.key()).collect(),
+        ))
     }
 }
 

@@ -184,6 +184,13 @@ pub trait Condition: Send + Sync {
     fn max_ttl(&self) -> Option<Duration> {
         None
     }
+
+    /// **The GitHub pull request or issue this watches, and for what** — `("owner/repo#N",
+    /// ["checks", …])` — so a second watch on the same one can be refused in favour of one watch
+    /// for all of it. `None` for everything that is not a GitHub watch.
+    fn github(&self) -> Option<(String, Vec<&'static str>)> {
+        None
+    }
 }
 
 /// How a runner waits before the next evaluation.
@@ -238,6 +245,14 @@ impl Watch {
                 format!("loopback port {port} becoming {}", want.as_str())
             }
             Watch::Custom(c) => c.0.describe(),
+        }
+    }
+
+    /// The GitHub target and conditions of this watch, when it is one ([`Condition::github`]).
+    pub fn github(&self) -> Option<(String, Vec<&'static str>)> {
+        match self {
+            Watch::Custom(c) => c.0.github(),
+            _ => None,
         }
     }
 
