@@ -716,7 +716,19 @@ use crate::view::Snapshot;
 /// A reply's empty `path:start-end` fences, filled by the daemon from the file when the reply
 /// lands and sent after the row's content. A new variant, so a version-47 head would fail to
 /// decode the first one — the version-4 argument — and the number moves.
-pub const PROTOCOL_VERSION: u32 = 48;
+///
+/// # 49: plugin panes ([`crate::SessionEvent::PluginPane`], [`ClientFrame::PaneOpen`])
+///
+/// A pane a plugin describes and this host draws (`docs/plugins-slice1.md`, C3 and C4): the
+/// daemon publishes the document a `pane_<name>` hook answered, and a head opens one and sends
+/// a stop's action back through two frames of its own. Two new events and two new client
+/// frames, so **both halves** would fail on the other's first one mid-session — the version-4
+/// argument in both directions — and the number moves.
+///
+/// The action frame carries no `expected_seq`, unlike every other mutating command: what it
+/// asks for is a pane's own view, which is no more the session's state than a `ListJobs` is,
+/// and a stale-mark refusal would turn an operator's keypress into a sentence about a turn.
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2387,6 +2399,38 @@ pub enum ClientFrame {
     /// **`pane` names which**, since 44 — the one the operator confirmed on the card, which
     /// names it by its number and its command.
     TermClose { pane: u32 },
+    /// **Open a plugin's pane**: the head opened it, so the daemon runs the pane's look now and
+    /// answers with [`crate::SessionEvent::PluginPane`].
+    ///
+    /// Read-only and unserialised like [`ClientFrame::ListJobs`], and for the same reason: a
+    /// pane that opens must answer while it is open, and a verb that rode the command queue
+    /// would answer after the turn. It is **asked on every open** rather than pushed, because a
+    /// view is a moment — the one the daemon published an hour ago is a dashboard of that
+    /// hour — and it is not in a snapshot for the same reason.
+    ///
+    /// A daemon that has no such pane says nothing: the head draws the pane it holds (or, for a
+    /// pane it has never heard of, `/pane NAME` says so).
+    PaneOpen {
+        /// `<layer name>/<hook name>` — see [`crate::SessionEvent::PluginPane`].
+        pane: String,
+    },
+    /// **One key of one stop, back to the pane that drew it**: the `event` word the stop's
+    /// action named, or `"look"` to re-run the look now.
+    ///
+    /// `say` is not here and must not be: a pane's `say` is a line to the session's model, and
+    /// a line is [`ClientFrame::Prompt`] — sent by the head through the composer's own path, so
+    /// it is queued, announced and attributed exactly as a typed one is. A second door into the
+    /// model from a dashboard would be a prompt nobody typed wearing nobody's name.
+    ///
+    /// No `expected_seq` and no `client_request_id` — see [`PROTOCOL_VERSION`]'s 49 section.
+    PaneAction {
+        /// `<layer name>/<hook name>`.
+        pane: String,
+        /// The stop's id, as the plugin wrote it; `""` when the stop had none (a markdown item).
+        item: String,
+        /// The action word.
+        action: String,
+    },
 }
 
 /// **One live pane of a session, as [`ServerFrame::TermStatus`] lists it** — its number and
@@ -2888,6 +2932,8 @@ mod tests {
                 | ClientFrame::OperatorCall { .. }
                 | ClientFrame::OperatorResult { .. }
                 | ClientFrame::OperatorShell { .. }
+                | ClientFrame::PaneAction { .. }
+                | ClientFrame::PaneOpen { .. }
                 | ClientFrame::Peek { .. }
                 | ClientFrame::Promote { .. }
                 | ClientFrame::Prompt { .. }
@@ -2948,6 +2994,8 @@ mod tests {
                 | crate::SessionEvent::TranscriptAppended { .. }
                 | crate::SessionEvent::TranscriptContent { .. }
                 | crate::SessionEvent::Citations { .. }
+                | crate::SessionEvent::PluginPane { .. }
+                | crate::SessionEvent::PluginPaneGone { .. }
                 | crate::SessionEvent::TranscriptForked { .. }
                 | crate::SessionEvent::TurnFailed { .. }
                 | crate::SessionEvent::TurnFinished { .. }
@@ -2994,8 +3042,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 48,
-            "the match above was last reconciled with the frame list at 48 — \
+            PROTOCOL_VERSION, 49,
+            "the match above was last reconciled with the frame list at 49 — \
+             `SessionEvent::PluginPane`/`PluginPaneGone` and `ClientFrame::PaneOpen`/`PaneAction`, \
+             plugin panes (a version-48 head cannot decode the first event, a version-48 daemon \
+             cannot parse the first frame). 48 was \
              `SessionEvent::Citations`, the lines a reply cited (a version-47 head cannot decode \
              it). 47 was `ClientFrame::AnswerTodo`, the operator's answer to a todo row's question (a \
              version-46 daemon cannot parse it). 46 was `SessionEvent::HeldResults`, the counts of what a session holds back from its model \

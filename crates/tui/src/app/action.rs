@@ -117,6 +117,21 @@ pub enum Action {
         /// at the offset the previous answer named.
         offset: u64,
     },
+    /// **Open a plugin's pane** — the head just opened it, so the daemon runs the pane's look
+    /// now and answers with `SessionEvent::PluginPane`. Asked on every open, because a view is
+    /// a moment: the one this head holds may be an hour old.
+    PaneOpen {
+        pane: String,
+    },
+    /// **One key of one stop, back to the pane that drew it** — the `event` word its action
+    /// named, or `"look"`. A `say` never travels here: it is a line to the session's model, so
+    /// it goes through [`Action::Prompt`] and the composer's own path, attributed to the
+    /// operator who pressed the key.
+    PaneAction {
+        pane: String,
+        item: String,
+        action: String,
+    },
     /// Ask the daemon for the settings this session runs under (`/config`).
     Settings,
     /// Bring a session that is in the store but not in this daemon back to life.

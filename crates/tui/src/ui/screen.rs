@@ -803,7 +803,12 @@ impl App {
             rung: self.rung_state(),
         };
         let standings = self.queue_standings();
-        let right = bottom_markers(&bottom, &standings, self.asks_folded_count());
+        let right = bottom_markers(
+            &bottom,
+            &standings,
+            self.asks_folded_count(),
+            self.plugin_badge(),
+        );
         let p = self.cfg.palette();
         let Some(legend) = completions.filter(|l| l.width() > 0) else {
             // **One builder for both paths.** rano's `BoxBottom::line` composes this same right
@@ -1031,6 +1036,24 @@ impl App {
                 let rows = self.monitors_lines(w);
                 self.pane_window(rows, room)
             }
+            // **A plugin's pane**, drawn through `pane_window` like every other: its own
+            // document is as long as a project's plan is, so it scrolls and pages with the
+            // keys the bar names.
+            Drawn::Surface(Surface::PluginPane) => {
+                let rows = self.plugin_lines(w);
+                self.pane_window(rows, room)
+            }
+            // **One stop read whole**, over the pane — also through `pane_window`: a finding's
+            // evidence and a row's detail are written by a plugin and can be a screenful.
+            Drawn::Surface(Surface::PluginDetail) => {
+                let lines = self.plugin_detail_lines(w).unwrap_or_else(|| {
+                    vec![rano::agent::pane::faint(
+                        "  that row is gone — esc goes back to the pane",
+                    )]
+                });
+                let rows = row_strings(&lines, self.cfg.palette());
+                self.pane_window(rows, room)
+            }
             Drawn::Conversation => {
                 let rows = self.body_window(room);
                 // The window's rows, as the terminal's: the header is above them.
@@ -1060,6 +1083,7 @@ fn bottom_markers(
     b: &BoxBottom,
     standings: &Standings,
     folded: Option<usize>,
+    badge: Option<(String, Role)>,
 ) -> Option<rano::render::Line> {
     use rano::render::{Line, Span};
     use rano::style::Role;
@@ -1088,6 +1112,13 @@ fn bottom_markers(
             rano::agent::text::clean_line(r),
             Role::Attention,
         ));
+    }
+    // **A plugin pane's own counter**, in the register the pane chose — the operator's ask for
+    // an agent's turn count, one screen over (`docs/plugins-slice1.md` C3's `badge`): drawn
+    // where the waits-on-you counter is drawn, and only while that pane is on the screen.
+    if let Some((text, role)) = badge {
+        sep(&mut right);
+        right.push(Span::role(text, role));
     }
     if let Some(words) = standings.words() {
         sep(&mut right);

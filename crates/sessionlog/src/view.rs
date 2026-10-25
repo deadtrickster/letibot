@@ -977,6 +977,15 @@ impl SessionView {
             // late head as a fact about now. A head that attaches mid-turn draws nothing until the
             // held set next changes.
             SessionEvent::HeldResults { .. } => {}
+            // **Nothing to fold, and the snapshot must not carry one.** A pane's view is what its
+            // last look answered: stored here it would be handed to a head that attaches hours
+            // later as a dashboard of that moment, drawn with no sign that it is old. A head asks
+            // again — `ClientFrame::PaneOpen` — when the operator opens the pane, and the event's
+            // job is only to reach the head that is watching.
+            SessionEvent::PluginPane { .. } => {}
+            // Nothing to fold: which panes a session has is the head's copy of the events, and
+            // this view is per-session state the daemon owns (an attach re-asks).
+            SessionEvent::PluginPaneGone { .. } => {}
             // **Not carried, and the reason is the snapshot's**: the queues are daemon-level,
             // and the view is per-session. A head that wants them asks with `ListMergeQueue` and
             // gets the whole snapshot as of now; a move only tells it to ask again.

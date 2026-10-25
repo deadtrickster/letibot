@@ -873,6 +873,15 @@ impl Link {
                     Action::Switch(id) => {
                         self.client.switch(&id, 0)?;
                     }
+                    Action::PaneOpen { pane } => {
+                        self.client.pane_open(&pane)?;
+                    }
+                    // **A stop's action, back to the pane that drew it** — the same shape the
+                    // open has: a read the daemon answers with a new view on the log, not a
+                    // command queued behind a turn.
+                    Action::PaneAction { pane, item, action } => {
+                        self.client.pane_action(&pane, &item, &action)?;
+                    }
                     Action::Settings => {
                         self.client.settings()?;
                     }

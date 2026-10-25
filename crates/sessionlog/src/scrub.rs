@@ -100,6 +100,16 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Ephemeral, for `Filling`'s reason: a held count is true NOW, and the delivery that ends
         // the hold is a durable row of its own.
         SessionEvent::HeldResults { .. } => true,
+        // **Ephemeral, and it is the same reason one turn on**: a pane's view is the answer to a
+        // look, and a look from four minutes ago describes four minutes ago. Replaying it would
+        // hand a head that attached later a dashboard with no sign of its age, and the screen a
+        // store-backed reader wants is the conversation, not a stale copy of a screen somebody
+        // had open. A head asks again when the operator opens the pane.
+        SessionEvent::PluginPane { .. } => true,
+        // The same, and doubly: a gone-pane replayed to a head that never saw the pane is a
+        // subtraction from nothing. The durable fact this leaves behind is that the layer's
+        // panes are not drawn, which the daemon answers when it is asked.
+        SessionEvent::PluginPaneGone { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.

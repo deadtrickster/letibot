@@ -115,6 +115,16 @@ impl App {
             // say was missing (*"a head that switches back does not find its pane again, it
             // finds the transcript"*).
             self.term = None;
+            // **And the plugin panes go with it.** A view is the daemon's answer about THIS
+            // session's layers and looks; carried across a switch it would draw another
+            // session's dashboard in this one's rectangle, which is the same lie a carried
+            // model name is. The daemon publishes them for the session it publishes anything
+            // for, so the new session's own arrive as it opens panes.
+            self.plugin_panes.clear();
+            self.plugin_open = None;
+            self.plugin_screen = Default::default();
+            self.plugin_sel = 0;
+            self.plugin_detail = None;
             // **And what this head believed about the pane is the session's, not this head's.**
             // A `Hello` re-asks (see that arm), and until the answer lands the fact is
             // `Unasked` — which is the state that makes `!term close` hold its line rather than
@@ -584,6 +594,13 @@ impl App {
             | SessionEvent::TranscriptContent { .. }
             | SessionEvent::Citations { .. }
             | SessionEvent::TranscriptForked { .. }) => self.on_transcript_event(e, ts),
+            // **A plugin pane's view** — held by name, drawn when the operator opens it
+            // (`app::plugin`). It carries no transcript row and changes no conversation: it is
+            // a screen's content, which is why it is dispatched straight to the pane's own
+            // handler rather than through a fold.
+            e @ (SessionEvent::PluginPane { .. } | SessionEvent::PluginPaneGone { .. }) => {
+                self.on_plugin_event(e)
+            }
             e @ SessionEvent::Warning { .. } => self.on_warning(e, ts),
         }
     }

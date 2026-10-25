@@ -28,9 +28,10 @@ fn every_plain_letter_binding_waits_for_an_empty_composer() {
 #[test]
 fn a_word_typed_over_any_surface_reaches_the_composer() {
     for s in Surface::ALL {
-        // The todo row read whole takes every key while it is up, on purpose: a reading surface
-        // with no field on it must not grow a draft under it (`TODO_ROW`'s last binding).
-        if s == Surface::TodoRow {
+        // The two reading surfaces take every key while they are up, on purpose: a surface with
+        // no field on it must not grow a draft under it (`TODO_ROW`'s and `PLUGIN_DETAIL`'s last
+        // binding).
+        if matches!(s, Surface::TodoRow | Surface::PluginDetail) {
             continue;
         }
         let mut a = app();

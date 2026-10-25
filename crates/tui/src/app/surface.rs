@@ -63,6 +63,14 @@ pub(crate) enum Surface {
     /// The monitors the model armed, live and ended — `/monitors`, or a click on the edge's
     /// `N monitors watching`.
     Monitors,
+    /// **A plugin's pane** — the dashboard a `pane_<name>` hook answered, open by `/pane NAME`
+    /// or by a row of `/pane`'s list. Which pane it shows is `App::plugin_open`: the surface
+    /// says where on the screen, the data says what, the split `Surface::Listing` makes with
+    /// `slash_out`.
+    PluginPane,
+    /// **One of that pane's stops read whole** — its Enter. An overlay like every other, so Esc
+    /// gives the pane back rather than reopening a screen the reader was done with.
+    PluginDetail,
     /// A slash command's listing (`/notes`, a diagnostic, a long warning).
     Listing,
 }
@@ -77,6 +85,7 @@ impl Surface {
             Surface::QueueEntry => Some(Surface::Queue),
             Surface::SubOut => Some(Surface::Subagents),
             Surface::JobOut => Some(Surface::Jobs),
+            Surface::PluginDetail => Some(Surface::PluginPane),
             _ => None,
         }
     }
@@ -95,7 +104,7 @@ impl Surface {
     }
 
     /// Every surface, for the tests and the generated help that walk them.
-    pub(crate) const ALL: [Surface; 15] = [
+    pub(crate) const ALL: [Surface; 17] = [
         Surface::Help,
         Surface::Stats,
         Surface::Picker,
@@ -110,6 +119,8 @@ impl Surface {
         Surface::Jobs,
         Surface::JobOut,
         Surface::Monitors,
+        Surface::PluginPane,
+        Surface::PluginDetail,
         Surface::Listing,
     ];
 }
@@ -265,6 +276,17 @@ impl App {
             Surface::Listing => self.slash_out = None,
             Surface::Subagents => self.sub_out_pending = None,
             Surface::Standing => self.standing_corpus = None,
+            // **A plugin's pane closes the pane's own state with it**: which of them was open,
+            // which of its screens, and the row the detail was read from. The views themselves
+            // stay — they are the daemon's answers about the session, not about this screen —
+            // so reopening a pane draws what is already known while the new look travels.
+            Surface::PluginPane => {
+                self.plugin_open = None;
+                self.plugin_screen = Default::default();
+                self.plugin_sel = 0;
+                self.plugin_detail = None;
+            }
+            Surface::PluginDetail => self.plugin_detail = None,
             _ => {}
         }
     }
@@ -317,6 +339,10 @@ impl App {
             Surface::Jobs => Some(Action::ListJobs),
             // The monitors come on the job table's answer.
             Surface::Monitors => Some(Action::ListJobs),
+            // **A plugin's pane is opened by NAME**, and the name is not this function's
+            // argument: [`App::open_plugin`] asks the daemon for a fresh look and pushes this
+            // surface itself. Nothing here could name which pane, so nothing here asks.
+            Surface::PluginPane => None,
             Surface::Stats => {
                 // **Opening the screen IS the acknowledgement** (R51 item 17) — and only on the
                 // way in; see the `/status` verb.
@@ -328,7 +354,8 @@ impl App {
             | Surface::QueueEntry
             | Surface::SubOut
             | Surface::JobOut
-            | Surface::Listing => None,
+            | Surface::Listing
+            | Surface::PluginDetail => None,
         }
     }
 

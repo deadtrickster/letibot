@@ -2250,6 +2250,39 @@ pub enum SessionEvent {
         /// answered `failed`.
         failed: u64,
     },
+    /// **A plugin pane's view** (C3 of `docs/plugins-slice1.md`): the document a
+    /// `pane_<name>` hook answered, published so every head draws the same dashboard.
+    ///
+    /// **The body is the plugin's JSON, not a parsed [`crate::pane::View`].** Parsing is the
+    /// head's, and it is deliberately the head's: a view written for a newer contract than
+    /// this one should draw what this head understands — an unknown block kind is one muted
+    /// line, an unknown field is ignored — rather than failing at the wire and taking the
+    /// connection down in the middle of a turn. The daemon validates a plugin's answer before
+    /// it publishes one, so what arrives here is already a document (see `View::validate`);
+    /// the head parses it again only because it is the half that knows what it can draw.
+    ///
+    /// **Live-only, like [`SessionEvent::Filling`]**: a pane's view is what its last look
+    /// answered, and one stored in a snapshot would come back to a head attaching hours later
+    /// as a dashboard of a moment that has passed. A head that attaches asks again — with
+    /// [`crate::ClientFrame::PaneOpen`] — the moment the operator opens the pane.
+    PluginPane {
+        /// **Which pane**, as `<layer name>/<hook name>`: `plan-dashboard/dashboard`. The
+        /// layer's name is the manifest's, so two layers cannot collide, and the hook's keeps
+        /// one layer's two panes apart.
+        pane: String,
+        /// The C3 `View`, as the plugin wrote it.
+        view: serde_json::Value,
+    },
+    /// **That pane is gone** — its layer was disabled, removed or hot-reloaded into a failure,
+    /// or the session it was scoped to was left.
+    ///
+    /// A pane is not a `Warning`: nothing went wrong, and the screen is the record. A head
+    /// drops the view and closes the pane if it is the one on screen, which is what makes a
+    /// `PluginPane` the whole of a pane's life rather than its first frame.
+    PluginPaneGone {
+        /// See [`SessionEvent::PluginPane::pane`].
+        pane: String,
+    },
 }
 
 impl SessionEvent {
@@ -2294,6 +2327,8 @@ impl SessionEvent {
             SessionEvent::Filling { .. } => "Filling",
             SessionEvent::CompactionProgress { .. } => "CompactionProgress",
             SessionEvent::HeldResults { .. } => "HeldResults",
+            SessionEvent::PluginPane { .. } => "PluginPane",
+            SessionEvent::PluginPaneGone { .. } => "PluginPaneGone",
         }
     }
 }

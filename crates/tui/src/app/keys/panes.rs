@@ -65,6 +65,13 @@ impl App {
         }
         match k {
             Key::Esc | Key::CtrlC => {
+                // **A plugin pane's Esc leaves the VIEW before it leaves the pane** (C3's
+                // ladder: detail, then view, then the pane). The detail is a surface, so the
+                // pop below is already that step; this is the one under it, and it is the
+                // pane's own because a view is not a surface.
+                if self.plugin_esc() {
+                    return ControlFlow::Break(None);
+                }
                 self.pop_surface();
                 ControlFlow::Break(None)
             }
@@ -151,6 +158,9 @@ impl App {
                 ControlFlow::Break(None)
             }
             Act::Verb(v) => self.queue_verb(v),
+            // **A plugin's own keys**, read from the view on the screen: a panel's key, `f`, `l`,
+            // or an action letter of the selected stop.
+            Act::PluginKey => self.plugin_key(k),
             // **The pane the silence is seen from is where it is switched** — the same verb
             // typed, so the key and `/nag` cannot drift; the daemon's `nags_paused` /
             // `nags_resumed` row is what moves this head's resident line.
@@ -237,6 +247,16 @@ impl App {
                 self.monitors_sel = step(self.monitors_sel.min(n - 1), n, up);
                 self.scroll_into_view(self.monitors_row_of());
             }
+            // **A plugin's pane: the cursor walks its STOPS** — the lines and rows with an id,
+            // the markdown items and the findings (C3) — and the window follows it.
+            Surface::PluginPane => {
+                let n = self.plugin_stops().len();
+                if n == 0 {
+                    return ControlFlow::Continue(());
+                }
+                self.plugin_sel = step(self.plugin_sel.min(n - 1), n, up);
+                self.scroll_into_view(self.plugin_row_of());
+            }
             _ => return ControlFlow::Continue(()),
         }
         self.redraw = true;
@@ -285,6 +305,9 @@ impl App {
                 self.redraw = true;
                 ControlFlow::Break(None)
             }
+            // **Enter reads the stop under the cursor whole** — a finding with its evidence,
+            // its fix and its verify; a row with its `detail` (C3).
+            Surface::PluginPane => ControlFlow::Break(self.plugin_enter()),
             _ => ControlFlow::Continue(()),
         }
     }

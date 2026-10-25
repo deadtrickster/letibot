@@ -63,6 +63,10 @@ pub(crate) enum Target {
     /// **A todo row's `waits on …` link** (`todos_wait_links`), over the todos pane; its one stop
     /// is the link's index in that record. A click opens the job or the child the row waits on.
     TodoWait,
+    /// **A panel's title row in a plugin's pane** — C3's *a click on a panel opens its view*. Its
+    /// one stop is the panel's index in the view, and it is not a stop of the pane: a panel's
+    /// title is a door, and Enter is for the rows behind it.
+    PluginPanel,
     /// The decision card; its stops are the ladder's rows.
     Decision,
     /// The quit card; its stops are its two choices.
@@ -147,6 +151,7 @@ impl App {
                     Surface::Subagents => self.pane_stops(&self.subagents_stop_rows, top, room),
                     Surface::Jobs => self.pane_stops(&self.jobs_stop_rows, top, room),
                     Surface::Monitors => self.pane_stops(&self.monitors_stop_rows, top, room),
+                    Surface::PluginPane => self.pane_stops(&self.plugin_stop_rows, top, room),
                     Surface::Standing => self.pane_stops(&self.standing_stop_rows, top, room),
                     Surface::Config => self.pane_stops(&self.config_stop_rows(), top, room),
                     _ => Vec::new(),
@@ -172,6 +177,28 @@ impl App {
                                 },
                                 target: Target::TodoWait,
                                 stops: vec![(top + d, k)],
+                            });
+                        }
+                    }
+                }
+                // **A plugin pane's panels, over the title rows they were drawn on** — the
+                // frame's own record (`plugin_panel_rows`), scroll applied, so a click lands on
+                // the panel whose title the operator saw. A title scrolled out of the window is
+                // not a target.
+                if s == Surface::PluginPane {
+                    for (row, panel) in self.plugin_panel_rows.clone() {
+                        if let Some(d) = row.checked_sub(self.pane_scroll)
+                            && d < room
+                        {
+                            self.hits.push(Hit {
+                                rect: Rect {
+                                    x,
+                                    y: top + d,
+                                    w: term_w.saturating_sub(x),
+                                    h: 1,
+                                },
+                                target: Target::PluginPanel,
+                                stops: vec![(top + d, panel)],
                             });
                         }
                     }

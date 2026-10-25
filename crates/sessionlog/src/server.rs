@@ -1803,6 +1803,26 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **A plugin pane, opened or keyed** (`PROTOCOL_VERSION` 49).
+            //
+            // The daemon half of C4 is the plugin stack's (a later package: it owns the
+            // layers, the looks and the gate), and until it lands these two frames are
+            // accepted and answered with nothing — which is a pane that draws the view the
+            // head already holds, or one `/pane NAME` says it has never heard of. Refusing
+            // by name would be worse than silence: a head talking to this daemon is not
+            // wrong, and a `Rejected` naming a frame the head is entitled to send would
+            // read as a version skew that is not there.
+            //
+            // The two are read here rather than queued because they are a screen's
+            // questions, not the session's acts — the reason `ListJobs` is answered here
+            // and `Slash` is not. `PaneAction.action` is the stop's `event` word or
+            // `"look"`; a pane's `say` never travels as one (see `ClientFrame::PaneAction`).
+            Ok(ClientFrame::PaneOpen { pane: _ }) => {}
+            Ok(ClientFrame::PaneAction {
+                pane: _,
+                item: _,
+                action: _,
+            }) => {}
             // A head going away is the normal case and says nothing.
             Err(WireError::Eof) => break Ok(()),
             // **Anything else is said before the connection goes.**
