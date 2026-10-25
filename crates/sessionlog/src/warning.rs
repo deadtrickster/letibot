@@ -145,6 +145,15 @@ pub const TABLE: &[(&str, Class)] = &[
     // happen. These are the four the operator was met by.
     ("auto_compact", Class::Routine),
     ("compacted", Class::Routine),
+    // **A plugin or a model that misbehaved, and the harness handled it.** A layer that failed
+    // while the one below it answered, a candidate the shadow gate refused (the old version keeps
+    // answering), a pane whose view the host refused (it draws the reason instead), and a model
+    // that refused an image (placeholders from then on, the request retried once). None of them
+    // is the reader's own input answered, and none puts the session at risk: hiccups handled.
+    ("plugin_layer", Class::Routine),
+    ("plugin_refused", Class::Routine),
+    ("plugin_view_refused", Class::Routine),
+    ("model_refused_images", Class::Routine),
     // **The fold saying what it is doing while it does it** — *"compacting half 1 of 2: the
     // most recent exchanges — 348 item(s), 940612 token(s) to read"*, and then what the half
     // answered. Routine by the same rule as the four above: the operation the operator is
@@ -590,6 +599,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // skim red.
     ("job_output_refused", Class::Refused),
     ("slash_refused", Class::Refused),
+    // The first round on a newly chosen model was refused by its provider: the turn failed,
+    // and the notice names the model before it and the command back.
+    ("model_switch_refused", Class::Failure),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript store cannot be written, the decision corpus cannot be consulted, the
     // title cannot be recorded, the session the operator asked for does not resume, and
@@ -1158,10 +1170,13 @@ mod the_register_census {
         //     (Routine) and `daemon_start_failed` (Failure).
         //   · **145, not 144**: `workspace_gone` (Failure, R92.24).
         //   · **146, not 145**: `context_wall_continued` (Routine) — a wall the prompt goes on past.
-        assert_eq!(TABLE.len(), 146, "the table's size");
-        assert_eq!(count(Class::Routine), 53);
+        //   · **151, not 146**: the plugin host's `plugin_layer`, `plugin_refused`,
+        //     `plugin_view_refused` and the image retry's `model_refused_images` (Routine, hiccups
+        //     handled), and `model_switch_refused` (Failure, the new model's first round refused).
+        assert_eq!(TABLE.len(), 151, "the table's size");
+        assert_eq!(count(Class::Routine), 57);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 82);
+        assert_eq!(count(Class::Failure), 83);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
