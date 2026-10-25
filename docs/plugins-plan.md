@@ -291,10 +291,84 @@ A plugin tool's schema is prompt bytes in the cached prefix, so plugin tools loa
 start and at a reseat — which already announces tool changes. Calls go through the gate as the
 built-ins do; a tool that needs the world declares looks like a condition does.
 
+### 4.9 `pane` — the UI language
+
+The operator: *"and we have to give plugins the ui language - so panes, keys, markdown itemized
+navigation, esc, enter - all templated"*.
+
+**Plugins describe, the host draws.** A plugin never paints cells or reads keys. It returns a
+*view*: a document in a small vocabulary of the pieces the head already has. The head renders it
+with the same rano widgets and the same conventions as its own panes, so a plugin pane cannot
+look or behave differently from the built-in ones.
+
+```jsonc
+// pane_<name>: in
+{"v":1, "state":{…}, "look":{…}, "event":null,       // or {"item":"tier1/jstests","action":"open"}
+ "size":{"w":120,"h":40}}
+// out
+{"title":"stroppy-conformity · v0.2.0",
+ "badge":{"text":"3 running","role":"attention"},     // the pane's counter in the corner
+ "body":[
+   {"table":{"columns":["item","status"],"rows":[
+     {"id":"tier1/jstests","cells":["Mongo jstests","not started"],"role":"muted",
+      "detail":"…markdown, shown on Enter…",
+      "actions":[{"key":"s","label":"start","say":"start the jstests work"}]}]}},
+   {"progress":{"label":"campaign A","done":41,"of":96,"role":"working"}},
+   {"markdown":"…"}],
+ "look":{"exec":["…"]}, "every_s":30,                 // refresh, as a condition does
+ "state":{…}}
+```
+
+- **The pieces**: `markdown` (itemized: each list item and heading is a stop, ↑/↓ move between
+  them as in the transcript's markers), `list`, `table`, `tree` (collapsible), `progress`, `kv`
+  (label/value rows), `badge`. Each row can carry an `id`, a `role` (the palette's: muted,
+  working, attention, success, failure), a `detail` and `actions`.
+- **The keys are templated, not chosen**: ↑/↓/PgUp/PgDn/wheel move, **Enter** opens the row's
+  `detail` (itself itemized markdown, Enter again into its items), **Esc** goes back one level and
+  closes at the top — and only that, the Esc rule of every other pane, so a plugin cannot bind it
+  to anything else. A plugin's own `actions` take letters, are shown in the hint bar, and are
+  refused by the host if they collide with a reserved key.
+- **What an action may do**: `say` (a line to the session's model, as if typed — subject to the
+  ordinary queue rules), `look` (re-run the pane's look now), `arm` (a monitor), or `event` (call
+  the pane again with `{"item","action"}` to change its own state — expand, filter, page). It
+  cannot run anything the stack's capabilities do not allow.
+- **Where panes live**: a plugin pane joins the pane list (alt-letter or the panes menu) beside
+  todos, monitors and jobs, with the same scroll guard, wheel router and click arithmetic. A pane
+  with a `badge` shows it in the status row, like the waits-on-you counter.
+- **Hot and gated like any hook**: a pane's change goes through the shadow gate, where the view it
+  returns for the recorded inputs is rendered to text and diffed — the gate's diff for a pane is
+  what the pane looks like.
+
 ### Not hooks
 
 Dialect parsers and tokencore (per-token hot path), the store and transcript, the allow side of
 adjudication, the merge queue's landing, sudo and VMs.
+
+### 4.10 The second goal: project dashboards
+
+The operator, of the stroppy-conformity session (a Claude Code session): *"a huge tiered plan with
+multiple stages across 6 hosts. I want to have a dashboard for it"*.
+
+That session's state today is spread over a 1,231-line `PLAN.md`, a `HANDOFF.md`, the tiers table
+the agent re-types on request (tiers 0–3, each row done / in progress / not started, plus the
+release rows), the agents and their branches, and campaigns that `bin/fleet.sh` shards across five
+hosts (lab2x1 heavy, lubuntu1–3, the XMG at .55) from this Mac, where the session runs, each with its own queue, capacity
+and detached remote jobs. Nothing shows it at once; the operator asks for the table.
+
+A **project dashboard is a project-scope `pane` layer**, committed to the project (or the
+operator's local setup for a project that keeps tooling out of its repository, as this one does),
+whose look reads the project's own sources of truth:
+
+- the plan's status rows — from a machine-readable status file the agents keep beside `PLAN.md`
+  (the table they already re-type, written once as data), not scraped from prose;
+- the agents running and their branches — from the session (subagents, child sessions, leticode
+  delegations);
+- the fleet — `fleet.sh`'s `<out>/fleet.env` and `remote.sh … state` per host, per job;
+- host health — the capacity `fleet.sh` already reads (cores, load, memory, reserve).
+
+It is the acceptance case for §4.9: a tiered table with stages, live progress per host, a badge
+for what waits on the operator (tag and publish are theirs), Enter into any row for its detail, and
+actions that hand work back to the session (`s` start, `r` re-run a shard).
 
 ## 5. What the model gets
 
@@ -418,10 +492,11 @@ why its work runs between the session's turns when the two share a server.
 4. **The butler**: the role, its creation with the session, `/butler`, the `butler` call, the
    review gate on layers it did not write, and the friction signals.
 5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
-6. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
+6. **`pane`** (§4.9) and **the stroppy-conformity dashboard** as its acceptance case (§4.10).
+7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
    or bot), with the operator watching where it gets stuck. What it trips on is the next work.
-7. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
-8. `tool`, at reseat.
+8. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
+9. `tool`, at reseat.
 
 ## 8. Open questions
 
