@@ -212,9 +212,9 @@ In `crates/sessionlog/src/protocol.rs`, bump `PROTOCOL_VERSION` to 49 and add:
 // daemon -> head, a session event
 SessionEvent::PluginPane { pane: String /* "plan-dashboard/dashboard" */, view: serde_json::Value /* C3 View */ }
 SessionEvent::PluginPaneGone { pane: String }
-// head -> daemon, a command
-ClientCommand::PaneAction { pane: String, item: String, action: String }  // action = key's event, or "look"
-ClientCommand::PaneOpen { pane: String }   // the head opened it: the daemon runs it now
+// head -> daemon, a client frame (the enum is `ClientFrame`)
+ClientFrame::PaneAction { pane: String, item: String, action: String }  // action = key's event, or "look"
+ClientFrame::PaneOpen { pane: String }   // the head opened it: the daemon runs it now
 ```
 
 The view types (`View`, `Block`, `Row`, `Action`, `Role`) are serde structs in
