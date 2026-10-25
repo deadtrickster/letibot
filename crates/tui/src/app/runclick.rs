@@ -12,6 +12,9 @@ use super::*;
 use crate::app::visibility::Show;
 
 /// **One clause of a marker on the last frame** — where it was drawn and what a click opens.
+/// The run a live pane's marker stands for — the turn in flight, whose rows have not landed.
+pub(crate) const LIVE_RUN: &str = "\u{0}live";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MarkerHit {
     /// The screen row of the window it is on.
@@ -158,8 +161,78 @@ impl App {
         Some((top + m.y, m.from, m.to))
     }
 
+    /// **The live pane's marker clauses, as targets** — the rows of this frame below the history
+    /// (`hist_lines`), which is where the turn in flight is drawn. Its run is [`LIVE_RUN`]: it has
+    /// no rows of its own until they land.
+    pub(crate) fn live_marker_rows(&self, start: usize, out: &[String]) -> Vec<MarkerHit> {
+        let mut hits = Vec::new();
+        // Nothing to read while no turn is up, and a row with no `]` holds no clause — read
+        // cheaply first, so a frame copies nothing for the rows that cannot be markers.
+        if self.turn.is_none() {
+            return hits;
+        }
+        for (y, row) in out.iter().enumerate() {
+            if start + y < self.hist_lines.len() || !row.contains(']') {
+                continue;
+            }
+            for (from, to, show) in clauses(&keyhints::cells(row)) {
+                hits.push(MarkerHit {
+                    y,
+                    from,
+                    to,
+                    run: LIVE_RUN.into(),
+                    show,
+                });
+            }
+        }
+        hits
+    }
+
+    /// **The run the newest hidden rows make**, by its first row's id — what a lift in the live
+    /// pane is carried to when a round's rows land.
+    pub(crate) fn newest_run_head(&self) -> Option<String> {
+        let hidden = |k: usize| crate::ui::row_hidden(&self.items, self.visibility, k);
+        let last = (0..self.items.len()).rev().find(|&k| hidden(k))?;
+        let mut first = last;
+        while first > 0 && hidden(first - 1) {
+            first -= 1;
+        }
+        Some(self.items[first].item_id.clone())
+    }
+
+    /// **A round's rows landed: what the live pane had lifted stays lifted on them** — the run
+    /// they make opens with the same kind, and the pane keeps it for the next round.
+    pub(crate) fn carry_live_open(&mut self) {
+        let Some(show) = self.live_open else {
+            return;
+        };
+        if let Some(run) = self.newest_run_head() {
+            self.payload_sel = Some(run);
+            self.payload_page = 0;
+            self.payload_max.set(usize::MAX);
+            self.run_show = Some(show);
+            self.invalidate_history();
+        }
+    }
+
     /// **Open the run a clause stands for**, lifting only its kind.
     pub(crate) fn open_marker(&mut self, m: MarkerHit) {
+        // **The turn still running** — its rows are in the pane, not the history: lift that kind
+        // there, or put it back when the same clause is clicked again.
+        if m.run == LIVE_RUN {
+            self.live_open = if self.live_open == m.show && m.show.is_some() {
+                None
+            } else {
+                m.show.or(Some(Show::Tools))
+            };
+            if self.live_open.is_none() {
+                self.payload_sel = None;
+                self.run_show = None;
+                self.invalidate_history();
+            }
+            self.redraw = true;
+            return;
+        }
         self.payload_sel = Some(m.run);
         self.payload_page = 0;
         self.payload_max.set(usize::MAX);

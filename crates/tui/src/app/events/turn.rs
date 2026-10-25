@@ -337,6 +337,8 @@ impl App {
                         timings,
                     });
                 }
+                // **What the live pane had lifted stays lifted on the rows this round left.**
+                self.carry_live_open();
                 // A terminal state can hand a call back to the transcript.
                 // While the pane is drawing a turn, that turn's assistant rows do
                 // not draw their own unsettled calls; once it stands down they

@@ -21,7 +21,13 @@ pub(crate) fn push_turn_pane<'a>(
     superseded: bool,
     live_joins: bool,
     walk_carried_live: bool,
+    lifted: Option<Show>,
 ) {
+    // **What a click on the live marker lifted** (`App::live_open`): that kind is drawn open while
+    // the turn runs, whatever the rung hides.
+    let show_thinking = lifted == Some(Show::Thinking);
+    let show_calls = lifted == Some(Show::Tools);
+    let think = if show_thinking { Fold::Open } else { think };
     let running = matches!(t.state, Some(TurnState::Running));
     let think_elapsed = if t.think_started_ms == 0 {
         None
@@ -60,7 +66,7 @@ pub(crate) fn push_turn_pane<'a>(
     // operator's ruling: *all of it after the reply*; this block used to sit here, above the text
     // the model was still writing, which is the marker *"above the current reply"*.
 
-    if !superseded && !reasoning.is_empty() && !vis.hides_the_working() {
+    if !superseded && !reasoning.is_empty() && (!vis.hides_the_working() || show_thinking) {
         // Narrower by the rail and by the step it is set in. Getting this
         // wrong makes the block one row taller than the space reserved for
         // it, which moves everything below it by a line every frame — which
@@ -126,8 +132,8 @@ pub(crate) fn push_turn_pane<'a>(
         let live_calls: Vec<_> = live_calls
             .iter()
             .filter(|c| match &c.state {
-                CallState::Finished { edit: Some(_), .. } => vis.shows(Show::Edits),
-                _ => !vis.hides_the_working(),
+                CallState::Finished { edit: Some(_), .. } => vis.shows(Show::Edits) || show_calls,
+                _ => !vis.hides_the_working() || show_calls,
             })
             .collect();
         if !live_calls.is_empty() {

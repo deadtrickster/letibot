@@ -485,6 +485,7 @@ impl App {
                 superseded,
                 live_joins,
                 walk_carried_live,
+                self.live_open,
             );
         }
 
@@ -630,6 +631,10 @@ impl App {
         self.card_rows = self.card_rows_in(start, end);
         // **And the clauses of the run markers**, for a click to open that kind (`runclick`).
         self.marker_rows = self.marker_rows_in(start, end);
+        // **And the live pane's own marker** — the turn in flight is drawn below the history, so
+        // its clauses are read off this frame's rows (`live_marker_rows`).
+        let live = self.live_marker_rows(start, &out);
+        self.marker_rows.extend(live);
         // **The disclosure is about the HOLD, not about a number** (R36). It used to be
         // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
         // anchored row happens to sit near the END of a shortened transcript has

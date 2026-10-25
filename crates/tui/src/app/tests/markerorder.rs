@@ -209,3 +209,59 @@ fn a_row_landing_later_in_a_run_recounts_its_marker_at_once() {
         "the marker counts the row that landed, at once: {line}"
     );
 }
+
+/// **The live marker clicks before its turn is sealed** — the operator: *"clicking on tool calls
+/// and thinking counters work only after they are sealed. Say i just sent a prompt and model
+/// thinks - clicking doesnt work. same for running toolcals"*. A click on the pane's `thinking`
+/// clause shows the thinking; on its `tool call` clause, the call in flight; the same clause
+/// again puts it back.
+#[test]
+fn the_live_marker_clicks_before_the_turn_is_sealed() {
+    let mut a = conversation();
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::Delta {
+            turn_id: "t1".into(),
+            target: DeltaTarget::Reasoning,
+            text: "first I should look at the build log\nthen decide".into(),
+        },
+    )));
+    a.apply(ServerFrame::Event(env(
+        3,
+        testing::proposed_on("t1", "c1", "bash", "\"cargo build --release\""),
+    )));
+    let screen = a.screen(120, 30);
+    let text = screen.join("\n");
+    assert!(
+        !text.contains("look at the build log"),
+        "hidden by the rung: {text}"
+    );
+    let y = line_of(&screen, "thinking line");
+    let row: Vec<char> = crate::app::keyhints::cells(&screen[y]);
+    let line: String = row.iter().collect();
+    let x = line.find("thinking").expect("the clause") as u16;
+    a.key(Key::Click { x, y: y as u16 });
+    let text = a.screen(120, 30).join("\n");
+    assert!(
+        text.contains("look at the build log"),
+        "the thinking is shown: {text}"
+    );
+    // The calls' clause shows the call in flight.
+    let screen = a.screen(120, 30);
+    let y = line_of(&screen, "tool call");
+    let line: String = crate::app::keyhints::cells(&screen[y]).iter().collect();
+    let x = line.find("tool call").expect("the clause") as u16;
+    a.key(Key::Click { x, y: y as u16 });
+    let text = a.screen(120, 30).join("\n");
+    assert!(
+        text.contains("cargo build --release"),
+        "the call is shown: {text}"
+    );
+    // And again: back as the rung draws it.
+    let screen = a.screen(120, 30);
+    let y = line_of(&screen, "tool call");
+    let line: String = crate::app::keyhints::cells(&screen[y]).iter().collect();
+    let x = line.find("tool call").expect("the clause") as u16;
+    a.key(Key::Click { x, y: y as u16 });
+    assert_eq!(a.live_open, None);
+}

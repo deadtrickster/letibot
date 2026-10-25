@@ -158,6 +158,11 @@ pub struct App {
     /// **Which kind the open run lifts** — `None` is the whole run (`ctrl-t`), `Some` the kind a
     /// click on one of its marker's clauses asked for.
     pub(crate) run_show: Option<visibility::Show>,
+    /// **What a click lifted in the turn still running** — its marker's thinking or calls, drawn
+    /// open in the live pane, and carried to the run its rows land in at each round's end (the
+    /// operator: *"clicking on tool calls and thinking counters work only after they are
+    /// sealed"*). `None` is the pane as the rung draws it. See `app::runclick`.
+    pub(crate) live_open: Option<visibility::Show>,
     /// **What this head holds of each ended job's output**, by handle — the second line of a
     /// completion notice and the tail its popup shows. Filled by a `ReadJobOutput` the window
     /// sends for a notice on the screen (once per job; see `App::ask_notice_tails`) and by any
@@ -1714,6 +1719,7 @@ impl App {
             card_rows: Vec::new(),
             marker_rows: Vec::new(),
             run_show: None,
+            live_open: None,
             job_tails: Default::default(),
             term_fact: PaneFact::Unasked,
             term_ask: None,
