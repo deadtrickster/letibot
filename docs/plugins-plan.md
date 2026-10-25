@@ -421,6 +421,31 @@ a script is built (its `run` resolves, the file exists, it is executable), loade
 parses, its name and args are unique, its shape does not duplicate another's), and replayed against
 the recorded commands it claims to replace (each one must map onto the script with some args).
 
+**Scripts can be wasm too.** A hook runs on the harness's hot path and never blocks, which is why
+it declares its looks (§1). A script is a *tool call*, which already blocks, so a script module gets
+a **synchronous `exec` import**: it runs a program, reads the answer, and goes on — and every
+`exec` is gated on its own. A script is then a module exporting `script_<name>` with its args
+schema, and its logic (the loop over hosts, the parsing, the `jq`) is compiled code rather than
+bash; the descriptor above becomes optional. The similarity checks are unchanged: they compare the
+commands a script *runs*.
+
+A shell script can stay a shell script and still run in wasm: **a shell interpreter compiled to
+wasm** whose every external command is a gated `exec`, which gives a script per-command permission
+— something bash on the host cannot have.
+
+**Shell tooling as wasm, for the gate.** A shell script tool is built and checked in the shadow gate
+(§2.4) like a layer: formatted and linted, in the sandbox, the same answer on every machine, nothing
+installed — which matters in VMs and on the campaign hosts.
+
+- **shfmt** is Go, and Go compiles to WASI (`GOOS=wasip1`); rano's host speaks its own ABI rather
+  than WASI, so it takes a small WASI shim in the host, or a Go wrapper exporting the hook.
+- **shellcheck** is Haskell; GHC's wasm backend is unproven for it here. The other way is a port:
+  a Rust linter over `tree-sitter-bash` (already a rano dependency), starting with the checks that
+  catch most real defects — SC2086 and SC2046 (unquoted expansion and substitution), `cd` without
+  `|| exit`, unused and unassigned variables, `[ ]` against `[[ ]]` pitfalls, useless `cat` — each
+  ported with shellcheck's own test cases. About 400 checks exist; the first 20–30 carry most of
+  the value, and porting them one by one is leticode work.
+
 **A script that outgrows its descriptor becomes a plugin.** When it needs state, a look loop or a
 pane, the butler turns it into a wasm layer; the descriptor's `replaces` shapes carry over, so the
 similarity check keeps pointing at it.
@@ -547,7 +572,9 @@ why its work runs between the session's turns when the two share a server.
 4. **The butler**: the role, its creation with the session, `/butler`, the `butler` call, the
    review gate on layers it did not write, and the friction signals.
    **Scripts** (§4.11) with it: the `script` tool and its resident catalog, command shapes and the
-   similarity clustering over the store's `bash` history, candidates, duplicate refusal, promotion.
+   similarity clustering over the store's `bash` history, candidates, duplicate refusal, promotion;
+   wasm scripts with a synchronous gated `exec`; shfmt (WASI) and a tree-sitter-bash shellcheck port
+   as the gate's shell steps.
 5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
 6. **`pane`** (§4.9) and **the example plan dashboard** (§4.10).
 7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
