@@ -1416,6 +1416,7 @@ mod decisions;
 mod detected;
 mod editor;
 mod feedback;
+mod ghlinks;
 mod hits;
 mod jobcard;
 mod jobs;

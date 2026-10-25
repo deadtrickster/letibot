@@ -50,6 +50,17 @@ impl App {
                     *l = rano::term::links::link_urls(l);
                 }
             }
+            // **And every word naming something in the session's repository** — `#212`, a
+            // commit it has, a branch it has (`app::ghlinks`): only what the repository was read
+            // to hold, so nothing is linked on a guess.
+            if let Some(refs) = self.gh_refs.clone() {
+                let mut url_of = |w: &str| refs.url_of(w);
+                for l in out.iter_mut() {
+                    if let Some(linked) = rano::term::links::link_words(l, &mut url_of) {
+                        *l = linked;
+                    }
+                }
+            }
         }
         if self.hold {
             // **The marker takes the hint bar's row.** It is one row that always exists, so the

@@ -372,7 +372,7 @@ pub struct BlockCache {
     /// What `stable_rows` were converted under: width, palette, register, bound. The view
     /// re-renders on the first, third and fourth itself; the palette is the head's alone —
     /// rano's lines hold no colour — so a `color` flip must drop the strings here.
-    key: Option<(usize, Palette, Option<Role>, usize)>,
+    key: Option<(usize, Palette, Option<Role>, usize, bool)>,
     /// **The document these rows were drawn from**, as far as it can be checked for the cost
     /// of a frame: the bytes at its head and its length. A document that is not an extension of
     /// this one is a document nobody wrote, and the rows are not its rows.
@@ -456,7 +456,10 @@ impl BlockCache {
         limit: usize,
     ) -> (&[String], &[String]) {
         let p = cfg.palette();
-        let key = Some((cfg.width, p, cfg.base, limit));
+        // **Whether a link may be written** — a markdown link's label carries its URL (rano's
+        // `Run::link`), and a terminal that does not speak OSC 8 is given the label alone.
+        let links = cfg.links.is_some();
+        let key = Some((cfg.width, p, cfg.base, limit, links));
         if self.key != key {
             self.key = key;
             self.stable_rows.clear();
@@ -509,6 +512,12 @@ impl BlockCache {
             // rail marks text, and a gap with a rail in it is a row of nothing.
             if l.is_empty() {
                 String::new()
+            } else if !links && l.spans.iter().any(|s| s.style.link.is_some()) {
+                let mut l = l.clone();
+                for s in &mut l.spans {
+                    s.style.link = None;
+                }
+                decor.apply(&md_row(&l, p))
             } else {
                 decor.apply(&md_row(l, p))
             }
@@ -745,14 +754,17 @@ mod tests {
             Run {
                 text: "a ".into(),
                 style: InlineStyle::Plain,
+                link: None,
             },
             Run {
                 text: "code".into(),
                 style: InlineStyle::Code,
+                link: None,
             },
             Run {
                 text: " b".into(),
                 style: InlineStyle::Plain,
+                link: None,
             },
         ];
         let block = Block::Paragraph { lines: vec![runs] };

@@ -1242,6 +1242,13 @@ pub struct App {
     /// session's newest edit or command was in (`App::followed_repo`). `None` with one repository
     /// (the field reads the workspace as it always did) and with several and nothing to follow.
     pub(crate) git_dir: Option<std::path::PathBuf>,
+    /// **The session repository's GitHub references** — its `owner/repo`, branches and commits —
+    /// for the words on the screen that name them to become links (`app::ghlinks`).
+    pub(crate) gh_refs: Option<std::sync::Arc<ghlinks::GitRefs>>,
+    /// The background read of them, and which repository it is for.
+    pub(crate) gh_job: Option<(String, std::sync::mpsc::Receiver<Option<ghlinks::GitRefs>>)>,
+    /// Which repository was last read, and when.
+    pub(crate) gh_read: (String, u64),
     /// **The repository the operator pinned on the repo card** — `None` follows the work.
     pub(crate) git_pinned: Option<std::path::PathBuf>,
     /// **The repo card's rows, read once when it opens** — a `git status` per repository, run
@@ -1908,6 +1915,9 @@ impl App {
             git_reader: std::sync::Arc::new(crate::gitfield::read_state),
             git_repos: Vec::new(),
             git_dir: None,
+            gh_refs: None,
+            gh_job: None,
+            gh_read: (String::new(), 0),
             git_pinned: None,
             repo_rows: Vec::new(),
             live_join: None,
@@ -2146,6 +2156,7 @@ pub(crate) mod diff_popup;
 mod editor;
 mod events;
 mod feedback;
+mod ghlinks;
 mod hits;
 pub(crate) mod keyhints;
 mod keys;
