@@ -1427,6 +1427,7 @@ mod monitors;
 mod notes;
 mod oneliners;
 mod pane;
+mod plugin_pane;
 mod queue;
 mod reach;
 mod redcard;

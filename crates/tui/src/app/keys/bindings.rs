@@ -119,6 +119,11 @@ pub(crate) enum Act {
     Retire,
     /// The queue's `o`: go into the session of the reviewer working the row.
     Reviewer,
+    /// **A key the VIEW names** — a panel's key, `f`, `l`, or an action letter of the selected
+    /// stop. A plugin's pane's keys are its document's, so the static table can only hand the
+    /// alphabet over and let the pane decide ([`App::plugin_key`]); a letter that is none of
+    /// those falls through to the composer.
+    PluginKey,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
 }
@@ -307,6 +312,34 @@ const JOB_OUT: &[Binding] = &[
     WHEEL,
 ];
 const LISTING: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
+// **A plugin's pane** — the host's keys, and the plugin's own behind them (C3).
+//
+// The panel keys and the action letters are the VIEW's, which a static table cannot name, so
+// one last binding at the end hands every other key to [`App::plugin_key`]: it decides, from
+// the view on the screen, whether the letter opens a panel, shows the findings, shows the
+// legend, or is an action of the selected stop. `Continue` there — a letter that is none of
+// those — falls through to the composer exactly as it would with no pane open, which is what
+// the empty-composer guard is for.
+const PLUGIN: &[Binding] = &[
+    LIST,
+    b(
+        &[On::Enter],
+        Always,
+        Act::Open,
+        Text("reads the selected row whole"),
+    ),
+    PAGE,
+    WHEEL,
+    b(&[On::Any], Empty, Act::PluginKey, Nothing),
+];
+// A detail is one stop read whole: it scrolls, and it says what Esc does. There is no field on
+// it, so a draft must not grow in the composer under it — the same rule the todo row keeps.
+const PLUGIN_DETAIL: &[Binding] = &[
+    b(UPDOWN, Always, Act::Scroll, Text("scroll")),
+    PAGE,
+    WHEEL,
+    b(&[On::Any], Always, Act::Swallow, Nothing),
+];
 
 impl Surface {
     /// **The surface's keys** — the one table its dispatch, its bar and its help read.
@@ -325,6 +358,8 @@ impl Surface {
             Surface::Jobs => JOBS,
             Surface::JobOut => JOB_OUT,
             Surface::Monitors => MONITORS,
+            Surface::PluginPane => PLUGIN,
+            Surface::PluginDetail => PLUGIN_DETAIL,
             Surface::Listing => LISTING,
         }
     }
@@ -337,6 +372,7 @@ impl Surface {
             Surface::QueueEntry => "esc back to the queue",
             Surface::SubOut => "esc back to the subagents",
             Surface::JobOut => "esc back to the jobs",
+            Surface::PluginDetail => "esc back to the pane",
             _ => "esc closes",
         }
     }
@@ -358,6 +394,8 @@ impl Surface {
             Surface::Jobs => "jobs",
             Surface::JobOut => "job's output",
             Surface::Monitors => "monitors",
+            Surface::PluginPane => "pane",
+            Surface::PluginDetail => "row read whole",
             Surface::Listing => "listing",
         }
     }
@@ -403,6 +441,7 @@ impl Surface {
             Surface::Subagents => Some("/subagents"),
             Surface::Jobs => Some("/jobs"),
             Surface::Monitors => Some("/monitors"),
+            Surface::PluginPane => Some("/pane NAME"),
             Surface::SubOut => Some("/peek ID"),
             _ => None,
         }
@@ -447,6 +486,12 @@ impl Surface {
                  ones that ended and how"
             }
             Surface::Listing => "a slash command's listing",
+            Surface::PluginPane => {
+                "a plugin's pane: the dashboard a `pane` hook answered — its panels, what \
+                 tripped, and what every label means; a panel's key opens its view, enter reads \
+                 a row whole"
+            }
+            Surface::PluginDetail => "one row of a plugin's pane, read whole",
         }
     }
 }

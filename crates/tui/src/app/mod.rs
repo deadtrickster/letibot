@@ -231,6 +231,30 @@ pub struct App {
     /// **The pane row each monitor stop was DRAWN on**, which the arrows scroll by and a click is
     /// tested against. See [`App::jobs_stop_rows`].
     pub(crate) monitors_stop_rows: Vec<usize>,
+    /// **The plugin panes this head holds, by the name the daemon publishes them under**
+    /// (`<layer>/<hook>`) — the view each one's last look answered, or why it could not be read.
+    /// A map rather than a list because the wire says *this pane's view* and this is what "this
+    /// pane" names; the order the panes list draws them in is the map's own.
+    pub(crate) plugin_panes: std::collections::BTreeMap<String, PluginState>,
+    /// **Which of them the `PluginPane` surface is showing.** The surface says where on the
+    /// screen, this says what — the split `Surface::Listing` makes with `slash_out`.
+    pub(crate) plugin_open: Option<String>,
+    /// **Which of that pane's screens** is drawn: the overview, one panel's view behind its key,
+    /// the findings, or the legend.
+    pub(crate) plugin_screen: crate::ui::panes::plugin::Screen,
+    /// An index into [`App::plugin_stops`] — the row the cursor is on.
+    pub(crate) plugin_sel: usize,
+    /// **The pane row each plugin stop was DRAWN on** — the record the arrows scroll by and a
+    /// click is tested against. See [`App::jobs_stop_rows`].
+    pub(crate) plugin_stop_rows: Vec<usize>,
+    /// **The pane rows the panel titles were drawn on**, `(row, panel)` — a click on one opens
+    /// that panel's view (C3's *a click on a panel opens it*). Not stops: a panel's title is a
+    /// door, and Enter is for the rows behind it.
+    pub(crate) plugin_panel_rows: Vec<(usize, usize)>,
+    /// **The stop a detail overlay was opened on**: the screen it was read out of, and its
+    /// index in that screen's stops. Kept as a value because the overlay covers the pane and
+    /// the pane's own screen never becomes the detail's.
+    pub(crate) plugin_detail: Option<(crate::ui::panes::plugin::Screen, usize)>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
@@ -1742,6 +1766,13 @@ impl App {
             monitors: Vec::new(),
             monitors_sel: 0,
             monitors_stop_rows: Vec::new(),
+            plugin_panes: std::collections::BTreeMap::new(),
+            plugin_open: None,
+            plugin_screen: Default::default(),
+            plugin_sel: 0,
+            plugin_stop_rows: Vec::new(),
+            plugin_panel_rows: Vec::new(),
+            plugin_detail: None,
             picker_sel: 0,
             picker_hits: Vec::new(),
             screen_rows: 0,
@@ -2164,6 +2195,7 @@ mod notes;
 pub(crate) mod one_event;
 mod panes;
 mod pick;
+mod plugin;
 mod pointer;
 mod prefs;
 mod reach;
@@ -2190,6 +2222,7 @@ pub use keys::*;
 pub(crate) use notes::*;
 pub(crate) use panes::*;
 pub(crate) use pick::*;
+pub(crate) use plugin::*;
 pub(crate) use prefs::*;
 pub(crate) use scroll::*;
 pub use session::*;

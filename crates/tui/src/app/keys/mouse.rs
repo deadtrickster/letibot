@@ -35,6 +35,9 @@ impl App {
             Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
             Target::CountLabel(_) | Target::GitField => true,
+            // **A panel's title is a door only while its pane is the one on the screen**: the
+            // frame that recorded it may have been covered by another pane since.
+            Target::PluginPanel => self.focused_surface() == Some(Surface::PluginPane),
             Target::FlashNotice => self.status_click.is_some(),
         }
     }
@@ -138,6 +141,11 @@ impl App {
             (Target::TodoWait, Some(k)) => {
                 return ControlFlow::Break(self.open_wait_link(k));
             }
+            // **A click on a panel's title opens that panel's view** — C3's one click, and the
+            // same act its key runs, through the same door.
+            (Target::PluginPanel, Some(i)) => {
+                return ControlFlow::Break(self.plugin_panel_key(i));
+            }
             (Target::Conversation | Target::Notice | Target::NoteCard, None) => {
                 return ControlFlow::Continue(());
             }
@@ -153,6 +161,7 @@ impl App {
                 Surface::Subagents => self.subagents_sel = k,
                 Surface::Jobs => self.jobs_sel = k,
                 Surface::Monitors => self.monitors_sel = k,
+                Surface::PluginPane => self.plugin_sel = k,
                 Surface::Standing => self.standing_sel = k,
                 Surface::Config => self.config_sel = k,
                 _ => return ControlFlow::Break(None),
@@ -196,7 +205,7 @@ impl App {
         }
         const NOTCH: usize = 3;
         match target {
-            Target::Surface(_) | Target::QueueTab(_) | Target::TodoWait => {
+            Target::Surface(_) | Target::QueueTab(_) | Target::TodoWait | Target::PluginPanel => {
                 self.scroll_pane(up, NOTCH)
             }
             // A window, not an open run — a run is the conversation's own rows and the

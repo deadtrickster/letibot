@@ -338,6 +338,29 @@ impl HeadClient {
         Ok(())
     }
 
+    /// **Ask the daemon to run a plugin pane's look now**, because a head just opened it. The
+    /// answer arrives as [`crate::SessionEvent::PluginPane`] on the log, like the job table's
+    /// rows arrive as a `Jobs` frame: the head draws what it is given and does not decide what a
+    /// dashboard says.
+    pub fn pane_open(&mut self, pane: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::PaneOpen {
+            pane: pane.to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// **One key of one stop back to the pane that drew it** — the `event` word its action
+    /// named, or `"look"`. Answered like an open: the new view is an event on the log. `say`
+    /// never travels here; see [`ClientFrame::PaneAction`].
+    pub fn pane_action(&mut self, pane: &str, item: &str, action: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::PaneAction {
+            pane: pane.to_string(),
+            item: item.to_string(),
+            action: action.to_string(),
+        })?;
+        Ok(())
+    }
+
     /// Ask the daemon to compact this session: one summary turn over the history
     /// as it stands, then the history is replaced by that summary through a
     /// transcript fork. Queued behind a running turn, like a prompt.

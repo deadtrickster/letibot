@@ -50,6 +50,8 @@ pub mod event;
 pub mod hub;
 pub mod log;
 pub mod metrics_tap;
+// **The pane contract's document** (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
+pub mod pane;
 pub mod protocol;
 pub mod question;
 pub mod registry;

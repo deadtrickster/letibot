@@ -690,6 +690,18 @@ impl App {
             }
             // **What this session is watching** — the monitors the model armed.
             "monitors" => self.toggle_surface(Surface::Monitors),
+            // **The plugin panes this session has** — C3/C4's `pane_` hooks. Bare, it is the
+            // list of them by title; `/pane NAME` opens one, through the same door a row of
+            // that list names, and asks the daemon for a fresh look as it opens.
+            "pane" => {
+                self.slash_out = Some(("/pane".to_string(), self.plugin_listing()));
+                self.push_surface(Surface::Listing);
+                None
+            }
+            _ if verb_arg(cmd, "pane").is_some() => {
+                let name = verb_arg(cmd, "pane").unwrap_or("").trim().to_string();
+                self.open_plugin(&name)
+            }
             // **The merge queue**, and it is not this session's: there is one `main` and one
             // queue, so the pane asks for the whole thing and the daemon answers with it.
             //
@@ -1292,6 +1304,11 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "monitors",
         "open or close the monitors pane: what this session is watching",
+    ),
+    (
+        "pane",
+        "the plugin panes this session has — /pane NAME opens one: a dashboard a plugin \
+         describes, drawn by this head",
     ),
     (
         "queue",
