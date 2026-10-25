@@ -1,0 +1,39 @@
+[package]
+name = "letibot-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The Claude Code bridge (docs/claude-code-bridge.md): an MCP server over stdio that holds
+# leticode sessions as a HEAD rather than a process it runs once, plus the `wait` verb a
+# background command uses to wake Claude up.
+[[bin]]
+name = "letibot-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The wire, and the head half of it: `HeadClient` is the three obligations a head owes
+# (attach with a seq, ack after handling, expected_seq on every mutating frame), and this
+# bridge is a head with no screen.
+letibot-sessionlog.workspace = true
+# A transcript row is the source of the last assistant message, and it is this crate's
+# type — the session log re-exports its rows, and matching on them needs the type named.
+letibot-transcript.workspace = true
+serde_json.workspace = true
+# The socket's name is the first twelve hex of the workspace's SHA-256, exactly as
+# `scripts/letibot` derives it (`sha12`): a different hash names a socket no daemon
+# listened on and starts a second one for one folder.
+sha2 = "0.10"
+# `setsid(2)`, for starting a daemon that does not die with the MCP process that spawned
+# it — the same detachment `scripts/letibot`'s `detach` gets from `setsid`/perl.
+libc = "0.2"
+
+[dev-dependencies]
+# **A real daemon, in this process.** The end-to-end test is the daemon's own
+# `Daemon::serve` over a `Registry` plus `Sessions::open_first`, exactly as harnessd's
+# integration tests build one — so the protocol the bridge speaks in the test is the
+# protocol it speaks on a box, and `default-features = false` keeps llama.cpp (and thus
+# the GGUF) out of the build: a session whose turns go to a provider needs neither.
+letibot-harnessd = { workspace = true, default-features = false }

@@ -33,6 +33,10 @@ members = [
     "crates/plugins",
     "crates/harnessd",
     "crates/opencode",
+    # Another head, and the one that is a program rather than a screen: the Claude Code
+    # bridge (docs/claude-code-bridge.md) reaches the daemon over the same socket the TUI
+    # does, and holds a session rather than running one.
+    "crates/bridge",
     # **The one binary, last, because it depends on the roles' crates.** Everything
     # above is a library or a role's own executable; this is the multicall that will
     # absorb them. It sits at the bottom of the list so the direction of the
@@ -121,3 +125,4 @@ letibot-code = { path = "crates/code" }
 letibot-plugins = { path = "crates/plugins" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
+letibot-bridge = { path = "crates/bridge" }
