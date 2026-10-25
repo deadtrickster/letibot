@@ -694,6 +694,51 @@ pub trait ShellSuggester: Send + Sync {
     fn suggest(&self, hub: &Hub, workspace: &str, prefix: &str) -> Vec<String>;
 }
 
+/// **Who answers a plugin pane's questions** — C4's `ClientFrame::PaneOpen` and
+/// `ClientFrame::PaneAction`, and the panes list a head needs before it can open one.
+///
+/// # Why it is a trait on the registry, and why it is read on the connection's thread
+///
+/// The same reason [`TerminalDriver`] is: **a pane must answer while a turn is running**. The
+/// two frames are a screen's questions and not the session's acts, so they are answered here
+/// rather than queued behind a turn the worker may be inside for minutes — a dashboard that
+/// waited for the model would be a dashboard that is blank exactly when somebody is watching
+/// work happen.
+///
+/// This crate has no wasm engine and no `letibot-plugins` dependency, deliberately: the layers,
+/// the looks and the shadow gate are the daemon's (W4 of `docs/plugins-slice1.md`), and a head
+/// binary that answered a pane itself would be a second opinion about what a plugin may do. So
+/// the daemon installs an implementation per session, and a registry with none answers both
+/// frames with silence — which a head draws as the view it already holds, and which `/pane
+/// NAME` reports as a pane nobody has.
+///
+/// # Why per session and not once
+///
+/// The layers are discovered per session (`docs/plugins-plan.md` §2.1): the session's own dir,
+/// its project's `.letibot/plugins`, and the user's. Two sessions on one daemon therefore have
+/// two stacks, and a pane id belongs to one of them.
+pub trait PaneDriver: Send + Sync {
+    /// **A head attached: say which panes this session has.**
+    ///
+    /// Called after the `Hello` and the backlog are written, so a head that has just arrived
+    /// receives the panes as events on the same log as everything else, in order. This is the
+    /// half that makes a panes list possible: a head learns a pane exists from a
+    /// [`crate::SessionEvent::PluginPane`], and the view a call answers is also its title.
+    ///
+    /// **It must not block.** It is called on the connection's thread, like every other method
+    /// here.
+    fn attach(&self, session_id: &str, hub: &Arc<Hub>);
+
+    /// **Run this pane now**, because a head opened it: the answer is a
+    /// [`crate::SessionEvent::PluginPane`] on the session's log, never a reply frame. A pane
+    /// this session does not have publishes nothing.
+    fn open(&self, session_id: &str, hub: &Arc<Hub>, pane: &str);
+
+    /// **One key of one stop, back to the pane that drew it** — the action word its `event`
+    /// named, or `look` to re-run the look. Answered like [`Self::open`].
+    fn action(&self, session_id: &str, hub: &Arc<Hub>, pane: &str, item: &str, action: &str);
+}
+
 /// **Who owns a pane's pty** — `!term`, the program that owns the screen.
 ///
 /// A trait and not a method on the registry, for the reason [`ShellSuggester`] is one: this
@@ -1017,6 +1062,10 @@ pub struct Registry {
     /// the session ([`Registry::remove`]). See [`PromptDriver`] for why it is keyed by session
     /// and not held once.
     prompts: Mutex<std::collections::HashMap<String, Arc<dyn PromptDriver>>>,
+    /// **One per session that has layers**, installed by the daemon at open and removed with
+    /// the session. See [`PaneDriver`] for why a plugin pane's questions are answered here
+    /// rather than queued behind a turn.
+    pane_drivers: Mutex<std::collections::HashMap<String, Arc<dyn PaneDriver>>>,
     /// **Which daemon this is** — minted once per registry, and a daemon has exactly one. See
     /// [`Registry::instance`].
     instance: String,
@@ -1148,6 +1197,7 @@ impl Registry {
             suggester: Mutex::new(None),
             terminal: Mutex::new(None),
             prompts: Mutex::new(std::collections::HashMap::new()),
+            pane_drivers: Mutex::new(std::collections::HashMap::new()),
             instance: mint_instance(),
             started_ms: now_ms(),
             stopping: std::sync::atomic::AtomicBool::new(false),
@@ -1411,6 +1461,26 @@ impl Registry {
             .insert(session_id.to_string(), driver);
     }
 
+    /// **Install this session's plugin-pane driver.** Called by the daemon at open — it is the
+    /// half that discovers the layers — and removed with the session ([`Registry::remove`]).
+    pub fn set_pane_driver(&self, session_id: &str, driver: Arc<dyn PaneDriver>) {
+        self.pane_drivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), driver);
+    }
+
+    /// This session's plugin-pane driver, or `None` for a session with no layers — a session no
+    /// daemon has opened, a test, or a daemon built before this existed. A `PaneOpen` then
+    /// answers nothing, which is what `/pane NAME` already knows how to say.
+    pub fn pane_driver(&self, session_id: &str) -> Option<Arc<dyn PaneDriver>> {
+        self.pane_drivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
+    }
+
     /// This session's stdin driver, or `None` for a session that has none — a daemon built
     /// before this existed, a test, or a session whose harness never opened. A `PromptAnswer`
     /// or a `SendLine` then answers with a sentence naming the absence rather than silence,
@@ -1623,10 +1693,15 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let pane_driver = self
+            .pane_drivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
-        drop((ender, prompt, notes, boundary, job_output));
+        drop((ender, prompt, notes, boundary, job_output, pane_driver));
         entry.hub.close();
         Some(entry.hub)
     }

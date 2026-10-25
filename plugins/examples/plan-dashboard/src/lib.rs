@@ -49,17 +49,40 @@ const FIX_STATUS: &str =
 
 /// **The pane's whole logic.** An input in, a `View` out, with no I/O and no hidden state.
 pub fn view(input: &Value) -> Value {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default();
-    view_at(input, now)
+    view_before(input, now())
 }
 
 /// [`view`] with the clock given. The staleness finding is a comparison against now, so a test
 /// that asserts on it must say what now is instead of hoping the box's clock agrees with a
 /// fixture written months ago.
 pub fn view_at(input: &Value, now: i64) -> Value {
+    view_before(input, Some(now))
+}
+
+/// **The clock this pane has, or nothing at all.**
+///
+/// A wasm32 guest has no `SystemTime::now`: std's answer there is a PANIC, and a panic in this
+/// module is a trap — which the host draws as one unavailable panel and no dashboard (measured:
+/// the committed `.wasm` was never executed until the daemon loaded it, and every call trapped on
+/// `time not implemented on this platform`). So the age of the status file is measured where a
+/// clock exists and simply NOT measured where it does not — `None` is *could not ask*, never
+/// *it is fresh*, and no finding claims a freshness nobody computed.
+fn now() -> Option<i64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs() as i64)
+    }
+}
+
+/// [`view_at`]'s whole body, with the clock optional.
+fn view_before(input: &Value, now: Option<i64>) -> Value {
     let Ok(input) = Input::deserialize(input) else {
         // Unreadable is not the same as refused: a host that hands this pane something which is
         // not a C3 input gets the first frame back — and the first frame asks for the file.
@@ -180,7 +203,7 @@ fn look_error(look: &crate::view::LookResult) -> String {
 
 /// The dashboard proper: the overview of panels, the findings, the legend and the look that keeps
 /// it current.
-fn dashboard(status: &Status, now: i64) -> View {
+fn dashboard(status: &Status, now: Option<i64>) -> View {
     let mut panels = vec![
         tiers_panel(status),
         stages_panel(status),
@@ -440,10 +463,12 @@ fn yours_panel(status: &Status) -> Panel {
 /// blocked row is its own finding, because "one of twelve rows is stuck" is not something the
 /// overview can say; and a file that parsed clean is a `passed` finding rather than silence, so
 /// the list distinguishes "nothing is wrong" from "nothing was read".
-fn findings(status: &Status, now: i64) -> Vec<Finding> {
+fn findings(status: &Status, now: Option<i64>) -> Vec<Finding> {
     let mut out = Vec::new();
 
-    if let Some(at) = time::epoch(&status.updated) {
+    // **An age is a measurement, and one needs a clock.** A guest has none (see [`now`]), so the
+    // staleness finding exists exactly where it could have been computed.
+    if let (Some(now), Some(at)) = (now, time::epoch(&status.updated)) {
         let age = now - at;
         if age > STALE_AFTER_H * 3_600 {
             let age_h = age / 3_600;

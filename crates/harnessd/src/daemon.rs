@@ -196,6 +196,13 @@ impl Daemon {
                     if parked > 0 {
                         eprintln!("  parked {parked} idle subagent(s) in the store");
                     }
+                    // **And the plugin tick** (W4 of `docs/plugins-slice1.md`): the hot-reload
+                    // poll every two seconds, the panes whose `every_s` has come round, and the
+                    // notices a layer owes its session's model. On this pass and never inside a
+                    // turn, so `plugin_tick` starts the gate — which runs `cargo` — on a thread
+                    // and returns: a session's work must not wait for a compiler, and a pane's
+                    // query is answered on its own connection's thread.
+                    sessions.plugin_tick();
                     // **And the reviews this daemon's sessions host**, read from the store — the
                     // durable half of the queue's ring. It is due on its own clock rather than on
                     // this pass's, because this arm is also entered for a nag or a sweep. See

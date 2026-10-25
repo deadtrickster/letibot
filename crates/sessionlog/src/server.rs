@@ -1805,24 +1805,28 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             }
             // **A plugin pane, opened or keyed** (`PROTOCOL_VERSION` 49).
             //
-            // The daemon half of C4 is the plugin stack's (a later package: it owns the
-            // layers, the looks and the gate), and until it lands these two frames are
-            // accepted and answered with nothing — which is a pane that draws the view the
-            // head already holds, or one `/pane NAME` says it has never heard of. Refusing
-            // by name would be worse than silence: a head talking to this daemon is not
-            // wrong, and a `Rejected` naming a frame the head is entitled to send would
-            // read as a version skew that is not there.
+            // The daemon half of C4 is the plugin stack's: the layers, the looks and the gate are
+            // discovered per session by the daemon, which installs a [`crate::registry::PaneDriver`]
+            // for each session it opens. Both frames are read here rather than queued because they
+            // are a screen's questions, not the session's acts — the reason `ListJobs` is answered
+            // here and `Slash` is not — and because a pane must answer while a turn owns the
+            // worker. A session with no driver answers nothing, which is what a head draws as the
+            // view it already holds.
             //
-            // The two are read here rather than queued because they are a screen's
-            // questions, not the session's acts — the reason `ListJobs` is answered here
-            // and `Slash` is not. `PaneAction.action` is the stop's `event` word or
-            // `"look"`; a pane's `say` never travels as one (see `ClientFrame::PaneAction`).
-            Ok(ClientFrame::PaneOpen { pane: _ }) => {}
-            Ok(ClientFrame::PaneAction {
-                pane: _,
-                item: _,
-                action: _,
-            }) => {}
+            // `PaneAction.action` is the stop's `event` word or `"look"`; a pane's `say` never
+            // travels as one (see `ClientFrame::PaneAction`).
+            Ok(ClientFrame::PaneOpen { pane }) => {
+                let session_id = seat.hub.session_id();
+                if let Some(driver) = registry.pane_driver(&session_id) {
+                    driver.open(&session_id, &seat.hub, &pane);
+                }
+            }
+            Ok(ClientFrame::PaneAction { pane, item, action }) => {
+                let session_id = seat.hub.session_id();
+                if let Some(driver) = registry.pane_driver(&session_id) {
+                    driver.action(&session_id, &seat.hub, &pane, &item, &action);
+                }
+            }
             // A head going away is the normal case and says nothing.
             Err(WireError::Eof) => break Ok(()),
             // **Anything else is said before the connection goes.**
@@ -1924,6 +1928,15 @@ fn seat_in(
         for env in &a.backlog {
             w.write(&ServerFrame::Event(env.clone()))?;
         }
+    }
+
+    // **And the panes this session has, so a head that has just arrived has a list with titles
+    // before anybody opens one.** C4 makes a head learn a pane from `SessionEvent::PluginPane`,
+    // and a view is also its title — so the driver asks every pane for its first frame here,
+    // after the `Hello` and the backlog, which puts them on this head's queue in order and on
+    // the log for the next head too. Silent for a session with no layers, which is most of them.
+    if let Some(driver) = registry.pane_driver(&session_id) {
+        driver.attach(&session_id, &hub);
     }
 
     let switching = Arc::new(AtomicBool::new(false));

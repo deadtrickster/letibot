@@ -37,6 +37,13 @@ letibot-webfetch.workspace = true
 # R6: reading an opencode conversation into this session's rows.
 letibot-opencode.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
+# **The plugin layers and the panes they answer** (W4 of `docs/plugins-slice1.md`): the stack,
+# the recorder, the shadow gate and the pane `View`, all in crates with no wasm engine in them.
+letibot-plugins.workspace = true
+# The engine behind `letibot_plugins::Loader`: a plugin is a wasm module that answers text hooks,
+# and rano is the host that loads one. This is the only reason the daemon links a JIT, and it is
+# the price of running a plugin at all — see `crates/harnessd/src/plugins/rano.rs`.
+rano = { git = "https://github.com/deadtrickster/rano", rev = "dfa2df3dc96df773c2885cd36bd8bfa609813c36" }
 # The metrics writer thread and metrics.db (TODO R81): the daemon is the one that writes it.
 letibot-metrics = { workspace = true, features = ["store"] }
 serde.workspace = true

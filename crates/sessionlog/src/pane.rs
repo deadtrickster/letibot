@@ -475,7 +475,11 @@ impl View {
     /// mean in every other pane, and a click on a panel needs the panel's key to be a key that
     /// can be pressed. So the rules are:
     ///
-    /// * a panel's key is one lowercase letter, is not a host key, and is not another panel's;
+    /// * a panel's key is one lowercase letter, is not a host key, and is not another panel's —
+    ///   **for a panel that has a view to open.** A panel whose `view` is absent draws its
+    ///   `summary` and has nothing to toggle, so it needs no key and C3 gives it none: the
+    ///   example plugin's first frame is one panel saying what it is reading, and a key on it
+    ///   would be a key that teaches people not to press keys;
     /// * an action's key is one lowercase letter, is not a host key, is not a panel's key, and
     ///   is not another action's key **on the same stop** (the same letter on two different
     ///   stops is fine — one stop is selected at a time);
@@ -489,9 +493,15 @@ impl View {
     pub fn validate(&self) -> Result<(), String> {
         let mut panel_keys: BTreeMap<char, String> = BTreeMap::new();
         for p in &self.panels {
+            if p.key.is_empty() && p.view.is_empty() {
+                // Nothing behind a key: `Panel::shown` answers the summary, so there is no view
+                // for a key to open and none is asked for (C3 keys open views).
+                continue;
+            }
             let c = one_letter(&p.key).ok_or_else(|| {
                 format!(
-                    "panel `{}` takes key {:?}: a panel's key is one lowercase letter",
+                    "panel `{}` takes key {:?}: a panel that has a view needs one lowercase letter \
+                     to open it",
                     p.id, p.key
                 )
             })?;

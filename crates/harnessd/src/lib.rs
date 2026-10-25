@@ -117,6 +117,7 @@ pub mod notes_offer;
 pub mod notes_scope;
 pub mod operator_ask;
 pub mod oracle;
+pub mod plugins;
 pub mod pr_watch;
 pub mod progress;
 pub mod prompt;

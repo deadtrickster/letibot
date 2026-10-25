@@ -848,6 +848,11 @@ pub struct Sessions<'a> {
     /// [`Sessions::ensure_gatekeeper`], which runs every review pass, says a standing failure
     /// once and a new one again. `None` once it opens.
     gatekeeper_said: Option<String>,
+    /// **Each session's plugin layers** — the stack, the recorded inputs and the panes a head has
+    /// opened (W4 of `docs/plugins-slice1.md`). One per session, because the layers are discovered
+    /// per session, and installed on the registry at `open` so a `PaneOpen` reaches it from the
+    /// connection's thread rather than through this worker.
+    plugins: HashMap<String, Arc<crate::plugins::PluginHost>>,
 }
 
 /// **The three facts a session the DAEMON ITSELF starts has, which the daemon's command line
@@ -1019,6 +1024,7 @@ impl<'a> Sessions<'a> {
             busy_seen: Instant::now(),
             bangs: HashMap::new(),
             gatekeeper_said: None,
+            plugins: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
         // The system prompt is composed at open, for the tools the seat actually holds,
@@ -1070,6 +1076,10 @@ impl<'a> Sessions<'a> {
         // own. The ring is drained by the worker's first pass. See
         // [`Sessions::put_a_restored_session_to_work`].
         sessions.put_a_restored_session_to_work(&id);
+        // **And the plugin layers this session has**, found last so nothing above it waits for a
+        // wasm compile: a session with no layers costs three `read_dir`s on directories that do
+        // not exist.
+        sessions.open_plugins(&id);
         Ok(sessions)
     }
 
@@ -2062,6 +2072,7 @@ impl<'a> Sessions<'a> {
             // handover — and those are carried by a RING, which a restart throws away. See
             // [`Sessions::put_a_restored_session_to_work`].
             self.put_a_restored_session_to_work(session_id);
+            self.open_plugins(session_id);
         }
         Ok(self.open.get_mut(session_id).expect("just inserted"))
     }
@@ -2069,6 +2080,77 @@ impl<'a> Sessions<'a> {
     /// Sessions with a harness behind them. The rest exist and have never run.
     pub fn opened(&self) -> usize {
         self.open.len()
+    }
+
+    /// **The plugin layers `session_id` has**, discovered once, when it opens.
+    ///
+    /// At open rather than on the first pane because of C4's own shape: a head learns a pane
+    /// EXISTS from a `SessionEvent::PluginPane`, and the view a call answers is also its title —
+    /// so a session that discovered its layers lazily would have a panes list that filled in the
+    /// first time somebody guessed a name. [`crate::plugins::PluginHost::announce`] is the call
+    /// that publishes them, and it runs no look: nothing reads a project's files until somebody
+    /// opens the dashboard.
+    ///
+    /// A session with no hub (removed under us) or no harness gets no host, which a `PaneOpen`
+    /// reads as *silence* — the same answer a session with no driver gives.
+    fn open_plugins(&mut self, session_id: &str) {
+        if self.plugins.contains_key(session_id) {
+            return;
+        }
+        let Some(hub) = self.registry.get(session_id) else {
+            return;
+        };
+        let Some(workspace) = self
+            .open
+            .get(session_id)
+            .map(|h| h.workspace().to_path_buf())
+        else {
+            return;
+        };
+        let host = Arc::new(crate::plugins::PluginHost::production(
+            session_id, &workspace,
+        ));
+        host.announce(&hub);
+        let driver: Arc<dyn letibot_sessionlog::registry::PaneDriver> = host.clone();
+        self.registry.set_pane_driver(session_id, driver);
+        self.plugins.insert(session_id.to_string(), host);
+    }
+
+    /// **The plugin tick**, run from the daemon's idle pass and never blocking it: the hot-reload
+    /// poll (which hands a changed layer to a thread), the panes whose `every_s` has come round,
+    /// and the notices a layer owes this session's model.
+    ///
+    /// The notices are the half that needs this worker: a notice is a transcript row, and a row is
+    /// the harness's to write — which is why the plugin host queues them and does not publish
+    /// them itself. Everything else in the tick would work without the worker, and that is
+    /// deliberate: a pane must keep answering while a turn is running.
+    pub fn plugin_tick(&mut self) {
+        if self.plugins.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = self.plugins.keys().cloned().collect();
+        for id in ids {
+            let Some(host) = self.plugins.get(&id).cloned() else {
+                continue;
+            };
+            for notice in host.take_notices() {
+                if let Some(h) = self.open.get_mut(&id) {
+                    if let Err(e) = h.note_to_model(&notice) {
+                        eprintln!("  {id} · a plugin notice could not be written: {e}");
+                    }
+                }
+            }
+            if let Some(hub) = self.registry.get(&id) {
+                host.tick(hub);
+            }
+        }
+    }
+
+    /// When the plugin tick next has something to do: the earliest hot-reload poll or pane refresh
+    /// over every session this daemon holds. `None` for a daemon whose sessions have no layers,
+    /// which is every daemon without plugins — so this adds no wake to a box that has none.
+    fn plugins_due_at(&self) -> Option<Instant> {
+        self.plugins.values().filter_map(|h| h.next_at()).min()
     }
 
     /// **Stop every session's subagents and wait for their threads to leave** — the daemon's
@@ -2454,6 +2536,7 @@ impl<'a> Sessions<'a> {
             self.reviews_at,
             self.park_at,
             self.idle_exit_at,
+            self.plugins_due_at(),
         ]
         .into_iter()
         .flatten()

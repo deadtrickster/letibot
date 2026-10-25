@@ -13492,6 +13492,23 @@ impl Harness {
         &self.intent
     }
 
+    /// **Tell this session's model something the HARNESS found, without running a turn.**
+    ///
+    /// The door [`crate::plugins`] needs and the reason it queues rather than publishes: a layer
+    /// the shadow gate refused, or a pane that answered something the contract refuses, is a fact
+    /// the MODEL is the one that can fix — and a fact only the harness can put in front of it,
+    /// because a notice is a transcript row and rows are the harness's to write. The tick that
+    /// discovers it runs on the worker's idle pass, where the harness is in hand; the gate itself
+    /// runs off that pass, on a thread, which is why it hands the sentence over instead of
+    /// speaking ([`crate::plugins::PluginHost::take_notices`]).
+    ///
+    /// It is `append_notice` and not a turn: a plugin that failed to load is not a reason to
+    /// spend a generation, and the row is read by the model's next turn like any other harness
+    /// note.
+    pub(crate) fn note_to_model(&mut self, text: &str) -> Result<(), HarnessError> {
+        self.append_notice(text)
+    }
+
     fn append_notice(&mut self, text: &str) -> Result<(), HarnessError> {
         // The harness talking to itself. Recorded as such, so a §5.7 salvage notice
         // or an intent nudge can never be read back as the operator authorising the
