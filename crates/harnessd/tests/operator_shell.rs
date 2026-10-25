@@ -291,7 +291,14 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
     );
 
     // What the model is handed.
-    let messages = letibot_provider::messages::convert("be terse", &items, false);
+    // A model that takes pictures: this test is about which ROWS reach the model, and a
+    // text-only model would answer a `read` image with a placeholder instead.
+    let messages = letibot_provider::messages::convert(
+        "be terse",
+        &items,
+        false,
+        letibot_provider::messages::Eyes::Sees,
+    );
     let said: Vec<&str> = messages
         .iter()
         .filter_map(|m| m["content"].as_str())

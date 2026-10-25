@@ -3447,7 +3447,10 @@ impl<'a> Sessions<'a> {
                 let before = self.harness(session_id).ok().map(|h| {
                     let now = h.measure_resident();
                     let c = h.config();
-                    (now.tokens, c.ledger_scale, h.token_unit(), c.shown_wall())
+                    // `Config::scale`, not the measurement alone: on a session whose switch
+                    // carried a ratio, `now.tokens` is the converted count and a line that
+                    // converted the same history with nothing would print bytes beside it.
+                    (now.tokens, c.scale(), h.token_unit(), c.shown_wall())
                 });
                 match self.compact(session_id) {
                     Ok(r) => {
@@ -3482,13 +3485,10 @@ impl<'a> Sessions<'a> {
                                 compaction: None,
                             });
                         }
-                        let base = self.open.get_mut(session_id).map(|h| {
-                            (
-                                h.measure_resident(),
-                                h.config().ledger_scale,
-                                h.is_metered(),
-                            )
-                        });
+                        let base = self
+                            .open
+                            .get_mut(session_id)
+                            .map(|h| (h.measure_resident(), h.config().scale(), h.is_metered()));
                         let (resident, scale, unit, (window, headroom)) =
                             before.unwrap_or((0, None, "tokens".into(), (0, 0)));
                         let said = match &base {
@@ -3616,7 +3616,10 @@ impl<'a> Sessions<'a> {
                                         summary_was_streamed: true,
                                     },
                                     "reseated",
-                                    c.ledger_scale,
+                                    // `Config::scale` and not the measurement alone: the
+                                    // pair the numbers above were converted with is the
+                                    // pair this line has to convert with, carried or not.
+                                    c.scale(),
                                     resident,
                                     c.shown_tokens(c.planning_window().unwrap_or(0)),
                                     c.shown_tokens(c.headroom()),

@@ -61,6 +61,22 @@ pub struct ModelFacts {
     /// model the catalogue prices nowhere — some are free, some are unlisted, and
     /// those are different from zero.
     pub prices: Option<crate::presets::Prices>,
+    /// **What it accepts as input**, from models.dev's `modalities.input`. `None`
+    /// when the row says nothing, which is not the same as "text only" — see
+    /// [`Catalogue::takes_images`].
+    pub inputs: Option<Inputs>,
+}
+
+/// One model's input modalities, as models.dev publishes them: `"modalities":
+/// {"input": ["text", "image"], "output": ["text"]}`.
+///
+/// Only the two facts this harness can act on are kept. `audio` and `video` are
+/// carried by the catalogue and dropped here deliberately: nothing in this tree can
+/// send either, so a flag for them would be a switch nothing reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inputs {
+    pub text: bool,
+    pub image: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +91,14 @@ struct RawModel {
     limit: Option<RawLimit>,
     #[serde(default)]
     cost: Option<RawCost>,
+    #[serde(default)]
+    modalities: Option<RawModalities>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawModalities {
+    #[serde(default)]
+    input: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -299,6 +323,14 @@ impl Catalogue {
                     ModelFacts {
                         context: l.context,
                         output: l.output,
+                        // **Absent is not empty.** A row with no `modalities` says
+                        // nothing about what it takes, and a zeroed `Inputs` would
+                        // say "text only" — the shape of an invented fact this
+                        // module exists to avoid.
+                        inputs: m.modalities.map(|mo| Inputs {
+                            text: mo.input.iter().any(|i| i == "text"),
+                            image: mo.input.iter().any(|i| i == "image"),
+                        }),
                         prices: m.cost.map(|c| crate::presets::Prices {
                             input: c.input,
                             // No `cache_read` means no discount, which is the input
@@ -337,6 +369,32 @@ impl Catalogue {
     /// One model's facts, by the catalogue's own provider id.
     pub fn model(&self, provider: &str, model: &str) -> Option<ModelFacts> {
         self.providers.get(provider)?.models.get(model).copied()
+    }
+
+    /// **Whether this model takes pictures** — `Some(true)` when the catalogue says it
+    /// does, `Some(false)` when the catalogue carries the model and its `modalities.input`
+    /// names text and not image, and `None` when nothing here knows.
+    ///
+    /// **This is the question that wedged a session**, MEASURED 2026-10-25 in
+    /// `~/logs/harnessd-2000f08acfaa.log`: a long session switched to `glm-5.3` on the
+    /// coding plan, and every request — the round, and then the compaction that would
+    /// have made room — came back
+    ///
+    /// ```text
+    /// http 400: messages.content.type is invalid, allowed values: ['text']
+    /// ```
+    ///
+    /// because `letibot_provider::messages` sent the transcript's image parts as
+    /// `image_url` to a model that takes text only. The model's own catalogue row says
+    /// so, and nothing asked it.
+    ///
+    /// `None` is an answer and not a reason to guess: the caller decides which end is
+    /// safe, and [`crate::messages`] treats *not known to take pictures* as *do not send
+    /// one*, because the two mistakes are not the same size — a placeholder the model can
+    /// read loses a picture, while an `image_url` to a text-only model refuses the whole
+    /// conversation, on every turn, until somebody switches models back.
+    pub fn takes_images(&self, provider: &str, model: &str) -> Option<bool> {
+        self.model(provider, model)?.inputs.map(|i| i.image)
     }
 
     /// Every model name a provider carries, sorted — for a failure message that
@@ -694,6 +752,45 @@ mod tests {
                 preset.fallback_model
             );
         }
+    }
+
+    /// **What a model takes as input is read, and NOT knowing is its own answer.**
+    ///
+    /// `takes_images` is what stops a session that has images in its history from being
+    /// refused whole by a text-only model: MEASURED 2026-10-25, `glm-5.3` answered
+    /// `messages.content.type is invalid, allowed values: ['text']` to every request once
+    /// the conversation carried `read`'s charts, and to the compaction that would have
+    /// made room. So the three answers are kept apart: `Some(true)` sends the picture,
+    /// `Some(false)` sends the placeholder, and `None` — the model is not in the
+    /// catalogue, or its row says nothing — is the safe end rather than a guess.
+    #[test]
+    fn the_input_modalities_are_read_and_absent_is_not_text_only() {
+        const FIXTURE: &str = r#"{
+          "p": {"models": {
+            "sees":   {"limit": {"context": 1000},
+                       "modalities": {"input": ["text", "image"], "output": ["text"]}},
+            "blind":  {"limit": {"context": 1000},
+                       "modalities": {"input": ["text"], "output": ["text"]}},
+            "silent": {"limit": {"context": 1000}}
+          }}
+        }"#;
+        let c = read_fixture(FIXTURE);
+        assert_eq!(c.takes_images("p", "sees"), Some(true));
+        assert_eq!(c.takes_images("p", "blind"), Some(false));
+        assert_eq!(
+            c.takes_images("p", "silent"),
+            None,
+            "a row with no modalities says nothing, and a zeroed Inputs would say \
+             'text only' — an invented fact"
+        );
+        assert_eq!(
+            c.takes_images("p", "not-a-model"),
+            None,
+            "a model the catalogue does not carry is unknown, not blind"
+        );
+        // The window and the modalities live on one row: adding the second must not
+        // have cost the first.
+        assert_eq!(c.model("p", "sees").unwrap().context, 1_000);
     }
 
     #[test]

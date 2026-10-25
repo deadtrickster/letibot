@@ -2304,6 +2304,40 @@ pub struct Harness {
     /// ([`Harness::set_mode_consented`], and once at open); read at every spawn. See
     /// [`HarnessTaskRunner::point`].
     point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
+    /// **The model this session switched away from, kept until a round proves the new
+    /// one works** — so a switch that fails says how to go back.
+    ///
+    /// The failure it exists for is the one an operator cannot see the shape of:
+    /// MEASURED 2026-10-25, a long session was switched to `glm-coding`, the provider
+    /// refused its very first request (`messages.content.type is invalid`), and every turn
+    /// after that was refused the same way. The operator's only move was to remember what
+    /// the session had been on and type it back — and the daemon knew both the name and
+    /// the command. See [`Harness::switch_back_notice`].
+    switch_back: Option<SwitchBack>,
+}
+
+/// **The sentence a failed switch earns** — apart from [`Harness::switch_back_notice`] so
+/// the wording and the command are testable without a session, a store and a provider.
+///
+/// The command is spelled the way the head's `/models` takes it (`Harness::model_name`),
+/// not described: an operator reading *"go back to deepseek"* would have to work out
+/// which of five spellings the verb accepts, and the daemon already knows.
+fn switch_back_said(previous: &str, now: &str, code: u16) -> String {
+    format!(
+        "the first round on `{now}` was refused by the provider (http {code}). Nothing this \
+         turn produced is lost and the conversation is unchanged: `/models {previous}` takes \
+         this session back to `{previous}`, and the next turn goes there."
+    )
+}
+
+/// **The model a session switched away from**, kept until a round proves the new one
+/// answers — the fact that makes a failed switch recoverable by the person who typed it.
+///
+/// Held in [`Harness::model_name`]'s spelling, which is the one `/models` takes, so the
+/// command in the notice is not a second name to translate.
+struct SwitchBack {
+    /// What answered before the switch: `deepseek/deepseek-flash`, `local`.
+    previous: String,
 }
 
 /// What a resume actually rebuilt.
@@ -5204,7 +5238,7 @@ impl Harness {
         let mut key_wanted = None;
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
-            Some(pc) => match build_provider(pc, &cfg.sampling) {
+            Some(pc) => match build_provider(pc, &cfg.sampling, provider_notes(&hub)) {
                 Ok(p) => Some(p),
                 Err(_) if key_is_missing(pc) => {
                     key_wanted = Some(pc.clone());
@@ -5381,6 +5415,8 @@ impl Harness {
             // overwrite it. See the field's own doc for why a return needs a
             // record and cannot re-derive.
             own_server,
+            // Nothing to go back to until a switch has been made.
+            switch_back: None,
         };
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
@@ -6767,8 +6803,15 @@ impl Harness {
             // A switch cleared the scale (`set_provider`, `set_own_server`): the anchor
             // was a measurement on the model before, and goes with it.
             self.wall_anchor = None;
+            // **The carried ratio still converts.** Nothing here has measured THIS model,
+            // so `measured` is `None` and a line says so; but a pair measured on the model
+            // before the switch is a better count than the ledger's bytes, and using it is
+            // what stops a fresh provider stopping the turn at round 0 with
+            // `2708271 of 1000000 ledger tokens (unscaled …)`. `shown_tokens` falls back to
+            // the ledger's own figure when there is no pair at all, which is the old
+            // behaviour exactly.
             return Resident {
-                tokens: len,
+                tokens: self.cfg.shown_tokens(len),
                 measured: None,
                 since: 0,
             };
@@ -6803,13 +6846,28 @@ impl Harness {
     /// **The unit a printed count is in**, for the lines that print one: a count with
     /// no unit beside another in a different one is how *"3191928 of 3404045"* and
     /// *"937686 of 999999"* came to sit on adjacent log lines for the same check (R72).
+    ///
+    /// Three answers on a metered session, because there are three states and only one of
+    /// them is a measurement: `deepseek tokens` (measured on this model), `glm-coding tokens
+    /// (estimated with deepseek/deepseek-flash's measured scale)` (the ratio a switch carried),
+    /// and `ledger tokens (unscaled …)` (nothing measured anywhere).
     pub fn token_unit(&self) -> String {
         match (&self.provider, self.cfg.ledger_scale) {
             (Some(p), Some(_)) => format!("{} tokens", p.name()),
-            (Some(p), None) => format!(
-                "ledger tokens (unscaled: no round on {} has measured yet)",
-                p.name()
-            ),
+            // **An estimate names the model that made it.** `estimated with deepseek's
+            // measured scale` is a different claim from `deepseek tokens` and from
+            // `ledger tokens (unscaled …)`, and a reader who is not told which one they are
+            // looking at cannot tell a measurement from an inherited ratio.
+            (Some(p), None) => match self.cfg.carried_note() {
+                Some(model) => format!(
+                    "{} tokens (estimated with {model}'s measured scale)",
+                    p.name()
+                ),
+                None => format!(
+                    "ledger tokens (unscaled: no round on {} has measured yet)",
+                    p.name()
+                ),
+            },
             (None, _) => "tokens".into(),
         }
     }
@@ -7070,6 +7128,9 @@ impl Harness {
         // A different box is a different KV cache and a different window; the ratio
         // measured on the old one is not evidence about this one.
         self.cfg.ledger_scale = None;
+        // And a ratio measured on a CLOUD model -- `None` here unless this session came
+        // from one -- is not evidence about a local ledger, whose count IS the prompt.
+        self.cfg.carried_scale = None;
         let moved = self.retune_window_local(want, &m.name, m.profile.window);
         let line = format!(
             "turns go to `{}` at {} from the next one on (fleet, no meter){}{moved}",
@@ -7223,6 +7284,9 @@ impl Harness {
         self.cfg.sampling = sampling;
         self.cfg.media_marker = props.media_marker.clone();
         self.cfg.ledger_scale = None;
+        // The new weights count their own tokens: an estimate carried from a cloud model
+        // would be a conversion of a local count into something it is not.
+        self.cfg.carried_scale = None;
 
         // **The conversation, re-rendered whole under the new pair.** The items
         // are dialect-neutral (`item_json`); the tokens were a cache of one
@@ -7479,10 +7543,22 @@ impl Harness {
         // `Config::tokens_are_unscaled` is how a reader says so rather than treating it as
         // calibrated.
         //
+        // **The old pair is KEPT, as an estimate that names the model it was measured
+        // on** — the half of this that used to be wrong. Clearing is right: the first
+        // round on the new model's tokenizer is what measures it, and until then nothing
+        // about this model has been measured. What clearing must not do is turn the
+        // ledger's own bytes into the number compared with the new model's window:
+        // MEASURED 2026-10-25, a session switched to `glm-coding` stopped at round 0 with
+        // `2708271 of 1000000 ledger tokens (unscaled: no round on glm-coding has measured
+        // yet)` and never sent a byte. See `Config::CarriedScale` for the whole of it, and
+        // `Config::carried_note` for how every line that prints a converted count says
+        // whose measurement it is.
+        //
         // **The clear is inside each arm and not before the `match`**, because this method
         // promises that a switch which cannot be built changes nothing — and a scale dropped
         // for a provider whose key turned out to be missing would be a change made by a
-        // refusal.
+        // refusal. `carry_the_scale` is called after the provider that can fail is built,
+        // on the same line as the clear it is the other half of.
         match choice {
             // The daemon's own server takes token ids, and a byte-vocabulary session has
             // none it could read: refused before anything changes, as the promise above
@@ -7498,7 +7574,8 @@ impl Harness {
             // clear. `set_own_server` is this arm; see its doc for the re-seat half.
             None => self.set_own_server(true),
             Some(pc) => {
-                let p = build_provider(&pc, &self.cfg.sampling).map_err(HarnessError::Setup)?;
+                let p = build_provider(&pc, &self.cfg.sampling, provider_notes(&self.hub))
+                    .map_err(HarnessError::Setup)?;
                 let mut line = format!(
                     "turns go to {}/{} from the next one on — METERED; the prefix check is \
                      skipped, the ledger stays the record",
@@ -7513,6 +7590,8 @@ impl Harness {
                 // compacted at the wrong time or not at all.
                 line.push_str(&self.retune_window(&pc));
                 // After everything that can fail, and before anything reads it.
+                self.note_the_way_back();
+                self.carry_the_scale();
                 self.cfg.ledger_scale = None;
                 self.provider = Some(p);
                 self.cfg.provider = Some(pc);
@@ -7526,6 +7605,71 @@ impl Harness {
                 Ok(line)
             }
         }
+    }
+
+    /// **Keep the ratio a switch is about to clear, named after the model that measured
+    /// it** — the other half of the clear in [`Harness::set_provider`], and see
+    /// `Config::CarriedScale` for why the pair is kept at all.
+    ///
+    /// Called only where the switch SUCCEEDED: a switch refused for a missing key changes
+    /// nothing, and a scale moved by a refusal would be a change made by nothing.
+    ///
+    /// **A second switch with nothing measured in between keeps the older pair rather
+    /// than overwriting it with `None`** — `deepseek → glm-coding → grok` is one session
+    /// whose only measurement was deepseek's, and that is still the best estimate there is
+    /// for either of the others.
+    fn carry_the_scale(&mut self) {
+        let Some((ledger, provider)) = self.cfg.ledger_scale else {
+            return;
+        };
+        // The model being LEFT, in `/models`' spelling (`deepseek/deepseek-flash`), read
+        // before the caller overwrites anything.
+        let model = self.model_name();
+        self.cfg.carried_scale = Some(crate::config::CarriedScale {
+            model,
+            ledger,
+            provider,
+        });
+    }
+
+    /// **Remember the model this switch is leaving, so a refusal can name the way back.**
+    ///
+    /// Read BEFORE anything moves, and only where the move cannot fail after it — see
+    /// [`Harness::switch_back_notice`] for what reads it.
+    fn note_the_way_back(&mut self) {
+        self.switch_back = Some(SwitchBack {
+            previous: self.model_name(),
+        });
+    }
+
+    /// **A switch that fails says how to go back** — the notice a provider's refusal earns
+    /// on the first round after a model switch, or `None` when this is not that.
+    ///
+    /// MEASURED 2026-10-25, `s-1791394076177451000`: a long session was switched to
+    /// `glm-coding`, and every request it sent came back
+    /// `http 400: messages.content.type is invalid, allowed values: ['text']`. The screen
+    /// said `FAILED — http 400: …` and stopped there; the operator had to remember what
+    /// the session had been on and type it back by hand, and the daemon knew both the name
+    /// and the command. That is the whole of this function.
+    ///
+    /// **4xx only**, because that is the class that refuses *what was sent*: a 429 is the
+    /// ladder's (it waits, and may fall back), a 5xx is an endpoint that is unwell, and
+    /// neither is evidence about the model. A transport failure says nothing about it
+    /// either.
+    ///
+    /// The armed state is TAKEN, so one switch earns one notice: a second failure is a
+    /// session that has a problem the way back does not fix, and repeating the advice
+    /// every turn is how a warning becomes furniture.
+    pub fn switch_back_notice(&mut self, e: &HarnessError) -> Option<String> {
+        let back = self.switch_back.take()?;
+        let code = provider_refusal(e)?;
+        let now = self.model_name();
+        if now == back.previous {
+            // The round went to the model this session already was on — a switch that
+            // landed on the name in force is not a switch, and there is nowhere back.
+            return None;
+        }
+        Some(switch_back_said(&back.previous, &now, code))
     }
 
     /// **The whole of `/models NAME`, in one place, for both callers.**
@@ -7584,8 +7728,15 @@ impl Harness {
     /// moment later pays two cold prefills for one decision — so that caller passes
     /// `false` and takes the field clears without the re-seat.
     fn set_own_server(&mut self, reseat_foreign: bool) -> Result<String, HarnessError> {
+        self.note_the_way_back();
         self.provider = None;
         self.cfg.ledger_scale = None;
+        // **And the carried pair goes with it**: coming home means the ledger IS the
+        // prompt again (the engine sends its own token ids), so a ratio measured by a
+        // cloud model would convert a count that needs no conversion. See
+        // `Config::scale`, which would ignore it anyway — cleared here so that the only
+        // state a reader has to reason about is the one that applies.
+        self.cfg.carried_scale = None;
         self.cfg.provider = None;
         // **The return itself**: address, alias, sampling, marker, vocabulary,
         // dialect — every field a fleet switch overwrote, given back the value
@@ -10170,7 +10321,12 @@ impl Harness {
         // the `Sessions` sibling states: `should_compact` above is the decision,
         // and the line prints the count it was made on, in the window's own units
         // (`Config::shown_wall`), with the unit named.
-        let scale = self.cfg.ledger_scale;
+        //
+        // `Config::scale` and not `ledger_scale`: on a session whose switch carried a
+        // ratio, the count the decision was taken on is the CONVERTED one, and a line that
+        // converted with nothing would print the ledger's bytes beside a unit it had just
+        // named as the provider's.
+        let scale = self.cfg.scale();
         let (w, h) = self.cfg.shown_wall();
         let r = now.tokens;
         let unit = self.token_unit();
@@ -10224,10 +10380,14 @@ impl Harness {
                 // as the measured count it was folded from, and the guard below it
                 // JUDGED that estimate: 1,039,055 for a base deepseek counted at
                 // 507,355 (pg-noop, 2026-10-11).
-                let estimated = self.cfg.wall.awaiting_on(&self.session.transcript_id);
+                let estimated = self.cfg.wall.awaiting_on(&self.session.transcript_id)
+                    || self.cfg.carried_note().is_some();
                 let scales = crate::sessions::Scales {
                     before: scale,
-                    after: self.cfg.ledger_scale,
+                    // The base's own pair when one measured it; else the ratio the whole
+                    // session is being converted by, which is what `measure_resident` used
+                    // for the after-count as well.
+                    after: self.cfg.ledger_scale.or(scale),
                     unit: Some(unit.clone()),
                     estimated,
                 };
@@ -10279,6 +10439,17 @@ impl Harness {
                     ),
                     compaction: None,
                 });
+                // **And if this is the first request after a model switch, say how to go
+                // back.** The compaction runs through this harness, not through the turn
+                // tail, and it is the door the measured failure took: the summary turn
+                // carried the same history and was refused the same way.
+                if let Some(said) = self.switch_back_notice(&e) {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_switch_refused".into(),
+                        detail: said,
+                        compaction: None,
+                    });
+                }
             }
         }
         self.meter_compaction(matches!(why, WallWhy::Tidy), ok, started, (r, resident));
@@ -12085,7 +12256,14 @@ impl Harness {
             {
                 let resident = self.session.ledger.len() as u64;
                 let prefix = u64::from(self.session.ledger.prefix_len());
-                if wall_stops_round(round, resident, prefix, self.cfg.headroom(), window) {
+                if wall_stops_this_round(
+                    round,
+                    resident,
+                    prefix,
+                    self.cfg.headroom(),
+                    window,
+                    self.cfg.wall_basis(),
+                ) {
                     // In the units the operator's header shows, and the count the
                     // decision was made on; see `Harness::measure_resident`. The
                     // ledger's own figures are named once at the end rather than per
@@ -12094,7 +12272,23 @@ impl Harness {
                     let (w, h) = self.cfg.shown_wall();
                     let r = now.map(|n| n.tokens).unwrap_or(resident);
                     let unit = self.token_unit();
-                    let also = if self.cfg.tokens_are_converted() {
+                    let here = self
+                        .provider
+                        .as_ref()
+                        .map(|p| format!("{}/{}", p.name(), p.model()))
+                        .unwrap_or_default();
+                    let also = if let Some(model) = self.cfg.carried_note() {
+                        // **An estimate, named as one, with whose measurement it is.** This
+                        // is the line the 2026-10-25 session needed and did not get: the
+                        // count is the ledger's bytes converted by the ratio deepseek
+                        // measured, not a number anything has confirmed for glm-coding.
+                        format!(
+                            " (estimated with {model}'s measured scale: no round has run on \
+                             {here} yet, so this box's own ledger count is converted by the \
+                             ratio {model} measured before the switch. One round here replaces \
+                             it)"
+                        )
+                    } else if self.cfg.tokens_are_converted() {
                         format!(
                             " (counted as the provider counts them; this box's own \
                              ledger says {resident} of {window}, and it over-counts \
@@ -12107,13 +12301,8 @@ impl Harness {
                         // reader who is not told cannot tell that from a measured sentence.
                         format!(
                             " (these are this box's own ledger counts: no round has run on \
-                             {model} since it took over, so nothing has measured how its \
-                             tokens relate to the ledger's. One round sets it)",
-                            model = self
-                                .provider
-                                .as_ref()
-                                .map(|p| format!("{}/{}", p.name(), p.model()))
-                                .unwrap_or_default()
+                             {here} since it took over, so nothing has measured how its \
+                             tokens relate to the ledger's. One round sets it)"
                         )
                     } else {
                         String::new()
@@ -12285,6 +12474,9 @@ impl Harness {
                 watch.finish();
                 let Err(TurnFailure::Http(e)) = attempted else {
                     attempt = 0;
+                    // **The new model answered**, which is the whole of what a switch had
+                    // to prove — there is nothing to go back to any more.
+                    self.switch_back = None;
                     break attempted;
                 };
                 // **A model that moved under this round is not weather, and this is the
@@ -14459,6 +14651,43 @@ fn wall_stops_round(round: usize, resident: u64, prefix: u64, headroom: u64, win
     }
 }
 
+/// **Whether the wall stops THIS round** — [`wall_stops_round`]'s arithmetic plus the one
+/// question about where the count came from.
+///
+/// MEASURED 2026-10-25, `s-1791394076177451000`: a session switched from deepseek to
+/// `glm-coding` was stopped at round 0 with
+///
+/// ```text
+/// context wall: stopped after 0 round(s) at 2708271 of 1000000 ledger tokens
+///               (unscaled: no round on glm-coding has measured yet)
+/// ```
+///
+/// — 2,708,271 LEDGER tokens against a 1,000,000-token window, where the ledger of a
+/// metered session is `Vocab::bytes` (one id per byte of the rendered history). It is not a
+/// count of tokens at all, and comparing it with a token window says nothing about whether
+/// the prompt fits. The provider is the only one that can answer that question, and it
+/// answers it with a refusal that the compaction door already handles on evidence
+/// (`WallWhy::Refused`). So at round 0 an unmeasured count does not stop the turn.
+///
+/// **Carried is not unmeasured.** A ratio measured on the model before the switch converts
+/// bytes into that model's tokens — the same quantity, off by however differently the two
+/// tokenizers count — so the comparison is meaningful and the wall may fire on it, with
+/// every line that prints it saying which model measured the ratio. Only *nothing has ever
+/// been measured* is the case where the arithmetic means nothing at all.
+fn wall_stops_this_round(
+    round: usize,
+    resident: u64,
+    prefix: u64,
+    headroom: u64,
+    window: u64,
+    basis: crate::config::WallBasis<'_>,
+) -> bool {
+    if round == 0 && basis == crate::config::WallBasis::Unmeasured {
+        return false;
+    }
+    wall_stops_round(round, resident, prefix, headroom, window)
+}
+
 /// **Where the smaller-tail fold splits** — the ordinary fold's split moved later until
 /// the verbatim part is at most half what it was, or the ordinary split unchanged when
 /// the longer first part would not fit one summary call (the next rung, the sliced fold,
@@ -15537,6 +15766,23 @@ fn retry_host(provider: Option<&dyn letibot_backend::MessagesBackend>, local: &E
 struct ContextLengthRefusal {
     requested: Option<u64>,
     limit: Option<u64>,
+}
+
+/// **The HTTP status a failure names, when it is a provider refusing what was SENT.**
+///
+/// 4xx is that class: the request reached a model that read it and said no. 429 is not
+/// (the ladder's — it waits, and may move the session), and neither is anything 5xx or
+/// transport, which is a fact about the endpoint rather than about what was sent. Read by
+/// [`Harness::switch_back_notice`].
+fn provider_refusal(e: &HarnessError) -> Option<u16> {
+    match e {
+        HarnessError::Turn(TurnFailure::Http(letibot_turn::HttpError::Status { code, .. }))
+            if (400..500).contains(code) && *code != 429 =>
+        {
+            Some(*code)
+        }
+        _ => None,
+    }
 }
 
 /// **Is this HTTP failure the context wall, spoken by the thing that owns it?**
@@ -20527,17 +20773,42 @@ fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) -> String {
 
 /// A provider backend from its config: the preset, the key (a missing one is a
 /// refusal naming the variable and the file), the model, the switches.
+///
+/// `notes` is where a provider says something a person has to read — a model refusing a
+/// picture, today. Passed in rather than found, because this crate's session log is one
+/// level above the provider and the provider must stay below it; see
+/// [`provider_notes`], which is the only caller with a hub.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
+    notes: letibot_provider::openai::Notes,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::Preset::parse(&pc.name)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
         .map_err(|e| format!("provider {}: {e}", pc.name))?;
-    let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds);
+    let mut p =
+        letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds).with_notes(notes);
     p.thinking = pc.thinking;
     p.sampling = provider_sampling(sampling);
     Ok(Box::new(p))
+}
+
+/// **Where a provider's own note reaches the operator** — the session's hub, one crate up.
+///
+/// One closure, so the fact a provider learns ("this model refused an image") arrives as
+/// the warning a head already draws, and `letibot_provider` keeps needing no session log.
+/// The code is the one a grep for this behaviour looks for.
+fn provider_notes(
+    hub: &std::sync::Arc<letibot_sessionlog::Hub>,
+) -> letibot_provider::openai::Notes {
+    let hub = hub.clone();
+    std::sync::Arc::new(move |said: String| {
+        hub.publish(letibot_sessionlog::SessionEvent::Warning {
+            code: "model_refused_images".into(),
+            detail: said,
+            compaction: None,
+        });
+    })
 }
 
 /// The sampling the operator configured, as a provider's body fields. The local

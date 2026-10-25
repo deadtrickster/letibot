@@ -437,6 +437,11 @@ pub struct Config {
     /// daemon. `--http HOST:PORT`. See [`crate::httphead`].
     pub http: Option<String>,
     pub ledger_scale: Option<(u64, u64)>,
+    /// **The old pair, kept across a switch as an ESTIMATE** — `None` until a session
+    /// moves off the model it measured on, and cleared by any round on the new one. See
+    /// [`CarriedScale`] for the session that made this a field rather than a cleared
+    /// number.
+    pub carried_scale: Option<CarriedScale>,
     pub unconfined: bool,
     /// A human name for the session, or empty.
     ///
@@ -1572,6 +1577,57 @@ fn headroom_of(w: u64) -> u64 {
     (w / 16).max(2048).min(w / 4)
 }
 
+/// **The last ratio this session measured, when it was measured on a model it has since
+/// switched away from.**
+///
+/// A switch clears `Config::ledger_scale` — a measurement made on one model is not evidence
+/// about another — and clearing it is right. What it is not is a reason to refuse work:
+/// cleared, the ledger's own count was compared with the new model's window, and the ledger
+/// of a metered session is `Vocab::bytes` (one token per byte of the rendered history),
+/// which over-counts a real tokenizer by three to five times. MEASURED 2026-10-25,
+/// `s-1791394076177451000` on the way from deepseek to `glm-coding`: `context wall: stopped
+/// after 0 round(s) at 2708271 of 1000000 ledger tokens (unscaled: no round on glm-coding
+/// has measured yet)` — the turn never left the machine, and the compaction that could have
+/// made room was then refused by the provider for carrying images. The last pair this
+/// session had measured was deepseek's 2,704,409 ledger for 792,991 prompt tokens; carried
+/// across the switch it puts the same conversation at ~1,000,000 of glm's window, inside it.
+///
+/// So the old pair is kept as an **estimate, named as one**: every line that prints a count
+/// converted with it says which model measured the ratio (`Config::carried_note`), and
+/// `Config::pre_emptive_compact` still refuses to compact on it, because a pre-emptive fold
+/// on an inherited ratio is a fold nobody measured. The first round on the new model
+/// replaces it (`Harness::measure_resident` writes `ledger_scale`), which is the whole
+/// design: a measurement beats an estimate as soon as one exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedScale {
+    /// The model the pair was measured on, in `/models`' own spelling —
+    /// `deepseek/deepseek-flash`. Named in every line that uses it.
+    pub model: String,
+    /// `(ledger tokens, that model's prompt tokens)` for ONE prompt.
+    pub ledger: u64,
+    pub provider: u64,
+}
+
+/// **What a ledger count's relation to the answering model's count is known from** — the
+/// provenance a wall decision turns on, in one value rather than three predicates that have
+/// to agree.
+///
+/// The distinction that matters at the wall is not *is it a measurement* but *is it a
+/// measurement of THIS model*: at round 0 an unmeasured count is bytes against tokens, and
+/// stopping a turn on that comparison is how the 2026-10-25 session never sent anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallBasis<'a> {
+    /// The ledger IS the prompt (a local session), or a pair was measured on the model
+    /// answering now.
+    Measured,
+    /// The pair was measured on `model`, which this session has switched away from —
+    /// a ratio carried across the switch.
+    Carried(&'a str),
+    /// Nothing has measured anything: a fresh metered provider, or a session whose stored
+    /// pair predates `context_ledger`.
+    Unmeasured,
+}
+
 impl Config {
     /// How much of the window must stay free for a turn to be safe to start.
     ///
@@ -1640,7 +1696,7 @@ impl Config {
     /// reasoning.
     pub fn planning_window(&self) -> Option<u64> {
         let w = self.context_window?;
-        let Some((ledger, provider)) = self.ledger_scale else {
+        let Some((ledger, provider)) = self.scale() else {
             return Some(w);
         };
         if ledger == 0 || provider == 0 {
@@ -1648,6 +1704,46 @@ impl Config {
         }
         let scaled = (w as u128 * ledger as u128) / provider as u128;
         Some((scaled.clamp((w / 4) as u128, (w as u128) * 16)) as u64)
+    }
+
+    /// **The pair every conversion uses** — the measurement on the model answering now,
+    /// else the one carried across the switch from the model before it.
+    ///
+    /// The carried pair is only consulted for a METERED session: returning to the daemon's
+    /// own server makes the ledger the prompt again (`Vocab::bytes` on a cloud route,
+    /// the model's own vocabulary on a local one), and a cloud ratio applied to a local
+    /// count would be a conversion of one unit into itself.
+    pub fn scale(&self) -> Option<(u64, u64)> {
+        if self.provider.is_none() {
+            return self.ledger_scale;
+        }
+        self.ledger_scale
+            .or_else(|| self.carried_scale.as_ref().map(|c| (c.ledger, c.provider)))
+    }
+
+    /// **The model whose measurement is standing in for this one's**, when that is what is
+    /// happening — `None` once a round on the current model has measured.
+    ///
+    /// Every line that prints a converted count asks this, because an estimate printed in a
+    /// measurement's clothes is this tree's most expensive kind of wrong (R72: *"1.35 is a
+    /// lie - that top was shown as 900+"*).
+    pub fn carried_note(&self) -> Option<&str> {
+        if self.provider.is_none() || self.ledger_scale.is_some() {
+            return None;
+        }
+        self.carried_scale.as_ref().map(|c| c.model.as_str())
+    }
+
+    /// **Where this session's count comes from** — see [`WallBasis`]. One answer, read by
+    /// the wall's decision and by the lines that explain it.
+    pub fn wall_basis(&self) -> WallBasis<'_> {
+        if self.provider.is_none() || self.ledger_scale.is_some() {
+            return WallBasis::Measured;
+        }
+        match self.carried_note() {
+            Some(model) => WallBasis::Carried(model),
+            None => WallBasis::Unmeasured,
+        }
     }
 
     /// **Ledger tokens as the provider would count them**, or `None` if nobody
@@ -1705,11 +1801,11 @@ impl Config {
     /// it must be able to say it is unscaled rather than silently treating it as
     /// calibrated."*
     pub fn tokens_are_unscaled(&self) -> bool {
-        self.provider.is_some() && self.ledger_scale.is_none()
+        self.provider.is_some() && self.scale().is_none()
     }
 
     pub fn provider_tokens(&self, ledger_tokens: u64) -> Option<u64> {
-        let (ledger, provider) = self.ledger_scale?;
+        let (ledger, provider) = self.scale()?;
         if ledger == 0 || provider == 0 {
             return None;
         }
@@ -1945,6 +2041,7 @@ impl Config {
             depth: 0,
             http: None,
             ledger_scale: None,
+            carried_scale: None,
             unconfined: false,
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),

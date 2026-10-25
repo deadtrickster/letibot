@@ -24,7 +24,18 @@ pub struct OpenAiProvider {
     pub thinking: bool,
     /// `temperature` and friends, passed through verbatim.
     pub sampling: Value,
+    /// **Where a fact the operator must read is said** — the daemon's hub, one crate up.
+    ///
+    /// A closure rather than a hub because this crate is below `letibot-sessionlog` and
+    /// stays there: what the provider knows is "this model refused a picture", and who
+    /// needs to hear it is the caller's business. `None` in a test or a one-off — the mark
+    /// is still recorded and still said on stderr.
+    notes: Option<Notes>,
 }
+
+/// Where a provider says something a person has to read. `Arc<dyn Fn>` because the
+/// provider is `Send + Sync` and cloned into a `Box<dyn MessagesBackend>`.
+pub type Notes = std::sync::Arc<dyn Fn(String) + Send + Sync>;
 
 impl OpenAiProvider {
     pub fn new(preset: &'static Preset, model: Option<&str>, creds: Credentials) -> Self {
@@ -51,11 +62,50 @@ impl OpenAiProvider {
             agent: ureq::Agent::new_with_config(config),
             thinking: false,
             sampling: json!({}),
+            notes: None,
+        }
+    }
+
+    /// **Install the way this provider tells a person something** — see [`Notes`].
+    pub fn with_notes(mut self, notes: Notes) -> Self {
+        self.notes = Some(notes);
+        self
+    }
+
+    /// **What this model gets pictures as.** Three sources, in the order that decides:
+    ///
+    /// 1. **a provider already refused one** ([`crate::messages::known_text_only`]) — a
+    ///    measurement, and it outranks a table;
+    /// 2. **the catalogue's `modalities.input`** — `Some(false)` is the only thing that
+    ///    turns pictures off without being told twice;
+    /// 3. **otherwise the pictures are SENT** ([`crate::messages::Eyes::Unknown`]). A model
+    ///    nobody knows about gets the image and describes it; the alternative is a harness
+    ///    that quietly turns every attached chart into a sentence about a chart.
+    fn eyes(&self) -> crate::messages::Eyes<'_> {
+        if crate::messages::known_text_only(self.preset.name, &self.model) {
+            return crate::messages::Eyes::TextOnly(&self.model);
+        }
+        let catalogue = crate::catalogue::Catalogue::load();
+        match catalogue.takes_images(self.preset.catalogue_id, &self.model) {
+            Some(true) => crate::messages::Eyes::Sees,
+            Some(false) => crate::messages::Eyes::TextOnly(&self.model),
+            None => crate::messages::Eyes::Unknown(&self.model),
         }
     }
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
+        self.body_for(req, self.eyes())
+    }
+
+    /// The same body, with what the model gets pictures as given rather than decided —
+    /// the retry after a refusal is the one caller, and it must not have to re-ask a
+    /// question it has just answered.
+    fn body_for(
+        &self,
+        req: &TurnRequest<'_>,
+        eyes: crate::messages::Eyes<'_>,
+    ) -> Result<Value, BackendError> {
         // **`tools` is built first because it is part of the request — NOT because it
         // decides whether the reasoning echo is required.** This comment asserted the
         // opposite for a day, on the strength of the vendor's guide, and the guide is
@@ -74,7 +124,13 @@ impl OpenAiProvider {
         let carries_tools = !tools.is_empty();
         let mut body = json!({
             "model": self.model,
-            "messages": crate::messages::convert_with_tail(req.system, req.items, req.tail, carries_tools),
+            "messages": crate::messages::convert_with_tail(
+                req.system,
+                req.items,
+                req.tail,
+                carries_tools,
+                eyes,
+            ),
             "stream": true,
             "stream_options": {"include_usage": true},
         });
@@ -231,7 +287,66 @@ impl MessagesBackend for OpenAiProvider {
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
-        let body = self.body(req)?;
+        let eyes = self.eyes();
+        let first = self.round(req, on_delta, eyes);
+        // **A picture the model would not take, learned rather than guessed.** Three things
+        // have to be true and all three are read off the refusal or the request, never
+        // assumed: the status is a 400, the sentence names a content type (or `image_url`)
+        // as the complaint, and the request ACTUALLY carried a picture — see
+        // `crate::messages::text_only_refusal`, whose doc quotes the measured bodies. Then
+        // the model is marked text-only for the rest of this daemon's life, the operator is
+        // told once, and the SAME request goes again with placeholders instead of
+        // pictures. One retry, never a ladder: if the second attempt is refused too, that
+        // refusal is the answer.
+        //
+        // **The compaction takes this path too**, which is the reason it exists: the
+        // summary turn carries the same history, so the request that failed at the wall is
+        // the one this makes succeed. MEASURED 2026-10-25, `glm-5.3`:
+        // `http 400: messages.content.type is invalid, allowed values: ['text']`, to the
+        // round and then to the compaction that would have made room.
+        let Err(BackendError::Refused {
+            status: 400,
+            body: why,
+        }) = &first
+        else {
+            return first;
+        };
+        let carried = crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter()));
+        if !eyes.takes_images() || !carried || !crate::messages::text_only_refusal(why) {
+            return first;
+        }
+        if crate::messages::mark_text_only(self.preset.name, &self.model) {
+            let said = format!(
+                "{} refused an image; images are now sent to it as placeholders (the provider \
+                 said: {why}). The request went again without them, and this daemon will not \
+                 send this model another picture.",
+                self.model
+            );
+            // The daemon's log first: a session may have no head attached, and this is the
+            // line that says why every later request carries placeholders.
+            eprintln!("  {said}");
+            if let Some(notes) = &self.notes {
+                notes(said);
+            }
+        }
+        self.round(req, on_delta, crate::messages::Eyes::TextOnly(&self.model))
+    }
+}
+
+impl OpenAiProvider {
+    /// **One attempt at the wire**: build the body for `eyes`, post it, stream the answer.
+    ///
+    /// Split out of [`MessagesBackend::complete`] because the refusal path takes the round
+    /// again, and "the same request, one substitution" should not be a second copy of the
+    /// send/stream/accumulate half. A non-2xx status returns before a single byte of the
+    /// body is read as a stream, which is what makes re-taking the round safe.
+    fn round(
+        &self,
+        req: &TurnRequest<'_>,
+        on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
+        eyes: crate::messages::Eyes<'_>,
+    ) -> Result<Completion, BackendError> {
+        let body = self.body_for(req, eyes)?;
         // Serialised once and kept, so a refusal can say how large the request was
         // without paying for a second pass over a body that may be megabytes.
         let payload = body.to_string();

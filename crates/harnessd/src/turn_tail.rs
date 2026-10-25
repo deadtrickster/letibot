@@ -257,6 +257,18 @@ fn settle(
         && !is_wall(&out)
     {
         publish_failure(h.hub(), h.last_turn_id(), e);
+        // **A switch that fails says how to go back** — the operator's own session was
+        // switched to a model whose every request was refused, and the screen named the
+        // refusal and nothing else. See `Harness::switch_back_notice`: `None` when this
+        // turn is not the first after a switch, or the failure is not the provider
+        // refusing what was sent.
+        if let Some(said) = h.switch_back_notice(e) {
+            h.hub().publish(SessionEvent::Warning {
+                code: "model_switch_refused".into(),
+                detail: said,
+                compaction: None,
+            });
+        }
     }
     // **The wall is the one failure that must still compact**, and the two outcomes take two
     // DIFFERENT doors: a success takes the pre-emptive door (would the next turn fit?), which the
