@@ -172,7 +172,7 @@ pub fn opencode_path() -> Option<PathBuf> {
 /// The vendored snapshot's provenance, beside the data it describes. Written by
 /// `scripts/refresh-models-snapshot.sh`, which is also what keeps the two honest
 /// with each other: the script regenerates the file and prints this string.
-pub const SNAPSHOT_FETCHED: &str = "2026-10-04";
+pub const SNAPSHOT_FETCHED: &str = "2026-10-26";
 
 /// **The floor**: every provider a preset can switch to, as models.dev carried
 /// them on [`SNAPSHOT_FETCHED`]. 5 KB rather than the whole 222-provider file,

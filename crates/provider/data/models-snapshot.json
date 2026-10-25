@@ -8,8 +8,14 @@
      "output": 0.6
     },
     "limit": {
-     "context": 1000000,
+     "context": 1048576,
      "output": 393216
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
     }
    },
    "deepseek-v4-flash": {
@@ -19,8 +25,14 @@
      "output": 0.6
     },
     "limit": {
-     "context": 1000000,
+     "context": 1048576,
      "output": 393216
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
     }
    },
    "deepseek-v4-flash-vision-exp": {
@@ -30,8 +42,14 @@
      "output": 0.6
     },
     "limit": {
-     "context": 1000000,
+     "context": 1048576,
      "output": 393216
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
     }
    },
    "deepseek-v4-pro": {
@@ -41,8 +59,13 @@
      "output": 1.98
     },
     "limit": {
-     "context": 1000000,
+     "context": 1048576,
      "output": 393216
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    }
   }
@@ -58,6 +81,13 @@
     "limit": {
      "context": 1000000,
      "output": 30000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-4.20-0309-reasoning": {
@@ -69,6 +99,13 @@
     "limit": {
      "context": 1000000,
      "output": 30000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-4.20-multi-agent-0309": {
@@ -80,6 +117,13 @@
     "limit": {
      "context": 1000000,
      "output": 30000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-4.3": {
@@ -91,6 +135,13 @@
     "limit": {
      "context": 1000000,
      "output": 30000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-4.5": {
@@ -102,6 +153,13 @@
     "limit": {
      "context": 500000,
      "output": 500000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-4.6": {
@@ -113,6 +171,13 @@
     "limit": {
      "context": 500000,
      "output": 500000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-4.7": {
@@ -124,6 +189,13 @@
     "limit": {
      "context": 500000,
      "output": 500000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-build-0.1": {
@@ -135,36 +207,75 @@
     "limit": {
      "context": 256000,
      "output": 256000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ]
     }
    },
    "grok-imagine-image": {
     "limit": {
      "context": 16000,
      "output": 0
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
     }
    },
    "grok-imagine-image-quality": {
     "limit": {
      "context": 16000,
      "output": 0
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
     }
    },
    "grok-imagine-video": {
     "limit": {
      "context": 1024,
      "output": 0
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
     }
    },
    "grok-imagine-video-1.5": {
     "limit": {
      "context": 1024,
      "output": 0
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "audio"
+     ]
     }
    },
    "grok-imagine-video-1.5-lite": {
     "limit": {
      "context": 1024,
      "output": 0
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
     }
    }
   }
@@ -180,6 +291,11 @@
     "limit": {
      "context": 204800,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5-turbo": {
@@ -191,6 +307,11 @@
     "limit": {
      "context": 200000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.2": {
@@ -202,6 +323,11 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.2-highspeed": {
@@ -213,6 +339,11 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.3": {
@@ -224,6 +355,11 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.3-flash": {
@@ -235,6 +371,14 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ]
     }
    },
    "glm-5.3-highspeed": {
@@ -246,6 +390,11 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    }
   }
@@ -261,17 +410,27 @@
     "limit": {
      "context": 131072,
      "output": 98304
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-4.5-air": {
     "cost": {
-     "cache_read": 0.03,
-     "input": 0.2,
-     "output": 1.1
+     "cache_read": 0.0239,
+     "input": 0.11952,
+     "output": 0.89637
     },
     "limit": {
      "context": 131072,
      "output": 98304
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-4.5-flash": {
@@ -283,16 +442,29 @@
     "limit": {
      "context": 131072,
      "output": 98304
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-4.5v": {
     "cost": {
-     "input": 0.6,
-     "output": 1.8
+     "cache_read": 0.05976,
+     "input": 0.29879,
+     "output": 0.89637
     },
     "limit": {
      "context": 64000,
      "output": 16384
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
     }
    },
    "glm-4.6": {
@@ -304,16 +476,29 @@
     "limit": {
      "context": 204800,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-4.6v": {
     "cost": {
-     "input": 0.3,
-     "output": 0.9
+     "cache_read": 0.02988,
+     "input": 0.1494,
+     "output": 0.44819
     },
     "limit": {
      "context": 128000,
      "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
     }
    },
    "glm-4.6v-flash": {
@@ -325,17 +510,29 @@
     "limit": {
      "context": 128000,
      "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
     }
    },
    "glm-4.7": {
     "cost": {
-     "cache_read": 0.11,
-     "input": 0.6,
-     "output": 2.2
+     "cache_read": 0.08964,
+     "input": 0.44819,
+     "output": 2.09153
     },
     "limit": {
      "context": 204800,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-4.7-flash": {
@@ -347,94 +544,148 @@
     "limit": {
      "context": 200000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-4.7-flashx": {
     "cost": {
-     "cache_read": 0.01,
-     "input": 0.07,
-     "output": 0.4
+     "cache_read": 0.01494,
+     "input": 0.0747,
+     "output": 0.44819
     },
     "limit": {
      "context": 200000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5": {
     "cost": {
-     "cache_read": 0.2,
-     "input": 1,
-     "output": 3.2
+     "cache_read": 0.1494,
+     "input": 0.59758,
+     "output": 2.68911
     },
     "limit": {
      "context": 204800,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.1": {
     "cost": {
-     "cache_read": 0.26,
-     "input": 1.4,
-     "output": 4.4
+     "cache_read": 0.19421,
+     "input": 0.89637,
+     "output": 3.58548
     },
     "limit": {
      "context": 200000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.2": {
     "cost": {
-     "cache_read": 0.26,
-     "input": 1.4,
-     "output": 4.4
+     "cache_read": 0.29879,
+     "input": 1.19516,
+     "output": 4.18306
     },
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.3": {
     "cost": {
-     "cache_read": 0.26,
-     "input": 1.4,
-     "output": 4.4
+     "cache_read": 0.29879,
+     "input": 1.19516,
+     "output": 4.18306
     },
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.3-flash": {
     "cost": {
-     "cache_read": 0.03,
-     "input": 0.15,
-     "output": 0.5
+     "cache_read": 0.03436,
+     "input": 0.11952,
+     "output": 0.41831
     },
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ]
     }
    },
    "glm-5.3-flashx": {
     "cost": {
-     "cache_read": 0.075,
-     "input": 0.37,
-     "output": 1.25
+     "cache_read": 0.08516,
+     "input": 0.29879,
+     "output": 1.04577
     },
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ]
     }
    },
    "glm-5v-turbo": {
     "cost": {
-     "cache_read": 1.2,
-     "input": 5,
-     "output": 22
+     "cache_read": 0.17927,
+     "input": 0.74698,
+     "output": 3.28669
     },
     "limit": {
      "context": 200000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ]
     }
    }
   }
@@ -443,12 +694,20 @@
   "models": {
    "glm-4.6v": {
     "cost": {
-     "input": 0.3,
-     "output": 0.9
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
     },
     "limit": {
      "context": 128000,
      "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
     }
    },
    "glm-5.3": {
@@ -460,6 +719,11 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    },
    "glm-5.3-flash": {
@@ -471,6 +735,14 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video",
+      "pdf"
+     ]
     }
    },
    "glm-5.3-highspeed": {
@@ -482,6 +754,11 @@
     "limit": {
      "context": 1000000,
      "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ]
     }
    }
   }
