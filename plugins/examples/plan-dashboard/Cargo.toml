@@ -1,0 +1,34 @@
+[package]
+name = "plan-dashboard"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the example letibot pane plugin: a project plan's tiers, stages, agents and hosts"
+
+[lib]
+# `cdylib` is the plugin the host loads; `rlib` is what the native tests link, because the view
+# is a pure function and an example whose logic could only be tested through a wasm host would
+# not be an example anyone could trust.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The Rust SDK over the rano ABI — the memory, the allocator and the result block are its job,
+# not this file's. A path, not a version: the slice-1 SDK lives in the rano checkout, and this
+# example is built beside it until it is published.
+rano-plugin = { path = "/Users/dead/Projects/rano/rano/sdks/rust" }
+# Slice 1's SDK has no `json` feature yet (docs/plugins-slice1.md C1's `json_hook` belongs to the
+# package that owns the ABI), so this plugin does its own serde_json, as C5's package brief says.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# A guest module is read out of a directory, loaded and cached: small is what matters here.
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"
+
+# **Not a member of letibot's workspace, deliberately.** This crate is a guest for another host's
+# ABI, copied into a project's `.letibot/plugins/`; the workspace must not build, test or gate it.
+# The root manifest lists `plugins` under `exclude` for the same reason.
+[workspace]

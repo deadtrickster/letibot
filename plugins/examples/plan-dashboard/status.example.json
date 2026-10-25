@@ -1,0 +1,203 @@
+{
+  "updated": "2026-10-25T21:55:00Z",
+  "release": {
+    "name": "v0.2.0",
+    "goal": "every row of tiers 0, 1 and 2 done"
+  },
+  "tiers": [
+    {
+      "id": "tier0",
+      "title": "Tier 0 · the contracts",
+      "rows": [
+        {
+          "id": "tier0/panes",
+          "area": "docs",
+          "item": "C3 in serenedash's language",
+          "status": "done",
+          "note": "the panel, line and finding shapes are fixed; nothing in the slice may add a block kind",
+          "branch": "main",
+          "agent": "dead"
+        },
+        {
+          "id": "tier0/stack",
+          "area": "crates",
+          "item": "C2 layer stack over fake modules",
+          "status": "done",
+          "note": "no wasmtime in the public API, so the stack is testable without a runtime",
+          "branch": "plugins-stack",
+          "agent": "leticode"
+        },
+        {
+          "id": "tier0/sdk",
+          "area": "rano",
+          "item": "C1 the text hook, load_hooks and last_fuel",
+          "status": "done",
+          "note": "",
+          "branch": "plugin-call",
+          "agent": "leticode"
+        }
+      ]
+    },
+    {
+      "id": "tier1",
+      "title": "Tier 1 · the pane",
+      "rows": [
+        {
+          "id": "tier1/wire",
+          "area": "protocol",
+          "item": "protocol 49: PluginPane events and PaneAction",
+          "status": "in progress",
+          "note": "the head draws fixture views; the daemon does not emit one yet",
+          "branch": "plugins-pane",
+          "agent": "leticode wt-plugins-pane"
+        },
+        {
+          "id": "tier1/tui",
+          "area": "tui",
+          "item": "the pane under the host's keys",
+          "status": "in progress",
+          "note": "t, g, a, h and y toggle a view; q, j, k, f and l belong to the host",
+          "branch": "plugins-pane",
+          "agent": "leticode wt-plugins-pane"
+        },
+        {
+          "id": "tier1/sessionlog",
+          "area": "sessionlog",
+          "item": "pane.rs: the View as data",
+          "status": "done",
+          "note": "",
+          "branch": "plugins-pane",
+          "agent": "leticode"
+        },
+        {
+          "id": "tier1/sixty",
+          "area": "tests",
+          "item": "fixture JSON for every block kind",
+          "status": "not started",
+          "note": "needs the renderer to land first, or the fixture is untested data",
+          "branch": "",
+          "agent": ""
+        }
+      ]
+    },
+    {
+      "id": "tier2",
+      "title": "Tier 2 · the run",
+      "rows": [
+        {
+          "id": "tier2/look",
+          "area": "harnessd",
+          "item": "looks run through the gate and feed back as the next input",
+          "status": "in progress",
+          "note": "one look per 30s, and the gate never runs one at all",
+          "branch": "plugins-harness",
+          "agent": "leticode wt-plugins-harness"
+        },
+        {
+          "id": "tier2/vm",
+          "area": "firecode",
+          "item": "a look inside the VM's copy of the tree",
+          "status": "blocked",
+          "note": "the VM copies the workspace rather than the project: 72.8 GiB against an 8 GiB ceiling",
+          "branch": "",
+          "agent": ""
+        },
+        {
+          "id": "tier2/hot",
+          "area": "harnessd",
+          "item": "hot reload behind the shadow gate",
+          "status": "done",
+          "note": "",
+          "branch": "plugins-harness",
+          "agent": "leticode"
+        }
+      ]
+    },
+    {
+      "id": "tier3",
+      "title": "Tier 3 · the release",
+      "rows": [
+        {
+          "id": "tier3/install",
+          "area": "install",
+          "item": "the built-in layer ships beside the daemon",
+          "status": "not started",
+          "note": "",
+          "branch": "",
+          "agent": ""
+        },
+        {
+          "id": "tier3/walkthrough",
+          "area": "docs",
+          "item": "a plugin author's walkthrough, end to end",
+          "status": "not started",
+          "note": "",
+          "branch": "",
+          "agent": ""
+        }
+      ]
+    }
+  ],
+  "stages": [
+    {
+      "id": "smoke",
+      "title": "smoke checkpoint",
+      "status": "done",
+      "note": "the example plugin loads and draws the fixture"
+    },
+    {
+      "id": "soak",
+      "title": "8 hour soak",
+      "status": "waiting",
+      "note": "starts when tier 1 is done"
+    },
+    {
+      "id": "tag",
+      "title": "tag and publish",
+      "status": "not started",
+      "note": ""
+    }
+  ],
+  "agents": [
+    {
+      "id": "s-7c1",
+      "kind": "leticode",
+      "task": "draw the pane under the host's keys",
+      "branch": "plugins-pane",
+      "status": "running"
+    },
+    {
+      "id": "s-9ab",
+      "kind": "claude",
+      "task": "the layer stack and the shadow gate",
+      "branch": "plugins-stack",
+      "status": "running"
+    }
+  ],
+  "hosts": [
+    {
+      "id": "lab2x1",
+      "state": "busy",
+      "jobs": 3,
+      "note": "the landing worktree and two builds"
+    },
+    {
+      "id": "lab2x2",
+      "state": "busy",
+      "jobs": 1,
+      "note": ""
+    },
+    {
+      "id": "m4mac",
+      "state": "down",
+      "jobs": 0,
+      "note": "offline since the 23rd, its cgroup tree left behind"
+    }
+  ],
+  "yours": [
+    {
+      "id": "tag",
+      "what": "tag v0.2.0 and publish the release notes"
+    }
+  ]
+}

@@ -18,3 +18,7 @@ scratch/
 # Still ignored, because an absolute path in a committed file is what made the
 # daemon unbuildable on a runner.
 /.cargo/config.toml
+
+# The example plugin crates are standalone workspaces: their build output is theirs, not this
+# tree's, and a `.wasm` somebody built is a copy at `plugin.wasm` beside it.
+/plugins/examples/*/target/
