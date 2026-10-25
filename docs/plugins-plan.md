@@ -185,6 +185,54 @@ the merge — the capability list is part of the reviewed diff. Session plugins:
 session plugin is loaded with a capability, the operator gets one question (an ask card naming the
 plugin, the capability, and the plugin's one-line purpose); allow-all answers it yes.
 
+### 3.1 Two ABIs: rano's, and WASI
+
+The operator: *"we can look at wasi actually"* — and the crates are fetched (`wasmtime-wasi`,
+`wasmtime-wasi-http`, `wasmtime-wasi-io` 49.0.3, matching the `wasmtime` rano pins, are in the
+offline cache since 2026-10-25).
+
+**Beside rano's ABI, not instead of it.** rano's ABI v1 (bytes in, a result block out, no imports
+unless granted) stays what editor hooks and slice 1 speak. WASI is added because the toolchains
+already target it: `GOOS=wasip1` (so shfmt), C, Rust, Python (componentize-py) and JavaScript (jco)
+build WASI modules and components without a custom ABI, so off-the-shelf tools run as plugins.
+
+**A second `Loader`.** `letibot-plugins` talks to modules through `Loader`/`Module` (C2), so the
+WASI engine is a second implementation and rano does not change. A manifest says which:
+`abi = "rano-1"` (the default) or `abi = "wasi-p2"` (a component; a preview-1 module is accepted
+through wasmtime's adapter).
+
+**Two worlds, by what may block:**
+
+- **`hook`** — panes, conditions, notices, digests, links. A component exporting
+  `handle: func(hook: string, input: string) -> result<option<string>, string>` and importing
+  **nothing**: not WASI's clocks, random, filesystem or network. Hooks stay pure, so the shadow
+  gate's replay (§2.4) stays exact. JSON at the boundary first, so the contracts of
+  `docs/plugins-slice1.md` hold unchanged; typed WIT records can replace the strings later without
+  changing what a hook means.
+- **`script`** — script tools (§4.11) and the gate's own tools. `wasi:cli` (`run`, args, stdin,
+  stdout and stderr captured), plus one letibot import, `letibot:host/exec`: a synchronous, gated
+  exec, each call adjudicated like `bash`.
+
+**Capabilities are WASI's own shape:**
+
+| capability | in WASI |
+|---|---|
+| `read` | the workspace pre-opened read-only |
+| `write` (new, scripts only) | the workspace pre-opened read-write |
+| `http:<host>` | `wasi:http` outgoing, refused for any other authority |
+| `exec:<prog>` | `letibot:host/exec`, refused for any other program |
+| none | no pre-opens, no sockets, no environment beyond what the host sets |
+
+**Deterministic where the gate needs it.** In the shadow gate a script sees a fixed clock, seeded
+random, a snapshot of the workspace and no network, so its replay compares like a hook's.
+
+**The first WASI tools are the gate's**: shfmt built with `GOOS=wasip1`, then the shellcheck port,
+then `jaq` (jq in Rust) for scripts that reshape JSON.
+
+**To measure before committing to it**: harnessd's build time and binary size with
+`wasmtime-wasi` in, and the cost of instantiating a component per call against rano's per-call
+store.
+
 ## 4. Hooks
 
 Each hook kind is a wasm export `<kind>_<name>` (rano's convention: the export enumerates what a
@@ -577,6 +625,8 @@ why its work runs between the session's turns when the two share a server.
    as the gate's shell steps.
 5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
 6. **`pane`** (§4.9) and **the example plan dashboard** (§4.10).
+   **WASI** (§3.1) beside it: the second `Loader` (`abi = "wasi-p2"`), the `hook` and `script`
+   worlds, `letibot:host/exec`, the capability mapping, and shfmt as the first WASI gate tool.
 7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
    or bot), with the operator watching where it gets stuck. What it trips on is the next work.
 8. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
