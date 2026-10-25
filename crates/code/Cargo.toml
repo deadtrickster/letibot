@@ -28,4 +28,4 @@ repository.workspace = true
 # twenty-two more, and one engine. Same deliberate absolute path as the other two
 # consumers, for the same reason: rano is an operator-local project, not a
 # published crate.
-rano = { git = "https://github.com/deadtrickster/rano", rev = "c862c84eaaeb3f6a8d91583f9f69751b5c21d3e1" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "0e4080a03448dab4963eba8be18f45f78d891a67" }
