@@ -4642,6 +4642,10 @@ impl Harness {
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate)
+            // **A one-shot's session tells its tools so**, which is what makes `bash` refuse
+            // `background: true`: there is no later head and no daemon left watching when that
+            // job's result arrives. See `InvokeCtx::one_shot`.
+            .with_one_shot(cfg.one_shot)
             .with_operator_waiting(std::sync::Arc::new(move || waiting_hub.has_queued_prompt()))
             .with_completion_delivered(std::sync::Arc::new(move |job: &str| {
                 delivering.as_ref().is_some_and(|w| w.delivering(job))
@@ -5127,7 +5131,16 @@ impl Harness {
                         s.put_session(&SessionRecord {
                             id: cfg.session_id.clone(),
                             title: Some(cfg.title.clone()).filter(|t| !t.is_empty()),
-                            model_id: cfg.model.clone(),
+                            // **Who answers, not what the vocabulary binds.** `cfg.model` is the
+                            // local alias whose tokenizer renders the prompt; on a box whose
+                            // `providers.toml` names `[default] provider = "deepseek"` the turns
+                            // go to deepseek and the row said qwen. This row is what
+                            // `letibot --sessions` and the ctrl-s picker draw, so the wrong one
+                            // made a deepseek session look like a local one — the operator's
+                            // *"with --new it started with qwen, not default model"*.
+                            // `Sessions::wiring` is the same fact for the live registry, and the
+                            // two are written from one expression so they cannot disagree again.
+                            model_id: cfg.prompt_model_name(),
                             dialect_sha,
                             workspace_root: cfg.workspace.display().to_string(),
                             owner: cfg.owner.clone(),

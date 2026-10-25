@@ -461,6 +461,15 @@ pub struct InvokeCtx<'a> {
     /// background start carries is said only then (R93.B6) — it was on every start, to seats
     /// with no plan and to seats with no `todo_write` at all.
     pub plan_open: bool,
+    /// **Whether the session this call belongs to ends when this run ends** — a one-shot
+    /// (`letibot "a question"`), which has no daemon to come back to.
+    ///
+    /// It is a fact about the RUN and not about the call, carried here because it is the tool
+    /// that has to act on it: a command left in the background is watched by a daemon and read
+    /// by a head, and a one-shot run has neither — so the job would outlive the only thing that
+    /// could ever have delivered its result. `bash` refuses `background: true` here rather than
+    /// starting work nobody can read. See [`ToolRuntime::with_one_shot`].
+    pub one_shot: bool,
 }
 
 impl InvokeCtx<'_> {
@@ -1769,6 +1778,9 @@ pub struct ToolRuntime {
     /// The repair codes the model has been told about in this runtime (R93.F56) — see
     /// [`ToolResult::repairs_told`].
     pub repairs_told: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
+    /// **Whether this runtime belongs to a one-shot run**, which ends with the process that
+    /// started it. See [`InvokeCtx::one_shot`] for the rule a tool applies and why.
+    pub one_shot: bool,
 }
 
 impl ToolRuntime {
@@ -1787,7 +1799,19 @@ impl ToolRuntime {
             completion_wanted: None,
             operator_runs: None,
             repairs_told: Default::default(),
+            one_shot: false,
         }
+    }
+
+    /// **Wire the fact that this runtime is a one-shot run's** — a `letibot "…"`, whose
+    /// daemon exits when the prompt's answer does.
+    ///
+    /// Nothing else in the tree has this shape: every other session outlives its head, so a
+    /// background job has a watcher and a place for its result to land. A one-shot has neither,
+    /// and `bash` says so by name instead of starting a process nobody will ever read.
+    pub fn with_one_shot(mut self, yes: bool) -> Self {
+        self.one_shot = yes;
+        self
     }
 
     /// Wire the question a long-running tool asks before it spends another minute.
@@ -2122,6 +2146,7 @@ impl ToolRuntime {
                     .get("todo_write")
                     .and_then(|t| t.open_plan())
                     .unwrap_or(false),
+                one_shot: self.one_shot,
             };
             tool.invoke(&mut ctx, &args)
         };

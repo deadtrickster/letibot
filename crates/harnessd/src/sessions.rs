@@ -1782,10 +1782,27 @@ impl<'a> Sessions<'a> {
         }
     }
 
-    /// What a session is attached to, from the daemon's own command line.
+    /// **What a session is attached to, from the daemon's own command line — and the `model`
+    /// here is WHO ANSWERS, not what the vocabulary binds.**
+    ///
+    /// `cfg.model` is the local BINDING: the alias whose tokenizer renders the prompt, which the
+    /// launcher passes on every start. `cfg.prompt_model_name()` is the model that actually
+    /// answers — `deepseek/deepseek-flash` on a box whose `providers.toml` says `[default]
+    /// provider = "deepseek"`, `qwen-3.8-flash-next` on one answering locally.
+    ///
+    /// This wrote `cfg.model`, and that is wrong in exactly one direction: a daemon on the
+    /// operator's `[default]` provider recorded and DREW `qwen-3.8-flash-next` for every session
+    /// it opened — `SessionWiring` is what a head's `Hello` carries, what a session's row keeps
+    /// (`Harness::open`'s `SessionRecord.model_id`), and what the ctrl-s picker draws beside each
+    /// stored session, so the header's first frame, the picker line and `letibot --sessions` all
+    /// said qwen about a session whose turns were going to deepseek. The operator met it as
+    /// *"with --new it started with qwen, not default model"*, one minute after starting it on
+    /// the default. The `model` settings row got this right (`Config::disclosures`, which reads
+    /// the provider), which is why the two disagreeing was the whole defect: one session described
+    /// two ways.
     pub fn wiring(cfg: &Config) -> SessionWiring {
         SessionWiring {
-            model: cfg.model.clone(),
+            model: cfg.prompt_model_name(),
             dialect: cfg.dialect.name().to_string(),
             endpoint: cfg.endpoint.authority(),
             workspace: cfg.workspace.display().to_string(),

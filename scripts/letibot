@@ -9,11 +9,14 @@
 # idle means quiet rather than unwatched. A second head can attach at the same time
 # and see the same stream from a snapshot.
 #
-#   letibot                     attach, starting the daemon if needed
-#   letibot --continue          reopen the newest session in THIS workspace
+#   letibot                     attach — or start this folder's daemon on a NEW session
+#                               (never a resume: that is --continue's, and only its)
+#   letibot --continue          reopen the newest session in THIS workspace — the only verb
+#                               that reopens anything without being asked which
 #   letibot --session ID        reopen a particular one
 #   letibot --sessions          what is on disk: id, title, workspace, age, rows
-#   letibot --new [TITLE]       start a fresh session
+#   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
+#                               one the plain start opened IS this fresh session)
 #   letibot --rename ID TITLE   name a stored session
 #   letibot --delete ID         remove a stored session that has no rows
 #   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
@@ -342,11 +345,15 @@ usage() {
 letibot — one command to start chatting: brings up harnessd if it is not
 already up, then attaches the TUI head to it.
 
-  letibot                     attach, starting the daemon if needed
-  letibot --continue          reopen the newest session in THIS workspace
+  letibot                     attach to this folder's daemon — starting one on a NEW session
+                              if none is up. It never resumes by itself: the sessions on disk
+                              are `--continue`'s, and ctrl-s in the head shows them all.
+  letibot --continue          reopen the newest session in THIS workspace — the only verb that
+                              reopens anything without being asked which
   letibot --session ID        reopen a particular one
   letibot --sessions          what is on disk: id, title, workspace, age, rows
-  letibot --new [TITLE]       start a fresh session
+  letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
+                              one the plain start opens IS this fresh session)
   letibot --rename ID TITLE   name a stored session
   letibot --delete ID         remove a stored session that has no rows
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
@@ -1730,9 +1737,22 @@ esac
 
 # Which session this invocation is about, decided before anything is started.
 # SESSION is the id to reopen; NEW_TITLE (when set) means make a fresh one instead.
+#
+# **A PLAIN RUN DECLARES NOTHING HERE, AND THAT IS LOAD-BEARING.** With no `--session` on the
+# daemon's command line, `harnessd` mints a new id, so the daemon a plain `letibot` starts opens a
+# FRESH session — it does not resume the newest one, and nothing here looks for it. The operator,
+# 2026-10-26: *"if i just start leticode in stroppy-io, without --continue it still attaches to
+# the latest session, like with --continue"*. In this tree only `--continue` (and `--session ID`)
+# ever names a session to reopen; a start is always a fresh one, which is what `--help` says and
+# what `tests/launcher.sh` now pins. A start that reopened the newest would also make the two
+# verbs indistinguishable, and the second thing typed would land in a conversation nobody chose.
 SESSION=""
 NEW_TITLE=""
 WANT_NEW=0
+# Whether THIS invocation started the daemon (as opposed to attaching to one already up). It
+# decides one thing, at the end: a start has already opened the fresh session a `--new` asked
+# for, so the head must not ask for a second one. See the exec at the bottom.
+STARTED=0
 case "${1:-}" in
   --continue|-c)
     shift
@@ -1959,9 +1979,12 @@ if ! live; then
   fi
   # Nothing answered, so the file is a leftover.
   rm -f "$SOCKET"
-  # The daemon opens its first session eagerly, so passing `--session ID` here is
-  # what makes the resume -- and its hash-chain check -- happen at startup, where a
-  # failure is a line in this terminal rather than a surprise inside a prompt.
+  # **The daemon opens its FIRST session eagerly, and that session is the one this start is
+  # about.** `--session ID` here is what makes a resume — and its hash-chain check — happen at
+  # startup, where a failure is a line in this terminal rather than a surprise inside a prompt;
+  # with no `--session` (a plain run, and `--new`) the daemon mints a fresh id, which is the
+  # fresh session those two verbs mean. `--title` names it when `--new` gave one.
+  STARTED=1
   detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
       ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
       --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
@@ -1988,8 +2011,13 @@ if ! live; then
   # exactly what was measured on 2026-10-11. `$DPID` stays as the fallback for a box whose
   # `/proc/locks` this cannot read.
   record_write "$(folder_lock_pid || echo "$DPID")"
-  # The session was named on the daemon's own command line, so the head attaches to
-  # it by being the head of that daemon. Nothing more to ask for.
+  # **This head attaches to THAT session by being the head of this daemon**, and it is handed
+  # no `--resume` and no `--new-session`: a start has already opened the session this
+  # invocation is about, whether that is the one `--continue` named or the fresh one a plain
+  # run or `--new` asked for. Asking a second time here is what left a folder's daemon holding
+  # two — the empty first session, which is what the NEXT plain attach lands on, and the one
+  # the operator was in. (That is the shape of the 2026-10-26 report: a `--new` head exited and
+  # the folder's daemon was on a session nobody was looking at.)
   exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
 fi
 
@@ -2047,7 +2075,10 @@ if [ -n "$BASH_ON" ] && ! daemon_has_bash; then
   sleep 5
 fi
 
-if [ "$WANT_NEW" = 1 ]; then
+if [ "$WANT_NEW" = 1 ] && [ "$STARTED" = 0 ]; then
+  # **Only when the daemon was already up.** With none, the start above opened the fresh session
+  # this verb asked for and the head attaches to that one; asking here as well would open a
+  # SECOND session in the same daemon and leave the first empty.
   exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}" \
        --new-session "$NEW_TITLE"
 fi

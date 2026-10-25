@@ -772,6 +772,15 @@ pub struct Config {
     /// in that folder starts a daemon and resumes it. Default one hour, the operator's choice;
     /// `--idle-exit SECONDS` sets it, and `0` keeps the daemon up until it is stopped.
     pub idle_exit_after: Option<std::time::Duration>,
+    /// **Whether this daemon is a one-shot's** — started for `letibot "a question"`, which
+    /// prints the answer and exits, taking the daemon with it.
+    ///
+    /// It changes one thing: `bash` refuses `background: true`, because there is no later head
+    /// and no daemon that would still be watching when the job's result arrives (see
+    /// `InvokeCtx::one_shot`). Everything else about the run is the same, which is why this is
+    /// a flag on the config rather than a second entry point. `cli.rs` sets it from the steps it
+    /// was handed, so a session's tools read the RUN and not a flag somebody typed twice.
+    pub one_shot: bool,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
@@ -2114,6 +2123,7 @@ impl Config {
             held_results_cap: crate::delivery::HELD_RESULTS_CAP,
             restore_within: crate::restart::RESTORE_WITHIN,
             idle_exit_after: Some(std::time::Duration::from_secs(3600)),
+            one_shot: false,
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,

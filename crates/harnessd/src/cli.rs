@@ -1005,6 +1005,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
+    // **A RUN OF STEPS IS A ONE-SHOT, and the session's tools are told so.** `--prompt` and
+    // `--slash` are what `letibot "a question"` passes: the daemon runs the steps, prints the
+    // answers and exits, and it exits with them. Configured HERE, off the steps themselves,
+    // rather than left to whoever built the command line — a second flag meaning *one-shot*
+    // could disagree with them, and this is the fact the tools act on (`InvokeCtx::one_shot`:
+    // `bash` refuses `background: true`, because nothing will ever read that job's result).
+    cfg.one_shot = !steps.is_empty();
+
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
             return Err(

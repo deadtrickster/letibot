@@ -442,6 +442,43 @@ impl Tool for Bash {
             );
         }
 
+        // **A ONE-SHOT RUN HAS NOBODY TO HAND A BACKGROUND JOB TO** — and it is a fact about
+        // the RUN, so it is decided here with the other facts that need only the request: ahead
+        // of the backend, the scope, the gate and the predicate.
+        //
+        // `letibot "a question"` starts a daemon of its own on a private socket, prints the
+        // answer and exits, and the daemon exits with it. Nobody reads a job's output after
+        // that: the row lives in the store, the handle is in a transcript no head will open,
+        // and the process — in the `session` scope a background call defaults to — would
+        // outlive the only thing that could ever have delivered its result. What the operator
+        // met was exactly that: several one-shots' daemons still up, each holding jobs nobody
+        // would read.
+        //
+        // So it is REFUSED rather than quietly run in the foreground: a model told
+        // `background: true` and given a job id would go on to `job_wait` for it, and the
+        // refusal says what to do instead. A `monitor` needs no such rule — it is in-memory and
+        // dies with the daemon, so nothing of it outlives the run. The field is a fact about the
+        // run rather than about this call, which is why it lives on the runtime
+        // (`ToolRuntime::with_one_shot`).
+        if ctx.one_shot
+            && args
+                .get("background")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            return Invocation::not_run(
+                "this run is one-shot, so `background: true` is refused",
+                "A one-shot run (`letibot \"…\"`) prints its answer and exits, and its daemon \
+                 exits with it — so a job left in the background would be work nobody ever \
+                 reads the result of, still running after the answer was printed. Nothing was \
+                 started.\n\n\
+                 Run it in the FOREGROUND instead: raise `timeout_ms` (the deadline is the \
+                 kill point, and the default is two minutes), which is what a one-shot can \
+                 wait for because there is nothing else for it to do. A background run is for \
+                 a session that stays up — a head attached to a daemon, or a subagent of one.",
+            );
+        }
+
         // **A program that wants to own the terminal is refused before it is
         // started** — and this is the FIRST thing decided, ahead of the backend, the
         // scope and the predicate, because it is a fact about the command text alone.

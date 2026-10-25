@@ -15,7 +15,18 @@ set -u
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 LAUNCHER="$ROOT/scripts/letibot"
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+# **And the daemon stubs this script started go with it.** They are `$T/bin/harnessd` — a python
+# stub that binds a socket under `$T` and sleeps for ever — so the temp dir IS their identity:
+# nothing else on the box has a command line naming it. A case that fails before its own `kill`
+# is exactly how a test suite leaves daemons behind, which is the defect this file is otherwise
+# about (the operator's 2026-10-26 third report), so the cleanup does not depend on a case
+# reaching its last line.
+cleanup() {
+  ps -eo pid=,args= 2>/dev/null | awk -v d="$T/bin/harnessd" 'index($0, d) { print $1 }' \
+    | while read -r _stub; do kill "$_stub" 2>/dev/null || true; done
+  rm -rf "$T"
+}
+trap cleanup EXIT
 
 mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/run" "$T/ws"
 cat > "$T/bin/harnessd" <<'STUB'
@@ -40,7 +51,8 @@ run() {
   local toml="$1"; shift
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
   (cd "${RUN_WS:-$T/ws}" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
-    LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 </dev/null)
+    LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
+    "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 </dev/null)
 }
 expect() { # expect NAME OUTPUT PATTERN -- the output must match
   if printf '%s' "$2" | grep -qE -- "$3"; then echo "ok   $1"
@@ -299,5 +311,130 @@ expect "  ...as --stop N --force always did" "$out" "no daemon for $OTHER_P"
 out="$(run "$DEFAULT_ONLY" --stop 1 2)"
 expect "  ...and two targets are refused" "$out" "takes one daemon"
 rm -f "$T/run/letibot/"*.json
+
+# ---------------------------------------------------------------------------
+# **WHAT A START OPENS, AND WHAT A HEAD'S EXIT MAY NOT DO** — the operator's 2026-10-26 reports,
+# at the launcher's own level.
+#
+# 1. *"if i just start leticode in stroppy-io, without --continue it still attaches to the latest
+#    session, like with --continue"* — so a start must pass NO `--session` (the daemon mints a
+#    fresh id) and only `--continue`/`--session` may name one. Pinned on the daemon's ARGV,
+#    because that is the whole of what decides it: the launcher does not, and must not, look for
+#    the newest.
+# 2. *"and when i exited it took the other stroppy-io harnessd with it"* — the head that exits is
+#    a stub here; the daemon it was attached to must still be alive and listening afterwards, and
+#    `--new` against a live folder must not start a second one.
+# 3. And `--new` with NO daemon up must not ask the head for a session of its own: the start
+#    already opened the fresh one, and a second leaves the folder's daemon holding an empty
+#    first session that every later plain attach lands on.
+if command -v python3 >/dev/null 2>&1; then
+  # A daemon stub that LISTENS (so the launcher's start poll succeeds), writes every invocation's
+  # argv down, and stays until this test kills it.
+  cat > "$T/bin/harnessd" <<'STUB'
+#!/usr/bin/env python3
+import os, socket, sys, time
+with open(os.environ["STUB_ARGV"], "a") as log:
+    log.write("harnessd " + " ".join(sys.argv[1:]) + "\n")
+if "--latest-session" in sys.argv:
+    print("s-latest")
+    sys.exit(0)
+p = sys.argv[sys.argv.index("--socket") + 1]
+try:
+    os.unlink(p)
+except FileNotFoundError:
+    pass
+s = socket.socket(socket.AF_UNIX)
+s.bind(p)
+s.listen(4)
+while True:
+    time.sleep(0.2)
+STUB
+  # The head the operator quits: it records what it was handed and exits at once. `--probe` is the
+  # launcher's own question and answers 0 ("a daemon here, speaking this build").
+  cat > "$T/bin/letibot-tui" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in *" --probe "*) exit 0 ;; esac
+printf 'tui %s\n' "$*" >> "$STUB_ARGV"
+echo "letibot-tui: THE HEAD RAN"
+STUB
+  chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
+
+  daemon_argv() { grep '^harnessd ' "$T/argv.log" 2>/dev/null || true; }
+  head_argv() { grep '^tui ' "$T/argv.log" 2>/dev/null || true; }
+  # **`printf '%s'`, with no newline**: the launcher hashes the workspace path with nothing
+  # appended (`launcher.rs`'s `key`, and the `printf '%s' | sha256sum` the shell has always
+  # used). A `$(pwd -P)` piped straight in carries a trailing newline and hashes a DIFFERENT
+  # path — this case's first draft looked for a record under a key nobody writes.
+  key_of() { printf '%s' "$(cd "$1" && pwd -P)" | key12; }
+  pid_of() { # pid_of DIR -- the pid in that folder's record
+    sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+      "$T/run/letibot/$(key_of "$1").json" 2>/dev/null | head -1
+  }
+  fresh() { : > "$T/argv.log"; rm -f "$T/run/letibot/"*.json; }
+  stop_case() { # stop_case DIR -- this block's own daemon, and nothing else
+    local p
+    p="$(pid_of "$1")"
+    [ -n "$p" ] && kill "$p" 2>/dev/null || true
+  }
+
+  # **1. A plain start opens a FRESH session.** No `--session` on the daemon's command line is
+  # what makes `harnessd` mint an id; a launcher that "helpfully" passed the newest would be the
+  # operator's report, and nothing else in the start would look wrong.
+  mkdir -p "$T/plain"
+  fresh
+  out="$(RUN_WS="$T/plain" run "$DEFAULT_ONLY")"
+  refuse "a plain start does not pass the newest session to the daemon it starts" \
+    "$(daemon_argv)" "--session"
+  expect "  ...and the head runs" "$out" "THE HEAD RAN"
+  refuse "  ...and the head is given no --resume of its own" "$(head_argv)" "--resume"
+
+  # **2. `--continue` is the verb that names one** — and it names it on the daemon's command line,
+  # where the resume (and its hash-chain check) happens at startup.
+  mkdir -p "$T/cont"
+  fresh
+  out="$(RUN_WS="$T/cont" run "$DEFAULT_ONLY" --continue)"
+  expect "--continue starts the daemon ON the session it picked" "$(daemon_argv)" \
+    "--session s-latest"
+  expect "  ...and the head runs" "$out" "THE HEAD RAN"
+
+  # **3. `--new` with no daemon opens ONE session, not two.** The start's first session IS the
+  # fresh one, so the head must not also ask for one.
+  mkdir -p "$T/new"
+  fresh
+  out="$(RUN_WS="$T/new" run "$DEFAULT_ONLY" --new)"
+  refuse "a --new start does not name a session to resume" "$(daemon_argv)" "--session"
+  refuse "  ...and the head is not asked for a second fresh session" "$(head_argv)" \
+    "--new-session"
+  expect "  ...and the head runs" "$out" "THE HEAD RAN"
+
+  # **4. `--new` against a LIVE folder starts nothing and leaves the daemon alone** — and the head
+  # exits at once, which is the operator's "when i exited it took the other harnessd with it".
+  # The argv log is emptied; the RECORD is not, because it is how this case finds the pid that
+  # must still be there (and the launcher's own `--stop` path would have kept it too).
+  : > "$T/argv.log"
+  out="$(RUN_WS="$T/new" run "$DEFAULT_ONLY" --new)"
+  expect "--new against a live daemon attaches" "$out" "attached to harnessd"
+  expect "  ...and asks the head for the session it was told to make" "$(head_argv)" \
+    "--new-session"
+  if [ "$(daemon_argv | wc -l | tr -d ' ')" = "0" ]; then
+    echo "ok   ...and starts no second daemon for that folder"
+  else
+    echo "FAIL ...and starts no second daemon for that folder; it started:"
+    daemon_argv | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+  live_pid="$(pid_of "$T/new")"
+  sleep 0.3
+  if kill -0 "$live_pid" 2>/dev/null && listens "$T/run/letibot/$(key_of "$T/new").sock"; then
+    echo "ok   ...and the daemon survives the head's exit"
+  else
+    echo "FAIL ...and the daemon survives the head's exit: pid $live_pid is gone or its socket went"
+    fails=$((fails + 1))
+  fi
+
+  for d in "$T/plain" "$T/cont" "$T/new"; do stop_case "$d"; done
+else
+  echo "skip the start/--new cases: no python3 to listen on a unix socket"
+fi
 
 [ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }
