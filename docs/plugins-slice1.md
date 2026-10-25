@@ -1,8 +1,8 @@
 # Plugins, slice 1: contracts and work packages
 
 The first vertical slice of `docs/plugins-plan.md`: the layer stack, hot reload and the shadow gate
-in a new crate, pane plugins run by harnessd and drawn by the TUI, and the stroppy-conformity
-dashboard as the first plugin. This file fixes the **contracts** so the packages below can be built
+in a new crate, pane plugins run by harnessd and drawn by the TUI, and an example plan dashboard
+as the first plugin. This file fixes the **contracts** so the packages below can be built
 in parallel, each against these interfaces and not against each other's code. A package that needs
 a contract changed says so in its report; it does not change it on its own.
 
@@ -53,10 +53,10 @@ pub enum Scope { Session, Project, User, BuiltIn }
 pub enum Capability { Exec(String), Read, Http(String) }
 
 /// plugin.toml
-/// name = "stroppy-dashboard"
-/// purpose = "the stroppy-conformity plan, release and fleet at a glance"
+/// name = "plan-dashboard"
+/// purpose = "a project plan's tiers, stages, agents and hosts at a glance"
 /// hooks = ["pane_dashboard"]
-/// capabilities = ["read", "exec:ssh"]
+/// capabilities = ["read"]
 /// contract = 1
 pub struct Manifest { pub name: String, pub purpose: String, pub hooks: Vec<String>,
                       pub capabilities: Vec<Capability>, pub contract: u32 }
@@ -106,13 +106,22 @@ pub struct GateReport { pub passed: bool, pub build_log: String, pub load: Resul
 
 ## C3. The pane contract (hook `pane_<name>`, JSON, `"v": 1`)
 
+The dashboard language is serenedash's (`github.com/deadtrickster/serenedash`), which the operator
+pointed at: **an overview of panels, every panel a summary with a full view behind its own key**;
+every row through **one grid** (label, value, a bar or sparkline, a tail) so the numbers line up
+down the frame; **every bar says its denominator**; **findings** collect everything that tripped in
+one list, and Enter reads one whole — what was measured, the numbers behind it, the fix, and how to
+check it yourself; a **legend** documents every label, and the same text answers on hover; a panel
+that cannot get its data **says why and how to fix it** instead of drawing off an empty result; Esc
+leaves what you navigated into.
+
 Input:
 
 ```jsonc
 {"v":1,
- "state": null | {…},                          // what this pane returned last time
- "look":  null | {"exit":0,"stdout":"…","stderr":"…"}  // result of the look it asked for
- "event": null | {"item":"<row id>","action":"<action key or name>"},
+ "state": null | {…},                                  // what this pane returned last time
+ "look":  null | {"exit":0,"stdout":"…","stderr":"…"}, // the result of the look it asked for
+ "event": null | {"item":"<row id>","action":"<event>"},
  "size":  {"w":120,"h":40}}
 ```
 
@@ -120,43 +129,80 @@ Output (`View`):
 
 ```jsonc
 {"title":"…",
- "badge": null | {"text":"…","role":"<role>"},
- "body": [ <Block>… ],
- "look": null | {"exec":["prog","arg",…]} | {"read":"relative/or/absolute/path"},
- "every_s": 0 | <seconds, ≥ 5>,               // re-run the look this often
+ "badge": null | {"text":"…","role":"<role>"},        // shown in the status row
+ "panels":[ <Panel>… ],                                 // the overview, in order
+ "findings":[ <Finding>… ],                             // the `f` view; counted in a summary line
+ "legend": {"<label>":"<what it means>", …},            // the `l` view and the hover text
+ "look": null | {"exec":["prog","arg",…]} | {"read":"path"},
+ "every_s": 0 | <seconds, ≥ 5>,
  "state": null | {…}}
+```
+
+`Panel`:
+
+```jsonc
+{"id":"tiers", "key":"t", "title":"tiers",
+ "denominator":"rows in the tier",                      // what every bar in it is a share of
+ "summary":[ <Block>… ],                                // drawn on the overview (a few lines)
+ "view":[ <Block>… ],                                   // drawn when its key is pressed; absent = summary
+ "unavailable": null | {"why":"cannot connect to lab2x1","fix":"ssh-add ~/.ssh/headless_server"}}
 ```
 
 `Block` is one of:
 
 ```jsonc
-{"markdown":"…"}                                // itemized: list items and headings are stops
+{"lines":[ <Line>… ]}                                   // the grid
 {"table":{"columns":["…"],"rows":[<Row>…]}}
-{"list":{"rows":[<Row>…]}}                      // a table with one column, label only
 {"tree":{"rows":[<Row with "children":[<Row>…]>…]}}
-{"progress":{"label":"…","done":41,"of":96,"role":"<role>"}}
+{"markdown":"…"}                                        // itemized: list items and headings are stops
 {"kv":{"rows":[["label","value"],…]}}
 ```
 
-`Row`:
+`Line` — the one grid, laid out by the host (label column, right-aligned value column, glyph
+column, tail; a label too long is truncated with `…`, never clipped):
+
+```jsonc
+{"label":"tier 1", "value":"14/22",
+ "bar": null | {"frac":0.64},                           // a share of the panel's denominator
+ "spark": null | [0.1, 0.4, …],                         // history, each a share of the same denominator
+ "tail":"3 in progress", "role":"<role>",
+ "id": null | "tier1", "detail": null | "…markdown…", "actions":[<Action>…]}
+```
+
+`Row` (tables, trees):
 
 ```jsonc
 {"id":"tier1/jstests", "cells":["Mongo jstests","not started"], "role":"<role>",
- "detail":"…markdown…", "actions":[{"key":"s","label":"start","say":"…"} |
-                                     {"key":"r","label":"refresh","look":true} |
-                                     {"key":"x","label":"expand","event":"expand"}],
- "children":[…]}
+ "detail":"…markdown…", "actions":[<Action>…], "children":[…]}
 ```
+
+`Finding`:
+
+```jsonc
+{"id":"stale-status", "what":"status file is 3 days old", "panel":"tiers",
+ "severity":"tripped" | "missing" | "passed",
+ "detail":"…prose…", "evidence":{"updated":"2026-10-22T…","age_h":74},
+ "fix":"…what to do…", "verify":"…a command or query to check it yourself…",
+ "actions":[<Action>…]}
+```
+
+`Action`: `{"key":"s","label":"start","say":"…"}` (a line to the session's model, as an operator
+line), `{"key":"r","label":"refresh","look":true}` (re-run the look now), or
+`{"key":"x","label":"expand","event":"expand"}` (call the pane again with `{"item","action"}`).
 
 `role` is one of `muted`, `working`, `attention`, `success`, `failure`, `plain`.
 
-**Keys are the host's** (templated): ↑/↓, PgUp/PgDn and the wheel move between stops (rows,
-markdown items); **Enter** opens the row's `detail` as itemized markdown, Enter on an item in it
-goes no deeper in slice 1; **Esc** goes back one level and closes the pane at the top. Action keys
-are single lowercase letters; the host refuses a view whose action key is one of `q`, `j`, `k`, `h`,
-`l`, or collides with another action in the same row. `say` sends the text to the session's model as
-an operator line; `look: true` re-runs the look now; `event` calls the pane with
-`{"item": row id, "action": event}`.
+**Keys are the host's** (templated). On the overview: each panel's `key` toggles its view, `f`
+findings, `l` legend; ↑/↓/PgUp/PgDn and the wheel move between stops (lines and rows with an `id`,
+markdown items, findings); a click on a panel opens its view. **Enter** opens the selected stop's
+`detail` (a finding: its detail, evidence as label/value rows, fix and verify). **Esc** leaves what
+you navigated into — detail, then view — and closes the pane at the overview. Action keys are single
+lowercase letters shown in the hint bar for the selected stop; the host refuses a view where an
+action key collides with `q`, `j`, `k`, `f`, `l`, a panel key, or another action of the same stop.
+A summary line under the title counts findings by severity, as serenedash's does.
+
+**The view is also data.** The same JSON is what an agent reads (a later `pane read` tool), the way
+serenedash's `--once --format json` is what its MCP server returns.
 
 ## C4. The wire (protocol 49)
 
@@ -164,7 +210,7 @@ In `crates/sessionlog/src/protocol.rs`, bump `PROTOCOL_VERSION` to 49 and add:
 
 ```rust
 // daemon -> head, a session event
-SessionEvent::PluginPane { pane: String /* "stroppy-dashboard/dashboard" */, view: serde_json::Value /* C3 View */ }
+SessionEvent::PluginPane { pane: String /* "plan-dashboard/dashboard" */, view: serde_json::Value /* C3 View */ }
 SessionEvent::PluginPaneGone { pane: String }
 // head -> daemon, a command
 ClientCommand::PaneAction { pane: String, item: String, action: String }  // action = key's event, or "look"
@@ -176,27 +222,25 @@ The view types (`View`, `Block`, `Row`, `Action`, `Role`) are serde structs in
 the head (renders them). Unknown fields are ignored; unknown block kinds render as one muted line
 naming the kind.
 
-## C5. The stroppy-conformity status file
+## C5. The example: a plan dashboard
 
-`~/Projects/stroppy-conformity-local/status.json`, kept by that project's agents (the table they
-re-type today, written as data):
+The first pane plugin is a generic example in this repository, `plugins/examples/plan-dashboard`,
+reading a project's plan status file `<project>/.letibot/status.json`:
 
 ```jsonc
 {"updated":"2026-10-25T21:55:00Z",
  "release":{"name":"v0.2.0","goal":"every row of tiers 0, 1 and 2 done"},
- "tiers":[{"id":"tier0","title":"Tier 0: the protocol contract",
-           "rows":[{"id":"tier0/pgwire","area":"pgwire","item":"frames, types, …","status":"done",
-                    "note":"","branch":"","agent":""}]}],
- "stages":[{"id":"smoke","title":"smoke checkpoint","status":"waiting","note":"after Cloudberry merges"}],
- "agents":[{"id":"cloudberry","kind":"claude|leticode","task":"…","branch":"…","status":"running"}],
- "yours":[{"id":"tag-v020","what":"tag and publish v0.2.0"}]}
+ "tiers":[{"id":"tier0","title":"Tier 0","rows":[
+   {"id":"tier0/a","area":"…","item":"…","status":"done","note":"","branch":"","agent":""}]}],
+ "stages":[{"id":"smoke","title":"smoke checkpoint","status":"waiting","note":"…"}],
+ "agents":[{"id":"…","kind":"claude|leticode","task":"…","branch":"…","status":"running"}],
+ "hosts":[{"id":"lab2x1","state":"busy","jobs":3,"note":""}],
+ "yours":[{"id":"tag","what":"tag and publish"}]}
 ```
 
-`status` ∈ `done`, `in progress`, `not started`, `waiting`, `blocked`, `yours`.
-
-Fleet state is read live: the hosts are `FLEET` in `~/Projects/stroppy-conformity-local/hosts`,
-the newest fleet run is the newest `out/fleet-*/fleet.env` in the stroppy-conformity checkout, and
-`bin/remote.sh -n <job> state` answers per job.
+`status` ∈ `done`, `in progress`, `not started`, `waiting`, `blocked`, `yours`. The plugin's only
+capability is `read`. A project with a richer source of truth (live hosts, a scheduler) writes its
+own plugin; this one shows the language.
 
 ## Work packages
 
@@ -209,5 +253,5 @@ contract it needed changed.
 | W1 | rano worktree, branch `plugin-call` | C1: `from_bytes_hooks`, `load_hooks`, public `call`, `last_fuel`; SDK `json` feature with `json_hook`; WAT tests | — |
 | W2 | letibot worktree, branch `plugins-stack` | C2 in `crates/plugins` with fake `Module`/`Loader`/`Builder` in tests; no wasmtime dependency yet | contracts only |
 | W3 | letibot worktree, branch `plugins-pane` | C4 types in `crates/sessionlog/src/pane.rs` + protocol 49; the TUI pane that renders a `View` under the C3 keys, opened from the panes list, tested with fixture JSON | contracts only |
-| W5 | `~/Projects/stroppy-conformity-local/plugins/stroppy-dashboard` | C5 `status.json` filled from the current tiers table; the guest crate answering `pane_dashboard` from `status.json` and fleet state, built for wasm32, with native unit tests of the view it returns | C1 SDK (vendored path dep to the W1 worktree) |
+| W5 | letibot worktree, branch `plugins-dash` | C5: `plugins/examples/plan-dashboard`, the guest crate answering `pane_dashboard` from a status file, a fixture `status.json`, built for wasm32, with native unit tests of the view it returns | C1 SDK by path (text hook + its own serde_json) |
 | W4 | letibot, after W1–W3 | harnessd: a rano `Loader`, the stack per session, looks run through the gate, `PluginPane` events, `PaneOpen`/`PaneAction`, hot reload behind the gate | W1, W2, W3 |

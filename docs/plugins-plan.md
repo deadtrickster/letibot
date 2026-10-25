@@ -293,6 +293,10 @@ built-ins do; a tool that needs the world declares looks like a condition does.
 
 ### 4.9 `pane` — the UI language
 
+*The exact contract, in serenedash's dashboard language (panels with views behind keys, one
+grid, denominators, findings, legend), is C3 in `docs/plugins-slice1.md`; the sketch below is the
+first draft.*
+
 The operator: *"and we have to give plugins the ui language - so panes, keys, markdown itemized
 navigation, esc, enter - all templated"*.
 
@@ -346,29 +350,16 @@ adjudication, the merge queue's landing, sudo and VMs.
 
 ### 4.10 The second goal: project dashboards
 
-The operator, of the stroppy-conformity session (a Claude Code session): *"a huge tiered plan with
-multiple stages across 6 hosts. I want to have a dashboard for it"*.
+The operator: *"a huge tiered plan with multiple stages across 6 hosts. I want to have a dashboard
+for it"* — of a project's long-running session, given as an example of the kind of thing a project
+needs to see at once: a tiered plan with stages, the agents working it, the hosts it runs on. Today
+such state is spread over plan files and whatever the agent re-types on request.
 
-That session's state today is spread over a 1,231-line `PLAN.md`, a `HANDOFF.md`, the tiers table
-the agent re-types on request (tiers 0–3, each row done / in progress / not started, plus the
-release rows), the agents and their branches, and campaigns that `bin/fleet.sh` shards across five
-hosts (lab2x1 heavy, lubuntu1–3, the XMG at .55) from this Mac, where the session runs, each with its own queue, capacity
-and detached remote jobs. Nothing shows it at once; the operator asks for the table.
-
-A **project dashboard is a project-scope `pane` layer**, committed to the project (or the
-operator's local setup for a project that keeps tooling out of its repository, as this one does),
-whose look reads the project's own sources of truth:
-
-- the plan's status rows — from a machine-readable status file the agents keep beside `PLAN.md`
-  (the table they already re-type, written once as data), not scraped from prose;
-- the agents running and their branches — from the session (subagents, child sessions, leticode
-  delegations);
-- the fleet — `fleet.sh`'s `<out>/fleet.env` and `remote.sh … state` per host, per job;
-- host health — the capacity `fleet.sh` already reads (cores, load, memory, reserve).
-
-It is the acceptance case for §4.9: a tiered table with stages, live progress per host, a badge
-for what waits on the operator (tag and publish are theirs), Enter into any row for its detail, and
-actions that hand work back to the session (`s` start, `r` re-run a shard).
+A **project dashboard is a project-scope `pane` layer** whose look reads the project's own sources
+of truth (a status file the agents keep as data rather than prose, the session's agents and
+branches, whatever scheduler the project runs). The first one is a generic example in this
+repository, `plugins/examples/plan-dashboard` (C5 in `docs/plugins-slice1.md`), reading
+`<project>/.letibot/status.json`; a project with a richer source writes its own.
 
 ## 5. What the model gets
 
@@ -492,7 +483,7 @@ why its work runs between the session's turns when the two share a server.
 4. **The butler**: the role, its creation with the session, `/butler`, the `butler` call, the
    review gate on layers it did not write, and the friction signals.
 5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
-6. **`pane`** (§4.9) and **the stroppy-conformity dashboard** as its acceptance case (§4.10).
+6. **`pane`** (§4.9) and **the example plan dashboard** (§4.10).
 7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
    or bot), with the operator watching where it gets stuck. What it trips on is the next work.
 8. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
