@@ -38,18 +38,27 @@ pub use crate::schema::Downgrade;
 use crate::schema::{Access, ToolSchema};
 
 /// Where a subagent runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// **Not `Copy`, and that is the remote host's doing**: a placement can now carry a name,
+/// and a name is a `String`. Every reader of it clones or borrows, which is the right
+/// shape anyway — a placement is a fact about a spawn, and a spawn decides it once.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Placement {
     /// The parent's own boundary, whatever it is.
     #[default]
     Host,
     /// A firecode VM. Which hypervisor is the backend's business.
     Firecode,
+    /// **Another machine, over ssh** (`docs/remote-hosts.md`: `where: "host:lab2x1"`).
+    /// The name is one the operator declared in `~/.config/letibot/hosts.toml` — never a
+    /// project's — so the string here is always a name that was checked against that
+    /// file at the call.
+    Remote(String),
 }
 
 /// The handle's `seam:` line for a placement: what the child's work is made of and where it
 /// comes back. Empty for the host, whose work is the worktree itself.
-fn placement_seam(placement: Placement) -> String {
+fn placement_seam(placement: &Placement) -> String {
     match placement {
         // **No branch on this path.** The VM works on a copy, and firecode delivers the copy's
         // final state as a directory beside it when the VM comes down — the old line promised a
@@ -60,7 +69,16 @@ fn placement_seam(placement: Placement) -> String {
              it and take what you want.\n"
                 .to_string()
         }
-        _ => String::new(),
+        // **A branch, and this one is true.** The remote works on a checkout of the
+        // repository, so its commits are commits — they come back by `git fetch` when the
+        // session ends, and the line names the branch they land on so the parent does not
+        // have to guess it (`docs/remote-hosts.md`, "The tree").
+        Placement::Remote(host) => format!(
+            "  seam: the child works on {host} in its own checkout of this repository; what it \
+             commits comes back here as the branch `remote/{host}/<its short id>` when it ends. \
+             Uncommitted remote edits stay there.\n"
+        ),
+        Placement::Host => String::new(),
     }
 }
 
@@ -70,11 +88,17 @@ fn placement_seam(placement: Placement) -> String {
 /// and the parent learned it only from `task_result`, a round later. Now the call is refused
 /// with nothing spawned and `host` named as the way to go on.
 ///
+/// A `host:NAME` placement is refused the same way and for the same reason: the name has to
+/// be one the operator declared, and the refusal lists the ones that are.
+///
 /// `firecode` is the CLI to look for when the caller names one (a test's stub), `None` for the
-/// host's own answer (`$FIRECODE_BIN`, else `firecode` on PATH).
+/// host's own answer (`$FIRECODE_BIN`, else `firecode` on PATH). The hosts are passed in for
+/// the same reason: a test says which file, production says
+/// [`crate::remote::Hosts::load`].
 fn placement_arg(
     args: &serde_json::Value,
     firecode: Option<&std::path::Path>,
+    hosts: &crate::remote::Hosts,
 ) -> Result<Placement, Invocation> {
     let placement = match args.get("where").and_then(|v| v.as_str()) {
         None => return Ok(Placement::Host),
@@ -101,6 +125,19 @@ fn placement_arg(
             ),
         ));
     }
+    if let Placement::Remote(name) = &placement
+        && hosts.get(name).is_none()
+    {
+        return Err(Invocation::failed(
+            "this box has no such host",
+            format!(
+                "{}, so `where: host:{name}` cannot be honoured. Nothing was spawned. A \
+                 remote child needs a machine the operator declared; leave `where` out to run \
+                 it in your own boundary.",
+                hosts.refusal(name)
+            ),
+        ));
+    }
     Ok(placement)
 }
 
@@ -109,7 +146,7 @@ fn placement_arg(
 /// would leave the caller believing in a gate that does not exist.
 fn verify_arg(
     args: &serde_json::Value,
-    placement: Placement,
+    placement: &Placement,
 ) -> Result<Option<String>, Invocation> {
     let Some(v) = args
         .get("verify")
@@ -119,7 +156,7 @@ fn verify_arg(
     else {
         return Ok(None);
     };
-    if placement != Placement::Firecode {
+    if *placement != Placement::Firecode {
         return Err(Invocation::failed(
             "`verify` needs `where: firecode`",
             "the check is run by firecode, after the child finishes and before its VM stops; \
@@ -131,21 +168,53 @@ fn verify_arg(
 }
 
 impl Placement {
+    /// **`host`, `firecode`, or `host:NAME` for a machine the operator declared.**
+    ///
+    /// The name keeps its case — a hostname is not a keyword — while the keywords are
+    /// matched case-insensitively, because `where: Firecode` is what a model writes.
     pub fn parse(s: &str) -> Result<Placement, String> {
-        match s.trim().to_ascii_lowercase().as_str() {
+        let trimmed = s.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(name) = lower
+            .find(':')
+            .filter(|i| matches!(&lower[..*i], "host" | "remote"))
+            .map(|i| trimmed[i + 1..].trim())
+        {
+            if name.is_empty() {
+                return Err(
+                    "`host:` needs a name — `where: \"host:lab2x1\"`, one of the hosts in \
+                     ~/.config/letibot/hosts.toml"
+                        .to_string(),
+                );
+            }
+            return Ok(Placement::Remote(name.to_string()));
+        }
+        match lower.as_str() {
             "" | "host" | "here" => Ok(Placement::Host),
             "firecode" | "vm" | "firecracker" | "libvirt" => Ok(Placement::Firecode),
             other => Err(format!(
-                "`{other}` is not a placement. There are two: `host` (the default) and \
-                 `firecode` (a VM)"
+                "`{other}` is not a placement. There are three: `host` (the default), \
+                 `firecode` (a VM), and `host:NAME` — one of the machines the operator \
+                 declared in ~/.config/letibot/hosts.toml"
             )),
         }
     }
 
-    pub fn as_str(&self) -> &'static str {
+    /// The spelling that round-trips through [`Placement::parse`] — a recorded subagent's
+    /// spec is written with this and read back with that, so the two are one fact.
+    pub fn as_str(&self) -> String {
         match self {
-            Placement::Host => "host",
-            Placement::Firecode => "firecode",
+            Placement::Host => "host".to_string(),
+            Placement::Firecode => "firecode".to_string(),
+            Placement::Remote(name) => format!("host:{name}"),
+        }
+    }
+
+    /// The machine this placement is on, when it is another one.
+    pub fn host(&self) -> Option<&str> {
+        match self {
+            Placement::Remote(name) => Some(name),
+            _ => None,
         }
     }
 }
@@ -1085,6 +1154,11 @@ pub struct TaskTool {
     /// not `$FIRECODE_BIN` for the reason [`crate::firecode::FirecodeSpec::bin`] is one: a test
     /// that sets the variable races every other reader of it in the test binary.
     firecode_bin: Option<std::path::PathBuf>,
+    /// **The machines `where: "host:NAME"` may name.** `None` is
+    /// [`crate::remote::Hosts::load`], which reads the operator's file — the only place a
+    /// host may be declared. A field so a test says which file without an environment
+    /// variable that would race the other readers of it.
+    hosts: Option<crate::remote::Hosts>,
 }
 
 impl TaskTool {
@@ -1092,12 +1166,19 @@ impl TaskTool {
         TaskTool {
             runner,
             firecode_bin: None,
+            hosts: None,
         }
     }
 
     /// Check `where: firecode` against `bin` rather than the host's `$FIRECODE_BIN`/PATH.
     pub fn with_firecode_bin(mut self, bin: impl Into<std::path::PathBuf>) -> Self {
         self.firecode_bin = Some(bin.into());
+        self
+    }
+
+    /// Read `where: "host:NAME"` against `hosts` rather than the operator's file.
+    pub fn with_hosts(mut self, hosts: crate::remote::Hosts) -> Self {
+        self.hosts = Some(hosts);
         self
     }
 }
@@ -1140,7 +1221,7 @@ impl Tool for TaskTool {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
-                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
+                    "where": {"type": "string", "description": "`host` (the default: your own boundary), `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody), or `host:NAME` — a machine the operator declared in ~/.config/letibot/hosts.toml, where the child's tools (bash, read, write, jobs) run over ssh while its model connection stays here. Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
                     "repo": {"type": "string", "description": "With `where: firecode`: the repository the VM copies, relative to the session root or absolute. A VM holds one repository, so it is required when the session root holds several. Refused without `where: firecode`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
@@ -1178,11 +1259,12 @@ impl Tool for TaskTool {
                 }
             },
         };
-        let placement = match placement_arg(args, self.firecode_bin.as_deref()) {
-            Ok(p) => p,
-            Err(refused) => return refused,
-        };
-        let vm_verify = match verify_arg(args, placement) {
+        let placement =
+            match placement_arg(args, self.firecode_bin.as_deref(), &hosts_of(&self.hosts)) {
+                Ok(p) => p,
+                Err(refused) => return refused,
+            };
+        let vm_verify = match verify_arg(args, &placement) {
             Ok(v) => v,
             Err(refused) => return refused,
         };
@@ -1284,6 +1366,14 @@ impl Tool for TaskTool {
     }
 }
 
+/// The operator's hosts as this call sees them: the one a test handed in, or the file.
+fn hosts_of(given: &Option<crate::remote::Hosts>) -> crate::remote::Hosts {
+    match given {
+        Some(h) => h.clone(),
+        None => crate::remote::Hosts::load(),
+    }
+}
+
 /// The subtask's first line, for a one-line echo. The whole prompt back would be
 /// the model's own bytes returned to it as a result.
 fn first_line(prompt: &str) -> String {
@@ -1350,11 +1440,22 @@ fn first_line(prompt: &str) -> String {
 /// `task_message` exists for — not to throw the work away.
 pub struct TaskStartTool {
     runner: Arc<dyn TaskRunner>,
+    /// The machines `where: "host:NAME"` may name — see [`TaskTool::with_hosts`].
+    hosts: Option<crate::remote::Hosts>,
 }
 
 impl TaskStartTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
-        TaskStartTool { runner }
+        TaskStartTool {
+            runner,
+            hosts: None,
+        }
+    }
+
+    /// Read `where: "host:NAME"` against `hosts` rather than the operator's file.
+    pub fn with_hosts(mut self, hosts: crate::remote::Hosts) -> Self {
+        self.hosts = Some(hosts);
+        self
     }
 }
 
@@ -1386,7 +1487,7 @@ impl Tool for TaskStartTool {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
                     "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
-                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody). Placement never changes permissions."},
+                    "where": {"type": "string", "description": "`host` (the default: your own boundary), `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody), or `host:NAME` — a machine the operator declared in ~/.config/letibot/hosts.toml, where the child's tools (bash, read, write, jobs) run over ssh while its model connection stays here. Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
@@ -1426,11 +1527,11 @@ impl Tool for TaskStartTool {
             },
         };
         // Checked before the worktree is arranged: a refusal here leaves nothing behind.
-        let placement = match placement_arg(args, None) {
+        let placement = match placement_arg(args, None, &hosts_of(&self.hosts)) {
             Ok(p) => p,
             Err(refused) => return refused,
         };
-        let vm_verify = match verify_arg(args, placement) {
+        let vm_verify = match verify_arg(args, &placement) {
             Ok(v) => v,
             Err(refused) => return refused,
         };
@@ -1483,6 +1584,25 @@ impl Tool for TaskStartTool {
         // **The workspace, or the refusal that names its absence.** A `task_start`
         // with no workspace to arrange a worktree in is a call that cannot be done,
         // and it says so rather than guessing at a path.
+        //
+        // **A remote session's workspace is on another machine**, and this tool creates
+        // git worktrees with the local `git` against a local path — so it refuses by name
+        // rather than making one here under a path that belongs there. The way to have a
+        // remote child is `task` with the host named: its own `open` arranges the checkout
+        // on that machine (`SshBackend::place`), which is the same thing done where the
+        // tree is.
+        if let Some(host) = ctx.backend.host_label() {
+            return Invocation::failed(
+                "task_start arranges a worktree on this machine, and this session's tools run \
+                 elsewhere",
+                format!(
+                    "this session works on {host}, so a worktree made here would be a tree the \
+                     child could not reach. Nothing was arranged and nothing was spawned. Use \
+                     `task` — a child of a remote session runs on the same host and gets its \
+                     own checkout there, on branch `remote/<its short id>`."
+                ),
+            );
+        }
         let Some(workspace) = ctx.backend.workspace_path() else {
             return Invocation::failed(
                 "task_start needs a workspace",
@@ -1572,7 +1692,7 @@ impl Tool for TaskStartTool {
         };
         let seam_line = match handle.placement.main_tree {
             true => String::new(),
-            false => placement_seam(spec.placement),
+            false => placement_seam(&spec.placement),
         };
         // **`Backgrounded`, not `Ok`** — the same reason `task` gives: the outcome
         // names a fact about the world, *this is running and has not answered yet*.

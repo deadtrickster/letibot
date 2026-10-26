@@ -740,6 +740,44 @@ fn a_downgrade_only_removes_and_the_union_keeps_every_denial() {
     assert!(Downgrade::parse("").unwrap().is_none());
 }
 
+/// **A placement round-trips through the string a recorded spec carries.**
+///
+/// `RecordedSpec` writes `placement.as_str()` and reads it back with `Placement::parse` when a
+/// child is resumed, so the two spellings are one fact: a name that changed on the way through
+/// would resume a child somewhere its record does not say.
+#[test]
+fn a_placement_round_trips_and_a_host_keeps_its_case() {
+    for p in [
+        Placement::Host,
+        Placement::Firecode,
+        Placement::Remote("lab2x1".into()),
+    ] {
+        assert_eq!(
+            Placement::parse(&p.as_str()),
+            Ok(p.clone()),
+            "{}",
+            p.as_str()
+        );
+    }
+    // The keyword is matched case-insensitively (`where: Firecode` is what a model writes);
+    // the NAME is not — a hostname keeps the case it was declared with.
+    assert_eq!(
+        Placement::parse("Host:Lab2X1"),
+        Ok(Placement::Remote("Lab2X1".into()))
+    );
+    assert!(
+        Placement::parse("host:")
+            .unwrap_err()
+            .contains("needs a name")
+    );
+    assert_eq!(
+        Placement::Remote("lab2x1".into()).host(),
+        Some("lab2x1"),
+        "the name is readable without matching the variant"
+    );
+    assert_eq!(Placement::Host.host(), None);
+}
+
 #[test]
 fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -856,7 +894,12 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
 /// tool's own output is worse than no line."*
 #[test]
 fn a_vm_placement_does_not_promise_a_branch() {
-    let line = placement_seam(Placement::Firecode);
+    let line = placement_seam(&Placement::Firecode);
+    // And the remote seam is the other way round: a branch, and it says which one.
+    let remote = placement_seam(&Placement::Remote("lab2x1".into()));
+    assert!(remote.contains("remote/lab2x1/"), "{remote}");
+    assert!(remote.contains("checkout"), "{remote}");
+    assert!(!remote.contains("directory beside"), "{remote}");
     assert!(!line.contains("comes back as the branch"), "{line}");
     assert!(line.contains("directory beside"), "{line}");
 }
@@ -1549,4 +1592,75 @@ fn a_worktree_goes_where_the_layout_says() {
         "any other layout keeps them inside the repository"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **`where: "host:NAME"` names a machine the operator declared, or it names nothing.**
+///
+/// The refusal is the interesting half: a name that is not in the file must spawn nothing
+/// and must say which names the file *does* have, because "no host `lab2`" when the file
+/// says `lab2x1` is a refusal the caller cannot act on.
+#[test]
+fn a_remote_placement_needs_a_host_the_operator_declared() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    let hosts = crate::remote::Hosts::parse(
+        "[host.lab2x1]\nhostname = \"lab2x1\"\nuser = \"dead\"\nroot = \"~/letibot-remote\"\n",
+    )
+    .expect("it parses");
+    let runner: Arc<dyn TaskRunner> = Arc::new(Echo::default());
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskTool::new(runner.clone()).with_hosts(hosts)))
+        .unwrap();
+    reg.register(Box::new(TaskResultTool::new(runner.clone())))
+        .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let run = |rt: &mut ToolRuntime, sink: &mut crate::NullToolSink, tool: &str, args: &str| {
+        rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c0".into(),
+                name: tool.into(),
+                arguments: args.into(),
+            },
+            sink,
+        )
+        .payload
+    };
+
+    // A host that is there: the child is started, and the spec carries which one.
+    let placed = run(
+        &mut rt,
+        &mut sink,
+        "task",
+        r#"{"prompt": "run the suite", "where": "host:lab2x1"}"#,
+    );
+    assert!(placed.contains("started subagent"), "{placed}");
+    // What the child was actually started with, read back from the runner: the name is
+    // in the spec, so a remote child is a child on that machine and not a host one.
+    let collected = run(&mut rt, &mut sink, "task_result", r#"{"task": "sub-1"}"#);
+    assert!(collected.contains("@host:lab2x1"), "{collected}");
+
+    // A host that is not: nothing spawns, and the ones that are there are listed.
+    let refused = run(
+        &mut rt,
+        &mut sink,
+        "task",
+        r#"{"prompt": "x", "where": "host:lab2"}"#,
+    );
+    assert!(refused.contains("lab2x1"), "{refused}");
+    assert!(refused.contains("Nothing was spawned"), "{refused}");
+    assert!(!refused.contains("started subagent `sub-2`"), "{refused}");
+
+    // An empty name is its own sentence rather than a lookup of "".
+    let empty = run(
+        &mut rt,
+        &mut sink,
+        "task",
+        r#"{"prompt": "x", "where": "host:"}"#,
+    );
+    assert!(empty.contains("needs a name"), "{empty}");
 }
