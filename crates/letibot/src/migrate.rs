@@ -58,7 +58,6 @@
 //! `root/<repo>/<short id>` — and both are implemented here *small and replaceable*, against the
 //! doc's spelling, so whichever lands second can delete the copy instead of negotiating with it.
 
-use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -69,6 +68,11 @@ use letibot_sessionlog::activity::Activity;
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, NOTE_SESSION_CLOSED, ServerFrame};
 use letibot_tokencore::store::{ImportInto, SessionTransfer, Store};
+// **One `hosts.toml` reader and one ssh argv, shared with RH1.** This module used to spell both
+// itself — `parse_hosts`, `hosts_path`, `ssh_argv` — as a deliberately small copy that "whichever
+// landed second can delete". It landed: the copy is gone, and the only thing a migration reads
+// about a host is what `crates/tools` reads about it.
+use letibot_tools::remote::{Host, Hosts, Paths, Ssh};
 
 use crate::launcher;
 
@@ -86,135 +90,32 @@ pub const QUIESCE_PATIENCE: Duration = Duration::from_secs(60);
 // -------------------------------------------------------------------------------------------
 // hosts.toml
 // -------------------------------------------------------------------------------------------
-
-/// **One host, as the operator declared it** — `[host.NAME]` in `~/.config/letibot/hosts.toml`.
-///
-/// That file is the OPERATOR's and never a project's: a repository must not be able to name a
-/// machine to run on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Host {
-    /// The table's name: what `--to` and the marker column spell.
-    pub name: String,
-    /// What ssh connects to.
-    pub hostname: String,
-    pub user: String,
-    /// The identity file, as written. A leading `~` is left for ssh, which expands it.
-    pub key: Option<String>,
-    /// Where worktrees live on that machine.
-    pub root: String,
-}
-
-/// Every host the file declares, by name.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Hosts {
-    by_name: BTreeMap<String, Host>,
-}
-
-impl Hosts {
-    pub fn get(&self, name: &str) -> Option<&Host> {
-        self.by_name.get(name)
-    }
-
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.by_name.keys().map(|s| s.as_str())
-    }
-
-    /// Read the operator's file. **A missing file is not an error here** — it is an error at the
-    /// point a host is actually named, where the sentence can say which file to write.
-    pub fn load(path: &Path) -> Result<Hosts, String> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => parse_hosts(&text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Hosts::default()),
-            Err(e) => Err(format!("reading {}: {e}", path.display())),
-        }
-    }
-}
-
-/// `~/.config/letibot/hosts.toml`, or `$LETIBOT_HOSTS` — the override exists so a test can point
-/// at a file of its own instead of writing into the operator's home.
-pub fn hosts_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("LETIBOT_HOSTS").filter(|p| !p.is_empty()) {
-        return PathBuf::from(p);
-    }
-    home().join(".config/letibot/hosts.toml")
-}
-
-/// **The file's grammar, and its refusals.** `[host.NAME]` tables of four keys. An unknown key is
-/// refused by name rather than ignored, because a typo in this file places a session on a machine
-/// nobody named.
-pub fn parse_hosts(text: &str) -> Result<Hosts, String> {
-    let doc: toml::Value = text.parse().map_err(|e| format!("this is not TOML: {e}"))?;
-    let mut by_name = BTreeMap::new();
-    let Some(hosts) = doc.get("host").and_then(|h| h.as_table()) else {
-        return Ok(Hosts { by_name });
-    };
-    for (name, table) in hosts {
-        let table = table
-            .as_table()
-            .ok_or_else(|| format!("`[host.{name}]` is not a table"))?;
-        for key in table.keys() {
-            if !["hostname", "user", "key", "root"].contains(&key.as_str()) {
-                return Err(format!(
-                    "`host.{name}.{key}` is not a key this file has: `hostname`, `user`, `key`, \
-                     `root`. Refused rather than ignored — a typo here places a session on a \
-                     machine nobody named."
-                ));
-            }
-        }
-        let want = |key: &str| -> Result<String, String> {
-            match table.get(key) {
-                Some(toml::Value::String(v)) => Ok(v.clone()),
-                Some(_) => Err(format!("`host.{name}.{key}` must be a string")),
-                None => Err(format!(
-                    "`host.{name}` has no `{key}`. A host is `hostname`, `user`, `key` and \
-                     `root`, and the two with no default (`hostname`, `user`) have to be said."
-                )),
-            }
-        };
-        by_name.insert(
-            name.clone(),
-            Host {
-                name: name.clone(),
-                hostname: want("hostname")?,
-                user: want("user")?,
-                // The key is the one optional field: an ssh config with an `IdentityFile`
-                // already answers it, and demanding the path twice is a second place to keep it
-                // right.
-                key: table
-                    .get("key")
-                    .and_then(|k| k.as_str())
-                    .map(|k| k.to_string()),
-                root: table
-                    .get("root")
-                    .and_then(|r| r.as_str())
-                    .map(|r| r.to_string())
-                    .unwrap_or_else(|| "~/letibot-remote".to_string()),
-            },
-        );
-    }
-    Ok(Hosts { by_name })
-}
-
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
-}
+//
+// The reader is `letibot_tools::remote::Hosts`'s — one file read one way on this box, whether it
+// is a session's tools or its daemon that goes to the host.
 
 // -------------------------------------------------------------------------------------------
 // An endpoint: a store, a checkout and a daemon, reached directly or over ssh
 // -------------------------------------------------------------------------------------------
 
 /// **One place a session can live.** `local` is this box; anything else is a host from
-/// `hosts.toml`, reached through [`Endpoint::ssh_program`]'s program.
+/// `hosts.toml`, reached through the ssh connection in [`Endpoint::ssh`].
 ///
 /// A move has exactly two, and every step below is written ONCE against this type — which is what
 /// makes *host → host* the same code path as *laptop → host*, rather than a second one that would
 /// have to be kept in step with the first.
+///
+/// **The connection is `letibot_tools::remote::Ssh` and not this module's own argv.** RH4 spelled
+/// its own flags here, and the two spellings had already drifted from RH1's: neither passed
+/// `-F`, so both read the operator's ssh client config, and neither checked the host key it was
+/// about to trust. There is one ssh policy in this tree now, and this is the second of its two
+/// callers.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
     /// `local`, or the host's table name — the spelling the marker column stores.
     pub name: String,
     /// `None` for this box.
-    pub host: Option<Host>,
+    pub ssh: Option<Ssh>,
     /// The store's path, as spelled on that box: absolute here, and on a host a path inside
     /// `root` that this process never opens directly.
     pub store: String,
@@ -225,13 +126,15 @@ pub struct Endpoint {
 
 impl Endpoint {
     pub fn is_local(&self) -> bool {
-        self.host.is_none()
+        self.ssh.is_none()
     }
 
     /// The ssh destination, `user@hostname`.
     fn target(&self) -> String {
-        let h = self.host.as_ref().expect("only a host is ssh'd to");
-        format!("{}@{}", h.user, h.hostname)
+        self.ssh
+            .as_ref()
+            .expect("only a host is ssh'd to")
+            .destination()
     }
 
     /// **The daemon's unix socket on that box.** For a host it is inside the migration root and
@@ -262,64 +165,23 @@ impl Endpoint {
         format!("{}/.letibot/bin", self.root)
     }
 
-    /// The ssh program. `$LETIBOT_SSH` hands over a script that runs the command against a temp
-    /// "remote" home instead of a network — the only way this package can be exercised on a box
-    /// with no host, and the whole reason the ssh argv is built in one place.
-    fn ssh_program() -> String {
-        std::env::var("LETIBOT_SSH")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "ssh".to_string())
-    }
-
-    /// The argv of an ssh call to this endpoint, options and all — the one place the `-i key`,
-    /// `BatchMode` and `ControlMaster` rules (`docs/remote-hosts.md`) are spelled.
-    ///
-    /// **`BatchMode=yes` is the load-bearing one**: a host that asks for a password or a
-    /// host-key confirmation is refused by ssh rather than prompted, because a prompt inside a
-    /// migration is a verb that hangs with no screen to answer it on.
-    fn ssh_argv(&self) -> Vec<String> {
-        let host = self.host.as_ref().expect("only a host is ssh'd to");
-        let mut argv = vec![Self::ssh_program()];
-        if let Some(key) = &host.key {
-            argv.push("-i".into());
-            argv.push(key.clone());
-        }
-        for opt in [
-            "IdentitiesOnly=yes".to_string(),
-            "BatchMode=yes".to_string(),
-            // **One TCP connection per host**: a move makes a dozen calls, and a handshake each
-            // is most of the wall time on a LAN. The socket lives under the launcher's rundir, so
-            // it is this user's and it goes by that directory's rules.
-            "ControlMaster=auto".to_string(),
-            format!(
-                "ControlPath={}",
-                launcher::rundir()
-                    .join(format!("ssh-{}", sanitize(&host.name)))
-                    .display()
-            ),
-            "ControlPersist=60".to_string(),
-        ] {
-            argv.push("-o".into());
-            argv.push(opt);
-        }
-        argv
-    }
-
     /// A command that runs `script` on this endpoint, with stdin/stdout/stderr as the caller sets
     /// them. **The script is one argv element**, which is exactly what ssh hands to the far
     /// side's shell — so nothing in it is re-quoted on the way, and everything it names goes
     /// through [`sh_quote`] here.
+    ///
+    /// The host's `path` list goes in front of the script, because the move runs `cargo`, `git`
+    /// and the daemon's own binary on the far side through a shell that is not a login shell.
     fn command(&self, script: &str) -> Command {
         if self.is_local() {
             let mut c = Command::new("sh");
             c.arg("-c").arg(script);
             return c;
         }
-        let argv = self.ssh_argv();
-        let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]);
-        c.arg(self.target()).arg(script);
+        let ssh = self.ssh.as_ref().expect("only a host is ssh'd to");
+        let script = ssh.host().with_path(script);
+        let mut c = Command::new(ssh.program());
+        c.args(ssh.argv(&script));
         c
     }
 
@@ -438,22 +300,26 @@ impl Endpoint {
     /// later, when a head attaches from another terminal, so the child is left running: it ends
     /// when its ssh does, and that is a fact about a socket somebody else may be using.
     fn spawn_detached(&self, argv_extra: &[String], say: &mut Say<'_>) -> Result<(), String> {
-        let mut argv = self.ssh_argv();
-        argv.extend_from_slice(argv_extra);
-        argv.push(self.target());
-        let child = Command::new(&argv[0])
-            .args(&argv[1..])
+        let ssh = self.ssh.as_ref().expect("only a host is ssh'd to");
+        // The flags, then what makes this a forward, then the destination — a forward carries no
+        // remote command, which is the one shape `Ssh::argv` does not spell.
+        let mut full = vec![ssh.program().display().to_string()];
+        full.extend(ssh.flags());
+        full.extend_from_slice(argv_extra);
+        full.push(self.target());
+        let child = Command::new(&full[0])
+            .args(&full[1..])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("starting `{}`: {e}", argv[0]))?;
+            .map_err(|e| format!("starting `{}`: {e}", full[0]))?;
         std::mem::forget(child);
         say(&format!(
             "{}: {} {}",
             self.name,
-            argv[0],
-            argv[1..].join(" ")
+            full[0],
+            full[1..].join(" ")
         ));
         Ok(())
     }
@@ -994,7 +860,7 @@ impl Move {
                 self.to.name, self.from.name
             ));
         }
-        let local = home().join(".config/letibot/providers.toml");
+        let local = Paths::from_env().config().join("providers.toml");
         let text = std::fs::read(&local).map_err(|e| {
             format!(
                 "--copy-keys was asked for and {} cannot be read: {e}. Nothing was printed and \
@@ -1648,7 +1514,11 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     let store_path = store.unwrap_or_else(|| {
         std::env::var_os("LETIBOT_STORE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home().join(".local/share/letibot/sessions.db"))
+            .unwrap_or_else(|| {
+                Paths::from_env()
+                    .home()
+                    .join(".local/share/letibot/sessions.db")
+            })
     });
 
     // --- the far side's sub-verbs ---------------------------------------------------------
@@ -1739,7 +1609,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     let session = session.ok_or_else(|| format!("which session?\n{}", usage()))?;
     let local = Endpoint {
         name: LOCAL.to_string(),
-        host: None,
+        ssh: None,
         store: store_path.display().to_string(),
         root: String::new(),
     };
@@ -1763,8 +1633,8 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         .clone()
         .unwrap_or_else(|| LOCAL.to_string());
 
-    let hosts_file = hosts.unwrap_or_else(hosts_path);
-    let hosts = Hosts::load(&hosts_file)?;
+    let hosts_file = hosts.unwrap_or_else(letibot_tools::remote::hosts_file);
+    let hosts = Hosts::load_from(&hosts_file);
     let endpoint = |name: &str| -> Result<Endpoint, String> {
         if name == LOCAL {
             return Ok(local.clone());
@@ -1773,9 +1643,9 @@ fn run_inner(args: &[String]) -> Result<(), String> {
             format!(
                 "`{name}` is not a host in {}. Nothing was moved. {}",
                 hosts_file.display(),
-                match hosts.names().count() {
+                match hosts.names().len() {
                     0 => "That file has no `[host.NAME]` tables at all.".to_string(),
-                    _ => format!("It has: {}.", hosts.names().collect::<Vec<_>>().join(", ")),
+                    _ => format!("It has: {}.", hosts.names().join(", ")),
                 }
             )
         })?;
@@ -1822,9 +1692,13 @@ fn run_inner(args: &[String]) -> Result<(), String> {
 /// A host's endpoint: its root resolved to an absolute path ON that box, once, so that every later
 /// path is absolute and a `~` never has to survive a quoting layer.
 fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
+    // **The connection first**, because the two refusals it gives — a key that is missing or
+    // inside the operator's own ssh directory, and a host key nobody has accepted for letibot —
+    // have to arrive before a byte moves, not after the store has been exported.
+    let ssh = Ssh::connect(host.clone(), None, Paths::from_env())?;
     let probe = Endpoint {
         name: host.name.clone(),
-        host: Some(host.clone()),
+        ssh: Some(ssh.clone()),
         store: String::new(),
         root: host.root.clone(),
     };
@@ -1850,7 +1724,7 @@ fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
     }
     Ok(Endpoint {
         name: host.name.clone(),
-        host: Some(host.clone()),
+        ssh: Some(ssh),
         store: format!("{root}/.letibot/sessions.db"),
         root,
     })
@@ -1884,37 +1758,45 @@ fn usage() -> String {
 mod tests {
     use super::*;
 
-    /// **The file's grammar, and that a typo is refused rather than ignored.**
+    /// **The file's grammar, and that a typo is refused rather than ignored** — through the one
+    /// reader this box has, which is `crates/tools`'s since RH5: a migration and a remote session
+    /// must not read one file two ways.
     #[test]
     fn a_hosts_file_is_read_and_a_key_it_does_not_have_is_refused() {
-        let hosts = parse_hosts(
+        let hosts = Hosts::parse(
             "[host.lab2x1]\nhostname = \"lab2x1\"\nuser = \"dead\"\n\
-             key = \"~/.config/letibot/keys/headless\"\nroot = \"~/letibot-remote\"\n",
+             key = \"~/.config/letibot/keys/headless\"\npath = [\"~/.cargo/bin\"]\n\
+             root = \"~/letibot-remote\"\n",
         )
         .expect("a well-formed file");
         let host = hosts.get("lab2x1").expect("the host");
         assert_eq!(host.hostname, "lab2x1");
-        assert_eq!(host.user, "dead");
-        assert_eq!(host.key.as_deref(), Some("~/.config/letibot/keys/headless"));
+        assert_eq!(host.user.as_deref(), Some("dead"));
+        assert!(
+            host.key
+                .as_ref()
+                .is_some_and(|k| k.ends_with("keys/headless")),
+            "a `~` in a key is this machine's home: {:?}",
+            host.key
+        );
+        assert_eq!(host.path, vec!["~/.cargo/bin".to_string()]);
         assert_eq!(host.root, "~/letibot-remote");
         // `root` is the one key with a default: a host that omits it places work where one that
         // says so does.
-        let defaulted = parse_hosts("[host.a]\nhostname = \"a\"\nuser = \"u\"\n").unwrap();
+        let defaulted = Hosts::parse("[host.a]\nhostname = \"a\"\nuser = \"u\"\n").unwrap();
         assert_eq!(defaulted.get("a").unwrap().root, "~/letibot-remote");
 
-        let why = parse_hosts("[host.a]\nhostname = \"a\"\nuser = \"u\"\nkeyy = \"x\"\n")
+        let why = Hosts::parse("[host.a]\nhostname = \"a\"\nuser = \"u\"\nkeyy = \"x\"\n")
             .expect_err("a key this file does not have");
         assert!(why.contains("keyy"), "{why}");
-        let why = parse_hosts("[host.a]\nuser = \"u\"\n").expect_err("no hostname");
-        assert!(why.contains("hostname"), "{why}");
     }
 
     /// An empty or absent `[host]` table is no hosts, not an error: the file is the operator's and
     /// a fresh box has none.
     #[test]
     fn a_file_with_no_hosts_is_not_an_error() {
-        assert_eq!(parse_hosts("").unwrap().names().count(), 0);
-        assert_eq!(parse_hosts("[other]\nx = 1\n").unwrap().names().count(), 0);
+        assert_eq!(Hosts::parse("").unwrap().names().len(), 0);
+        assert_eq!(Hosts::parse("[other]\nx = 1\n").unwrap().names().len(), 0);
     }
 
     /// **The branch suffix is the id's tail**, and a short id is still itself.

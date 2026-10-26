@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use letibot_tools::backend::{BackendError, Command, ExecBackend};
 use letibot_tools::exec::{JobId, JobState, ScopeKind, SpawnRequest, Waited};
-use letibot_tools::remote::{Host, Hosts, SshBackend, SshSpec};
+use letibot_tools::remote::{Host, Hosts, Paths, SshBackend, SshSpec};
 
 /// The short id this suite's session gets: the last eight of `s-01abcdef`.
 const SHORT: &str = "01abcdef";
@@ -41,6 +41,11 @@ struct Rig {
     jobs: PathBuf,
     repo: PathBuf,
     ssh: PathBuf,
+    /// **What the fake ssh was handed**, one line per call: its argv, and its environment.
+    log: PathBuf,
+    /// letibot's own ssh material for this test: a key under the config directory, and the host
+    /// key already accepted. `Ssh::connect` refuses without both, which is the point of it.
+    paths: Paths,
     host: Host,
 }
 
@@ -59,22 +64,6 @@ impl Rig {
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&home).expect("home");
 
-        // **The fake ssh**: the flags are accepted and ignored, the last argument is the
-        // remote command, and `HOME` is the machine's own — so this test's `~/.bash_profile`
-        // cannot print into a base64 channel, and `~/letibot-remote` is where it says it is.
-        let ssh = bin.join("ssh");
-        write_executable(
-            &ssh,
-            &format!(
-                "#!/bin/bash\n\
-                 export PATH='{}':$PATH\n\
-                 export HOME='{}'\n\
-                 for last; do :; done\n\
-                 exec bash -lc \"$last\"\n",
-                bin.display(),
-                home.display()
-            ),
-        );
         // **A `setsid` for the boxes that have none** — Linux does, Darwin does not — so a
         // job on the fake remote leads its own process group exactly as it does on a Linux
         // host: `kill -TERM -<pid>` is only safe when it does, and `RemoteProcesses::kill`
@@ -87,6 +76,36 @@ impl Rig {
                 "#!/usr/bin/env perl\nuse POSIX ();\nPOSIX::setsid();\nexec { $ARGV[0] } @ARGV;\n",
             );
         }
+
+        // **The fake ssh records its argv and its environment**, and refuses to be anything but
+        // a passthrough: the flags under test are the ones it is HANDED, so it must not interpret
+        // them (a fake that understood `-i` would be testing itself).
+        let ssh = bin.join("ssh");
+        let log = dir.join("ssh.log");
+        write_executable(
+            &ssh,
+            &format!(
+                "#!/bin/bash\n\
+                 {{ printf 'ARGV %s\\n' \"$*\"; env | sed 's/^/ENV /'; }} >> '{}'\n\
+                 export PATH='{}':$PATH\n\
+                 export HOME='{}'\n\
+                 for last; do :; done\n\
+                 exec bash -lc \"$last\"\n",
+                log.display(),
+                bin.display(),
+                home.display()
+            ),
+        );
+        // **letibot's own key and known host**, in a config directory of this test's own — the
+        // two facts a connection is refused without, and neither is the operator's.
+        let paths = Paths::in_home(dir.join("letibot-home"));
+        std::fs::create_dir_all(paths.keys()).expect("the keys directory");
+        std::fs::write(paths.default_key("fake"), b"a dedicated key").expect("the key");
+        std::fs::write(
+            paths.known_hosts(),
+            "fake.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
+        )
+        .expect("the host key");
 
         let repo = dir.join("the-repo");
         std::fs::create_dir_all(&repo).expect("repo");
@@ -104,6 +123,7 @@ impl Rig {
             hostname: "fake.invalid".into(),
             user: Some("tester".into()),
             key: None,
+            path: Vec::new(),
             root: "~/letibot-remote".into(),
         };
         Rig {
@@ -112,8 +132,28 @@ impl Rig {
             jobs,
             repo,
             ssh,
+            log,
+            paths,
             host,
         }
+    }
+
+    /// One spec, with this rig's fake ssh and its own ssh material.
+    fn spec(&self) -> SshSpec {
+        SshSpec {
+            host: self.host.clone(),
+            name: "s-01abcdef".into(),
+            source: self.repo.clone(),
+            writable: true,
+            exec: true,
+            ssh: Some(self.ssh.clone()),
+            paths: Some(self.paths.clone()),
+        }
+    }
+
+    /// **Every ssh call this rig made**, as `<argv>` and `<env>` lines.
+    fn ssh_log(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
     /// **The backend, and the worktree it says it got.** The path is taken from the
@@ -122,15 +162,7 @@ impl Rig {
     /// under two names, and a comparison of the two would fail for a reason that has nothing
     /// to do with the placement.
     fn place(&mut self) -> SshBackend {
-        let b = SshBackend::place(&SshSpec {
-            host: self.host.clone(),
-            name: "s-01abcdef".into(),
-            source: self.repo.clone(),
-            writable: true,
-            exec: true,
-            ssh: Some(self.ssh.clone()),
-        })
-        .expect("the placement is arranged");
+        let b = SshBackend::place(&self.spec()).expect("the placement is arranged");
         self.worktree = PathBuf::from(b.worktree_path());
         self.jobs = self.worktree.join(".letibot-remote").join("jobs");
         b
@@ -196,6 +228,50 @@ fn alive(pid: u32) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// **The flags are handed to ssh, and nothing in the call names the operator's ssh material.**
+///
+/// This is the fake-ssh measurement the contract's policy is pinned by: every flag is on the
+/// command line `/tmp/letibot/ssh-…`-style, and neither the argv nor the environment the call runs
+/// with has a path into the operator's own ssh directory. The env half matters on its own — a
+/// `HOME` or an `SSH_*` that pointed there would hand ssh the same material the flags refuse.
+#[test]
+fn the_ssh_call_carries_the_policy_and_no_operator_ssh_material() {
+    let mut rig = Rig::new("flags");
+    let b = rig.place();
+    let _ = b.run(&Command {
+        argv: vec!["true".into()],
+        cwd: String::new(),
+        env: Vec::new(),
+    });
+    let log = rig.ssh_log();
+    assert!(!log.is_empty(), "the fake ssh recorded nothing");
+    for want in [
+        "-F /dev/null".to_string(),
+        format!(
+            "-o UserKnownHostsFile={}",
+            rig.paths.known_hosts().display()
+        ),
+        "-o GlobalKnownHostsFile=/dev/null".to_string(),
+        "-o StrictHostKeyChecking=yes".to_string(),
+        "-o BatchMode=yes".to_string(),
+        "-o IdentitiesOnly=yes".to_string(),
+        "-o IdentityAgent=none".to_string(),
+        "-o ControlMaster=auto".to_string(),
+        "-o ControlPath=".to_string(),
+        format!("-i {}", rig.paths.default_key("fake").display()),
+    ] {
+        assert!(
+            log.contains(&want),
+            "`{want}` was not handed to ssh:\n{log}"
+        );
+    }
+    let theirs = rig.paths.user_ssh().display().to_string();
+    assert!(
+        !log.contains(&theirs),
+        "nothing in the argv or the environment names `{theirs}`:\n{log}"
+    );
 }
 
 /// **Reading and writing a file over ssh, byte for byte, and atomically.**
@@ -545,6 +621,7 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         writable: true,
         exec: true,
         ssh: Some(rig.ssh.clone()),
+        paths: Some(rig.paths.clone()),
     })
     .expect_err("a folder is not a repository");
     let said = refused.to_string();

@@ -584,3 +584,144 @@ fn the_disclosure_names_the_classes_seated_and_not_write_by_default() {
         "N/A"
     );
 }
+
+/// **The never-write list is about paths, not prose — and about the path a call names, not the
+/// way it spells it.**
+///
+/// Both halves are measured here because both were wrong on 2026-10-26. The list was applied to
+/// every string in a call, so a `write` whose *body* quoted a path under the operator's ssh
+/// directory was refused as if it were writing there, and a `grep` for the pattern was refused as
+/// if it were reading the directory. And it was applied to the spelling only, so a symlink in the
+/// workspace that pointed at that directory passed every test and landed in it.
+#[test]
+fn the_never_write_list_is_about_paths_and_not_prose() {
+    let yes = |req: &AdjudicationRequest| {
+        Some(AdjudicationDecision::selected(
+            req,
+            "allow_once",
+            "model:test",
+            "sure",
+        ))
+    };
+    let gate = |surroundings: crate::intent::Surroundings, mode: crate::mode::Mode| {
+        AdjudicatedGate::new(Box::new(AskAdjudicator::new("model:test", yes)))
+            .with_surroundings(surroundings)
+            .with_mode(mode)
+    };
+
+    // **Content is not a path.** The body mentions the directory and the call is admitted at a
+    // mode whose write disposition is admit, with nobody asked.
+    let mut g = gate(pinned(), crate::mode::Mode::AUTO_EDITS);
+    let notes = json!({"path": "/w/notes.txt", "content": "a note about ~/.ssh is not a path"});
+    assert!(
+        matches!(g.admit(&call("write", &notes)), GateDecision::Admit),
+        "a write whose BODY names the directory is not a write into it"
+    );
+
+    // **A pattern is not a path either**, which is the same rule with the same evidence: a
+    // `grep` looking for the literal is a search, not a read of the directory.
+    let found = json!({"pattern": "~/.ssh", "path": "/w"});
+    assert!(
+        matches!(g.admit(&call("grep", &found)), GateDecision::Admit),
+        "a search for the string is not a read of the directory"
+    );
+
+    // **The path is.** The same store, as the path argument, is refused at the same mode, and
+    // the row says which rule refused it.
+    let into = json!({"path": "/home/dead/.ssh/authorized_keys", "content": "x"});
+    match g.admit(&call("write", &into)) {
+        GateDecision::Refuse {
+            outcome: ToolOutcome::Denied { .. },
+            ..
+        } => {}
+        other => panic!("a write INTO the store must be refused, got {other:?}"),
+    }
+    let said = g.log.last().expect("a row").decision.basis.clone();
+    assert!(said.contains("never-write list"), "{said}");
+
+    // **A symlink into the store is the store**, for every file tool, and for a path that does
+    // not exist yet. Nothing about the arguments says `.ssh`.
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-gate-ssh-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let home = dir.join("home");
+    let ws = dir.join("ws");
+    let store = home.join(".ssh");
+    std::fs::create_dir_all(&store).expect("the store");
+    std::fs::write(store.join("id_ed25519"), b"k").expect("a key");
+    std::fs::create_dir_all(&ws).expect("the workspace");
+    std::os::unix::fs::symlink(&store, ws.join("keys")).expect("a link into the store");
+    let mut surroundings = pinned();
+    surroundings.home = Some(home.display().to_string());
+    surroundings.workspace = Some(ws.display().to_string());
+    let ws_s = ws.display().to_string();
+    let mut g = gate(surroundings, crate::mode::Mode::ALLOW_ALL);
+    // **A file name that is not itself a key name.** `id_ed25519` is in the read-side secret
+    // table, so a `read` of it is refused one step earlier as a disclosure — which is a different
+    // rule and would make this loop test the wrong one. What is under test here is the PATH: a
+    // link named `keys` that lands in the store, with nothing in the arguments saying so.
+    for (name, args) in [
+        ("read", json!({"path": "keys/some-file"})),
+        ("write", json!({"path": "keys/new-file", "content": "x"})),
+        (
+            "edit",
+            json!({"path": "keys/some-file", "old_string": "k", "new_string": "j"}),
+        ),
+        ("grep", json!({"pattern": "PRIVATE", "path": "keys"})),
+        ("glob", json!({"pattern": "some-*", "path": "keys"})),
+    ] {
+        let called = GateCall {
+            name,
+            access: Access::Read,
+            args: &args,
+            turn_id: "t1",
+            call_id: "c1",
+            workspace: ws_s.as_str(),
+            target_exists: Some(true),
+            scripts: &[],
+        };
+        match g.admit(&called) {
+            GateDecision::Refuse {
+                outcome: ToolOutcome::Denied { .. },
+                ..
+            } => {}
+            other => {
+                panic!("`{name}` through a link into the store must be refused, got {other:?}")
+            }
+        }
+        let said = g.log.last().expect("a row").decision.basis.clone();
+        assert!(
+            said.contains("forbidden to touch"),
+            "the refusal names the operator's rule: {said}"
+        );
+    }
+
+    // **A shell command is best effort, and it says so**: an ABSOLUTE path in the words is
+    // refused, and a relative one is not — the gate cannot know what `keys/…` is from inside a
+    // shell the model is about to run.
+    let command = format!("cat {}", ws.join("keys/some-file").display());
+    let args = json!({ "command": command });
+    let called = GateCall {
+        name: "bash",
+        access: Access::Exec,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: ws_s.as_str(),
+        target_exists: None,
+        scripts: &[],
+    };
+    match g.admit(&called) {
+        GateDecision::Refuse {
+            outcome: ToolOutcome::Denied { .. },
+            ..
+        } => {}
+        other => panic!("an absolute path into the store must be refused, got {other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

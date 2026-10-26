@@ -41,3 +41,17 @@ canonicalizes its own directories BEFORE it writes the session's workspace into 
 the two are on different machines, and a 0-byte file when a fake ssh makes "remote" mean this
 box. It writes to `<local>.part` and renames now, which is the right shape regardless: a
 transfer must never depend on the two ends being distinct paths.
+
+## And one more, RH5 (2026-10-26): a tilde handed to a QUOTER is a literal too
+
+A per-host `path = ["~/.cargo/bin"]` list is put in front of the remote `PATH` for every command a
+remote session runs. The first implementation passed each entry through `quote()` — which exists to
+stop the shell expanding anything — so `~/.cargo/bin` became `'~/.cargo/bin'`: a directory literally
+named `~` on the far side, and nothing on `PATH` at all. Silent, and exactly the same failure as
+`cd "~/letibot-remote"` above, one layer along.
+
+The fix is to expand the tilde **into the shell's own words**: a `~/x` entry becomes
+`"$HOME/x"` (quoted only after the expansion point), and an entry that is not a tilde path is
+quoted as any other word is. The general rule, and it is the rule for any config value that
+names a path on ANOTHER machine: **decide which side expands it, then quote everything except
+that**. Quoting the whole value pulls the expansion point inside the quotes.

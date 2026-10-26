@@ -3202,28 +3202,49 @@ impl Gate for AdjudicatedGate {
         }
 
         // 1. The `never` rows, before any adjudicator and overridable by none.
-        if let Some(hit) = never_hit(call.args) {
+        //
+        // **Two questions, one rule.** `never_hit` asks it of the SPELLING — is a path segment
+        // of this call on the list — and [`ssh_resolution_hit`] asks it of the PATH: what does
+        // this argument actually name, after every symlink, for a file that may not exist yet.
+        // The second is what makes the file tools a hard line instead of a test of how a model
+        // spelled a path, and it is why `~/.ssh` is not merely a string in this tree.
+        let refused = never_hit(call.args).map(|hit| {
+            format!(
+                "`{hit}` is on the never-write list (§11.4); no adjudicator is consulted and \
+                 none can override it"
+            )
+        });
+        let refused = refused.or_else(|| {
+            let home = self.surroundings.home.as_deref()?;
+            let real = ssh_resolution_hit(call, std::path::Path::new(home))?;
+            Some(crate::remote::dot_ssh_refusal(
+                &real,
+                std::path::Path::new(home),
+            ))
+        });
+        if let Some(basis) = refused {
             let d = AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Selected {
                     option_id: "deny_and_tell".into(),
                 },
                 by: "boundary:host".into(),
-                basis: format!(
-                    "`{hit}` is on the never-write list (§11.4); no adjudicator is \
-                     consulted and none can override it"
-                ),
+                basis: basis.clone(),
                 latency_ms: 0,
             };
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             let id = req.id.clone();
             self.breaker.refused(&direction);
             // Asked here too, and this is the row worth having: an oracle that wants
-            // to admit a call touching `.ssh` is a calibration fact about the guard,
-            // and it is invisible unless the never-list path records a verdict. It
+            // to admit a call touching the operator's own ssh material is a calibration fact
+            // about the guard, and it is invisible unless this path records a verdict. It
             // changes nothing — the list is overridable by nobody, the oracle
             // included, and `Adjudicable` is not minted for it.
-            self.advise_on_a_settled_call(&req, format!("`{hit}` is on the never-write list"));
+            //
+            // The note is the decision's own BASIS, so an oracle reading this call cannot be told
+            // a different story from the one the operator's screen shows: two sentences about one
+            // refusal is the shape that lets a guard and its record disagree.
+            self.advise_on_a_settled_call(&req, basis);
             self.record(req, d, "refuse", direction.key());
             // The model is told why, because a refusal it cannot understand is a
             // refusal it will retry.
@@ -4023,9 +4044,103 @@ pub fn shape_of(b: &crate::intent::Baseline) -> Option<String> {
     b.command.as_ref().map(letibot_code::shell::shape)
 }
 
+/// **The arguments that are content and not a path**, so the never-write list is not asked
+/// about them.
+///
+/// The list is about PATHS — what a call would read or write — and it used to be applied to every
+/// string in a call. Measured 2026-10-26: a `write` whose *body* quoted a path under the
+/// operator's ssh directory was refused as if it were writing there, three times, and the
+/// session's `write` tool was then breaker-blocked for the rest of its life. A `grep` for the
+/// pattern was refused the same way, as was a `grep -r` whose only sin was to look for the
+/// literal. So: a replacement's text, a file's new body, and a search pattern are not paths and
+/// are not scanned. **A path argument still is**, and so is `bash`'s `command` — that is how a
+/// command names a path, and it is the one place where a string is the only evidence there is.
+const CONTENT_ARGUMENTS: &[&str] = &["content", "old_string", "new_string", "pattern"];
+
+/// The arguments that name a path, for [`ssh_resolution_hit`]. The file tools all spell it
+/// `path`; the rest are here because a tool that takes a path does not always call it that, and a
+/// check that tests the spelling rather than the fact is the defect this whole step exists to
+/// avoid.
+const PATH_ARGUMENTS: &[&str] = &[
+    "path",
+    "paths",
+    "file",
+    "file_path",
+    "cwd",
+    "src",
+    "dest",
+    "to",
+    "from",
+    "dir",
+    "directory",
+    "target",
+    "worktree",
+    "workspace",
+];
+
+/// **A path argument whose real target is the operator's ssh directory.**
+///
+/// The literal check above answers a spelling; this answers the path. A link in the workspace
+/// named `keys` and pointing into that directory passes every spelling test and lands in it, and
+/// so does a key file inside it that nobody has written yet —
+/// [`crate::remote::inside_user_ssh`] follows symlinks for both.
+///
+/// Two shapes, because a tool takes one of two things. A **path argument** is one path, resolved
+/// against the workspace when it is relative. A **command** is a string, so this can only look at
+/// its words that begin with `/` or `~` — **best effort, and said so**: a path built at runtime
+/// (`p="$HOME/.s""sh"`) is not something a matcher can see, and no design here pretends
+/// otherwise. The file tools are the hard line because they hand over a path rather than a
+/// sentence.
+fn ssh_resolution_hit(call: &GateCall<'_>, home: &std::path::Path) -> Option<std::path::PathBuf> {
+    let obj = call.args.as_object()?;
+    let workspace = std::path::Path::new(call.workspace);
+    let resolved = |raw: &str| -> Option<std::path::PathBuf> {
+        let p = crate::remote::expand(std::path::Path::new(raw), home);
+        let p = if p.is_absolute() {
+            p
+        } else {
+            workspace.join(p)
+        };
+        if crate::remote::inside_user_ssh(&p, home) {
+            Some(crate::remote::real(&p))
+        } else {
+            None
+        }
+    };
+    for (key, value) in obj {
+        if CONTENT_ARGUMENTS.contains(&key.as_str()) {
+            continue;
+        }
+        let Value::String(s) = value else { continue };
+        if key == "command" {
+            for word in s.split_whitespace() {
+                let word = word
+                    .trim_matches(|c: char| matches!(c, '"' | '\'' | ';' | '(' | ')' | ',' | '`'));
+                if (word.starts_with('/') || word.starts_with('~'))
+                    && let Some(hit) = resolved(word)
+                {
+                    return Some(hit);
+                }
+            }
+            continue;
+        }
+        if PATH_ARGUMENTS.contains(&key.as_str())
+            && let Some(hit) = resolved(s)
+        {
+            return Some(hit);
+        }
+    }
+    None
+}
+
 fn never_hit(args: &Value) -> Option<String> {
     let obj = args.as_object()?;
-    for v in obj.values() {
+    for (key, v) in obj {
+        // Content is not a path: see [`CONTENT_ARGUMENTS`] for the measurement that made this a
+        // rule rather than a tolerance.
+        if CONTENT_ARGUMENTS.contains(&key.as_str()) {
+            continue;
+        }
         let Value::String(s) = v else { continue };
         for seg in s.split(['/', '\\']) {
             for never in NEVER_WRITE {

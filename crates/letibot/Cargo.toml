@@ -44,13 +44,18 @@ serde_json.workspace = true
 # another store as a file, and the transfer (`export_session`/`import_session`) lives there
 # because the store's schema is the store's business.
 letibot-tokencore.workspace = true
-# `hosts.toml` has `[host.NAME]` sections, which is not the flat `key = "value"` subset the
-# other config files hand-parse — a table header is a grammar, and this is the parser the tree
-# already ships for the one file (`prompts.toml`) that needs one.
-toml.workspace = true
+# `hosts.toml` is read by `letibot-tools` (below), together with the ssh argv built from it: one
+# reader for the file a session's tools and its daemon both look up. This crate no longer parses
+# it, and the `toml` dependency went with the copy.
 # Stopping a daemon is `kill(2)`; shelling out to `kill` is a builtin on several
 # systems and a fork on the rest, and this is one syscall.
 libc = "0.2"
+# **The one ssh policy** (`docs/remote-hosts.md` RH5): `hosts.toml`'s reader and the argv every
+# ssh call is made with live in `crates/tools`, below this crate, and a migration is their second
+# caller. The direction is the tree's own — `letibot` already depends on `harnessd`, which depends
+# on `tools` — so this names a crate that was in the build already, and it is the reason two
+# spellings of one ssh command line cannot come back.
+letibot-tools.workspace = true
 
 [dev-dependencies]
 # The apparatus machinery, for the one test that needs a machine with listening

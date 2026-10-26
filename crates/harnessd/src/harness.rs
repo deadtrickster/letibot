@@ -3765,6 +3765,10 @@ impl Harness {
                 writable: may_write,
                 exec: may_exec && (cfg.allow_bash || cfg.seat.needs_exec_backend()),
                 ssh: None,
+                // The operator's own home and config directory: which key a host connects with,
+                // and which host keys have been accepted for letibot, are the running session's
+                // facts and not the caller's.
+                paths: None,
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;

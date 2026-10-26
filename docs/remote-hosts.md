@@ -28,15 +28,69 @@ to name a machine to run on):
 
 ```toml
 [host.lab2x1]
-hostname = "lab2x1"            # what ssh connects to
+hostname = "lab2x1"                          # what ssh connects to
 user     = "dead"
-key      = "~/.ssh/headless_server"
-root     = "~/letibot-remote"  # where remote worktrees live (default)
+key      = "~/.config/letibot/keys/lab2x1"  # the default when the line is absent
+path     = ["~/.cargo/bin"]                 # in front of the remote PATH, expanded THERE
+root     = "~/letibot-remote"               # where remote worktrees live (default)
 ```
 
-ssh runs with `-i key -o IdentitiesOnly=yes -o BatchMode=yes` and a ControlMaster socket per host
-(one TCP connection, so a command costs a round trip, not a handshake). BatchMode: a host that asks
-for a password or a host-key confirmation is refused by name, never prompted for.
+Five keys, and an unknown one is **refused by name** rather than ignored: a typo here places a
+session on a machine nobody named, or points ssh at a key nobody meant. `hostname` and `user` are
+the two that must be said; `root` defaults to `~/letibot-remote` and `key` to
+`~/.config/letibot/keys/<host>`.
+
+`path` is the one list: directories that go **in front of `PATH`** for every command the session
+runs on that machine — its foreground calls, its background jobs, and the `git-upload-pack` its
+branch comes back through. A login shell on a host does not always have the toolchain's directory
+on `PATH` (measured on lab2x1, 2026-10-26: `cargo` lives in `~/.cargo/bin` there and no profile adds
+it), and a remote session that cannot find `cargo` is a session that can do nothing. The entries
+are expanded by the **remote** shell, once, so `~` is that machine's home and not this one's.
+
+### The operator's own ssh material is never read
+
+The operator, 2026-10-26: *"letibot is forbidden to touch and even read `~/.ssh`"*. That is a rule
+about letibot's own reads, and it is enforced in the command line and in two refusals rather than
+asked for in a comment:
+
+* **`-F /dev/null` on every invocation.** The operator's ssh client config is not read at all — not
+  its `Host` blocks, not its `ProxyCommand`s, not its `IdentityFile`s.
+* **letibot's own known-hosts file** (`~/.config/letibot/known_hosts`), with
+  `UserKnownHostsFile` pointing at it and `GlobalKnownHostsFile=/dev/null`. A host key accepted for
+  letibot is not a host key accepted for the operator's own `git push`.
+* **`IdentityAgent=none`, `IdentitiesOnly=yes` and one `-i`.** The agent holds the operator's own
+  keys and ssh would offer every one of them, in ssh's own order, before the file it was given.
+* **A dedicated identity file per host**, `~/.config/letibot/keys/<host>` — the default when
+  `hosts.toml` says nothing. A `key` that resolves inside the operator's ssh directory is **refused
+  by name**, even when the operator typed that path themselves, and the refusal prints the
+  `ssh-keygen`/`ssh-copy-id` pair that makes the dedicated one.
+* **A host key nobody has accepted is refused by name**, before anything is arranged on the other
+  machine, with the one command that adds it:
+
+      mkdir -p ~/.config/letibot && ssh-keyscan -t ed25519 lab2x1 >> ~/.config/letibot/known_hosts
+
+  Read the key it prints before you keep it. letibot does not run `ssh-keyscan` itself: a key it
+  scanned and trusted on its own is a key nobody verified, and `StrictHostKeyChecking=yes` against a
+  file letibot filled silently would be strict about nothing. A **hashed** entry (`ssh-keyscan -H`)
+  cannot be recognised by letibot and reads as absent; the way out is the same scan without `-H`.
+
+And the same rule for every tool: `read`, `write`, `edit`, `grep`, `glob` and the file side of every
+builtin **refuse a path that resolves into that directory** — after every symlink, and for a file
+that does not exist yet — regardless of mode, `allow-all` included, before any adjudicator is
+consulted. A link in the workspace named `keys` and pointing there is that directory. A `bash`
+command is **best effort**: the gate refuses a command whose words name an absolute path into it, but
+a path built at runtime (`p="$HOME/.s""sh"`) is not something a matcher can see, and no design here
+pretends otherwise. The file tools are the hard line because they hand over a path rather than a
+sentence.
+
+### What a connection costs
+
+One TCP connection per host: `ControlMaster=auto` and a `ControlPath` under letibot's own runtime
+directory (`$XDG_RUNTIME_DIR/letibot`, or the box's temp directory when there is none), so a command
+costs a round trip rather than a handshake. `BatchMode=yes` and `StrictHostKeyChecking=yes`: a host
+that asks for a password or a host-key confirmation is **refused by name**, never prompted for — a
+daemon has no one at a terminal, and a prompt it cannot answer is a call that hangs until its
+deadline.
 
 ## Where it is asked for
 
@@ -88,6 +142,7 @@ a later decision, not this slice's.
 | RH2 | the bridge's `leticode_start { host }`; a live smoke test on lab2x1 run by the orchestrator |
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
 | RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
+| RH5 | **done**: one ssh policy for both callers (RH1's `SshBackend` and RH4's `--migrate`), the operator's own ssh material never read, `hosts.toml` read strictly with a per-host `path` list, and `~/.ssh` a hard refusal for every tool |
 
 ## As built (RH1)
 
@@ -129,3 +184,31 @@ defect this tree keeps paying for:
   (`ExecBackend::close`). The contract allows either.
 * **`host:NAME` is also spelled `remote:NAME`**, and `--where host:NAME` is the same act as
   `--host NAME` — one rule, with the name checked against `hosts.toml` in both places.
+
+## As built (RH5): one ssh policy, and the operator's ssh material is never read
+
+RH1 and RH4 each spelled their own `hosts.toml` reader and their own ssh argv, and by the time
+RH5 was asked for they had already drifted: **neither passed `-F`**, so both read the operator's
+ssh client config, and neither checked the host key it was about to trust. Both are now one
+implementation, in `crates/tools/src/remote.rs` — the policy section above — and `crates/letibot`'s
+migration calls it (`Endpoint::ssh` is a `Ssh`, not a vector of flags). The dependency direction
+is the tree's own: `letibot` already depends on `harnessd`, which depends on `tools`, so nothing
+was inverted to share it.
+
+* **One `hosts.toml` reader, strict.** Unknown keys refused by name, a key stated twice refused,
+  and `path` refused unless it is one line of quoted strings. RH4's reader was already strict;
+  RH1's tolerated anything, and it is RH1's that a session actually uses.
+* **The two refusals happen at connect time**, in `Ssh::connect`, before anything is arranged on
+  the other machine: the identity file (missing, relative, or resolving inside the operator's ssh
+  directory) and the host key (not in letibot's own known-hosts file). A placement that failed
+  half way would have a mirror on the far side and no way to say which step refused.
+* **The never-write list is about paths, not prose.** It used to be applied to every string
+  argument, so a `write` whose *body* quoted a path under the operator's ssh directory was
+  refused as if it were writing there, and a `grep` for the pattern was refused as if it were
+  reading the directory. Measured while building this: three such refusals opened the circuit
+  breaker on `write` for the rest of one session. A **path argument** is still scanned, and so is
+  `bash`'s `command`; a replacement's text, a file's body and a search pattern are not paths.
+* **And the list is now asked of the path, not the spelling.** `ssh_resolution_hit` resolves each
+  path argument — every symlink, and a leaf that does not exist yet — and refuses it if it lands
+  in the operator's ssh directory. The tree's own words for why: a rule that matched only a
+  spelling is a rule the first symlink routes around.

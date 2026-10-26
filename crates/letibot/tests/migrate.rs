@@ -93,6 +93,21 @@ impl Fixture {
              root = \"~/letibot-remote\"\n",
         )
         .unwrap();
+        // **The two facts a connection is refused without**, and both are letibot's own rather
+        // than the operator's: a dedicated key per host under the config directory (the default
+        // when the file says nothing), and the host key already accepted in letibot's own
+        // known-hosts file. A migration that did not have them would be refused by
+        // `Ssh::connect` before it moved a byte — which is the behaviour its own test asserts.
+        let paths = letibot_tools::remote::Paths::in_home(&self.home);
+        std::fs::create_dir_all(paths.keys()).unwrap();
+        let mut known = String::new();
+        for host in ["lab2x1", "lubuntu1"] {
+            std::fs::write(paths.default_key(host), format!("the {host} key")).unwrap();
+            known.push_str(&format!(
+                "{host} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI{host}\n"
+            ));
+        }
+        std::fs::write(paths.known_hosts(), known).unwrap();
     }
 
     /// **The fake ssh**: skip ssh's own options, then run the command against the home the target
@@ -105,7 +120,7 @@ impl Fixture {
              case \" $* \" in *\" -N \"*) exit 0 ;; esac\n\
              while [ $# -gt 0 ]; do\n\
                case \"$1\" in\n\
-                 -i|-o|-L) shift 2 ;;\n\
+                 -i|-o|-L|-F) shift 2 ;;\n\
                  -*) shift ;;\n\
                  *) break ;;\n\
                esac\n\

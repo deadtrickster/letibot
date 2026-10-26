@@ -18,8 +18,10 @@
 //! | the placement says where it is, and what stayed here | the `remote_placement` warning |
 //!
 //! `$LETIBOT_HOSTS` and `$LETIBOT_SSH` are set here, and this file is a test binary of its
-//! own — nothing else in this process reads either, which is why the two `set_var`s below are
-//! the whole of the environment this suite touches.
+//! own — nothing else in this process reads either, which is why the `set_var`s below are
+//! the whole of the environment this suite touches. `$HOME` is set with them, because the one
+//! ssh policy asks the *operator's* home whether a key is inside their own ssh directory, and
+//! the answer a test must get is about its fixture.
 
 use std::path::{Path, PathBuf};
 
@@ -91,11 +93,26 @@ impl Rig {
             "[host.fake]\nhostname = \"fake.invalid\"\nuser = \"tester\"\nroot = \"~/letibot-remote\"\n",
         )
         .expect("a hosts file");
+        // **letibot's own ssh material**, under this rig's home: the dedicated key the host
+        // connects with and the host key already accepted. `Ssh::connect` refuses a placement
+        // without both, so a fixture that did not write them would be testing the refusal.
+        let paths = letibot_tools::remote::Paths::in_home(&home);
+        std::fs::create_dir_all(paths.keys()).expect("the keys directory");
+        std::fs::write(paths.default_key("fake"), b"a dedicated key").expect("the key");
+        std::fs::write(
+            paths.known_hosts(),
+            "fake.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
+        )
+        .expect("the host key");
         // SAFETY (Rust 2024's `unsafe` on `set_var`): this test binary is one file and these
-        // two are read by nothing else in it, before any thread that would read them starts.
+        // three are read by nothing else in it, before any thread that would read them starts.
+        // `HOME` is this rig's, because the ssh policy reads the *operator's* home from it to
+        // answer "is this key inside their own ssh directory" — the answer for a test must be
+        // about this fixture and never about the box.
         unsafe {
             std::env::set_var("LETIBOT_HOSTS", &hosts);
             std::env::set_var("LETIBOT_SSH", &ssh);
+            std::env::set_var("HOME", &home);
         }
         Rig { dir, home, repo }
     }

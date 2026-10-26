@@ -80,7 +80,19 @@ pub struct Host {
     /// ssh client's own config needs and is the common case.
     pub hostname: String,
     pub user: Option<String>,
+    /// The identity file, as the file spelled it, with a leading `~` expanded on **this**
+    /// machine — it names a file here. `None` means the dedicated
+    /// [`Paths::default_key`], and either way [`identity_for`] is what turns it into the
+    /// file ssh is given.
     pub key: Option<PathBuf>,
+    /// **Directories to put in front of the remote `PATH`**, as the remote shell must spell
+    /// them: `~` is expanded *there*, once, and the far side's own `PATH` follows.
+    ///
+    /// Measured on lab2x1 (2026-10-26): a login shell there has no `~/.cargo/bin` on `PATH`
+    /// and no profile adds it, so `cargo` is a command a remote session cannot run without
+    /// saying where it is. Per host rather than global, because it is a fact about that
+    /// machine.
+    pub path: Vec<String>,
     /// Where remote worktrees live, as the *remote* shell writes it. `~` is expanded
     /// there, once, at placement ([`SshBackend::place`]) — so the paths this backend
     /// hands around are absolute and mean the same thing to `git fetch` a minute later.
@@ -118,15 +130,12 @@ pub struct Hosts {
 /// nothing else's: it is an environment variable, and a project that could set one
 /// could name a machine, which is the whole thing this file exists to prevent.
 pub fn hosts_file() -> PathBuf {
-    if let Some(p) = std::env::var_os("LETIBOT_HOSTS") {
+    if let Some(p) = std::env::var_os("LETIBOT_HOSTS").filter(|p| !p.as_os_str().is_empty()) {
         return PathBuf::from(p);
     }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_default()
-        .join("letibot")
-        .join("hosts.toml")
+    // The config directory is [`Paths`]'s rule, asked rather than restated: two readers of one
+    // file that disagree about where it is would be the defect this package exists to remove.
+    Paths::from_env().config().join("hosts.toml")
 }
 
 impl Hosts {
@@ -151,10 +160,23 @@ impl Hosts {
         }
     }
 
-    /// The same reader `providers.toml` has: `[section]` lines and `key = value`, one
-    /// section per host under `host.`. Deliberately the same shape and the same
-    /// tolerance — two config files on one box read two different ways is a rule
-    /// nobody can hold in their head.
+    /// **The file's grammar, and its refusals** — `[host.NAME]` tables of five keys, read the
+    /// way `crates/letibot`'s migration already reads this file and **stricter than it used to
+    /// be here**, because one of the keys names a file ssh reads.
+    ///
+    /// * An **unknown key is refused by name** rather than ignored: a typo in this file places a
+    ///   session on a machine nobody named, or points ssh at a key nobody meant.
+    /// * A key stated **twice** is refused, for the same reason.
+    /// * `path` is a list of strings on one line: `path = ["~/.cargo/bin", "/opt/bin"]`. One
+    ///   line rather than TOML's multi-line array because this reader is a line reader and a
+    ///   quietly-ignored continuation would be the strictness of this file in name only.
+    /// * A `#` starts a comment everywhere, including inside a quoted value — the one place this
+    ///   reader is not TOML, and it is said rather than discovered.
+    ///
+    /// Nothing is validated beyond the grammar here: **whether a host may actually be used is
+    /// asked when it is used** ([`Ssh::connect`]), where the answer can name the key file, the
+    /// known-hosts file and the one command that fixes either. A file with three good hosts and
+    /// one whose key is missing still places the three.
     pub fn parse(text: &str) -> Result<Hosts, String> {
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut current: Option<String> = None;
@@ -180,25 +202,54 @@ impl Hosts {
                     k.trim()
                 ));
             };
-            sections
-                .entry(sec.clone())
-                .or_default()
-                .insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
+            let key = k.trim();
+            let put = sections.entry(sec.clone()).or_default();
+            if put.contains_key(key) {
+                return Err(format!(
+                    "line {}: `{key}` is stated twice in `[{sec}]`. Refused rather than taken \
+                     last-wins — which of the two was meant is not something this file can say.",
+                    n + 1
+                ));
+            }
+            put.insert(key.to_string(), v.trim().to_string());
         }
         let mut hosts = BTreeMap::new();
         for (sec, kv) in sections {
-            let Some(name) = sec.strip_prefix("host.") else {
+            let Some(raw_name) = sec.strip_prefix("host.") else {
                 continue;
             };
-            let name = name.trim_matches('"').to_string();
-            let get = |k: &str| kv.get(k).map(|v| v.trim()).filter(|v| !v.is_empty());
-            let key = get("key").map(|k| expand_tilde(Path::new(k)));
+            let name = raw_name.trim_matches('"').to_string();
+            for key in kv.keys() {
+                if !HOST_KEYS.contains(&key.as_str()) {
+                    return Err(format!(
+                        "`host.{name}.{key}` is not a key this file has: {}. Refused rather than \
+                         ignored — a typo here places a session on a machine nobody named, or \
+                         points ssh at a key nobody meant.",
+                        HOST_KEYS.join(", ")
+                    ));
+                }
+            }
+            let get = |k: &str| {
+                kv.get(k)
+                    .map(|v| v.trim().trim_matches('"'))
+                    .filter(|v| !v.is_empty())
+            };
+            let path = match kv.get("path") {
+                Some(raw) => path_list(raw).ok_or_else(|| {
+                    format!(
+                        "`host.{name}.path` must be one line of quoted strings — \
+                         `path = [\"~/.cargo/bin\", \"/opt/bin\"]` — and `{raw}` is not that."
+                    )
+                })?,
+                None => Vec::new(),
+            };
             hosts.insert(
                 name.clone(),
                 Host {
                     hostname: get("hostname").unwrap_or(&name).to_string(),
                     user: get("user").map(str::to_string),
-                    key,
+                    key: get("key").map(|k| expand_tilde(Path::new(k))),
+                    path,
                     root: get("root").unwrap_or("~/letibot-remote").to_string(),
                     name,
                 },
@@ -237,19 +288,462 @@ impl Hosts {
         format!(
             "there is no host `{name}` in {} — {list}. Nothing was placed. A host is \
              declared by the operator, in that file and never in a project: \
-             `[host.{name}]` with `hostname` (what ssh connects to), `user`, `key` and \
-             `root` (where remote worktrees live, default `~/letibot-remote`).",
+             `[host.{name}]` with `hostname` (what ssh connects to), `user`, `key` (the \
+             dedicated identity file, default `~/.config/letibot/keys/{name}`), `path` \
+             (directories to put in front of the remote `PATH`) and `root` (where remote \
+             worktrees live, default `~/letibot-remote`).",
             hosts_file().display()
         )
     }
 }
 
+/// The keys a `[host.NAME]` table may carry. Anything else is refused by name: this file decides
+/// which machine a session runs on and which file ssh reads, and a typo in it is not a detail to
+/// be ignored.
+const HOST_KEYS: &[&str] = &["hostname", "user", "key", "path", "root"];
+
+/// `["a", "b"]` → the strings, with the quotes and spaces off, and an empty list for `[]`.
+///
+/// A tiny reader rather than a TOML one: this file's grammar is a line of `key = value`, and this
+/// is the only value that is not a plain string. What it refuses, it refuses by name (see
+/// [`Hosts::parse`]) rather than reading half of it.
+fn path_list(raw: &str) -> Option<Vec<String>> {
+    let inner = raw.trim().strip_prefix('[')?.strip_suffix(']')?;
+    let mut out = Vec::new();
+    for item in inner.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let unquoted = item.trim_matches('"').trim_matches('\'').trim();
+        if unquoted.is_empty() {
+            return None;
+        }
+        out.push(unquoted.to_string());
+    }
+    Some(out)
+}
+
 /// `~/x` in a key path, expanded **here**, because it names a file on this machine.
 fn expand_tilde(p: &Path) -> PathBuf {
-    let s = p.display().to_string();
-    match (s.strip_prefix("~/"), std::env::var_os("HOME")) {
-        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-        _ => p.to_path_buf(),
+    expand(p, &Paths::from_env().home)
+}
+
+// ---------------------------------------------------------------------------
+// The ssh policy — one place, for both callers
+// ---------------------------------------------------------------------------
+//
+// The operator, 2026-10-26: *"letibot is forbidden to touch and even read `~/.ssh`"*. Both
+// ssh callers in this tree — [`SshBackend`] (a session whose *tools* run elsewhere) and
+// `letibot --migrate` (which moves a session's daemon) — used to spell their own flags, and the
+// two spellings had already drifted: neither passed `-F`, so both read the operator's ssh client
+// config, and neither checked the host key it was about to trust. Everything below is written
+// once, and `crates/letibot`'s migration calls **this** code rather than a copy of it.
+
+/// letibot's own known-hosts file, inside [`Paths::config`] — and not the operator's: a host key
+/// accepted for letibot is not a host key accepted for their own `git push`.
+pub const KNOWN_HOSTS_FILE: &str = "known_hosts";
+
+/// Where a host's dedicated identity file lives, inside [`Paths::config`].
+pub const KEYS_DIR: &str = "keys";
+
+/// **The two directories an ssh call is decided against**: the operator's home, inside which one
+/// directory is off limits, and letibot's own config directory, where everything it does read
+/// lives.
+///
+/// A value rather than an environment read at each use, for the reason
+/// [`crate::intent::Surroundings`] is one: a test pins the home it means, and a session's paths
+/// are a property of the session rather than of whichever thread asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    home: PathBuf,
+    config: PathBuf,
+}
+
+impl Paths {
+    /// This box's: `$HOME`, and `$XDG_CONFIG_HOME/letibot` (or `$HOME/.config/letibot`).
+    pub fn from_env() -> Paths {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|h| !h.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute() && !p.as_os_str().is_empty())
+            .map(|x| x.join("letibot"))
+            .unwrap_or_else(|| home.join(".config").join("letibot"));
+        Paths { home, config }
+    }
+
+    /// A test's own: `home`, with the config directory where a real operator's would be.
+    pub fn in_home(home: impl Into<PathBuf>) -> Paths {
+        let home = home.into();
+        let config = home.join(".config").join("letibot");
+        Paths { home, config }
+    }
+
+    /// A test's own, with the config directory somewhere other than under the home — the shape a
+    /// box with `XDG_CONFIG_HOME` set has.
+    pub fn with_config(mut self, config: impl Into<PathBuf>) -> Paths {
+        self.config = config.into();
+        self
+    }
+
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    pub fn config(&self) -> &Path {
+        &self.config
+    }
+
+    pub fn known_hosts(&self) -> PathBuf {
+        self.config.join(KNOWN_HOSTS_FILE)
+    }
+
+    pub fn keys(&self) -> PathBuf {
+        self.config.join(KEYS_DIR)
+    }
+
+    /// `keys/<host>` under the config directory — **the key a host uses when the file says
+    /// nothing**.
+    pub fn default_key(&self, host: &str) -> PathBuf {
+        self.keys().join(sanitise(host))
+    }
+
+    /// The operator's own ssh directory: the one letibot may not read, and the one a key may not
+    /// be in. Built by a join rather than spelled, so this file has one place that says it.
+    pub fn user_ssh(&self) -> PathBuf {
+        self.home.join(".ssh")
+    }
+}
+
+/// A host name as a file name: a table key may carry a `.` or a `-`, and neither is a problem, but
+/// a `/` would be a directory and nothing else belongs in a path letibot writes.
+fn sanitise(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// `~/x` → `<home>/x`. A `~` left unexpanded would name a directory called `~`, and a path that
+/// does not exist is not one any rule can be asked about.
+pub fn expand(path: &Path, home: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    if s == "~" {
+        return home.to_path_buf();
+    }
+    path.to_path_buf()
+}
+
+/// **The real path of `path`, following symlinks — for a path that need not exist yet.**
+///
+/// `canonicalize` answers only about a path that is there, and a rule that quietly stops applying
+/// to a path that is not — a key file inside the store that nobody has written yet — is the shape
+/// of hole this tree has been bitten by before. So the deepest existing ancestor is canonicalised
+/// and the remaining components are applied to it lexically: enough to answer *would this land
+/// inside the store*, which is the question a write target asks.
+pub fn real(path: &Path) -> PathBuf {
+    let mut probe = path.to_path_buf();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = probe.canonicalize() {
+            let mut out = real;
+            for name in rest.iter().rev() {
+                if name == ".." {
+                    out.pop();
+                } else if name != "." {
+                    out.push(name);
+                }
+            }
+            return out;
+        }
+        let Some(name) = probe.file_name().map(|n| n.to_os_string()) else {
+            return path.to_path_buf();
+        };
+        rest.push(name);
+        let Some(parent) = probe.parent() else {
+            return path.to_path_buf();
+        };
+        if parent == probe {
+            return path.to_path_buf();
+        }
+        probe = parent.to_path_buf();
+    }
+}
+
+/// **Is `path` inside the operator's ssh directory** — after symlinks, and about a path that may
+/// not exist. The rule is about where the bytes are, so a link in the workspace named `keys` and
+/// pointing at that directory is that directory.
+pub fn inside_user_ssh(path: &Path, home: &Path) -> bool {
+    let path = expand(path, home);
+    let store = real(&home.join(".ssh"));
+    let real_path = real(&path);
+    real_path == store || real_path.starts_with(&store)
+}
+
+/// **The refusal the operator's rule gives**, in their own words.
+pub fn dot_ssh_refusal(path: &Path, home: &Path) -> String {
+    format!(
+        "`{}` resolves inside the operator's own ssh directory (`{}`), and the operator's rule \
+         (2026-10-26) is \"letibot is forbidden to touch and even read `~/.ssh`\". Nothing was read \
+         and nothing was run — this is refused before any mode, grant or adjudicator is consulted, \
+         and none of them can override it. Followed through every symlink, and asked of a path that \
+         does not exist yet, because the spelling is not the rule.",
+        path.display(),
+        home.join(".ssh").display()
+    )
+}
+
+/// **The identity file a host connects with** — the one `hosts.toml` names, or the dedicated
+/// `keys/<host>` under the config directory — after the two refusals that make it letibot's own:
+/// it is absolute, it exists, and it does not resolve into the operator's ssh directory.
+pub fn identity_for(host: &str, declared: Option<&Path>, paths: &Paths) -> Result<PathBuf, String> {
+    let key = match declared {
+        Some(p) => {
+            let expanded = expand(p, paths.home());
+            if !expanded.is_absolute() {
+                return Err(format!(
+                    "`[host.{host}] key = \"{}\"` is a relative path, and a key named relative to \
+                     the directory a daemon happened to start in is a key that stops being found \
+                     the moment something else starts it. Say it absolutely — `{}` is the default.",
+                    p.display(),
+                    paths.default_key(host).display()
+                ));
+            }
+            expanded
+        }
+        None => paths.default_key(host),
+    };
+    if inside_user_ssh(&key, paths.home()) {
+        return Err(format!(
+            "`[host.{host}]` uses `{}` as its key, which is inside the operator's own ssh \
+             directory — and the operator's rule (2026-10-26) is \"letibot is forbidden to touch \
+             and even read `~/.ssh`\". Nothing was placed and nothing was connected. A host's key \
+             is its own file, so the operator's ssh material is never what letibot runs with:\n    \
+             ssh-keygen -t ed25519 -N '' -f {key}\n    ssh-copy-id -i {key}.pub <user>@<host>\n\
+             and leave `key` out of the file, since that is its default.",
+            key.display(),
+            key = paths.default_key(host).display()
+        ));
+    }
+    if !key.is_file() {
+        return Err(format!(
+            "`[host.{host}]` needs the key `{}` and there is no file there. A host's key is a \
+             dedicated one under letibot's own directory — the operator's ssh material is not \
+             something letibot may read. Make it:\n    \
+             ssh-keygen -t ed25519 -N '' -f {key}\n    ssh-copy-id -i {key}.pub <user>@{host}\n\
+             and `key` may be left out of `hosts.toml`, since that path is the default.",
+            key.display(),
+            key = key.display()
+        ));
+    }
+    Ok(key)
+}
+
+/// **Is this host's key already in letibot's own known-hosts file?**
+///
+/// The format is ssh's: one entry per line, `<host>[,<host>…] <type> <base64>`, with a bracketed
+/// `[host]:port` for a non-default port. Two things this deliberately does not do: a **hashed**
+/// entry (`|1|…`, which `ssh-keyscan -H` writes) cannot be recognised here and reads as absent —
+/// the way out is the same scan without `-H` — and a wildcard entry is not honoured, since
+/// `StrictHostKeyChecking=yes` matching a pattern is the guessing this file exists to avoid.
+pub fn host_key_known(file: &Path, hostname: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(field) = line.split_whitespace().next() else {
+            continue;
+        };
+        for name in field.split(',') {
+            let name = name.trim_start_matches('!');
+            if name == hostname {
+                return true;
+            }
+            // `[host]:2222` — the same machine on a port ssh was told about.
+            if let Some(inner) = name.strip_prefix('[').and_then(|n| n.split(']').next())
+                && inner == hostname
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// **The refusal for a host whose key nobody has accepted here**, with the one command that adds
+/// it — printed for the operator, never run by letibot. A key it scanned and trusted on its own
+/// is a key nobody checked, which is strict about nothing.
+pub fn unknown_host_key(hostname: &str, paths: &Paths) -> String {
+    let file = paths.known_hosts();
+    format!(
+        "`{hostname}` is not in letibot's own known-hosts file ({}), so there is no host key here \
+         to check the machine against — and ssh runs with `StrictHostKeyChecking=yes` and \
+         `BatchMode=yes`, which means it would fail rather than ask. Nothing was connected and \
+         nothing was placed. Add it once, yourself:\n    \
+         mkdir -p {} && ssh-keyscan -t ed25519 {hostname} >> {}\n\
+         and read the key it prints before you keep it (no `-H`: a hashed entry cannot be checked \
+         here).",
+        file.display(),
+        paths.config().display(),
+        file.display()
+    )
+}
+
+/// **Every flag every letibot ssh runs with, in one list.**
+///
+/// `-F /dev/null` comes first: the operator's ssh client config is not read at all, so not even
+/// its `Host` blocks, `ProxyCommand`s or `IdentityFile`s can reach this call. Then the files ssh
+/// may read, then what it may do, then the connection, then the identity.
+///
+/// **`-i` and `IdentitiesOnly=yes` are together on purpose**: `-i` *offers* a key and
+/// `IdentitiesOnly` is what stops ssh adding the agent's and the config's. Either alone is the
+/// defect — a key file named and then passed over for an agent key that answers first.
+pub fn flags(key: &Path, control: &Path, paths: &Paths) -> Vec<String> {
+    let mut v: Vec<String> = vec!["-F".into(), "/dev/null".into()];
+    for (k, val) in [
+        // **letibot's own file**, and the system's refused: the host keys letibot trusts are the
+        // ones the operator put there for it.
+        (
+            "UserKnownHostsFile",
+            paths.known_hosts().display().to_string(),
+        ),
+        ("GlobalKnownHostsFile", "/dev/null".to_string()),
+        // An unknown host key is refused, never learned. `accept-new` would trust whatever
+        // answered first, and BatchMode means there is nobody to ask.
+        ("StrictHostKeyChecking", "yes".to_string()),
+        // A host that wants a password is refused by name rather than prompted for: a daemon has
+        // no terminal, and a prompt it cannot answer is a call that hangs until its deadline.
+        ("BatchMode", "yes".to_string()),
+        // **The agent is the operator's own keys.** ssh would offer every one of them, in ssh's
+        // own order, before the one file it was given.
+        ("IdentityAgent", "none".to_string()),
+        ("IdentitiesOnly", "yes".to_string()),
+        // One TCP connection per host: a command then costs a round trip, not a handshake. The
+        // socket is in letibot's rundir ([`control_path`]).
+        ("ControlMaster", "auto".to_string()),
+        ("ControlPath", control.display().to_string()),
+        ("ControlPersist", "120".to_string()),
+        ("ConnectTimeout", "20".to_string()),
+    ] {
+        v.push("-o".into());
+        v.push(format!("{k}={val}"));
+    }
+    v.push("-i".into());
+    v.push(key.display().to_string());
+    v
+}
+
+/// letibot's runtime directory — the launcher's rule, restated here because this crate is
+/// **below** the launcher (`crates/letibot` depends on this one, not the other way round).
+pub fn rundir() -> PathBuf {
+    let base = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.as_os_str().is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => std::env::temp_dir(),
+    };
+    base.join("letibot")
+}
+
+/// The `ControlMaster` socket for one host, under [`rundir`].
+///
+/// **A unix socket path is capped** (`SUN_LEN`: 104 bytes on this Mac, 108 on Linux), and a
+/// per-user temp directory under `/var/folders/…` is most of that before a name is added — so the
+/// long answer falls back to `/tmp`, which is short on every box this runs on. Measured: a path
+/// past the cap fails the bind with a sentence that reads like a bug in the caller.
+pub fn control_path(host: &str, pid: u32) -> PathBuf {
+    let short = sanitise(host);
+    let preferred = rundir().join(format!("ssh-{short}.sock"));
+    if preferred.as_os_str().len() <= 100 {
+        return preferred;
+    }
+    PathBuf::from("/tmp").join(format!("letibot-ssh-{pid}-{short}.sock"))
+}
+
+/// **The host's `path` list as the export a remote command starts with** — `None` when the file
+/// declares none, so a command's text is unchanged for every host that does not need it.
+///
+/// Expanded by the **remote** shell and not here: an entry is a path on that machine (`~` is
+/// *its* home), so expanding it on this box would write this box's directories into a command
+/// that runs somewhere else. Prepended, never replaced: the far side's own `PATH` is what finds
+/// `git`, `bash` and coreutils.
+pub fn path_export(entries: &[String]) -> Option<String> {
+    let entries = quoted_entries(entries)?;
+    Some(format!("export PATH={}:\"$PATH\"", entries.join(":")))
+}
+
+/// The same list as a **prefix assignment** rather than an export, for a remote command that is
+/// not a script and so has nowhere to put an `export` — git's `upload-pack`, which ssh runs as
+/// `<this> '<path>'`.
+pub fn path_prefix(entries: &[String]) -> Option<String> {
+    let entries = quoted_entries(entries)?;
+    Some(format!("PATH={}:\"$PATH\"", entries.join(":")))
+}
+
+/// The list as shell words, or `None` when there is nothing to say.
+fn quoted_entries(entries: &[String]) -> Option<Vec<String>> {
+    let entries: Vec<String> = entries
+        .iter()
+        .map(|e| e.trim())
+        .filter(|e| !e.is_empty())
+        .map(one_entry)
+        .collect();
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
+}
+
+/// One `path` entry as the remote shell must see it.
+///
+/// **A `~` handed to `quote()` would be a literal character**, because quoting exists to stop the
+/// shell expanding anything — so `~/.cargo/bin` would name a directory called `~` on the far side
+/// and put nothing on `PATH` at all. The tilde is expanded **there, once**, as `"$HOME/…"`; the
+/// rest of the entry is quoted as any other word is, and the two are written as adjacent words so
+/// one awkward path cannot break out of the quoting.
+fn one_entry(e: &str) -> String {
+    // The characters `quote()` leaves bare. An entry made only of them needs no quoting at all.
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, '/' | '.' | '_' | '-' | ':' | '+' | ',' | '@')
+            })
+    };
+    match e.strip_prefix("~/") {
+        Some(rest) if plain(rest) => format!("\"$HOME/{rest}\""),
+        Some(rest) => format!("\"$HOME\"/{}", quote(rest)),
+        None if e == "~" => "\"$HOME\"".to_string(),
+        None => quote(e),
+    }
+}
+
+impl Host {
+    /// **What this host's `path` list does to a remote script**, or the script itself.
+    pub fn with_path(&self, script: &str) -> String {
+        match path_export(&self.path) {
+            Some(export) => format!("{export}; {script}"),
+            None => script.to_string(),
+        }
+    }
+
+    /// The host's `path` list as a command prefix, for the remote command that is not a script.
+    pub fn path_prefix(&self) -> Option<String> {
+        path_prefix(&self.path)
     }
 }
 
@@ -257,46 +751,56 @@ fn expand_tilde(p: &Path) -> PathBuf {
 // The ssh channel
 // ---------------------------------------------------------------------------
 
-/// **One host's ssh connection**, with the flags the contract names.
+/// **One host's ssh connection**, opened by [`Ssh::connect`] after the two refusals that make
+/// it letibot's own: its identity file, and its host key.
 ///
-/// `-i key -o IdentitiesOnly=yes -o BatchMode=yes`: a host that asks for a password
-/// or a host-key confirmation is **refused by name**, never prompted for — a daemon
-/// has no one at a terminal, and a prompt it cannot answer is a call that hangs until
-/// its deadline. `ControlMaster`/`ControlPath` keeps one TCP connection per host, so a
-/// command costs a round trip rather than a handshake; the master is dropped at
-/// [`Ssh::exit_master`].
+/// Everything about the command line is [`flags`]'s, and there is nothing here that a caller can
+/// restate: `-F /dev/null` (no operator ssh client config), letibot's own known-hosts file, the
+/// system's refused, `StrictHostKeyChecking=yes` under `BatchMode=yes`, `IdentityAgent=none`,
+/// the one `-i` key and `IdentitiesOnly=yes`, and a `ControlMaster` socket in letibot's rundir so
+/// a command costs a round trip rather than a handshake. See the policy section above for why
+/// each one is there.
 ///
-/// The program is a field (`$LETIBOT_SSH` by default) so a test can substitute a fake
-/// that runs the command locally; nothing else about this file changes for it.
+/// The program is a field (`$LETIBOT_SSH` by default) so a test can substitute a fake that runs
+/// the command locally; nothing else about this file changes for it.
+#[derive(Clone)]
 pub struct Ssh {
     host: Host,
     program: PathBuf,
+    /// The identity file ssh is given, resolved and checked once, at [`Ssh::connect`].
+    key: PathBuf,
     control: PathBuf,
+    paths: Paths,
 }
 
 impl Ssh {
-    pub fn new(host: Host) -> Ssh {
-        let program = ssh_program_default();
-        // **`/tmp`, not `$TMPDIR`.** A unix socket path is capped at ~104 bytes, and
-        // macOS's per-user temp directory is already most of that.
-        let control = PathBuf::from("/tmp").join(format!(
-            "letibot-ssh-{}-{}.sock",
-            std::process::id(),
-            host.name
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect::<String>()
-        ));
-        Ssh {
-            host,
-            program,
-            control,
+    /// **Open the connection a host is reached through**, or say why it cannot be.
+    ///
+    /// Two refusals happen here and both name the operator's rule and the fix: a key that is
+    /// missing or inside their own ssh directory ([`identity_for`]), and a host key nobody has
+    /// accepted in letibot's own known-hosts file ([`unknown_host_key`]). They happen **before**
+    /// anything is arranged on the machine, which is the whole point of this being the
+    /// constructor rather than a check somewhere down the command path: a placement that failed
+    /// half way would have a checkout on the far side and no way to say which step refused.
+    pub fn connect(host: Host, program: Option<PathBuf>, paths: Paths) -> Result<Ssh, String> {
+        let key = identity_for(&host.name, host.key.as_deref(), &paths)?;
+        if !host_key_known(&paths.known_hosts(), &host.hostname) {
+            return Err(unknown_host_key(&host.hostname, &paths));
         }
-    }
-
-    pub fn with_program(mut self, program: impl Into<PathBuf>) -> Ssh {
-        self.program = program.into();
-        self
+        let control = control_path(&host.name, std::process::id());
+        // The socket's directory has to exist or ssh cannot make the master — and a missing
+        // master is not an error, it is a handshake per command, which nobody asked for. A
+        // failure here is not fatal: ssh says so on its own stderr.
+        if let Some(dir) = control.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        Ok(Ssh {
+            host,
+            program: program.unwrap_or_else(ssh_program_default),
+            key,
+            control,
+            paths,
+        })
     }
 
     pub fn host(&self) -> &Host {
@@ -311,32 +815,16 @@ impl Ssh {
         self.host.destination()
     }
 
+    /// The identity file this connection was opened with — resolved, existing, and outside the
+    /// operator's ssh directory.
+    pub fn key(&self) -> &Path {
+        &self.key
+    }
+
     /// The flags, and nothing else — what `git` needs for `core.sshCommand`, where the
     /// destination and the command are git's to append.
     pub fn flags(&self) -> Vec<String> {
-        let mut v = Vec::new();
-        if let Some(key) = &self.host.key {
-            v.push("-i".into());
-            v.push(key.display().to_string());
-        }
-        let control = self.control.display().to_string();
-        for (k, val) in [
-            ("IdentitiesOnly", "yes".to_string()),
-            ("BatchMode", "yes".to_string()),
-            // **An unknown host key is refused, never learned** (`docs/remote-hosts.md`): with
-            // BatchMode, `yes` makes ssh fail on a host this box has not been told about, so the
-            // first connection to a machine is the operator's own `ssh` and not a key this daemon
-            // decided to trust. `accept-new` would trust whatever answers first.
-            ("StrictHostKeyChecking", "yes".to_string()),
-            ("ControlMaster", "auto".to_string()),
-            ("ControlPersist", "120".to_string()),
-            ("ControlPath", control),
-            ("ConnectTimeout", "20".to_string()),
-        ] {
-            v.push("-o".into());
-            v.push(format!("{k}={val}"));
-        }
-        v
+        flags(&self.key, &self.control, &self.paths)
     }
 
     /// The argv that runs `command` on the remote: flags, destination, command — the
@@ -352,12 +840,17 @@ impl Ssh {
     /// One ssh call, with the remote command wrapped in a login shell — the contract's
     /// `ssh host 'cd <worktree> && bash -lc …'`, spelled once.
     ///
+    /// **The host's `path` list goes in front**, inside the login shell and not beside it: a
+    /// login shell reads the remote's profiles, and a profile that sets `PATH` would otherwise
+    /// undo a prefix applied before it. Every command this backend runs goes through here, so a
+    /// job's launcher, a status probe and a command of the model's all get the same `PATH`.
+    ///
     /// The returned stderr is the ssh client's own (a refused key, a name that does not
     /// resolve) and never the remote command's: ssh does not carry two channels apart
     /// into two pipes. That is [`crate::firecode`]'s trade as well, and it is stated in
     /// [`SshBackend::describe`] rather than left to be discovered.
     pub fn sh(&self, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
-        let command = format!("bash -lc {}", quote(script));
+        let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
         let out = std::process::Command::new(&self.program)
             .args(self.argv(&command))
             .stdin(std::process::Stdio::null())
@@ -466,6 +959,11 @@ impl Ssh {
         let control = self.control.display().to_string();
         let _ = std::process::Command::new(&self.program)
             .args([
+                // The same `-F /dev/null` every other call has: dropping the master is still an
+                // ssh invocation, and one that read the operator's config would be the hole in
+                // every other flag.
+                "-F",
+                "/dev/null",
                 "-o",
                 &format!("ControlPath={control}"),
                 "-o",
@@ -528,6 +1026,12 @@ pub struct SshSpec {
     /// The ssh program, when the caller names one (a test's fake). `None` is
     /// `$LETIBOT_SSH`, else `ssh`.
     pub ssh: Option<PathBuf>,
+    /// **Where letibot's ssh material is**, when the caller says (a test's own home and config
+    /// directory). `None` is [`Paths::from_env`] — the operator's, which is what every real
+    /// session uses. A field rather than an environment variable for the reason
+    /// [`crate::builtins::task::TaskTool`]'s `hosts` is one: a test that set `$HOME` would race
+    /// every other reader of it in the same process.
+    pub paths: Option<Paths>,
 }
 
 /// **A session whose tools run on another machine.**
@@ -574,11 +1078,18 @@ impl SshBackend {
     /// worktree. Five things have to be true for this to work and a message that says
     /// only "ssh failed" would leave the operator to guess which.
     pub fn place(spec: &SshSpec) -> Result<SshBackend, BackendError> {
-        let mut ssh = Ssh::new(spec.host.clone());
-        if let Some(p) = &spec.ssh {
-            ssh = ssh.with_program(p.clone());
-        }
         let host = spec.host.name.clone();
+        // **The connection is opened first, and the two refusals it can give are the two that
+        // have to happen before anything is arranged**: a key that is missing or inside the
+        // operator's own ssh directory, and a host key nobody has accepted for letibot. A
+        // placement that discovered either of them half way would have a mirror on the far side
+        // and no way to say which step refused.
+        let ssh = Ssh::connect(
+            spec.host.clone(),
+            spec.ssh.clone(),
+            spec.paths.clone().unwrap_or_else(Paths::from_env),
+        )
+        .map_err(|why| BackendError::Io(format!("placing this session on {host}: {why}")))?;
         let place =
             |e: BackendError| BackendError::Io(format!("placing this session on {host}: {e}"));
 
@@ -766,12 +1277,10 @@ impl SshBackend {
         }
 
         let processes = if spec.exec {
-            let mut pssh = Ssh::new(spec.host.clone());
-            if let Some(p) = &spec.ssh {
-                pssh = pssh.with_program(p.clone());
-            }
+            // The same connection, cloned: one ControlPath and one identity file, so a job `ssh`
+            // pays the round trip the session's own commands already paid for.
             Some(Arc::new(RemoteProcesses::new(
-                pssh,
+                ssh.clone(),
                 host.clone(),
                 worktree.clone(),
             )))
@@ -861,17 +1370,31 @@ impl SshBackend {
             .map(|a| quote(&a))
             .collect::<Vec<_>>()
             .join(" ");
-        let fetched = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.local_repo)
-            .arg("-c")
-            .arg(format!("core.sshCommand={ssh_command}"))
-            .arg("fetch")
-            .arg("--no-tags")
-            .arg(&url)
-            .arg(&refspec)
-            .stdin(std::process::Stdio::null())
-            .output();
+        let fetched = {
+            let mut fetch = std::process::Command::new("git");
+            fetch
+                .arg("-C")
+                .arg(&self.local_repo)
+                .arg("-c")
+                .arg(format!("core.sshCommand={ssh_command}"))
+                .arg("fetch")
+                .arg("--no-tags");
+            // **The far side's `git-upload-pack` is a remote command**, and ssh runs it as
+            // `<this> '<path>'` — a login shell does not read a profile for it, so a host whose
+            // `git` is not on the default `PATH` needs the prefix here too. `--upload-pack` is
+            // the only door git gives for it, and its argument is spliced into the remote
+            // command line, so it is a **prefix assignment** rather than an `export`.
+            if let Some(prefix) = self.ssh.host().path_prefix() {
+                fetch
+                    .arg("--upload-pack")
+                    .arg(format!("{prefix} git-upload-pack"));
+            }
+            fetch
+                .arg(&url)
+                .arg(&refspec)
+                .stdin(std::process::Stdio::null())
+                .output()
+        };
         let mut said = match fetched {
             Ok(out) if out.status.success() => {
                 let commit = git(
@@ -1985,12 +2508,35 @@ mod tests {
 hostname = "lab2x1"
 user     = "dead"
 key      = "~/.config/letibot/keys/lab2x1"
+path     = ["~/.cargo/bin", "/opt/bin"]
 root     = "~/letibot-remote"
 
 [host."bench-2"]
 hostname = "10.0.0.7"
 user     = "root"
 "#;
+
+    /// A test's own home and config directory, with a key for `host` and its host key already
+    /// accepted — the two facts [`Ssh::connect`] refuses without.
+    fn paths_for(tag: &str, host: &str, hostname: &str) -> (PathBuf, Paths) {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-policy-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let paths = Paths::in_home(dir.join("home"));
+        std::fs::create_dir_all(paths.keys()).expect("the keys directory");
+        std::fs::write(paths.default_key(host), b"a key").expect("the dedicated key");
+        std::fs::write(
+            paths.known_hosts(),
+            format!("{hostname} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n"),
+        )
+        .expect("a known host");
+        (dir, paths)
+    }
 
     #[test]
     fn a_missing_file_is_no_hosts() {
@@ -2008,6 +2554,11 @@ user     = "root"
         assert_eq!(lab.user.as_deref(), Some("dead"));
         assert_eq!(lab.root, "~/letibot-remote");
         assert_eq!(lab.destination(), "dead@lab2x1");
+        assert_eq!(
+            lab.path,
+            vec!["~/.cargo/bin".to_string(), "/opt/bin".to_string()],
+            "a host's `path` list is read, and left as the REMOTE spells it"
+        );
         assert!(
             lab.key.as_ref().is_some_and(|k| k.ends_with("keys/lab2x1")),
             "a `~` in a key is this machine's home: {:?}",
@@ -2045,18 +2596,191 @@ user     = "root"
         assert_eq!(quote(""), "''");
     }
 
+    /// **The ssh argv is the policy's, and nothing in it names the operator's ssh material.**
+    /// The assertions about what is *missing* are the point: a list with `-i` and no
+    /// `IdentitiesOnly` looks complete.
     #[test]
     fn the_ssh_argv_is_the_contract_flags_then_dest_then_command() {
         let h = Hosts::parse(FILE).expect("it parses");
-        let ssh = Ssh::new(h.get("lab2x1").expect("lab2x1").clone());
+        let host = h.get("lab2x1").expect("lab2x1").clone();
+        let (dir, paths) = paths_for("argv", &host.name, &host.hostname);
+        // The key the FILE names is this fixture's home, not the operator's.
+        let declared = paths.default_key("lab2x1");
+        let host = Host {
+            key: Some(declared.clone()),
+            ..host
+        };
+        let ssh = Ssh::connect(host, Some(PathBuf::from("/bin/false")), paths.clone())
+            .expect("the connection opens");
         let argv = ssh.argv("bash -lc 'true'");
         let flags = argv.join(" ");
-        assert!(flags.contains("-o IdentitiesOnly=yes"), "{flags}");
-        assert!(flags.contains("-o BatchMode=yes"), "{flags}");
-        assert!(flags.contains("ControlMaster=auto"), "{flags}");
-        assert!(flags.contains("lab2x1"), "{flags}");
+        for want in [
+            "-F /dev/null".to_string(),
+            format!("-o UserKnownHostsFile={}", paths.known_hosts().display()),
+            "-o GlobalKnownHostsFile=/dev/null".to_string(),
+            "-o StrictHostKeyChecking=yes".to_string(),
+            "-o BatchMode=yes".to_string(),
+            "-o IdentitiesOnly=yes".to_string(),
+            "-o IdentityAgent=none".to_string(),
+            "-o ControlMaster=auto".to_string(),
+            format!("-i {}", declared.display()),
+        ] {
+            assert!(flags.contains(&want), "`{want}` is missing from: {flags}");
+        }
+        assert!(
+            !flags.contains(&paths.user_ssh().display().to_string()),
+            "nothing on the command line names the operator's ssh material: {flags}"
+        );
         assert_eq!(argv[argv.len() - 2], "dead@lab2x1");
         assert_eq!(argv[argv.len() - 1], "bash -lc 'true'");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Two refusals, before anything is arranged**: a key that is not there (or is inside the
+    /// operator's own ssh directory), and a host key nobody has accepted here.
+    #[test]
+    fn a_host_is_refused_by_name_before_anything_is_placed() {
+        let h = Hosts::parse(FILE).expect("it parses");
+        let host = h.get("lab2x1").expect("lab2x1").clone();
+        let (dir, paths) = paths_for("refuse", &host.name, &host.hostname);
+
+        // A host whose key is one of the operator's own.
+        std::fs::create_dir_all(paths.user_ssh()).expect("their directory");
+        let theirs = paths.user_ssh().join("id_ed25519");
+        std::fs::write(&theirs, b"k").expect("their key");
+        let why = Ssh::connect(
+            Host {
+                key: Some(theirs),
+                ..host.clone()
+            },
+            None,
+            paths.clone(),
+        )
+        .expect_err("a key inside the operator's directory");
+        assert!(why.contains("forbidden to touch"), "{why}");
+
+        // A key that is simply not there.
+        let why = Ssh::connect(
+            Host {
+                key: Some(dir.join("missing")),
+                ..host.clone()
+            },
+            None,
+            paths.clone(),
+        )
+        .expect_err("a key with no file");
+        assert!(why.contains("no file there"), "{why}");
+
+        // A host key nobody has accepted: the refusal carries the command that adds it.
+        std::fs::write(paths.known_hosts(), "").expect("an empty known_hosts");
+        let why = Ssh::connect(host, None, paths.clone()).expect_err("an unknown host key");
+        assert!(why.contains("ssh-keyscan -t ed25519"), "{why}");
+        assert!(why.contains("Nothing was connected"), "{why}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A host's `path` list is in front of every remote command**, and a host without one runs
+    /// exactly the command it always did.
+    #[test]
+    fn a_hosts_path_list_is_a_prefix_on_every_remote_command() {
+        assert_eq!(path_export(&[]), None);
+        let export = path_export(&["~/.cargo/bin".into(), "/opt/x y/bin".into()]).expect("export");
+        assert!(export.starts_with("export PATH="), "{export}");
+        assert!(
+            export.contains("\"$HOME/.cargo/bin\""),
+            "a `~` is expanded by the REMOTE shell and never quoted into a literal tilde: {export}"
+        );
+        assert!(export.contains("'/opt/x y/bin'"), "{export}");
+        assert!(export.ends_with(":\"$PATH\""), "{export}");
+        assert_eq!(
+            host_with_path(vec!["~/.cargo/bin".into()]).with_path("cd x && git status"),
+            "export PATH=\"$HOME/.cargo/bin\":\"$PATH\"; cd x && git status"
+        );
+        assert_eq!(host_with_path(Vec::new()).with_path("true"), "true");
+        assert_eq!(
+            path_prefix(&["~/.cargo/bin".into()]).as_deref(),
+            Some("PATH=\"$HOME/.cargo/bin\":\"$PATH\"")
+        );
+        // An entry that is not a tilde path is quoted as any word is, and an awkward one cannot
+        // escape its quoting.
+        assert_eq!(
+            path_export(&["/opt/x y".into()]).as_deref(),
+            Some("export PATH='/opt/x y':\"$PATH\"")
+        );
+        assert_eq!(
+            path_export(&["~/a b".into()]).as_deref(),
+            Some("export PATH=\"$HOME\"/'a b':\"$PATH\"")
+        );
+    }
+
+    fn host_with_path(path: Vec<String>) -> Host {
+        Host {
+            name: "lab2x1".into(),
+            hostname: "lab2x1".into(),
+            user: Some("dead".into()),
+            key: None,
+            path,
+            root: "~/letibot-remote".into(),
+        }
+    }
+
+    /// **The file's refusals**: a key it does not have, a key stated twice, a `path` that is not
+    /// a list, and a host that omits `key` getting the dedicated default.
+    #[test]
+    fn hosts_toml_refuses_what_it_does_not_understand() {
+        let why =
+            Hosts::parse("[host.a]\nhostname = \"a\"\nkeyy = \"x\"\n").expect_err("an unknown key");
+        assert!(why.contains("keyy"), "{why}");
+        let why =
+            Hosts::parse("[host.a]\nhostname = \"a\"\nhostname = \"b\"\n").expect_err("twice");
+        assert!(why.contains("twice"), "{why}");
+        let why = Hosts::parse("[host.a]\npath = \"~/.cargo/bin\"\n").expect_err("not a list");
+        assert!(why.contains("one line of quoted strings"), "{why}");
+
+        let h = Hosts::parse("[host.a]\nhostname = \"a\"\n").expect("it parses");
+        let a = h.get("a").expect("a");
+        assert!(
+            a.key.is_none(),
+            "omitted, so the dedicated default answers it"
+        );
+        assert!(a.path.is_empty());
+        assert_eq!(a.root, "~/letibot-remote");
+    }
+
+    /// **A link into the ssh directory is the ssh directory**, after every symlink and for a
+    /// path that does not exist yet — the rule is about the bytes, not the spelling.
+    #[test]
+    fn a_path_that_resolves_into_the_ssh_directory_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-policy-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let paths = Paths::in_home(dir.join("home"));
+        let store = paths.user_ssh();
+        std::fs::create_dir_all(&store).expect("the store");
+        std::fs::write(store.join("id_ed25519"), b"k").expect("a key");
+        std::fs::create_dir_all(dir.join("workspace")).expect("ws");
+        std::os::unix::fs::symlink(&store, dir.join("workspace/keys")).expect("link");
+
+        assert!(inside_user_ssh(
+            &dir.join("workspace/keys/id_ed25519"),
+            paths.home()
+        ));
+        assert!(inside_user_ssh(
+            &store.join("a-key-not-written-yet"),
+            paths.home()
+        ));
+        assert!(!inside_user_ssh(
+            &dir.join("workspace/ordinary.txt"),
+            paths.home()
+        ));
+        let said = dot_ssh_refusal(&dir.join("workspace/keys/id_ed25519"), paths.home());
+        assert!(said.contains("forbidden to touch"), "{said}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

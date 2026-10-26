@@ -267,14 +267,18 @@ pub const NOTES_DIR: &str = ".letibot/notes";
 /// # Why this is not a row on §11.4's never-write list
 ///
 /// [`crate::adjudicate::NEVER_WRITE`] is a **boundary**: checked before any
-/// adjudicator, overridable by nobody — and its matcher (`never_hit`) scans
-/// *every string argument of every gated call* for a segment, with no tool in the
-/// test. `.letibot/notes/` is the opposite kind of rule: this harness writes it on
-/// purpose, through this tool, and a `never` row naming it would refuse **this
+/// adjudicator, overridable by nobody — and its matcher (`never_hit`) scans the
+/// **path arguments** of a gated call, and every word of a `bash` command, with no
+/// tool in the test. `.letibot/notes/` is the opposite kind of rule: this harness writes it
+/// on purpose, through this tool, and a `never` row naming it would refuse **this
 /// tool's own writes** the moment a note's text happened to mention the directory
-/// — a rule that breaks the tool is worse than the hole it closes. The honest
-/// home is the door: the rule is *this door does not lead into that directory, the
-/// tool that owns it does*, and a door is where a routing rule belongs.
+/// — a rule that breaks the tool is worse than the hole it closes. (That was not
+/// hypothetical: until RH5 the matcher scanned `content` too, and a file whose body
+/// merely quoted a guarded path was refused. It does not any more — but the rule
+/// here is still a door's, because it is about which TOOL opens a path and not
+/// about which path exists.) The honest home is the door: the rule is *this door
+/// does not lead into that directory, the tool that owns it does*, and a door is
+/// where a routing rule belongs.
 ///
 /// # What it reads, and what it does not
 ///
