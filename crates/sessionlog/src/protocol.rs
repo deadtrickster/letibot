@@ -792,7 +792,22 @@ use crate::view::Snapshot;
 /// it. It is **ephemeral** as well (scrubbed from every replay, like [`crate::SessionEvent::Filling`])
 /// and republished to a head after a snapshot, a gap or a resync, like `HeldResults` — a value from
 /// before a gap describes a session that may since have gone quiet.
-pub const PROTOCOL_VERSION: u32 = 52;
+///
+/// # 53: a session can be CLOSED here without stopping the daemon
+/// ([`ClientFrame::CloseSession`])
+///
+/// A migration moves a session's rows to another store and its daemon to another machine
+/// (`docs/remote-hosts.md` RH4). The copy has to be STILL while it is taken, and neither
+/// existing verb makes it still: `Stop` ends the daemon, taking every other session in the
+/// folder with it, and a head's detach changes nothing about what the session does — a
+/// settled job is still delivered, a monitor still fires.
+///
+/// **A new frame is a bump** by the rule above: an older daemon has no arm for it and would
+/// fail to parse the line mid-session. Nothing is added to any existing frame, and nothing
+/// on the event side changes, so a version-52 head talking to a version-53 daemon is
+/// unaffected — which is the direction that matters, because the head that sends this one is
+/// a migration and not a screen.
+pub const PROTOCOL_VERSION: u32 = 53;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1777,6 +1792,28 @@ pub enum ClientFrame {
         expected_seq: u64,
         /// Who asked, for the announcement. The head's identity, not a name it
         /// invents.
+        who: String,
+    },
+    /// **Close THIS session here, and let go of it** — the frame a migration sends before it
+    /// carries the rows to another store (`docs/remote-hosts.md` RH4, `letibot --migrate`).
+    ///
+    /// Not [`ClientFrame::Stop`]: that ends the DAEMON, and a folder's daemon holds the
+    /// operator's other sessions. Not a detach either: a detached head's session stays open
+    /// and keeps appending — a settled job's delivery lands, a monitor fires — and a session
+    /// being copied to another machine must be still while it moves, or the copy is a
+    /// conversation with a hole the far side will never learn about.
+    ///
+    /// Answered on the connection's own thread, like `Stop` and for the same reason: the
+    /// worker is where a turn runs, and a close that queued behind one would be a close that
+    /// waited for the thing it is trying to stop. Answered with `Accepted` first, then the
+    /// session's hub is closed (every other head sees its `Bye`) and the worker is rung to
+    /// drop the harness, its backend and its children — [`crate::registry::Work::Close`].
+    ///
+    /// A second ask for a session already closed is a no-op, not an error.
+    CloseSession {
+        client_request_id: String,
+        expected_seq: u64,
+        /// Who asked, for the announcement on the session's log — the head's identity.
         who: String,
     },
     /// Idempotent, issuable by any attached head, announced with the issuer.
@@ -3008,6 +3045,14 @@ pub const NOTE_COMPACT_QUEUED: &str = "queued after the running turn";
 /// incident this constant exists for was a daemon that **never read the frame at all** and
 /// a head that exited as though it had.
 pub const NOTE_STOPPING: &str = "stopping";
+/// **The `note` on a `CloseSession` this daemon accepted** — one session is going, and the
+/// daemon is staying.
+///
+/// Its own word rather than [`NOTE_STOPPING`]'s, because the two `Accepted`s mean opposite
+/// things on the two sides of them: a head told `stopping` waits for the socket to go, and a
+/// head told this one is attached to a session that is no longer there — the daemon is fine,
+/// other sessions are fine, and *this* conversation's live copy is elsewhere now.
+pub const NOTE_SESSION_CLOSED: &str = "session closed";
 pub const REJECT_UNKNOWN_DECISION: &str = "no such open decision";
 pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
 /// A `Switch` or an `Attach` named a session this daemon does not hold.
@@ -3067,6 +3112,7 @@ mod tests {
                 | ClientFrame::AnswerTodo { .. }
                 | ClientFrame::Askpass { .. }
                 | ClientFrame::Attach { .. }
+                | ClientFrame::CloseSession { .. }
                 | ClientFrame::CompactSession { .. }
                 | ClientFrame::Detach { .. }
                 | ClientFrame::Feedback { .. }
@@ -3195,8 +3241,15 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 52,
-            "the match above was last reconciled with the frame list at 52 — 52 added \
+            PROTOCOL_VERSION, 53,
+            "the match above was last reconciled with the frame list at 53 — 53 added \
+             `ClientFrame::CloseSession`, which closes ONE session and lets go of its harness \
+             (a version-52 daemon fails to parse it, the version-4 argument; a head either \
+             sends it or does not, so an EVENT-side skew does not arise). It exists because a \
+             migration (`letibot --migrate`, `docs/remote-hosts.md` RH4) has to take a still \
+             copy of a conversation, and neither verb that existed made a session still: \
+             `Stop` ends the whole daemon, and a detach changes nothing about what the session \
+             does — a settled job is still delivered, a monitor still fires. 52 added \
              `SessionEvent::ActivityChanged`, what a session is waiting on (a version-51 head cannot \
              decode it mid-session; the snapshot's `activity` field is defaulted, but the EVENT is \
              what makes the bump). 51 added \
@@ -3589,6 +3642,13 @@ mod tests {
             },
             ClientFrame::Stop {
                 client_request_id: "r1s".into(),
+                expected_seq: 12,
+                who: "dead".into(),
+            },
+            // 53's frame, on the round trip like every other: a variant whose fields are
+            // never exercised is a variant that stops encoding without anything saying so.
+            ClientFrame::CloseSession {
+                client_request_id: "r1c".into(),
                 expected_seq: 12,
                 who: "dead".into(),
             },

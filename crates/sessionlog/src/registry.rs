@@ -84,6 +84,14 @@ struct BellInner {
     /// arrival order across heads and that ordering is a promise, while a wake has
     /// no head and no `client_request_id` to be fair to.
     wakes: VecDeque<String>,
+    /// **Sessions something asked to be CLOSED** — `ClientFrame::CloseSession`, and the
+    /// reason it is a fourth queue. The session is gone from the registry by the time this
+    /// is rung (its hub is closed, its heads told), so a wake or a command for it would be
+    /// dropped by [`Registry::next_work_until`]'s own rule — *the session is gone and there
+    /// is nothing to do* — while what is NOT nothing is the harness the worker still holds:
+    /// its backend, its children, its store connection. This queue is the one thing that
+    /// outlives the registry entry long enough to say so.
+    closes: VecDeque<String>,
     /// Wakes served in a row while the caller's clock was already due. See
     /// [`WAKES_AHEAD_OF_A_DUE_CLOCK`].
     wakes_while_due: usize,
@@ -104,6 +112,7 @@ enum Ring {
     Open(String),
     Command(String),
     Woken(String),
+    Close(String),
 }
 
 impl Bell {
@@ -161,6 +170,15 @@ impl Bell {
         self.cv.notify_all();
     }
 
+    /// **Say that `session_id` is to be let go of** — see [`BellInner::closes`].
+    pub fn ring_close(&self, session_id: &str) {
+        {
+            let mut g = self.lock();
+            g.closes.push_back(session_id.to_string());
+        }
+        self.cv.notify_all();
+    }
+
     /// Wake every waiter, for good. `next` then returns `None`.
     pub fn close(&self) {
         self.lock().closed = true;
@@ -206,6 +224,12 @@ impl Bell {
     fn next_any_until(&self, deadline: Option<Instant>) -> RingWait {
         let mut g = self.lock();
         loop {
+            // **A close comes first**, before opens and before commands: the session it is
+            // about no longer exists, so every entry above would be dropped by the ring's
+            // own rules and the harness would stay held for the life of the daemon.
+            if let Some(id) = g.closes.pop_front() {
+                return RingWait::Ring(Ring::Close(id));
+            }
             if let Some(id) = g.opens.pop_front() {
                 return RingWait::Ring(Ring::Open(id));
             }
@@ -1110,6 +1134,16 @@ pub enum Work {
     /// head's name on something no head did. The worker decides what a wake means
     /// for that session; the registry only says which session woke.
     Woken(String),
+    /// **Let go of this session's harness** — `ClientFrame::CloseSession`, served after the
+    /// session itself is already gone.
+    ///
+    /// A variant and not an `Open`-shaped no-op: by the time this is served the registry
+    /// does not hold the session, so every other arm would drop the entry and leave the
+    /// worker holding a `Harness` — its exec backend, its children, its store connection —
+    /// for the life of the daemon. What the arm does is [`crate::registry::Work`]'s own
+    /// description of a close: `Sessions::close` in the daemon, which is the one place that
+    /// knows what else a session holds.
+    Close(String),
 }
 
 /// Why a session could not be created.
@@ -2201,6 +2235,10 @@ impl Registry {
                 RingWait::Closed => return WorkOrIdle::Closed,
                 RingWait::Idle => return WorkOrIdle::Idle,
                 RingWait::Ring(Ring::Open(id)) => return WorkOrIdle::Work(Work::Open(id)),
+                // **Not filtered on the registry holding it**, unlike the two arms below:
+                // the whole point of a close is that it does not any more, and dropping the
+                // ring here would drop the harness the worker still owns.
+                RingWait::Ring(Ring::Close(id)) => return WorkOrIdle::Work(Work::Close(id)),
                 // A wake for a session this registry does not hold is dropped, the
                 // same way a command for one is: the session is gone and there is
                 // nothing to wake.
@@ -2218,6 +2256,24 @@ impl Registry {
                 }
             }
         }
+    }
+
+    /// **Close this session here, and let go of it** — the registry's half of
+    /// `ClientFrame::CloseSession`.
+    ///
+    /// Two acts, in this order, and the order is why it is one method. [`Registry::remove`]
+    /// closes the session's hub and takes it out of the registry — from that instant no head
+    /// can attach to it and no command can be accepted for it, which is what makes a copy
+    /// taken afterwards the last word. Then the worker is rung with [`Work::Close`], because
+    /// the harness, its backend and its children are the worker's and only the worker may
+    /// drop them.
+    ///
+    /// `false` when the registry did not hold it: a second close, or one for a session that
+    /// never opened here, which is not an error — *stop* is not a request that can be wrong.
+    pub fn close_session(&self, session_id: &str) -> bool {
+        let held = self.remove(session_id).is_some();
+        self.bell.ring_close(session_id);
+        held
     }
 
     pub fn next_command(&self) -> Option<(String, QueuedCommand)> {

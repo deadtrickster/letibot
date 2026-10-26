@@ -275,6 +275,22 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Close this session here and let go of it** — the frame a migration sends before it
+    /// carries the rows to another store (`docs/remote-hosts.md` RH4). Answered with an
+    /// `Accepted` whose note is [`crate::protocol::NOTE_SESSION_CLOSED`], and then this
+    /// connection is detached: the session it was attached to is no longer held here.
+    ///
+    /// Not [`HeadClient::stop`]: that ends the daemon and every session in it.
+    pub fn close_session(&mut self, expected_seq: u64, who: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::CloseSession {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            who: who.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Ask the daemon to move the running command to the background (Ctrl+B).
     pub fn promote(&mut self, expected_seq: u64) -> Result<String, ClientError> {
         let client_request_id = self.next_id();

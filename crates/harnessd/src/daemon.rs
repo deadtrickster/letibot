@@ -437,6 +437,23 @@ impl Daemon {
                         crate::instruments::worker_cmd(&session_id, &cmd, at, &outcome);
                         sink(&session_id, OutcomeSaid::Command(&cmd, &outcome));
                     }
+                    // **The session a head closed is let go of here** — `ClientFrame::CloseSession`,
+                    // which a migration sends before it copies the rows to another machine
+                    // (`docs/remote-hosts.md` RH4). The registry entry went on the connection's
+                    // thread; what is left is the harness, its backend and its children, and this
+                    // is the one place that knows how to drop them (`Sessions::close`).
+                    //
+                    // Said out loud, because a session that stops existing under a head that is
+                    // still attached is otherwise the quiet shape this tree has been bitten by
+                    // before: the head sees its socket close and cannot say whether the daemon
+                    // went or the session did.
+                    Work::Close(session_id) => {
+                        let held = sessions.close(&session_id);
+                        eprintln!(
+                            "  {session_id} · closed{}; the store keeps its rows",
+                            if held { "" } else { " (it was not open here)" }
+                        );
+                    }
                     Work::Woken(session_id) => {
                         // **A monitor fired while nothing was running.** T24's *"wakes the
                         // loop when it fires"*, which until now had no caller: a firing was

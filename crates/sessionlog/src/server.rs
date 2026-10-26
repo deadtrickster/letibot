@@ -1616,6 +1616,41 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **Closing ONE session does not go through the command queue either**, for
+            // `Stop`'s reason three arms below: the worker may be inside a turn, and a close
+            // that queued behind one would wait for the very thing it is trying to stop. The
+            // session goes at once — its hub closed, every other head told — and the worker is
+            // rung to let go of the harness, which is the half only it can do
+            // (`Work::Close`).
+            //
+            // The announcement is a `Warning` on THIS session's log, before the hub closes, so
+            // a second head of the same session is not left reading a transcript that has
+            // stopped with no word about why.
+            Ok(ClientFrame::CloseSession {
+                client_request_id,
+                expected_seq: _,
+                who,
+            }) => {
+                let session = seat.hub.session_id();
+                seat.hub.publish(crate::event::SessionEvent::Warning {
+                    code: "session_closed".into(),
+                    detail: format!(
+                        "`{who}` closed this session so it could be carried to another \
+                         machine (`letibot --migrate`). Nothing here is deleted: the rows stay \
+                         in the store and the session's row says where its live copy is now. \
+                         A head left attached is detached — a conversation that has moved on \
+                         is not one to keep typing into."
+                    ),
+                    compaction: None,
+                });
+                let f = crate::protocol::ServerFrame::Accepted {
+                    client_request_id,
+                    seq: seat.hub.head_seq(),
+                    note: crate::protocol::NOTE_SESSION_CLOSED.into(),
+                };
+                writer.lock().unwrap().write(&f)?;
+                registry.close_session(&session);
+            }
             // **The stop does NOT go through the command queue**, and that was
             // the whole of its first version's failure. One worker drains that
             // queue and a running turn owns it, so a `Stop` submitted mid-turn
