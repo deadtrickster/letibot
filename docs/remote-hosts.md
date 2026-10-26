@@ -173,8 +173,10 @@ there', either on both separately or on both together"* — and *"so the remote 
 harnessd concept"*. The Stroppy session that day hand-rolled exactly that: `ssh … nohup … &` to a
 bench box, `ps -p` polls, log tails, and a run the session lost track of when its one-shot ended.
 
-**The supervisor is harnessd's.** Every process the daemon starts — local or remote, a `bash
-background: true`, a fanout branch, a scenario role — is a **record in the store**: id, owning
+**The supervisor is harnessd's, and it is cross-cutting: ANY process letibot starts is
+supervised**, no exceptions — a foreground `bash` call and a background job, an operator `!` run,
+the merge gate's steps, a reviewer's or a subagent's commands, an LSP server, a firecode VM, a
+fanout branch, a scenario role; local or remote. Each is a **record in the store**: id, owning
 session, host, process group, role, command, deadline, readiness check, state, and the RPC record of
 its last check. The store is the truth, so a restarted daemon finds every remote process again. The
 daemon's own loop supervises them under the RPC rules above: bounded liveness checks per host,
