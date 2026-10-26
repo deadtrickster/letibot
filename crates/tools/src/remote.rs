@@ -3381,7 +3381,12 @@ user     = "root"
 
         // A host key nobody has accepted: the refusal carries the command that adds it.
         std::fs::write(paths.known_hosts(), "").expect("an empty known_hosts");
-        let why = Ssh::connect(host, None, paths.clone()).expect_err("an unknown host key");
+        // **The key left to its default**, which `paths_for` made in this test's own home: the
+        // fixture's `~/…` key is expanded against the REAL `$HOME` when the file is parsed, so
+        // this check passed only on a box where that real key happened to exist (the operator's
+        // Mac) and failed on lab2x1, the first Linux gate to run it (2026-10-26).
+        let why = Ssh::connect(Host { key: None, ..host }, None, paths.clone())
+            .expect_err("an unknown host key");
         assert!(why.contains("ssh-keyscan -t ed25519"), "{why}");
         assert!(why.contains("Nothing was connected"), "{why}");
         std::fs::remove_dir_all(&dir).ok();
