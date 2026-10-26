@@ -87,3 +87,4 @@ a later decision, not this slice's.
 | RH1 | hosts.toml; `SshBackend: ExecBackend` (run, read, write, list, stat, processes with remote jobs); `Placement::Remote(host)`; the git placement both ways; `task where: "host:NAME"`; `--host NAME` for a root session; the progress and seam lines; tests with a fake `ssh` (a script that runs the command locally against a temp "remote root"), never a real host |
 | RH2 | the bridge's `leticode_start { host }`; a live smoke test on lab2x1 run by the orchestrator |
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
+| RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
