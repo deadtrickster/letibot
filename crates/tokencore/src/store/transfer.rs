@@ -967,7 +967,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(text: &str) -> Result<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err(StoreError::Corrupt(format!(
             "a hex blob of odd length ({})",
             text.len()

@@ -67,7 +67,7 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::activity::Activity;
 use letibot_sessionlog::client::HeadClient;
-use letibot_sessionlog::protocol::{Caps, ServerFrame, NOTE_SESSION_CLOSED};
+use letibot_sessionlog::protocol::{Caps, NOTE_SESSION_CLOSED, ServerFrame};
 use letibot_tokencore::store::{ImportInto, SessionTransfer, Store};
 
 use crate::launcher;
@@ -133,10 +133,8 @@ impl Hosts {
 /// `~/.config/letibot/hosts.toml`, or `$LETIBOT_HOSTS` — the override exists so a test can point
 /// at a file of its own instead of writing into the operator's home.
 pub fn hosts_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("LETIBOT_HOSTS") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
+    if let Some(p) = std::env::var_os("LETIBOT_HOSTS").filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
     }
     home().join(".config/letibot/hosts.toml")
 }
@@ -239,7 +237,10 @@ impl Endpoint {
     /// **The daemon's unix socket on that box.** For a host it is inside the migration root and
     /// named by the session, because a moved session's daemon serves exactly that session.
     pub fn daemon_socket(&self, session: &str) -> String {
-        assert!(!self.is_local(), "a local daemon's socket is its checkout's");
+        assert!(
+            !self.is_local(),
+            "a local daemon's socket is its checkout's"
+        );
         format!("{}/.letibot/{session}.sock", self.root)
     }
 
@@ -395,10 +396,16 @@ impl Endpoint {
                 .map_err(|e| format!("reading {path}: {e}"));
         }
         let quoted = sh_quote(path)?;
-        let out_file = std::fs::File::create(local)
-            .map_err(|e| format!("creating {}: {e}", local.display()))?;
+        // **Into a `.part` file, then renamed over `local`.** A caller can hand the same path for
+        // both ends — a bundle made on the source and pulled back through a temp file named the
+        // same — and creating `local` first would truncate the very file being read.
+        let part = local.with_extension("part");
+        let out_file = std::fs::File::create(&part)
+            .map_err(|e| format!("creating {}: {e}", part.display()))?;
         let mut child = self
-            .command(&format!("base64 {quoted}"))
+            // **`base64 < file`, not `base64 file`** — BSD's base64 (a Mac, and a Mac is one of
+            // the two ends of a move) takes no file argument at all.
+            .command(&format!("base64 < {quoted}"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -416,12 +423,14 @@ impl Endpoint {
             .wait_with_output()
             .map_err(|e| format!("finishing the read from {}: {e}", self.name))?;
         if !out.status.success() {
+            let _ = std::fs::remove_file(&part);
             return Err(format!(
                 "reading {path} on {}: {}",
                 self.name,
                 tail(&String::from_utf8_lossy(&out.stderr))
             ));
         }
+        std::fs::rename(&part, local).map_err(|e| format!("{}: {e}", local.display()))?;
         Ok(())
     }
 
@@ -440,7 +449,12 @@ impl Endpoint {
             .spawn()
             .map_err(|e| format!("starting `{}`: {e}", argv[0]))?;
         std::mem::forget(child);
-        say(&format!("{}: {} {}", self.name, argv[0], argv[1..].join(" ")));
+        say(&format!(
+            "{}: {} {}",
+            self.name,
+            argv[0],
+            argv[1..].join(" ")
+        ));
         Ok(())
     }
 }
@@ -516,6 +530,11 @@ pub struct Move {
     pub session: String,
     pub from: Endpoint,
     pub to: Endpoint,
+    /// **This box's endpoint, even when neither end of the move is here.** It is what makes a
+    /// `lab2x1 -> lubuntu1` hop keep the laptop's row truthful: that row is the index of record
+    /// every surface reads, and a hop that left it naming the first host would send the next
+    /// attach and the next `--sessions` to a machine the session has left.
+    pub local: Endpoint,
     pub patience: Duration,
     /// Copy `~/.config/letibot/providers.toml` to the destination when it has none.
     pub copy_keys: bool,
@@ -600,15 +619,19 @@ impl Move {
         // (`None`); the source's says where it went.
         self.mark(&self.to, None)?;
         self.mark(&self.from, Some(&self.to.name))?;
+        // **And the laptop's row, when the move did not touch this box.** It is not one of the
+        // two ends of a host-to-host hop, but it is the row `--sessions` and `--continue` read
+        // here — so leaving it naming the first host would be a signpost to a machine the
+        // session has left.
+        if !self.from.is_local() && !self.to.is_local() {
+            self.mark(&self.local, Some(&self.to.name))?;
+        }
         say(&format!(
             "{} now lives on `{}`. The rows on `{}` stay, marked — a move back has something to \
              come back to.",
             self.session, self.to.name, self.from.name
         ));
-        say(&format!(
-            "attach with `letibot --session {}`",
-            self.session
-        ));
+        say(&format!("attach with `letibot --session {}`", self.session));
         Ok(())
     }
 
@@ -697,11 +720,21 @@ impl Move {
     /// **The checkout moves as a git branch**, and what is uncommitted stays behind.
     fn move_tree(&self, facts: &Facts, say: &mut Say<'_>) -> Result<Landed, String> {
         let short = short_id(&self.session);
-        let repo = Path::new(&facts.workspace)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "session".to_string());
+        // **The repository's name, not the checkout's directory name.** A session that has already
+        // hopped once works in `<root>/<repo>/<short>`, so the last component is the SESSION's id
+        // and taking it as the repository would nest every later hop one directory deeper.
+        let repo = {
+            let mut path = Path::new(&facts.workspace);
+            if path.file_name().map(|n| n.to_string_lossy()) == Some(short.as_str().into())
+                && let Some(parent) = path.parent()
+            {
+                path = parent;
+            }
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "session".to_string())
+        };
         let ws = sh_quote(&facts.workspace)?;
 
         // A folder that is not a repository has no HEAD to send, and copying it would be a
@@ -744,12 +777,24 @@ impl Move {
         // **The bundle, through a temp file on this box.** A session's HEAD can be hundreds of
         // megabytes, and holding one in memory to relay it would be a way to run out of it.
         let bundle = temp_path("tree")?;
-        let at = sh_quote(&bundle.display().to_string())?;
+        // **Two paths, and they are deliberately different.** A bundle made on THIS box is
+        // already here. One made on a host is written into that host's own root and then pulled
+        // back to a temp file here — the relay the module header owns up to — and naming the two
+        // the same would make the cleanup below delete the copy just fetched on any machine whose
+        // "remote" is this one.
+        let plant = if self.from.is_local() {
+            bundle.display().to_string()
+        } else {
+            format!("{}/.letibot/{}.bundle", self.from.root, self.session)
+        };
+        let at = sh_quote(&plant)?;
         self.from.run_ok(&format!(
             "cd {ws} && rm -f {at} && git bundle create {at} HEAD >/dev/null 2>&1"
         ))?;
-        self.from.read_to(&bundle.display().to_string(), &bundle)?;
-        let _ = self.from.run(&format!("rm -f {at}"));
+        if !self.from.is_local() {
+            self.from.read_to(&plant, &bundle)?;
+            let _ = self.from.run(&format!("rm -f {at}"));
+        }
         let bytes = std::fs::metadata(&bundle).map(|m| m.len()).unwrap_or(0);
         say(&format!("HEAD bundled: {} KiB", bytes.div_ceil(1024)));
 
@@ -759,8 +804,11 @@ impl Move {
             // merges, as with any worktree package.
             let dest = self.local_checkout()?;
             let refname = format!("remote/{}/{}", sanitize(&self.from.name), short);
+            // **The LOCAL copy of the bundle**, which is the one `git fetch` can open here — `at`
+            // is the path the bundle was made at, and on a host that is the host's.
+            let here = sh_quote(&bundle.display().to_string())?;
             self.to.run_ok(&format!(
-                "cd {} && git fetch -q {at} '+HEAD:refs/heads/{refname}'",
+                "cd {} && git fetch -q {here} '+HEAD:refs/heads/{refname}'",
                 sh_quote(&dest)?,
             ))?;
             say(&format!(
@@ -1142,12 +1190,7 @@ impl Move {
     /// (OpenSSH's unix-socket forwarding). A forward is a process, so it is started once and left:
     /// it does not belong to this verb's lifetime — a head attaches an hour later from a different
     /// terminal. A dropped one is re-established by the next attach ([`Move::reattach`]).
-    fn forward(
-        &self,
-        endpoint: &Endpoint,
-        session: &str,
-        say: &mut Say<'_>,
-    ) -> Result<(), String> {
+    fn forward(&self, endpoint: &Endpoint, session: &str, say: &mut Say<'_>) -> Result<(), String> {
         if endpoint.is_local() {
             return Ok(());
         }
@@ -1425,7 +1468,7 @@ fn close_session(
                 return Ok(());
             }
             Ok(ServerFrame::Rejected { reason, .. }) => {
-                return Err(format!("the daemon refused to close {session}: {reason}"))
+                return Err(format!("the daemon refused to close {session}: {reason}"));
             }
             Ok(_) => continue,
             Err(_) => {
@@ -1509,6 +1552,25 @@ fn now_ms() -> u128 {
 // The verb
 // -------------------------------------------------------------------------------------------
 
+/// **The sub-verbs the FAR SIDE of a move runs** — a host's own `letibot`, against its own
+/// store. They are internal (no launcher passes them, nothing invokes them by a program name)
+/// and they exist so that the half of a move that touches another machine's store is done by
+/// THAT machine's binary at THAT machine's commit, rather than by a second SQL implementation
+/// spoken over ssh.
+pub const FAR_VERBS: [&str; 5] = [
+    "--export-session",
+    "--import-session",
+    "--mark",
+    "--describe-session",
+    "--reattach",
+];
+
+/// Is this word one of [`FAR_VERBS`]? Asked by the dispatcher, which has no other way to tell a
+/// migration flag from a mistyped role.
+pub fn is_far_verb(word: &str) -> bool {
+    FAR_VERBS.contains(&word)
+}
+
 /// `letibot --migrate SESSION --to NAME`, `letibot migrate …`, `letibot --reattach SESSION`, and
 /// the sub-verbs the far side of a move runs.
 pub fn run(args: &[String]) -> ExitCode {
@@ -1569,7 +1631,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                 return Ok(());
             }
             other if other.starts_with('-') && other.len() > 1 => {
-                return Err(format!("{other} is not a migration flag.\n{}", usage()))
+                return Err(format!("{other} is not a migration flag.\n{}", usage()));
             }
             other => {
                 if session.is_some() {
@@ -1684,8 +1746,8 @@ fn run_inner(args: &[String]) -> Result<(), String> {
 
     // **Where the session lives NOW** — the local row's marker, because the local store is the
     // index of record. This is what makes `--to lubuntu1` work for a session already on lab2x1.
-    let local_store = Store::open(&store_path)
-        .map_err(|e| format!("opening {}: {e}", store_path.display()))?;
+    let local_store =
+        Store::open(&store_path).map_err(|e| format!("opening {}: {e}", store_path.display()))?;
     let here_row = local_store
         .session(&session)
         .map_err(|e| e.to_string())?
@@ -1727,7 +1789,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         (false, None) => {
             return Err(
                 "--to names where the session goes: a host from hosts.toml, or `local`.".into(),
-            )
+            );
         }
     };
 
@@ -1744,6 +1806,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         session,
         from,
         to,
+        local,
         patience,
         copy_keys,
         src,
@@ -1766,11 +1829,13 @@ fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
         root: host.root.clone(),
     };
     // `~` is the shell's, and this is the one place it is allowed to be: after this the root is
-    // absolute.
-    let root = if host.root.starts_with('~') {
-        format!("\"{}\"", host.root)
-    } else {
-        sh_quote(&host.root)?
+    // an absolute path. **Expanded to `$HOME/…` rather than left as `~`** — a tilde inside double
+    // quotes is a literal character, so `cd "~/letibot-remote"` creates a directory named `~`
+    // beside wherever the command happened to run, and every path after it is nonsense.
+    let root = match host.root.strip_prefix("~/") {
+        Some(rest) => format!("\"$HOME/{rest}\""),
+        None if host.root == "~" => "\"$HOME\"".to_string(),
+        None => sh_quote(&host.root)?,
     };
     let out = probe.run_ok(&format!(
         "d={root}; mkdir -p \"$d\" 2>/dev/null; cd \"$d\" && pwd -P"
@@ -1830,10 +1895,7 @@ mod tests {
         let host = hosts.get("lab2x1").expect("the host");
         assert_eq!(host.hostname, "lab2x1");
         assert_eq!(host.user, "dead");
-        assert_eq!(
-            host.key.as_deref(),
-            Some("~/.config/letibot/keys/headless")
-        );
+        assert_eq!(host.key.as_deref(), Some("~/.config/letibot/keys/headless"));
         assert_eq!(host.root, "~/letibot-remote");
         // `root` is the one key with a default: a host that omits it places work where one that
         // says so does.

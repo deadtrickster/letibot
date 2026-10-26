@@ -456,13 +456,14 @@ for a in "$@"; do
   # `--vm-arg --mem` hands `--mem` to firecode.
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in
-    --vm-arg|--host|--provider|--model|--mode|--session|-s|--rename|--delete|\
+    --vm-arg|--host|--provider|--model|--mode|--session|-s|--rename|--delete|--to|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms) skip=1 ;;
   esac
   case "$a" in
     --help|-h|help|--read-only|--writes|--bash|--no-bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
     --rename|--delete|--mode|--force|--vm|--vm-arg|--host|--provider|--model|\
+    --migrate|--reattach|--to|--copy-keys|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
     --*) die "unknown flag: $a
          ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;

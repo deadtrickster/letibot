@@ -927,6 +927,7 @@ dependencies = [
  "letibot-metrics",
  "letibot-sessionlog",
  "letibot-tokencore",
+ "letibot-transcript",
  "letibot-tui",
  "libc",
  "serde_json",

@@ -57,3 +57,6 @@ libc = "0.2"
 # daemons: absent apparatus SKIPS loudly rather than failing, and
 # LETIBOT_REQUIRE_APPARATUS=1 refuses the skip. See `letibot_tokencore::apparatus`.
 letibot-tokencore.workspace = true
+# The migration test builds a store by hand, and a store's rows ARE transcript items — the
+# crate is not a dependency of the binary, so it is named here rather than re-exported.
+letibot-transcript.workspace = true

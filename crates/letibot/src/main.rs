@@ -296,9 +296,7 @@ fn main() -> ExitCode {
                     stats::run_stats(&tail())
                 } else if word == "fb" {
                     stats::run_fb(&tail())
-                } else if word == "migrate" {
-                    migrate::run(&tail())
-                } else if word == "--migrate" {
+                } else if word == "migrate" || word == "--migrate" {
                     // **The spelling the operator and the brief use**, so the launcher can pass
                     // its own line through unchanged: `letibot --migrate SESSION --to NAME`.
                     migrate::run(&tail())
@@ -308,6 +306,14 @@ fn main() -> ExitCode {
                 } else if word == "--version" || word == "-V" {
                     println!("letibot {}", env!("CARGO_PKG_VERSION"));
                     ExitCode::SUCCESS
+                } else if migrate::is_far_verb(word) {
+                    // **The far side of a move runs THIS binary's own sub-verbs** — a host's
+                    // `letibot --export-session …` is this same executable, built from the same
+                    // commit, so the verb is recognised here and the flag itself is the module's
+                    // first argument (it parses flags anywhere on its line).
+                    let mut line = vec![word.to_string()];
+                    line.extend(tail());
+                    migrate::run(&line)
                 } else {
                     eprintln!("letibot: no such role: {word}");
                     eprintln!(

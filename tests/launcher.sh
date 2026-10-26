@@ -603,4 +603,51 @@ else
   echo "skip the stop and start-wait cases: no python3"
 fi
 
+# ---------------------------------------------------------------------------
+# **A SESSION THAT LIVES ON A HOST** (`docs/remote-hosts.md` RH4): the verb passes through,
+# and an attach goes to the forwarded socket instead of to this folder's daemon.
+#
+# The launcher never migrated anything itself — that is `letibot migrate` — but it is the thing
+# that decides WHERE a head attaches, and the record in the rundir is the whole of what it
+# reads. Both halves are pinned here.
+cat > "$T/bin/letibot" <<'STUB'
+#!/usr/bin/env bash
+printf 'letibot'; printf ' %q' "$@"; printf '\n'
+STUB
+chmod +x "$T/bin/letibot"
+
+out="$(run "$DEFAULT_ONLY" --migrate s-4242 --to lab2x1)"
+expect "--migrate is handed to the migration verb with this box's store" "$out" \
+  "^letibot migrate s-4242 --to lab2x1 --store "
+refuse "  ...and the launcher never starts a daemon for it" "$out" "^harnessd "
+
+out="$(run "$DEFAULT_ONLY" --reattach s-4242)"
+expect "--reattach is the same verb's other spelling" "$out" \
+  "^letibot migrate --reattach s-4242 --store "
+
+# The record a move writes, beside this folder's own daemon records. Its socket does not
+# exist here (nothing forwards in a test), so the launcher re-establishes first and THEN
+# hands the head the forwarded socket — which is the order that makes a dropped forward
+# invisible to the person attaching.
+mkdir -p "$T/run/letibot"
+# **A head stub that says what it was handed** — the last case above leaves one that only says
+# it ran, and what this case is about is the ARGUMENTS.
+cat > "$T/bin/letibot-tui" <<'STUB'
+#!/usr/bin/env bash
+printf 'head'; printf ' %q' "$@"; printf '\n'
+STUB
+chmod +x "$T/bin/letibot-tui"
+printf '{"workspace": "/elsewhere/checkout/4242", "socket": "%s", "host": "lab2x1", "session": "s-4242"}' \
+  "$T/run/letibot/migrated-s-4242.sock" > "$T/run/letibot/migrated-s-4242.json"
+out="$(run "$DEFAULT_ONLY" --session s-4242)"
+expect "a moved session's forward is re-established before the head runs" "$out" \
+  "re-establishing the forward"
+expect "  ...and the head is handed the FORWARDED socket" "$out" \
+  "--socket $T/run/letibot/migrated-s-4242.sock"
+expect "  ...and resumes that session, not this folder's" "$out" "--resume s-4242"
+refuse "  ...and no daemon is started for this folder" "$out" "^harnessd "
+rm -f "$T/run/letibot/migrated-s-4242.json"
+
+
+
 [ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }
