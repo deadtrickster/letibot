@@ -44,6 +44,64 @@
 
 use serde::{Deserialize, Serialize};
 
+/// **The size a `data:` reference states, read out of the header only** — so a head can cut a
+/// picture's cell box without decoding the pixels.
+///
+/// A tool result carries a [`Media`], which already has `width`/`height`; a **user row's image part
+/// carries the reference and nothing else** ([`crate::UserPart::Image`]), and the head that draws it
+/// needs the aspect the box keeps. So this decodes a bounded prefix of the base64 — 4 KiB, which is
+/// more than enough for every header walked below — and asks [`dimensions`], the same function
+/// [`Media::of`] uses. One walk over one format table, and a format whose size this module does not
+/// parse answers `(None, None)` here exactly as it does there.
+///
+/// The mime comes from the reference's own `data:<mime>;base64,` prefix and not from a file name:
+/// there is no name here, and a name is the weaker claim anyway.
+pub fn size_of_data_ref(data_ref: &str) -> (Option<u32>, Option<u32>) {
+    let Some((head, _)) = data_ref.split_once(";base64,") else {
+        return (None, None);
+    };
+    let mime = head.trim_start_matches("data:");
+    let payload = wire_payload(data_ref);
+    // 4 KiB of bytes needs 5462 base64 characters, and the padding never crosses the walk.
+    let take = payload.len().min(5 * 1024);
+    let bytes = decode_base64(&payload[..take]);
+    dimensions(mime, &bytes)
+}
+
+/// **Standard base64, decoded** — [`encode_base64`] backwards, and the alphabet is the same
+/// constant read the other way.
+///
+/// **Tolerant on purpose**: padding, a stray character, a payload cut mid-quantum. It is used to
+/// read a header out of bytes a head did not build (a pasted picture, a row written by another
+/// version), and refusing there would turn *an image of an unknown shape* into *no image at all*.
+/// What it does not do is guess: a character outside the alphabet ends the decode, so a corrupted
+/// payload yields a short buffer and `(None, None)` rather than wrong pixels.
+pub fn decode_base64(text: &str) -> Vec<u8> {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for c in text.bytes() {
+        let Some(v) = A.iter().position(|a| *a == c) else {
+            if c == b'=' {
+                break;
+            }
+            // Whitespace is padding a line-wrapped encoder leaves; anything else is corruption.
+            if c.is_ascii_whitespace() {
+                continue;
+            }
+            break;
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
+}
+
 /// **The base64 alphabet, spelled once for the whole tree.**
 ///
 /// It is here — in the crate both the tool layer and the log can see — because two callers need it
@@ -395,6 +453,41 @@ mod tests {
         // A name that says nothing gets nothing.
         assert_eq!(sniff_mime("notes.txt", unknown), None);
         assert_eq!(sniff_mime("Makefile", unknown), None);
+    }
+
+    /// **A user row's image part carries a reference, and the size still comes out of the
+    /// header** — with the base64 decoded no further than the IHDR needs.
+    #[test]
+    fn a_data_ref_states_its_size_without_decoding_the_picture() {
+        use super::{decode_base64, encode_base64, size_of_data_ref};
+        let png = png_header(640, 480);
+        let reference = format!("data:image/png;base64,{}", encode_base64(&png));
+        assert_eq!(size_of_data_ref(&reference), (Some(640), Some(480)));
+        // The same bytes with no prefix at all: the mime is the only thing that came from the
+        // header's spelling, so a bare payload has no format to read and no size to give.
+        assert_eq!(size_of_data_ref(&encode_base64(&png)), (None, None));
+        // A format whose header this module does not walk answers absent, not 0x0.
+        assert_eq!(
+            size_of_data_ref("data:image/gif;base64,R0lGODlh"),
+            (None, None)
+        );
+        // Truncated payloads decode to what they have; a header cut short is absent, not wrong.
+        assert_eq!(size_of_data_ref("data:image/png;base64,"), (None, None));
+        // And the decoder is `encode_base64` backwards over the same alphabet.
+        for bytes in [&b""[..], b"f", b"fo", b"foo", &png[..]] {
+            assert_eq!(decode_base64(&encode_base64(bytes)), bytes);
+        }
+        assert_eq!(
+            decode_base64("Zm9v\n"),
+            b"foo",
+            "a wrapped encoder's newline"
+        );
+        assert_eq!(decode_base64("Zg=="), b"f");
+        assert_eq!(
+            decode_base64("Zm9v!!"),
+            b"foo",
+            "corruption ends the decode"
+        );
     }
 
     #[test]
