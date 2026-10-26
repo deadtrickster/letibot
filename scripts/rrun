@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# rrun — run build/test steps for a git worktree on a remote host, and keep a local status file.
+#
+#   rrun NAME WORKTREE [--host H] [--gate | -- STEP...]
+#
+# The branch's HEAD (and main, for check-fmt) goes over as a git bundle; the steps run detached on
+# the host as a transient systemd --user service (`rrun-NAME`; `systemctl --user stop rrun-NAME`
+# stops it), in ~/remote-runs/runs/NAME/tree, with a clean environment and one cargo target dir per
+# host. A host is one of hosts.toml's (its hostname and user; default lab2x1, the box that can build
+# letibot: the fork's llama.cpp and the vocabularies are there). ssh uses letibot's own key and known_hosts, never ~/.ssh. Status lands in
+# ~/.local/share/letibot/remote-runs/NAME.json, which the packages pane's Runs tab reads.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+runner="$here/rrun-runner.py"
+name="$1"; wt="$2"; shift 2
+host=lab2x1
+steps=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) host="$2"; shift 2 ;;
+    --gate) steps=("sh scripts/check-fmt.sh main" \
+                   "cargo clippy --offline --all-targets" \
+                   "LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace --no-fail-fast"); shift ;;
+    --) shift; steps=("$@"); break ;;
+    *) echo "rrun: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+[ ${#steps[@]} -gt 0 ] || { echo "rrun: no steps (use --gate or -- STEP...)" >&2; exit 2; }
+
+state_dir="$HOME/.local/share/letibot/remote-runs"; mkdir -p "$state_dir"
+local_status="$state_dir/$name.json"
+key="$HOME/.config/letibot/keys/$host"
+ssh_=(ssh -F /dev/null -i "$key" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes
+      -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.config/letibot/known_hosts"
+      -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3 "${RRUN_USER:-$USER}@$host")
+
+branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
+sha="$(git -C "$wt" rev-parse --short HEAD)"
+bundle="$(mktemp -t rrun).bundle"
+git -C "$wt" bundle create -q "$bundle" HEAD "$branch" main 2>/dev/null || git -C "$wt" bundle create -q "$bundle" HEAD main
+steps_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${steps[@]}")"
+now=$(date +%s)
+python3 - "$local_status" "$name" "$host" "$branch" "$sha" "$now" "$steps_json" <<'PY'
+import json, sys
+p, name, host, branch, sha, now, steps = sys.argv[1:]
+json.dump({"name": name, "host": host, "branch": branch, "sha": sha, "state": "shipping",
+           "started": int(now), "updated": int(now),
+           "steps": [{"cmd": c, "state": "waiting"} for c in json.loads(steps)]}, open(p, "w"))
+PY
+
+rdir="remote-runs/runs/$name"
+"${ssh_[@]}" "mkdir -p ~/$rdir ~/remote-runs/bin && rm -rf ~/$rdir/tree ~/$rdir/step-*.log"
+"${ssh_[@]}" "cat > ~/remote-runs/bin/runner.py" < "$runner"
+"${ssh_[@]}" "cat > ~/$rdir/src.bundle" < "$bundle"; rm -f "$bundle"
+# The checkout: a clone of the bundle (HEAD detached at the branch tip; main for check-fmt).
+"${ssh_[@]}" "cd ~/$rdir && git clone -q src.bundle tree && cd tree && git checkout -q --detach $sha && git branch -f main origin/main 2>/dev/null; git log --oneline -1"
+# The status as it starts.
+"${ssh_[@]}" "cat > ~/$rdir/status.json" < "$local_status"
+# The steps travel as a FILE: inside the remote command line a step with quotes or a pipe broke it.
+printf '%s' "$steps_json" | "${ssh_[@]}" "cat > ~/$rdir/steps.json"
+# A transient user SERVICE, not a scope: systemd-run returns at once and the run is systemd's
+# child, not this ssh session's — a scope kept the session (and this launcher) open until the run
+# ended. The unit's name is the run's, so `systemctl --user stop rrun-NAME` stops it.
+"${ssh_[@]}" "systemctl --user stop rrun-$name 2>/dev/null; systemctl --user reset-failed rrun-$name 2>/dev/null; \
+# **A clean, explicit environment.** A user service inherits the systemd user manager's
+# environment, which on a desktop box is the desktop session's (TERM=qterminal, DISPLAY, the
+# operator's ssh agent socket): a gate's result then depends on what the desktop exported — the
+# first Linux gate's colour test failed on exactly that (2026-10-26). `env -i` and a fixed set.
+  XDG_RUNTIME_DIR=/run/user/\$(id -u) systemd-run --user --quiet --collect --unit=rrun-$name -p Delegate=yes \
+  --working-directory=\$HOME/$rdir -p StandardOutput=file:\$HOME/$rdir/runner.log -p StandardError=file:\$HOME/$rdir/runner.log \
+  env -i HOME=\$HOME USER=\$USER LOGNAME=\$USER SHELL=/bin/bash LANG=C.UTF-8 TERM=xterm-256color \
+      XDG_RUNTIME_DIR=/run/user/\$(id -u) CARGO_TARGET_DIR=\$HOME/remote-runs/target \
+      PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin \
+  \$HOME/.local/bin/mise exec -C \$HOME/$rdir/tree -- python3 \$HOME/remote-runs/bin/runner.py \$HOME/$rdir \$HOME/$rdir/steps.json && echo started"
+
+# Keep the local copy fresh until the run ends (and once more after).
+(
+  while sleep 15; do
+    if "${ssh_[@]}" "cat ~/$rdir/status.json" > "$local_status.tmp" 2>/dev/null && [ -s "$local_status.tmp" ]; then
+      mv -f "$local_status.tmp" "$local_status"
+      st=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$local_status")
+      case "$st" in passed|failed) exit 0 ;; esac
+    fi
+  done
+) > /dev/null 2>&1 &
+disown
+echo "rrun: $name ($branch @ $sha) on $host — status in $local_status"
