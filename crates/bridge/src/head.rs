@@ -28,7 +28,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
-use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, TodoEntry};
+use letibot_sessionlog::event::{
+    DeltaTarget, Envelope, SessionEvent, TodoEntry, TodoNeed, TodoStatus,
+};
 use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
@@ -409,6 +411,12 @@ pub struct State {
     /// When the turn last went idle, so `wait` can tell a turn that ended from a gap
     /// between rounds (see [`SETTLE`]).
     pub idle_since: Option<Instant>,
+    /// **Background jobs started and not yet settled.** A model that backgrounds a build and
+    /// ends its turn to wait for it is woken by the job's settlement and goes on: QA's turn
+    /// ended *waiting on the last probe target*, and a `wait` that answered there handed the
+    /// orchestrator a package with an hour of work left. Joined from the `Backgrounded`
+    /// handle and the `JobSettled` that names it.
+    pub jobs_open: std::collections::BTreeSet<String>,
     /// Whether the round in view has finished generating: calls that finish while it is
     /// still writing are not the turn's last.
     round_done: bool,
@@ -434,6 +442,20 @@ impl State {
         } else {
             &self.last_row
         }
+    }
+
+    /// **Whether the work is waiting on a job of its own**: an unfinished todo row that needs
+    /// a job still running. Not every open job — a server left running, or the test's
+    /// `sleep 30`, must not hold a later turn open for ever — only the jobs the model said
+    /// its work waits on, which is what the board's `needs` edge is (QA's row read
+    /// `needs: job j7262` while its turn had ended).
+    pub fn waiting_on_jobs(&self) -> bool {
+        self.todos.iter().any(|t| {
+            t.status != TodoStatus::Completed
+                && t.needs.iter().any(
+                    |n| matches!(n, TodoNeed::Job { handle } if self.jobs_open.contains(handle)),
+                )
+        })
     }
 
     fn go_idle(&mut self) {
@@ -481,6 +503,13 @@ impl State {
                 self.seed(&snapshot);
             }
             ServerFrame::Todos { todos, .. } => self.todos = todos,
+            ServerFrame::Jobs { jobs, .. } => {
+                self.jobs_open = jobs
+                    .into_iter()
+                    .filter(|j| j.running)
+                    .map(|j| j.id)
+                    .collect();
+            }
             ServerFrame::Rejected { reason, .. } => self.rejection = Some(reason),
             ServerFrame::Bye { reason } => self.closed = Some(reason),
             _ => {}
@@ -675,6 +704,7 @@ impl State {
                     handle, ran_for_ms, ..
                 } = &outcome
                 {
+                    self.jobs_open.insert(handle.clone());
                     self.events.push(
                         Entry::of("job", "started")
                             .named(handle.clone())
@@ -703,6 +733,7 @@ impl State {
                 elapsed_ms,
                 ..
             } => {
+                self.jobs_open.remove(&job);
                 self.events.push(
                     Entry::of("job", "ended")
                         .named(job)
@@ -873,6 +904,9 @@ impl Head {
         {
             let mut c = client.lock().unwrap_or_else(|e| e.into_inner());
             let _ = c.list_todos();
+            // Nor are the running jobs, and `wait` attaches fresh every time: without the
+            // list, a turn that ended to wait on a job would read as the work being done.
+            let _ = c.list_jobs();
         }
         let head = Head {
             session: session.to_string(),
@@ -968,6 +1002,7 @@ impl Head {
             in_flight: g.in_flight.clone(),
             idle_since: g.idle_since,
             round_done: g.round_done,
+            jobs_open: g.jobs_open.clone(),
             turned: g.turned,
             events: g.events.clone(),
             closed: g.closed.clone(),
@@ -1135,9 +1170,18 @@ impl Head {
                 Turn::Running => armed = true,
                 // Ended means quiet for [`SETTLE`]: a round's end is not the turn's, and the
                 // next round's `TurnStarted` re-arms this before the window runs out.
-                Turn::Idle | Turn::Failed(_)
-                    if armed && g.idle_since.is_none_or(|t| t.elapsed() >= SETTLE) =>
+                // A job still running will wake the model again, so the turn that ended to
+                // wait for it is not the end of the work; a failure ends it regardless.
+                Turn::Idle
+                    if armed
+                        && !g.waiting_on_jobs()
+                        && g.idle_since.is_none_or(|t| t.elapsed() >= SETTLE) =>
                 {
+                    return Attention::TurnEnded {
+                        message: g.last_message().to_string(),
+                    };
+                }
+                Turn::Failed(_) if armed && g.idle_since.is_none_or(|t| t.elapsed() >= SETTLE) => {
                     return Attention::TurnEnded {
                         message: g.last_message().to_string(),
                     };
@@ -1148,7 +1192,7 @@ impl Head {
             if now >= deadline {
                 return Attention::Timeout;
             }
-            if !armed && g.turned && now >= grace {
+            if !armed && g.turned && !g.waiting_on_jobs() && now >= grace {
                 // Nothing turned, and something has turned before: answer with what is here
                 // rather than waiting out a timeout that would report a health problem this
                 // session does not have.
@@ -1162,8 +1206,11 @@ impl Head {
             // A session that has never turned waits the whole deadline: there is no grace
             // question to ask about a session with no turn to have ended.
             let until = match g.idle_since {
-                Some(t) if armed && g.turn != Turn::Running => deadline.min(t + SETTLE),
-                _ if armed || !g.turned => deadline,
+                // Open jobs: nothing to time here, the job's settlement rings the bell.
+                Some(t) if armed && g.turn != Turn::Running && !g.waiting_on_jobs() => {
+                    deadline.min(t + SETTLE)
+                }
+                _ if armed || !g.turned || g.waiting_on_jobs() => deadline,
                 _ => deadline.min(grace),
             };
             let wait = until.saturating_duration_since(now);
@@ -1454,6 +1501,63 @@ mod tests {
             "idle",
             "a round that left nothing open ends idle"
         );
+    }
+
+    /// **A turn that ended to wait on its own job is not the end of the work.** QA ended a
+    /// turn *waiting on the last probe target*; the job's settlement woke it again. The
+    /// open set follows the backgrounded handle to its `JobSettled`, and a fresh head
+    /// (which is what `wait` is) seeds it from the daemon's job list.
+    #[test]
+    fn a_job_left_running_keeps_the_work_open() {
+        let mut state = State::default();
+        let mut seq = 0;
+        let mut feed = |state: &mut State, event: SessionEvent| {
+            seq += 1;
+            state.fold(ServerFrame::Event(env(seq, event)));
+        };
+        feed(&mut state, testing::turn_started("t1"));
+        feed(
+            &mut state,
+            testing::proposed_on("t1", "c1", "bash", "cargo test"),
+        );
+        feed(
+            &mut state,
+            finished(
+                "c1",
+                ToolOutcome::Backgrounded {
+                    handle: "j9".into(),
+                    ran_for_ms: 900,
+                    how: Backgrounding::Asked,
+                    next: "job_output j9".into(),
+                },
+            ),
+        );
+        feed(&mut state, testing::turn_finished("t1"));
+        assert_eq!(state.word(), "idle");
+        assert!(state.jobs_open.contains("j9"), "the job is still running");
+        assert!(
+            !state.waiting_on_jobs(),
+            "an open job nothing waits on (a server, a sleep) holds nothing open"
+        );
+        let row = |status| TodoEntry {
+            status,
+            needs: vec![TodoNeed::Job {
+                handle: "j9".into(),
+            }],
+            ..serde_json::from_value(json!({"content": "run the tests", "status": "pending"}))
+                .expect("a todo row")
+        };
+        state.fold(ServerFrame::Todos {
+            session_id: "s-recorded".into(),
+            todos: vec![row(TodoStatus::InProgress)],
+        });
+        assert!(
+            state.waiting_on_jobs(),
+            "the board says the work waits on j9"
+        );
+        feed(&mut state, settled("j9", "exited 0", 60_000));
+        assert!(state.jobs_open.is_empty(), "its settlement closes it");
+        assert!(!state.waiting_on_jobs());
     }
 
     /// **The report outlives the chatter after it, and the spend is the package's.** P1

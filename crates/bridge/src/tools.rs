@@ -161,6 +161,11 @@ impl Bridge {
                 "predicted": s.spent.predicted_tokens,
                 "rounds": s.rounds,
             },
+            // The model's own background jobs still running: each will wake it again, so an
+            // idle session with any of these is waiting, not done.
+            "jobs_open": s.jobs_open.iter().collect::<Vec<_>>(),
+            // Whether an unfinished todo needs one of them: `wait` holds while this is true.
+            "waiting_on_jobs": s.waiting_on_jobs(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
             // **What the daemon said to the last frame it refused.** An answer that arrives
             // after its card closed is refused rather than applied (`docs`: a reply to a
