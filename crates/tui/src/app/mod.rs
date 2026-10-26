@@ -572,6 +572,21 @@ pub struct App {
     pub(crate) images_scanned: usize,
     /// Upload bytes for the head to write before the next frame (kitty graphics).
     pub(crate) image_uploads: Vec<Vec<u8>>,
+    /// **Which picture protocol the terminal speaks** (`rano::term::proto`), decided from the same
+    /// environment [`App::features`] came from. [`App::set_features`] is where it is set, so the
+    /// one decision is made once — a head that asked `TERM` again per frame would have two answers
+    /// to one question.
+    pub(crate) proto: rano::term::Proto,
+    /// **The pictures a view of the head draws through rano's widget** — the enlarged picture in
+    /// the popup, whose box moves with the frame and which has to be deleted when the view closes.
+    /// The conversation's own thumbnails are one upload a row for ever (`images_sent`), because a
+    /// row that scrolls back has to still show its picture.
+    pub(crate) pictures: rano::term::Pictures,
+    /// **The thumbnails the last frame drew**, as `(screen row, index into `picture_refs`)` — what
+    /// a click acts on and what `Enter` opens. Recorded by the draw, read by the key.
+    pub(crate) picture_rows: Vec<(usize, usize)>,
+    /// The pictures those rows show, this frame: what a click names.
+    pub(crate) picture_refs: Vec<PictureRef>,
     /// **A command of the operator's own is waiting for an answer**: the request, and what has
     /// been typed for it so far.
     ///
@@ -1919,6 +1934,10 @@ impl App {
             images_box: 0,
             images_scanned: 0,
             image_uploads: Vec::new(),
+            proto: rano::term::Proto::None,
+            pictures: rano::term::Pictures::default(),
+            picture_rows: Vec::new(),
+            picture_refs: Vec::new(),
             prompt: None,
             prompt_buf: String::new(),
             prompt_away: false,
@@ -2303,6 +2322,7 @@ mod notes;
 pub(crate) mod one_event;
 mod panes;
 mod pick;
+mod pictures;
 mod plugin;
 mod pointer;
 mod prefs;
@@ -2330,6 +2350,7 @@ pub use keys::*;
 pub(crate) use notes::*;
 pub(crate) use panes::*;
 pub(crate) use pick::*;
+pub(crate) use pictures::*;
 pub(crate) use plugin::*;
 pub(crate) use prefs::*;
 pub(crate) use scroll::*;

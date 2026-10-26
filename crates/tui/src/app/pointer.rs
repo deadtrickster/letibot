@@ -265,13 +265,14 @@ impl App {
                 })
             }
             // A notice and a note card are one hit a row, and every row of one opens it: the
-            // block is every row recorded for the same one.
-            Target::Notice | Target::NoteCard => {
+            // block is every row recorded for the same one. **A picture's rows are the same**: the
+            // hover lights the whole box, and a click anywhere on it opens the picture.
+            Target::Notice | Target::NoteCard | Target::Picture => {
                 let k = hit.stop_at(row)?;
-                let of = if hit.target == Target::Notice {
-                    &self.notice_rows
-                } else {
-                    &self.card_rows
+                let of = match hit.target {
+                    Target::Notice => &self.notice_rows,
+                    Target::NoteCard => &self.card_rows,
+                    _ => &self.picture_rows,
                 };
                 Some(Hovered {
                     rows: of

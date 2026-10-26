@@ -40,6 +40,21 @@ pub(crate) fn user_row_lines(
     match speaker {
         letibot_transcript::Speaker::Operator => {
             let mut rows = user_block(&text, it.ts, cfg);
+            // **The pictures this prompt attached, under their chips** — the operator, from a
+            // fresh session with an image pasted and sent: *"image doesnt render"*. The chip in
+            // their own words names it (`[image 1 · png · 195 KiB]`), and the picture itself is
+            // drawn below the block as rows of kitty placeholders the terminal fills from the
+            // bytes the upload pass sent (`app::attention::queue_image_uploads`).
+            //
+            // **Where the terminal takes no picture the chip is the whole of it**, which is why
+            // this is a `cfg.images` arm and nothing else: a head that wrote placeholders to a
+            // terminal that does not fill them would draw a row of invisible tofu.
+            //
+            // Every picture is drawn in the order the row carries them, so two of them are two
+            // thumbnails and not one.
+            if cfg.images {
+                rows.extend(user_pictures(&it.item_id, parts, cfg));
+            }
             // **An answer names the question it answers** — the operator: *"my reply doesnt
             // have any hint on the question. lets mention the question i replied to"*. A faint
             // line under their words, which stay verbatim (the trail cites them); see
@@ -135,6 +150,37 @@ pub(crate) fn notice_lines(
         } else {
             out.push(session_notice(part).cut(cols));
         }
+    }
+    out
+}
+
+/// **A user row's thumbnails, as the rows they are drawn in**: the picture's placeholder rows,
+/// cut to the box the width gives it and set in under the operator's block.
+///
+/// The rows are [`rano::term::graphics::image_rows`] — the same ones a tool result's picture is
+/// drawn with, and the same cluster the terminal reads its placement out of. Nothing is read here:
+/// a part whose bytes the upload pass has not reached yet draws nothing this frame, and the pass
+/// invalidates the history when it does.
+pub(crate) fn user_pictures(
+    item_id: &str,
+    parts: &[UserPart],
+    cfg: &crate::ui::render::RenderConfig,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (k, p) in parts.iter().enumerate() {
+        if !matches!(p, UserPart::Image { .. }) {
+            continue;
+        }
+        let Some((id, cols, rows, _)) = crate::ui::render::user_picture_box(item_id, k, cfg.width)
+        else {
+            continue;
+        };
+        let inset = "  ";
+        out.extend(
+            rano::term::graphics::image_rows(id, cols, rows)
+                .into_iter()
+                .map(|r| format!("{inset}{r}")),
+        );
     }
     out
 }

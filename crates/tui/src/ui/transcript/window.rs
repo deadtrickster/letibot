@@ -661,6 +661,16 @@ impl App {
         self.card_rows = self.card_rows_in(start, end);
         // **And the clauses of the run markers**, for a click to open that kind (`runclick`).
         self.marker_rows = self.marker_rows_in(start, end);
+        // **And which of them are a picture's thumbnail rows**, for a click — or Enter — to open
+        // the picture larger (`app::pictures`). Read off the same window and the same spans, so the
+        // row a click lands on is the row the frame drew the picture in.
+        let pictures = self.picture_rows_in(start, end);
+        self.picture_refs = pictures.iter().map(|(_, p)| p.clone()).collect();
+        self.picture_rows = pictures
+            .iter()
+            .enumerate()
+            .map(|(k, (y, _))| (*y, k))
+            .collect();
         // **And the live pane's own marker** — the turn in flight is drawn below the history, so
         // its clauses are read off this frame's rows (`live_marker_rows`).
         let live = self.live_marker_rows(start, &out);
@@ -684,6 +694,7 @@ impl App {
             self.notice_rows.retain(|(r, _)| *r != 0);
             self.card_rows.retain(|(r, _)| *r != 0);
             self.marker_rows.retain(|m| m.y != 0);
+            self.picture_rows.retain(|(r, _)| *r != 0);
         }
         if !self.following() {
             let behind = total - end;
@@ -696,6 +707,7 @@ impl App {
             self.notice_rows.retain(|(r, _)| *r != last);
             self.card_rows.retain(|(r, _)| *r != last);
             self.marker_rows.retain(|m| m.y != last);
+            self.picture_rows.retain(|(r, _)| *r != last);
         }
         out
     }

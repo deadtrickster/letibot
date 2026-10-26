@@ -55,6 +55,26 @@ pub(crate) enum PopupBody {
         /// longer carries), a System row's, the flash notice's. `None` reads it from the text.
         title: Option<(String, Role)>,
     },
+    /// **A picture, larger** — the operator's own attachment, opened from its thumbnail by a click
+    /// or by Enter ([`App::open_picture`]).
+    ///
+    /// It rides in this popup rather than in one of its own because what the reader does with it is
+    /// what they do with a change or a notice: read it, scroll it, Esc out. A second overlay would
+    /// be a second set of keys, a second entry in `drawn()` and a second place the cursor has to be
+    /// hidden.
+    Picture {
+        /// The image id the thumbnail's bytes were uploaded under — the same id, so opening a
+        /// picture is a *placement* at a bigger box and never a second upload.
+        id: u32,
+        /// The PNG, base64, without its `data:` prefix — what the kitty protocol carries.
+        png: String,
+        /// `image/png`, for the edge: the operator may have pasted a format this head cannot draw.
+        media_type: String,
+        /// Pixels, when the header gave them: the box keeps the picture's shape.
+        px: (Option<u32>, Option<u32>),
+        /// The PNG's own size, for the edge.
+        bytes: usize,
+    },
 }
 
 /// **A note drawn as a card's one line** — where the line is in `hist_lines`, and the text the
@@ -83,7 +103,11 @@ impl App {
         self.open_popup(PopupBody::Change(f.clone()));
     }
 
-    fn open_popup(&mut self, body: PopupBody) {
+    pub(crate) fn open_popup(&mut self, body: PopupBody) {
+        // **One popup at a time, and the old one gives back what it held** — a picture's bytes are
+        // placed where that view put it, and the rows that named it go with the view: the terminal
+        // cannot free what nothing draws.
+        self.close_popup();
         self.diff_popup = Some(DiffPopup {
             body,
             scroll: 0,
@@ -91,6 +115,26 @@ impl App {
             laid: None,
             room: 0,
         });
+    }
+
+    /// **Close the popup, and let go of what it drew** — a change's rows need nothing, a picture's
+    /// bytes do: they are deleted in the terminal's own terms (see
+    /// [`Pictures`](rano::term::Pictures)).
+    pub(crate) fn close_popup(&mut self) {
+        self.diff_popup = None;
+        for bytes in self.pictures.forget() {
+            self.image_uploads.push(bytes);
+        }
+    }
+
+    /// **The bytes a picture popup needs, for the box the frame drew** — the rano widget's own
+    /// decision (upload once, place when the box moves, delete when the view closes), so a resize
+    /// under an open picture costs a placement and not the picture.
+    pub(crate) fn sync_picture_popup(&mut self, want: Option<rano::term::Picture>) {
+        let want: Vec<rano::term::Picture> = want.into_iter().collect();
+        for bytes in self.pictures.sync(&want) {
+            self.image_uploads.push(bytes);
+        }
     }
 
     /// **Open row `k`'s completion notice whole** — the click on its compact lines. A job whose
@@ -473,6 +517,50 @@ impl App {
         }
     }
 
+    /// **The popup's rows for a picture at `width`**: the picture's placeholders in a box cut to
+    /// the frame, and nothing where the terminal cannot draw one — the edge says why, so an empty
+    /// box is never drawn without a reason beside it.
+    ///
+    /// **The box is the frame's, not the thumbnail's**: the point of opening a picture is to see
+    /// more of it, so this is most of the width where the thumbnail was half. The height cap is the
+    /// protocol's ([`rano::term::graphics::IMAGE_MAX_ROWS`]) and not the popup's, because the layout
+    /// must not depend on how many rows the frame happened to give it — a layout that did would be
+    /// re-made on every resize.
+    pub(crate) fn picture_popup_layout(
+        &self,
+        id: u32,
+        png: &str,
+        px: (Option<u32>, Option<u32>),
+        width: usize,
+    ) -> Layout {
+        let proto = self.proto;
+        let split = self.diff_split;
+        if !proto.speaks() {
+            return Layout {
+                width,
+                split,
+                rows: Vec::new(),
+                first: 0,
+                note: Some(
+                    "this terminal draws no pictures — the chip in the conversation names this one"
+                        .to_string(),
+                ),
+            };
+        }
+        // **Four fifths of the frame** — `image_box` halves what it is given, so it is handed the
+        // width a box of 4/5 would have been cut at.
+        let box_cols = rano::term::graphics::image_box(width.saturating_mul(8) / 5);
+        let (cols, rows) = rano::term::graphics::image_cells(px.0, px.1, box_cols);
+        let picture = rano::term::Picture::from_base64(id, png, (cols, rows));
+        Layout {
+            width,
+            split,
+            rows: picture.lines(proto),
+            first: 0,
+            note: None,
+        }
+    }
+
     /// **The popup owns the keyboard while it is open**: the arrows and the paging keys read
     /// it, `ctrl-]` hands the same change to the editor, and Esc closes it — and nothing else.
     ///
@@ -508,14 +596,14 @@ impl App {
         let max = len.saturating_sub(page);
         match k {
             Key::Esc | Key::CtrlC => {
-                self.diff_popup = None;
+                self.close_popup();
             }
             // **`ctrl-]` edits a change**; a notice has no file behind it, so the key is the
             // popup's and does nothing.
             Key::CtrlBracket => {
                 if let PopupBody::Change(f) = &p.body {
                     let f = f.clone();
-                    self.diff_popup = None;
+                    self.close_popup();
                     self.open_in_editor(&f);
                 }
             }

@@ -106,8 +106,19 @@ impl App {
             .then(|| self.wiring.workspace.clone())
             .filter(|w| !w.is_empty());
         self.cfg.light = self.features.background && self.light_background == Some(true);
-        self.cfg.images = self.features.images;
-        if self.features.images {
+        // **Pictures, in the one form this head can draw** — the kitty protocol's Unicode
+        // placeholders, which are rows of ordinary text a terminal fills from bytes it holds. That
+        // form is what makes a picture survive a scroll, a resize and a redraw for the price of one
+        // upload, and it is why the gate is the PROTOCOL and not `features.images`: iTerm2's inline
+        // protocol draws *into cells at the cursor*, so a diffing painter erases it on the next
+        // repaint and would have to re-send megabytes a frame. Where the terminal offers only that
+        // one, the chip in the operator's own words is the picture's whole representation — which
+        // is what this head drew for every picture before this.
+        self.cfg.images = matches!(
+            self.proto,
+            rano::term::Proto::Kitty | rano::term::Proto::KittyPassthrough
+        );
+        if self.cfg.images {
             self.queue_image_uploads();
         }
         // The TERMINAL's width, kept beside the frame's. `cfg.width` is the inner
@@ -854,6 +865,11 @@ impl App {
         self.file_rows.clear();
         self.notice_rows.clear();
         self.card_rows.clear();
+        // **And a picture's rows go with them** — a frame with no conversation on it draws no
+        // thumbnail, and a click measured against the last frame's rows would open a picture under
+        // whatever is covering it now.
+        self.picture_rows.clear();
+        self.picture_refs.clear();
         // **What is drawn here is `drawn()`'s answer** (R69) — the same value `App::key` routes
         // on and the hint bar describes, so the three can no longer be three hand-written orders
         // that disagree about which of several open panes is in front.
@@ -1081,6 +1097,9 @@ impl App {
                     *row += y;
                 }
                 for (row, _) in &mut self.card_rows {
+                    *row += y;
+                }
+                for (row, _) in &mut self.picture_rows {
                     *row += y;
                 }
                 rows

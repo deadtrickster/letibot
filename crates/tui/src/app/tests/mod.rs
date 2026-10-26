@@ -1430,6 +1430,7 @@ mod notes;
 mod oneliners;
 mod pane;
 mod paste;
+mod pictures;
 mod plugin_pane;
 mod queue;
 mod reach;

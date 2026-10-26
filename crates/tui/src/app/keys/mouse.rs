@@ -27,7 +27,7 @@ impl App {
             Target::Surface(s) => self.focused_surface() == Some(s),
             Target::QueueTab(_) => self.focused_surface() == Some(Surface::Queue),
             Target::TodoWait => self.focused_surface() == Some(Surface::Todos),
-            Target::Conversation | Target::Notice | Target::NoteCard => {
+            Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
             Target::Decision => !self.open.is_empty(),
@@ -146,7 +146,15 @@ impl App {
             (Target::PluginPanel, Some(i)) => {
                 return ControlFlow::Break(self.plugin_panel_key(i));
             }
-            (Target::Conversation | Target::Notice | Target::NoteCard, None) => {
+            // **A picture's row opens the picture, larger** — the same act Enter does, and the
+            // reason the thumbnail is a target at all (see `app::pictures`).
+            (Target::Picture, Some(k)) => {
+                if let Some(r) = self.picture_refs.get(k).cloned() {
+                    self.open_picture(&r);
+                }
+                return ControlFlow::Break(None);
+            }
+            (Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture, None) => {
                 return ControlFlow::Continue(());
             }
             (_, None) => return ControlFlow::Break(None),
@@ -210,12 +218,12 @@ impl App {
             }
             // A window, not an open run — a run is the conversation's own rows and the
             // conversation scrolls under it (see [`App::run_is_open`]).
-            Target::Conversation | Target::Notice | Target::NoteCard
+            Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
                 if self.payload_window_open() =>
             {
                 self.page_payload(up, NOTCH)
             }
-            Target::Conversation | Target::Notice | Target::NoteCard => {
+            Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }

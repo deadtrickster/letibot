@@ -178,6 +178,51 @@ pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, Option<u32>, Opt
         .copied()
 }
 
+/// **The pictures an operator's row carries that the head has uploaded**: `(item, part index)` →
+/// `(id, pixel width, pixel height)`. The same bargain as [`REPLY_IMAGES`] and for the same reason:
+/// the upload pass has `&mut App` and reads the bytes, the renderer has `&` and must not allocate a
+/// megabyte of base64 to draw a frame — so a picture the pass has not reached yet draws nothing,
+/// and the row is redrawn when it has (the pass marks the history dirty).
+type UserImages = std::collections::BTreeMap<(String, usize), (u32, Option<u32>, Option<u32>)>;
+static USER_IMAGES: std::sync::Mutex<UserImages> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// **The word a user row's image id is spelled with** — `s-7#img1`. The `#` and the word are what
+/// keep a picture's id from colliding with the row's own ([`rano::term::graphics::image_id`] of an
+/// item id is a reply's picture, of `item#target` a markdown one), and the index keeps two pictures
+/// in one prompt apart.
+pub(crate) const USER_PART: &str = "img";
+
+pub fn remember_user_image(item_id: &str, part: usize, image: (u32, Option<u32>, Option<u32>)) {
+    if let Ok(mut m) = USER_IMAGES.lock() {
+        m.insert((item_id.to_string(), part), image);
+    }
+}
+
+/// The picture an uploaded row's part was sent under, or `None` while the pass has not reached it.
+pub fn user_image(item_id: &str, part: usize) -> Option<(u32, Option<u32>, Option<u32>)> {
+    USER_IMAGES
+        .lock()
+        .ok()?
+        .get(&(item_id.to_string(), part))
+        .copied()
+}
+
+/// **The cell box of a user row's picture at this width** — the thumbnail under the chip, the
+/// enlarged picture in the popup, and the same function the upload pass places it with, so the rows
+/// a renderer draws always match the placement the terminal holds. The pixels come back with it
+/// because the popup's box is cut from them and re-cutting needs the aspect.
+pub(crate) fn user_picture_box(
+    item_id: &str,
+    part: usize,
+    width: usize,
+) -> Option<(u32, u32, u32, (Option<u32>, Option<u32>))> {
+    let (id, w, h) = user_image(item_id, part)?;
+    let (cols, rows) =
+        rano::term::graphics::image_cells(w, h, rano::term::graphics::image_box(width));
+    Some((id, cols, rows, (w, h)))
+}
+
 /// **Where a reply's picture goes**: after the first rendered line, at or past `from`, that
 /// shows its reference — the markdown itself when it is drawn literally (a code block), else
 /// the bare target, else its alt text, which is what the markdown renderer leaves of an image.

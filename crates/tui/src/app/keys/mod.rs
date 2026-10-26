@@ -111,6 +111,28 @@ impl App {
                 self.drop_selection();
                 return None;
             }
+            // **Enter over a picture opens it, larger** — the operator's ask for a pasted image to
+            // be readable where the terminal can draw one. What a click does on the thumbnail
+            // row, with the keyboard's version of *which one*: the newest picture the last frame
+            // drew, which is the rule `ctrl-t` already follows for a run and `alt-n` for a notice.
+            //
+            // **Guarded to the state where it cannot steal anything**: the conversation is what
+            // is drawn, nothing is in front of it, the composer is empty — where Enter sends
+            // nothing today — and a picture is actually on the screen. Every other Enter is the
+            // composer's, unchanged.
+            Key::Enter
+                if self.editor.text().trim().is_empty()
+                    && self.diff_popup.is_none()
+                    && self.open.is_empty()
+                    && self.prompt.is_none()
+                    && self.drawn() == Drawn::Conversation
+                    && !self.picture_rows.is_empty() =>
+            {
+                if let Some(r) = self.newest_picture_ref() {
+                    self.open_picture(&r);
+                }
+                return None;
+            }
             // **A held view moves for the reader's own keys** — the operator: *"i think held
             // counter might also be off, at least never decremented?"*. The hold is against the
             // STREAM moving the view (`App::toggle_hold`); a frozen frame also froze the

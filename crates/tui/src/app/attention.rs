@@ -6,13 +6,17 @@ use letibot_sessionlog::view::TurnState;
 use letibot_transcript::TranscriptItem;
 
 impl App {
-    /// **Tell the head's state what the terminal speaks** (see `rano::term::features`).
+    /// **Tell the head's state what the terminal speaks** (see `rano::term::features`), and — in
+    /// the same breath, because it is the same value — which picture protocol goes with it
+    /// (`Features::proto`). One call, so a head cannot come up with features that say *pictures*
+    /// and a protocol that says *none*.
     pub fn set_features(&mut self, f: rano::term::Features) {
         if self.features != f {
             self.features = f;
             self.invalidate_history();
             self.redraw = true;
         }
+        self.set_proto(f.proto);
     }
 
     /// **The tab's progress bar** (OSC 9;4): what it should show this tick. Somebody waiting on
@@ -178,6 +182,10 @@ impl App {
         }
         let mut scanned = self.images_scanned;
         let mut found: Vec<(u32, Option<u32>, Option<u32>, String)> = Vec::new();
+        // **A row's thumbnail is drawn from the registry this fills**, so the frame it is
+        // registered on has to be drawn again — the flag is spent after the borrow ends, because
+        // the walk holds `items` and the rebuild does not.
+        let mut remembered = false;
         for it in &self.items[self.images_scanned..] {
             // **A row whose content has not arrived stops the walk**, and is looked at again
             // next frame: `TranscriptAppended` and its content are separate events, and a mark
@@ -208,10 +216,54 @@ impl App {
                         found.push((id, m.width, m.height, m.wire_base64().to_string()));
                     }
                 }
+                // **A picture the OPERATOR attached** — the one thing the conversation has been
+                // unable to show since paste-attachments landed: the row carried the chip and the
+                // bytes, and the head drew only the chip (the operator, from a fresh session:
+                // *"image doesnt render"*). The bytes are already here — a `data:` reference on
+                // the row — so nothing is read off the disk and no converter runs: kitty carries
+                // PNG, which is what the composer produces and what the daemon stores.
+                //
+                // The size comes out of the header ([`size_of_data_ref`]), which is what keeps
+                // the thumbnail's aspect instead of a box of a fixed shape, and the id is the
+                // row's plus the part's index, so two pictures in one prompt are two images.
+                TranscriptItem::User { parts, .. } => {
+                    for (k, p) in parts.iter().enumerate() {
+                        let letibot_transcript::UserPart::Image {
+                            media_type,
+                            data_ref,
+                        } = p
+                        else {
+                            continue;
+                        };
+                        if media_type != "image/png" {
+                            continue;
+                        }
+                        let id = rano::term::graphics::image_id(&format!(
+                            "{}#{}{k}",
+                            it.item_id,
+                            crate::ui::render::USER_PART
+                        ));
+                        let (w, h) = letibot_transcript::media::size_of_data_ref(data_ref);
+                        // **Registered every time it is walked**, because the renderer reads that
+                        // registry and does not care which App filled it: whether the terminal has
+                        // the BYTES is `images_sent`'s question, asked below.
+                        crate::ui::render::remember_user_image(&it.item_id, k, (id, w, h));
+                        remembered = true;
+                        found.push((
+                            id,
+                            w,
+                            h,
+                            letibot_transcript::media::wire_payload(data_ref).to_string(),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
         self.images_scanned = scanned;
+        if remembered {
+            self.invalidate_history();
+        }
         for (id, w, h, b64) in found {
             if self.images_sent.insert(id, (w, h)).is_none() {
                 let (cols, rows) = rano::term::graphics::image_cells(w, h, box_cols);

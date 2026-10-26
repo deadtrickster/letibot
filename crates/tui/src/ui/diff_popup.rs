@@ -33,6 +33,23 @@ impl App {
                 PopupBody::Notice {
                     text, jobs, answer, ..
                 } => self.notice_popup_layout(text, jobs, answer.as_deref(), inner),
+                PopupBody::Picture { id, png, px, .. } => {
+                    let laid = self.picture_popup_layout(*id, png, *px, inner);
+                    // **The bytes, for the box this frame gives it** — the widget's own decision
+                    // (upload once, place when the box moves, delete when the view closes), so a
+                    // resize under an open picture costs a placement and not the megabytes.
+                    let (cols, rows) = (laid.rows.first().map(|l| l.width()), laid.rows.len());
+                    let want = match (cols, rows) {
+                        (Some(c), r) if r > 0 => Some(rano::term::Picture::from_base64(
+                            *id,
+                            png,
+                            (c as u32, r as u32),
+                        )),
+                        _ => None,
+                    };
+                    self.sync_picture_popup(want);
+                    laid
+                }
             };
             if let Some(p) = self.diff_popup.as_mut() {
                 p.laid = Some(laid);
@@ -118,6 +135,29 @@ impl App {
                     "esc closes · ↑↓ pgup/pgdn home/end"
                 },
             ),
+            // **A picture names itself**: what it is, how big it is in pixels and in cells.
+            PopupBody::Picture {
+                media_type,
+                px,
+                bytes,
+                ..
+            } => {
+                let size = match (px.0, px.1) {
+                    (Some(w), Some(h)) => format!("{w}×{h} · {} KiB", bytes / 1024),
+                    _ => format!("{} KiB", bytes / 1024),
+                };
+                (
+                    Line::new(vec![
+                        Span::styled(media_type.clone(), Style::of(Role::Strong)),
+                        Span::raw(format!(" · {size}")),
+                    ]),
+                    if deciding {
+                        "esc closes · pgup/pgdn"
+                    } else {
+                        "esc closes · ↑↓ pgup/pgdn home/end"
+                    },
+                )
+            }
         };
         let keys = Line::new(vec![Span::raw(keys)]);
         let mut out = Vec::with_capacity(room);

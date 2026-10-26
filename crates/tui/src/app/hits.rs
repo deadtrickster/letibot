@@ -77,6 +77,10 @@ pub(crate) enum Target {
     SettingCard,
     /// A count label on the composer's top edge.
     CountLabel(CountLabel),
+    /// **A picture's thumbnail rows in the conversation** (`app::pictures`) — each row of the box,
+    /// over the block the picture was drawn in. A click opens the picture larger, in the popup the
+    /// change and the notice open in.
+    Picture,
     /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
     GitField,
 }
@@ -279,6 +283,21 @@ impl App {
                         },
                         target: Target::NoteCard,
                         stops: vec![(y, i)],
+                    });
+                }
+                // **A picture's rows, over the block it was drawn in** — one rectangle a row, the
+                // whole width, like a notice's: the thumbnail is a box of placeholder cells whose
+                // columns a person cannot see, so the row IS the target.
+                for (y, k) in self.picture_rows.clone() {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x: 0,
+                            y,
+                            w: term_w,
+                            h: 1,
+                        },
+                        target: Target::Picture,
+                        stops: vec![(y, k)],
                     });
                 }
             }
