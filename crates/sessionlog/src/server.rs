@@ -1035,11 +1035,38 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                 brief.wiring,
                                 brief.parent_session_id,
                             ) {
-                                Ok(_) => ServerFrame::Sessions {
-                                    sessions: registry.list(),
-                                    current: seat.hub.session_id(),
-                                    created: Some(session_id),
-                                },
+                                Ok(hub) => {
+                                    // **THE RESTORE IS ANNOUNCED HERE, BEFORE IT CAN START.**
+                                    //
+                                    // A session is registered the moment a head asks for it and
+                                    // opened when the worker gets to it — behind whatever turn it is
+                                    // running, which on this box has been minutes. Between the two
+                                    // the hub holds nothing, and a head that switches now is handed
+                                    // an empty snapshot: MEASURED 2026-10-26, the operator's
+                                    // `leticode --session s-1793…` drew *"attached, and this session
+                                    // has said nothing yet"* over a conversation of 166 stored rows.
+                                    //
+                                    // The store's own count is the whole of what is missing and it
+                                    // is in hand here (`brief.items`), so the layer that owns the fact
+                                    // states it — this tree's rule for an indicator. The hub
+                                    // republishes the last `Filling` to every head that attaches
+                                    // (`Hub::attach`), so the sentence arrives WITH the empty
+                                    // snapshot; `Harness::open` then walks the same name row by row
+                                    // and ends it (`letibot_sessionlog::RESTORING_ROWS`).
+                                    if brief.items > 0 {
+                                        hub.publish(SessionEvent::Filling {
+                                            what: crate::RESTORING_ROWS.into(),
+                                            unit: "rows".into(),
+                                            done: 0,
+                                            total: brief.items as u64,
+                                        });
+                                    }
+                                    ServerFrame::Sessions {
+                                        sessions: registry.list(),
+                                        current: seat.hub.session_id(),
+                                        created: Some(session_id),
+                                    }
+                                }
                                 Err(e) => ServerFrame::Rejected {
                                     client_request_id,
                                     reason: e.to_string(),

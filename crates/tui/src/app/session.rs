@@ -434,6 +434,32 @@ impl App {
         cur.to_string()
     }
 
+    /// **How many rows this session's store row holds, while this head holds none of them**
+    /// — the fact [`App::restoring`] is drawn from, asked at the one moment the two sources
+    /// are both in hand (a `Hello`, whose list carries every session's `stored_items`).
+    ///
+    /// The head opened the session it asked for and was handed an empty snapshot; the same
+    /// frame said the store holds 166 rows for it. The daemon restores on its worker, behind
+    /// whatever turn it is running, so for however long that takes the two disagree and the
+    /// screen must not believe the emptier one.
+    ///
+    /// **Only while the head holds NOTHING**, and that is the rule rather than caution. A live
+    /// session in a daemon with a store has `stored_items` too, and it equals what the view
+    /// holds — but a COMPACTED session's view is trimmed to the window, so `items.len() <
+    /// stored_items` is the ordinary state of a long conversation and would have this head
+    /// claim a restore that finished an hour ago. `is_empty` is the state that has one
+    /// meaning: the head is holding no conversation at all and has been told there is one.
+    pub(crate) fn rows_the_store_holds(&self) -> Option<u32> {
+        if !self.items.is_empty() {
+            return None;
+        }
+        self.sessions
+            .iter()
+            .find(|s| s.session_id == self.session_id)
+            .map(|b| b.stored_items)
+            .filter(|n| *n > 0)
+    }
+
     pub(crate) fn session_label(&self, id: &str) -> String {
         let brief = self.sessions.iter().find(|s| s.session_id == id);
         // **A subagent is named by its slug** — `fix-login`, the name its parent was handed and

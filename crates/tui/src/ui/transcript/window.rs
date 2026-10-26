@@ -544,10 +544,40 @@ impl App {
         // **Unless the head has not been told yet** — that case has the cat above,
         // and this banner would assert that the session is empty when the truth is
         // that nobody has reported yet.
+        //
+        // **And unless the daemon has said the rows EXIST and have not been loaded**
+        // (`self.restoring`): the same false claim, one source further on. MEASURED
+        // 2026-10-26 — `leticode --session ID` against a daemon that was already up drew
+        // this banner over a conversation of 166 stored rows, because the restore was
+        // queued behind another session's turn and the switch's snapshot was empty. The
+        // line that replaces it is the same row shape a `system` item is drawn in, so it
+        // reads as part of the conversation and goes when the conversation arrives.
         let opening;
+        let restoring;
         if segs.iter().all(|s| s.len() == 0) && !self.attaching {
-            opening = row_strings(&rano::agent::screens::opening(), cfg.palette());
-            segs.push(Seg::Borrowed(&opening));
+            match self.restoring {
+                Some(n) => {
+                    restoring = row_strings(
+                        &rano::agent::screens::system_row(
+                            "restore",
+                            &format!(
+                                "this session's {n} row(s) are in the store and have not been \
+                                 loaded into this head yet — the daemon restores a session it does \
+                                 not hold on its worker, so they arrive as it walks them (the \
+                                 status row says how far it has got). Nothing is lost, and a \
+                                 prompt typed now waits for the restore and runs on it."
+                            ),
+                            cfg.width,
+                        ),
+                        cfg.palette(),
+                    );
+                    segs.push(Seg::Borrowed(&restoring));
+                }
+                None => {
+                    opening = row_strings(&rano::agent::screens::opening(), cfg.palette());
+                    segs.push(Seg::Borrowed(&opening));
+                }
+            }
         }
 
         let total: usize = segs.iter().map(Seg::len).sum();

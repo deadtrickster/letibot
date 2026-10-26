@@ -1513,6 +1513,22 @@ pub struct App {
     /// for any other session leaves [`Self::attaching`] up, so the placeholder's empty
     /// banner is never drawn as if it were the conversation asked for.
     pub(crate) fetching: Option<String>,
+    /// **How many rows this session's store row holds, while the head is holding none of
+    /// them** — the daemon is restoring the conversation and it has not arrived.
+    ///
+    /// MEASURED 2026-10-26: `leticode --session ID` against a daemon that was already up drew
+    /// *"attached, and this session has said nothing yet. Type a question and press enter."*
+    /// over a conversation of 166 stored rows. The title in the status line and the row count
+    /// come from the STORE (`SessionBrief`, in the list beside every `Hello`); the rows come
+    /// from the SNAPSHOT — and a session the daemon has registered but not yet opened has an
+    /// empty one, because the restore runs on the worker, behind whatever turn it is running.
+    /// So the two sources disagree and the screen believed the emptier one: a head that has
+    /// been told a session holds 166 rows must never draw that session as one that has said
+    /// nothing. See `App::rows_the_store_holds` for the rule and `ui/transcript/window.rs` for
+    /// where it is drawn instead of the banner.
+    ///
+    /// `None` is the ordinary state: no rows are missing. Cleared the moment a row arrives.
+    pub(crate) restoring: Option<u32>,
     /// When the attach began, on the clock `App::clock` is given.
     ///
     /// The cat's frame comes from the **elapsed** time rather than from a counter,
@@ -2017,6 +2033,7 @@ impl App {
             body_len: 0,
             attaching: false,
             fetching: None,
+            restoring: None,
             link: Link::Attached,
             daemon_protocol: None,
             daemon_seat: None,

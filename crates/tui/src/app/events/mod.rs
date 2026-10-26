@@ -305,6 +305,11 @@ impl App {
             arriving: false,
         });
         self.items = s.items;
+        // **And whether this session's store row holds a conversation the head has not got.**
+        // Asked here because this is where the rows are replaced, and asked of both sources in
+        // one place: a snapshot can be the empty one a session the daemon has registered but
+        // not yet opened is handed. See [`App::rows_the_store_holds`].
+        self.restoring = self.rows_the_store_holds();
         // A snapshot replaces the rows, so everything derived from them — the `!`
         // candidates and the model's suggestions — is stale and goes with them.
         self.the_rows_moved();

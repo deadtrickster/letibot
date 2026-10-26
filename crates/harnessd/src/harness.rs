@@ -5635,7 +5635,7 @@ impl Harness {
             // ...and it restores the CONVERSATION, which a compaction splits across
             // transcripts: the tail of the ones before comes back too, up to the view's bound.
             let before = h.ancestor_tail();
-            h.republish_after("restoring the stored conversation", before);
+            h.republish_after(letibot_sessionlog::RESTORING_ROWS, before);
         }
         // **What a head attaching to this session should be told**, left in the registry for
         // `seat_in` — see the comment in the resume arm for why it is not said there. A

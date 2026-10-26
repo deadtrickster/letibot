@@ -182,7 +182,10 @@ impl App {
                     Some(s) => self.load(*s),
                     // A resume served from the scrollback: no snapshot, and the
                     // state that is already here is this session's.
-                    None => self.session_id = session_id,
+                    None => {
+                        self.session_id = session_id;
+                        self.restoring = self.rows_the_store_holds();
+                    }
                 }
                 // **A reconnect's replay scrubs the held counts** (R91.12), so a count this head
                 // read before the gap may be one whose zero it never saw; the daemon says the
@@ -243,6 +246,11 @@ impl App {
                         cost_micros_usd: None,
                     });
                 }
+                // **And what the store says this session holds, while the head holds nothing**
+                // — the disagreeing sources, made into a state the screen can draw instead of
+                // the empty-transcript banner. `load` asks it for the snapshot arm; this asks it
+                // for the arm with no snapshot, and for a switch either way.
+                self.restoring = self.rows_the_store_holds();
                 if moved {
                     // The picker is closed by arriving, not by the key that opened
                     // it: the switch is the answer to the question the picker

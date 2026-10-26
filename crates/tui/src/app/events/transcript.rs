@@ -91,6 +91,10 @@ impl App {
                 // — the `!` candidates and the model's suggestions — is stale. The next
                 // Tab for the same prefix is a fresh ask.
                 self.the_rows_moved();
+                // **And the restore this head was waiting on has begun to arrive.** The line that
+                // said *N rows are in the store and not here yet* was true until this row; from
+                // here the conversation draws itself, so it goes. See [`App::restoring`].
+                self.restoring = self.rows_the_store_holds();
                 Disposition::Rendered
             }
             // The body for a row already announced. Before this existed, a head

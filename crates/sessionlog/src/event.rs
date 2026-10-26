@@ -1181,6 +1181,19 @@ pub const COMPACTION_TEMPLATE: &str = "compaction/2026-09-23";
 /// is and the head draws exactly what it drew before.
 pub const COMPACTION_SECTIONS_KEY: &str = "compaction.sections";
 
+/// **The fill a session created from the store announces, and the one its restore
+/// completes** — `SessionEvent::Filling`'s `what` for both halves, spelled once.
+///
+/// Two layers say it and they must agree, or the bar one of them starts is never ended by
+/// the other: the daemon's socket says it the moment a `ResumeSession` registers a hub
+/// (the store's row count is known there, and the wait is otherwise invisible), and
+/// `Harness::open` says it while it walks the restored rows and once more at the end
+/// (`republish_after`). MEASURED 2026-10-26: a head attached to a session whose restore
+/// was still queued behind another session's turn was handed an empty snapshot and drew
+/// *"this session has said nothing yet"* about a conversation of 166 rows — the sentence
+/// a head draws from THIS name is the one that says otherwise.
+pub const RESTORING_ROWS: &str = "restoring the stored conversation";
+
 /// **A subagent's call, named, on a card its own session cannot draw.**
 ///
 /// The operator, on who a subagent's ask belongs to: *"who asks subagents

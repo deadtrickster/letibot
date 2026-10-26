@@ -536,6 +536,21 @@ struct Inner {
     /// daemon says it only when the value CHANGES. Without this a head that attached mid-turn or
     /// reconnected across a change kept the activity from before it.
     activity_now: Option<SessionEvent>,
+    /// **The last [`SessionEvent::Filling`] this hub published** — republished to a head when it
+    /// attaches, for the reason the two above are, and it is the longest wait of the three.
+    ///
+    /// A restore announces itself BEFORE the worker reaches it (`server`'s `ResumeSession` arm
+    /// paints `0 of N rows` from the store's own count), and the head that most needs that
+    /// sentence is the one that arrives a moment later and is handed the empty snapshot: a fill
+    /// is in no snapshot, so without this the head drew a session it had just been told holds
+    /// 166 rows as one that *"has said nothing yet"*. MEASURED 2026-10-26, the operator's
+    /// `leticode --session` against a daemon busy with another session's turn.
+    ///
+    /// **Only an INCOMPLETE fill is held** — see `Inner::append_and_fan` — so a restore that
+    /// finished is never re-announced to a head that attaches afterwards. A restore that FAILED
+    /// leaves its `0 of N` here, which a head draws for the fifteen seconds its own no-news window
+    /// allows, beside the `resume_failed` warning that says what went wrong.
+    filling_now: Option<SessionEvent>,
     closed: bool,
     /// Rung when this hub takes a command, so **one** worker can wait on many
     /// sessions without a timer. See [`crate::registry`].
@@ -708,6 +723,7 @@ impl Hub {
                 own_wake: false,
                 held_now: None,
                 activity_now: None,
+                filling_now: None,
                 closed: false,
                 bell: None,
                 answers: None,
@@ -1208,6 +1224,12 @@ impl Hub {
             if let Some(activity) = g.activity_now.clone() {
                 g.append_and_fan(activity);
             }
+            // **And the operation the session is in the middle of**, when it announced one: a
+            // restore says `0 of N rows` before the worker can reach it, and the head that
+            // attaches in that window is the one whose empty snapshot needs the sentence most.
+            if let Some(filling) = g.filling_now.clone() {
+                g.append_and_fan(filling);
+            }
 
             Attached {
                 head_id,
@@ -1247,6 +1269,10 @@ impl Hub {
                 // And the activity, for the reason the attach arm gives (52).
                 if let Some(activity) = g.activity_now.clone() {
                     g.append_and_fan(activity);
+                }
+                // And the operation in flight, for the attach arm's third reason.
+                if let Some(filling) = g.filling_now.clone() {
+                    g.append_and_fan(filling);
                 }
                 return Delivery::Resync {
                     reason,
@@ -2349,6 +2375,18 @@ impl Inner {
         if matches!(event, SessionEvent::ActivityChanged { .. }) {
             self.activity_now = Some(event.clone());
         }
+        // **The last fill, kept the same way and for the same kind of reason**: it is ephemeral
+        // and the head that needs it most is the one that was not attached yet.
+        //
+        // **And kept only while it is INCOMPLETE.** A finished fill has nothing left to say — the
+        // head clears its own line on `done == total` — so re-saying one to a later attach would
+        // be re-telling an operation that is over. The completeness is the whole of the test:
+        // `Harness::open` ends the restore with a tick that says `N of N`, which is what takes
+        // the line out of here (where it lands in the failed-open case is said on the field,
+        // beside the `resume_failed` warning that names the reason).
+        if let SessionEvent::Filling { done, total, .. } = &event {
+            self.filling_now = (*done < *total).then(|| event.clone());
+        }
         self.tap.observe(self.log.session_id(), &event);
         let env = self.log.append(event);
         self.view.apply(&env);
@@ -2469,6 +2507,74 @@ mod tests {
             panic!("expected events");
         };
         assert_eq!(held(&b), vec![(0, 0, 0)], "the resynced head was not told");
+    }
+
+    /// **A head that attaches in the middle of a named operation is told which one** — the same
+    /// rule `HeldResults` and `ActivityChanged` follow, and the longest wait of the three.
+    ///
+    /// MEASURED 2026-10-26 (`leticode --session ID`, a daemon already up): a session is
+    /// registered the instant a head asks for it and opened when the worker reaches it, so for
+    /// however long the turn in front of it runs, a head attached to that session is holding an
+    /// empty snapshot. `Filling` is ephemeral and in no snapshot, so without this the one
+    /// sentence that says *a restore is coming* never reached the head that needed it.
+    #[test]
+    fn a_head_that_attaches_mid_operation_is_told_which_one() {
+        let fills = |b: &crate::cursor::Batch| -> Vec<(String, u64, u64)> {
+            b.events()
+                .iter()
+                .filter_map(|e| match &e.event {
+                    SessionEvent::Filling {
+                        what, done, total, ..
+                    } => Some((what.clone(), *done, *total)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mark = |hub: &Hub| {
+            hub.publish(SessionEvent::Warning {
+                code: "interrupt_idle".into(),
+                detail: String::new(),
+                compaction: None,
+            });
+        };
+        let hub = Hub::new("s-filling");
+        hub.publish(SessionEvent::Filling {
+            what: crate::RESTORING_ROWS.into(),
+            unit: "rows".into(),
+            done: 0,
+            total: 166,
+        });
+
+        let late = attach(&hub, 64);
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&late.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(
+            fills(&b),
+            vec![(crate::RESTORING_ROWS.to_string(), 0, 166)],
+            "the head was handed an empty snapshot and not told why"
+        );
+
+        // **And a finished operation is not re-announced**: the restore's own last tick says
+        // `166 of 166`, and a head attaching afterwards must not be told that a restore which
+        // is over is still running.
+        hub.publish(SessionEvent::Filling {
+            what: crate::RESTORING_ROWS.into(),
+            unit: "rows".into(),
+            done: 166,
+            total: 166,
+        });
+        let after = attach(&hub, 64);
+        mark(&hub);
+        let Delivery::Events(b) = hub.next_batch(&after.head_id, 64) else {
+            panic!("expected events");
+        };
+        assert_eq!(
+            fills(&b),
+            Vec::new(),
+            "a completed fill has nothing left to say"
+        );
     }
 
     #[test]

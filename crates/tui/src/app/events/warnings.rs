@@ -73,6 +73,15 @@ impl App {
                 if code == "auto_compact_failed" {
                     self.compacting = None;
                 }
+                // **A restore that failed is not a restore still running, and this head must stop
+                // saying it is.** The line that says *the store holds N rows and they are being
+                // loaded* is the head's own claim (see [`App::restoring`]), and the daemon's
+                // `resume_failed` is the one fact that ends it without rows: the warning says what
+                // went wrong, and a line beside it promising the conversation is on its way would
+                // be the stale progress this file refuses everywhere else.
+                if code == "resume_failed" {
+                    self.restoring = None;
+                }
                 // **The reseat card** (`app::reseat`) — the operator: *"when on abstain keep
                 // reseat select open. this way i keep reseat in mind because it stares at me yet
                 // can continue at my risk"*. `prefix_stale` raises it (and is still filed as the
