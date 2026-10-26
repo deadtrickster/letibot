@@ -82,6 +82,8 @@ use crate::vocab::TokenId;
 
 mod busy;
 pub mod live_view;
+mod transfer;
+pub use transfer::{ImportInto, ImportReport, SessionTransfer, TRANSFER_FORMAT, TableExport};
 mod queues;
 pub use busy::{BUSY_RETRY_TOTAL, is_busy_sql};
 pub use queues::*;
@@ -376,7 +378,14 @@ pub struct ShapelessAdmit {
 /// **30** since the lines a reply cited are a row — `citation`, a new table, additive, described
 /// at [`citations`]. A citation is a snapshot taken when the reply lands, kept beside the reply so
 /// the model's own text is never rewritten.
-pub const SCHEMA_VERSION: i64 = 30;
+///
+/// **31** since a session can LIVE SOMEWHERE ELSE — `session.lives_on` and
+/// `session.moved_ms`, additive, described at its migration arm below and at
+/// [`StoredSession::lives_on`]. A session's whole daemon can be moved to a remote host and
+/// back (`docs/remote-hosts.md` RH4), and what is left behind is a marker: the rows stay,
+/// because a migration that deleted them would have no way back when the far side turned
+/// out to be a host that could not build.
+pub const SCHEMA_VERSION: i64 = 31;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -457,10 +466,15 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- column existed, which the resume path falls back to
                                      -- the stored prefix row for. See
                                      -- `StoredSession::prefix_fingerprint`.
-    nags_paused_until INTEGER        -- v25; the operator paused this session's idle plan-check.
+    nags_paused_until INTEGER,        -- v25; the operator paused this session's idle plan-check.
                                      -- NULL = not paused; 0 = until they resume it; any other
                                      -- value = unix ms the pause ends at. See
                                      -- `StoredSession::nags_paused_until`.
+    lives_on       TEXT,             -- v31; the endpoint holding the LIVE copy of this
+                                     -- session, when it is not in this store's own box —
+                                     -- `local` or a host from `hosts.toml`. NULL = the copy
+                                     -- here is the live one. See `store::transfer`.
+    moved_ms       INTEGER           -- v31; when it moved there. NULL with `lives_on`.
                                                                                                                                                                                                                                                                                                                                                                                   );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -979,6 +993,18 @@ pub struct StoredSession {
     /// that ENDED while nobody held the session; the daemon that opens it reads that as resumed
     /// and says so, rather than as a pause that never ends.
     pub nags_paused_until: Option<i64>,
+    /// **Where this session's live copy is**, when it is not in this store's own box —
+    /// `None` here means the copy in front of you IS the live one.
+    ///
+    /// A migration (`store::transfer`, `letibot migrate`) does not delete the rows it
+    /// leaves behind: it marks them, so `--sessions` says *lives on lab2x1 since …* instead
+    /// of offering a copy that is not being appended to. The mark is what every surface
+    /// follows — the listing, `--continue`, and a head — and `Some("local")` is a real
+    /// value: a session that came home from a host to a laptop is a copy whose live twin
+    /// is on the laptop, and the host's store records that in the same column.
+    pub lives_on: Option<String>,
+    /// When it moved there, unix ms. `None` with [`Self::lives_on`].
+    pub moved_ms: Option<i64>,
 }
 
 /// **One job's row, as the session store keeps it** — the durable half of the process table.
@@ -2518,6 +2544,28 @@ impl Store {
             // it is shown.
             self.conn.execute_batch(citations::CITATIONS_SQL)?;
         }
+        if from < 31 {
+            // v31: **a session can live somewhere else** — [`StoredSession::lives_on`]. Two
+            // additive columns, NULL in every existing row, and NULL is the true state of such
+            // a row: no session that predates this verb was ever migrated. Guarded on the
+            // column rather than the number, for the reason v25, v28 and v19 give — a fixture
+            // walks a current store backwards, and the guard is what makes the arm safe to
+            // renumber if another migration takes 31 first.
+            let has = |sql: &str| -> bool {
+                self.conn
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'lives_on'") {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN lives_on TEXT")?;
+            }
+            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'moved_ms'") {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN moved_ms INTEGER")?;
+            }
+        }
         Ok(())
     }
 
@@ -3206,7 +3254,9 @@ impl Store {
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
                       ORDER BY i.seq DESC LIMIT 1),
                     s.prefix_fingerprint,
-                    s.nags_paused_until
+                    s.nags_paused_until,
+                    s.lives_on,
+                    s.moved_ms
                FROM session s{filter}",
         ))?;
         let mut out: Vec<StoredSession> = stmt
@@ -3255,6 +3305,10 @@ impl Store {
                     prefix_fingerprint: r.get(20)?,
                     // **Index 21**, appended last for the reason 20 was.
                     nags_paused_until: r.get(21)?,
+                    // **Index 22 and 23**, the two columns a migration writes. Appended
+                    // for the reason every index above was: the list is read BY POSITION.
+                    lives_on: r.get(22)?,
+                    moved_ms: r.get(23)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
