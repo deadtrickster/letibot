@@ -480,17 +480,21 @@ impl Accumulator {
             let Some(delta) = choice.get("delta") else {
                 continue;
             };
-            if let Some(t) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
-                if !t.is_empty() {
-                    self.reasoning.push_str(t);
-                    out.push(Delta::Reasoning(t.to_string()));
-                }
+            // One `let` chain rather than `if let` inside `if`: edition 2024 allows it, and the
+            // nested shape is `clippy::collapsible_if` — the lint the merge queue's log tail
+            // showed on 2026-10-26 while the step's real failure (a build script's panic) sat in
+            // the middle of the output. See the Merge gate section of `AGENTS.md`.
+            if let Some(t) = delta.get("reasoning_content").and_then(|v| v.as_str())
+                && !t.is_empty()
+            {
+                self.reasoning.push_str(t);
+                out.push(Delta::Reasoning(t.to_string()));
             }
-            if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
-                if !t.is_empty() {
-                    self.text.push_str(t);
-                    out.push(Delta::Text(t.to_string()));
-                }
+            if let Some(t) = delta.get("content").and_then(|v| v.as_str())
+                && !t.is_empty()
+            {
+                self.text.push_str(t);
+                out.push(Delta::Text(t.to_string()));
             }
             if let Some(calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                 for c in calls {
