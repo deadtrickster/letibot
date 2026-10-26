@@ -33,12 +33,14 @@ user     = "dead"
 key      = "~/.config/letibot/keys/lab2x1"  # the default when the line is absent
 path     = ["~/.cargo/bin"]                 # in front of the remote PATH, expanded THERE
 root     = "~/letibot-remote"               # where remote worktrees live (default)
+mise     = "~/.local/bin/mise"              # the toolchain wrapper; `false` turns it off
 ```
 
-Five keys, and an unknown one is **refused by name** rather than ignored: a typo here places a
+Six keys, and an unknown one is **refused by name** rather than ignored: a typo here places a
 session on a machine nobody named, or points ssh at a key nobody meant. `hostname` and `user` are
-the two that must be said; `root` defaults to `~/letibot-remote` and `key` to
-`~/.config/letibot/keys/<host>`.
+the two that must be said; `root` defaults to `~/letibot-remote`, `key` to
+`~/.config/letibot/keys/<host>`, and `mise` to *find it once and cache the answer* ([§ Toolchains
+through mise](#toolchains-through-mise)).
 
 `path` is the one list: directories that go **in front of `PATH`** for every command the session
 runs on that machine — its foreground calls, its background jobs, and the `git-upload-pack` its
@@ -157,13 +159,39 @@ ControlMaster is the connection pool, the remote shell is the server. The operat
    never as a failure that implies it did not happen.
 5. **Fail fast on a host that is down.** After repeated connection failures a host is marked
    unavailable for a short window (a circuit breaker): calls to it fail at once with the reason
-   and the time it was last reached, instead of each waiting out a timeout.
+   and the time it was last reached, instead of each waiting out a timeout. **Built (RH6).**
 6. **Cancellation reaches the far side.** An interrupt kills the local ssh *and* the remote
    process group (the job's recorded pgid), so a stopped turn leaves nothing running there.
+   **Built (RH6).**
 7. **Observability.** Every remote call is recorded with host, step, duration and outcome, so a
    slow or flaky host is visible on the head and in `hosts {probe: true}`, not guessed at.
+   **Built (RH6).**
 8. **Back-pressure.** A host has a bound on concurrent calls (the ControlMaster's sessions);
    calls beyond it queue with the same deadlines rather than opening unbounded connections.
+   **Built (RH6).**
+
+How each of them is built, and the numbers chosen where the contract left them open, is
+[§ As built (RH6)](#as-built-rh6-four-practices-one-refusal-and-a-toolchain).
+
+## Toolchains through mise
+
+The operator, 2026-10-26: *"regarding cargo and stuff - we do it via mise generally"*. Measured
+that day on all four hosts: `mise` lives at `~/.local/bin/mise` and is **not on a non-login
+shell's `PATH`**, the globally installed tools differ per machine, and a project pins its own with
+`mise.toml` or `.tool-versions`. So a remote command that runs without mise sees the wrong
+`cargo`, or none.
+
+Every remote command therefore runs as
+
+    <mise> exec -C <the checkout> -- bash -lc '<the command>'
+
+when the host has mise — a foreground command, a step of the backend's own work, a background
+job's launcher, a probe, and git's `git-upload-pack`, which is the one that has to be spliced in
+by hand because sshd runs it without a login shell. `path` stays as the escape hatch, and
+`mise = false` turns the wrapper off for a host whose toolchain is on `PATH`.
+
+`mise exec` **may install a pinned tool on its first use** — that is network traffic on the remote
+machine, as the command asked for, and it is the one thing in this file that reaches the network.
 
 ## The supervisor, and work across hosts
 
@@ -252,7 +280,7 @@ would remove:
 | RH1 | hosts.toml; `SshBackend: ExecBackend` (run, read, write, list, stat, processes with remote jobs); `Placement::Remote(host)`; the git placement both ways; `task where: "host:NAME"`; `--host NAME` for a root session; the progress and seam lines; tests with a fake `ssh` (a script that runs the command locally against a temp "remote root"), never a real host |
 | RH2 | the bridge's `leticode_start { host }`; a live smoke test on lab2x1 run by the orchestrator |
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
-| RH6 | the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4 |
+| RH6 | **done**: the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4; auth refusals made definite; `migrate`'s steps bounded; toolchains through `mise`; the `notes` tool's body exempt from the never-write list |
 | RH7 | harnessd's process supervisor: store records for every started process, the supervising loop, ownership teardown, restart recovery; `bash background` on it |
 | RH8 | `fanout` (growing into the matrix runner: capacity placement, interleaved reps, every-cell check, resume) and `scenario` (service fixtures) on the supervisor |
 | RH9 | resource leases on shared hosts (ports outside the ephemeral range, subnets, compose projects under a host lock), exact teardown, and hosts.toml's `reserve`/`flags`/`never_touch` |
@@ -368,3 +396,101 @@ it may place work, and never waits on a machine that has stopped answering.
   into the checkout's own `info/exclude` when the checkout is made — `git rev-parse --git-path`
   answering where that file is, rather than this side guessing a path that differs per layout —
   and the uncommitted list on close drops it as well, for a checkout made by an older build.
+
+## As built (RH6): four practices, one refusal, and a toolchain
+
+The operator, 2026-10-26: *"the tooling shouldnt hang, that is important"* — *"like it is classic
+RPC architecture right"* — *"so we should follow practicies"*. Rules 1–4 were HT's; this is the
+rest, plus three things the same day made obvious: an auth refusal is not a lost connection, a
+migration's steps were unbounded, and a remote command that runs without the project's toolchain
+is a command that builds with the wrong compiler.
+
+Everything here lives in one new module, `crates/tools/src/rpc.rs`, and **there is one
+implementation of each** — the backend (`Ssh`), the `hosts` tool's probe and `letibot --migrate`
+all call it. The state is `static`, keyed by the host's name, because the contract's rule 5 says
+so: three private breakers would mean a host that is down costs each caller its own three
+timeouts, which is the cost the breaker exists to remove.
+
+* **Rule 5 — three failures in a row, inside a minute, and the host is not dialled for thirty
+  seconds.** Three, because one failing step is already two attempts (the retry), so waiting for
+  two *steps* would be four timeouts before anything decided; sixty seconds, because "in a row"
+  without a window opens the breaker on three unrelated bad minutes in a day, and one hung turn
+  produces its three attempts well inside it; thirty seconds of cooldown, because that is the
+  shortest window in which *did it come back* is a real question (`ServerAliveInterval` gives up
+  on a dead link in about 15 s, `ConnectTimeout` on an unreachable one in 20). The refusal says
+  the count, when it opened, **when the host was last reached**, and when the next probe is. After
+  the cooldown **exactly one call is let through** as a probe — a floodgate at the moment the
+  client knows least would be the wrong shape — and a probe that answers closes it.
+* **A refusal from the far side never counts as a connection failure.** `Permission denied` is a
+  machine that is up; counting it would open the breaker on a key nobody installed.
+* **Rule 6 — the remote process group is recorded and killed.** A command of the model's
+  (`ExecBackend::run`, the one non-idempotent door) is wrapped as
+  `setsid bash -c 'echo $$ > <file>; ( <cmd> ); …'`: `setsid` makes the shell a session leader, so
+  its pid **is** its process group, and the file is removed when the command ends normally, so a
+  stale id can never be signalled later. A call that stops answering kills the local ssh *and*
+  then makes one more bounded call (`CANCEL_BOUND`, 10 s) that reads the group, asks
+  `ps -o pgid=` whether that pid really leads one — a `kill -TERM -<pid>` on a pid that does not
+  signals the *caller's* group — and sends `TERM`, waiting at most a second before `KILL`. A
+  background job already had this ([§ Jobs and processes](#jobs-and-processes)); this is the same
+  rule for the one command that does not go through a job.
+* **`run`'s bound is the connection's**, and the earlier text above said something else. There is
+  no "tool's own deadline" on `Command`: `run` carries [`Ssh::bound`], which is `STEP_BOUND` (20 s)
+  in production. Said plainly here rather than left as a claim the code does not keep — and it is
+  what an abandoned `run` is cancelled against.
+* **Rule 7 — every call is recorded, in a ring of 256 per process.** Host, step, duration and one
+  of five outcomes: `ok` (it answered, whatever it said), `refused` (the far side said no),
+  `timed_out`, `dropped`, `unknown` (the local process could not be started). The **step is a
+  name, never a payload** — *reading a path*, *this command ran*, *a probe of lab2x1* — because a
+  record is read by a head and printed to a log. `hosts {probe: true}` shows the last four calls
+  and the three slowest per host, including for a host that could not be reached; and
+  `$LETIBOT_RPC_DEBUG=1` prints one line per call to stderr, which is the daemon's log.
+* **Rule 8 — eight ssh invocations per host at once.** `MaxSessions` defaults to 10 per
+  connection (a ControlMaster is one connection); the two this leaves are the master's own channel
+  and one `-O check`. Ten exactly would have the *server* refuse the eleventh with
+  `Session open refused`, which reads like a fault on the host rather than a queue we forgot to
+  keep. A call beyond the bound **waits for a slot under its own deadline** and is refused with a
+  sentence if it does not get one — a queue that outlives the deadline it was queued under is the
+  hang coming back through the door marked back-pressure. `-O check`/`-O exit` do not take a slot:
+  they are local IPC to a socket, not a session on the far side.
+* **An auth refusal is definite, said in words, and never retried.** Measured live that day: three
+  hosts whose key had not been installed answered `Permission denied (publickey)`, and the client
+  called it *lost the connection, it may not have happened* — and asked **twice**. OpenSSH prints
+  those words and exits 255 with nothing on stdout, which is exactly the shape a dropped connection
+  has, so the difference is read from stderr (`Permission denied (…)`,
+  `Too many authentication failures`, `Host key verification failed`,
+  `No … host key is known for …`, `remote host identification has changed`). It becomes its own
+  outcome, it is never retried, it does **not** open the breaker, and the sentence is the one the
+  contract asks for: *letibot's key is not authorised on HOST (or HOST's host key changed)* — with
+  `ssh-copy-id` for the first and `ssh-keyscan` for the second, because the two fixes are two
+  different files.
+* **`letibot --migrate`'s steps are bounded, and its build is watched.** Every step of a move is
+  `STEP_BOUND`; the two streamed transfers (a bundle out, a bundle back) are `GIT_BOUND` (5 min)
+  and the bound is applied *before* the encoders are joined, because `wait()` on an encoder blocks
+  on the ssh's stdin and is how a hang gets in front of the rule that forbids one. The far side's
+  `cargo build` gets `BUILD_BOUND` (30 min, `--build-timeout SECS`) and **progress**: the last
+  thing cargo said is printed every ten seconds, so *still working* is distinguishable from
+  *wedged*. The retry classes are the backend's (`Retried::Once` for the questions — `git
+  rev-parse`, `git status`, `cat <stamp>` — and `Never` for everything that changes something),
+  and the breaker and the call records are the same `static`s, because it is one process.
+* **Toolchains through mise.** `hosts.toml` gains `mise`: a program path (`~` expanded on the
+  remote, once) or `false`. Left out, it is **probed once per host per process** — `$HOME/.local/bin/mise`
+  first, then `command -v mise` — and the answer is cached **including "no mise"**, because a host
+  without it must pay one round trip for that fact and not one per command. A probe that did not
+  *answer* is not cached: a timeout is not a fact about what a machine has installed. The wrapper
+  is `<mise> exec -C <the checkout> -- bash -lc '<the host's PATH; the command>'`, and `-C` is the
+  checkout rather than `$HOME` because a project pins its versions in its own tree — before a
+  placement has made one, `-C` is `$HOME`, which is the honest answer for a directory that does
+  not exist yet. git's side is spliced by hand (`--upload-pack '<mise> exec -C … -- git-upload-pack'`)
+  because sshd runs it with no login shell at all; a background job inherits the environment its
+  launcher was started with, so it is wrapped by the same act. `hosts {probe: true}` reports the
+  mise version and `mise ls --current` in the host's root **instead of** *cargo on PATH* — on a
+  host with mise that question has no meaning — and falls back to `PATH` on one without.
+* **The `notes` tool's body is prose.** The never-write list was narrowed once (RH5) to skip a
+  `write`'s body, a replacement's text and a search pattern; `notes` was not in that list, so a
+  note *about* `.git` or `.ssh` — which is the note that records the rake — could not be written.
+  `text`, `abstract` and `query` are content arguments now. A note's **`name` is not**: it becomes
+  a file under the notes directory, so it is still scanned, and both halves have a test.
+* **A fixture says which toolchain it has.** `mise = false` on every fake host in the test suites,
+  because the default probes *the machine running the test*: on a developer's Mac that finds the
+  real `/opt/homebrew/bin/mise` behind the fake ssh and puts it in front of every assertion. The
+  mise tests are the ones that name a path or plant `$HOME/.local/bin/mise`.
