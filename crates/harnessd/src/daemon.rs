@@ -357,7 +357,7 @@ impl Daemon {
                             Ok(true) => eprintln!(
                                 "  the review queue is session {} — attach to it and its board is the \
                                  queue",
-                                crate::sessions::gatekeeper::SESSION
+                                sessions.review_session()
                             ),
                             Ok(false) => {}
                             Err(e) => eprintln!("  the review queue's session did not open: {e}"),

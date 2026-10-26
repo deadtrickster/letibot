@@ -1696,24 +1696,55 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
         .unwrap();
 
     assert!(d.parent.restore_after_restart().is_none());
-    // And a second harness on the same session in the same daemon — the reopen a head's attach
-    // or `/resume` reaches — finds the same.
+    // **A SECOND harness for one session is REFUSED, by name** — the writer claim
+    // (`letibot_tokencore::store::writers`, `harnessd::writer`). The daemon's own door never
+    // builds one: `Sessions::open_as` answers a `/resume` or a head's attach for a session it
+    // holds with the harness it already has. This is what a hand-built second one gets, and it
+    // is the reason the guard exists — two harnesses on one transcript interleave rows and the
+    // store's append-only trigger refuses the second, leaving a conversation that does not
+    // restore (MEASURED 2026-10-26, `s-gatekeeper#t0`).
     let hub2 = Hub::new(PARENT);
-    let mut again = Harness::open_with_registry(
+    let second = Harness::open_with_registry(
         &parts,
         cfg.clone(),
         hub2.clone(),
         None,
         None,
         d.registry.clone(),
+    );
+    let refusal = second
+        .err()
+        .expect("a second harness for one session is refused")
+        .to_string();
+    assert!(
+        refusal.contains("is being written by another process"),
+        "the refusal names the reason: {refusal}"
+    );
+    // **And the reopen that really happens** — the daemon's harness gone, its claim given back
+    // with it, the session opened again: nothing restored and nothing reminded, because the
+    // records name the daemon that wrote them.
+    let registry = d.registry.clone();
+    let hub = d.hub();
+    let parent = d.parent;
+    drop(parent);
+    let hub3 = Hub::new(PARENT);
+    let mut again = Harness::open_with_registry(
+        &parts,
+        cfg.clone(),
+        hub3.clone(),
+        None,
+        None,
+        registry.clone(),
     )
     .expect("reopens");
     assert!(again.restore_after_restart().is_none());
-    assert!(warnings(&d.hub(), "restart_restored").is_empty());
-    assert!(warnings(&hub2, "restart_reminded").is_empty());
+    assert!(warnings(&hub, "restart_restored").is_empty());
+    assert!(warnings(&hub3, "restart_reminded").is_empty());
     std::thread::sleep(Duration::from_millis(200));
-    assert!(d.registry.get("s-restart-parent-sub-mine").is_none());
-    d.stop(None);
+    assert!(registry.get("s-restart-parent-sub-mine").is_none());
+    // The orderly stop, for the reason `Daemon::stop` is one: the registry closes and every
+    // session's services end with it.
+    registry.close();
 }
 
 /// **A stop no record dates is UNKNOWN, and an unknown down time restores nothing** — the

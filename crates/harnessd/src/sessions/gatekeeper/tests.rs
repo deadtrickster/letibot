@@ -12,6 +12,15 @@ use crate::config::Config;
 use crate::harness::Parts;
 use crate::sessions::{Sessions, StoreSessions};
 
+/// **The review-queue session of the fixture's workspace** — `s-gatekeeper-<workspace key>`.
+///
+/// One per daemon now, so a test that names it derives it from the config it built rather than from
+/// a constant every daemon on the box once shared; a test that compared against the constant would
+/// be asserting the defect.
+fn queue_of(cfg: &Config) -> String {
+    super::session(&cfg.workspace)
+}
+
 /// **A runner that records what it was asked to start and answers `Running` for ever** — the
 /// child a real runner would start needs a model, and what is measured here is *whose runner
 /// was asked for what*.
@@ -298,7 +307,7 @@ impl Fixture {
             .expect("the queue's session opens");
         sessions
             .open
-            .get_mut(SESSION)
+            .get_mut(&queue_of(&self.cfg))
             .expect("the queue's session is open")
             .set_subagents_for_test(Arc::new(Recording {
                 started: self.started.clone(),
@@ -316,7 +325,7 @@ impl Fixture {
     fn prompt<'p>(&self, sessions: &'p Sessions<'_>) -> &'p str {
         &sessions
             .open
-            .get(SESSION)
+            .get(&queue_of(&self.cfg))
             .expect("the queue's session is open")
             .config()
             .system
@@ -336,7 +345,7 @@ impl Fixture {
     fn board(&self, sessions: &Sessions<'_>) -> Vec<TodoItem> {
         sessions
             .open
-            .get(SESSION)
+            .get(&queue_of(&self.cfg))
             .expect("the gatekeeper session is open")
             .todo_list()
             .into_iter()
@@ -532,7 +541,7 @@ fn the_session_is_started_once_and_not_twice() {
     let held = |reg: &Registry| {
         reg.list()
             .iter()
-            .filter(|b| b.session_id == SESSION)
+            .filter(|b| b.session_id == queue_of(&f.cfg))
             .count()
     };
 
@@ -541,7 +550,7 @@ fn the_session_is_started_once_and_not_twice() {
         "the daemon starts it"
     );
     assert!(
-        sessions.open.contains_key(SESSION),
+        sessions.open.contains_key(&queue_of(&f.cfg)),
         "and holds a harness for it"
     );
     assert_eq!(held(&f.registry), 1, "one row in the registry, not two");
@@ -562,13 +571,21 @@ fn the_session_is_started_once_and_not_twice() {
     // **And a second DAEMON does not make a twin either** — the restart, one process along: a
     // fresh registry over the same store, which finds the session on disk and RESUMES it.
     //
+    // **The first daemon GOES FIRST, and that is now a condition of the test rather than a
+    // convenience.** A session has one writer (`crate::writer`, and
+    // `sessions::writer_tests::a_second_session_cannot_write_one_transcript` proves it): a second
+    // daemon opening one a LIVE process holds is refused, which is the whole of what that guard
+    // is for. What this half measures is the restart — the first daemon gone, its claim given
+    // back with its harnesses — and that is what a restart is.
+    //
     // **The name is changed in the store first, and that is what makes this an assertion rather
     // than a coincidence**: a session made fresh would carry the hardcoded `TITLE`, and one
     // RESUMED carries the name its own row holds. The count alone could not tell the two apart —
     // `put_session` is skipped for a row that is already there, so a twin would leave one row too.
     f.store()
-        .set_title(SESSION, "the queue, renamed")
+        .set_title(&queue_of(&f.cfg), "the queue, renamed")
         .expect("the store takes a name");
+    drop(sessions);
     let second = Registry::new();
     second
         .create("s-host-2", "", Sessions::wiring(&f.cfg))
@@ -594,7 +611,7 @@ fn the_session_is_started_once_and_not_twice() {
         second
             .list()
             .iter()
-            .find(|b| b.session_id == SESSION)
+            .find(|b| b.session_id == queue_of(&f.cfg))
             .map(|b| b.title.as_str()),
         Some("the queue, renamed"),
         "RESUMED, not re-made: it came back under the name its own store row holds"
@@ -602,14 +619,14 @@ fn the_session_is_started_once_and_not_twice() {
 
     let stored = f.store().list_sessions().expect("the store lists");
     assert_eq!(
-        stored.iter().filter(|s| s.id == SESSION).count(),
+        stored.iter().filter(|s| s.id == queue_of(&f.cfg)).count(),
         1,
         "ONE row in the store: a second daemon resumes the session, it does not mint a twin"
     );
     assert_eq!(
         stored
             .iter()
-            .find(|s| s.id == SESSION)
+            .find(|s| s.id == queue_of(&f.cfg))
             .map(|s| s.title.as_deref()),
         Some(Some("the queue, renamed")),
         "and it is the session a person reads in `--sessions`: {stored:?}"
@@ -672,5 +689,42 @@ fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
             .expect("open")
             .serve_reviews(),
         0
+    );
+}
+
+/// **A review queue per daemon, and the id is the workspace's** — the defect this replaced, at
+/// the level of the id.
+///
+/// The id used to be the constant `s-gatekeeper` in every daemon on every box, while every daemon
+/// on the box shares ONE store — so the operator's daemon and the project daemon each opened their
+/// own copy of the same session and both appended to one transcript (MEASURED 2026-10-26:
+/// `s-gatekeeper#t0`, `transcript_item seq must be the next one`). Two folders are two daemons and
+/// now two sessions; the same folder is the same session across a restart, which is what keeps its
+/// board and its review rows.
+#[test]
+fn two_workspaces_get_two_review_sessions_and_one_workspace_keeps_its_own() {
+    let a = queue_of(&Config::for_this_box("/tmp/letibot-review-a"));
+    let b = queue_of(&Config::for_this_box("/tmp/letibot-review-b"));
+    assert_ne!(a, b, "two daemons must not share one transcript");
+    assert_eq!(
+        a,
+        queue_of(&Config::for_this_box("/tmp/letibot-review-a")),
+        "the same folder's daemon comes back to the same session after a restart"
+    );
+    assert_eq!(a, format!("s-gatekeeper-{}", &a["s-gatekeeper-".len()..]));
+    assert!(
+        letibot_sessionlog::is_gatekeeper_session(&a),
+        "the id is recognised as a review queue's by shape: {a}"
+    );
+    assert!(
+        letibot_sessionlog::is_gatekeeper_session("s-gatekeeper"),
+        "and so is the constant every daemon shared before, which a store still holds"
+    );
+    // **A reviewer child of one is NOT one of these** — `hubs_of_repository` and `roots_of` filter
+    // on this predicate, and a child admitted as "the queue's board" would be a publish into a
+    // subagent's hub.
+    assert!(
+        !letibot_sessionlog::is_gatekeeper_session(&format!("{a}-sub-1791")),
+        "a reviewer's id is its parent's plus a suffix, and it is not the queue"
     );
 }

@@ -1134,33 +1134,30 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         .expect_err("a session this bridge already holds is not attached again");
     assert!(twice.contains("already holds"), "{twice}");
 
-    // **The name `gatekeeper` is the review queue's session** — `s-gatekeeper`, the one id
-    // every daemon spells the same, because the queue is *started once* and attachable by
-    // name tomorrow. This daemon opens it at startup (`Sessions::ensure_gatekeeper`), which is
-    // what makes the name testable at all: an attach by the name seats a head on the id the
-    // crate's constant holds, and not on a string this file invented.
+    // **The name `gatekeeper` is THIS daemon's review-queue session** — one per folder now
+    // (`s-gatekeeper-<workspace key>`), because every daemon on the box shares one store and two
+    // appending to one transcript is the corruption the store's trigger then refuses. This daemon
+    // opens it at startup (`Sessions::ensure_gatekeeper`), which is what makes the name testable
+    // at all: an attach by the name resolves through the worktree's own key — the same key the
+    // bridge found the daemon with — and lands on the id `gatekeeper_session` derives there.
+    let queue_id = letibot_sessionlog::gatekeeper_session(&world.worktree);
     let queue = watcher
         .attach(&world.worktree.display().to_string(), "gatekeeper", true)
         .expect("the review queue's session is one this daemon holds");
     assert_eq!(
-        queue["session"],
-        letibot_sessionlog::GATEKEEPER_SESSION,
-        "the name resolves to the one id every daemon spells the same: {queue}"
+        queue["session"], queue_id,
+        "the name resolves to this folder's queue, and not to a constant: {queue}"
     );
     assert_eq!(queue["watch_only"], json!(true), "{queue}");
     // …and the rest of the table works on it exactly as on a session this bridge started:
     // `status`, `events`, `list` and `wait` never needed the head to be a decider.
     let queue_status = watcher
-        .status(letibot_sessionlog::GATEKEEPER_SESSION)
+        .status(&queue_id)
         .expect("status on a watched session");
-    assert_eq!(
-        queue_status["session"],
-        letibot_sessionlog::GATEKEEPER_SESSION,
-        "{queue_status}"
-    );
+    assert_eq!(queue_status["session"], queue_id, "{queue_status}");
     assert_eq!(queue_status["watch_only"], json!(true), "{queue_status}");
     watcher
-        .events(letibot_sessionlog::GATEKEEPER_SESSION, None, None)
+        .events(&queue_id, None, None)
         .expect("events on a watched session");
     // **This is the case the caps exist for, on the session B6 is about.** The review queue's
     // session is opened by the daemon with nobody attached, and the watcher is now its only
@@ -1171,7 +1168,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     // is written against. A watcher that declared itself able would have produced the second.
     let queue_hub = world
         .registry
-        .get(letibot_sessionlog::GATEKEEPER_SESSION)
+        .get(&queue_id)
         .unwrap_or_else(|| panic!("the daemon holds the review queue's session"));
     assert_eq!(
         queue_hub.attached_heads(),

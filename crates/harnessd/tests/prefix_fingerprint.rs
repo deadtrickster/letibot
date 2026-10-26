@@ -183,6 +183,12 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
 
     // (2) The instructions change — the `--system` case, and the one the old token-count
     // comparison used to report with *"start a new session"* as its only remedy.
+    //
+    // **The harness above goes first, and that is the rule rather than tidiness now**: a session
+    // has one writer (`harnessd::writer`), so two scaffolds over one store file in one process
+    // contend exactly as two daemons do — the second open is refused by name.
+    drop(h);
+    drop(registry);
     let mut changed = cfg.clone();
     changed
         .system

@@ -14,6 +14,11 @@ letibot-transcript.workspace = true
 # through it; the daemon installs the writer.
 letibot-metrics.workspace = true
 serde.workspace = true
+# **The workspace key a folder's daemon is named by** (`lib.rs`'s `workspace_key`): the review
+# queue's session id is `s-gatekeeper-<key>`, and a head that computes that key with a hash of its
+# own is a second spelling of which folder a session belongs to. `sha2` is what `scripts/letibot`
+# shells out to (`sha256sum | cut -c1-12`), so this is that rule written once in Rust.
+sha2 = "0.10"
 # preserve_order so a tool call's argument JSON survives a round trip through a
 # frame with its key order intact. The same reason dialect-glm needs it: those
 # bytes become prompt bytes again on the next turn.

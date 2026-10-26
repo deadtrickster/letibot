@@ -141,6 +141,9 @@ impl Fixture {
         registry
             .create("s-elsewhere", "", Sessions::wiring(&cfg))
             .expect("another session registers");
+        // **The queue's session of THIS fixture's daemon** — derived from the workspace the config
+        // was built on, which is what `Sessions` will compute for it.
+        let host = crate::sessions::gatekeeper::session(&cfg.workspace);
         Some(Self {
             _dir: dir,
             db,
@@ -148,7 +151,7 @@ impl Fixture {
             registry,
             started: Arc::new(Mutex::new(Vec::new())),
             started_by_the_daemon: Arc::new(Mutex::new(Vec::new())),
-            host: crate::sessions::gatekeeper::SESSION.to_string(),
+            host,
         })
     }
 

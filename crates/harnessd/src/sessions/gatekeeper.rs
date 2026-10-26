@@ -141,31 +141,47 @@ use letibot_tokencore::store::{
 };
 use letibot_tools::builtins::task::Placement;
 
-/// **The session id, hardcoded, and the reason it is not minted like every other one.**
+/// **The review-queue session id of the daemon serving `workspace`** — `s-gatekeeper-<key>`.
 ///
-/// Session ids are `s-<now_ns>` — unique per creation and meaningless. This one has to be the
-/// OPPOSITE: the same string in every daemon, on every start, forever, because it is the key three
-/// things are decided by:
+/// Session ids are `s-<now_ns>` — unique per creation and meaningless. This one is the opposite
+/// WITHIN a folder and never across them, because it is the key four things are decided by:
 ///
 /// * **"Started once"** is a fact about this string. A daemon that comes up finds the session in the
-///   store by it and RESUMES it ([`Registry::resumable`]'s own door), so a second daemon — or the
-///   same daemon restarted — does not make a twin.
-/// * **Attaching is by name.** *"so - i can connect to that session"*: the operator types this id,
-///   and it is the same id tomorrow.
+///   store by it and RESUMES it ([`Registry::resumable`]'s own door), so the same daemon restarted
+///   does not make a twin. *The same daemon*, and not *any daemon*: a second folder's daemon has a
+///   key of its own and an id of its own, which is what stops two daemons writing one transcript —
+///   every daemon on this box shares one store, and the store's append-only trigger refuses the
+///   second writer's rows while the damage is already in the file.
+/// * **Attaching is by name.** *"so - i can connect to that session"*: the operator types this id
+///   (or the bridge's `leticode_attach {"session": "gatekeeper"}`, which resolves through
+///   [`letibot_sessionlog::gatekeeper_session`]), and it is the same id tomorrow.
 /// * **The board is the queue for THAT session**, and a per-run id would strand a board and its
 ///   store rows behind every restart.
 /// * **It is the session a review row NAMES** (`mergequeue::GatekeeperDoor`): *the session that
 ///   reviewed it* — which is the column's own documented meaning, and the reason the review is
 ///   spawned by THIS harness and not by the tree the branch came from.
 ///
-/// **The string itself lives one crate down**, in
-/// [`letibot_sessionlog::GATEKEEPER_SESSION`], and this is the daemon's name for it: a head
-/// has to be able to say *which session* — the bridge's `leticode_attach` takes the name
-/// `gatekeeper` — and a head that linked this crate to learn one id would be linking the
-/// daemon, its providers and its wasm JIT. One definition, two names for it.
+/// **The id itself is spelled one crate down**, in [`letibot_sessionlog::gatekeeper_session`],
+/// because a HEAD has to be able to name it — the bridge's `leticode_attach` takes the name
+/// `gatekeeper` — and a head that linked this crate to learn one id would be linking the daemon,
+/// its providers and its wasm JIT. One definition, two names for it.
 ///
 /// [`Registry::resumable`]: letibot_sessionlog::registry::Registry::resumable
-pub const SESSION: &str = letibot_sessionlog::GATEKEEPER_SESSION;
+pub fn session(workspace: &std::path::Path) -> String {
+    letibot_sessionlog::gatekeeper_session(workspace)
+}
+
+/// **The review queue's id as a fixture spells it** — `s-gatekeeper-0123456789ab`, the shape a
+/// daemon's own id has, with a key no workspace gives.
+///
+/// The TUI's review-card fixtures are golden text, and one of them names the parent session a
+/// refusal came from. A fixture that hashed a temp path would pin a number no reader can check
+/// and that moves with the box's own temp directory; what the card actually parses is the SHAPE
+/// (`message from your parent session `s-gatekeeper-…``), so one invented key is enough.
+#[cfg(test)]
+pub(crate) fn session_for_fixture() -> String {
+    "s-gatekeeper-0123456789ab".to_string()
+}
 
 /// What the session is called in a picker, and on its own store row. A title is set once and only
 /// changed on purpose (`SessionBrief::title`), so this is what a person reads in `--sessions`.

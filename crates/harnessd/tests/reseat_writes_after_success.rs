@@ -214,7 +214,6 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
         Harness::open_with_registry(&parts, seated.clone(), hub.clone(), None, None, registry)
             .expect("the session reopens");
     let old = h.transcript_id().to_string();
-    let rows = h.items().len();
 
     let other = Store::open(&store).expect("a second connection");
     other
@@ -244,15 +243,23 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
         Some(old.as_str()),
         "a fork with none of its rows stored is what a restart would open"
     );
-    // A restart now resumes the parent, whole.
-    {
+    // A restart now resumes the parent, whole — and **the restart is READ FROM THE STORE here
+    // rather than run**: a second harness for one session is refused by name (the writer claim,
+    // `harnessd::writer`), because the first one is still alive and holding the fork this test is
+    // about. `current_transcript_id` IS the restart's answer — the row a resume opens — and the
+    // reopen itself is exercised where a daemon really stops: `restart_restore`.
+    let refusal = {
         let hub = Hub::new(&seated.session_id);
         let registry = Registry::of(hub.clone());
-        let again = Harness::open_with_registry(&parts, seated.clone(), hub, None, None, registry)
-            .expect("the restart opens");
-        assert_eq!(again.transcript_id(), old);
-        assert_eq!(again.items().len(), rows);
-    }
+        Harness::open_with_registry(&parts, seated.clone(), hub, None, None, registry)
+            .err()
+            .expect("a second harness for one session is refused")
+            .to_string()
+    };
+    assert!(
+        refusal.contains("is being written by another process"),
+        "and the refusal says why: {refusal}"
+    );
 
     // The next store write takes the rows up and seals the fork.
     h.submit("carry on").expect("the turn runs");

@@ -161,8 +161,8 @@ daemon serves it) stays undecided.
 ### Watching a session the bridge did not start (B6)
 
 Written 2026-10-26. The operator: *"the operator cannot see who in the merge queue is doing
-what"*. The review queue's own session, `s-gatekeeper`, lives in the operator's daemon and starts a
-reviewer subagent per claimed row (`s-gatekeeper-sub-*`). Until B6 the only way to follow it from
+what"*. The review queue's own session lives in each folder's daemon and starts a reviewer
+subagent per claimed row (`s-gatekeeper-<key>-sub-*`). Until B6 the only way to follow it from
 Claude Code was to read the store and guess.
 
 `leticode_attach` is the same head `leticode_start` keeps, on a session somebody else opened:
@@ -174,11 +174,15 @@ Claude Code was to read the store and guess.
   prompt, never answers a card and never interrupts; `leticode_send`, `leticode_answer` and
   `leticode_stop` refuse on it, saying it is watched and not held. `leticode_start`'s own session,
   and an attach with `watch_only: false`, are heads that hold their session and act on it.
-* **`session: "gatekeeper"`** is the review queue's id. It is a constant — the same string in every
-  daemon, because the queue is *started once* and attachable by name tomorrow — and it lives in
-  `letibot_sessionlog::GATEKEEPER_SESSION`, with `harnessd`'s `sessions::gatekeeper::SESSION` being
-  the daemon's name for the same value. A head must be able to say which session it means without
-  linking the daemon.
+* **`session: "gatekeeper"`** is THIS folder's review-queue session. **One per daemon**: the id is
+  `s-gatekeeper-<workspace key>`, derived by `letibot_sessionlog::gatekeeper_session` from the same
+  key the launcher names the folder's socket with — because every daemon on the box shares one store,
+  and two of them appending to one transcript is silent corruption (MEASURED 2026-10-26,
+  `s-gatekeeper#t0`: `transcript_item seq must be the next one`). So the name resolves through the
+  worktree the attach is joining: `leticode_attach {worktree, session: "gatekeeper"}` lands on the
+  daemon it found by that folder's key, on that daemon's queue. `harnessd`'s
+  `sessions::gatekeeper::session` and the bridge's `gatekeeper_session_for_key` are one function's
+  two callers, so a head says *which session* without linking the daemon.
 
 **What a watcher must NOT do is count as somebody who can answer.** Attaching a second head steals
 nothing from the operator's screen: the daemon publishes a card to every head attached to the

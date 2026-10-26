@@ -550,7 +550,7 @@ for branches:
 
 | | review queue | harness butler |
 |---|---|---|
-| the session | `s-gatekeeper`, one per daemon, a root | `s-butler`, one per daemon, a root |
+| the session | `s-gatekeeper-<workspace key>`, one per daemon, a root | `s-butler-<workspace key>`, one per daemon, a root |
 | its board | one row per branch waiting for a verdict | one row per harness request, naming the session it is for |
 | its children | reviewers (`Gatekeeper` role) | a **fitter** that writes the layer into the requesting session's stack, and a **reviewer** that passes or refuses it — never the same child |
 | its model | default, or configured | default, or `butler.model` |

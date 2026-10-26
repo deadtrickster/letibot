@@ -83,6 +83,10 @@ use crate::vocab::TokenId;
 mod busy;
 pub mod live_view;
 mod transfer;
+
+/// **Who may append to a session's transcript** (schema 32) — the row and its compare-and-swap.
+/// See [`writers`] for the daemon-shared store this exists in and the two writers it stops.
+pub mod writers;
 pub use transfer::{ImportInto, ImportReport, SessionTransfer, TRANSFER_FORMAT, TableExport};
 mod queues;
 pub use busy::{BUSY_RETRY_TOTAL, is_busy_sql};
@@ -385,7 +389,15 @@ pub struct ShapelessAdmit {
 /// back (`docs/remote-hosts.md` RH4), and what is left behind is a marker: the rows stay,
 /// because a migration that deleted them would have no way back when the far side turned
 /// out to be a host that could not build.
-pub const SCHEMA_VERSION: i64 = 31;
+///
+/// **32** since the store keeps **one writer per session** — `session_writer`, a new table,
+/// described in [`writers`]. Every daemon on this box shares this file, and two of them opened
+/// the same session (the review queue's, whose id was one constant for the whole box) and
+/// appended to one transcript: the append-only trigger refused the second writer's rows
+/// *after* the first writer's were in, and the conversation it left behind does not restore.
+/// A row naming the process that holds a session is what lets the second open be REFUSED
+/// instead of half-written.
+pub const SCHEMA_VERSION: i64 = 32;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -1814,6 +1826,7 @@ impl Store {
         self.conn.execute_batch(modes::MODES_SQL)?;
         self.conn.execute_batch(told::TOLD_SQL)?;
         self.conn.execute_batch(citations::CITATIONS_SQL)?;
+        self.conn.execute_batch(writers::WRITERS_SQL)?;
         self.conn.execute("DELETE FROM schema_version", [])?;
         self.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2565,6 +2578,13 @@ impl Store {
                 self.conn
                     .execute_batch("ALTER TABLE session ADD COLUMN moved_ms INTEGER")?;
             }
+        }
+        if from < 32 {
+            // v32: **one writer per session**, as a row — [`writers`] carries the whole of it.
+            // A migrated store never runs `SCHEMA_SQL`, so the table is created here, and
+            // `IF NOT EXISTS` keeps a store that somehow already has one honest (the fixtures
+            // walk a current store backwards, and this arm must be safe to run on one).
+            self.conn.execute_batch(writers::WRITERS_SQL)?;
         }
         Ok(())
     }

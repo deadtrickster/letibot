@@ -926,6 +926,17 @@ pub struct Sessions<'a> {
     /// substituted, so a second session is the same daemon and not a second
     /// configuration nobody typed.
     base: Config,
+    /// **The review-queue session THIS daemon owns** — `s-gatekeeper-<workspace key>`, one per
+    /// folder, and the same id across this daemon's restarts (see
+    /// [`gatekeeper::session`]).
+    ///
+    /// A field rather than a call at every use, and it is one value and not a rule read
+    /// repeatedly: `serve_reviews`, `fill_gatekeeper_board` and `ensure_gatekeeper` all have to
+    /// agree about WHICH session is the queue, and the id is derived from the workspace, which
+    /// never changes for the life of a daemon. It used to be the constant `s-gatekeeper` — one
+    /// id for every daemon on the box, sharing one store — which two daemons appended to at once
+    /// (MEASURED 2026-10-26: `s-gatekeeper#t0`, `transcript_item seq must be the next one`).
+    gatekeeper: String,
     registry: Arc<Registry>,
     open: HashMap<String, Harness>,
     /// Sessions whose monitor waiter is already running. **One waiter per name**,
@@ -1326,6 +1337,7 @@ impl<'a> Sessions<'a> {
         let mut sessions = Sessions {
             parts: std::borrow::Cow::Borrowed(parts),
             base: cfg.clone(),
+            gatekeeper: gatekeeper::session(&cfg.workspace),
             registry: registry.clone(),
             open: HashMap::new(),
             armed: std::collections::HashSet::new(),
@@ -1543,6 +1555,7 @@ impl<'a> Sessions<'a> {
             // A clone is three `Arc`s — the vocabulary and the dialect renderer are not copied.
             parts: std::borrow::Cow::Owned(Parts::clone(&self.parts)),
             base: self.base.clone(),
+            gatekeeper: self.gatekeeper.clone(),
             registry: self.registry.clone(),
             open: HashMap::new(),
             armed: std::collections::HashSet::new(),
@@ -3215,7 +3228,7 @@ impl<'a> Sessions<'a> {
     /// ([`Sessions::reviews_due`]), from the one medium both daemons can see.
     ///
     /// **One session hosts them, and it is the queue's own** —
-    /// [`gatekeeper::SESSION`], whose board is the queue. A review is a `task` child of THAT
+    /// [`Sessions::review_session`], whose board is the queue. A review is a `task` child of THAT
     /// session (`Harness::serve_reviews` starts it through the session's own runner), which is the
     /// operator's *"gatekeepers are subagents"* one level down: the reviewer is a subagent of the
     /// tutor, and its asks come up to the tutor's head. The loop below is over every session this
@@ -3239,7 +3252,8 @@ impl<'a> Sessions<'a> {
         // otherwise hold the daemon's loop for the length of that turn, which is the defect these
         // threads exist to remove. `0` is what this answers because nobody here is waiting for the
         // count — the log line that read it is the session's own now.
-        if let Some(court) = self.courts.get(gatekeeper::SESSION) {
+        let queue = self.gatekeeper.clone();
+        if let Some(court) = self.courts.get(&queue) {
             court.post(|s: &mut Sessions<'static>| {
                 s.serve_reviews();
             });
@@ -3255,6 +3269,16 @@ impl<'a> Sessions<'a> {
         started
     }
 
+    /// **The id of the review-queue session this daemon owns** — `s-gatekeeper-<workspace key>`.
+    ///
+    /// For the log line that tells the operator what to attach to, and for anything that has a
+    /// `Sessions` in hand and needs to name the queue. It is [`gatekeeper::session`] of the
+    /// workspace this daemon was started on, computed once at construction — see the field, which
+    /// also carries why the id is per workspace and not one string for the box.
+    pub fn review_session(&self) -> &str {
+        &self.gatekeeper
+    }
+
     /// **The review queue's own session, started once** — the daemon's hardcoded gatekeeper
     /// session, whose board is the queue. `Ok(true)` is the pass that started it.
     ///
@@ -3268,8 +3292,9 @@ impl<'a> Sessions<'a> {
     /// * **this box** — the REGISTRY, and behind it the STORE. A session this daemon does not hold
     ///   but the store knows is **resumed** ([`Registry::resumable`]) rather than created
     ///   fresh — so a daemon restarted, or a second daemon on the same store, comes back to the
-    ///   SAME conversation under the same id instead of making a twin. [`gatekeeper::SESSION`]'s
-    ///   own doc says why that id is fixed rather than minted.
+    ///   SAME conversation under the same id instead of making a twin. [`Sessions::review_session`]'s
+    ///   own doc says why that id is fixed rather than minted — and per workspace rather than per
+    ///   box, which is the defect the fixed-per-box version caused.
     ///
     /// # The prompt, which is this session's own
     ///
@@ -3310,11 +3335,11 @@ impl<'a> Sessions<'a> {
                         "the review queue's session `{}` did not open, so nothing in the merge \
                          queue is being reviewed by this daemon: {said}. It is tried again on \
                          every review pass; this is said again only if the reason changes.",
-                        gatekeeper::SESSION
+                        self.gatekeeper
                     );
                     let mut ids = vec![self.base.session_id.clone()];
-                    if self.registry.get(gatekeeper::SESSION).is_some() {
-                        ids.push(gatekeeper::SESSION.to_string());
+                    if self.registry.get(&self.gatekeeper).is_some() {
+                        ids.push(self.gatekeeper.clone());
                     }
                     for id in ids {
                         self.warn(&id, "review_queue_not_open", detail.clone());
@@ -3328,9 +3353,10 @@ impl<'a> Sessions<'a> {
 
     /// The body of [`Sessions::ensure_gatekeeper`], whose doc is this function's.
     fn open_the_gatekeeper(&mut self) -> Result<bool, HarnessError> {
+        let queue = self.gatekeeper.clone();
         if self.base.store.is_none()
-            || self.open.contains_key(gatekeeper::SESSION)
-            || self.courts.contains_key(gatekeeper::SESSION)
+            || self.open.contains_key(&queue)
+            || self.courts.contains_key(&queue)
         {
             return Ok(false);
         }
@@ -3343,24 +3369,21 @@ impl<'a> Sessions<'a> {
             self.base.gatekeeper_vm,
             letibot_tools::firecode::firecode_available(),
         ));
-        if self.registry.get(gatekeeper::SESSION).is_none() {
+        if self.registry.get(&queue).is_none() {
             // **Resumed, or made, and the store is what decides which.** The stored row carries the
             // title a person may have renamed; a session nobody has ever opened gets the hardcoded
             // one.
-            let (title, wiring) = match self.registry.resumable(gatekeeper::SESSION) {
+            let (title, wiring) = match self.registry.resumable(&queue) {
                 Some(brief) => (brief.title, brief.wiring),
                 None => (gatekeeper::TITLE.to_string(), Sessions::wiring(&self.base)),
             };
-            self.registry
-                .create(gatekeeper::SESSION, &title, wiring)
-                .map_err(|e| {
-                    HarnessError::Setup(format!(
-                        "the review queue's session `{}` could not be created: {e}",
-                        gatekeeper::SESSION
-                    ))
-                })?;
+            self.registry.create(&queue, &title, wiring).map_err(|e| {
+                HarnessError::Setup(format!(
+                    "the review queue's session `{queue}` could not be created: {e}"
+                ))
+            })?;
             return self.open_as(
-                gatekeeper::SESSION,
+                &queue,
                 Some(OwnSession {
                     seat: gatekeeper::SEAT,
                     title,
@@ -3375,11 +3398,11 @@ impl<'a> Sessions<'a> {
         // both — so this is the same name without a read of every stored session, every pass.
         let title = self
             .registry
-            .title_of(gatekeeper::SESSION)
+            .title_of(&queue)
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| gatekeeper::TITLE.to_string());
         self.open_as(
-            gatekeeper::SESSION,
+            &queue,
             Some(OwnSession {
                 seat: gatekeeper::SEAT,
                 title,
@@ -3408,19 +3431,20 @@ impl<'a> Sessions<'a> {
     pub fn fill_gatekeeper_board(&mut self) -> usize {
         // Posted for `serve_reviews`' reason: the board is the queue's session's, and that session
         // is on its own thread.
-        if let Some(court) = self.courts.get(gatekeeper::SESSION) {
+        let queue = self.gatekeeper.clone();
+        if let Some(court) = self.courts.get(&queue) {
             court.post(|s: &mut Sessions<'static>| {
                 s.fill_gatekeeper_board();
             });
             return 0;
         }
-        let rows = match self.open.get_mut(gatekeeper::SESSION) {
+        let rows = match self.open.get_mut(&queue) {
             Some(h) => h.fill_queue_board(),
             // The session did not open — said on the daemon's log by the caller of
             // `ensure_gatekeeper`. Nothing is lost: the next pass fills the board.
             None => return 0,
         };
-        self.rearm_todo_nag(gatekeeper::SESSION);
+        self.rearm_todo_nag(&queue);
         rows
     }
 
@@ -5814,6 +5838,13 @@ mod idle_exit_clock {
 
 #[cfg(test)]
 mod review_pass;
+
+/// **Two daemons, one store, one session** — the writer claim (`crate::writer`) driven through
+/// `Sessions`, which is the door a daemon comes through. Here rather than beside `crate::writer`
+/// because a test of an OPEN has to hold a `Sessions`' own harness, and that field is this
+/// module's.
+#[cfg(test)]
+mod writer_tests;
 
 #[cfg(test)]
 mod stored_end_rule {

@@ -370,10 +370,23 @@ impl serve::QueueDoor for RegistryDoor {
     }
 
     fn ring_reviewers(&self) {
-        let host = crate::sessions::gatekeeper::SESSION;
-        if !self.registry.bell().is_closed() && self.registry.get(host).is_some() {
-            self.registry.bell().ring_wake(host);
+        // **The review queue's session THIS daemon holds** — `s-gatekeeper-<key>`, one per
+        // workspace, so it is found by SHAPE ([`letibot_sessionlog::is_gatekeeper_session`])
+        // rather than by a constant every daemon on the box once spelled the same. A daemon
+        // that holds none (its review session has not been opened yet) rings nobody, and the
+        // store-backed pass in `Sessions::serve_reviews` is what serves the row.
+        if self.registry.bell().is_closed() {
+            return;
         }
+        let Some(host) = self
+            .registry
+            .held_ids()
+            .into_iter()
+            .find(|id| letibot_sessionlog::is_gatekeeper_session(id))
+        else {
+            return;
+        };
+        self.registry.bell().ring_wake(&host);
     }
 
     fn ring_project(&self, session_id: &str) -> Result<String, String> {
@@ -431,13 +444,13 @@ impl serve::QueueDoor for RegistryDoor {
 }
 
 impl RegistryDoor {
-    /// **The root sessions this daemon holds whose workspace is `repository`** — not the review
+    /// **The root sessions this daemon holds whose workspace is `repository`** — not a review
     /// queue's own session, and not a subagent (its root is the one that hears).
     fn roots_of(&self, store: &Store, repository: &str) -> Vec<String> {
         self.registry
             .held_ids()
             .into_iter()
-            .filter(|id| id != crate::sessions::gatekeeper::SESSION)
+            .filter(|id| !letibot_sessionlog::is_gatekeeper_session(id))
             .filter(|id| self.registry.parent_of(id).is_none())
             .filter(|id| !matches!(store.session_parent(id), Ok(Some(Some(p))) if !p.is_empty()))
             .filter(|id| {
@@ -691,6 +704,10 @@ pub fn serves(workspace: &Path, repo: &Path) -> bool {
 /// workspace is a session of `repository` ([`repository_of_workspace`]), and the review queue's
 /// own session, whose board IS the queue. Never every hub: a red `main` is news to the project's
 /// sessions and the queue's board, and noise everywhere else.
+///
+/// **The queue's session is found by SHAPE and not by an id** — every daemon owns one
+/// ([`letibot_sessionlog::is_gatekeeper_session`]), each with the id of its own workspace, so
+/// "the queue's board" is a class of session rather than one string the whole box shares.
 pub fn hubs_of_repository(
     registry: &letibot_sessionlog::registry::Registry,
     store: Option<&Store>,
@@ -700,7 +717,7 @@ pub fn hubs_of_repository(
         .held_ids()
         .into_iter()
         .filter(|id| {
-            id == crate::sessions::gatekeeper::SESSION
+            letibot_sessionlog::is_gatekeeper_session(id)
                 || store
                     .and_then(|s| s.session_workspace(id).ok().flatten())
                     .is_some_and(|w| {

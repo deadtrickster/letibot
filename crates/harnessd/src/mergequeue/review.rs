@@ -1,5 +1,5 @@
 //! **The review queue's reviewers** — the half that runs on the review queue's own SESSION
-//! (`sessions::gatekeeper::SESSION`), because a reviewer is a `task` child of it (the operator:
+//! (`sessions::gatekeeper::session`), because a reviewer is a `task` child of it (the operator:
 //! *"reviews are subagents managed by the main gatekeeper session … gatekeepers are subagents"*,
 //! and *"model reviews stay, yes"*).
 //!

@@ -769,9 +769,14 @@ mod tests {
     /// shape if it moved a part it keys on (the opening, the branch, the verdict's words).
     #[test]
     fn the_tuis_review_card_fixtures_are_what_the_queue_writes() {
-        use crate::sessions::gatekeeper::SESSION;
+        use crate::sessions::gatekeeper;
+        // **The review queue's session, as one daemon spells it.** A fixture rather than a derived
+        // id: the id is per workspace now (`s-gatekeeper-<key>`), and a fixture that hashed a temp
+        // path would embed a number no reader can check. What the card parses is the SHAPE —
+        // `message from your parent session `s-gatekeeper-…`` — and one key is enough to pin it.
+        let host = gatekeeper::session_for_fixture();
         let r = groupingsets();
-        let as_message = |text: String| crate::harness::parent_message_text(SESSION, &text);
+        let as_message = |text: String| crate::harness::parent_message_text(&host, &text);
 
         let blocked = ReviewRow {
             state: ReviewState::Blocked,

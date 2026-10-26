@@ -1160,10 +1160,12 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     let dir = TempDir::new("harnessd-session-channel-refusal");
     let path = dir.path().join("sessions.db");
     // The review queue's own session hosts the reviewers (`Harness::serve_reviews` serves only
-    // there), so the father of the branch here IS that session.
-    let main_id = letibot_harnessd::sessions::gatekeeper::SESSION;
+    // there), so the father of the branch here IS that session. **Per daemon now**: the id is the
+    // one `gatekeeper::session` derives from this fixture's workspace, which is what `Sessions`
+    // will compute for the daemon it builds.
+    let main_id = letibot_harnessd::sessions::gatekeeper::session(std::path::Path::new("/tmp"));
 
-    let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
+    let parts = parts_for(&config(&main_id, Endpoint::new("127.0.0.1", 1), &path));
     // Four requests, in the order they happen: the child's work, the gatekeeper's CALL, the
     // gatekeeper's reply after it, and the child's turn on the complaints. **The call and the
     // reply are two rounds of one turn**, which is why the reviewer needs two entries here — the
@@ -1196,9 +1198,9 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     // false`) is gone because the constructor now carries it for every fixture in the tree: a VM
     // over this fixture's `/tmp` workspace would measure and copy it and boot firecracker, and what
     // this test is about is the channel a refusing verdict comes back on.
-    let cfg = config(main_id, stub.endpoint.clone(), &path);
+    let cfg = config(&main_id, stub.endpoint.clone(), &path);
     let registry = Registry::new();
-    let mut father = a_session(main_id, &parts, &cfg, registry.clone());
+    let mut father = a_session(&main_id, &parts, &cfg, registry.clone());
 
     // **The child that did the work** — a real one, through the real `task` tool, so it has a
     // session of its own to be sent back to.
@@ -1285,11 +1287,11 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     };
     let dir = TempDir::new("harnessd-session-channel-refusal-gone");
     let path = dir.path().join("sessions.db");
-    let main_id = letibot_harnessd::sessions::gatekeeper::SESSION;
+    let main_id = letibot_harnessd::sessions::gatekeeper::session(std::path::Path::new("/tmp"));
     let peer_id = "s-the-session-that-enqueued-it";
     let lost = "s-the-child-that-left";
 
-    let parts = parts_for(&config(main_id, Endpoint::new("127.0.0.1", 1), &path));
+    let parts = parts_for(&config(&main_id, Endpoint::new("127.0.0.1", 1), &path));
     // **The reviewer's own turn, and no other** — the branch's child is gone, which is the state
     // this test is about, so the only child in this fixture is the one `serve_reviews` starts.
     //
@@ -1316,9 +1318,9 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
     // workspace is `/tmp`, so a VM placement here would measure and copy it and boot firecracker,
     // while what this test is about is the channel a refusing verdict comes back on. No line asks
     // for one: a config built the ordinary way (`Config::for_this_box`) states no VM.
-    let cfg = config(main_id, stub.endpoint.clone(), &path);
+    let cfg = config(&main_id, stub.endpoint.clone(), &path);
     let registry = Registry::new();
-    let mut father = a_session(main_id, &parts, &cfg, registry.clone());
+    let mut father = a_session(&main_id, &parts, &cfg, registry.clone());
     // **The session that enqueued the work** — a session in its own right, live, with no tree edge
     // to this one (the operator's own correction: *"well gatekeeper is not a child"*).
     let _peer = a_session(peer_id, &parts, &cfg, registry.clone());

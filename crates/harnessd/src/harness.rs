@@ -2019,6 +2019,14 @@ struct OwnServer {
 /// One session: the engine, the transcript, the tools, the log and the store.
 pub struct Harness {
     cfg: Config,
+    /// **The right to append to this session's transcript**, claimed at open and given back when
+    /// this harness is dropped ([`crate::writer`], `letibot_tokencore::store::writers`).
+    ///
+    /// A field rather than a call at every write, because the claim is a LIFETIME and not a
+    /// permission check: it is taken once, it is what a second process's open is refused by, and
+    /// the value's only job is to be dropped at the right moment. `None` for a session with no
+    /// store, and for one whose live copy is on another endpoint.
+    _writer: Option<crate::writer::Claim>,
     /// **The daemon's mode rows**, which a `/mode` taken by a running turn writes
     /// (`apply_queued_mode`, through [`crate::modes::record`]).
     mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
@@ -3270,6 +3278,26 @@ impl Harness {
                 .map_err(|e| HarnessError::Store(e.to_string()))?,
         };
         let mut notes: Vec<String> = Vec::new();
+        // **ONE PROCESS APPENDS TO ONE TRANSCRIPT, AND THIS IS WHERE THAT IS DECIDED.**
+        //
+        // The claim is a row (`letibot_tokencore::store::writers`) naming this process, taken
+        // before a single row is written and given back when this harness goes. A session another
+        // LIVE process holds is refused here, by name — which is the defect `crate::writer`
+        // describes at length, MEASURED on 2026-10-26 as `s-gatekeeper#t0` with two daemons'
+        // rows in it and a transcript that no longer restores.
+        //
+        // **A session whose live copy is elsewhere is not claimed**: the refusal below is the one
+        // that speaks about it, and nothing here will append to that row.
+        let moved = stored
+            .as_ref()
+            .and_then(|s| s.lives_on.clone())
+            .filter(|s| !s.is_empty());
+        let writer = match (&store, moved.is_some()) {
+            (Some(s), false) => {
+                Some(crate::writer::claim(s, &cfg.session_id).map_err(HarnessError::Setup)?)
+            }
+            _ => None,
+        };
         if let Some(st) = &stored {
             // **A COPY THAT LIVES SOMEWHERE ELSE IS NOT OPENED HERE.**
             //
@@ -5653,6 +5681,10 @@ impl Harness {
         };
         let mut h = Harness {
             mode_store: parts.mode_store.clone(),
+            // **The claim on this session's transcript, held for the harness's life** — see
+            // `crate::writer`. Dropped with the harness, which is what gives the session back to
+            // whoever opens it next; never read, and named `_` because of that.
+            _writer: writer,
             deliverable: None,
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
@@ -9834,7 +9866,7 @@ impl Harness {
     }
 
     /// **The reviews this daemon's queues claimed, served by THIS session's runner** — the
-    /// review queue's session (`sessions::gatekeeper::SESSION`) is the host; every other session
+    /// review queue's session (`sessions::gatekeeper::session`) is the host; every other session
     /// serves nothing. The body is [`crate::mergequeue::review::serve`]: start a reviewer for each
     /// claimed row nobody is on (placed per decision 3), write the verdict it handed in bound to
     /// the head it judged (decision 6), count an attempt that reached none, and kill a reviewer
@@ -9897,9 +9929,10 @@ impl Harness {
     }
 
     /// Whether this harness is the review queue's own session — the one
-    /// [`crate::sessions::gatekeeper::SESSION`] names, whose board is the queue.
+    /// [`crate::sessions::gatekeeper::session`] names for this daemon's workspace, whose board is
+    /// the queue.
     fn is_the_queue(&self) -> bool {
-        self.hub.session_id() == crate::sessions::gatekeeper::SESSION
+        self.hub.session_id() == crate::sessions::gatekeeper::session(&self.cfg.workspace)
     }
 
     /// **The review queue, onto this session's board** — one row per review this daemon's queues
@@ -18554,7 +18587,7 @@ impl HarnessTaskRunner {
         prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
     ) -> Option<crate::subagent_record::SubagentRecord> {
-        if self.base.session_id == crate::sessions::gatekeeper::SESSION {
+        if self.base.session_id == crate::sessions::gatekeeper::session(&self.base.workspace) {
             return None;
         }
         let store = self.run_store()?;

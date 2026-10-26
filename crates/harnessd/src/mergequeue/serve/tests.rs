@@ -1662,6 +1662,45 @@ fn a_reviewing_row_whose_reviewer_is_not_alive_is_re_seated_on_the_next_pass() {
     let r = s.review_row("g").unwrap().unwrap();
     assert_eq!(r.state, ReviewState::Reviewing, "left under review: {r:?}");
     assert_eq!(r.attempts, 1, "a live child spends no attempt");
+
+    // **And a child of the id every daemon shared before this change is the SAME case.** The
+    // review queue's session used to be the constant `s-gatekeeper` on every box, so a row an old
+    // build left `reviewing` names a reviewer `s-gatekeeper-sub-…` — a session no daemon of this
+    // build holds, and therefore exactly the vanished child this rule re-seats. Nothing has to
+    // migrate such a row: it is stopped being waited for the next time the queue passes.
+    w.door.live.lock().unwrap().clear();
+    assert!(
+        s.move_review(
+            "g",
+            ReviewState::Reviewing,
+            ReviewState::Reviewing,
+            &Move::new("pool", "an old build's reviewer")
+                .set("owner", "test/a")
+                .set("reviewer", "s-gatekeeper-sub-1791759365511364772"),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+    run(&q, 1);
+    // **The worker's pass is a whole cycle**: the re-seat puts the row back to `waiting` and the
+    // same pass claims it again, so what proves the re-seat is the TRANSITION, not the row's
+    // resting state. Two attempts: one for the live child that vanished, one for the old id's.
+    let legacy = s.review_row("g").unwrap().unwrap();
+    assert_eq!(
+        legacy.attempts, 2,
+        "an old id's vanished reviewer spends an attempt like any other: {legacy:?}"
+    );
+    let why = s
+        .transitions("review", "g")
+        .unwrap()
+        .into_iter()
+        .rfind(|t| t.to_state == "waiting")
+        .expect("the row was re-seated again")
+        .why;
+    assert!(
+        why.contains("s-gatekeeper-sub-1791759365511364772") && why.contains("not alive"),
+        "and the same sentence, naming the old child: {why}"
+    );
 }
 
 /// **A fix branch opened for a tip the target has moved past is withdrawn, and its empty tree and
@@ -2239,8 +2278,10 @@ fn a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_sessi
     seat("s-repo", &w.repo);
     seat("s-wt", &wt);
     let reg = Registry::new();
-    let board = crate::sessions::gatekeeper::SESSION;
-    let hubs: Vec<_> = ["s-home", "s-repo", "s-wt", board]
+    // **The review queue's session of THIS daemon** — one per workspace, found by its shape
+    // rather than by a constant every daemon on the box once shared.
+    let board = crate::sessions::gatekeeper::session(&w.dir.0);
+    let hubs: Vec<_> = ["s-home", "s-repo", "s-wt", board.as_str()]
         .iter()
         .map(|id| reg.create(*id, *id, SessionWiring::default()).unwrap())
         .collect();

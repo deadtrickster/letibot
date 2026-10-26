@@ -144,8 +144,11 @@ impl Bridge {
     /// second hand. `watch_only: false` exists for the other job, driving a session this
     /// bridge did not open (a resumed package, a session a person left idle).
     pub fn attach(&self, worktree: &str, session: &str, watch_only: bool) -> Result<Value, String> {
-        let session = session_name(session)?;
+        // **The daemon first**, because the name `gatekeeper` resolves against ITS workspace key:
+        // the review queue's session id is per folder, so a name resolved to a constant would
+        // join whichever daemon spelled it rather than the one this call is about.
         let d = daemon::resolve(Path::new(worktree))?;
+        let session = session_name(session, &d.key)?;
         if !daemon::is_up(&d.socket) {
             return Err(format!(
                 "no daemon is up for {}: nothing is accepting on {}. `leticode_attach` joins a \
@@ -412,13 +415,14 @@ impl Bridge {
 
 /// **The session an attach names.**
 ///
-/// Most attaches name an id — `s-gatekeeper` above all — but the review queue's session is
-/// the one session in the tree whose id is a *constant*, the same string in every daemon on
-/// every box, and a name a person types has to be that constant rather than a second
-/// spelling of it. `gatekeeper` is the name; [`letibot_sessionlog::GATEKEEPER_SESSION`] is
-/// the id it resolves to, and `harnessd`'s `sessions::gatekeeper::SESSION` is the same value
-/// under the daemon's own name.
-fn session_name(raw: &str) -> Result<String, String> {
+/// Most attaches name an id, but the review queue's session is the one session in the tree with a
+/// NAME rather than an id a person would remember — and that name has to resolve to *this folder's*
+/// daemon's queue and not to another folder's. **The review queue is one session per daemon**
+/// ([`letibot_sessionlog::gatekeeper_session`], `s-gatekeeper-<workspace key>`), because every
+/// daemon on the box shares one store and two of them appending to one transcript is silent
+/// corruption. So `gatekeeper` resolves through `key` — the workspace key of the daemon this
+/// attach is joining, which the caller already resolved to find that daemon at all.
+fn session_name(raw: &str, key: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err(
@@ -428,7 +432,7 @@ fn session_name(raw: &str) -> Result<String, String> {
         );
     }
     Ok(match raw {
-        "gatekeeper" => letibot_sessionlog::GATEKEEPER_SESSION.to_string(),
+        "gatekeeper" => letibot_sessionlog::gatekeeper_session_for_key(key),
         other => other.to_string(),
     })
 }
@@ -470,7 +474,7 @@ pub fn list() -> Value {
                  "required": ["worktree", "brief"]
              })),
         tool("leticode_attach",
-             "Join a session that is already running — the merge queue's own `s-gatekeeper`, a \
+             "Join a session that is already running — this folder's review queue, a \
               package a person resumed, any session a folder's daemon holds — and hold it \
               the way `leticode_start` holds one, without a brief. It JOINS a running daemon and \
               never starts one: with nothing listening on that folder's socket it refuses and \
@@ -486,7 +490,7 @@ pub fn list() -> Value {
                  "type": "object",
                  "properties": {
                      "worktree": { "type": "string", "description": "Absolute path to a folder of the checkout whose daemon holds the session — the daemon is found by the workspace's hash, so a worktree of the same repository is the same daemon." },
-                     "session": { "type": "string", "description": "The session id, or the name `gatekeeper` for the review queue's session (`s-gatekeeper`, the one id every daemon spells the same)." },
+                     "session": { "type": "string", "description": "The session id, or the name `gatekeeper` for THIS folder's review queue — one session per daemon now, so the name resolves through the folder it attaches to (`s-gatekeeper-<workspace key>`)." },
                      "watch_only": { "type": "boolean", "description": "Default true: watch and never act — no prompt, no answer, no interrupt. False drives the session as `leticode_start` would, and takes over answering its asks." }
                  },
                  "required": ["worktree", "session"]
@@ -811,17 +815,30 @@ mod tests {
     }
 
     /// **`gatekeeper` is the review queue's id, not a second spelling of it** (B6): the name
-    /// resolves to the constant every daemon spells the same, an id passes through, and an
-    /// empty one is refused rather than read as "whatever the daemon calls current" — a
-    /// watcher that landed on somebody else's session would report on the wrong conversation.
+    /// resolves to THIS daemon's queue — one session per workspace, so it is the id the daemon the
+    /// attach joins computed for the same folder — an id passes through, and an empty one is
+    /// refused rather than read as "whatever the daemon calls current" — a watcher that landed on
+    /// somebody else's session would report on the wrong conversation.
     #[test]
-    fn the_gatekeeper_name_resolves_to_the_queues_id() {
+    fn the_gatekeeper_name_resolves_to_this_daemons_queue() {
+        // The workspace key the caller resolved to find the daemon: `abc123def456` stands for the
+        // twelve hex characters `launcher::key` derives from a folder.
         assert_eq!(
-            session_name("gatekeeper").expect("a name"),
-            letibot_sessionlog::GATEKEEPER_SESSION
+            session_name("gatekeeper", "abc123def456").expect("a name"),
+            letibot_sessionlog::gatekeeper_session_for_key("abc123def456")
         );
-        assert_eq!(session_name(" s-1789 ").expect("an id"), "s-1789");
-        let e = session_name("  ").expect_err("an attach names a session");
+        // **And two folders' daemons get two ids**, which is the whole of what this replaced: the
+        // review queue used to be one string on the box, and two daemons appending to one
+        // transcript is the corruption the store's append-only trigger then refuses.
+        assert_ne!(
+            session_name("gatekeeper", "abc123def456").expect("a name"),
+            session_name("gatekeeper", "789abc012def").expect("a name")
+        );
+        assert_eq!(
+            session_name(" s-1789 ", "abc123def456").expect("an id"),
+            "s-1789"
+        );
+        let e = session_name("  ", "abc123def456").expect_err("an attach names a session");
         assert!(e.contains("`session` is empty"), "{e}");
         assert!(e.contains("gatekeeper"), "{e}");
     }

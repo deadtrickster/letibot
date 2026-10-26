@@ -136,6 +136,9 @@ pub mod transcript_source;
 pub mod turn_tail;
 pub mod vm_reap;
 pub mod wall;
+// **One process per session's transcript** — the claim a second daemon's open is refused by
+// (`letibot_tokencore::store::writers`), and the sentence it is refused with.
+pub mod writer;
 
 pub use answers::{Answers, HeadAdjudicator};
 pub use config::{Config, SpillPolicy, SpillStorage};
