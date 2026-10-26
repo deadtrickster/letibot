@@ -72,3 +72,36 @@ What to read, in `gate_steps_json`: `error: N targets failed:` for the count, an
 `error: test failed, to rerun pass …` + its `Caused by: …` line — `(signal: 6, SIGABRT)` and
 `Library not loaded` mean the rpath/load class (a build, not the target's history), while a
 `Caused by: exited with code 101` means the binary ran and something else is going on.
+
+## UPDATE 2026-10-27 (2) — the classifier reads a 4 KiB TAIL, and the box had lost its vocabulary
+
+The tail became readable at tip `6d2a1c7e95df`: `error: 2 targets failed:` naming
+`letibot-harnessd --test session_lifecycle` and `--test stop_ends_runs`, preceded by a wall of
+`running 0 tests` / `test result: ok` doc-test blocks. **Two**, where the earlier tips' lists were
+truncated at 25+ lines — so the failing set varies per run, and the wall of doc-tests is what the
+tail budget is being spent on.
+
+`EVIDENCE_BYTES = 4_096` (`gate.rs:47`): a step's stored output is `read_tail(&log)` — the last
+**4 KiB**, with `… [N byte(s) dropped from the front]` in front. A `cargo test --workspace
+--no-fail-fast -- --nocapture` run fills 4 KiB with doc-test noise in half a second, so
+`shows_code_failing` **structurally cannot see** a mid-run failure's `panicked at` / `failures:` —
+they are megabytes above the cap. That, plus `names_a_missing_thing` matching the runner's own
+`[gate memory: uncapped … No such file or directory (os error 2)]`, is the whole of "the gate's own
+setup failed, and then: [gate memory: …]".
+
+### MEASURED: both named targets fail here, at `Parts::load`
+
+`LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline -p letibot-harnessd --test session_lifecycle
+--test stop_ends_runs` in this worktree: `test result: FAILED. 0 passed; 7 failed`, every test
+panicking at `crates/harnessd/tests/session_lifecycle.rs:78` (`parts_for`), with
+
+```
+the vocabulary must load: Setup("loading the vocabulary: libllama could not load a vocabulary
+from /Users/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf")
+```
+
+and `ls ~/models/qwen3.8-flash-next/` shows **shard 1 of 6 only** (`…-00001-of-00006.gguf`,
+10.9 MB, and a `split-shard-1.gguf.orig`): a split model with five shards missing. libllama refuses
+a vocabulary from a partial split, `Parts::load` fails, and the two GGUF-dependent integration
+targets fail. So `main`'s step 3 is not code — it is the box's apparatus, which is exactly what
+`LETIBOT_REQUIRE_APPARATUS=1` is supposed to turn into a failure.
