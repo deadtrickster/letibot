@@ -76,9 +76,28 @@ pub fn builds_or_tests(command: &str) -> bool {
     .any(|w| c.contains(w))
 }
 
+/// **The step's own words, with the gate's own notes dropped.**
+///
+/// A row's `output` ends with lines the GATE wrote — `[gate memory: …]`, `[step: exit code 101]`,
+/// `[N process(es) the step left running were killed with its cgroup]` — and every classifier
+/// below reads that same string. MEASURED 2026-10-26 on `main` at `6d2a1c7e`: a step with **two
+/// failing test targets** was reported as *"the gate's own setup failed"*, because the uncapped
+/// run's note says `… /proc/self/cgroup could not be read: No such file or directory` and
+/// [`names_a_missing_thing`] took that as the step naming something missing — so the tip went
+/// `blocked` (unjudged, nothing lands) instead of red. The note is a fact about the gate's harness
+/// on this platform and never about the code, so no classifier may read it.
+fn step_words(out: &str) -> impl Iterator<Item = &str> {
+    out.lines().filter(|l| {
+        let t = l.trim_start();
+        !(t.starts_with("[gate memory: ")
+            || t.starts_with("[step: ")
+            || (t.starts_with('[') && t.ends_with("with its cgroup]")))
+    })
+}
+
 /// Output that shows a build or a test PASSING (cargo's own words).
 fn shows_a_pass(out: &str) -> bool {
-    out.lines().any(|l| {
+    step_words(out).any(|l| {
         let t = l.trim_start();
         t.starts_with("Finished ") || t.starts_with("test result: ok")
     })
@@ -86,7 +105,7 @@ fn shows_a_pass(out: &str) -> bool {
 
 /// Output that shows the CODE failing — a compile error, a failed test, a panic, a format diff.
 pub(crate) fn shows_code_failing(out: &str) -> bool {
-    out.lines().any(|l| {
+    step_words(out).any(|l| {
         let t = l.trim_start();
         t.starts_with("error[")
             || t.starts_with("error: could not compile")
@@ -94,13 +113,18 @@ pub(crate) fn shows_code_failing(out: &str) -> bool {
             || t.contains("panicked at")
             || t.starts_with("Diff in ")
             || t.starts_with("failures:")
+            // **Cargo's own verdict on failing test TARGETS** — `error: 2 targets failed:` and
+            // the list under it. It is the LAST thing `cargo test --no-fail-fast` writes, so it
+            // survives the cap that keeps only the end of a long step's output, while the earlier
+            // `test result: FAILED` lines do not — without this, a step whose retained tail is
+            // nothing but `test result: ok` reads as *everything passed*.
+            || (t.starts_with("error: ") && t.contains("target") && t.contains("failed"))
     })
 }
 
 /// The last words name something MISSING — a path, a binary, a command.
 fn names_a_missing_thing(out: &str) -> Option<String> {
-    let lines: Vec<&str> = out
-        .lines()
+    let lines: Vec<&str> = step_words(out)
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
@@ -231,6 +255,59 @@ mod tests {
                 "{out}"
             );
         }
+    }
+
+    /// **MEASURED 2026-10-26, `main` at `6d2a1c7e`: a RED step was reported as the gate's own
+    /// setup, and nothing could land on a tip nothing was wrong with.**
+    ///
+    /// The step is the workspace's tests under the gate — two failing targets — and the gate
+    /// appends its own `[gate memory: uncapped …]` note, whose reason happens to be
+    /// `/proc/self/cgroup could not be read: No such file or directory`. The classifier read the
+    /// GATE's words as the step's, matched *no such file*, and called it setup. The output here is
+    /// the row's real tail, verbatim.
+    #[test]
+    fn a_red_step_is_red_even_behind_the_gates_own_memory_note() {
+        let out = "running 0 tests\n\n\
+                   test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
+                   finished in 0.00s\n\n\
+                   error: 2 targets failed:\n    \
+                   `-p letibot-harnessd --test session_lifecycle`\n    \
+                   `-p letibot-harnessd --test stop_ends_runs`\n\n\
+                   [gate memory: uncapped — the step ran in the daemon's own cgroup: there is no \
+                   process-lifetime mechanism on this backend, so a process started here would \
+                   have no owner and nothing would reap it: `/proc/self/cgroup` could not be read: \
+                   No such file or directory (os error 2)]\n\
+                   [step: exit code 101]\n";
+        assert!(
+            shows_code_failing(out),
+            "cargo's own verdict on failing targets must count as the code failing"
+        );
+        assert_eq!(
+            setup_failure(&[step(
+                "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture",
+                MergeGateOutcome::Failed,
+                out
+            )]),
+            None,
+            "a step with two failing test targets was called the gate's setup"
+        );
+    }
+
+    /// And the annotation alone must never be read as the step's words: an UNCAPED note with no
+    /// failing code behind it is still a setup failure only if something else in the output names
+    /// a missing thing — the note's own `/proc/self/cgroup` is about the gate's harness.
+    #[test]
+    fn the_gates_notes_are_not_the_steps_words() {
+        assert_eq!(step_words("[gate memory: uncapped — /proc/self/cgroup: No such file or directory (os error 2)]").count(), 0);
+        assert_eq!(step_words("[step: exit code 101]").count(), 0);
+        assert_eq!(
+            step_words("[3 process(es) the step left running were killed with its cgroup]").count(),
+            0
+        );
+        assert_eq!(
+            names_a_missing_thing("[gate memory: uncapped — No such file or directory]"),
+            None
+        );
     }
 
     #[test]
