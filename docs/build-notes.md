@@ -47,6 +47,12 @@ looked like a clippy warning. The search in `build-support.rs` now tries the var
 then `$HOME/Projects/llama.cpp`, then the box path, and `build-glm/bin` then `build/bin`
 under it — so a differently-located llama.cpp needs no variable at all.
 
+**A target dir follows the library it linked, not a new one.** Each script watches the
+`libllama` it chose (`llama_watch`), so rebuilding llama.cpp in place relinks. A NEW
+higher-priority directory appearing (a `build-glm/` built after `build/`) is invisible to
+cargo; run `cargo clean -p letibot-llama` in that target dir once, or set
+`LETIBOT_LLAMA_LIB`.
+
 Already covered: `llama` (`letibot-llama`, the origin — the only crate that links the lib, and asserts it exists; it was `tokencore` until the vocabulary became a backend),
 `turn`, `sessionlog` (its dev-dependencies pull the engine in), `harnessd`, `bridge` (its end-to-end test starts a real daemon). A new crate
 that ends up linking `libllama` needs the same treatment.

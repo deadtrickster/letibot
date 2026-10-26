@@ -601,6 +601,16 @@ fn a_bang_line_that_asks_is_answered_and_finishes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // **Linux's reading, asserted.** The card carries the program's own last line only where
+    // the daemon can see that the program is blocked on its terminal, and Darwin exposes
+    // neither `wchan` nor `/proc/<tid>/syscall` (`crates/tools/src/exec/ask.rs`): a Mac raises
+    // the unreadable offer instead, which `!send` still answers.
+    let Some(_) = letibot_tokencore::apparatus::applies(
+        "reading that a program waits on its terminal (wchan or /proc/<tid>/syscall)",
+        cfg!(target_os = "linux"),
+    ) else {
+        return;
+    };
     let socket = socket_path("answered");
     let cfg = config("bang-answered", &socket);
     // **Leaked on purpose.** The harness borrows `Parts` for its life and the run must happen
@@ -815,6 +825,16 @@ fn the_manual_send_reaches_a_running_commands_stdin() {
 #[test]
 fn a_program_that_prints_a_question_and_exits_raises_no_card() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // **Linux's reading, asserted.** The card carries the program's own last line only where
+    // the daemon can see that the program is blocked on its terminal, and Darwin exposes
+    // neither `wchan` nor `/proc/<tid>/syscall` (`crates/tools/src/exec/ask.rs`): a Mac raises
+    // the unreadable offer instead, which `!send` still answers.
+    let Some(_) = letibot_tokencore::apparatus::applies(
+        "reading that a program waits on its terminal (wchan or /proc/<tid>/syscall)",
+        cfg!(target_os = "linux"),
+    ) else {
         return;
     };
     // ---- 1. A question, and a clean exit.
