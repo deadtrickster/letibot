@@ -373,7 +373,7 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
         })
     };
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let rec = driver.join().expect("the driver thread");
     daemon.shutdown();
 
@@ -546,7 +546,7 @@ fn a_second_bang_line_waits_for_the_run_in_flight_and_runs_once() {
         })
     };
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let rec = driver.join().expect("the driver thread");
     daemon.shutdown();
 

@@ -55,7 +55,7 @@
 use std::path::PathBuf;
 
 use crate::config::{AdjudicatorChoice, Config, Disclosure, Seat, SpillPolicy, SpillStorage};
-use crate::{Daemon, Dialect, Outcome, Parts, Sessions};
+use crate::{Daemon, Dialect, Outcome, OutcomeSaid, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use letibot_turn::Endpoint;
 
@@ -1746,8 +1746,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             )));
     }
     let (prefix_tokens, ledger_head) = sessions
-        .harness_of(&session_id)
-        .map(|h| (h.tokens().len(), h.ledger_head()))
+        .with_harness(&session_id, |h| (h.tokens().len(), h.ledger_head()))
         .unwrap_or((0, String::new()));
 
     // After the session is open, not before: the adjudication line is read from the
@@ -1755,8 +1754,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // harness is built. A banner computed early is a banner describing a session
     // that had not been wired yet.
     let disclosures = sessions
-        .harness_of(&session_id)
-        .map(|h| h.config().disclosures(h.wiring()))
+        .with_harness(&session_id, |h| h.config().disclosures(h.wiring()))
         .unwrap_or_default();
 
     eprintln!("harnessd: session {session_id}");
@@ -1784,7 +1782,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // Say the wall and what happens at it. A session that will compact itself
         // without warning is a session doing something the operator did not see
         // coming, and one that will NOT is worth knowing before it dies at 500.
-        let c = sessions.harness_of(&session_id).map(|h| h.config().clone());
+        let c = sessions.with_harness(&session_id, |h| h.config().clone());
         if let Some(c) = c {
             eprintln!("{}", context_line(&c));
         }
@@ -1817,9 +1815,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // count and the chain head are the evidence.
     match sessions.resume_report(&session_id) {
         Some(r) => {
-            let counted = sessions
-                .harness_of(&session_id)
-                .map(|h| (h.config().shown_tokens(r.tokens as u64), h.token_unit()));
+            let counted = sessions.with_harness(&session_id, move |h| {
+                (h.config().shown_tokens(r.tokens as u64), h.token_unit())
+            });
             eprintln!("{}", resumed_line(&r, counted));
             for note in &r.notes {
                 for line in wrap(note, term_cols().clamp(48, 100).saturating_sub(11)) {
@@ -1966,30 +1964,45 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     boot.done();
     eprintln!("  waiting for a head. Ctrl-C to stop.");
-    daemon.run(&mut sessions, |session, cmd, outcome| match outcome {
-        // The session is named on every line: with more than one of them, "who did
-        // what" is only half the question and the other half used to be unanswerable
-        // from this log.
-        Outcome::Replied(r) => eprintln!(
-            "  {session} · {} -> {} round(s), {} tool call(s)",
-            cmd.identity, r.rounds, r.tool_calls
-        ),
-        // The base is the LEDGER's pair (the fork's own measurement), and says so: the
-        // count in the provider's units is the `compacted:` line the session printed just
-        // above this one (R72 follow-up).
-        Outcome::Compacted(r) => eprintln!(
-            "  {session} · {} -> compacted, base {} -> {} ledger tokens (transcript {}); {}",
-            cmd.identity,
-            r.fork.was_tokens,
-            r.fork.base_tokens,
-            r.fork.transcript_id,
-            crate::sessions::summary_turn_reuse(&r.summary_turn)
-        ),
-        Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
-        Outcome::Ignored => {}
-        // A wake handed to the session's own thread; nothing ran on this one. See
-        // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
-        Outcome::HandedOn => {}
+    daemon.run(&mut sessions, |session, said| match said {
+        // **A command a head sent, and what it came to.** The wording is the daemon's and the
+        // turn's own thread reports it through this door — one line either way.
+        OutcomeSaid::Command(cmd, outcome) => match outcome {
+            // The session is named on every line: with more than one of them, "who did
+            // what" is only half the question and the other half used to be unanswerable
+            // from this log.
+            Outcome::Replied(r) => eprintln!(
+                "  {session} · {} -> {} round(s), {} tool call(s)",
+                cmd.identity, r.rounds, r.tool_calls
+            ),
+            // The base is the LEDGER's pair (the fork's own measurement), and says so: the
+            // count in the provider's units is the `compacted:` line the session printed just
+            // above this one (R72 follow-up).
+            Outcome::Compacted(r) => eprintln!(
+                "  {session} · {} -> compacted, base {} -> {} ledger tokens (transcript {}); {}",
+                cmd.identity,
+                r.fork.was_tokens,
+                r.fork.base_tokens,
+                r.fork.transcript_id,
+                crate::sessions::summary_turn_reuse(&r.summary_turn)
+            ),
+            Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
+            Outcome::Ignored => {}
+            // A wake handed to the session's own thread; nothing ran on this one. See
+            // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
+            Outcome::HandedOn => {}
+        },
+        // **A wake has no command behind it.** It used to be the worker's own `monitor ->` line;
+        // now it is said by whichever thread ran the turn, in the same words.
+        OutcomeSaid::Wake(outcome) => match outcome {
+            Outcome::Replied(r) => eprintln!(
+                "  {session} · monitor -> {} round(s), {} tool call(s)",
+                r.rounds, r.tool_calls
+            ),
+            Outcome::Failed(e) => eprintln!("  {session} · monitor -> {e}"),
+            // A wake never compacts, and the two that say nothing happened say nothing.
+            Outcome::Compacted(_) | Outcome::Ignored | Outcome::HandedOn => {}
+        },
     });
     // **Every step of the orderly stop is SAID, as it starts** (2026-10-26). What follows is
     // bounded but not short — a gate's process group killed, the VMs brought down, five seconds of

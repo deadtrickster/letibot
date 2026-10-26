@@ -8,19 +8,25 @@
 //!
 //! # One worker over many sessions
 //!
-//! Still **one**, and still §13.2's "one authoritative reader". What changed is
-//! what it waits on: [`Registry::next_command`] blocks on the cross-session bell
-//! and hands back *which* session woke it. So two heads prompting two different
-//! sessions are served in the order they pressed enter, and a long turn in one
-//! session queues the other — which is honest about a box with one GPU, and is
-//! what the operator would otherwise discover by watching two sessions both claim
-//! to be generating.
+//! **The worker below is a dispatcher now, and every session has a reader of its own.** The
+//! operator's requirement, in their words: *"one daemon, several sessions … give a thread to each
+//! session and that is it"*. Until this, one thread took one command at a time across every
+//! session, and a prompt to the second waited for the first's three-minute turn — measured
+//! 2026-10-26 in the operator's own daemon: a prompt to session B sat queued from 14:08 to
+//! 14:10:52, exactly one second after session A's turn ended.
 //!
-//! One worker rather than a thread per session is not a stopgap. `TurnEngine`
-//! borrows the vocabulary and the dialect's renderer, and a second thread would
-//! need both to be `Sync`; more to the point, the thing being serialised is a
-//! shared llama.cpp server with a fixed number of slots, and a daemon that ran two
-//! turns at once would be arbitrating a resource it does not own.
+//! [`Sessions::serve_each_on_its_own_thread`] is what arms it, and [`crate::sessions::Court`] is
+//! the shape: the same one a subagent already had (`harness::serve_child`). The loop here keeps
+//! what is the DAEMON's — opening sessions, the review queue's own session, the idle exit — and
+//! the per-session clocks (the plan check, the abandoned-call sweep, the child park) moved onto
+//! the threads that may drive the harnesses they read.
+//!
+//! What that costs and why it is worth it: `TurnEngine` borrows the vocabulary and the dialect's
+//! renderer, and two threads need both to be `Sync` — which they are (`Parts` is three `Arc`s,
+//! shared read-only by every session's engine, which is what it was always for). The thing that
+//! was being serialised was never a shared llama.cpp server: it was one thread doing one turn at a
+//! time for unrelated conversations. A box with one GPU still arbitrates that where it always
+//! did — in the server's own slots.
 //!
 //! # Why there is no async runtime and no timer
 //!
@@ -45,14 +51,14 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use letibot_sessionlog::hub::{Hub, QueuedCommand};
+use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
 use letibot_sessionlog::server::{ServerHandle, serve_registry};
 
 use crate::harness::HarnessError;
 use letibot_sessionlog::registry::{Work, WorkOrIdle};
 
-use crate::sessions::{Outcome, Sessions};
+use crate::sessions::{Outcome, OutcomeSaid, ReplySink, Sessions};
 
 /// The write end of the self-pipe, for the signal handler. An `AtomicI32` because
 /// that is what a handler may touch; `-1` means no handler is installed.
@@ -250,17 +256,26 @@ impl Daemon {
         Ok(())
     }
 
-    /// Run the single command worker until the registry closes.
+    /// Run the daemon's own loop until the registry closes.
     ///
-    /// One worker, by construction: §13.2's "one authoritative reader, shared by
-    /// many heads", now shared by many *sessions* as well. Two heads may prompt at
-    /// once and the second is queued, which is what a human expects from a shared
-    /// session — it is not a race the daemon has to arbitrate.
+    /// # The dispatcher, and the readers it hands work to
+    ///
+    /// **Arming the threads is the first thing it does** ([`Sessions::serve_each_on_its_own_thread`]),
+    /// and after that the two arms that used to run a turn — `Work::Command` and `Work::Woken` — are
+    /// reachable only for a session with no court: `Hub::try_command` answers `None` for a hub owned
+    /// by its own thread, so its commands are never popped here, and a wake for one is handed to
+    /// that thread. They are kept, and kept working, because they are the same two arms a daemon
+    /// without threads has always run and the log lines are the same.
+    ///
+    /// What stays here is what belongs to the DAEMON: a session being created, the review queue's
+    /// own pass, the idle exit. The per-session clocks moved to the sessions' threads.
     pub fn run(
         &self,
         sessions: &mut Sessions<'_>,
-        mut on_reply: impl FnMut(&str, &QueuedCommand, Outcome),
+        on_reply: impl Fn(&str, OutcomeSaid<'_>) + Send + Sync + 'static,
     ) {
+        let sink: ReplySink = Arc::new(on_reply);
+        sessions.serve_each_on_its_own_thread(sink.clone());
         // **The worker's wait, with the clock as an input.** `next_work_until` gives up at a
         // deadline and says so, which is what lets this loop act on a PAUSE rather than only on an
         // event — and the one thing that wanted to is the idle plan-check the operator asked for:
@@ -280,38 +295,46 @@ impl Daemon {
                 // passes `None`, so this arm is only reachable when one of the three clocks is
                 // actually due.
                 WorkOrIdle::Idle => {
-                    // **A call nothing will answer is closed out HERE**, on the idle pass, and the
-                    // placement is the liveness test: the round loop is synchronous, so a round in
-                    // flight would be holding this very thread and this line could not run. See
-                    // `Sessions::sweep_abandoned_calls`.
-                    let pass = std::time::Instant::now();
-                    let swept = sessions.sweep_abandoned_calls();
-                    crate::instruments::worker_pass("sweep", pass, swept);
-                    if swept > 0 {
-                        eprintln!("  swept {swept} abandoned tool call(s)");
+                    // **The per-session clocks are the sessions' own now.** Every session on a
+                    // thread of its own keeps its plan check, its abandoned-call sweep and its
+                    // child park THERE — on the one thread that may drive its harness — so this
+                    // pass does not ask them anything it would then stand still waiting for. The
+                    // block below is what a daemon that never armed the threads still does here,
+                    // and it is the same code every fixture drives.
+                    if !sessions.each_on_its_own_thread() {
+                        // **A call nothing will answer is closed out HERE**, on the idle pass, and the
+                        // placement is the liveness test: the round loop is synchronous, so a round in
+                        // flight would be holding this very thread and this line could not run. See
+                        // `Sessions::sweep_abandoned_calls`.
+                        let pass = std::time::Instant::now();
+                        let swept = sessions.sweep_abandoned_calls();
+                        crate::instruments::worker_pass("sweep", pass, swept);
+                        if swept > 0 {
+                            eprintln!("  swept {swept} abandoned tool call(s)");
+                        }
+                        let pass = std::time::Instant::now();
+                        let ran = sessions.deliver_due_nags();
+                        crate::instruments::worker_pass("todo-check", pass, ran);
+                        if ran > 0 {
+                            eprintln!("  todo check -> {ran} session(s)");
+                        }
+                        // **And a reopened subagent idle past its window goes back to the store**
+                        // (R68's idle-child policy, `Config::child_park_after`). On this pass for the
+                        // sweep's reason: no round is running, so nothing it holds is mid-call.
+                        let pass = std::time::Instant::now();
+                        let parked = sessions.park_idle_children();
+                        crate::instruments::worker_pass("park", pass, parked);
+                        if parked > 0 {
+                            eprintln!("  parked {parked} idle subagent(s) in the store");
+                        }
+                        // **And the plugin tick** (W4 of `docs/plugins-slice1.md`): the hot-reload
+                        // poll every two seconds, the panes whose `every_s` has come round, and the
+                        // notices a layer owes its session's model. On this pass and never inside a
+                        // turn, so `plugin_tick` starts the gate — which runs `cargo` — on a thread
+                        // and returns: a session's work must not wait for a compiler, and a pane's
+                        // query is answered on its own connection's thread.
+                        sessions.plugin_tick();
                     }
-                    let pass = std::time::Instant::now();
-                    let ran = sessions.deliver_due_nags();
-                    crate::instruments::worker_pass("todo-check", pass, ran);
-                    if ran > 0 {
-                        eprintln!("  todo check -> {ran} session(s)");
-                    }
-                    // **And a reopened subagent idle past its window goes back to the store**
-                    // (R68's idle-child policy, `Config::child_park_after`). On this pass for the
-                    // sweep's reason: no round is running, so nothing it holds is mid-call.
-                    let pass = std::time::Instant::now();
-                    let parked = sessions.park_idle_children();
-                    crate::instruments::worker_pass("park", pass, parked);
-                    if parked > 0 {
-                        eprintln!("  parked {parked} idle subagent(s) in the store");
-                    }
-                    // **And the plugin tick** (W4 of `docs/plugins-slice1.md`): the hot-reload
-                    // poll every two seconds, the panes whose `every_s` has come round, and the
-                    // notices a layer owes its session's model. On this pass and never inside a
-                    // turn, so `plugin_tick` starts the gate — which runs `cargo` — on a thread
-                    // and returns: a session's work must not wait for a compiler, and a pane's
-                    // query is answered on its own connection's thread.
-                    sessions.plugin_tick();
                     // **And the reviews this daemon's sessions host**, read from the store — the
                     // durable half of the queue's ring. It is due on its own clock rather than on
                     // this pass's, because this arm is also entered for a nag or a sweep. See
@@ -412,7 +435,7 @@ impl Daemon {
                         let at = crate::instruments::Clock::now();
                         let outcome = sessions.dispatch(&session_id, &cmd);
                         crate::instruments::worker_cmd(&session_id, &cmd, at, &outcome);
-                        on_reply(&session_id, &cmd, outcome);
+                        sink(&session_id, OutcomeSaid::Command(&cmd, &outcome));
                     }
                     Work::Woken(session_id) => {
                         // **A monitor fired while nothing was running.** T24's *"wakes the
@@ -447,21 +470,17 @@ impl Daemon {
                         // answered — and a turn that ends is what arms it. The shared turn tail
                         // arms it (R68.4), for this door and every other.
                         match sessions.wake(&session_id) {
-                            Outcome::Replied(r) => eprintln!(
-                                "  {session_id} · monitor -> {} round(s), {} tool call(s)",
-                                r.rounds, r.tool_calls
-                            ),
-                            // A wake never compacts; the arm exists because the outcome is
-                            // the worker's one vocabulary.
-                            Outcome::Compacted(_) => {}
-                            Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
-                            Outcome::Ignored => {}
-                            // **Said out loud in the outcome and silent in the log.** The daemon
-                            // served this wake by handing it to the thread that owns the session
-                            // (`Sessions::wake`), which is what a subagent's settlement needs — and
-                            // a tree churning is ordinary, so a line per settlement would bury the
-                            // lines that are not.
-                            Outcome::HandedOn => {}
+                            outcome @ Outcome::Replied(_) => {
+                                sink(&session_id, OutcomeSaid::Wake(&outcome))
+                            }
+                            outcome @ Outcome::Failed(_) => {
+                                sink(&session_id, OutcomeSaid::Wake(&outcome))
+                            }
+                            // A wake never compacts, and `Ignored`/`HandedOn` are the two answers
+                            // that say nothing happened here — a settlement already taken at a
+                            // round boundary, and a session whose own thread was handed it. The
+                            // outcome is the worker's one vocabulary, so the arms stay.
+                            Outcome::Compacted(_) | Outcome::Ignored | Outcome::HandedOn => {}
                         }
                     }
                 },

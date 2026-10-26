@@ -440,7 +440,7 @@ impl World {
         let worker = std::thread::spawn(move || {
             let mut sessions = Sessions::open_first(parts, cfg, worker_registry)
                 .expect("the daemon opens its first session");
-            daemon.run(&mut sessions, |_, _, _| {});
+            daemon.run(&mut sessions, |_, _| {});
             daemon.shutdown();
         });
 

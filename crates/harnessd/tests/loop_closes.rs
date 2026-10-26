@@ -399,7 +399,7 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
         (text, finished)
     });
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let (text, finished) = head.join().expect("the head thread");
     daemon.shutdown();
     let _ = pump_thread.join();

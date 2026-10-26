@@ -230,7 +230,7 @@ fn a_follow_up_taken_by_a_failed_round_is_in_the_retried_round() {
             }
         })
     };
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     driver.join().expect("the driver thread");
     daemon.shutdown();
 

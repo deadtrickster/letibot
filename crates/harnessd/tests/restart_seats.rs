@@ -373,7 +373,7 @@ fn a_restart_fires_the_row_whose_job_is_gone() {
         fired
     });
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let fired = driver.join().expect("the driver thread");
 
     let (said, took) = fired.unwrap_or_else(|| {
@@ -438,7 +438,7 @@ fn a_ring_seats_the_firing_at_once() {
         fired
     });
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let fired = driver.join().expect("the driver thread");
     let (said, took) = fired.expect(
         "a ring reached the worker and the stored fact was not seated: the ring is the only door \

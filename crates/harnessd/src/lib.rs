@@ -143,7 +143,7 @@ pub use daemon::Daemon;
 pub use dialect::{Dialect, Wiring};
 pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply};
 pub use modes::ModeStore;
-pub use sessions::{Outcome, Sessions};
+pub use sessions::{Outcome, OutcomeSaid, Sessions};
 pub use tasks::{TaskEntry, TaskJournal};
 pub use term::Terminals;
 

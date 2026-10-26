@@ -217,7 +217,7 @@ fn the_example_dashboard_answers_its_look_through_the_daemons_loader() {
             seen
         })
     };
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let seen = driver.join().expect("the head's thread");
 
     assert!(

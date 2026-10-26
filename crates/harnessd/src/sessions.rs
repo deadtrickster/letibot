@@ -777,9 +777,133 @@ pub enum Outcome {
     HandedOn,
 }
 
+/// **What a session's own thread says to the daemon's log.**
+///
+/// A command it ran, or a wake — which has no command behind it and which the daemon's worker
+/// used to print itself. The wording belongs to the daemon and the thread is not the daemon, so the
+/// thread's half of it travels through a sink ([`ReplySink`]) rather than being said twice.
+pub enum OutcomeSaid<'a> {
+    Command(&'a QueuedCommand, &'a Outcome),
+    Wake(&'a Outcome),
+}
+
+/// **The daemon's log, as the sessions served on their own threads reach it.**
+///
+/// `Arc` rather than a reference because one sink is shared by every session's thread and by the
+/// worker loop that installed it; `Fn` rather than `FnMut` for the same reason.
+pub type ReplySink = Arc<dyn Fn(&str, OutcomeSaid<'_>) + Send + Sync>;
+
+/// **Something the daemon asks of a session whose command queue did not carry it.**
+///
+/// It carries its own reply (`std::sync::mpsc`) rather than the court carrying a typed one, so one
+/// channel serves every door: the answer type is the closure's return.
+type Job = Box<dyn FnOnce(&mut Sessions<'static>) -> Follow + Send>;
+
+/// **What a session's thread does after a job** — carry on serving, or leave.
+///
+/// `Finish` is [`Sessions::drain_subagents`]'s door: the daemon is going, and this session's
+/// children have to be told to stop and waited for by the thread that holds the harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Follow {
+    Serve,
+    Finish,
+}
+
+/// **One session, on its own thread** — the reader that serves it.
+///
+/// The operator's requirement, in their words: *"one daemon, several sessions … give a thread to
+/// each session and that is it"*. Before this every session the daemon held was served by ONE
+/// worker, one command at a time across all of them — measured 2026-10-26 in the operator's own
+/// daemon, where a prompt to session B sat queued from 14:08 to 14:10:52, exactly one second after
+/// session A's three-minute turn ended.
+///
+/// It is the shape a subagent already had (`harness::serve_child`): the thread takes the session's
+/// commands off its own hub queue, runs the turn each one makes, and keeps the session's clocks
+/// (the plan-check, the abandoned-call sweep, the child park) because it is the only thread that
+/// may drive the harness. What the daemon keeps is the door — [`Court::ask`] and [`Court::post`] —
+/// for the requests a session's queue does not carry.
+struct Court {
+    /// The nudge. A job sent here does not wake the thread by itself: it is blocked in the hub's
+    /// condvar, so [`Court::ask`] rings that too.
+    jobs: std::sync::mpsc::Sender<Job>,
+    /// `None` once it has been joined, so a second shutdown waits on nothing.
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// What this session is holding the daemon up for, as its thread last read it — the idle
+    /// exit's question ([`Sessions::idle_exit_refusal`]), answered without standing still for a
+    /// turn that may be minutes long.
+    status: Arc<Mutex<Option<String>>>,
+    /// The hub, because a job is delivered by waking the thread that is waiting on it.
+    hub: Arc<letibot_sessionlog::hub::Hub>,
+}
+
+impl Court {
+    /// **Ask this session something, and wait for the answer.**
+    ///
+    /// For the doors a caller outside the daemon reaches synchronously — `cli.rs`'s banner, and
+    /// every test that drives `Sessions` by hand. `None` is a thread that has already gone: the
+    /// session is closed, and its answer is nobody's.
+    fn ask<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Sessions<'static>) -> R + Send + 'static,
+    ) -> Option<R> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = self.jobs.send(Box::new(move |s: &mut Sessions<'static>| {
+            // A caller that has given up is not an error: the work is done either way.
+            let _ = tx.send(f(s));
+            Follow::Serve
+        }));
+        sent.ok()?;
+        self.hub.wake_its_own_reader();
+        rx.recv().ok()
+    }
+
+    /// **Ask without waiting** — for the daemon's own pass, which must not stand still while a
+    /// session is mid-turn. The daemon's review pass is the one caller that matters.
+    fn post(&self, f: impl FnOnce(&mut Sessions<'static>) + Send + 'static) {
+        let sent = self.jobs.send(Box::new(move |s: &mut Sessions<'static>| {
+            f(s);
+            Follow::Serve
+        }));
+        if sent.is_ok() {
+            self.hub.wake_its_own_reader();
+        }
+    }
+
+    /// **Tell this session's thread to leave**, and answer what its children did.
+    ///
+    /// The answer is `(told, left)`: whether anything was told to stop, and whether anything could
+    /// not be waited for inside `patience` — [`SubagentExit`]'s two facts, per session.
+    fn finish(
+        &self,
+        id: &str,
+        patience: std::time::Duration,
+        reply: std::sync::mpsc::Sender<(bool, bool)>,
+    ) {
+        let id = id.to_string();
+        let job: Job = Box::new(move |s: &mut Sessions<'static>| {
+            let held = s.open.remove(&id);
+            let answer = match &held {
+                Some(h) => stop_children_of(h, patience),
+                None => (false, false),
+            };
+            if let Some(h) = held {
+                s.open.insert(id.clone(), h);
+            }
+            let _ = reply.send(answer);
+            Follow::Finish
+        });
+        if self.jobs.send(job).is_ok() {
+            self.hub.wake_its_own_reader();
+        }
+    }
+}
+
 /// Every session this daemon is serving, and the harness behind each one.
 pub struct Sessions<'a> {
-    parts: &'a Parts,
+    /// **The parts, borrowed or owned.** Borrowed by the daemon — the vocabulary and the dialect
+    /// renderer are one load for the process, and `Sessions<'a>` has always borrowed them — and
+    /// OWNED by each session's thread, which outlives the `&Parts` a constructor was handed.
+    parts: std::borrow::Cow<'a, Parts>,
     /// The command line, minus the session id. Cloned per session with its own id
     /// substituted, so a second session is the same daemon and not a second
     /// configuration nobody typed.
@@ -853,6 +977,17 @@ pub struct Sessions<'a> {
     /// per session, and installed on the registry at `open` so a `PaneOpen` reaches it from the
     /// connection's thread rather than through this worker.
     plugins: HashMap<String, Arc<crate::plugins::PluginHost>>,
+    /// **The sessions served on a thread of their own** — see [`Court`]. Empty on a daemon that
+    /// was never told to serve them that way (`Daemon::run` is the one caller that says so), and
+    /// empty on a court's own instance, which is what keeps a forwarder from forwarding to itself.
+    courts: HashMap<String, Court>,
+    /// **Whether a session gets a thread of its own.** Armed by `Daemon::run`, which IS the worker
+    /// this replaces; a test that drives `Sessions` by hand leaves it off and drives the same
+    /// single-threaded path every test has always driven. See [`Court`].
+    threaded: bool,
+    /// **Where a turn's outcome is said** — the daemon's log, once — so a session's thread can
+    /// report an outcome it ran without owning the wording. `None` for a `Sessions` under a test.
+    reply: Option<ReplySink>,
 }
 
 /// **The three facts a session the DAEMON ITSELF starts has, which the daemon's command line
@@ -980,6 +1115,112 @@ impl SubagentExit {
     }
 }
 
+/// **One session's children, told to stop and waited for** — [`Sessions::drain_subagents`]' body
+/// for one harness, here so the daemon's loop and a session's own thread run the same two lines.
+///
+/// The answer is `(told, left)`: whether anything was told to stop, and whether anything was still
+/// running when the patience ran out.
+fn stop_children_of(harness: &Harness, patience: std::time::Duration) -> (bool, bool) {
+    let told = harness.stop_children().is_some();
+    let left = !harness.wait_for_children(patience);
+    (told, left)
+}
+
+/// **The loop of a session served on its own thread** — the shape a subagent already has
+/// (`harness::serve_child`), for a session the daemon holds.
+///
+/// Three things and no more: the daemon's requests (its own channel, because a door like
+/// `dispatch` or `with_harness` is not something a head put on the command queue), the session's
+/// own queue, and the clocks this thread alone may keep — because keeping the clocks anywhere else
+/// is what forced every session onto one worker.
+fn court_main(
+    mut s: Sessions<'static>,
+    hub: Arc<letibot_sessionlog::hub::Hub>,
+    id: String,
+    jobs: std::sync::mpsc::Receiver<Job>,
+    status: Arc<Mutex<Option<String>>>,
+) {
+    use std::sync::mpsc::TryRecvError;
+    let closed = loop {
+        // **The daemon's requests first.** Each one has an asker behind it and a `Finish` is the
+        // daemon leaving, which ends this loop rather than waiting for a queue to close first.
+        let mut finish = false;
+        loop {
+            match jobs.try_recv() {
+                Ok(job) => finish |= job(&mut s) == Follow::Finish,
+                Err(TryRecvError::Empty) => break,
+                // The daemon's `Sessions` is gone: nothing can ask this session anything again.
+                Err(TryRecvError::Disconnected) => {
+                    finish = true;
+                    break;
+                }
+            }
+        }
+        if finish {
+            break false;
+        }
+        // Published rather than answered on demand: the idle exit asks every second, and a session
+        // mid-turn cannot answer at all. See `Sessions::court_refusal`.
+        *status.lock().unwrap_or_else(|e| e.into_inner()) = s.court_refusal(&id);
+        match hub.take_own_work_until(s.next_idle_at()) {
+            letibot_sessionlog::hub::OwnWork::Closed => break true,
+            letibot_sessionlog::hub::OwnWork::Command(cmd) => {
+                let at = crate::instruments::Clock::now();
+                let outcome = s.dispatch(&id, &cmd);
+                crate::instruments::worker_cmd(&id, &cmd, at, &outcome);
+                s.say(&id, OutcomeSaid::Command(&cmd, &outcome));
+            }
+            // **A wake is this session's own settlement being ready** — the same door
+            // `harness::serve_child` answers, and the reason a ring naming a root still means
+            // something now that the daemon's worker cannot run its turn.
+            letibot_sessionlog::hub::OwnWork::Wake => {
+                let outcome = s.wake(&id);
+                s.say(&id, OutcomeSaid::Wake(&outcome));
+            }
+            // Nothing was asked of this session: this is where its own clocks are read, on the one
+            // thread that may drive the harness. `daemon.rs`'s idle pass, one session wide.
+            letibot_sessionlog::hub::OwnWork::TimedOut => {
+                let pass = Instant::now();
+                let swept = s.sweep_abandoned_calls();
+                crate::instruments::worker_pass("sweep", pass, swept);
+                let pass = Instant::now();
+                let ran = s.deliver_due_nags();
+                crate::instruments::worker_pass("todo-check", pass, ran);
+                let pass = Instant::now();
+                let parked = s.park_idle_children();
+                crate::instruments::worker_pass("park", pass, parked);
+                s.plugin_tick();
+            }
+        }
+    };
+    // **Said once, whether this thread served or was closed out**: the status is the daemon's
+    // answer to *what is holding you up*, and a thread that has left holds nothing.
+    *status.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if closed {
+        // **A session CLOSED out from under it is over, and a DAEMON going away is not.** The
+        // difference is the registry: a close takes the entry away (`Registry::remove`), while a
+        // stop closes every hub and leaves the tree standing. Only the second has children still
+        // running whose stop is `Sessions::drain_subagents`'s to deliver, so only the second waits.
+        if s.registry.get(&id).is_none() {
+            if let Some(h) = s.open.get(&id) {
+                h.stop_children();
+                h.close_backend();
+            }
+            return;
+        }
+        // **The hub closed under it** — the daemon is stopping. The harness is NOT dropped here:
+        // its children may still be running, and telling them to stop is
+        // `Sessions::drain_subagents`'s job, which arrives on this thread as its last job. A daemon
+        // that never asks (a test that ends) drops the sender and this channel, which is the same
+        // ending one step earlier.
+        while let Ok(job) = jobs.recv() {
+            if job(&mut s) == Follow::Finish {
+                break;
+            }
+        }
+    }
+}
+
 impl<'a> Sessions<'a> {
     /// Start with one session, opened eagerly. See the module header for why the
     /// first one is not lazy.
@@ -1004,7 +1245,7 @@ impl<'a> Sessions<'a> {
             .get(&id)
             .ok_or_else(|| HarnessError::Setup(format!("session {id} is not in the registry")))?;
         let mut sessions = Sessions {
-            parts,
+            parts: std::borrow::Cow::Borrowed(parts),
             base: cfg.clone(),
             registry: registry.clone(),
             open: HashMap::new(),
@@ -1025,6 +1266,9 @@ impl<'a> Sessions<'a> {
             bangs: HashMap::new(),
             gatekeeper_said: None,
             plugins: HashMap::new(),
+            courts: HashMap::new(),
+            threaded: false,
+            reply: None,
         };
         let (tool, cond) = sessions.seat_tool(&id);
         // The system prompt is composed at open, for the tools the seat actually holds,
@@ -1083,6 +1327,210 @@ impl<'a> Sessions<'a> {
         Ok(sessions)
     }
 
+    /// **Serve every session on a thread of its own from now on**, and say a turn's outcome where
+    /// `reply` sends it.
+    ///
+    /// One caller: `Daemon::run`, which IS the single worker this replaces. A test that drives
+    /// `Sessions` by hand (`drive_worker` and its kin) leaves it off and drives exactly the path it
+    /// has always driven — one thread, one command at a time — which is what keeps those suites
+    /// about the thing they were written about rather than about this.
+    pub fn serve_each_on_its_own_thread(&mut self, reply: ReplySink) {
+        self.threaded = true;
+        self.reply = Some(reply);
+        // The first session was opened by `open_first`, before there was a thread to hand it to;
+        // its creation rang a `Work::Open` that the loop has not drained yet, and that is where
+        // this is reached for it too. This catches the case where the ring was spent already.
+        let ids: Vec<String> = self.open.keys().cloned().collect();
+        for id in ids {
+            self.spawn_court(&id);
+        }
+    }
+
+    /// **Whether each session is served on a thread of its own.** See [`Court`].
+    pub fn each_on_its_own_thread(&self) -> bool {
+        self.threaded
+    }
+
+    /// **Say a turn's outcome where the daemon's log reads it** — once, from whichever thread ran
+    /// the turn. Silence under a test, which supplies no sink.
+    fn say(&self, session_id: &str, said: OutcomeSaid<'_>) {
+        if let Some(reply) = &self.reply {
+            reply(session_id, said);
+        }
+    }
+
+    /// **What this session is holding the daemon up for** — the per-harness half of
+    /// [`Sessions::idle_exit_refusal`], asked where the harness is.
+    ///
+    /// It exists as its own function so the two readers answer with one body: the session's own
+    /// thread computes it at every boundary and publishes it ([`Court::status`]), and the daemon
+    /// reads the published answer rather than waiting for a turn that may be minutes long.
+    fn court_refusal(&self, session_id: &str) -> Option<String> {
+        let h = self.open.get(session_id)?;
+        if let Some(why) = h.park_refusal() {
+            return Some(format!("{session_id}: {why}"));
+        }
+        if h.monitors().is_some_and(|m| !m.list().is_empty()) {
+            return Some(format!("{session_id} has a monitor watching"));
+        }
+        if self.nags.get(session_id).and_then(|c| c.due_at()).is_some() {
+            return Some(format!("{session_id} has a plan-check armed"));
+        }
+        if self.bang_run_in_flight(session_id) {
+            return Some(format!("{session_id} has a `!` run in flight"));
+        }
+        None
+    }
+
+    /// **Give this session a thread of its own, if it has one to serve and none yet.**
+    ///
+    /// Idempotent, because three doors reach it: the daemon's `Work::Open` (a session a head made
+    /// or resumed), the first pass after `serve_each_on_its_own_thread`, and any door that finds an
+    /// open session with no court (`dispatch`, `wake`) — which is what a session opened lazily by
+    /// something other than `Sessions::open` looks like.
+    fn spawn_court(&mut self, session_id: &str) -> bool {
+        if !self.threaded
+            || self.courts.contains_key(session_id)
+            || !self.open.contains_key(session_id)
+        {
+            return false;
+        }
+        let Some(hub) = self.registry.get(session_id) else {
+            return false;
+        };
+        let (jobs, job_rx) = std::sync::mpsc::channel();
+        // **The session is handed over on its own channel, not captured**, so a thread that could
+        // not be started costs nothing: nothing has been moved out of this struct until the thread
+        // is there to take it. See the `Err` arm below.
+        let (ready, ready_rx) = std::sync::mpsc::channel::<Sessions<'static>>();
+        let status = Arc::new(Mutex::new(None));
+        let for_thread = status.clone();
+        let thread_id = session_id.to_string();
+        let thread_hub = hub.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("session-{session_id}"))
+            .spawn(move || {
+                // A daemon that never hands the session over is a daemon that left: nothing to do.
+                if let Ok(court) = ready_rx.recv() {
+                    court_main(court, thread_hub, thread_id, job_rx, for_thread);
+                }
+            });
+        let thread = match spawned {
+            Ok(t) => t,
+            Err(e) => {
+                // **Said, and the session keeps the only reader it had**: its turns run on the
+                // daemon's worker, as they did before this thread existed. Worse, and never silent.
+                eprintln!(
+                    "  {session_id} · no thread of its own ({e}) — its turns run on the daemon's \
+                     one worker, behind every other session's"
+                );
+                return false;
+            }
+        };
+        let Some(court) = self.court_of(session_id) else {
+            return false;
+        };
+        // **Marked before the session is handed over**, so there is no instant in which the worker
+        // could take this session's command and run it as well as the thread — the second writer
+        // [`Owner`] exists to make unspellable. A command that lands between this line and the
+        // thread's first pass waits in the hub's queue, and the thread takes it.
+        hub.owned_by_its_own_thread();
+        if ready.send(court).is_err() {
+            return false;
+        }
+        self.courts.insert(
+            session_id.to_string(),
+            Court {
+                jobs,
+                thread: Some(thread),
+                status,
+                hub,
+            },
+        );
+        true
+    }
+
+    /// **This session's own `Sessions`, for the thread that will serve it.**
+    ///
+    /// Everything per-session MOVES: the harness, its clocks, the seat slot, the plugin host, the
+    /// `!` state. Two instances holding one session would be two answers to *who runs this turn* —
+    /// the defect [`Owner`] exists to make unspellable, one level up. What stays behind is the
+    /// daemon's own: its review clock, its idle exit, the queue.
+    fn court_of(&mut self, session_id: &str) -> Option<Sessions<'static>> {
+        let id = session_id.to_string();
+        let harness = self.open.remove(&id)?;
+        let mut court = Sessions {
+            // **OWNED, not borrowed**: this thread outlives the `&Parts` the daemon was handed.
+            // A clone is three `Arc`s — the vocabulary and the dialect renderer are not copied.
+            parts: std::borrow::Cow::Owned(Parts::clone(&self.parts)),
+            base: self.base.clone(),
+            registry: self.registry.clone(),
+            open: HashMap::new(),
+            armed: std::collections::HashSet::new(),
+            seat: self.seat.clone(),
+            slots: HashMap::new(),
+            seated: HashMap::new(),
+            fabric_seen: HashMap::new(),
+            nags: HashMap::new(),
+            nag_window: self.nag_window,
+            sweep_at: None,
+            park_at: None,
+            // **The daemon's own clocks are the daemon's.** A court with a review clock or an
+            // idle exit would be a second daemon deciding to leave — and the review pass reads
+            // the queue, which is the daemon's.
+            reviews_at: None,
+            idle_exit_at: None,
+            busy_seen: Instant::now(),
+            bangs: HashMap::new(),
+            gatekeeper_said: None,
+            plugins: HashMap::new(),
+            courts: HashMap::new(),
+            threaded: false,
+            reply: self.reply.clone(),
+        };
+        court.open.insert(id.clone(), harness);
+        if let Some(slot) = self.slots.remove(&id) {
+            court.slots.insert(id.clone(), slot);
+        }
+        if let Some(cond) = self.seated.remove(&id) {
+            court.seated.insert(id.clone(), cond);
+        }
+        if let Some(seen) = self.fabric_seen.remove(&id) {
+            court.fabric_seen.insert(id.clone(), seen);
+        }
+        if let Some(nag) = self.nags.remove(&id) {
+            court.nags.insert(id.clone(), nag);
+        }
+        if let Some(bang) = self.bangs.remove(&id) {
+            court.bangs.insert(id.clone(), bang);
+        }
+        if let Some(plugin) = self.plugins.remove(&id) {
+            court.plugins.insert(id.clone(), plugin);
+        }
+        if self.armed.remove(&id) {
+            court.armed.insert(id);
+        }
+        Some(court)
+    }
+
+    /// **One session's harness, asked rather than borrowed.**
+    ///
+    /// `harness_of` hands out a reference, which a session served on its own thread cannot: the
+    /// harness is on that thread. So a caller that only needs to read something says what it wants
+    /// with a closure and gets the same answer either way — run here when this struct holds the
+    /// session, asked of its thread when the thread does.
+    pub fn with_harness<R: Send + 'static>(
+        &self,
+        session_id: &str,
+        f: impl FnOnce(&Harness) -> R + Send + 'static,
+    ) -> Option<R> {
+        if let Some(court) = self.courts.get(session_id) {
+            let id = session_id.to_string();
+            return court.ask(move |s| s.open.get(&id).map(f))?;
+        }
+        self.open.get(session_id).map(f)
+    }
+
     /// The seat this daemon holds, if any.
     pub fn seat(&self) -> Option<&letibot_flowy::Seat> {
         self.seat.as_ref()
@@ -1133,6 +1581,15 @@ impl<'a> Sessions<'a> {
 
     /// One slash verb from a head, against this session.
     pub fn slash(&mut self, session_id: &str, line: &str) -> crate::slash::SlashReply {
+        // **A verb a session's own thread must answer is asked of it** — the harness it acts on is
+        // there, and so is the clock `/nag` moves. `cli.rs`'s `--slash` steps are the caller here.
+        if let Some(court) = self.court_serving(session_id) {
+            let id = session_id.to_string();
+            let line = line.to_string();
+            if let Some(reply) = court.ask(move |s: &mut Sessions<'static>| s.slash(&id, &line)) {
+                return reply;
+            }
+        }
         self.slash_parsed(session_id, crate::slash::Slash::parse(line))
     }
 
@@ -1694,6 +2151,14 @@ impl<'a> Sessions<'a> {
     /// it as a system update (§5.3). Called after a compaction. Returns whether
     /// an update went in.
     pub fn refresh_fabric(&mut self, session_id: &str) -> Result<bool, HarnessError> {
+        // The fabric block is a system update, which is the harness's — so it is asked of the
+        // thread that owns it. `attach_seat` is the caller here.
+        if let Some(court) = self.court_serving(session_id) {
+            let id = session_id.to_string();
+            if let Some(out) = court.ask(move |s: &mut Sessions<'static>| s.refresh_fabric(&id)) {
+                return out;
+            }
+        }
         let Some(block) = self.fabric_due(session_id) else {
             return Ok(false);
         };
@@ -1850,7 +2315,13 @@ impl<'a> Sessions<'a> {
     /// [`Sessions::ensure_gatekeeper`] uses, because the daemon's own `--role` and `--title` are the
     /// OPERATOR's conversation's and the review queue's session is not that conversation.
     fn open_as(&mut self, session_id: &str, own: Option<OwnSession>) -> Result<bool, HarnessError> {
-        if self.open.contains_key(session_id) {
+        // **A session served by its own thread IS open** — its harness is there, not here — so an
+        // open for it is the `Work::Open` its creation rang, arriving after the thread took it.
+        if self.open.contains_key(session_id) || self.courts.contains_key(session_id) {
+            // **An open session with no thread yet gets one here.** The daemon's own first session
+            // is the case: `open_first` opened it before there was a worker to hand it to, and its
+            // creation rang the `Work::Open` that lands on this line.
+            self.spawn_court(session_id);
             return Ok(false);
         }
         let hub = self.registry.get(session_id);
@@ -1901,6 +2372,8 @@ impl<'a> Sessions<'a> {
                 if self.registry.parent_of(session_id).is_some() {
                     self.arm_park();
                 }
+                // **And the thread that will serve it from now on**, handed everything above.
+                self.spawn_court(session_id);
                 Ok(true)
             }
             Err(e) => {
@@ -2035,7 +2508,7 @@ impl<'a> Sessions<'a> {
             });
             let cfg = self.with_fabric(cfg, cond.is_some());
             let mut h = match Harness::open_with_registry(
-                self.parts,
+                &self.parts,
                 cfg,
                 hub,
                 None,
@@ -2099,7 +2572,9 @@ impl<'a> Sessions<'a> {
 
     /// Sessions with a harness behind them. The rest exist and have never run.
     pub fn opened(&self) -> usize {
-        self.open.len()
+        // A session on its own thread is open — its harness is there, not here — so counting only
+        // `self.open` would answer *nothing runs* about a daemon that is running everything.
+        self.open.len() + self.courts.len()
     }
 
     /// **The plugin layers `session_id` has**, discovered once, when it opens.
@@ -2145,6 +2620,15 @@ impl<'a> Sessions<'a> {
     /// them itself. Everything else in the tick would work without the worker, and that is
     /// deliberate: a pane must keep answering while a turn is running.
     pub fn plugin_tick(&mut self) {
+        // **A session on its own thread ticks its own layers**, on the clock that thread keeps:
+        // the notices are transcript rows and the rows are the harness's to write. Asking here is
+        // for the callers that drive `Sessions` by hand; the daemon's own pass finds nothing.
+        let courted: Vec<String> = self.courts.keys().cloned().collect();
+        for id in courted {
+            if let Some(court) = self.courts.get(&id) {
+                court.post(|s: &mut Sessions<'static>| s.plugin_tick());
+            }
+        }
         if self.plugins.is_empty() {
             return;
         }
@@ -2213,20 +2697,65 @@ impl<'a> Sessions<'a> {
     /// `None` when nothing was running, so a caller prints it unconditionally without putting a
     /// line on every ordinary quit.
     pub fn drain_subagents(&self, timeout: std::time::Duration) -> SubagentExit {
-        let ids: Vec<String> = self.open.keys().cloned().collect();
         let began = std::time::Instant::now();
         let mut told = 0;
         let mut left = Vec::new();
+        // **The sessions on their own threads first.** Each is asked to stop its children and wait
+        // for them, and answers from the only thread that may drive its harness — so a session
+        // that is mid-turn answers when the turn ends, which is what the bound is spent on.
+        let mut answers = Vec::new();
+        for (id, court) in &self.courts {
+            let (tx, rx) = std::sync::mpsc::channel();
+            court.finish(id, timeout.saturating_sub(began.elapsed()), tx);
+            answers.push((id.clone(), rx));
+        }
+        for (id, rx) in answers {
+            let remaining = timeout.saturating_sub(began.elapsed());
+            match rx.recv_timeout(remaining.max(Duration::from_millis(1))) {
+                Ok((was_told, was_left)) => {
+                    // `told` counts sessions that had something to stop — a session with nothing
+                    // live says nothing, exactly as the loop below has always counted.
+                    if was_told {
+                        told += 1;
+                    }
+                    if was_left {
+                        left.push(id);
+                    }
+                }
+                // No answer inside the bound: the session is still inside a turn, so its children
+                // have not even been told. Named rather than counted, and by the session a person
+                // can go and look at.
+                Err(_) => left.push(id),
+            }
+        }
+        // **And the threads themselves, which the process's exit needs gone.** `exit()` runs every
+        // ELF finalizer, and `_dl_fini` tears the libraries down underneath a thread still inside
+        // them — the crash this wait exists to prevent. `JoinHandle::join` would be the plain door
+        // and cannot be used from `&self`, so this is the same bound read as a poll.
+        for (id, court) in &self.courts {
+            let Some(thread) = &court.thread else {
+                continue;
+            };
+            while !thread.is_finished() && began.elapsed() < timeout {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if !thread.is_finished() && !left.iter().any(|named| named == id) {
+                left.push(id.clone());
+            }
+        }
+        // **The sessions this struct holds itself** — every session of a daemon that never armed
+        // the threads (a test), and any session whose thread could not be started.
+        let ids: Vec<String> = self.open.keys().cloned().collect();
         for id in ids {
             let Some(harness) = self.open.get(&id) else {
                 continue;
             };
-            // `Some` is this session's children having been told to stop, which is the count of
-            // sessions that had something running — a session with nothing live says nothing.
-            if harness.stop_children().is_some() {
+            let (was_told, was_left) =
+                stop_children_of(harness, timeout.saturating_sub(began.elapsed()));
+            if was_told {
                 told += 1;
             }
-            if !harness.wait_for_children(timeout.saturating_sub(began.elapsed())) {
+            if was_left {
                 left.push(id);
             }
         }
@@ -2246,6 +2775,15 @@ impl<'a> Sessions<'a> {
     /// traffic. It goes through the same `harness()` as the worker, so a scripted
     /// run and a driven one open a session the same way.
     pub fn submit(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
+        // **A session on its own thread answers there** — `cli.rs`'s scripted steps are the caller,
+        // and they run before the worker loop starts, so this waits on a thread that is idle.
+        if let Some(court) = self.court_serving(session_id) {
+            let id = session_id.to_string();
+            let text = text.to_string();
+            if let Some(out) = court.ask(move |s: &mut Sessions<'static>| s.submit(&id, &text)) {
+                return out;
+            }
+        }
         self.run_prompt(session_id, text, &[])
     }
 
@@ -2475,6 +3013,12 @@ impl<'a> Sessions<'a> {
     /// should be. Without this the session would be checked once ever, and a plan re-written by
     /// the operator's own instruction would never be checked at all.
     pub fn note_operator_prompt(&mut self, session_id: &str) {
+        // The clock this earns back is the session's, and that clock is on its own thread.
+        if let Some(court) = self.courts.get(session_id) {
+            let id = session_id.to_string();
+            court.post(move |s: &mut Sessions<'static>| s.note_operator_prompt(&id));
+            return;
+        }
         if let Some(clock) = self.nags.get_mut(session_id) {
             clock.prompt_arrived();
         }
@@ -2611,6 +3155,17 @@ impl<'a> Sessions<'a> {
     /// `attempts`/`failed_ms` through `mergequeue::review_retry`, and the session's own `reviewing`
     /// list. Answers how many gatekeepers were started, for the log line.
     pub fn serve_reviews(&mut self) -> usize {
+        // **The pass runs where the queue's session is.** That session has a thread of its own now,
+        // so the daemon POSTS the pass rather than running it: a gatekeeper mid-turn would
+        // otherwise hold the daemon's loop for the length of that turn, which is the defect these
+        // threads exist to remove. `0` is what this answers because nobody here is waiting for the
+        // count — the log line that read it is the session's own now.
+        if let Some(court) = self.courts.get(gatekeeper::SESSION) {
+            court.post(|s: &mut Sessions<'static>| {
+                s.serve_reviews();
+            });
+            return 0;
+        }
         let ids: Vec<String> = self.open.keys().cloned().collect();
         let mut started = 0;
         for id in ids {
@@ -2694,7 +3249,10 @@ impl<'a> Sessions<'a> {
 
     /// The body of [`Sessions::ensure_gatekeeper`], whose doc is this function's.
     fn open_the_gatekeeper(&mut self) -> Result<bool, HarnessError> {
-        if self.base.store.is_none() || self.open.contains_key(gatekeeper::SESSION) {
+        if self.base.store.is_none()
+            || self.open.contains_key(gatekeeper::SESSION)
+            || self.courts.contains_key(gatekeeper::SESSION)
+        {
             return Ok(false);
         }
         // **Where its reviewers will run, decided HERE because the session has to be TOLD.**
@@ -2769,6 +3327,14 @@ impl<'a> Sessions<'a> {
     ///
     /// Returns how many rows the board holds, which is what a caller's log line counts.
     pub fn fill_gatekeeper_board(&mut self) -> usize {
+        // Posted for `serve_reviews`' reason: the board is the queue's session's, and that session
+        // is on its own thread.
+        if let Some(court) = self.courts.get(gatekeeper::SESSION) {
+            court.post(|s: &mut Sessions<'static>| {
+                s.fill_gatekeeper_board();
+            });
+            return 0;
+        }
         let rows = match self.open.get_mut(gatekeeper::SESSION) {
             Some(h) => h.fill_queue_board(),
             // The session did not open — said on the daemon's log by the caller of
@@ -2806,6 +3372,15 @@ impl<'a> Sessions<'a> {
     /// `open_first` armed at the production minute comes due at the new one.
     pub fn set_nag_window(&mut self, window: Duration) {
         self.nag_window = window;
+        // **And every session's own thread, which keeps its own clock.** A court made after this
+        // is given the new window by `court_of`. A session that moved its clock is disarmed and
+        // re-armed on the session's own thread, on the rows it holds there.
+        let courted: Vec<String> = self.courts.keys().cloned().collect();
+        for id in courted {
+            if let Some(court) = self.courts.get(&id) {
+                court.post(move |s: &mut Sessions<'static>| s.set_nag_window(window));
+            }
+        }
         for clock in self.nags.values_mut() {
             clock.set_window(window);
         }
@@ -2829,9 +3404,13 @@ impl<'a> Sessions<'a> {
     /// vanished left the operator's head showing `running` for eight minutes, with `esc esc` dead
     /// because the interrupt stops GENERATION and generation had already ended.
     pub fn sweep_abandoned_calls(&mut self) -> usize {
+        // **The sweep is the thread that owns the harness's to run**, and that placement is the
+        // liveness test: a round in flight holds the thread, so a sweep that runs at all is a
+        // sweep at a moment when no round owns a call. Asking here is for the callers that drive
+        // `Sessions` by hand.
+        let mut settled = self.ask_courts(|s| s.sweep_abandoned_calls());
         self.sweep_at = None;
         let ids: Vec<String> = self.open.keys().cloned().collect();
-        let mut settled = 0;
         for id in ids {
             if let Some(h) = self.open.get_mut(&id) {
                 settled += h.sweep_abandoned_calls();
@@ -2855,6 +3434,19 @@ impl<'a> Sessions<'a> {
     /// `false` when the worker did not hold the session; the registry entry is removed either way,
     /// so a hub whose open failed is closed through the same door.
     pub fn close(&mut self, session_id: &str) -> bool {
+        // **A session on its own thread is closed THERE**: the harness, its backend and its
+        // children are on that thread, and closing them from here would be the second writer this
+        // whole change exists to remove.
+        if let Some(court) = self.courts.get(session_id) {
+            let id = session_id.to_string();
+            let closed = court.ask(move |s: &mut Sessions<'static>| s.close(&id));
+            // The court's own close took the registry entry with it, which is what the caller's
+            // `bool` means; a thread that is already gone answers nothing, and the entry goes the
+            // same way here so a hub is never left open behind a session nobody serves.
+            self.registry.remove(session_id);
+            self.courts.remove(session_id);
+            return closed.unwrap_or(false);
+        }
         let held = self.open.remove(session_id);
         if let Some(h) = &held {
             h.stop_children();
@@ -2891,13 +3483,14 @@ impl<'a> Sessions<'a> {
     /// Root sessions are never parked here: they are the operator's conversations, and their
     /// lifetime is the operator's to end. Answers how many were parked.
     pub fn park_idle_children(&mut self) -> usize {
+        let mut parked = self.ask_courts(|s| s.park_idle_children());
         let Some(window) = self.base.child_park_after else {
             self.park_at = None;
-            return 0;
+            return parked;
         };
         let now = Instant::now();
         if self.park_at.is_some_and(|at| at > now) {
-            return 0;
+            return parked;
         }
         self.park_at = None;
         let now_ms = letibot_sessionlog::registry::now_ms();
@@ -2908,7 +3501,6 @@ impl<'a> Sessions<'a> {
             .filter(|id| self.registry.parent_of(id).is_some())
             .cloned()
             .collect();
-        let mut parked = 0;
         let mut again: Option<Instant> = None;
         for id in children {
             let quiet_for = self.registry.get(&id).map(|h| {
@@ -2970,18 +3562,22 @@ impl<'a> Sessions<'a> {
                 return Some(format!("{id} has a turn in flight"));
             }
         }
-        for (id, h) in &self.open {
-            if let Some(why) = h.park_refusal() {
-                return Some(format!("{id}: {why}"));
+        for id in self.open.keys() {
+            if let Some(why) = self.court_refusal(id) {
+                return Some(why);
             }
-            if h.monitors().is_some_and(|m| !m.list().is_empty()) {
-                return Some(format!("{id} has a monitor watching"));
-            }
-            if self.nags.get(id).and_then(|c| c.due_at()).is_some() {
-                return Some(format!("{id} has a plan-check armed"));
-            }
-            if self.bang_run_in_flight(id) {
-                return Some(format!("{id} has a `!` run in flight"));
+        }
+        // **And the sessions on their own threads, as they last reported themselves.** Read rather
+        // than asked, because asking would mean waiting for a turn that may be minutes long — and
+        // a turn in flight is already answered above, from the hub.
+        for court in self.courts.values() {
+            if let Some(why) = court
+                .status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+            {
+                return Some(why);
             }
         }
         self.base
@@ -3052,13 +3648,13 @@ impl<'a> Sessions<'a> {
     /// and wake arms arm it, and the monitor wake after it, as `run_prompt` arms it: a monitor
     /// the nag turn declared is a monitor whose firing must wake the session.
     pub fn deliver_due_nags(&mut self) -> usize {
+        let mut ran = self.ask_courts(|s| s.deliver_due_nags());
         let now = Instant::now();
         let due: Vec<String> = self
             .nags
             .iter_mut()
             .filter_map(|(id, clock)| clock.due_now(now).then(|| id.clone()))
             .collect();
-        let mut ran = 0;
         for session_id in due {
             // **A paused session's deadline is the pause's END, not a check** (`/nag pause 2h`):
             // the pause is lifted here, said on the hub, and the clock re-armed as if the operator
@@ -3112,6 +3708,13 @@ impl<'a> Sessions<'a> {
     /// and no wake-arming: a summary proposes nothing and monitors do not fire on
     /// it.
     pub fn compact(&mut self, session_id: &str) -> Result<CompactReport, HarnessError> {
+        // **A compaction is a turn**, so it runs where the harness is.
+        if let Some(court) = self.court_serving(session_id) {
+            let id = session_id.to_string();
+            if let Some(out) = court.ask(move |s: &mut Sessions<'static>| s.compact(&id)) {
+                return out;
+            }
+        }
         let hub = self.registry.get(session_id);
         let harness = self.harness(session_id)?;
         let (started, before) = (std::time::Instant::now(), harness.ledger_len() as u64);
@@ -3243,6 +3846,10 @@ impl<'a> Sessions<'a> {
     /// altogether. Nothing is lost when that happens — a session that has closed handed its
     /// undrained settlements up a level first (`jobwatch::JobWatchers::stop`).
     pub fn wake(&mut self, session_id: &str) -> Outcome {
+        // A session on its own thread is woken THERE. On this struct `open` does not hold it, so
+        // `wake_route` already answers `ItsOwnReader` — this is only the spawn, for a session that
+        // is open here and has no thread yet.
+        self.spawn_court(session_id);
         let hub = self.registry.get(session_id);
         // **The decision is `wake_route`'s, so it can be asserted without a daemon.** The two
         // facts it reads are asked of the layers that own them: `open` is this struct's, the
@@ -3442,8 +4049,55 @@ impl<'a> Sessions<'a> {
         }
     }
 
+    /// **The court that serves this session, if one does** — giving it one first when the session
+    /// is open and has none.
+    ///
+    /// A session opened by a door older than the threads (`harness_as` reached from somewhere
+    /// other than `open`) has no court; without this it would go on running its turns on the
+    /// daemon's worker for ever, which is the defect these threads exist to remove.
+    fn court_serving(&mut self, session_id: &str) -> Option<&Court> {
+        if !self.courts.contains_key(session_id) {
+            self.spawn_court(session_id);
+        }
+        self.courts.get(session_id)
+    }
+
+    /// **Ask every session on its own thread the same question, and add up the answers.**
+    ///
+    /// The shape a per-session count has once the sessions are no longer in THIS struct: the
+    /// sweep, the plan check and the child park each walk `self.open` in one session's body — and
+    /// on a court that `open` holds exactly that one session, so the same body answers for it.
+    ///
+    /// `Copy` because every court is asked the same question, and a closure a loop may hand out
+    /// more than once is the only way to say that.
+    fn ask_courts(
+        &self,
+        f: impl Fn(&mut Sessions<'static>) -> usize + Send + Sync + Copy + 'static,
+    ) -> usize {
+        let mut total = 0;
+        for id in self.courts.keys() {
+            if let Some(court) = self.courts.get(id) {
+                total += court.ask(f).unwrap_or(0);
+            }
+        }
+        total
+    }
+
     /// Run one command against its session.
     pub fn dispatch(&mut self, session_id: &str, cmd: &QueuedCommand) -> Outcome {
+        // **A session served on its own thread runs its own commands.** The daemon's worker never
+        // takes one off the hub any more (`Hub::try_command` answers `None` for a hub owned by its
+        // own thread), so this arm is for the callers that reach `dispatch` directly — a test, and
+        // a daemon that never armed the threads. Asking and waiting is right for both: neither is
+        // the loop that a turn must not stand still in front of.
+        if let Some(court) = self.court_serving(session_id) {
+            let id = session_id.to_string();
+            let cmd = cmd.clone();
+            if let Some(outcome) = court.ask(move |s: &mut Sessions<'static>| s.dispatch(&id, &cmd))
+            {
+                return outcome;
+            }
+        }
         let hub = self.registry.get(session_id);
         match &cmd.kind {
             CommandKind::Prompt { text, attachments } => {

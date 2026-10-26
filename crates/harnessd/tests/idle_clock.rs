@@ -278,7 +278,7 @@ fn a_wake_arms_the_sweep_that_closes_a_call_nothing_answered() {
         closed
     });
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let closed = driver.join().expect("the driver thread");
     assert!(
         closed,

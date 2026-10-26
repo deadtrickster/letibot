@@ -629,7 +629,7 @@ where
         })
     };
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let rec = driver.join().expect("the driver thread");
     daemon.shutdown();
     (rec, hub, cfg)

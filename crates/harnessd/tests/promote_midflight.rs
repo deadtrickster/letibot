@@ -264,7 +264,7 @@ fn a_ctrl_o_promotes_the_operators_run_in_flight() {
         })
     };
 
-    daemon.run(&mut sessions, |_, _, _| {});
+    daemon.run(&mut sessions, |_, _| {});
     let rec = driver.join().expect("the driver thread");
     daemon.shutdown();
 
