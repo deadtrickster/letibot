@@ -276,9 +276,15 @@ pub fn runner_harness_with_gate(
     fixture_tree(dir.path());
     let host = Arc::new(crate::exec::HostProcesses::new(dir.path())?);
     let promote: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    // **A session scratch directory, because a promoted run's output has to have somewhere to
+    // go.** The daemon wires this from `harness::scratch_dir()`; a fixture that did not would
+    // make every promotion test measure the no-scratch branch instead of the one that matters —
+    // and the operator's report is about the branch that has one.
+    let scratch = TempDir::new();
     let backend = crate::backend::HostBackend::executable_with(dir.path(), Arc::clone(&host))
         .expect("fixture root")
-        .with_promote_channel(promote.clone());
+        .with_promote_channel(promote.clone())
+        .with_scratch_dir(scratch.path());
     let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
     let mut rt = ToolRuntime::new(registry, Box::new(backend));
     if let Some(g) = gate {
@@ -291,7 +297,7 @@ pub fn runner_harness_with_gate(
         mount: Default::default(),
         promote: Some(promote),
         _dir: dir,
-        _scratch: None,
+        _scratch: Some(scratch),
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
     })

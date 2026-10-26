@@ -105,7 +105,8 @@ pub use host::{
     SpawnRequest, Waited, job_label,
 };
 pub use jobs::{
-    DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputSlice, Stdin, job_name,
+    DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputFile, OutputSlice, Stdin,
+    job_name,
 };
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,

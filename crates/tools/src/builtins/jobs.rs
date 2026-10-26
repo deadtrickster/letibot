@@ -613,26 +613,63 @@ impl Tool for JobOutput {
         }
 
         let mut inv = Invocation::ok(format!(
-            "{}\n[{} — {}]\n{}",
+            "{}\n[{} — {}]\n{}{}",
             slice.text(),
             view.state.word(),
             denominator,
             if view.state.is_running() {
                 format!(
                     "`{label}` is still running; this window is what it had written \
-                     when it was read."
+                     when it was read.\n"
                 )
             } else {
                 String::new()
+            },
+            // **The window is bounded and the file is not**, so the reader is told where the
+            // rest of it is at the one moment they are looking at a window whose edges matter.
+            // This is the operator's report one layer down: a promoted run whose only copy was
+            // 8 MiB of memory was a run whose output *"goes to /dev/null"*.
+            //
+            // Named as a place the bytes ARE, not as a tool to call: a session inside a
+            // boundary can open the window through this tool and cannot `read` a path outside
+            // its view, so promising `read` here would be a refusal the reader would have to
+            // discover.
+            match &view.output_file {
+                Some(f) => format!(
+                    "[every byte of it is also in `{}`, from byte {} of this job's output — the \
+                     file keeps growing with the window, so the 8 MiB is the window's bound and \
+                     not the output's]\n",
+                    f.path, f.from
+                ),
+                None => String::new(),
             }
         ));
-        if slice.dropped > 0 && from < slice.dropped {
+        if let Some(f) = &view.output_file
+            && let Some(why) = &f.problem
+        {
             inv = inv.with_note(format!(
-                "offset {from} is behind what is still retained, so this window \
-                 starts at {} instead. Those bytes are gone: capture keeps the last \
-                 {} bytes and this job outran that.",
-                slice.from, slice.retained
+                "`{}` STOPPED GROWING at {} bytes — {why}. Everything after that point is only \
+                 in this window, which keeps the last {} bytes.",
+                f.path, f.bytes, slice.retained
             ));
+        }
+        if slice.dropped > 0 && from < slice.dropped {
+            inv = inv.with_note(match &view.output_file {
+                // The bytes are not gone, they are in the file — and saying *gone* over a job
+                // that was promoted is the lie this whole note exists to stop.
+                Some(f) => format!(
+                    "offset {from} is behind what is still retained, so this window starts at \
+                     {}. Those bytes are not lost: they are in `{}`, from byte {} of this job's \
+                     output.",
+                    slice.from, f.path, f.from
+                ),
+                None => format!(
+                    "offset {from} is behind what is still retained, so this window \
+                     starts at {} instead. Those bytes are gone: capture keeps the last \
+                     {} bytes and this job outran that.",
+                    slice.from, slice.retained
+                ),
+            });
         }
         inv
     }
@@ -1340,6 +1377,7 @@ mod tests {
             since_last_output: None,
             memory_cap: crate::exec::MemoryCap::NotAsked,
             memory: None,
+            output_file: None,
         }
     }
 

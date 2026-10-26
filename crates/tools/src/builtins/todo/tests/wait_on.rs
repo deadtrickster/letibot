@@ -28,6 +28,7 @@ fn job(id: &str, slug: Option<&str>, state: JobState) -> JobView {
         since_last_output: None,
         memory_cap: MemoryCap::NotAsked,
         memory: None,
+        output_file: None,
     }
 }
 

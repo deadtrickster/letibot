@@ -465,6 +465,53 @@ pub struct Capture {
     /// publication timestamp says a dead job is live and a progress timestamp says
     /// a finished job is broken, and only the second one is about work.
     last_at: Option<SystemTime>,
+    /// **A file the whole of this job's output keeps going into**, once somebody moved the
+    /// run out of the foreground. See [`Capture::spill_to`] for the report that closes.
+    spill: Option<Spill>,
+}
+
+/// **Where a promoted run's output goes on living** — the file, the byte of the job's own
+/// output its first byte is, and whether it is still growing.
+///
+/// The window ([`Capture`]) stays exactly what it was: 8 MiB of the tail, which is what
+/// `job_output` pages and what the denominator counts. This is the copy that is **not**
+/// bounded, because a run that went to the background is a run that may print for an hour —
+/// and the operator's report was that a promoted run's output *"goes to /dev/null"*, which
+/// the window becomes in three measured ways: it drops everything past
+/// [`super::host::DEFAULT_CAPTURE_BYTES`], [`super::host::SETTLED_CAPTURE_BUDGET`] releases
+/// a settled job's window altogether, and the whole table dies with the daemon.
+///
+/// `path` is a string rather than a `PathBuf` because every reader of it prints it: the
+/// promotion's result, `job_output`, `job_list` and the run's own settlement notice, and a
+/// sentence with a `Path` in it is the same sentence with `.display()` in four places.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputFile {
+    pub path: String,
+    /// **The ABSOLUTE offset in this job's output of the file's first byte.** Usually 0, and
+    /// not always: a foreground run that had already outgrown the window when it was
+    /// promoted has lost its head for good, and the file honestly starts where the window
+    /// did rather than at a zero no reader could check.
+    pub from: u64,
+    /// Bytes in the file at the moment this was read.
+    pub bytes: u64,
+    /// **Why the file stopped growing**, when a write failed — `None` while it is keeping
+    /// up. A file that quietly stopped at 4 MiB while the job ran on would read as a job
+    /// that stopped printing, which is the defect the denominator rules exist against.
+    pub problem: Option<String>,
+}
+
+/// The open file behind an [`OutputFile`], kept with the ring so there is **one writer** for
+/// a job's bytes: the drain thread that already owns them.
+#[derive(Debug)]
+struct Spill {
+    path: std::path::PathBuf,
+    /// `None` once the job has settled and the window was released — the file is still on
+    /// disk and still named, and this process has no reason to hold a descriptor open for
+    /// a run that can never write again.
+    file: Option<std::fs::File>,
+    from: u64,
+    bytes: u64,
+    problem: Option<String>,
 }
 
 impl Capture {
@@ -475,6 +522,7 @@ impl Capture {
             dropped: 0,
             produced: 0,
             last_at: None,
+            spill: None,
         }
     }
 
@@ -487,6 +535,53 @@ impl Capture {
             self.buf.drain(..over);
             self.dropped += over as u64;
         }
+        // **After the ring, and with the bytes the ring just dropped**: the file is the copy
+        // that keeps everything, so it must not inherit the window's bound.
+        if let Some(spill) = &mut self.spill {
+            spill.append(bytes);
+        }
+    }
+
+    /// **Start a file that this job's output keeps going into, and seed it with what the job
+    /// has already printed.**
+    ///
+    /// Called once per job, at the moment the run is moved out of the foreground — the moment
+    /// its output stopped having an end in sight. The seed is the **retained window**, so the
+    /// file holds everything the result the model just read held, and the two agree about
+    /// where they start: [`OutputFile::from`] is the window's own absolute offset, not 0.
+    ///
+    /// Truncates. A second promotion of a job that already has a file is answered from
+    /// [`Capture::output_file`] by the caller rather than by calling this again — truncating a
+    /// file a run is writing is the one outcome worse than having none.
+    pub fn spill_to(&mut self, path: impl Into<std::path::PathBuf>) -> Result<OutputFile, String> {
+        let path = path.into();
+        let mut file = std::fs::File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let seed: Vec<u8> = self.buf.iter().copied().collect();
+        file.write_all(&seed)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.spill = Some(Spill {
+            path,
+            file: Some(file),
+            from: self.dropped,
+            bytes: seed.len() as u64,
+            problem: None,
+        });
+        Ok(self.output_file().expect("the spill was just set"))
+    }
+
+    /// The file this job's output is also going into, or `None`. See [`OutputFile`].
+    pub fn output_file(&self) -> Option<OutputFile> {
+        self.spill.as_ref().map(|s| OutputFile {
+            path: s.path.display().to_string(),
+            from: s.from,
+            bytes: s.bytes,
+            problem: s.problem.clone(),
+        })
     }
 
     /// **Does the retained window hold this text?**
@@ -521,9 +616,17 @@ impl Capture {
     /// exactly as the ring drops them, so a slice afterwards says *produced N, dropped N, holding
     /// 0* — a window onto nothing that says so — rather than reading as a job that wrote nothing.
     /// The memory itself is returned, not just emptied: `VecDeque::clear` keeps its allocation.
+    ///
+    /// **The spill's descriptor goes with it, and the file does not.** A settled job can never
+    /// write again, so holding its descriptor until the host dies is a descriptor per promoted
+    /// job on a box whose soft limit is 256 (see the `ulimit` rake); the path and the counts
+    /// stay, because the bytes are still on disk and a reader must still be told where.
     pub fn release(&mut self) {
         self.dropped += self.buf.len() as u64;
         self.buf = VecDeque::new();
+        if let Some(spill) = &mut self.spill {
+            spill.file = None;
+        }
     }
 
     /// How long since the last byte, and `None` when there has never been one —
@@ -556,6 +659,24 @@ impl Capture {
         let take = limit.min(self.buf.len());
         let from = self.dropped + (self.buf.len() - take) as u64;
         self.slice(from, take)
+    }
+}
+
+impl Spill {
+    /// Append the bytes the ring just took. A failure is recorded once and stops the writes —
+    /// retrying a full disk every drain would spend the run's time on a report nobody reads, and
+    /// a hole that is *said* is the same rule the denominator follows.
+    fn append(&mut self, bytes: &[u8]) {
+        if self.problem.is_some() {
+            return;
+        }
+        let Some(file) = &mut self.file else {
+            return;
+        };
+        match file.write_all(bytes) {
+            Ok(()) => self.bytes += bytes.len() as u64,
+            Err(e) => self.problem = Some(format!("{}: {e}", self.path.display())),
+        }
     }
 }
 
@@ -787,6 +908,13 @@ impl Job {
         self.stdin.clone()
     }
 
+    /// **The file this job's output is also going into**, once it was promoted out of the
+    /// foreground, or `None`. Read off the capture rather than kept beside it, so there is
+    /// one record of where the bytes are and not two that can disagree.
+    pub fn output_file(&self) -> Option<OutputFile> {
+        self.capture.lock().expect("capture").output_file()
+    }
+
     pub fn lifetime(&self) -> Lifetime {
         self.lifetime.lock().expect("job lifetime").clone()
     }
@@ -867,6 +995,82 @@ mod tests {
     }
 
     use super::*;
+
+    /// **The spill is the copy that is not bounded** — the whole reason a promoted run gets a
+    /// file, and the operator's report in one assertion.
+    ///
+    /// The window drops from the front past its cap and says so; the file must not inherit that
+    /// bound, or a promoted build's first half is gone exactly when the run stopped being short
+    /// enough to fit the window. The seed is the retained window — so a job whose window had
+    /// already dropped bytes gets a file that says which byte it starts at, rather than a file
+    /// silently pretending to be the whole output.
+    #[test]
+    fn a_spilled_capture_keeps_every_byte_while_the_window_drops_the_head() {
+        let dir = std::env::temp_dir().join(format!("letibot-spill-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to spill into");
+        let path = dir.join("job-j1.out");
+
+        let mut cap = Capture::new(16);
+        cap.push(b"aaaa");
+        let opened = cap.spill_to(&path).expect("the file opens");
+        assert_eq!(
+            (opened.from, opened.bytes),
+            (0, 4),
+            "the file starts with what the window held, from byte 0"
+        );
+
+        // Twenty more bytes into a sixteen-byte window: the ring drops, the file does not.
+        cap.push(b"bbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(cap.retained(), 16, "the window keeps its cap");
+        assert_eq!(cap.produced(), 24);
+        let on_disk = std::fs::read(&path).expect("the file is there");
+        assert_eq!(
+            on_disk.len() as u64,
+            cap.produced(),
+            "the file has every byte the job wrote, not the window's sixteen"
+        );
+        assert!(
+            String::from_utf8_lossy(&on_disk).starts_with("aaaabbbb"),
+            "and it starts where the job did: {:?}",
+            String::from_utf8_lossy(&on_disk)
+        );
+        assert_eq!(
+            cap.output_file().expect("still named").bytes,
+            24,
+            "the record counts the bytes that are actually in the file"
+        );
+
+        // **A window that had already dropped bytes makes an honest file, not a whole one.**
+        let late = dir.join("job-j2.out");
+        let mut cap = Capture::new(8);
+        cap.push(b"0123456789abcdef");
+        let opened = cap.spill_to(&late).expect("the second file opens");
+        assert_eq!(
+            opened.from, 8,
+            "the file begins at the byte its window begins at"
+        );
+        assert_eq!(opened.bytes, 8);
+        assert_eq!(
+            std::fs::read(&late).expect("the second file"),
+            b"89abcdef".to_vec()
+        );
+
+        // **Releasing the window closes the descriptor and keeps the file.** A settled job can
+        // never write again; the bytes and the path must outlive the handle.
+        cap.release();
+        let kept = cap
+            .output_file()
+            .expect("the file is still named after the release");
+        assert_eq!(kept.bytes, 8);
+        cap.push(b"nothing should reach a released file");
+        assert_eq!(
+            std::fs::read(&late).expect("the second file").len(),
+            8,
+            "a released spill takes no more writes"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// **A name is one line, capped, and blank words are no name at all.**
     ///

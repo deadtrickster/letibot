@@ -3100,6 +3100,12 @@ impl RemoteProcesses {
             state,
             produced: job.produced(),
             since_last_output: None,
+            // **The output of a job here is already a file, and it is on the other machine.**
+            // [`crate::exec::OutputFile`] is a path a reader on THIS box can open — `read`,
+            // `tail` — so a remote job's `ssh://host:/…/j7.out` in this field would be a locator
+            // that fails the one call it suggests. The promotion's own note names it instead, and
+            // `job_output` reads it over the connection.
+            output_file: None,
         }
     }
 
@@ -3635,6 +3641,12 @@ impl ProcessHost for RemoteProcesses {
     /// **Nothing is moved, because nothing needed moving.** A job on this host is
     /// started detached from the ssh call that made it, so it already outlives the turn;
     /// the record says that rather than claiming a migration that did not happen.
+    ///
+    /// **And its output was never only in memory, which is the other half of the promise.**
+    /// [`RemoteProcesses::launch`] redirects the command into `{jobs}/{n}.out` on the host
+    /// before it starts, so everything a promoted run prints is already in a file there — the
+    /// note names it, and `job_output` reads it back over the connection (a `tail -c` from the
+    /// offset the caller asked for). There is nothing for this method to start doing.
     fn promote(
         &self,
         job: &JobId,
@@ -3657,9 +3669,14 @@ impl ProcessHost for RemoteProcesses {
             migration: None,
             at: SystemTime::now(),
             note: Some(format!(
-                "it was started detached on {}, so it already outlives this turn: nothing moved",
-                self.host
+                "it was started detached on {}, so it already outlives this turn: nothing \
+                 moved. Its output is already a file there — `{}` — so nothing it prints is \
+                 lost while it runs",
+                self.host, j.out
             )),
+            // See `RemoteProcesses::view`: this field is a path on THIS box, and the file is on
+            // the host. The note above is where a reader is told where it is.
+            output_file: None,
         })
     }
 

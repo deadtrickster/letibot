@@ -904,14 +904,37 @@ impl Tool for Bash {
             // A command the OPERATOR moved to the background (Ctrl+B) has the same capture as
             // one the model asked for, and the same sentence must not tell its reader to open a
             // window that will stay empty.
+            //
+            // **And this is where the file is said**, because it is the only moment the caller
+            // learns it: `promote` opened `job-<id>.out` in the session's scratch directory and
+            // the run's window is bounded at 8 MiB, so a reader told only about the window is a
+            // reader who loses a long build's first half. The operator's report is the reason the
+            // file exists at all — *"its output goes to /dev/null, causes agony"* — and a file
+            // nobody names is the same /dev/null with an inode.
+            let kept = match &p.output_file {
+                Some(f) => format!(
+                    " Every byte it printed before the move, and every byte it prints from here \
+                     on, is also going into `{}` — that file is not bounded by the window's 8 MiB, \
+                     so the output of a long run is not lost past it.",
+                    f.path
+                ),
+                None => String::new(),
+            };
             let next = match crate::builtins::output_redirect_path(command) {
                 Some(path) => format!(
-                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended, and do not build your own clock in the meantime."
+                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended, and do not build your own clock in the meantime.{kept}"
                 ),
                 None => format!(
-                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far."
+                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far.{kept}"
                 ),
             } + &crate::builtins::todo::attach_now(ctx, "job", &id.0);
+            let file_line = match &p.output_file {
+                Some(f) => format!(
+                    "  output file: {} (from byte {} of its output)\n",
+                    f.path, f.from
+                ),
+                None => String::new(),
+            };
             let mut inv = Invocation::backgrounded(
                 id.0.clone(),
                 p.ran_for,
@@ -919,7 +942,7 @@ impl Tool for Bash {
                 &next,
                 format!(
                     "{body}\n\n[`{label}` was moved to the background — you did not ask \
-                     for it]\n  command: {command}\n  owned by: {} — {}\n\nIts \
+                     for it]\n  command: {command}\n{file_line}  owned by: {} — {}\n\nIts \
                      completion will reach you on its own the moment it ends — this call was \
                      waiting on it, so it is not held for a break; do not wait on it.\n",
                     p.to,

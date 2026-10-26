@@ -431,8 +431,18 @@ impl HostBackend {
     /// Set the session's scratch directory. The daemon calls this after
     /// construction; a backend a test built without it has no scratch, and a tool
     /// that wants one gets a refusal rather than a guess.
+    ///
+    /// **Both halves, from one call.** The tools read it through [`ExecBackend::scratch_dir`],
+    /// and the process host writes a promoted run's output into it
+    /// ([`crate::exec::ProcessHost::promote`]); a host pointed at a different directory than
+    /// the tools would be the same defect the daemon's own single `scratch_dir()` exists to
+    /// prevent, one layer down — so the host takes it here rather than from a second builder
+    /// somebody has to remember.
     pub fn with_scratch_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.scratch = Some(dir.as_ref().to_path_buf());
+        if let Some(host) = &self.processes {
+            host.set_scratch_dir(dir.as_ref());
+        }
         self
     }
 

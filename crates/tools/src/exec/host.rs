@@ -41,7 +41,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::ExecError;
 use super::confine::{ConfinePlan, Confinement, Unconfined};
-use super::jobs::{DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, MemoryCap, OutputSlice};
+use super::jobs::{
+    DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, MemoryCap, OutputFile, OutputSlice,
+};
 use super::monitor::Monitors;
 use super::scope::{
     Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
@@ -188,6 +190,11 @@ pub struct JobView {
     pub ran_for: Option<Duration>,
     pub produced: u64,
     pub since_last_output: Option<Duration>,
+    /// **Where the whole of this job's output is also going**, once it was promoted out of the
+    /// foreground — or `None` for a job nobody moved (and for one that was already over when
+    /// they asked). See [`OutputFile`]: the window above is bounded, this is not, and a reader
+    /// told only about the window is a reader who loses a long build's first half.
+    pub output_file: Option<OutputFile>,
 }
 
 /// **What a job is called**: `release-build · j65`, or just `j65` when nobody named it.
@@ -274,6 +281,14 @@ pub struct Promotion {
     pub migration: Option<Migration>,
     pub at: SystemTime,
     pub note: Option<String>,
+    /// **The file the run's output keeps going into from here on**, when this session has a
+    /// scratch directory to put it in. `None` where there is nowhere to spill — and then the
+    /// run's output is exactly what it was before, in the window.
+    ///
+    /// On the record rather than said in prose at the call site because it is the promotion's
+    /// own answer to *where does the rest of this go*, and every reader of a promotion — the
+    /// `bash` result, `job_output`, a `job_list` an hour later — needs the same string.
+    pub output_file: Option<OutputFile>,
 }
 
 impl Promotion {
@@ -303,6 +318,9 @@ impl Promotion {
         match &self.migration {
             Some(m) => s.push_str(&format!("; {}", m.summary())),
             None => s.push_str("; nothing was moved"),
+        }
+        if let Some(f) = &self.output_file {
+            s.push_str(&format!("; its output keeps going to {}", f.path));
         }
         if let Some(n) = &self.note {
             s.push_str(&format!(" — {n}"));
@@ -802,6 +820,14 @@ pub struct HostProcesses {
     /// Bytes retained per job. Beyond this the ring drops from the front and says
     /// so — see [`super::jobs::OutputSlice::denominator`].
     capture_bytes: usize,
+    /// **Where a promoted run's output keeps going** — the session's scratch directory, set by
+    /// the daemon ([`crate::backend::Backend::with_scratch_dir`]'s host half).
+    ///
+    /// Behind a lock because the daemon sets it after the host is built and the host is shared
+    /// by `Arc` with every tool in the session. `None` on a host nobody wired one to: a
+    /// promotion then leaves the run's output exactly where it was — in the window — rather than
+    /// inventing a directory.
+    scratch: Mutex<Option<PathBuf>>,
     /// The shell a command is handed to.
     shell: Vec<String>,
     /// **The shell the OPERATOR's own command is handed to**, which is theirs and
@@ -937,6 +963,7 @@ impl HostProcesses {
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
+            scratch: Mutex::new(None),
             shell: vec!["/bin/sh".into(), "-c".into()],
             console_shell: super::console::shell(),
             session_name: unique("s"),
@@ -1012,6 +1039,56 @@ impl HostProcesses {
     pub fn with_capture_bytes(mut self, bytes: usize) -> Self {
         self.capture_bytes = bytes;
         self
+    }
+
+    /// **Where a promoted run's output goes on living.** The daemon calls this once, with the
+    /// session's scratch directory, and only the session's own opener knows it — see
+    /// [`HostBackend::with_scratch_dir`](crate::backend::HostBackend::with_scratch_dir), which
+    /// is the one call that sets both halves.
+    pub fn set_scratch_dir(&self, dir: impl Into<PathBuf>) {
+        *self.scratch.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.into());
+    }
+
+    /// **Give a promoted run a file that keeps everything it prints from here on** — the
+    /// window's unbounded companion, in the session's scratch directory as `job-<id>.out`.
+    ///
+    /// Three answers, and each is a different fact: the file it already has (a second Ctrl+O
+    /// must not truncate a file a run is writing); `None` because this host has no scratch
+    /// directory to put one in; `None` because opening it failed, which is printed on the
+    /// daemon's stderr rather than smuggled into a promotion record that would then claim a
+    /// file nobody can open.
+    fn spill_output(&self, job: &Job) -> Option<OutputFile> {
+        if let Some(existing) = job.output_file() {
+            return Some(existing);
+        }
+        // Nothing more will be written by a run that has ended, and its window still holds
+        // what it wrote — a file made now would be a copy of a finished thing.
+        if !job.state().is_running() {
+            return None;
+        }
+        let dir = self
+            .scratch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("letibot: scratch dir {}: {e}", dir.display());
+            return None;
+        }
+        let path = dir.join(format!("job-{}.out", job.id.0));
+        match job.capture.lock().expect("capture").spill_to(&path) {
+            Ok(f) => Some(f),
+            Err(why) => {
+                // Said where the daemon's own banner is, because the alternative is a
+                // promotion record naming a file that is not there.
+                eprintln!(
+                    "letibot: `{}` was moved to the background but its output could not be \
+                     spilled, so it stays only in its window: {why}",
+                    job_label(job.slug.as_deref(), &job.id.0)
+                );
+                None
+            }
+        }
     }
 
     /// **The shell a command is handed to**, `/bin/sh -c` unless this says otherwise.
@@ -1178,6 +1255,7 @@ impl HostProcesses {
             ran_for: job.ran_for(),
             produced: cap.produced(),
             since_last_output: cap.since_last(),
+            output_file: cap.output_file(),
         }
     }
 
@@ -1856,6 +1934,22 @@ impl ProcessHost for HostProcesses {
     /// promoted**, because the ones that did move really are owned by the new
     /// scope now — and the residue is in the record and in the note rather than
     /// hidden behind a rollback that would have to kill work to be honest.
+    ///
+    /// # And the output gets a file, because the move is a promise about time
+    ///
+    /// A foreground command is bounded by its deadline, so a window that holds 8 MiB is a
+    /// window that holds all of it. A move to the background lifts that bound — the run may
+    /// now print for an hour — so the promotion is the one moment where *the output is only in
+    /// memory* stops being a fact nobody could notice and becomes an agony. The operator,
+    /// 2026-10-26: *"when I background a lengthy bash run with Ctrl-o its output goes to
+    /// /dev/null, causes agony, should go to a tmp file in a scratch dir"*. So the same step
+    /// opens `job-<id>.out` in the session's scratch directory ([`OutputFile`]), seeds it with
+    /// what the run has already printed, and every later byte goes to both the window and the
+    /// file.
+    ///
+    /// **After the migration, not before it**: a promotion that failed moved nothing, and a
+    /// file created for a move that did not happen is a promise nobody kept. Nothing is lost by
+    /// the ordering — the file is seeded from the window as it stands when the move is measured.
     fn promote(
         &self,
         id: &JobId,
@@ -1868,9 +1962,12 @@ impl ProcessHost for HostProcesses {
         let ran_for = job.elapsed();
         let target = self.scope_for(to, name)?;
 
-        // Already there. Not an error and not a no-op worth hiding: a caller that
-        // promoted the same job twice should be told that the second call moved
-        // nothing, rather than shown a record that looks like a second move.
+        // **Already there.** Not an error and not a no-op worth hiding: a caller that
+        // promoted the same job twice is told the second call moved nothing, rather than shown
+        // a record that looks like a second move. The file is still the answer to *where does
+        // its output go* — this may be the first promotion that could make one, either because
+        // the earlier one found no scratch directory or because the job was backgrounded by
+        // somebody else and never moved at all.
         if life.owner == target {
             return Ok(self.record_promotion(Promotion {
                 job: id.clone(),
@@ -1886,6 +1983,7 @@ impl ProcessHost for HostProcesses {
                     "`{}` was already owned by that scope, so nothing moved",
                     job_label(job.slug.as_deref(), &id.0)
                 )),
+                output_file: self.spill_output(&job),
             }));
         }
 
@@ -1906,6 +2004,7 @@ impl ProcessHost for HostProcesses {
                     job_label(job.slug.as_deref(), &id.0),
                     job.state().word()
                 )),
+                output_file: None,
             }));
         }
 
@@ -1939,6 +2038,10 @@ impl ProcessHost for HostProcesses {
             background: Some(how.clone()),
         });
 
+        // **And the bytes get somewhere unbounded to go**, now that the run really has
+        // outlived the turn — see this method's header.
+        let output_file = self.spill_output(&job);
+
         let note = (!migration.complete()).then(|| {
             format!(
                 "PARTIAL: {} process(es) would not leave `{}` and are still reaped by \
@@ -1958,6 +2061,7 @@ impl ProcessHost for HostProcesses {
             migration: Some(migration),
             at: SystemTime::now(),
             note,
+            output_file,
         }))
     }
 

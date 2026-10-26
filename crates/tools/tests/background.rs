@@ -262,6 +262,143 @@ fn a_promote_request_from_the_head_moves_the_running_command() {
     );
 }
 
+/// **A run moved to the background mid-flight keeps what it wrote on both sides of the move** —
+/// the operator's report, sentence for sentence: *"when I background a lengthy bash run with
+/// Ctrl-o its output goes to /dev/null, causes agony, should go to a tmp file in a scratch
+/// dir"*.
+///
+/// Two halves, and the second is the one the file exists for. Everything already printed is
+/// still readable — the window kept it, and the promotion seeds the file from the window — and
+/// everything printed **after** the move is readable, in the same place the model was told about
+/// when the promotion produced its result. The file is the copy that is not bounded, which is
+/// what makes it worth naming: the window is 8 MiB of the tail, and a `bash` foreground result
+/// is the only reader that ever saw those bytes before this.
+///
+/// The command prints on a clock rather than in a `sleep` and a burst, so *before* and *after*
+/// are facts about time and not about a race: the promote lands about a third of the way in, and
+/// the assertion needs both sides of that instant.
+#[test]
+fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
+    let mut h = runner!("promote_keeps_output");
+    // **The Ctrl+O, on the other thread** — `crate::testing`'s runner has no head, so the request
+    // is set on the channel the daemon wires from the hub, while the call below is blocked in
+    // `bash`'s wait loop. That channel is exactly what `HeadClient::promote` ends at
+    // (`harnessd`'s `promote_midflight` drives the frame itself).
+    let channel = h.promote.clone().expect("a promote channel");
+    let promoted_at = std::time::Instant::now();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        *channel.lock().unwrap_or_else(|e| e.into_inner()) = Some("deadtrickster".to_string());
+    });
+    let r = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": "for i in 1 2 3 4 5 6 7 8; do echo line-$i; sleep 0.4; done"
+        })
+        .to_string(),
+    );
+    let handle = match &r.outcome {
+        ToolOutcome::Backgrounded { handle, how, .. } => {
+            assert_eq!(
+                *how,
+                Backgrounding::Operator {
+                    identity: "deadtrickster".into()
+                }
+            );
+            handle.clone()
+        }
+        other => panic!("the Ctrl+O did not move the run: {other:?}\n{}", r.render()),
+    };
+    let host = h.processes.clone().unwrap();
+    let jid = JobId(handle.clone());
+
+    // **The file the promotion made, and it is named to the model** — the handle and the path
+    // are the two facts the result has to carry, because the call it lands in is the last moment
+    // anything tells this caller where its run went.
+    let file = host
+        .job(&jid)
+        .and_then(|v| v.output_file)
+        .expect("a promoted run's output keeps going into a file");
+    assert!(
+        file.path.ends_with(&format!("job-{handle}.out")),
+        "the file is named after the job: {}",
+        file.path
+    );
+    assert_eq!(
+        file.from, 0,
+        "nothing was dropped before the move, so it starts at 0"
+    );
+    let rendered = r.render();
+    assert!(
+        rendered.contains(&format!("job=\"{handle}\"")),
+        "the result must name the handle: {rendered}"
+    );
+    assert!(
+        rendered.contains(&file.path),
+        "the result must name the file its output is going into: {rendered}"
+    );
+
+    // **Wait for the command itself to finish** — `job_wait` returns at once for a job this
+    // session started, so the wait is a poll on the state, not a clock the harness invents.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while host
+        .job(&jid)
+        .map(|v| v.state.is_running())
+        .unwrap_or(false)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        !host.job(&jid).map(|v| v.state.is_running()).unwrap_or(true),
+        "the command never finished"
+    );
+    assert!(
+        promoted_at.elapsed() > std::time::Duration::from_secs(1),
+        "the promote has to have landed mid-flight for this to be about anything"
+    );
+
+    // **1. `job_output` returns both sides of the move.** The pre-move lines are the ones the
+    // foreground result already carried; the post-move ones only exist because the window kept
+    // filling after the promotion, and that is the half nobody could see before.
+    let read = h.call(
+        "job_output",
+        &serde_json::json!({"job": handle}).to_string(),
+    );
+    let body = read.render();
+    for n in 1..=8 {
+        assert!(
+            body.contains(&format!("line-{n}\n")),
+            "line-{n} is missing from `job_output`: {body}"
+        );
+    }
+    assert!(
+        body.contains(&file.path),
+        "`job_output` must name the file that keeps the whole of it: {body}"
+    );
+
+    // **2. The file on disk holds them**, read from the disk and not through the harness: a test
+    // that asked the tool whether it wrote is a test of the tool's opinion of itself.
+    let on_disk = std::fs::read_to_string(&file.path).expect("the scratch file exists");
+    for n in 1..=8 {
+        assert!(
+            on_disk.contains(&format!("line-{n}\n")),
+            "line-{n} is missing from `{}`: {on_disk}",
+            file.path
+        );
+    }
+    assert!(
+        file.path.starts_with(
+            h.scratch_dir()
+                .expect("the runner fixture has a scratch")
+                .to_str()
+                .unwrap()
+        ),
+        "the file belongs in the session's scratch directory: {}",
+        file.path
+    );
+}
+
 // ------------------------------------------------------- monitors, T24
 
 /// T24 requirements 1, 2, 3 and 4, through the tool the model actually calls.

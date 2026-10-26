@@ -3752,6 +3752,14 @@ impl Harness {
                     HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
                 })?
             };
+            // **A promoted run's output has a file here too** — the drain that feeds a job's
+            // window is THIS process's (the guest's `firecode in` writes to a pipe the daemon
+            // holds), so the file lands in this daemon's scratch directory, which is where the
+            // model's `read` can open it. Without this line a VM session's `Ctrl+O` would be the
+            // one placement where a promoted run's output stayed only in memory.
+            if let Some(h) = fc.host_processes() {
+                h.set_scratch_dir(&scratch);
+            }
             let described = fc.describe();
             let writable = fc.is_writable();
             let monitors = fc.host_processes().and_then(|h| h.monitors().cloned());
