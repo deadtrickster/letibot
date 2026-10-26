@@ -550,16 +550,18 @@ pub fn list() -> Value {
                  "required": ["session"]
              })),
         tool("leticode_answer",
-             "Answer a permission ask with one of the options the ask offered. Sent as the \
-              protocol's Answer frame, so the decision lands in the corpus attributed to \
-              this bridge, and the daemon takes it exactly as it takes the operator's own.",
+             "Answer an open ask. A PERMISSION ask takes one of the option ids it offered, sent \
+              as the protocol's Answer frame, so the decision lands in the corpus attributed to \
+              this bridge exactly as the operator's own. A QUESTION ask (the model's own \
+              ask_user_question) takes one of its `choices` by exact text or 1-based number, \
+              `free:<words>` for a typed reply, or `abstain`; `note` qualifies a chosen option.",
              json!({
                  "type": "object",
                  "properties": {
                      "session": { "type": "string", "description": "The session id." },
                      "ask": { "type": "string", "description": "The ask id from `leticode_asks` (its `ask` field)." },
-                     "option": { "type": "string", "description": "One option id the ask offered: `allow_once`, `allow_session`, `allow_always`, `reject_once`, `reject_always` — the ask says which." },
-                     "note": { "type": "string", "description": "What the model is told, for a `deny_and_tell` option." }
+                     "option": { "type": "string", "description": "For a permission: one option id it offered (`allow_once`, `allow_session`, `allow_always`, `reject_once`, `reject_always` — the ask says which). For a question: a choice's text or number, `free:<words>`, or `abstain`." },
+                     "note": { "type": "string", "description": "What the model is told: for a `deny_and_tell` option, or a qualification of a question's chosen option." }
                  },
                  "required": ["session", "ask", "option"]
              })),

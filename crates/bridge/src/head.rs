@@ -1007,6 +1007,60 @@ fn last_assistant(items: &[SnapshotItem]) -> Option<String> {
     })
 }
 
+/// **A question's answer from the bridge's words**: a choice by its exact text or its
+/// 1-based number, `free:<words>` for a typed reply, `abstain` for the deliberate no-answer.
+/// A note qualifies a choice and is refused on its own, as the daemon refuses it.
+fn question_answer(
+    option: &str,
+    note: Option<&str>,
+    choices: &[String],
+) -> Result<letibot_sessionlog::question::QuestionAnswer, String> {
+    use letibot_sessionlog::question::QuestionAnswer;
+    let note = note
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+    if option == "abstain" {
+        return Ok(QuestionAnswer {
+            abstain: true,
+            ..QuestionAnswer::default()
+        });
+    }
+    if let Some(words) = option.strip_prefix("free:") {
+        return Ok(QuestionAnswer {
+            free: Some(words.trim().to_string()),
+            ..QuestionAnswer::default()
+        });
+    }
+    let index = choices
+        .iter()
+        .position(|c| c == option)
+        .or_else(|| {
+            option
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n >= 1 && *n <= choices.len())
+                .map(|n| n - 1)
+        })
+        .ok_or_else(|| {
+            let listed: Vec<String> = choices
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{}. {c}", i + 1))
+                .collect();
+            format!(
+                "`{option}` is not one of the question's choices; it offers {} — or answer \
+                 `free:<words>`, or `abstain`",
+                listed.join("; ")
+            )
+        })?;
+    Ok(QuestionAnswer {
+        option: Some(index),
+        note,
+        ..QuestionAnswer::default()
+    })
+}
+
 /// What a caller waiting on a session learns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attention {
@@ -1257,7 +1311,7 @@ impl Head {
         // card must be told the bridge is not holding it, not that the card is gone — the
         // card is very likely still open, and somebody else is going to settle it.
         self.may_write()?;
-        let (kind, offered): (String, Vec<String>) = {
+        let (kind, offered, choices): (String, Vec<String>, Vec<String>) = {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(found) = g.asks.iter().find(|a| a.req_id == ask) else {
                 let open: Vec<String> = g.asks.iter().map(|a| a.req_id.clone()).collect();
@@ -1273,16 +1327,30 @@ impl Head {
             (
                 found.kind.clone(),
                 found.options.iter().map(|o| o.option_id.clone()).collect(),
+                found.choices.clone(),
             )
         };
+        // **A question carries the model's own choices**, and is answered with
+        // `AnswerQuestion`: `option` names a choice by its exact words or by its number
+        // (1-based, as a person reads the list), `free:<words>` is a typed reply, and
+        // `abstain` is the deliberate no-answer. Package RH5's question sat unanswered for
+        // its whole deadline because this path refused every question (2026-10-26).
+        if kind == "question" {
+            let answer =
+                question_answer(option, note, &choices).map_err(|e| format!("ask `{ask}`: {e}"))?;
+            let mut c = self.said_client()?;
+            return c
+                .answer_question(ask, answer)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
         // **A question is not a permission, and the two have different frames.** Sending an
         // `Answer` for a question would be refused by the daemon for a reason that names
         // neither — so it is refused here, saying what could answer it.
         if kind != "permission" {
             return Err(format!(
-                "ask `{ask}` is a {kind}, not a permission: a question is answered by a person \
-                 in a TUI (it carries the model's own choices, and `AnswerQuestion` is the frame \
-                 for it, which this build does not send yet)"
+                "ask `{ask}` is a {kind}: only permissions and questions can be answered from \
+                 the bridge"
             ));
         }
         if !offered.iter().any(|o| o == option) {
@@ -1639,6 +1707,29 @@ pub fn create_session(d: &Daemon, title: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A question is answered by its choice, its number, typed words, or an abstention.**
+    #[test]
+    fn a_question_is_answered_by_choice_number_words_or_abstention() {
+        let choices = vec!["Lift it".to_string(), "Stop".to_string()];
+        let by_text = question_answer("Stop", None, &choices).expect("a choice by its words");
+        assert_eq!(by_text.option, Some(1));
+        let by_number = question_answer("1", Some("and say why"), &choices).expect("by number");
+        assert_eq!(by_number.option, Some(0));
+        assert_eq!(by_number.note.as_deref(), Some("and say why"));
+        let free = question_answer("free:neither", None, &choices).expect("typed words");
+        assert_eq!(free.free.as_deref(), Some("neither"));
+        assert!(
+            question_answer("abstain", None, &choices)
+                .expect("abstain")
+                .abstain
+        );
+        let refused = question_answer("3", None, &choices).expect_err("no third choice");
+        assert!(
+            refused.contains("1. Lift it") && refused.contains("2. Stop"),
+            "{refused}"
+        );
+    }
     use letibot_sessionlog::testing;
     use letibot_transcript::Backgrounding;
 
