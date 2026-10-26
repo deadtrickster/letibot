@@ -25,6 +25,9 @@ use letibot_tools::exec::confine::{Egress, Grant, ViewSpec};
 use letibot_tools::exec::{Bwrap, Confinement, ExecError};
 use letibot_tools::testing::confined_harness_with;
 
+/// What this file's skips name, for [`letibot_tokencore::apparatus`].
+const BOUNDARY: &str = "a usable confinement boundary (bwrap, an unprivileged user namespace)";
+
 fn toolchain() -> Vec<Grant> {
     let home = std::env::var("HOME").expect("a home");
     vec![
@@ -127,10 +130,15 @@ fn the_boundary_says_what_a_grant_costs() {
     let probed = Bwrap::probe(v, Egress::Denied);
     let _ = std::fs::remove_dir_all(&dir);
     let Ok(b) = probed else {
-        // Through `apparatus`, so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the skip (R67 item 18).
-        return letibot_tokencore::apparatus::absent(
-            "a usable confinement boundary (bwrap, an unprivileged user namespace)",
-        );
+        // Through `apparatus`, so `LETIBOT_REQUIRE_APPARATUS=1` can refuse the skip (R67 item 18)
+        // — but only where a boundary COULD be. macOS has no namespaces to enter and no bwrap
+        // to install, so a skip refused there is a requirement no provisioning can meet, and it
+        // made the gate's test step red on the operator's Mac for a reason in no diff.
+        let Some(_) = letibot_tokencore::apparatus::applies(BOUNDARY, cfg!(target_os = "linux"))
+        else {
+            return;
+        };
+        return letibot_tokencore::apparatus::absent(BOUNDARY);
     };
     let d = b.describe();
     eprintln!("--- describe ---\n{d}\n");

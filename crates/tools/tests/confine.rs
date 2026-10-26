@@ -54,14 +54,33 @@ fn absent(what: &str) {
     letibot_tokencore::apparatus::absent(what)
 }
 
+/// **The boundary is a PLATFORM question before it is a box question.**
+///
+/// On Linux a boundary that is not there is apparatus this box was not given — `bwrap`, an
+/// unprivileged user namespace, a delegated cgroup v2 subtree — so [`absent`] is right: a
+/// provisioned box has one, and a run that demands its apparatus refuses the skip.
+///
+/// macOS can never have one. There are no namespaces for a helper to enter and no bubblewrap
+/// to install, so no amount of provisioning produces a boundary, and demanding one made the
+/// merge gate's test step red on the operator's Mac for a reason that was in no diff (the
+/// queue's daemon runs on that Mac). The refusal asserted just above this call is the whole
+/// of what a boundary test can measure there; `applies` says so without a failure.
+fn boundary_absent() {
+    let Some(_) = letibot_tokencore::apparatus::applies(BOUNDARY, cfg!(target_os = "linux")) else {
+        return;
+    };
+    absent(BOUNDARY);
+}
+
 /// The assertion for the branch where this box cannot confine. It is not "nothing
 /// to see here": the refusal has to name what was missing and has to say that
 /// nothing was run, because the whole entry is that a boundary which silently is
 /// not there is worse than none.
 ///
-/// The refusal is asserted FIRST and then the absence is announced through [`absent`], so a
-/// box without a boundary still checks the refusal, and a run that demands the boundary
-/// (`LETIBOT_REQUIRE_APPARATUS=1`) fails rather than passing on the refusal half alone.
+/// The refusal is asserted FIRST and then the absence is announced through
+/// [`boundary_absent`], so a box without a boundary still checks the refusal, and a LINUX run
+/// that demands the boundary (`LETIBOT_REQUIRE_APPARATUS=1`) fails rather than passing on the
+/// refusal half alone. On macOS, where a boundary cannot exist, that half is the measurement.
 fn no_boundary(e: &ExecError, test: &str) {
     eprintln!("{test}: no usable boundary on this host, asserting on the refusal instead: {e}");
     let m = format!("{e}");
@@ -76,7 +95,7 @@ fn no_boundary(e: &ExecError, test: &str) {
             || m.contains("userns"),
         "a refusal must name the mechanism that was missing: {m}"
     );
-    absent(BOUNDARY);
+    boundary_absent();
 }
 
 // ------------------------------------------------------- rule 1: fail closed
@@ -346,7 +365,7 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
                 m.contains("was NOT run") || m.contains("nothing would reap it"),
                 "the refusal must say nothing ran: {m}"
             );
-            absent(BOUNDARY);
+            boundary_absent();
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

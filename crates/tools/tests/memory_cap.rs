@@ -10,6 +10,10 @@
 //! A box with no user systemd skips, and says so; with `LETIBOT_REQUIRE_APPARATUS=1` (the
 //! merge gate's setting) a skip is a failure, because a skipped test is a passed one as far
 //! as a step's status is concerned.
+//!
+//! **A platform with no systemd is not that box.** macOS has no `systemd-run` and no cgroups,
+//! so a cap in a delegated scope is a thing it can never have; the same absence there is
+//! announced through `apparatus::applies` and is not a failure a provisioning could clear.
 
 use std::process::Command;
 use std::time::Duration;
@@ -40,13 +44,20 @@ fn a_job_that_outgrows_its_cap_dies_alone_and_one_under_its_cap_reports_its_peak
         .status()
         .is_ok_and(|s| s.success());
     if !scope_ok {
-        let why = "no systemd user manager here, so there is no delegated scope to cap in";
-        assert!(
-            std::env::var_os("LETIBOT_REQUIRE_APPARATUS").is_none(),
-            "{THIS}: {why}, and LETIBOT_REQUIRE_APPARATUS makes a skip a failure"
+        // **Two absences, and only one of them is this box's.** `systemd-run --user` and the
+        // delegated scope it asks for are Linux's: a Linux box with no user manager is one
+        // that has not been set up, and `LETIBOT_REQUIRE_APPARATUS=1` refuses that skip on
+        // purpose. macOS can never have either — the absence there is the platform's, so it
+        // is announced through `applies` and is not refusable.
+        let Some(_) = letibot_tokencore::apparatus::applies(
+            "a delegated systemd scope to cap a job in",
+            cfg!(target_os = "linux"),
+        ) else {
+            return;
+        };
+        return letibot_tokencore::apparatus::absent(
+            "a systemd user manager, whose delegated scope is what a memory cap needs",
         );
-        eprintln!("{THIS}: SKIPPED — {why}");
-        return;
     }
     let exe = std::env::current_exe().expect("the test binary");
     let out = Command::new("systemd-run")
