@@ -2339,6 +2339,12 @@ impl SessionEvent {
                 | SessionEvent::JobSettled { .. }
                 | SessionEvent::Subagent { .. }
                 | SessionEvent::HeldResults { .. }
+                // **The board, because it is what says a job is awaited.** A job counts once a row
+                // `needs` it, and the model usually backgrounds the job FIRST and writes the row
+                // after: without this the session read quiet from the job's start until something
+                // else moved, and the bridge's `wait` answered `the turn ended` while package R1 sat
+                // waiting on `j10949` with a row that said so (2026-10-26).
+                | SessionEvent::TodosUpdated { .. }
                 // **A warning, because it is a verb's answer.** A command the worker took off the
                 // queue is `Delivery` until something says otherwise, and every command that runs no
                 // turn at all — a `/mode`, a refusal, an interrupt that found nothing to stop — ends
@@ -2421,6 +2427,13 @@ pub fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// **A board change recomputes the activity**: a job counts once a row needs it, and the
+    /// row is usually written after the job starts.
+    #[test]
+    fn a_todo_board_change_touches_the_activity() {
+        assert!(SessionEvent::TodosUpdated { todos: Vec::new() }.touches_activity());
+    }
+
     use super::*;
 
     /// **The wire's title rule is the STORE's title rule** — the test that makes a copy safe.
