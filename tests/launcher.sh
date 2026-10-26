@@ -432,6 +432,49 @@ STUB
     fails=$((fails + 1))
   fi
 
+  # **5. `--continue ID` is `--session ID`, and anything else after `--continue` is refused.**
+  #
+  # MEASURED 2026-10-26: `leticode --continue s-1791394076177451000` ran a ONE-SHOT whose prompt
+  # WAS the id, into the newest session — the operator's live conversation, which then acted on
+  # the string. `--continue` takes no argument, so the id fell through to the one-shot branch.
+  #
+  # A session id is unambiguous and means the verb it names, so it is read as one — pinned here on
+  # the daemon's ARGV (`--session s-…`, and never `--prompt`), because that is what decides which
+  # session opens and whether a turn is run. The id forms are the store's own: `s-<digits>`, with
+  # an optional transcript suffix `#tN`.
+  for pair in "contid:s-1791394076177451000" "contid-t:s-1791394076177451000#t17"; do
+    d="$T/${pair%%:*}"; want="${pair#*:}"
+    mkdir -p "$d"
+    fresh
+    out="$(RUN_WS="$d" run "$DEFAULT_ONLY" --continue "$want")"
+    expect "--continue $want names that session" "$(daemon_argv)" "--session $want( |\$)"
+    expect "  ...and says what it read" "$out" \
+      "--continue takes no argument; $want is a session id, so this is --session $want"
+    refuse "  ...and runs no prompt with the id in it" "$(daemon_argv)" "--prompt"
+    expect "  ...and the head runs" "$out" "THE HEAD RAN"
+    refuse "  ...and the newest session was not asked for instead" "$(daemon_argv)" \
+      "--session s-latest"
+    stop_case "$d"
+  done
+
+  # An argument that is not a session id is a mistake about the verb, not a prompt: refused with
+  # the sentence and the usage, and nothing started — a one-shot's prompt is the FIRST argument
+  # and only the first.
+  mkdir -p "$T/contbad"
+  fresh
+  out="$(RUN_WS="$T/contbad" run "$DEFAULT_ONLY" --continue please-reopen-it)"
+  rc=$?
+  expect "a stray argument after --continue is refused" "$out" \
+    "--continue takes no argument, and 'please-reopen-it' is not a session id"
+  expect "  ...with the usage line" "$out" "letibot --session ID"
+  if [ "$rc" -ne 0 ]; then echo "ok   ...and exits non-zero"; else
+    echo "FAIL ...and exits non-zero: exit $rc"; fails=$((fails + 1))
+  fi
+  if [ -z "$(daemon_argv)" ]; then echo "ok   ...and starts no daemon with it as a prompt"; else
+    echo "FAIL ...and starts no daemon with it as a prompt:"; daemon_argv | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+
   for d in "$T/plain" "$T/cont" "$T/new"; do stop_case "$d"; done
 else
   echo "skip the start/--new cases: no python3 to listen on a unix socket"

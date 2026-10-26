@@ -12,7 +12,8 @@
 #   letibot                     attach — or start this folder's daemon on a NEW session
 #                               (never a resume: that is --continue's, and only its)
 #   letibot --continue          reopen the newest session in THIS workspace — the only verb
-#                               that reopens anything without being asked which
+#                               that reopens anything without being asked which. Takes no argument;
+#                               a session id after it is read as --session ID (and said).
 #   letibot --session ID        reopen a particular one
 #   letibot --sessions          what is on disk: id, title, workspace, age, rows
 #   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
@@ -349,7 +350,8 @@ already up, then attaches the TUI head to it.
                               if none is up. It never resumes by itself: the sessions on disk
                               are `--continue`'s, and ctrl-s in the head shows them all.
   letibot --continue          reopen the newest session in THIS workspace — the only verb that
-                              reopens anything without being asked which
+                              reopens anything without being asked which. It takes NO argument;
+                              `--continue s-…` is read as `--session s-…` and says so
   letibot --session ID        reopen a particular one
   letibot --sessions          what is on disk: id, title, workspace, age, rows
   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
@@ -1834,6 +1836,29 @@ STARTED=0
 case "${1:-}" in
   --continue|-c)
     shift
+    # **AN ID HERE MEANS `--session`, AND ANYTHING ELSE IS REFUSED** (2026-10-26). `--continue`
+    # takes no argument, so `leticode --continue s-1791394076177451000` fell through to the
+    # one-shot branch below and ran a prompt whose whole text was the id — into the NEWEST
+    # session, which is the one the operator was trying to reopen. That session then acted on the
+    # string: an ssh to another box, a benchmark, an edit to a file.
+    #
+    # A session id is not ambiguous, so it is read as the verb it names and the reading is said
+    # out loud. Anything else after `--continue` is refused: a one-shot's prompt is the FIRST
+    # argument and only the first, and an argument that arrives after a verb is a mistake about
+    # the verb rather than a prompt nobody meant to type.
+    if [ $# -gt 0 ] && [[ "$1" =~ ^s-[0-9]+(#t[0-9]+)?$ ]]; then
+      echo "letibot: --continue takes no argument; $1 is a session id, so this is --session $1" >&2
+      SESSION="$1"; shift
+    fi
+    if [ $# -gt 0 ]; then
+      echo "letibot: --continue takes no argument, and '$1' is not a session id.
+         '--continue' reopens the NEWEST session in THIS workspace. To name one:
+             $ME --session ID        (--sessions lists them)
+         To run a prompt instead, put it FIRST — nothing after a flag is a prompt:
+             $ME 'some prompt'" >&2
+      usage >&2
+      exit 1
+    fi
     # Scoped to this workspace by default. A session's workspace is a stored fact,
     # and reopening a ~/ conversation while standing in Projects/rano is almost
     # never what was meant -- so the scope is a path prefix with the exact match
@@ -1843,10 +1868,14 @@ case "${1:-}" in
     # its title, its row count and its workspace there. Continuing the wrong
     # conversation is not a keystroke you can take back -- the next thing you type
     # lands in it -- so the pick is announced before the head opens over it.
-    if ! SESSION="$("${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --latest-session --scope "$WORKSPACE")"; then
-      echo "letibot: no session with anything in it under $WORKSPACE." >&2
-      echo '         "letibot --sessions" lists what is on disk; plain "letibot" starts a new one.' >&2
-      exit 1
+    # **Only when no id was given** (see above): a named session is not a question about which
+    # one is newest, and asking would overwrite the answer the operator already gave.
+    if [ -z "$SESSION" ]; then
+      if ! SESSION="$("${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --latest-session --scope "$WORKSPACE")"; then
+        echo "letibot: no session with anything in it under $WORKSPACE." >&2
+        echo '         "letibot --sessions" lists what is on disk; plain "letibot" starts a new one.' >&2
+        exit 1
+      fi
     fi
     ;;
   --session|-s)
