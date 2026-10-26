@@ -86,11 +86,16 @@ impl Fixture {
     }
 
     fn write_hosts(&self) {
+        // **`mise = false`, because these hosts are fakes on this box.** The default is *find the
+        // host's mise and wrap every command in `mise exec`* — which on a developer's Mac would
+        // find the real `/opt/homebrew/bin/mise` behind the fake ssh and put it in front of every
+        // assertion here. A fixture says what it means.
         std::fs::write(
             &self.hosts,
             "[host.lab2x1]\nhostname = \"lab2x1\"\nuser = \"dead\"\nroot = \"~/letibot-remote\"\n\
+             mise = false\n\
              \n[host.lubuntu1]\nhostname = \"lubuntu1\"\nuser = \"dead\"\n\
-             root = \"~/letibot-remote\"\n",
+             root = \"~/letibot-remote\"\nmise = false\n",
         )
         .unwrap();
         // **The two facts a connection is refused without**, and both are letibot's own rather
@@ -113,26 +118,37 @@ impl Fixture {
     /// **The fake ssh**: skip ssh's own options, then run the command against the home the target
     /// names. A forward (`-N`) is recorded and exits — there is nothing to forward to here.
     fn write_fake_ssh(&self) {
+        self.write_fake_ssh_with("");
+    }
+
+    /// The same fake, with a prelude — how a test makes a host misbehave. `prelude` runs **before**
+    /// the command is dispatched, so a `sleep 300` there is a host that has stopped answering and an
+    /// `exit 255` is one whose connection went away.
+    fn write_fake_ssh_with(&self, prelude: &str) {
         std::fs::write(
             &self.ssh,
-            "#!/bin/sh\n\
-             printf '%s\\n' \"$*\" >> \"$LETIBOT_FAKE_SSH_LOG\"\n\
-             case \" $* \" in *\" -N \"*) exit 0 ;; esac\n\
-             while [ $# -gt 0 ]; do\n\
-               case \"$1\" in\n\
-                 -i|-o|-L|-F) shift 2 ;;\n\
-                 -*) shift ;;\n\
-                 *) break ;;\n\
-               esac\n\
-             done\n\
-             target=\"$1\"; shift\n\
-             cmd=\"$1\"\n\
-             HOME=\"$LETIBOT_FAKE_REMOTES/${target#*@}\"\n\
-             export HOME\n\
-             mkdir -p \"$HOME/bin\"\n\
-             PATH=\"$HOME/bin:$PATH\"\n\
-             export PATH\n\
-             exec sh -c \"$cmd\"\n",
+            format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$*\" >> \"$LETIBOT_FAKE_SSH_LOG\"\n\
+                 case \" $* \" in *\" -N \"*) exit 0 ;; esac\n\
+                 while [ $# -gt 0 ]; do\n\
+                   case \"$1\" in\n\
+                     -i|-o|-L|-F) shift 2 ;;\n\
+                     -*) shift ;;\n\
+                     *) break ;;\n\
+                   esac\n\
+                 done\n\
+                 {prelude}\
+\
+                 target=\"$1\"; shift\n\
+                 cmd=\"$1\"\n\
+                 HOME=\"$LETIBOT_FAKE_REMOTES/${{target#*@}}\"\n\
+                 export HOME\n\
+                 mkdir -p \"$HOME/bin\"\n\
+                 PATH=\"$HOME/bin:$PATH\"\n\
+                 export PATH\n\
+                 exec sh -c \"$cmd\"\n"
+            ),
         )
         .unwrap();
         set_exec(&self.ssh);
@@ -656,4 +672,48 @@ fn a_host_without_provider_keys_is_refused_unless_the_keys_are_copied() {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(&there).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "the keys land mode 600, not 644");
+}
+
+/// **A step that gets no answer is killed at its bound** — rule 1, measured on the second caller of
+/// an ssh call.
+///
+/// The fake ssh sleeps for ever. The verb's first call to the destination is `test -f
+/// providers.toml` (`Retried::Never`, one attempt), so the whole run is one [`STEP_BOUND`] — and
+/// the sentence names the step, the host and the bound. Twenty seconds is what the bound IS; a test
+/// that made it shorter would measure a number nothing in production uses.
+///
+/// What this does **not** measure is the breaker, and it cannot: every invocation of
+/// `letibot --migrate` is its own process, and the breaker — like the call records — is per
+/// process. The two are measured where they live: `letibot_tools::rpc`'s own tests for the state
+/// machine, and `remote_hosts.rs` for the same state reached through a real backend.
+#[test]
+fn a_step_that_never_answers_is_killed_at_its_bound() {
+    use std::time::Instant;
+    let f = Fixture::new("hang");
+    f.write_fake_ssh_with("case \"$*\" in *lubuntu1*) sleep 300 ;; esac\n");
+    let began = Instant::now();
+    let out = f.migrate(&[SESSION, "--to", "lubuntu1"]);
+    let took = began.elapsed();
+    let text = said(&out);
+    assert!(
+        !out.status.success(),
+        "a host that never answers is a refusal: {text}"
+    );
+    assert!(
+        took < letibot_tools::remote::STEP_BOUND * 3,
+        "the verb came back inside its bound ({took:?}): {text}"
+    );
+    assert!(
+        text.contains("lubuntu1") && text.contains("got no answer within"),
+        "the refusal names the host and the bound: {text}"
+    );
+    assert!(
+        text.contains("killed rather than waited on"),
+        "and what was done about it: {text}"
+    );
+    assert_eq!(
+        f.local_lives_on(),
+        None,
+        "nothing was moved, and no marker says otherwise"
+    );
 }

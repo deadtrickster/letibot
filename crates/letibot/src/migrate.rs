@@ -59,6 +59,7 @@
 //! doc's spelling, so whichever lands second can delete the copy instead of negotiating with it.
 
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -73,6 +74,7 @@ use letibot_tokencore::store::{ImportInto, SessionTransfer, Store};
 // landed second can delete". It landed: the copy is gone, and the only thing a migration reads
 // about a host is what `crates/tools` reads about it.
 use letibot_tools::remote::{Host, Hosts, Paths, Ssh};
+use letibot_tools::rpc::{Outcome, Retried};
 
 use crate::launcher;
 
@@ -86,6 +88,20 @@ pub const LOCAL: &str = "local";
 /// is told what the session is still waiting on, rather than being left with a verb that never
 /// returns.
 pub const QUIESCE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// **How long the far side's `cargo build` is given**, when the operator does not say.
+///
+/// Thirty minutes, and the number is the difference between two kinds of step: everything else this
+/// verb runs on a host is a `cat`, a `git fetch` or a move of a file and belongs inside
+/// [`letibot_tools::remote::STEP_BOUND`]'s twenty seconds, while a **cold** `cargo build --release`
+/// of this tree is tens of minutes on a slow machine and its duration is the work's business.
+/// `--build-timeout SECS` is the door for a host that needs more; nothing here is unbounded, which
+/// is the rule the whole verb is written to.
+pub const BUILD_BOUND: Duration = Duration::from_secs(30 * 60);
+
+/// How often a running build says the last thing it said. Ten seconds: long enough not to fill a
+/// scrollback, short enough that a person watching a move can tell *still working* from *wedged*.
+const BUILD_PROGRESS: Duration = Duration::from_secs(10);
 
 // -------------------------------------------------------------------------------------------
 // hosts.toml
@@ -170,8 +186,11 @@ impl Endpoint {
     /// side's shell — so nothing in it is re-quoted on the way, and everything it names goes
     /// through [`sh_quote`] here.
     ///
-    /// The host's `path` list goes in front of the script, because the move runs `cargo`, `git`
-    /// and the daemon's own binary on the far side through a shell that is not a login shell.
+    /// **The command is wrapped by the backend's own [`Ssh::remote_command`]** and not by a
+    /// spelling of this module's: the host's `path` list in front of `PATH`, the login shell, and
+    /// `mise exec` around both when the host has a toolchain pinned that way. A move runs `cargo`
+    /// on the far side, so *which* `cargo` is not a detail — and one wrapper for both callers is
+    /// what keeps a migration building with the toolchain a session would build with.
     fn command(&self, script: &str) -> Command {
         if self.is_local() {
             let mut c = Command::new("sh");
@@ -179,25 +198,23 @@ impl Endpoint {
             return c;
         }
         let ssh = self.ssh.as_ref().expect("only a host is ssh'd to");
-        let script = ssh.host().with_path(script);
         let mut c = Command::new(ssh.program());
-        c.args(ssh.argv(&script));
+        c.args(ssh.argv(&ssh.remote_command(script)));
         c
     }
 
-    /// Run a shell script and capture it.
+    /// **Run a shell script and capture it, inside its own bound** — [`STEP_BOUND`] on this box's
+    /// clock, because a verb whose next step is a 226 MB export must not sit on a host that stopped
+    /// answering.
     fn run(&self, script: &str) -> Result<std::process::Output, String> {
-        self.command(script)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("running a command on {}: {e}", self.name))
+        self.run_classed(script, Retried::Never, letibot_tools::remote::STEP_BOUND)
     }
 
-    /// [`Endpoint::run`] requiring success, with stdout as text.
-    fn run_ok(&self, script: &str) -> Result<String, String> {
-        let out = self.run(script)?;
+    /// [`Endpoint::run`] for a step that cannot have changed anything: asked once more when the
+    /// first attempt does not answer ([`Retried::Once`] — the rule the backend follows, applied
+    /// here so the two callers of an ssh call retry by the same class).
+    fn read_step(&self, script: &str) -> Result<String, String> {
+        let out = self.run_classed(script, Retried::Once, letibot_tools::remote::STEP_BOUND)?;
         if !out.status.success() {
             return Err(format!(
                 "`{}` on {} failed: {}",
@@ -207,6 +224,108 @@ impl Endpoint {
             ));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// [`Endpoint::run`] requiring success, with stdout as text.
+    fn run_ok(&self, script: &str) -> Result<String, String> {
+        self.run_ok_within(script, letibot_tools::remote::STEP_BOUND)
+    }
+
+    /// [`Endpoint::run_ok`] with a bound of its own — the build gets minutes, not seconds.
+    fn run_ok_within(&self, script: &str, within: Duration) -> Result<String, String> {
+        let out = self.run_classed(script, Retried::Never, within)?;
+        if !out.status.success() {
+            return Err(format!(
+                "`{}` on {} failed: {}",
+                first_line(script),
+                self.name,
+                tail(&String::from_utf8_lossy(&out.stderr))
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// **One script on this endpoint, bounded, recorded, and inside the breaker** — rules 5, 7 and
+    /// the retry class, for the second caller in this tree.
+    ///
+    /// The three are here rather than at the call sites for the same reason they are in
+    /// [`letibot_tools::rpc`] for the backend: a caller that has to remember them is a caller that
+    /// will forget one, and this module has twelve call sites.
+    fn run_classed(
+        &self,
+        script: &str,
+        retry: Retried,
+        within: Duration,
+    ) -> Result<std::process::Output, String> {
+        let step = first_line(script).to_string();
+        let host = &self.name;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            // **A local endpoint is not a connection** and has no breaker: `local` failing is this
+            // box's own state, which no cooldown improves.
+            let pass = match &self.ssh {
+                Some(_) => letibot_tools::rpc::before(host)?,
+                None => letibot_tools::rpc::Pass { probe: false },
+            };
+            let command = self.command(script);
+            let program = PathBuf::from(command.get_program());
+            let args: Vec<String> = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let began = Instant::now();
+            let ended = letibot_tools::rpc::run_bounded(&program, &args, within);
+            let took = began.elapsed();
+            // **One retry, and only for a step that cannot have changed anything.**
+            let again = retry == Retried::Once && attempt == 1;
+            let lost = match ended {
+                letibot_tools::rpc::Ended::Unstartable(e) => {
+                    letibot_tools::rpc::record(host, &step, took, Outcome::Unknown);
+                    letibot_tools::rpc::after(host, pass, false);
+                    return Err(format!("{e} on {host}"));
+                }
+                letibot_tools::rpc::Ended::TimedOut => {
+                    letibot_tools::rpc::record(host, &step, took, Outcome::TimedOut);
+                    letibot_tools::rpc::after(host, pass, false);
+                    format!(
+                        "`{step}` on {host} got no answer within {} s: it was killed rather than \
+                         waited on, so nothing here is waiting on that machine any more.",
+                        within.as_secs()
+                    )
+                }
+                letibot_tools::rpc::Ended::Answered(out) => {
+                    // ssh's own failure is 255 with nothing from the command. Of those, a
+                    // REFUSAL is definite — the machine answered and will go on answering the
+                    // same way — and the rest are lost connections.
+                    let dropped = out.status.code() == Some(255) && out.stdout.is_empty();
+                    if !dropped {
+                        letibot_tools::rpc::record(host, &step, took, Outcome::Ok);
+                        letibot_tools::rpc::after(host, pass, true);
+                        return Ok(out);
+                    }
+                    if let Some(ssh) = &self.ssh
+                        && let Some(refusal) = ssh.refusal(&step, &out.stderr)
+                    {
+                        // **Definite, so it is never retried and never opens the breaker.**
+                        letibot_tools::rpc::record(host, &step, took, Outcome::Refused);
+                        letibot_tools::rpc::after(host, pass, true);
+                        return Err(refusal);
+                    }
+                    letibot_tools::rpc::record(host, &step, took, Outcome::Dropped);
+                    letibot_tools::rpc::after(host, pass, false);
+                    format!(
+                        "`{step}` on {host} lost the connection before it answered ({}). What it \
+                         did is unknown — check before doing it again.",
+                        tail(&String::from_utf8_lossy(&out.stderr))
+                    )
+                }
+            };
+            if again {
+                continue;
+            }
+            return Err(lost);
+        }
     }
 
     /// **Write a local file's bytes to `path` on this endpoint**, streamed — a bundle and a
@@ -223,6 +342,7 @@ impl Endpoint {
         let quoted = sh_quote(path)?;
         let input =
             std::fs::File::open(local).map_err(|e| format!("opening {}: {e}", local.display()))?;
+        let began = Instant::now();
         let mut child = self
             .command(&format!("base64 -d > {quoted}"))
             .stdin(Stdio::piped())
@@ -236,10 +356,25 @@ impl Endpoint {
             .stdout(Stdio::from(stdin))
             .spawn()
             .map_err(|e| format!("base64: {e}"))?;
+        // **The bound comes first, the join second.** `encoder.wait()` blocks until the encoder has
+        // written every byte into the ssh's stdin, so waiting for it before the deadline check is
+        // how a hang gets in front of the rule that forbids one.
+        let bounded = self.await_within(&mut child, "the write", letibot_tools::remote::GIT_BOUND);
         let _ = encoder.wait();
         let out = child
             .wait_with_output()
             .map_err(|e| format!("finishing the write to {}: {e}", self.name))?;
+        letibot_tools::rpc::record(
+            &self.name,
+            "writing a file there",
+            began.elapsed(),
+            if bounded.is_err() {
+                Outcome::TimedOut
+            } else {
+                Outcome::Ok
+            },
+        );
+        bounded?;
         if !out.status.success() {
             return Err(format!(
                 "writing {path} on {}: {}",
@@ -264,6 +399,7 @@ impl Endpoint {
         let part = local.with_extension("part");
         let out_file = std::fs::File::create(&part)
             .map_err(|e| format!("creating {}: {e}", part.display()))?;
+        let began = Instant::now();
         let mut child = self
             // **`base64 < file`, not `base64 file`** — BSD's base64 (a Mac, and a Mac is one of
             // the two ends of a move) takes no file argument at all.
@@ -280,10 +416,23 @@ impl Endpoint {
             .stdout(Stdio::from(out_file))
             .spawn()
             .map_err(|e| format!("base64 -d: {e}"))?;
+        // The bound first, the joins second: see [`Endpoint::write_from`].
+        let bounded = self.await_within(&mut child, "the read", letibot_tools::remote::GIT_BOUND);
         let _ = decoder.wait();
         let out = child
             .wait_with_output()
             .map_err(|e| format!("finishing the read from {}: {e}", self.name))?;
+        letibot_tools::rpc::record(
+            &self.name,
+            "reading a file there",
+            began.elapsed(),
+            if bounded.is_err() {
+                Outcome::TimedOut
+            } else {
+                Outcome::Ok
+            },
+        );
+        bounded?;
         if !out.status.success() {
             let _ = std::fs::remove_file(&part);
             return Err(format!(
@@ -294,6 +443,48 @@ impl Endpoint {
         }
         std::fs::rename(&part, local).map_err(|e| format!("{}: {e}", local.display()))?;
         Ok(())
+    }
+
+    /// **Wait for a streamed transfer, or kill it at the deadline.** The two streamed steps
+    /// ([`Endpoint::write_from`], [`Endpoint::read_to`]) hand their bytes through pipes, so they are
+    /// not [`letibot_tools::rpc::run_bounded`]'s shape — but they are still an ssh connection to
+    /// another machine, and a transfer nobody bounds is the hang the contract's rule 1 is about.
+    fn await_within(
+        &self,
+        child: &mut std::process::Child,
+        what: &str,
+        within: Duration,
+    ) -> Result<(), String> {
+        let began = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) if began.elapsed() >= within => {
+                    // The group, not the child: a killed `ssh` leaves the local `base64` writing
+                    // into a pipe nobody reads, and this side then waits for it.
+                    let _ = Command::new("kill")
+                        .args(["-KILL", &format!("-{}", child.id())])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "{what} on {} got no answer within {} s: it was killed rather than waited \
+                         on. Nothing here is waiting on that machine any more.",
+                        self.name,
+                        within.as_secs()
+                    ));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{what} on {}: {e}", self.name));
+                }
+            }
+        }
     }
 
     /// **Start an ssh of ours that outlives this command.** A forward has to be here an hour
@@ -404,6 +595,10 @@ pub struct Move {
     pub patience: Duration,
     /// Copy `~/.config/letibot/providers.toml` to the destination when it has none.
     pub copy_keys: bool,
+    /// **How long the destination's `cargo build` may take** — [`BUILD_BOUND`] unless the operator
+    /// said (`--build-timeout`). A field rather than a constant read at the call, because a test
+    /// that watched a real build would not be a test.
+    pub build_bound: Duration,
     /// The tree this build came from: what is bundled and built on the destination.
     pub src: PathBuf,
 }
@@ -604,8 +799,10 @@ impl Move {
         let ws = sh_quote(&facts.workspace)?;
 
         // A folder that is not a repository has no HEAD to send, and copying it would be a
-        // different product — `docs/remote-hosts.md` refuses that in this slice.
-        let inside = self.from.run_ok(&format!(
+        // different product — `docs/remote-hosts.md` refuses that in this slice. Both questions
+        // below only READ, so they are [`Retried::Once`]'s: a question asked again is the same
+        // question (`Endpoint::read_step`).
+        let inside = self.from.read_step(&format!(
             "cd {ws} 2>/dev/null && git rev-parse --is-inside-work-tree 2>/dev/null || true"
         ))?;
         if inside.trim() != "true" {
@@ -617,7 +814,7 @@ impl Move {
         }
         let dirty = self
             .from
-            .run_ok(&format!("cd {ws} && git status --porcelain"))?;
+            .read_step(&format!("cd {ws} && git status --porcelain"))?;
         let dirty: Vec<&str> = dirty.lines().filter(|l| !l.trim().is_empty()).collect();
         if dirty.is_empty() {
             say(&format!(
@@ -906,12 +1103,11 @@ impl Move {
         let stamp = format!("{}/.letibot/build-commit", endpoint.root);
         let bin = format!("{}/harnessd", endpoint.bin_dir());
         let have = endpoint
-            .run(&format!(
+            .read_step(&format!(
                 "cat {} 2>/dev/null; [ -x {} ] && echo present",
                 sh_quote(&stamp)?,
                 sh_quote(&bin)?
             ))
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
         if have.contains(want.as_str()) && have.contains("present") {
             say(&format!(
@@ -947,11 +1143,12 @@ impl Move {
         endpoint.write_from(&bundle, &arriving)?;
         let _ = std::fs::remove_file(&bundle);
         say(&format!(
-            "building this tree ({}) on `{}` — cargo build --release --offline",
+            "building this tree ({}) on `{}` — cargo build --release --offline, up to {} min",
             short_commit(&want),
-            endpoint.name
+            endpoint.name,
+            self.build_bound.as_secs() / 60
         ));
-        let build = endpoint.run(&format!(
+        let script = format!(
             "set -e\n\
              mkdir -p {bin} {src}\n\
              if [ ! -d {src}/.git ]; then git init -q {src}; fi\n\
@@ -967,7 +1164,13 @@ impl Move {
             bundle = sh_quote(&arriving)?,
             stamp = sh_quote(&stamp)?,
             want = sh_quote(&want)?,
-        ))?;
+        );
+        // **The build is the one step whose duration is not ours to guess** — a cold `cargo
+        // build` of this tree is minutes, and on a slow host more. So it gets its own bound
+        // ([`BUILD_BOUND`], or `--build-timeout`) and **progress**: while it runs, the last thing
+        // cargo said is printed every ten seconds, so a move that is working looks like one and a
+        // move that is wedged is told apart from it by what it stopped saying.
+        let build = self.build_on(endpoint, &script, say)?;
         if !build.status.success() {
             let err = String::from_utf8_lossy(&build.stderr);
             return Err(format!(
@@ -987,6 +1190,126 @@ impl Move {
             endpoint.bin_dir()
         ));
         Ok(())
+    }
+
+    /// **The far side's build, bounded and watched** — [`Move::build_bound`] on the clock, and the
+    /// last thing cargo said reported every [`BUILD_PROGRESS`].
+    ///
+    /// This is the one step of a move that runs longer than [`letibot_tools::remote::STEP_BOUND`]
+    /// and the only one that says anything while it runs, so it has its own runner rather than
+    /// borrowing `rpc::run_bounded`: a caller waiting on a build needs *the bound* and *what it is
+    /// doing*, and a function that returned only at the end could give neither.
+    ///
+    /// **The whole process group is killed at the deadline**, like every other bounded call here:
+    /// a killed `ssh` leaves cargo writing into a pipe nobody reads, and this side's reader then
+    /// blocks for as long as the build would have taken.
+    fn build_on(
+        &self,
+        endpoint: &Endpoint,
+        script: &str,
+        say: &mut Say<'_>,
+    ) -> Result<std::process::Output, String> {
+        use std::io::Read;
+        let (program, args) = {
+            let command = endpoint.command(script);
+            let program = PathBuf::from(command.get_program());
+            let args: Vec<String> = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            (program, args)
+        };
+        let mut child = Command::new(&program)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .map_err(|e| format!("running the build on {}: {e}", endpoint.name))?;
+        let pid = child.id();
+        // stdout is what the script's last lines print; stderr is cargo's progress.
+        let mut out_pipe = child.stdout.take().expect("piped");
+        let mut err_pipe = child.stderr.take().expect("piped");
+        let stdout = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out_pipe.read_to_end(&mut buf);
+            buf
+        });
+        let (tx, rx) = mpsc::channel::<String>();
+        let stderr = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err_pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(last) = String::from_utf8_lossy(&chunk[..n])
+                            .lines()
+                            .rfind(|l| !l.trim().is_empty())
+                        {
+                            let _ = tx.send(last.trim().to_string());
+                        }
+                    }
+                }
+            }
+            buf
+        });
+
+        let began = Instant::now();
+        let mut last_said = Instant::now();
+        let mut latest = String::new();
+        let status = loop {
+            while let Ok(line) = rx.try_recv() {
+                latest = line;
+            }
+            if last_said.elapsed() >= BUILD_PROGRESS && !latest.is_empty() {
+                say(&format!(
+                    "  still building on `{}` ({} s): {latest}",
+                    endpoint.name,
+                    began.elapsed().as_secs()
+                ));
+                last_said = Instant::now();
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if began.elapsed() >= self.build_bound => {
+                    let _ = Command::new("kill")
+                        .args(["-KILL", &format!("-{pid}")])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("waiting for the build on {}: {e}", endpoint.name));
+                }
+            }
+        };
+        let said = stdout.join().unwrap_or_default();
+        let err = stderr.join().unwrap_or_default();
+        let Some(status) = status else {
+            return Err(format!(
+                "the build on `{}` was killed at its {} min bound, so the host's binaries are not \
+                 this build's. Nothing was moved; the rows and the tree are still on `{}`. Give it \
+                 longer with `--build-timeout SECS` if the machine is simply slow.",
+                endpoint.name,
+                self.build_bound.as_secs() / 60,
+                self.from.name
+            ));
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: said,
+            stderr: err,
+        })
     }
 
     /// This tree's commit — what the far side must have been built from.
@@ -1458,6 +1781,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     let mut store: Option<PathBuf> = None;
     let mut src: Option<PathBuf> = None;
     let mut patience = QUIESCE_PATIENCE;
+    let mut build_bound = BUILD_BOUND;
     // The far side's sub-verbs — internal, and flags so a host's `letibot` reads its command line
     // like any other program.
     let mut export: Option<String> = None;
@@ -1483,6 +1807,13 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                     next("--patience")?
                         .parse()
                         .map_err(|e| format!("--patience: {e}"))?,
+                )
+            }
+            "--build-timeout" => {
+                build_bound = Duration::from_secs(
+                    next("--build-timeout")?
+                        .parse()
+                        .map_err(|e| format!("--build-timeout: {e}"))?,
                 )
             }
             "--export-session" => export = Some(next("--export-session")?),
@@ -1679,6 +2010,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         local,
         patience,
         copy_keys,
+        build_bound,
         src,
     };
     let mut say = |line: &str| println!("{line}");
