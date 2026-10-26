@@ -4,6 +4,7 @@
 Usage: runner.py RUN_DIR STEPS_JSON
 RUN_DIR holds the checkout (tree/), the log of each step (step-N.log) and status.json.
 """
+import fcntl
 import json
 import os
 import re
@@ -38,6 +39,21 @@ FAILURE = re.compile(
     r"(panicked at [^\n]{0,160}|^error: \d+ targets? failed:?$|^    `-p [^`]+`|^error(\[E\d+\])?: [^\n]{0,160})",
     re.M,
 )
+
+# One run at a time per target directory. Two checkouts of the same workspace get the same crate
+# hashes, so a second run in the shared target overwrites the rlibs the first is still linking
+# against (it once failed a doctest with an import the other branch did not have). The lock is
+# held until this process exits; a run waiting for it reads "queued".
+target = os.environ.get("CARGO_TARGET_DIR") or os.path.join(run_dir, "tree", "target")
+os.makedirs(target, exist_ok=True)
+lock = open(os.path.join(target, ".rrun.lock"), "w")
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    status["state"] = "queued"
+    save()
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    status["started"] = int(time.time())
 
 status["state"] = "running"
 status["steps"] = [{"cmd": c, "state": "waiting"} for c in steps]
