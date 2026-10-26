@@ -83,6 +83,17 @@ impl Builder for CargoBuilder {
     fn build(&self, dir: &Path) -> Result<String, BuildError> {
         let out = Command::new("cargo")
             .current_dir(dir)
+            // **The plugin's build is its own crate, in its own target directory.**
+            //
+            // MEASURED 2026-10-26, building a scaffolded plugin from a session whose daemon was
+            // started with `CARGO_TARGET_DIR` set: cargo put the guest at
+            // `$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/<crate>.wasm` — outside the layer
+            // this function then looks in — so a build that SUCCEEDED (`Finished release profile`)
+            // was reported as *"cargo succeeded but there is no built module"*. The inheritance is
+            // also wrong on its own terms: a guest is a different crate for a different target, and
+            // sharing the host's target directory makes it contend for that directory's lock with
+            // every build the session runs.
+            .env_remove("CARGO_TARGET_DIR")
             .args([
                 "build",
                 "--offline",

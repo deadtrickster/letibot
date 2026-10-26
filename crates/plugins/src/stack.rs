@@ -286,6 +286,20 @@ impl Stack {
         self.layers.iter().find(|l| l.id == id)
     }
 
+    /// **The fuel a layer's module burned on its last call** — the price per hook, which is what
+    /// `plugin test` and `plugin load` report and what `GateReport::fuel` is built from.
+    ///
+    /// `None` for a layer whose module never loaded, and for a built-in registered without one:
+    /// *nothing was measured* is not *it cost nothing*, and a caller that printed `0` for both
+    /// would be reporting a free hook that never ran. The number is the engine's own last call, so
+    /// it is per module and not per hook — ask it immediately after the call that interests you.
+    pub fn fuel(&self, id: &str) -> Option<u64> {
+        self.wired
+            .get(id)
+            .and_then(|w| w.module.as_ref())
+            .map(|m| m.fuel())
+    }
+
     /// Register a built-in default: a layer the host compiled in, with the module that answers
     /// for it. The **last registered is on top** of the built-in scope, which is the same
     /// newest-on-top rule the disk scopes follow — so register the least specific default first.
