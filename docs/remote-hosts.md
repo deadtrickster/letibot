@@ -134,6 +134,37 @@ files. So a remote session gets the **same gate as a host session** — the mode
 the corpus — with the remote host named in every card. A per-host `trust = "allow-all"` in hosts.toml is
 a later decision, not this slice's.
 
+## A remote is an RPC, and the client follows the practices
+
+Every tool call on a placed session is a remote procedure call: ssh is the transport, the
+ControlMaster is the connection pool, the remote shell is the server. The operator, 2026-10-26:
+*"the tooling shouldnt hang, that is important"* — *"like it is classic RPC architecture right"* —
+*"so we should follow practicies"*. These are the rules every remote code path is held to:
+
+1. **A deadline on every call.** Nothing waits unbounded: connect (`ConnectTimeout`), each
+   operation (its own wall-clock bound, enforced by killing the local ssh process — never by
+   trusting the remote), a command (`run` keeps the tool's own deadline), a probe (a total bound
+   across hosts). A passed deadline returns a sentence naming the host and the step.
+2. **Failure detection.** `ServerAliveInterval`/`ServerAliveCountMax`, so a host that stops
+   answering mid-call is noticed in seconds; a stale ControlMaster is checked or replaced, never
+   waited on.
+3. **Retries follow idempotency.** Idempotent operations (read, stat, list, workdir, a probe,
+   job output, and write — temp + `mv -f`) may be retried once, on a fresh connection.
+   **Non-idempotent ones (`run`, starting a job) are at-most-once**: never re-sent after a timeout
+   or a dropped connection.
+4. **An unknown outcome is said as unknown.** A `run` whose connection dropped is reported as
+   *"it may have run, partly run, or still be running on HOST — check before running it again"*,
+   never as a failure that implies it did not happen.
+5. **Fail fast on a host that is down.** After repeated connection failures a host is marked
+   unavailable for a short window (a circuit breaker): calls to it fail at once with the reason
+   and the time it was last reached, instead of each waiting out a timeout.
+6. **Cancellation reaches the far side.** An interrupt kills the local ssh *and* the remote
+   process group (the job's recorded pgid), so a stopped turn leaves nothing running there.
+7. **Observability.** Every remote call is recorded with host, step, duration and outcome, so a
+   slow or flaky host is visible on the head and in `hosts {probe: true}`, not guessed at.
+8. **Back-pressure.** A host has a bound on concurrent calls (the ControlMaster's sessions);
+   calls beyond it queue with the same deadlines rather than opening unbounded connections.
+
 ## Packages
 
 | id | builds |
