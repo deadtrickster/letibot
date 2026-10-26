@@ -213,6 +213,7 @@ Both stay under the session's gate, every card naming the hosts it reaches.
 | RH8 | `fanout` and `scenario` on the supervisor |
 | RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
 | RH5 | **done**: one ssh policy for both callers (RH1's `SshBackend` and RH4's `--migrate`), the operator's own ssh material never read, `hosts.toml` read strictly with a per-host `path` list, and `~/.ssh` a hard refusal for every tool |
+| HT | **done**: the `hosts` tool — which machines are declared, and which is least loaded, read at the call rather than frozen in a prompt; the remote checkout's own job directory kept out of `git status`; and, for every ssh operation that is not a command, a wall clock that kills the local ssh rather than waiting |
 
 ## As built (RH1)
 
@@ -282,3 +283,43 @@ was inverted to share it.
   path argument — every symlink, and a leaf that does not exist yet — and refuses it if it lands
   in the operator's ssh directory. The tree's own words for why: a rule that matched only a
   spelling is a rule the first symlink routes around.
+
+## As built (HT): the `hosts` tool, and ssh that cannot hang
+
+The operator: *"the tooling shouldnt freeze host list in the prompt"*, and then *"the tooling
+shouldnt hang, that is important"*. Both are about the same thing — a model that can see where
+it may place work, and never waits on a machine that has stopped answering.
+
+* **`hosts` reads the file at the call.** No arguments is the declared hosts with what a
+  connection would need (the dedicated key, the accepted host key), and **no ssh call at all** —
+  so it answers with every machine switched off. `probe: true` is one bounded ssh call per host,
+  **in parallel**, reporting cores, load average, memory, free disk under the host's `root`, and
+  whether `git`/`cargo` are on its `PATH` with the host's `path` list in front — the facts that
+  decide *where*. The list is never in the prompt: the file is the operator's and changes without
+  a restart, and the prompt is a cached prefix, so a list there would be stale *and* expensive.
+* **A probe never writes anything on the far side.** It is one script of `uname`, `nproc`,
+  `/proc/loadavg`, `/proc/meminfo`, `df -Pk` and `command -v`, and nothing else.
+* **`hosts {probe: true}` returns inside ten seconds whatever the hosts do.** Each host's probe is
+  bounded, and the collecting loop has a total bound of its own, so a host whose ssh ignores its
+  own bound is reported as timed out rather than waited on.
+* **`ServerAliveInterval=5` and `ServerAliveCountMax=3` are in the one policy**, beside
+  `ConnectTimeout`: a TCP connection that is up is not a host that is answering, and without them
+  a link that dies leaves a socket that accepts writes and returns nothing for ever.
+* **Every ssh call that is not a command carries a wall clock** ([`STEP_BOUND`], 20 s; a status
+  poll is shorter). The **local ssh is killed** at the deadline — nothing is signalled on the far
+  side — and the refusal names the host and the step. A model's command (`run`) keeps the tool's
+  own deadline and nothing else, because a build's duration is the tool's business.
+* **A stale `ControlMaster` socket is checked and dropped.** `ssh -O check` with a few seconds on
+  the question, then the socket (ours, in letibot's runtime directory) is removed so the next
+  call dials afresh instead of waiting on a master that is gone.
+* **The retry follows idempotency.** `read`, `stat`, `list`, `list_tree`, `workdir`, a probe,
+  `job_output` and `write` are asked **once more** after a timeout or a dropped connection; a
+  write's *chunks* are never retried on their own (a chunk sent twice appends itself twice — the
+  whole write starts again from the top instead, and only the last `mv -f` touches the target).
+  `run` and a job's start are **never** retried: a call that dies in flight may have run, partly
+  run, or still be running there, and the refusal says so in those words rather than reporting a
+  failure that would suggest nothing happened.
+* **The session's own job directory is not a change in the tree.** `.letibot-remote/` is written
+  into the checkout's own `info/exclude` when the checkout is made — `git rev-parse --git-path`
+  answering where that file is, rather than this side guessing a path that differs per layout —
+  and the uncommitted list on close drops it as well, for a checkout made by an older build.

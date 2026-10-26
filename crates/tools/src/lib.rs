@@ -177,6 +177,13 @@ pub fn read_only_tools(
     reg.register(Box::new(Ask::code(retrieval.clone())))?;
     reg.register(Box::new(Ask::corpus(retrieval)))?;
     reg.register(Box::new(builtins::read_spill::ReadSpill))?;
+    // **`hosts` — where this box may place work, read from the operator's file at every call.**
+    // Registered here and not with the session tools for the reason `outline` is: it needs no
+    // infrastructure, and a role that names it (`task`'s three seats) has to be able to resolve
+    // it. Reading the file at the call is the whole design — a list in the prompt would go stale
+    // when the operator edits `hosts.toml`, and the prompt is a cached prefix, so it would cost a
+    // re-prefill every time a machine was added.
+    reg.register(Box::new(builtins::hosts::HostsTool::new()))?;
     Ok(reg)
 }
 
@@ -351,9 +358,14 @@ mod tests {
             std::sync::Arc::new(builtins::lsp::LspConfig::default()),
         )
         .expect("todo_write registers");
-        assert!(reg.len() <= DEFAULT_MAX_TOOLS, "{} tools", reg.len());
+        // **The ceiling binds what a SESSION is given, not what the registry holds.** This registry
+        // is a superset on purpose — `outline` and `hosts` are registered here and seated by no
+        // role in this test — so the number that has to fit §8.4 is the resolved seat's, which the
+        // assertion below counts. What the registry still has to satisfy is that a role naming a
+        // tool resolves at all, and that is what resolving it here proves.
         let seated = reg.resolve_role(&roles::m1_orchestrator()).unwrap();
         assert_eq!(seated.len(), 7);
+        assert!(seated.len() <= DEFAULT_MAX_TOOLS, "{} tools", seated.len());
     }
 
     #[test]

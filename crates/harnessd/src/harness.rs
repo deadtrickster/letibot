@@ -3769,6 +3769,9 @@ impl Harness {
                 // and which host keys have been accepted for letibot, are the running session's
                 // facts and not the caller's.
                 paths: None,
+                // The bound every call that is not a command carries ([`STEP_BOUND`]): a session's
+                // tools must not be able to hold the daemon on a host that has stopped answering.
+                bound: None,
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;

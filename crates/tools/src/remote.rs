@@ -50,6 +50,7 @@
 //! group, and a daemon that restarts finds the job again from those files.
 
 use std::collections::BTreeMap;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -639,6 +640,15 @@ pub fn flags(key: &Path, control: &Path, paths: &Paths) -> Vec<String> {
         ("ControlPath", control.display().to_string()),
         ("ControlPersist", "120".to_string()),
         ("ConnectTimeout", "20".to_string()),
+        // **A TCP connection that is up is not a host that is answering.** ConnectTimeout only
+        // covers the handshake; a link that dies — a laptop's wifi, a suspended VM, a machine
+        // rebooting — leaves a socket that accepts writes and answers nothing for ever. These two
+        // ask for a sign of life every 5 s and give up after three misses, so the *connection* is
+        // declared dead in about 15 s and the ssh waiting on it returns instead of hanging. It is
+        // half the answer; the other half is the wall clock every call carries
+        // ([`STEP_BOUND`]), because a master that is still up but wedged answers no keepalive.
+        ("ServerAliveInterval", "5".to_string()),
+        ("ServerAliveCountMax", "3".to_string()),
     ] {
         v.push("-o".into());
         v.push(format!("{k}={val}"));
@@ -751,6 +761,61 @@ impl Host {
 // The ssh channel
 // ---------------------------------------------------------------------------
 
+/// **How long one ssh call that is not a command may take** before this box stops waiting for it.
+///
+/// A command's deadline is the tool's (`bash`'s timeout, `job_wait`'s own deadline); this is the
+/// other kind of call — the ones this backend makes **for itself**: a read, a write chunk, a
+/// listing, a status poll, a probe, a job's output, a kill. None of them is work the operator
+/// asked to run, so none of them is allowed to hold a daemon: a call past this bound has its
+/// **local ssh killed** and the operation fails, naming the host and the step.
+///
+/// The number is chosen against the policy beside it: `ServerAliveInterval=5` with
+/// `ServerAliveCountMax=3` gives up on a dead connection in about 15 s, and `ConnectTimeout=20`
+/// gives up on an unreachable one in 20 s — so 20 s is the point past which nothing this side can
+/// still call waiting.
+pub const STEP_BOUND: Duration = Duration::from_secs(20);
+
+/// The bound on one **status poll** ([`RemoteProcesses::refresh`]). Shorter than [`STEP_BOUND`]
+/// because a poll's answer arrives for the *next* tick: a `job_wait` that polls every 120 ms must
+/// still return within the deadline it was given, and a poll that takes half a minute to come back
+/// describes a machine this daemon has already given up on.
+const POLL_BOUND: Duration = Duration::from_secs(5);
+
+/// The bound on the calls that only ask **about the connection** — `ssh -O check` and `-O exit`.
+/// They are local IPC to a socket with no network in them at all, so anything past this is a
+/// master that has stopped answering.
+const MASTER_BOUND: Duration = Duration::from_secs(3);
+
+/// The bound on the local `git` work a placement does: `bundle create`, the `fetch` back. Generous
+/// because it is real work on a real repository — the number only has to be below "for ever".
+pub const GIT_BOUND: Duration = Duration::from_secs(300);
+
+/// **What a caller may do when a call does not answer at all.**
+///
+/// Retrying follows idempotency, which is the rule any RPC client lives by: a `read` whose answer
+/// never arrived changed nothing on the other machine, so it is asked once more; a `bash` command
+/// that may still be running there is never asked twice, because a second run is a second effect
+/// and reporting it as a failure would be a lie about the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// Asking again is the same as asking once: nothing changed, or the operation lands
+    /// atomically (a temp file and one `mv -f`).
+    Once,
+    /// Never asked twice: the far side may have acted, partly acted, or be acting still.
+    Never,
+}
+
+/// **How one bounded ssh call ended** — the shape the retry rule is written against.
+enum Call {
+    /// The far side answered: what the command printed, ssh's own stderr, and the exit status.
+    Answered(String, Vec<u8>, i32),
+    /// The bound passed with nothing to show for it. The local ssh was killed.
+    TimedOut(Duration),
+    /// ssh failed before the command could say anything — exit 255 with nothing on stdout: the
+    /// connection dropped, the key was refused, the name does not resolve.
+    Dropped(Vec<u8>),
+}
+
 /// **One host's ssh connection**, opened by [`Ssh::connect`] after the two refusals that make
 /// it letibot's own: its identity file, and its host key.
 ///
@@ -771,6 +836,9 @@ pub struct Ssh {
     key: PathBuf,
     control: PathBuf,
     paths: Paths,
+    /// The wall clock on every call that is not a command — [`STEP_BOUND`] unless a caller (a
+    /// test, mostly) names another.
+    bound: Duration,
 }
 
 impl Ssh {
@@ -800,7 +868,29 @@ impl Ssh {
             key,
             control,
             paths,
+            bound: STEP_BOUND,
         })
+    }
+
+    /// **The wall clock this connection's own work is given.** A test that wants a fake ssh's
+    /// silence to be measured in a second rather than in [`STEP_BOUND`] says so here; production
+    /// never calls it, which is why the default is the constant and not a field a caller has to
+    /// fill in.
+    pub fn with_bound(mut self, within: Duration) -> Ssh {
+        self.bound = within;
+        self
+    }
+
+    /// The bound this connection's non-command calls carry.
+    pub fn bound(&self) -> Duration {
+        self.bound
+    }
+
+    /// **The bound on one status poll** — [`POLL_BOUND`], and never longer than the connection's
+    /// own bound: a caller that asked for a second of patience did not ask for five times that on
+    /// every tick of a wait loop.
+    fn poll_bound(&self) -> Duration {
+        POLL_BOUND.min(self.bound)
     }
 
     pub fn host(&self) -> &Host {
@@ -849,37 +939,78 @@ impl Ssh {
     /// resolve) and never the remote command's: ssh does not carry two channels apart
     /// into two pipes. That is [`crate::firecode`]'s trade as well, and it is stated in
     /// [`SshBackend::describe`] rather than left to be discovered.
-    pub fn sh(&self, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
-        let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
-        let out = std::process::Command::new(&self.program)
-            .args(self.argv(&command))
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| {
-                BackendError::Io(format!(
-                    "running `{}` for {}: {e}",
-                    self.program.display(),
-                    self.host.name
-                ))
-            })?;
-        let exit = match out.status.code() {
-            Some(c) => c,
-            None => {
-                use std::os::unix::process::ExitStatusExt;
-                128 + out.status.signal().unwrap_or(0)
-            }
-        };
-        Ok((
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            out.stderr,
-            exit,
-        ))
+    ///
+    /// **This is the one unbounded door, and only `run` may use it**: a model's command has a
+    /// deadline of its own (`bash`'s `timeout_ms`, the run's budget) and this file has no business
+    /// inventing a second one. Everything else goes through [`Ssh::sh_step`].
+    fn sh_run(&self, step: &str, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
+        match self.call(script, Retry::Never, self.bound)? {
+            Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
+            other => Err(BackendError::Io(self.unknown(step, &other))),
+        }
     }
 
-    /// The same call, but a non-zero exit is an error carrying what the host said. Used
-    /// by everything that is arranging rather than running the model's work.
+    /// **One step of this backend's own work** — bounded by [`Ssh::bound`], and asked again once
+    /// when the operation is idempotent and the first attempt did not answer.
+    ///
+    /// `step` names the operation for the refusal (*reading a path*, *listing a directory*, *the
+    /// git bundle*), because an operation that stops waiting has to say which one stopped: a
+    /// sentence that says only "ssh failed" sends the operator to the wrong machine.
+    fn sh_step(&self, step: &str, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
+        self.sh_step_within(step, script, self.bound)
+    }
+
+    /// [`Ssh::sh_step`] with a bound of its own — a status poll is shorter than a write.
+    fn sh_step_within(
+        &self,
+        step: &str,
+        script: &str,
+        within: Duration,
+    ) -> Result<(String, Vec<u8>, i32), BackendError> {
+        match self.call(script, Retry::Once, within)? {
+            Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
+            other => Err(BackendError::Io(self.no_answer(step, &other, within))),
+        }
+    }
+
+    /// **One step, exactly once, and silence is a refusal** — for the steps that must not be asked
+    /// twice even though they are not commands: a write's chunk (a retry would append it again),
+    /// and a job's start (a retry would start a second one).
+    fn sh_once(&self, step: &str, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
+        self.sh_once_within(step, script, self.bound)
+    }
+
+    /// [`Ssh::sh_once`] with a bound of its own — a status poll is shorter than a write.
+    fn sh_once_within(
+        &self,
+        step: &str,
+        script: &str,
+        within: Duration,
+    ) -> Result<(String, Vec<u8>, i32), BackendError> {
+        match self.call(script, Retry::Never, within)? {
+            Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
+            other => Err(BackendError::Io(self.no_answer(step, &other, within))),
+        }
+    }
+
+    /// **The same call, but a non-zero exit is an error carrying what the host said.** Used by
+    /// everything that is arranging rather than running the model's work.
     fn must(&self, what: &str, script: &str) -> Result<String, BackendError> {
-        let (out, stderr, exit) = self.sh(script)?;
+        self.must_within(what, script, Retry::Once, self.bound)
+    }
+
+    /// [`Ssh::must`] for a step that must not be retried, and with its own bound.
+    fn must_within(
+        &self,
+        what: &str,
+        script: &str,
+        retry: Retry,
+        within: Duration,
+    ) -> Result<String, BackendError> {
+        let (out, stderr, exit) = match self.call(script, retry, within)? {
+            Call::Answered(out, stderr, exit) => (out, stderr, exit),
+            other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
+        };
         if exit != 0 {
             let said = if stderr.is_empty() {
                 out.trim().to_string()
@@ -899,14 +1030,207 @@ impl Ssh {
         Ok(out)
     }
 
+    /// **One step, with the retry its caller allows** — the rule lives here and nowhere else.
+    ///
+    /// A stale `ControlMaster` socket is cleared first ([`Ssh::fresh_master`]), because ssh would
+    /// otherwise try to multiplex through a master that is gone and fail — or wait — on the socket
+    /// rather than on the host.
+    fn call(&self, script: &str, retry: Retry, within: Duration) -> Result<Call, BackendError> {
+        self.fresh_master();
+        let first = self.attempt(script, within)?;
+        if retry == Retry::Once && !matches!(first, Call::Answered(..)) {
+            // **The one thing worth asking twice**, and only because the operation cannot have
+            // changed anything: no answer arrived. The master may be what died, so it is dropped
+            // first — a second attempt through the same dead socket would fail the same way.
+            let second = self.attempt(script, within)?;
+            return Ok(second);
+        }
+        Ok(first)
+    }
+
+    /// **One attempt, with the wall clock on it.** The local ssh is killed at the deadline; nothing
+    /// is signalled on the far side, because a process there is not this box's to kill and the
+    /// command it is running may be the operator's work.
+    fn attempt(&self, script: &str, within: Duration) -> Result<Call, BackendError> {
+        let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
+        let mut child = std::process::Command::new(&self.program)
+            .args(self.argv(&command))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            // **Its own process group**, so the deadline can end everything this call started.
+            // Killing only the direct child leaves a `sleep` IT ran holding the pipes open, and
+            // the drain threads below would then block for as long as that grandchild lives —
+            // which is the hang coming back in through the window.
+            .process_group(0)
+            .spawn()
+            .map_err(|e| {
+                BackendError::Io(format!(
+                    "running `{}` for {}: {e}",
+                    self.program.display(),
+                    self.host.name
+                ))
+            })?;
+        let pid = child.id();
+        // **Both streams are drained while the process waits**, on threads of their own: a pipe
+        // holds a buffer's worth and no more, so a child that fills it blocks for ever and the
+        // `try_wait` below would never see it finish — a walk of a large tree writes far more
+        // than a buffer.
+        let out = drain(child.stdout.take());
+        let err = drain(child.stderr.take());
+        let began = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if began.elapsed() >= within => {
+                    kill_group(pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) => {
+                    kill_group(pid);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = (out.join(), err.join());
+                    return Err(BackendError::Io(format!(
+                        "waiting for `{}` for {}: {e}",
+                        self.program.display(),
+                        self.host.name
+                    )));
+                }
+            }
+        };
+        let Some(status) = status else {
+            // **The master may be the thing that stopped answering**, and a socket that is still
+            // there would make the next call wait on it too. The two readers are NOT joined: the
+            // group is dead, so they end on their own, and a timed-out call has no use for what
+            // it did not finish reading.
+            let _ = (out, err);
+            self.drop_socket();
+            return Ok(Call::TimedOut(within));
+        };
+        let stdout = out.join().unwrap_or_default();
+        let stderr = err.join().unwrap_or_default();
+        let exit = match status.code() {
+            Some(c) => c,
+            None => {
+                use std::os::unix::process::ExitStatusExt;
+                128 + status.signal().unwrap_or(0)
+            }
+        };
+        let said = String::from_utf8_lossy(&stdout).into_owned();
+        // ssh's own failure: 255 with nothing from the command. A command that exits 255 and says
+        // something did run, and its words are the answer.
+        if exit == 255 && said.is_empty() {
+            self.drop_socket();
+            return Ok(Call::Dropped(stderr));
+        }
+        Ok(Call::Answered(said, stderr, exit))
+    }
+
+    /// The sentence a step that never answered is refused with: the host, the step, the bound, and
+    /// what was done about it.
+    fn no_answer(&self, step: &str, ended: &Call, within: Duration) -> String {
+        let how = match ended {
+            Call::TimedOut(_) => {
+                format!("got no answer within {} s", within.as_secs_f32().max(0.0))
+            }
+            Call::Dropped(stderr) => format!(
+                "lost the connection before it answered ({})",
+                first_line(&String::from_utf8_lossy(stderr))
+            ),
+            Call::Answered(..) => "did not answer".to_string(),
+        };
+        format!(
+            "`{step}` on {} {how}: the local ssh was killed rather than waited on, and the call \
+             was asked once more with a fresh connection. Nothing is left waiting — but the \
+             operation may not have happened, so check before relying on it.",
+            self.host.name
+        )
+    }
+
+    /// **A step whose outcome nobody knows.** `run` and a job's start are the two operations that
+    /// are not idempotent, so a call that died in flight is reported as exactly that — never as a
+    /// failure, which would read as *it did not happen* and could be run again on that reading.
+    fn unknown(&self, step: &str, ended: &Call) -> String {
+        let how = match ended {
+            Call::TimedOut(within) => {
+                format!("stopped answering for {} s", within.as_secs_f32().max(0.0))
+            }
+            Call::Dropped(stderr) => {
+                format!("dropped ({})", first_line(&String::from_utf8_lossy(stderr)))
+            }
+            Call::Answered(..) => "ended without an answer".to_string(),
+        };
+        format!(
+            "the connection to {} {how} while {step}: it may have run, partly run, or still be \
+             running there — check before running it again. It was NOT retried: this is not an \
+             operation that can be asked twice.",
+            self.host.name
+        )
+    }
+
+    /// `ssh -O <verb>` for this host's `ControlMaster`, bounded.
+    ///
+    /// Every one of these goes through `-F /dev/null` like every other call: checking or dropping
+    /// the master is still an ssh invocation, and one that read the operator's client config would
+    /// be the hole in every other flag.
+    fn master(&self, verb: &str) -> Option<std::process::Output> {
+        let args: Vec<String> = vec![
+            "-F".into(),
+            "/dev/null".into(),
+            "-o".into(),
+            format!("ControlPath={}", self.control.display()),
+            "-o".into(),
+            "ControlMaster=no".into(),
+            "-O".into(),
+            verb.into(),
+            self.destination(),
+        ];
+        run_bounded(&self.program, &args, MASTER_BOUND)
+    }
+
+    /// **A stale master must not hang the next call.** A `ControlMaster` socket outlives the
+    /// connection it belongs to (a `ControlPersist=120`, a crashed master, a network that went),
+    /// and ssh will try to multiplex through it and fail — or wait — instead of dialling the host.
+    /// So when the socket is there it is asked whether anything is home, with a few seconds on the
+    /// question, and a socket nobody answers on is removed. It is ours, in letibot's own runtime
+    /// directory, so nothing else is touched.
+    fn fresh_master(&self) {
+        if !self.control.exists() {
+            return;
+        }
+        if self.master("check").is_some_and(|o| o.status.success()) {
+            return;
+        }
+        let _ = std::fs::remove_file(&self.control);
+    }
+
+    /// **Drop the socket of a master that has just failed us — and do it without speaking to it.**
+    ///
+    /// `-O exit` is the polite way to end a master and it is what [`Ssh::exit_master`] does at the
+    /// end of a session. It is the wrong move *here*: this is the path a call takes when the
+    /// connection stopped answering, so asking that same connection to shut down cleanly waits out
+    /// another `MASTER_BOUND` — measured, that made a 2 s bound cost 10 s, because every failed
+    /// attempt paid it. Removing the socket is what actually stops the next call multiplexing
+    /// through it; a master process left behind expires on its own `ControlPersist=120`.
+    fn drop_socket(&self) {
+        let _ = std::fs::remove_file(&self.control);
+    }
+
     /// A file's bytes, base64 over the wire — **binary-safe**, which a `cat` is not
     /// once the connection is a pipe with a locale on it.
     fn read_abs(&self, path: &str) -> Result<Vec<u8>, BackendError> {
         let q = quote(path);
-        let (out, _, exit) = self.sh(&format!(
-            "if [ -d {q} ]; then exit 21; fi; if [ ! -e {q} ]; then exit 22; fi; \
-             base64 < {q} | tr -d '\\n'"
-        ))?;
+        let (out, _, exit) = self.sh_step(
+            &format!("reading {path}"),
+            &format!(
+                "if [ -d {q} ]; then exit 21; fi; if [ ! -e {q} ]; then exit 22; fi; \
+                 base64 < {q} | tr -d '\\n'"
+            ),
+        )?;
         match exit {
             0 => crate::firecode::decode_base64(out.as_bytes())
                 .map_err(|e| BackendError::Io(format!("{path}: {e}"))),
@@ -919,25 +1243,54 @@ impl Ssh {
     /// and one `mv -f` puts it in place. A half-written file is worse than a refused
     /// edit — [`ExecBackend::write`] says why — and over ssh the window is wider, not
     /// narrower.
+    ///
+    /// **The retry is the whole write's, never a chunk's.** A chunk that is sent twice appends
+    /// itself twice — the temp file is opened with `>` only for the first one — so a chunk is
+    /// asked exactly once ([`Ssh::sh_once`]) and a write that loses the connection starts again
+    /// from the top, where the first chunk truncates what the failed attempt left. The target is
+    /// only ever touched by the last `mv -f`, so nothing half-written can land.
     fn write_abs(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+        let mut last = None;
+        for _ in 0..2 {
+            match self.write_once(path, bytes) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.expect("the loop ran"))
+    }
+
+    /// One whole attempt at [`Ssh::write_abs`], from `mkdir` to `mv`.
+    fn write_once(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
         let dir = match path.rfind('/') {
             Some(0) => "/".to_string(),
             Some(i) => path[..i].to_string(),
             None => ".".to_string(),
         };
         let tmp = format!("{path}.letibot-{}", std::process::id());
-        self.must(
+        // **No step inside one attempt is retried on its own** — neither the chunk above nor these.
+        // The retry is [`Ssh::write_abs`]'s, once, for the whole sequence: two levels of retry would
+        // be four attempts at a host that is not answering, which is a bound nobody can predict
+        // from the outside.
+        self.must_within(
             &format!("making {dir}"),
             &format!("mkdir -p {}", quote(&dir)),
+            Retry::Never,
+            self.bound,
         )?;
         if bytes.is_empty() {
-            self.must("making an empty file", &format!(": > {}", quote(&tmp)))?;
+            self.must_within(
+                "making an empty file",
+                &format!(": > {}", quote(&tmp)),
+                Retry::Never,
+                self.bound,
+            )?;
         }
         // One ssh call per 48 KiB chunk: a command line is capped (ARG_MAX) and a base64
         // of the whole file would meet that cap on the first large write.
         for (i, chunk) in bytes.chunks(INLINE_WRITE_BYTES).enumerate() {
             let redir = if i == 0 { ">" } else { ">>" };
-            self.must(
+            self.sh_once(
                 &format!("writing {path}"),
                 &format!(
                     "printf %s {} | base64 -d {redir} {}",
@@ -946,34 +1299,20 @@ impl Ssh {
                 ),
             )?;
         }
-        self.must(
+        self.must_within(
             &format!("putting {path} in place"),
             &format!("mv -f {} {}", quote(&tmp), quote(path)),
+            Retry::Never,
+            self.bound,
         )
         .map(|_| ())
     }
 
     /// Drop the ControlMaster, if one was made. Best effort: an ssh that says it has no
-    /// master is not a failure of anything.
+    /// master is not a failure of anything — and it is bounded, because a master that has
+    /// stopped answering is exactly the case this is called in.
     pub fn exit_master(&self) {
-        let control = self.control.display().to_string();
-        let _ = std::process::Command::new(&self.program)
-            .args([
-                // The same `-F /dev/null` every other call has: dropping the master is still an
-                // ssh invocation, and one that read the operator's config would be the hole in
-                // every other flag.
-                "-F",
-                "/dev/null",
-                "-o",
-                &format!("ControlPath={control}"),
-                "-o",
-                "ControlMaster=no",
-                "-O",
-                "exit",
-                &self.destination(),
-            ])
-            .stdin(std::process::Stdio::null())
-            .output();
+        let _ = self.master("exit");
     }
 }
 
@@ -984,6 +1323,229 @@ impl std::fmt::Debug for Ssh {
             .field("program", &self.program)
             .finish()
     }
+}
+
+/// **The first line of something a machine said**, for a sentence that has to stay one sentence.
+fn first_line(text: &str) -> String {
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let line = line.trim();
+    if line.is_empty() {
+        return "it said nothing".to_string();
+    }
+    let mut cut = line.len().min(200);
+    while !line.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    if cut < line.len() {
+        format!("{}…", &line[..cut])
+    } else {
+        line.to_string()
+    }
+}
+
+/// **Drain a pipe on its own thread**, so a child that writes more than a pipe buffer does not
+/// block on it while this side waits for it to finish.
+fn drain<R: std::io::Read + Send + 'static>(
+    mut pipe: Option<R>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    })
+}
+
+/// **Run a program to completion, or kill it at the deadline.** The one place a local process
+/// this file starts for its own purposes — never a model's command — is given a wall clock.
+///
+/// `None` is *the bound passed and it was killed*; a program that cannot be started at all is
+/// also `None`, because every caller of this is asking a question it can do without
+/// (`is the master alive?`, `drop the master`).
+fn run_bounded(program: &Path, args: &[String], within: Duration) -> Option<std::process::Output> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let began = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if began.elapsed() >= within => {
+                kill_group(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => {
+                kill_group(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let Some(status) = status else {
+        // The readers belong to a group that is now dead, so they end on their own.
+        let _ = (out, err);
+        return None;
+    };
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    Some(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// **End everything one call started**, by the process group it leads.
+///
+/// A child killed on its own leaves whatever it spawned holding the pipes it inherited, and this
+/// side's readers then block for as long as that grandchild lives — measured: a fake `ssh` that
+/// ran `sleep 30` made a 2 s bound cost 120 s, because the sleeps outlived every kill. `kill` is
+/// used rather than a libc call because this crate has no `libc` dependency and a `/bin/kill` that
+/// is missing is a box with worse problems than this one.
+fn kill_group(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &format!("-{pid}")])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+// ---------------------------------------------------------------------------
+// What a host is doing, asked and never written
+// ---------------------------------------------------------------------------
+
+/// **What one probe of a remote host answered** — the live facts a placement decision needs.
+///
+/// Every field is what the machine itself said, and each one is optional or zero-able on
+/// purpose: a host without `/proc` answers no memory, and a fact this box could not read is
+/// reported as absent rather than as a zero that reads like a full disk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Facts {
+    /// `uname -n` — the machine's own name, which a `hostname = "10.0.0.7"` line does not tell
+    /// you.
+    pub uname: String,
+    /// `nproc`, or the portable `getconf` fallback. 0 means neither answered.
+    pub cores: u64,
+    /// The three load averages as the machine printed them — a string because that is the shape
+    /// the two platforms agree on, and a model reads it directly.
+    pub load: String,
+    pub mem_total_kb: Option<u64>,
+    pub mem_avail_kb: Option<u64>,
+    /// Which path the disk figure is about: the host's `root`, or its home when the root has not
+    /// been made yet.
+    pub disk_path: String,
+    pub disk_free_kb: Option<u64>,
+    /// Where `git` and `cargo` are, when the host's own `PATH` — with its `path` list in front —
+    /// finds them. This is the fact that decides whether a session can build there.
+    pub git: Option<String>,
+    pub cargo: Option<String>,
+}
+
+/// **The one script a probe runs**, and it only ever reads.
+///
+/// `key=value` lines rather than a formatted report, because the parser on this side then has no
+/// opinions about the far side's locale, and every fact is one line whose absence is meaningful.
+/// Nothing here writes, creates, moves or signals: a probe is a question, and the host it asks is
+/// the operator's machine.
+fn facts_script(root: &str) -> String {
+    format!(
+        r#"r={root}; case "$r" in '~/'*) r="$HOME/${{r:2}}" ;; esac
+[ -d "$r" ] || r="$HOME"
+echo "uname=$(uname -n 2>/dev/null)"
+echo "cores=$( (nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0) | head -1)"
+echo "load=$(cat /proc/loadavg 2>/dev/null | cut -d' ' -f1,2,3)"
+echo "mem_total_kb=$(awk '/^MemTotal:/ {{print $2}}' /proc/meminfo 2>/dev/null | head -1)"
+echo "mem_avail_kb=$(awk '/^MemAvailable:/ {{print $2}}' /proc/meminfo 2>/dev/null | head -1)"
+echo "disk_path=$r"
+echo "disk_free_kb=$(df -Pk "$r" 2>/dev/null | awk 'NR==2 {{print $4}}')"
+echo "git=$(command -v git 2>/dev/null)"
+echo "cargo=$(command -v cargo 2>/dev/null)"
+"#,
+        root = quote(root)
+    )
+}
+
+/// **Ask one host what it is doing, and never write there.**
+///
+/// The connection is [`Ssh::connect`]'s, so the two refusals it can give — a key that is missing
+/// or inside the operator's own ssh directory, and a host key nobody has accepted — arrive as
+/// sentences the caller can show, before anything is asked. Then one bounded call
+/// ([`STEP_BOUND`], or `within` when the caller has a shorter budget for the whole probe), and
+/// the facts are parsed out of it.
+///
+/// A host that does not answer within `within` is reported by the sentence [`Ssh::no_answer`]
+/// gives, so a probe of four machines with one dead host takes a bound, not four.
+pub fn probe(
+    host: &Host,
+    program: Option<PathBuf>,
+    paths: Paths,
+    within: Duration,
+) -> Result<Facts, String> {
+    let ssh = Ssh::connect(host.clone(), program, paths)?.with_bound(within);
+    let (said, stderr, exit) = ssh
+        .sh_step_within(
+            &format!("a probe of {}", host.name),
+            &facts_script(&host.root),
+            within,
+        )
+        .map_err(|e| e.to_string())?;
+    if exit != 0 {
+        let why = if stderr.is_empty() {
+            said.trim().to_string()
+        } else {
+            String::from_utf8_lossy(&stderr).trim().to_string()
+        };
+        return Err(format!(
+            "the probe of {} exited {exit}: {}",
+            host.name,
+            if why.is_empty() {
+                "it said nothing"
+            } else {
+                &why
+            }
+        ));
+    }
+    Ok(facts_of(&said))
+}
+
+/// The `key=value` lines of [`facts_script`] as a [`Facts`]. Unknown keys are ignored and missing
+/// ones are absent: a host that answers half a probe is half-known, which is a fact itself.
+pub fn facts_of(said: &str) -> Facts {
+    let mut f = Facts::default();
+    for line in said.lines() {
+        let Some((key, value)) = line.trim_end_matches('\r').split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let number = || value.parse::<u64>().ok();
+        match key.trim() {
+            "uname" => f.uname = value.to_string(),
+            "cores" => f.cores = number().unwrap_or(0),
+            "load" => f.load = value.to_string(),
+            "mem_total_kb" => f.mem_total_kb = number(),
+            "mem_avail_kb" => f.mem_avail_kb = number(),
+            "disk_path" => f.disk_path = value.to_string(),
+            "disk_free_kb" => f.disk_free_kb = number(),
+            "git" => f.git = (!value.is_empty()).then(|| value.to_string()),
+            "cargo" => f.cargo = (!value.is_empty()).then(|| value.to_string()),
+            _ => {}
+        }
+    }
+    f
 }
 
 /// `'` quoting for a POSIX shell: one argument, no expansion, nothing to escape.
@@ -1032,6 +1594,10 @@ pub struct SshSpec {
     /// [`crate::builtins::task::TaskTool`]'s `hosts` is one: a test that set `$HOME` would race
     /// every other reader of it in the same process.
     pub paths: Option<Paths>,
+    /// **The wall clock every call that is not a command is given**, when the caller names one.
+    /// `None` is [`STEP_BOUND`]. A test's door: a fake ssh that never answers should be measured
+    /// in a second rather than in twenty.
+    pub bound: Option<Duration>,
 }
 
 /// **A session whose tools run on another machine.**
@@ -1084,12 +1650,15 @@ impl SshBackend {
         // operator's own ssh directory, and a host key nobody has accepted for letibot. A
         // placement that discovered either of them half way would have a mirror on the far side
         // and no way to say which step refused.
-        let ssh = Ssh::connect(
+        let mut ssh = Ssh::connect(
             spec.host.clone(),
             spec.ssh.clone(),
             spec.paths.clone().unwrap_or_else(Paths::from_env),
         )
         .map_err(|why| BackendError::Io(format!("placing this session on {host}: {why}")))?;
+        if let Some(within) = spec.bound {
+            ssh = ssh.with_bound(within);
+        }
         let place =
             |e: BackendError| BackendError::Io(format!("placing this session on {host}: {e}"));
 
@@ -1195,9 +1764,10 @@ impl SshBackend {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        let bundled = git(
+        let bundled = git_within(
             &local_repo,
             &["bundle", "create", &staging.display().to_string(), "HEAD"],
+            GIT_BOUND,
         );
         if let Err(e) = bundled {
             let _ = std::fs::remove_file(&staging);
@@ -1232,11 +1802,18 @@ impl SshBackend {
         // **The checkout.** A second session on the same id (a resume) finds its worktree
         // already there and keeps it — the branch and everything committed on it.
         let existing = ssh
-            .sh(&format!("[ -d {} ] && echo yes", quote(&worktree)))
+            .sh_step(
+                "checking whether the checkout is already there",
+                &format!("[ -d {} ] && echo yes", quote(&worktree)),
+            )
             .map_err(place)?
             .0;
         if !existing.trim().eq("yes") {
-            ssh.must(
+            // **Not retried**, and this is the one arranging step where that matters: `git worktree
+            // add -b` is not idempotent, so a second attempt after a call that may have worked
+            // would fail with *already exists* and report a placement that is in fact fine. A
+            // timeout here is reported as it is (see [`Ssh::no_answer`]).
+            ssh.must_within(
                 "checking the branch out",
                 &format!(
                     "git -C {m} worktree add -b {br} {wt} {st} >/dev/null",
@@ -1245,9 +1822,33 @@ impl SshBackend {
                     wt = quote(&worktree),
                     st = quote(&staged)
                 ),
+                Retry::Never,
+                ssh.bound(),
             )
             .map_err(place)?;
         }
+
+        // **The session's own job directory is not part of the tree.** `.letibot-remote/` holds a
+        // background job's launcher, output, pid and exit file, so it appears the moment the
+        // session runs anything in the background — and it appeared on close as
+        // `?? .letibot-remote/`, a change the operator was told was theirs to look at. It is
+        // ours, so the checkout's own exclude file says so, `git` answering where that file is
+        // (`--git-path`, which relocates through a linked worktree exactly as git's own read
+        // does) rather than this side guessing a path that differs per git version.
+        ssh.must(
+            "excluding the session's own job directory",
+            &format!(
+                "p=$(git -C {wt} rev-parse --git-path info/exclude) || exit 1
+\
+                 case \"$p\" in /*) ;; *) p={wt}/\"$p\" ;; esac
+\
+                 mkdir -p \"$(dirname \"$p\")\" || exit 1
+\
+                 grep -qxF '.letibot-remote/' \"$p\" 2>/dev/null || echo '.letibot-remote/' >> \"$p\"",
+                wt = quote(&worktree)
+            ),
+        )
+        .map_err(place)?;
 
         // **What stayed here, and it is not carried.** Said with the list, because a
         // session that works on a tree the operator is not looking at must say so.
@@ -1371,32 +1972,31 @@ impl SshBackend {
             .collect::<Vec<_>>()
             .join(" ");
         let fetched = {
-            let mut fetch = std::process::Command::new("git");
-            fetch
-                .arg("-C")
-                .arg(&self.local_repo)
-                .arg("-c")
-                .arg(format!("core.sshCommand={ssh_command}"))
-                .arg("fetch")
-                .arg("--no-tags");
+            let mut argv: Vec<String> = vec![
+                "-C".into(),
+                self.local_repo.display().to_string(),
+                "-c".into(),
+                format!("core.sshCommand={ssh_command}"),
+                "fetch".into(),
+                "--no-tags".into(),
+            ];
             // **The far side's `git-upload-pack` is a remote command**, and ssh runs it as
             // `<this> '<path>'` — a login shell does not read a profile for it, so a host whose
             // `git` is not on the default `PATH` needs the prefix here too. `--upload-pack` is
             // the only door git gives for it, and its argument is spliced into the remote
             // command line, so it is a **prefix assignment** rather than an `export`.
             if let Some(prefix) = self.ssh.host().path_prefix() {
-                fetch
-                    .arg("--upload-pack")
-                    .arg(format!("{prefix} git-upload-pack"));
+                argv.push("--upload-pack".into());
+                argv.push(format!("{prefix} git-upload-pack"));
             }
-            fetch
-                .arg(&url)
-                .arg(&refspec)
-                .stdin(std::process::Stdio::null())
-                .output()
+            argv.push(url.clone());
+            argv.push(refspec.clone());
+            // **Bounded, because this fetch's transport is an ssh connection** ([`GIT_BOUND`]):
+            // a close that waits for ever on a dead host is the same defect as a `read` that does.
+            run_bounded(Path::new("git"), &argv, GIT_BOUND)
         };
         let mut said = match fetched {
-            Ok(out) if out.status.success() => {
+            Some(out) if out.status.success() => {
                 let commit = git(
                     &self.local_repo,
                     &["rev-parse", "--short", &self.back_branch],
@@ -1421,7 +2021,7 @@ impl SshBackend {
                     self.host, self.back_branch, ahead, self.base, commit
                 )
             }
-            Ok(out) => format!(
+            Some(out) => format!(
                 "the session on {} ended and its branch did NOT come back: `git fetch` said \
                  \"{}\". The work is still there, in {} on that machine (branch `{}`) — reach \
                  it with `git fetch {} {refspec}` once the cause is fixed",
@@ -1431,20 +2031,36 @@ impl SshBackend {
                 self.branch,
                 url
             ),
-            Err(e) => format!(
-                "the session on {} ended and its branch did NOT come back: git would not run \
-                 ({e}). The work is still there, in {} on that machine (branch `{}`)",
-                self.host, self.worktree, self.branch
+            None => format!(
+                "the session on {} ended and its branch did NOT come back: `git fetch` got no \
+                 answer within {} s and was killed, so the connection is the suspect. The work is \
+                 still there, in {} on that machine (branch `{}`) — fetch it yourself once the \
+                 host answers: `git fetch {} {refspec}`",
+                self.host,
+                GIT_BOUND.as_secs(),
+                self.worktree,
+                self.branch,
+                url
             ),
         };
         // **What was left uncommitted is not in that branch.** A session that ends with a
         // dirty tree has work the branch does not hold, and a report that named only the
         // branch would be a false "it is all here".
-        if let Ok((dirty, _, 0)) = self.ssh.sh(&format!(
-            "cd {} && git status --porcelain",
-            quote(&self.worktree)
-        )) {
-            let lines: Vec<&str> = dirty.lines().filter(|l| !l.trim().is_empty()).collect();
+        //
+        // **`.letibot-remote/` is not the session's work.** It is this backend's own job
+        // directory — a launcher, its output, its pid, its exit status — and a close that counted
+        // it as an uncommitted change told the operator to go and review files nothing typed. The
+        // checkout's exclude file makes `git status` leave it out ([`SshBackend::place`]); this
+        // filter is the belt beside it, for a checkout made by a build that predates that.
+        if let Ok((dirty, _, 0)) = self.ssh.sh_step(
+            "listing what is still uncommitted there",
+            &format!("cd {} && git status --porcelain", quote(&self.worktree)),
+        ) {
+            let lines: Vec<&str> = dirty
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter(|l| !l.contains(".letibot-remote/"))
+                .collect();
             if !lines.is_empty() {
                 let shown = lines
                     .iter()
@@ -1503,22 +2119,34 @@ fn short_branch_id(id: &str) -> String {
 
 /// One local `git` call, with its output, or the reason it failed.
 fn git(repo: &Path, args: &[&str]) -> Result<String, BackendError> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| BackendError::Io(format!("git {}: {e}", args.join(" "))))?;
-    if !out.status.success() {
-        return Err(BackendError::Io(format!(
+    git_within(repo, args, GIT_BOUND)
+}
+
+/// **One local `git` call with a wall clock on it**, for the steps that can reach another machine:
+/// `bundle create` on a large repository, and the `fetch` whose transport is ssh.
+///
+/// A `git` left waiting on a dead connection holds the op that asked for it — the placement, or the
+/// session's close — so it is killed at the deadline like everything else here, and the sentence
+/// says which step it was.
+fn git_within(repo: &Path, args: &[&str], within: Duration) -> Result<String, BackendError> {
+    let mut argv: Vec<String> = vec!["-C".into(), repo.display().to_string()];
+    argv.extend(args.iter().map(|a| a.to_string()));
+    match run_bounded(Path::new("git"), &argv, within) {
+        Some(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        Some(out) => Err(BackendError::Io(format!(
             "git {} in {}: {}",
             args.join(" "),
             repo.display(),
             String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        ))),
+        None => Err(BackendError::Io(format!(
+            "git {} in {} got no answer within {} s: it was killed rather than waited on. The \
+             step that needed it did not finish.",
+            args.join(" "),
+            repo.display(),
+            within.as_secs()
+        ))),
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 impl ExecBackend for SshBackend {
@@ -1540,22 +2168,17 @@ impl ExecBackend for SshBackend {
             .map(|(k, v)| format!("{}={} ", quote(k), quote(v)))
             .collect::<String>();
         let cwd = self.abs(&cmd.cwd);
-        let (out, stderr, exit) = self
-            .ssh
-            .sh(&format!("cd {} && {env_prefix}{joined}", quote(&cwd)))?;
-        if exit == 255 && out.is_empty() {
-            // ssh's own exit code, with nothing from the command: the connection is the
-            // failure, and saying so is the difference between a broken command and an
-            // unreachable machine.
-            return Err(BackendError::Io(format!(
-                "ssh to {} failed: {}",
-                self.host,
-                String::from_utf8_lossy(&stderr).trim()
-            )));
-        }
+        // **`run` is the one call that keeps the tool's deadline and nothing else.** The command
+        // may be a build, and this file has no idea how long that takes; what this file does know
+        // is that a command which loses its connection is not a failure — it may be running still
+        // — so it is reported as an unknown outcome and never re-sent.
+        let (out, _stderr, exit) = self.ssh.sh_run(
+            "this command ran",
+            &format!("cd {} && {env_prefix}{joined}", quote(&cwd)),
+        )?;
         Ok(Output {
             stdout: out.into_bytes(),
-            // Merged by ssh itself — see `Ssh::sh`.
+            // Merged by ssh itself — see `Ssh::sh_run`.
             stderr: Vec::new(),
             exit,
         })
@@ -1614,15 +2237,18 @@ impl ExecBackend for SshBackend {
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
         let q = format!("'{}'", self.abs(path).replace('\'', r#"'\\''"#));
-        let (out, _, exit) = self.ssh.sh(&format!(
-            "if [ ! -e {q} ]; then exit 22; fi\n\
-             if [ ! -d {q} ]; then exit 23; fi\n\
-             for f in {q}/* {q}/.[!.]*; do\n\
-               [ -e \"$f\" ] || [ -L \"$f\" ] || continue\n\
-               if [ -d \"$f\" ]; then printf 'd\\t0\\t%s\\n' \"$f\"; \
-               else printf 'f\\t%s\\t%s\\n' \"$(wc -c < \"$f\")\" \"$f\"; fi\n\
-             done"
-        ))?;
+        let (out, _, exit) = self.ssh.sh_step(
+            &format!("listing {path}"),
+            &format!(
+                "if [ ! -e {q} ]; then exit 22; fi\n\
+                 if [ ! -d {q} ]; then exit 23; fi\n\
+                 for f in {q}/* {q}/.[!.]*; do\n\
+                   [ -e \"$f\" ] || [ -L \"$f\" ] || continue\n\
+                   if [ -d \"$f\" ]; then printf 'd\\t0\\t%s\\n' \"$f\"; \
+                   else printf 'f\\t%s\\t%s\\n' \"$(wc -c < \"$f\")\" \"$f\"; fi\n\
+                 done"
+            ),
+        )?;
         match exit {
             0 => {}
             22 => return Err(BackendError::NotFound(path.to_string())),
@@ -1657,16 +2283,22 @@ impl ExecBackend for SshBackend {
     ) -> Result<(Vec<DirEntry>, bool), BackendError> {
         let abs = self.abs(root);
         let q = quote(&abs);
-        let (_, _, gate) = self.ssh.sh(&format!(
-            "if [ ! -e {q} ]; then exit 22; fi; if [ ! -d {q} ]; then exit 23; fi; exit 0"
-        ))?;
+        let (_, _, gate) = self.ssh.sh_step(
+            &format!("looking at {root}"),
+            &format!(
+                "if [ ! -e {q} ]; then exit 22; fi; if [ ! -d {q} ]; then exit 23; fi; exit 0"
+            ),
+        )?;
         match gate {
             0 => {}
             22 => return Err(BackendError::NotFound(root.to_string())),
             23 => return Err(BackendError::NotADirectory(root.to_string())),
             _ => {}
         }
-        let (listing, _, _) = self.ssh.sh(&format!("{} walk {q}", TREE_WALK))?;
+        let (listing, _, _) = self.ssh.sh_step(
+            &format!("walking {root}"),
+            &format!("{} walk {q}", TREE_WALK),
+        )?;
         Ok(crate::firecode::tree_in_walk_order(
             listing.as_bytes(),
             &abs,
@@ -1680,12 +2312,15 @@ impl ExecBackend for SshBackend {
         let q = quote(&abs);
         let (out, _, exit) = self
             .ssh
-            .sh(&format!(
-                "if [ -e {q} ] || [ -L {q} ]; then \
-                   if [ -d {q} ]; then printf 'd\\t0\\n'; \
-                   else printf 'f\\t%s\\n' \"$(wc -c < {q})\"; fi; \
-                 else exit 1; fi"
-            ))
+            .sh_step(
+                &format!("looking at {path}"),
+                &format!(
+                    "if [ -e {q} ] || [ -L {q} ]; then \
+                       if [ -d {q} ]; then printf 'd\\t0\\n'; \
+                       else printf 'f\\t%s\\n' \"$(wc -c < {q})\"; fi; \
+                     else exit 1; fi"
+                ),
+            )
             .ok()?;
         if exit != 0 {
             return None;
@@ -1876,6 +2511,12 @@ impl RemoteProcesses {
     /// status if there is one, whether the pid is still alive, and how much output there
     /// is.
     fn refresh(&self, job: &RemoteJob) {
+        self.refresh_within(job, self.ssh.poll_bound());
+    }
+
+    /// [`RemoteProcesses::refresh`] with the caller's remaining time — so a `job_wait` honours
+    /// its own deadline even when the host has stopped answering.
+    fn refresh_within(&self, job: &RemoteJob, within: Duration) {
         if !job.is_running() {
             return;
         }
@@ -1888,7 +2529,13 @@ impl RemoteProcesses {
             pid = quote(&job.pid_path),
             out = quote(&job.out),
         );
-        let Ok((line, _, 0)) = self.ssh.sh(&script) else {
+        // **A poll, so [`POLL_BOUND`] and one attempt**: a status question whose answer arrives
+        // after the next tick has already been superseded, and asking it twice holds the caller's
+        // deadline open for twice as long as it should.
+        let Ok((line, _, 0)) = self
+            .ssh
+            .sh_once_within("asking about a job", &script, within)
+        else {
             return;
         };
         // **`trim_end`, not `trim`.** The fields are tab-separated and the first one is
@@ -2041,11 +2688,18 @@ impl RemoteProcesses {
             s = quote(&script_path),
         );
         self.ssh
-            .sh(&format!("mkdir -p {}", quote(&jobs)))
+            .sh_step(
+                &format!("making {jobs}"),
+                &format!("mkdir -p {}", quote(&jobs)),
+            )
             .map_err(|e| ExecError::Spawn(format!("making {} on {}: {e}", jobs, self.host)))?;
+        // **A job's start is not idempotent, so it is asked exactly once.** The launcher has
+        // already been written; a start that loses its connection may have started the job, and
+        // running it again would be a second copy of the operator's work. The sentence the failure
+        // carries says so ([`Ssh::unknown`]).
         let (said, stderr, code) = self
             .ssh
-            .sh(&launch)
+            .sh_run("the job was starting", &launch)
             .map_err(|e| ExecError::Spawn(format!("starting a job on {}: {e}", self.host)))?;
         if code != 0 {
             return Err(ExecError::Spawn(format!(
@@ -2098,12 +2752,15 @@ impl RemoteProcesses {
             // writes, and the difference is in this file.
             let said = self
                 .ssh
-                .sh(&format!(
-                    "echo '--- the launcher:'; cat {s} 2>/dev/null | head -c 400; \
-                     echo '--- what it wrote:'; cat {o} 2>/dev/null | tail -c 400",
-                    s = quote(&script_path),
-                    o = quote(&out)
-                ))
+                .sh_step(
+                    "reading what the launcher wrote",
+                    &format!(
+                        "echo '--- the launcher:'; cat {s} 2>/dev/null | head -c 400; \
+                         echo '--- what it wrote:'; cat {o} 2>/dev/null | tail -c 400",
+                        s = quote(&script_path),
+                        o = quote(&out)
+                    ),
+                )
                 .map(|(o, _, _)| o)
                 .unwrap_or_default();
             return Err(ExecError::Spawn(format!(
@@ -2146,10 +2803,10 @@ impl RemoteProcesses {
             return Ok(reaping);
         }
         // **What is there before the kill**, so a zero is falsifiable.
-        if let Ok((said, _, 0)) = self
-            .ssh
-            .sh(&format!("ps -p {pid} -o pid=,comm= 2>/dev/null || true"))
-            && let Some(line) = said.lines().find(|l| !l.trim().is_empty())
+        if let Ok((said, _, 0)) = self.ssh.sh_step(
+            &format!("looking at pid {pid} before the kill"),
+            &format!("ps -p {pid} -o pid=,comm= 2>/dev/null || true"),
+        ) && let Some(line) = said.lines().find(|l| !l.trim().is_empty())
         {
             let mut it = line.split_whitespace();
             let p = it.next().and_then(|p| p.parse().ok()).unwrap_or(pid);
@@ -2165,7 +2822,10 @@ impl RemoteProcesses {
         // about. `ps -o pgid=` answers it, on the remote, before the signal.
         let pgid = self
             .ssh
-            .sh(&format!("ps -p {pid} -o pgid= 2>/dev/null | tr -d ' '"))
+            .sh_step(
+                &format!("asking whether pid {pid} leads a group"),
+                &format!("ps -p {pid} -o pgid= 2>/dev/null | tr -d ' '"),
+            )
             .ok()
             .map(|(said, _, _)| said.trim().to_string())
             .unwrap_or_default();
@@ -2179,33 +2839,59 @@ impl RemoteProcesses {
             pid.to_string()
         };
         let started = Instant::now();
-        let _ = self
-            .ssh
-            .sh(&format!("kill -TERM {target} 2>/dev/null || true"));
-        for _ in 0..40 {
-            self.refresh(job);
+        // **A signal is not idempotent here in the sense that matters** — sending `kill -TERM`
+        // twice to a group is harmless, but a second one after a timeout could reach a pid the
+        // first one ended and something else reused. Asked once, and a failure is reported by the
+        // read-back below rather than papered over.
+        let _ = self.ssh.sh_once(
+            &format!("ending pid {target}"),
+            &format!("kill -TERM {target} 2>/dev/null || true"),
+        );
+        let settle_by = Duration::from_secs(2);
+        let settle_started = Instant::now();
+        while settle_started.elapsed() < settle_by {
+            let left = settle_by.saturating_sub(settle_started.elapsed());
+            self.refresh_within(job, left.min(self.ssh.poll_bound()));
             if !job.is_running() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         if job.is_running() {
-            let _ = self
-                .ssh
-                .sh(&format!("kill -KILL {target} 2>/dev/null || true"));
+            let _ = self.ssh.sh_once(
+                &format!("killing pid {target} hard"),
+                &format!("kill -KILL {target} 2>/dev/null || true"),
+            );
             reaping.note = Some(format!("{} ignored SIGTERM and was killed hard", job.id.0));
         }
         reaping.waited = started.elapsed();
         job.settle(JobState::Killed { by: by.into() });
-        // **Who is left**, read back the way it was read before.
-        if let Ok((said, _, 0)) = self
-            .ssh
-            .sh(&format!("kill -0 {pid} 2>/dev/null && echo alive"))
-            && said.contains("alive")
-        {
-            reaping.survivors.push(pid);
+        // **Who is left**, read back the way it was read before. And when the read-back does not
+        // come, that is said rather than counted as a clean kill: `removed` means *this daemon
+        // looked and found nothing*, and a host that never answered has not been looked at.
+        match self.ssh.sh_step(
+            &format!("reading back whether pid {pid} is gone"),
+            &format!("kill -0 {pid} 2>/dev/null && echo alive"),
+        ) {
+            Ok((said, _, _)) => {
+                // The script's own protocol: it says `alive` when `kill -0` succeeded, and exits
+                // non-zero when it did not — so an exit status here is *still an answer*.
+                if said.contains("alive") {
+                    reaping.survivors.push(pid);
+                }
+                reaping.removed = reaping.survivors.is_empty();
+            }
+            Err(e) => {
+                // The job was told to stop and nothing on that machine confirmed it. Reported as
+                // unknown, so nothing downstream reads this as a kill that completed.
+                reaping.removed = false;
+                reaping.note = Some(format!(
+                    "{e} — so whether the process on {} is gone is UNKNOWN: nothing was read \
+                     back",
+                    self.host
+                ));
+            }
         }
-        reaping.removed = reaping.survivors.is_empty();
         self.reaps
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2263,10 +2949,13 @@ impl ProcessHost for RemoteProcesses {
              if [ \"$g\" = \"{pid}\" ]; then kill -KILL -{pid} 2>/dev/null; \
              else kill -KILL {pid} 2>/dev/null; fi\n"
         );
-        let _ = self.ssh.sh(&format!(
-            "nohup bash -c {} </dev/null >/dev/null 2>&1 & echo armed",
-            quote(&script)
-        ));
+        let _ = self.ssh.sh_once(
+            "arming the job's deadline",
+            &format!(
+                "nohup bash -c {} </dev/null >/dev/null 2>&1 & echo armed",
+                quote(&script)
+            ),
+        );
     }
 
     fn wait_job(&self, job: &JobId, deadline: Duration) -> Result<Waited, ExecError> {
@@ -2278,7 +2967,15 @@ impl ProcessHost for RemoteProcesses {
         // machine, so 120 ms is the fastest that does not cost more than the work.
         let tick = Duration::from_millis(120);
         loop {
-            self.refresh(&job);
+            let left = deadline.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                return Ok(Waited::Deadline {
+                    took: started.elapsed(),
+                    produced: job.produced(),
+                    since_last_output: None,
+                });
+            }
+            self.refresh_within(&job, left.min(self.ssh.poll_bound()));
             if !job.is_running() {
                 return Ok(Waited::Happened {
                     state: Some(job.state()),
@@ -2312,8 +3009,16 @@ impl ProcessHost for RemoteProcesses {
             });
         }
         loop {
+            let left = deadline.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                return Ok(Waited::Deadline {
+                    took: started.elapsed(),
+                    produced: mine.iter().map(|j| j.produced()).sum(),
+                    since_last_output: None,
+                });
+            }
             for j in &mine {
-                self.refresh(j);
+                self.refresh_within(j, left.min(self.ssh.poll_bound()));
             }
             if mine.iter().all(|j| !j.is_running()) {
                 return Ok(Waited::Happened {
@@ -2351,11 +3056,14 @@ impl ProcessHost for RemoteProcesses {
         self.refresh(&job);
         let (said, _, code) = self
             .ssh
-            .sh(&format!(
-                "tail -c +{} {} 2>/dev/null | base64 | tr -d '\\n'",
-                from + 1,
-                quote(&job.out)
-            ))
+            .sh_step(
+                &format!("reading the output of a job on {}", self.host),
+                &format!(
+                    "tail -c +{} {} 2>/dev/null | base64 | tr -d '\\n'",
+                    from + 1,
+                    quote(&job.out)
+                ),
+            )
             .map_err(|e| ExecError::Spawn(format!("reading {}: {e}", job.out)))?;
         if code != 0 {
             return Err(ExecError::Spawn(format!(

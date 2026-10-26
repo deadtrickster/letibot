@@ -1038,12 +1038,17 @@ pub mod roles {
             // subagent"*: a seat that can start a child but not arrange its placement is
             // the seat that spawns it into the main tree and then kills it for being in
             // the wrong place, which is the two mistakes the tool exists to prevent.
+            // **`hosts` is seated wherever `task` is**, and it is the same rule one step on: a seat
+            // that can place a child on `host:NAME` and cannot learn which names exist has only
+            // the refusal to go on, and the refusal costs a round trip per guess. Read-only, so
+            // the seat pays one entry for it.
             &[
                 "task",
                 "task_result",
                 "task_message",
                 "task_resume",
                 "task_start",
+                "hosts",
                 "read",
                 "grep",
                 "glob",
@@ -1102,6 +1107,10 @@ pub mod roles {
                 "task_result",
                 "task_message",
                 "task_resume",
+                // **`hosts`: which machines exist, and which is least loaded** — read from the
+                // operator's file at the call, because the list is theirs and the prompt is a
+                // cache. Seated beside `task`, whose `where: "host:NAME"` it is the way to choose.
+                "hosts",
                 // `task_start` beside `task`: the operator's ask — *"we will need a new
                 // tool - task_start or what that will arrange worktree, firecode and
                 // subagent"*. A seat that can start a child but not arrange its placement
@@ -1205,7 +1214,12 @@ pub mod roles {
         // back"*), which takes its own seat beside `task_message`: the restart reminder names it
         // as the one call that brings a child back, and a seat that is told and cannot act is the
         // same defect `queue` was seated against.
-        r.max_tools = 30;
+        // **Thirty-one since `hosts`**, and this one MOVES the declared ceiling by one, to 31: a
+        // seat that places children on `host:NAME` while being unable to learn which hosts exist
+        // has only the refusal to go on, and trading a seat away from a working verb for a
+        // read-only listing would be the wrong half of the choice. Declared here, where somebody
+        // deciding can read it.
+        r.max_tools = 31;
         r
     }
 
@@ -1372,6 +1386,10 @@ pub mod roles {
                 "task_message",
                 "task_resume",
                 "task_start",
+                // `hosts`, beside `task`: this seat can place a child on another machine, so it
+                // has to be able to see which machines there are. Read-only, and the seat has the
+                // room — fifteen tools against `DEFAULT_MAX_TOOLS` (16).
+                "hosts",
             ],
         )
     }
@@ -2993,8 +3011,10 @@ mod tests {
         // It took its own seat rather than trading for one: nothing left the list when
         // it arrived, which is the property `max_tools` is declared for. Twenty-eight since
         // `queue` (R76 item 2), which took its own seat the same way.
-        // Twenty-nine since `task_resume`.
-        assert_eq!(seat.tools.len(), 29, "{:?}", seat.tools);
+        // Twenty-nine since `task_resume`; thirty since `hosts`, which asked for no seat to be
+        // given up — a seat that can place a child on another machine and cannot list the
+        // machines is a seat that guesses.
+        assert_eq!(seat.tools.len(), 30, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

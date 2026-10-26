@@ -41,6 +41,7 @@ pub mod external;
 pub mod glob;
 pub mod grep;
 pub mod harness_view;
+pub mod hosts;
 pub mod intent;
 pub mod jobs;
 pub mod lsp;
