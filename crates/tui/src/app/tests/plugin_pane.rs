@@ -44,7 +44,8 @@ fn dashboard() -> serde_json::Value {
                       "fix": "write the status file",
                       "verify": "cat .letibot/status.json",
                       "actions": [{"key": "r", "label": "refresh", "look": true}]}],
-        "legend": {"tier": "a row of the plan", "host": "a machine the fleet runs on"},
+        "legend": {"tier": "a row of the plan", "host": "a machine the fleet runs on",
+                   "tier 1": "the tier the release waits on"},
         "every_s": 30
     })
 }
@@ -69,10 +70,26 @@ fn opened() -> App {
     let asked = a.command(&format!("pane {PANE}"));
     assert_eq!(
         asked,
-        Some(Action::PaneOpen { pane: PANE.into() }),
+        Some(Action::PaneOpen {
+            pane: PANE.into(),
+            // **The open can only guess the rectangle** — this head has never drawn a pane, so
+            // it says `0` and the frame that draws it sends the real one.
+            w: 0,
+            h: 0,
+        }),
         "opening the pane asks the daemon for a fresh look"
     );
     a
+}
+
+/// The screen row a needle was drawn on, and its column — for the tests that point at a row.
+fn find(screen: &[String], needle: &str) -> (u16, u16) {
+    for (y, row) in screen.iter().enumerate() {
+        if let Some(at) = row.find(needle) {
+            return (visible_width(&row[..at]) as u16, y as u16);
+        }
+    }
+    panic!("`{needle}` is not on the screen:\n{}", screen.join("\n"));
 }
 
 /// The screen as one string, for the assertions that only ask *is this on it*.
@@ -373,6 +390,59 @@ fn the_pane_verb_lists_them_by_title_and_opens_by_name() {
         b.screen(110, 30).join("\n").contains("no plugin pane"),
         "the refusal names it"
     );
+}
+
+/// **Esc at the overview closes the pane AND tells the daemon** — C4's `PaneClose`, and the only
+/// thing that takes a pane off the host's refresh clock. The view below it is a step of Esc's
+/// ladder and says nothing: leaving a panel's view is not leaving the pane.
+#[test]
+fn esc_at_the_overview_closes_the_pane_and_tells_the_daemon() {
+    let mut a = opened();
+    a.screen(110, 40);
+    // The frame's own correction of the rectangle the open could only guess, and whatever else a
+    // draw queued: drained so the assertions below are about the keys.
+    a.take_actions();
+
+    a.key(Key::Char('t'));
+    assert_eq!(a.key(Key::Esc), None, "esc left the view, not the pane");
+    assert_eq!(a.top_surface(), Some(Surface::PluginPane));
+    assert!(
+        a.take_actions().is_empty(),
+        "leaving a view is not a pane close"
+    );
+
+    assert_eq!(
+        a.key(Key::Esc),
+        Some(Action::PaneClose { pane: PANE.into() }),
+        "the pane left the screen, so the daemon stops refreshing it"
+    );
+    assert!(!a.is_open(Surface::PluginPane));
+    assert_eq!(a.plugin_open, None, "and the name went with it");
+    // **And the view this head holds stays** — it is the daemon's answer about the session, not
+    // about this screen, so reopening the pane draws it while the new look travels.
+    assert!(a.plugin_panes.contains_key(PANE));
+}
+
+/// **A label the view's legend documents answers on hover** — C3's second use of the legend
+/// (`the same text answers on hover`): point at a row and the bar says what its label means.
+#[test]
+fn hovering_a_documented_label_shows_the_legends_words() {
+    let mut a = opened();
+    let screen = a.screen(110, 40);
+    let (x, y) = find(&screen, "tier 1");
+    a.key(Key::Hover { x: x + 1, y });
+    let hovered = a.screen(110, 40).join("\n");
+    assert!(
+        hovered.contains("the tier the release waits on"),
+        "the legend's text for the row's label: {hovered}"
+    );
+
+    // **A label the legend does not document says nothing extra** — `tier 2` is not a key, and
+    // the bar keeps its key hints rather than guessing at a meaning.
+    let (x, y) = find(&screen, "tier 2");
+    a.key(Key::Hover { x: x + 1, y });
+    let plain = a.screen(110, 40).join("\n");
+    assert!(!plain.contains("the tier the release waits on"), "{plain}");
 }
 
 /// **A pane the daemon says is gone closes**, and its view goes with it: a surface left holding

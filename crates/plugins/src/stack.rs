@@ -37,10 +37,10 @@ use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
 
 /// How many module calls one resolution may make.
 ///
-/// A look nests — a layer asks below, that layer asks below — so a stack of ten layers could in
-/// principle ask for a great many answers to settle one hook. The budget turns a pathological
+/// An ask-below nests — a layer asks below, that layer asks below — so a stack of ten layers could
+/// in principle ask for a great many answers to settle one hook. The budget turns a pathological
 /// arrangement into a recorded failure with an answer from below, instead of a pane that takes a
-/// second to draw. Ten layers of one look each need far fewer than this.
+/// second to draw. Ten layers of one ask each need far fewer than this.
 const MAX_CALLS: usize = 32;
 
 /// A layer: where it came from, what it declares, and which bytes it is.
@@ -83,7 +83,7 @@ impl std::fmt::Display for Failure {
 pub struct Resolved {
     /// The answer, or none when nothing answered or a layer masked the hook.
     pub answer: Option<Value>,
-    /// The layer whose answer it is — the topmost one, since a layer that looks below still
+    /// The layer whose answer it is — the topmost one, since a layer that asks below still
     /// answers for itself.
     pub by: Option<String>,
     pub failures: Vec<Failure>,
@@ -346,7 +346,7 @@ impl Stack {
     /// Resolve one hook through the stack, from the top.
     ///
     /// The protocol is the crate doc's one table: pass or unchanged falls through, mask stops
-    /// everything below, a look below round trips, anything else answers. A layer that fails is
+    /// everything below, `below` round trips, anything else answers. A layer that fails is
     /// recorded and skipped, and **one failure never stops the resolution** — the layer below
     /// still answers, which is what keeps a broken fix from taking the session down with it.
     pub fn call(&self, hook: &str, input: &Value) -> Resolved {
@@ -644,13 +644,13 @@ impl Stack {
         Step::Passed
     }
 
-    /// One layer's answer, including the one look below it may take.
+    /// One layer's answer, including the one ask-below it may take.
     fn ask(
         &self,
         i: usize,
         module: &Arc<dyn Module>,
         input: &Value,
-        looked: bool,
+        asked: bool,
         walk: &mut Walk<'_>,
     ) -> Step {
         let layer = &self.layers[i];
@@ -683,21 +683,15 @@ impl Stack {
         if is(&answer, "mask") {
             return Step::Masked;
         }
-        if let Some(look) = answer.get("look") {
-            if looked {
+        if let Some(below_input) = answer.get("below") {
+            if asked {
                 walk.fail(
                     layer,
-                    "a second look inside one resolution — a layer may ask below once".to_string(),
+                    "a second `below` inside one resolution — a layer may ask below once"
+                        .to_string(),
                 );
                 return Step::Passed;
             }
-            let Some(below_input) = look.get("below") else {
-                walk.fail(
-                    layer,
-                    "`look` without `below` — there is nothing to ask the layer below".to_string(),
-                );
-                return Step::Passed;
-            };
             // The layer below is resolved and its answer is handed back to this layer, which is
             // asked again with the same input plus `below`. A mask or a pass below is `null`:
             // the lower stack answered nothing, and the layer that asked is told so.
@@ -970,15 +964,15 @@ mod tests {
     }
 
     #[test]
-    fn a_look_below_round_trips_the_lower_answer_into_the_layer_that_asked() {
-        let t = TempDir::new("look");
-        // The session layer changes one field of whatever answers below: `{"look":{"below":…}}`
-        // on the first call, and on the second it answers with what it was handed.
+    fn an_ask_below_round_trips_the_lower_answer_into_the_layer_that_asked() {
+        let t = TempDir::new("below");
+        // The session layer changes one field of whatever answers below: `{"below":…}` on the
+        // first call, and on the second it answers with what it was handed.
         layer(
             &t.path().join("session"),
             "a",
             &["pane_dashboard"],
-            Act::look_below(json!({"v": 1, "edited": true})),
+            Act::ask_below(json!({"v": 1, "edited": true})),
         );
         layer(
             &t.path().join("project/.letibot/plugins"),
@@ -1001,6 +995,40 @@ mod tests {
             "the below answer arrives under `below`, beside the original input",
         );
         assert!(r.failures.is_empty());
+    }
+
+    /// **C3's `look` is an answer, not C2's ask-below.** A pane that asks the host to read a file
+    /// answers a document with a top-level `look`; under the old protocol the stack read that as
+    /// *ask the layer below*, recorded `look without below`, and a dashboard that asked for its
+    /// file drew nothing at all. `below` is the marker now, and `look` belongs to the pane.
+    #[test]
+    fn a_pane_answer_carrying_c3s_look_answers_without_asking_below() {
+        let t = TempDir::new("pane-look");
+        let asks = json!({
+            "title": "plan",
+            "look": {"read": ".letibot/status.json"},
+            "every_s": 0,
+        });
+        layer(
+            &t.path().join("session"),
+            "a",
+            &["pane_dashboard"],
+            Act::answer(asks.clone()),
+        );
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "b",
+            &["pane_dashboard"],
+            Act::answer(json!({"title": "never asked"})),
+        );
+        let r = stack(&t).call("pane_dashboard", &json!({"v": 1}));
+        assert_eq!(r.by.as_deref(), Some("s1"), "the top layer answers");
+        assert_eq!(answer_of(&r), asks, "and it is the pane's own document");
+        assert!(
+            r.failures.is_empty(),
+            "a pane's look is not a broken ask-below: {:?}",
+            r.failures
+        );
     }
 
     #[test]
@@ -1050,14 +1078,14 @@ mod tests {
     }
 
     #[test]
-    fn a_second_look_from_one_layer_is_a_recorded_failure_not_a_loop() {
-        let t = TempDir::new("two-looks");
-        // This fake answers `look below` on every call, including the one carrying `below`.
+    fn a_second_ask_from_one_layer_is_a_recorded_failure_not_a_loop() {
+        let t = TempDir::new("two-asks");
+        // This fake answers `{"below":…}` on every call, including the one carrying `below`.
         layer(
             &t.path().join("session"),
             "a",
             &["pane_dashboard"],
-            Act::always_look(json!({"v": 1})),
+            Act::always_ask(json!({"v": 1})),
         );
         layer(
             &t.path().join("project/.letibot/plugins"),
@@ -1068,7 +1096,7 @@ mod tests {
         let r = stack(&t).call("pane_dashboard", &json!({}));
         assert_eq!(r.by.as_deref(), Some("p1"));
         assert!(
-            r.failures.iter().any(|f| f.why.contains("second look")),
+            r.failures.iter().any(|f| f.why.contains("second `below`")),
             "{:?}",
             r.failures
         );

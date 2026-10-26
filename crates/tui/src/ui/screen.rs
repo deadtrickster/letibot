@@ -1041,6 +1041,23 @@ impl App {
             // keys the bar names.
             Drawn::Surface(Surface::PluginPane) => {
                 let rows = self.plugin_lines(w);
+                // **The daemon is told the rectangle the pane is drawn in** (C4, protocol 51).
+                // `room` is `h` minus the chrome and the header, so this is the only place it is
+                // known — a key handler that opened the pane could only guess, and a pane laid out
+                // for a guess wraps its labels for a terminal nobody is looking at. A change
+                // detector rather than a frame per draw, for `Action::TermResize`'s reason: a
+                // resize frame per redraw would be a frame per keystroke.
+                if let Some(pane) = self.plugin_open.clone() {
+                    let told = (pane.clone(), w as u32, room as u32);
+                    if self.plugin_sent.as_ref() != Some(&told) {
+                        self.plugin_sent = Some(told.clone());
+                        self.queued.push(Action::PaneOpen {
+                            pane: told.0,
+                            w: told.1,
+                            h: told.2,
+                        });
+                    }
+                }
                 self.pane_window(rows, room)
             }
             // **One stop read whole**, over the pane — also through `pane_window`: a finding's

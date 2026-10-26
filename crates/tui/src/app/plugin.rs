@@ -114,6 +114,25 @@ impl App {
         view::target_of(v, self.plugin_screen, self.plugin_sel)
     }
 
+    /// **The legend's words for the row the pointer is over** — C3: *a legend documents every
+    /// label, and the same text answers on hover*.
+    ///
+    /// Read from where the pointer IS ([`App::pointer_at`]) and not from [`App::hovered`], and
+    /// that is the difference between this and every other pointer feature: `hovered` is *what a
+    /// click here would act on*, and a legend row is documentation — the pointer over it acts on
+    /// nothing, which is exactly the row a reader wants explained. The row is found in
+    /// [`App::plugin_legend_at`], the record the last frame wrote while drawing.
+    pub(crate) fn plugin_hover_legend(&self) -> Option<&str> {
+        let (_, y) = self.pointer_at?;
+        let key = self
+            .plugin_legend_at
+            .iter()
+            .find(|(row, _)| *row == usize::from(y))?
+            .1
+            .clone();
+        self.plugin_view()?.legend.get(&key).map(String::as_str)
+    }
+
     /// The stops of the screen on the screen — the list the arrows walk, Enter acts on, and a
     /// click is measured against.
     pub(crate) fn plugin_stops(&self) -> Vec<view::Stop> {
@@ -148,13 +167,44 @@ impl App {
             self.redraw = true;
             return None;
         }
-        self.plugin_open = Some(name.to_string());
+        // **A different pane in the same rectangle is a pane that closed.** The surface is one
+        // (`Surface::PluginPane`), so `plugin_open` is about to name another one — and the daemon
+        // holds a refresh clock per pane NAME. Without this the dashboard the operator navigated
+        // away from would keep its look running for the rest of the session.
+        if let Some(previous) = self.plugin_open.replace(name.to_string())
+            && previous != name
+        {
+            self.queued.push(Action::PaneClose { pane: previous });
+        }
         self.plugin_screen = view::Screen::Overview;
         self.plugin_sel = 0;
         self.push_surface(Surface::PluginPane);
+        // **The rectangle is a guess here and a measurement on the next frame** — see
+        // [`Action::PaneOpen`]. What this head last sent is the best it has.
+        let (w, h) = self
+            .plugin_sent
+            .as_ref()
+            .map(|(_, w, h)| (*w, *h))
+            .unwrap_or((0, 0));
+        self.plugin_sent = Some((name.to_string(), w, h));
         Some(Action::PaneOpen {
             pane: name.to_string(),
+            w,
+            h,
         })
+    }
+
+    /// **The pane leaves the surface stack**, so the daemon is told to stop refreshing it — C4's
+    /// `PaneClose`, which is the opposite of the `PaneOpen` [`App::open_plugin`] sends.
+    ///
+    /// The name has to be read BEFORE the close: `forget_surface` clears `plugin_open` with the
+    /// pane, which is what keeps a closed pane from reopening on a stale name.
+    pub(crate) fn close_plugin(&mut self) -> Option<Action> {
+        // **The surface closes whatever the name says**: a pane left on the stack with no name is
+        // a screen whose keys go nowhere, and the name is only needed for the frame.
+        let pane = self.plugin_open.clone();
+        self.close_surface(Surface::PluginPane);
+        pane.map(|pane| Action::PaneClose { pane })
     }
 
     /// **Esc, inside a plugin pane**: leave the view, then the pane. `true` when it took the
@@ -306,6 +356,7 @@ impl App {
         let content = view::content(v, self.plugin_screen, self.plugin_sel, w);
         self.plugin_stop_rows = content.lines.stop_rows.clone();
         self.plugin_panel_rows = content.panels;
+        self.plugin_legend_rows = content.legend;
         row_strings(&content.lines.lines, self.cfg.palette())
     }
 

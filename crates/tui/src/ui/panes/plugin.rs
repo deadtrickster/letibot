@@ -606,6 +606,11 @@ pub(crate) struct Content {
     pub(crate) lines: PaneLines,
     /// `(pane row, panel index)` for every panel title drawn.
     pub(crate) panels: Vec<(usize, usize)>,
+    /// **`(pane row, legend key)`** for every line or row whose label the view's legend
+    /// documents — the record a hover reads. C3 gives a legend two jobs, *the `l` view and the
+    /// hover text*, and this is the second one's: written where the row is drawn, because only
+    /// the draw knows which row the pointer's row became.
+    pub(crate) legend: Vec<(usize, String)>,
 }
 
 /// **The rows of a screen**, and where each stop landed — what the pane draws, the arrows
@@ -614,6 +619,7 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
     let g = grid(view, screen, w);
     let mut out = PaneLines::new();
     let mut panels: Vec<(usize, usize)> = Vec::new();
+    let mut legend: Vec<(usize, String)> = Vec::new();
     // The screen's own head, above the walk.
     match screen {
         Screen::Overview => {
@@ -762,6 +768,19 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                 }
             };
             out.push_stop(first);
+            // **A label the legend documents is a row the pointer can explain.** The key is the
+            // label as DRAWN (`clean_line`, the same reading the drawing measured), so a legend
+            // entry and the row it documents cannot disagree about what a label says.
+            if !view.legend.is_empty()
+                && let Some(label) = match &it {
+                    Item::Line { line, .. } => Some(clean_line(&line.label)),
+                    Item::Row { row, .. } => row.cells.first().map(|c| clean_line(c)),
+                    _ => None,
+                }
+                && view.legend.contains_key(&label)
+            {
+                legend.push((out.lines.len() - 1, label));
+            }
             for r in rows {
                 out.push(r);
             }
@@ -777,7 +796,11 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
     if out.lines.len() == before {
         out.push(pane::faint("  this pane has nothing to draw yet"));
     }
-    Content { lines: out, panels }
+    Content {
+        lines: out,
+        panels,
+        legend,
+    }
 }
 
 /// A legend's `label  meaning` rows: the documentation of every label in the pane.

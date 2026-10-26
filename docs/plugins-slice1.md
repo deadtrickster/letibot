@@ -74,10 +74,17 @@ impl Stack {
     /// Resolve one hook through the stack. Answer protocol, per layer from the top:
     ///   {"pass":true} or unchanged -> next layer down
     ///   {"mask":true}              -> no answer at all
-    ///   {"look":{"below": <input>}} -> call the layer below with <input>, then call this layer
+    ///   {"below": <input>}         -> call the layer below with <input>, then call this layer
     ///                                   again with the original input plus "below": <its answer>
     ///   anything else              -> the answer
     /// A layer that errors (trap, fuel, malformed JSON) is skipped and recorded as a failure.
+    ///
+    /// **The marker is `below`, at the top level, and it is not `look`.** C3's pane document has
+    /// a top-level `look` of its own (*run this for me*: `{"read":…}` or `{"exec":[…]}`), so a
+    /// protocol that spelled *ask the layer below* `{"look":{"below":…}}` could not tell a
+    /// dashboard's answer from a request, and every pane that asked for its file answered
+    /// nothing at all. One word, one meaning, in one place (changed 2026-10-26; slice 1's C2 had
+    /// `{"look":{"below":…}}` and the daemon carried a re-spelling seam for it).
     pub fn call(&self, hook: &str, input: &serde_json::Value) -> Resolved;
     pub fn set_disabled(&mut self, id: &str, disabled: bool) -> Result<(), String>;
     /// Hot reload: re-stat each layer's plugin.wasm; changed ones become Candidates.
@@ -204,9 +211,9 @@ A summary line under the title counts findings by severity, as serenedash's does
 **The view is also data.** The same JSON is what an agent reads (a later `pane read` tool), the way
 serenedash's `--once --format json` is what its MCP server returns.
 
-## C4. The wire (protocol 49)
+## C4. The wire (protocol 51)
 
-In `crates/sessionlog/src/protocol.rs`, bump `PROTOCOL_VERSION` to 49 and add:
+In `crates/sessionlog/src/protocol.rs`, bump `PROTOCOL_VERSION` to 51 and add:
 
 ```rust
 // daemon -> head, a session event
@@ -214,8 +221,21 @@ SessionEvent::PluginPane { pane: String /* "plan-dashboard/dashboard" */, view: 
 SessionEvent::PluginPaneGone { pane: String }
 // head -> daemon, a client frame (the enum is `ClientFrame`)
 ClientFrame::PaneAction { pane: String, item: String, action: String }  // action = key's event, or "look"
-ClientFrame::PaneOpen { pane: String }   // the head opened it: the daemon runs it now
+ClientFrame::PaneOpen { pane: String, w: u32, h: u32 }   // the head opened it: the daemon runs it now
+ClientFrame::PaneClose { pane: String }                  // the head closed it: stop refreshing it
 ```
+
+**`PaneOpen`'s `w` and `h` are the pane's drawable rectangle** — the columns and rows the head has
+for it, chrome excluded — and they exist because only a head knows them: a dashboard laid out for
+the host's guess wraps its labels for a terminal nobody is looking at. Both are `#[serde(default)]`
+and `0` means *the head did not say* (the host's own default). **A resize is `PaneOpen` again**,
+with the new rectangle: the head already sends it on every open, the daemon already re-runs the
+pane on one, and a second frame kind would be a second way to say *draw it at this size*.
+
+**`PaneClose` is the head saying a pane is off its screen.** Without it the host keeps a refresh
+clock per pane a head has ever opened and asks it again every `every_s` — a wasm call and a look
+every 5–30 seconds, for a screen somebody closed, until the session ends. It is idempotent and
+quiet: nothing is published in answer, and a pane the session never had is not an error.
 
 The view types (`View`, `Block`, `Row`, `Action`, `Role`) are serde structs in
 `crates/sessionlog/src/pane.rs`, shared by the daemon (validates a plugin's answer into them) and

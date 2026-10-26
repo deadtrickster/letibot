@@ -206,7 +206,22 @@ pub enum Action {
     /// **Open a plugin's pane** — the head just opened it, so the daemon runs the pane's look
     /// now and answers with `SessionEvent::PluginPane`. Asked on every open, because a view is
     /// a moment: the one this head holds may be an hour old.
+    ///
+    /// `w` and `h` are the rectangle the pane is drawn in (protocol 51). **The open can only
+    /// guess it**: the room a pane gets depends on the chrome above it, which `main_area` knows
+    /// and a key handler does not. So the guess is the last rectangle this head sent — a screen
+    /// rarely changes between one open and the next — and the frame that actually draws the pane
+    /// sends the real one, through the same change detector `Action::TermResize` uses. A head
+    /// that has never drawn a pane sends `0, 0`, which the daemon reads as *use your default*.
     PaneOpen {
+        pane: String,
+        w: u32,
+        h: u32,
+    },
+    /// **A plugin's pane is off the screen**, so the daemon stops refreshing it: the opposite of
+    /// [`Action::PaneOpen`], and the reason a closed dashboard does not keep reading files every
+    /// `every_s` until the session ends.
+    PaneClose {
         pane: String,
     },
     /// **One key of one stop, back to the pane that drew it** — the `event` word its action

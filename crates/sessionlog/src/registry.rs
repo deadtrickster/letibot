@@ -732,7 +732,18 @@ pub trait PaneDriver: Send + Sync {
     /// **Run this pane now**, because a head opened it: the answer is a
     /// [`crate::SessionEvent::PluginPane`] on the session's log, never a reply frame. A pane
     /// this session does not have publishes nothing.
-    fn open(&self, session_id: &str, hub: &Arc<Hub>, pane: &str);
+    ///
+    /// `size` is the rectangle the head will draw it in — `ClientFrame::PaneOpen`'s `w` and `h`,
+    /// and `(0, 0)` from a head built before protocol 51, which asks for the host's own default.
+    /// **A resize arrives here too**, as another open with the new rectangle: one frame for
+    /// *draw it at this size*, whether it is the first time or the fifth.
+    fn open(&self, session_id: &str, hub: &Arc<Hub>, pane: &str, size: (u32, u32));
+
+    /// **Stop refreshing this pane** — the head is no longer drawing it. A pane the head has
+    /// closed is not a pane whose look should keep running every `every_s`, and this is the only
+    /// thing that says so. Idempotent, and quiet: nothing is published in answer, and a pane this
+    /// session never had is not an error.
+    fn close(&self, session_id: &str, pane: &str);
 
     /// **One key of one stop, back to the pane that drew it** — the action word its `event`
     /// named, or `look` to re-run the look. Answered like [`Self::open`].

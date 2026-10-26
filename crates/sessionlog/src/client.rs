@@ -358,8 +358,24 @@ impl HeadClient {
     /// answer arrives as [`crate::SessionEvent::PluginPane`] on the log, like the job table's
     /// rows arrive as a `Jobs` frame: the head draws what it is given and does not decide what a
     /// dashboard says.
-    pub fn pane_open(&mut self, pane: &str) -> Result<(), ClientError> {
+    ///
+    /// `w` and `h` are the rectangle the head will draw the pane in (protocol 51). They are the
+    /// head's facts and nobody else's: the daemon has no screen, so a pane laid out for a guess
+    /// would wrap its labels for a terminal that does not exist. A resize is this call again.
+    pub fn pane_open(&mut self, pane: &str, w: u32, h: u32) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::PaneOpen {
+            pane: pane.to_string(),
+            w,
+            h,
+        })?;
+        Ok(())
+    }
+
+    /// **Tell the daemon a plugin pane is off the screen**, so it stops refreshing it. The
+    /// opposite of [`Client::pane_open`], and quiet: nothing is published in answer, because the
+    /// head that closed the pane is the one that says so.
+    pub fn pane_close(&mut self, pane: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::PaneClose {
             pane: pane.to_string(),
         })?;
         Ok(())

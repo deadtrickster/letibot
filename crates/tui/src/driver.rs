@@ -874,8 +874,14 @@ impl Link {
                     Action::Switch(id) => {
                         self.client.switch(&id, 0)?;
                     }
-                    Action::PaneOpen { pane } => {
-                        self.client.pane_open(&pane)?;
+                    Action::PaneOpen { pane, w, h } => {
+                        self.client.pane_open(&pane, w, h)?;
+                    }
+                    // **The pane left the screen**: the daemon takes it off its refresh clock,
+                    // so a closed dashboard stops reading files every `every_s`. Silent in
+                    // answer — the head that closed it is the one that said so.
+                    Action::PaneClose { pane } => {
+                        self.client.pane_close(&pane)?;
                     }
                     // **A stop's action, back to the pane that drew it** — the same shape the
                     // open has: a read the daemon answers with a new view on the log, not a

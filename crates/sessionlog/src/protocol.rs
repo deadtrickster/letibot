@@ -748,7 +748,24 @@ use crate::view::Snapshot;
 /// under a header naming it, and anything else becomes a [`letibot_transcript::UserPart::FileRef`]
 /// — a path the model may then `read`. Nothing here is a permission: the operator attached the
 /// file themselves, and the daemon reads it as the same act a `read` call is.
-pub const PROTOCOL_VERSION: u32 = 50;
+///
+/// # 51: a pane the head closed, and the rectangle it draws in
+///
+/// Two facts the pane wire was missing (`docs/plugins-slice1.md`, C4).
+///
+/// [`ClientFrame::PaneClose`] is the head saying a plugin pane is no longer on its screen, so the
+/// daemon stops refreshing it. Without it the host kept an entry per pane a head had ever opened
+/// and asked it again every `every_s` — a wasm call and a file read every 5–30 seconds, for a
+/// screen somebody had closed, until the session ended.
+///
+/// [`ClientFrame::PaneOpen`]'s `w` and `h` are the pane's drawable rectangle, so a pane can lay
+/// itself out for the screen it is drawn on instead of the host's 120×40 guess. Both are fields on
+/// a frame that already exists and both default (`0` = *the head did not say*), but the number
+/// moves anyway, and for the reason 50 moved: the frames are **new**, so a version-50 daemon fails
+/// to parse a `PaneClose` mid-session and a version-50 head cannot decode one — the version-4
+/// argument in both directions. A head that reads `51` knows its open carries a size the daemon
+/// will honour.
+pub const PROTOCOL_VERSION: u32 = 51;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2492,6 +2509,34 @@ pub enum ClientFrame {
     PaneOpen {
         /// `<layer name>/<hook name>` — see [`crate::SessionEvent::PluginPane`].
         pane: String,
+        /// **The pane's drawable rectangle**, in the terminal's columns and rows — what the head
+        /// has to draw it in, chrome excluded. Added at `PROTOCOL_VERSION` 51 and defaulted: a
+        /// version-50 head sends neither, and `0` asks the host for its own default rather than
+        /// pretending the pane is zero columns wide.
+        ///
+        /// **A resize is this frame again**, with the new rectangle: the head already sends it on
+        /// every open, the daemon already re-runs the pane on one, and a second frame kind would
+        /// be a second way to say *draw it at this size*.
+        #[serde(default)]
+        w: u32,
+        #[serde(default)]
+        h: u32,
+    },
+    /// **The head closed a plugin's pane**: stop refreshing it, and forget its state.
+    ///
+    /// Added at `PROTOCOL_VERSION` 51. The daemon keeps a pane on its refresh clock
+    /// (`every_s`) for as long as it believes somebody is looking at it; without this frame that
+    /// belief is *until the session ends*, because `PaneOpen` had no opposite. What goes is the
+    /// refresh — a wasm call and a look — and the pane's held `state`, which is a document about a
+    /// screen that is gone. Nothing is published in answer: the head that sent it is the one that
+    /// closed the pane, and a head that arrives later learns the pane's existence from the
+    /// `PluginPane` events the daemon publishes on attach.
+    ///
+    /// **Idempotent and quiet**, like `TermClose`: closing a pane twice, or one this session never
+    /// had, is not a request that can be wrong about anything.
+    PaneClose {
+        /// `<layer name>/<hook name>`.
+        pane: String,
     },
     /// **One key of one stop, back to the pane that drew it**: the `event` word the stop's
     /// action named, or `"look"` to re-run the look now.
@@ -3012,6 +3057,7 @@ mod tests {
                 | ClientFrame::OperatorResult { .. }
                 | ClientFrame::OperatorShell { .. }
                 | ClientFrame::PaneAction { .. }
+                | ClientFrame::PaneClose { .. }
                 | ClientFrame::PaneOpen { .. }
                 | ClientFrame::Peek { .. }
                 | ClientFrame::Promote { .. }
@@ -3121,8 +3167,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 50,
-            "the match above was last reconciled with the frame list at 50 — \
+            PROTOCOL_VERSION, 51,
+            "the match above was last reconciled with the frame list at 51 — 51 added \
+             `ClientFrame::PaneClose` (a new frame, so a version-50 daemon fails to parse it) and \
+             `PaneOpen`'s `w`/`h` (defaulted, and a version-50 daemon would ignore a size a head \
+             promised its pane; the frame is what makes the bump, not the fields). 50 was \
              `ClientFrame::Prompt.attachments`, an ADDED, DEFAULTED field that is still a bump: a \
              version-49 daemon parses the frame and DROPS the attachments in silence, so the bump \
              is what a head reads to refuse to promise a picture it cannot send. 49 was \

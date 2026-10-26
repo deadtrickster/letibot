@@ -88,10 +88,12 @@ built-in         github-pr, coderabbit, pr-create, links             ← embedde
   layer is small because a fix is small.
 - **Order within a scope is creation order**, newest on top, so the stack reads as the history of
   the fixes. Scopes stack session over project over user over built-in.
-- **A layer can call down.** Asking for the layer below's answer is a *look* like any other (§1, principle 1):
-  the hook returns `{"look":{"below": <input, possibly modified>}}` and is called again with the
-  lower layer's output. A fix that only changes one field of the answer asks below and edits it,
-  instead of re-implementing the hook — the dotenv `${VAR}` of this design.
+- **A layer can call down.** Asking for the layer below's answer is a *look below* (§1, principle 1):
+  the hook returns `{"below": <input, possibly modified>}` — a top-level marker, not `look`, which
+  the pane contract of `docs/plugins-slice1.md` C3 already uses for *run this for me* — and is
+  called again with the original input plus the lower layer's output under `below`. A fix that only
+  changes one field of the answer asks below and edits it, instead of re-implementing the hook — the
+  dotenv `${VAR}` of this design.
 - **A layer can mask.** `{"mask": true}` from a hook means *no answer here and none below* — the
   hook is switched off from this layer down (the built-in auto-watch, say). Masking is visible in
   the stack view, so a hook that does nothing is never a mystery.

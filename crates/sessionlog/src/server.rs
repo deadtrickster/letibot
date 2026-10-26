@@ -1816,10 +1816,20 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             //
             // `PaneAction.action` is the stop's `event` word or `"look"`; a pane's `say` never
             // travels as one (see `ClientFrame::PaneAction`).
-            Ok(ClientFrame::PaneOpen { pane }) => {
+            Ok(ClientFrame::PaneOpen { pane, w, h }) => {
                 let session_id = seat.hub.session_id();
                 if let Some(driver) = registry.pane_driver(&session_id) {
-                    driver.open(&session_id, &seat.hub, &pane);
+                    driver.open(&session_id, &seat.hub, &pane, (w, h));
+                }
+            }
+            // **The head closed the pane** (`PROTOCOL_VERSION` 51): the daemon drops it from the
+            // refresh clock. Nothing is answered — the head that stopped drawing it is the one
+            // that said so — and a pane this session never had is not an error, the same quiet
+            // `TermClose` keeps.
+            Ok(ClientFrame::PaneClose { pane }) => {
+                let session_id = seat.hub.session_id();
+                if let Some(driver) = registry.pane_driver(&session_id) {
+                    driver.close(&session_id, &pane);
                 }
             }
             Ok(ClientFrame::PaneAction { pane, item, action }) => {

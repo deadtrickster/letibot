@@ -35,10 +35,10 @@ pub(crate) enum Act {
     /// Answer text that is not JSON.
     Malformed(String),
     /// Ask the layer below on the first call, then answer with what came back.
-    LookBelow(Value),
+    AskBelow(Value),
     /// Ask the layer below on every call, including the one that already carries `below` — the
-    /// second-look path, which must be a recorded failure and not a loop.
-    AlwaysLook(Value),
+    /// second ask, which must be a recorded failure and not a loop.
+    AlwaysAsk(Value),
 }
 
 impl Act {
@@ -66,12 +66,12 @@ impl Act {
         Act::Malformed(text.to_string())
     }
 
-    pub(crate) fn look_below(input: Value) -> Act {
-        Act::LookBelow(input)
+    pub(crate) fn ask_below(input: Value) -> Act {
+        Act::AskBelow(input)
     }
 
-    pub(crate) fn always_look(input: Value) -> Act {
-        Act::AlwaysLook(input)
+    pub(crate) fn always_ask(input: Value) -> Act {
+        Act::AlwaysAsk(input)
     }
 }
 
@@ -113,7 +113,7 @@ impl Module for Fake {
             Act::Mask => json!({"mask": true}).to_string(),
             Act::Trap(why) => return Err(why.clone()),
             Act::Malformed(text) => text.clone(),
-            Act::LookBelow(below) => match input.get("below") {
+            Act::AskBelow(below) => match input.get("below") {
                 // The second call: report what arrived under `below` beside the original input,
                 // so a test can see the whole round trip rather than a flag saying it happened.
                 Some(seen) => {
@@ -123,9 +123,9 @@ impl Module for Fake {
                     }
                     json!({"below_seen": seen, "input": original}).to_string()
                 }
-                None => json!({"look": {"below": below}}).to_string(),
+                None => json!({"below": below}).to_string(),
             },
-            Act::AlwaysLook(below) => json!({"look": {"below": below}}).to_string(),
+            Act::AlwaysAsk(below) => json!({"below": below}).to_string(),
         }))
     }
 
@@ -145,8 +145,8 @@ pub(crate) fn script(acts: &[(&str, Act)]) -> Vec<u8> {
             Act::Mask => json!({ "mask": true }),
             Act::Trap(why) => json!({ "trap": why }),
             Act::Malformed(text) => json!({ "malformed": text }),
-            Act::LookBelow(input) => json!({ "look_below": input }),
-            Act::AlwaysLook(input) => json!({ "always_look": input }),
+            Act::AskBelow(input) => json!({ "ask_below": input }),
+            Act::AlwaysAsk(input) => json!({ "always_ask": input }),
         };
         answers.insert((*hook).to_string(), encoded);
     }
@@ -182,10 +182,10 @@ fn parse_script(bytes: &[u8]) -> Result<Fake, String> {
             Act::Trap(why.as_str().unwrap_or_default().to_string())
         } else if let Some(text) = encoded.get("malformed") {
             Act::Malformed(text.as_str().unwrap_or_default().to_string())
-        } else if let Some(input) = encoded.get("look_below") {
-            Act::LookBelow(input.clone())
-        } else if let Some(input) = encoded.get("always_look") {
-            Act::AlwaysLook(input.clone())
+        } else if let Some(input) = encoded.get("ask_below") {
+            Act::AskBelow(input.clone())
+        } else if let Some(input) = encoded.get("always_ask") {
+            Act::AlwaysAsk(input.clone())
         } else {
             return Err(format!("not a fake module: hook `{hook}` has no act"));
         };

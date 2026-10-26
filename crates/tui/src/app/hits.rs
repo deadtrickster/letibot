@@ -135,6 +135,7 @@ impl App {
         room: usize,
     ) {
         self.hits.clear();
+        self.plugin_legend_at.clear();
         let x = gutter;
         let rect = Rect {
             x: 0,
@@ -202,6 +203,21 @@ impl App {
                             });
                         }
                     }
+                    // **The rows a legend documents, in the terminal's rows** — the record a
+                    // hover reads to answer *what does this label mean* (C3's *the same text
+                    // answers on hover*). Not a hit: a legend row is documentation, and a click
+                    // on it acts on nothing, so it wants no hand pointer and no target. The
+                    // translation lives here because this is the one place that knows the pane's
+                    // top and its scroll.
+                    self.plugin_legend_at = self
+                        .plugin_legend_rows
+                        .iter()
+                        .filter_map(|(row, key)| {
+                            row.checked_sub(self.pane_scroll)
+                                .filter(|d| *d < room)
+                                .map(|d| (top + d, key.clone()))
+                        })
+                        .collect();
                 }
                 // **The strip's labels, over the pane they sit in** — only while the window shows
                 // the strip's row; a strip scrolled away is not a target.

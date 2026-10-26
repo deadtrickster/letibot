@@ -72,6 +72,14 @@ impl App {
                 if self.plugin_esc() {
                     return ControlFlow::Break(None);
                 }
+                // **A plugin's pane leaving the screen is the daemon's business too** (C4's
+                // `PaneClose`, protocol 51): the host keeps a refresh clock per pane a head has
+                // opened, and a dashboard nobody is looking at must stop reading files. The pop
+                // below is the same act for every other surface and says nothing, which is why
+                // this is a step of its own rather than a hook inside it.
+                if self.focused_surface() == Some(Surface::PluginPane) {
+                    return ControlFlow::Break(self.close_plugin());
+                }
                 self.pop_surface();
                 ControlFlow::Break(None)
             }

@@ -37,19 +37,18 @@
 //!
 //! # What slice 1 does not have, and why it is written down
 //!
-//! There is **no `PaneClose` on the wire** (C4), so a pane a head has opened stays in this host
-//! and keeps being refreshed at its own `every_s`. Nothing leaks but the refresh: a read look and
-//! a wasm call every 5–30 seconds while the session is up, for a screen somebody may have closed.
-//! A close frame is the fix, and it is a contract change this package does not make.
+//! **No look runs for a pane nobody opened.** [`PluginHost::announce`] publishes each pane's first
+//! frame with `may_look: false`, so a dashboard on a session's list costs a wasm call and no file
+//! read until a head opens it. The refresh clock (`every_s`) exists only for panes on that list
+//! that a head has opened, and `ClientFrame::PaneClose` (protocol 51) takes a pane off it — a
+//! closed pane is a pane the host stops asking.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use letibot_plugins::{
-    Builder, Capability, CargoBuilder, Failure, Loader, Module, Recorder, Stack,
-};
+use letibot_plugins::{Builder, Capability, CargoBuilder, Failure, Loader, Recorder, Stack};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::pane::{Block, Line, LookSpec, Panel, Role, Unavailable, View};
@@ -64,29 +63,14 @@ pub mod rano;
 /// seconds is `mergequeue::watch`'s own poll, for the same reason: a stat per layer is free.
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
 
-/// The rectangle a pane is asked to draw at when nobody told the host one. `ClientFrame::PaneOpen`
-/// carries no size (C4) and nothing else on the wire does either, so a dashboard laid out for a
-/// wide screen is the honest default rather than a guess about a head's terminal.
+/// **The rectangle a pane draws in when the head did not say one.** C4's `PaneOpen` carries the
+/// pane's own `w` and `h` (protocol 51); a head built before that sends neither, and a dashboard
+/// laid out for a wide screen is the honest default rather than a guess about a terminal.
 pub const SIZE_W: u32 = 120;
 pub const SIZE_H: u32 = 40;
 
 /// The contract version every pane input carries (C3): the host says which one it speaks.
 const PANE_V: u32 = 1;
-
-/// **The name a pane's own `look` travels under inside the stack.**
-///
-/// C2's answer protocol and C3's pane document both use the top-level key `look` and they mean
-/// different things: to the stack it is *ask the layer below* (`{"look":{"below":…}}`), to a pane
-/// it is *run this for me* (`{"look":{"read":"…"}}`). A pane answer read by the stack as an
-/// answer protocol would meet `look` without `below`, be recorded as a broken look below and
-/// passed to the next layer down — so a dashboard that asks for a file would answer nothing.
-///
-/// The collision is in the two contracts and neither is this package's to change, so it is
-/// bridged at the one seam that owns both: every module this host loads is wrapped so a pane
-/// hook's `look` that names **no layer below** is re-spelled on the way out ([`spell`]) and
-/// re-spelled back on the way in ([`unspell`]). The plugin and the stack each keep their own
-/// reading of the word, and the daemon is where the two are the same document.
-const PANE_LOOK: &str = "pane_look";
 
 /// One session's layers, its recorded inputs, and the panes a head has opened.
 pub struct PluginHost {
@@ -104,6 +88,12 @@ struct Inner {
     /// The panes a head has opened, by id, with what the pane returned and when it wants asking
     /// again.
     panes: BTreeMap<String, Open>,
+    /// **The rectangle each pane was last asked to draw in**, by pane id — `ClientFrame::PaneOpen`'s
+    /// `w` and `h`, which only a head knows. Kept beside `panes` rather than inside an `Open`
+    /// because a close is not a forget: a pane opened again on the same screen should draw at the
+    /// size it was last drawn at, and the entry it would have lived in is exactly what a close
+    /// removes.
+    sizes: BTreeMap<String, (u32, u32)>,
     /// Layer ids with a gate running right now, so a poll that sees the same change twice does
     /// not compile it twice.
     gating: BTreeSet<String>,
@@ -130,7 +120,6 @@ struct Open {
     /// 0 is never; C3's floor is `sessionlog::pane::MIN_EVERY_S`.
     every_s: u64,
     next_at: Option<Instant>,
-    size: (u32, u32),
 }
 
 /// What one render is: which `look` and `event` the first call is handed, and whether this pass
@@ -181,9 +170,7 @@ impl PluginHost {
             session_dir.as_deref(),
             Some(&workspace),
             user_dir.as_deref(),
-            // **The spelling seam** — see [`PANE_LOOK`]: every module is wrapped so a pane's own
-            // `look` survives the stack's look-below protocol.
-            Arc::new(Spelled { inner: loader }),
+            loader,
         );
         PluginHost {
             session: session.into(),
@@ -192,6 +179,7 @@ impl PluginHost {
                 stack,
                 rec: Recorder::new(),
                 panes: BTreeMap::new(),
+                sizes: BTreeMap::new(),
                 gating: BTreeSet::new(),
                 said: BTreeSet::new(),
                 notices: Vec::new(),
@@ -463,6 +451,20 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
+    /// **The rectangle a head is drawing this pane in** — `ClientFrame::PaneOpen`'s `w` and `h`,
+    /// recorded before the pane is asked so the C3 input carries it.
+    ///
+    /// `(0, 0)` is a head built before protocol 51, which has no size to give; it asks for
+    /// [`SIZE_W`]×[`SIZE_H`] rather than for a pane zero columns wide.
+    fn record_size(&self, pane: &str, (w, h): (u32, u32)) {
+        let size = if w == 0 || h == 0 {
+            (SIZE_W, SIZE_H)
+        } else {
+            (w, h)
+        };
+        self.lock().sizes.insert(pane.to_string(), size);
+    }
+
     /// Every stack failure not yet said, once each.
     fn say_failures_now(&self, hub: &Arc<Hub>) {
         let mut inner = self.lock();
@@ -485,9 +487,9 @@ impl PluginHost {
         let hook = format!("pane_{name}");
         let mut interior = self.lock();
         let size = interior
-            .panes
+            .sizes
             .get(pane)
-            .map(|p| p.size)
+            .copied()
             .unwrap_or((SIZE_W, SIZE_H));
         let mut state = interior.panes.get(pane).and_then(|p| p.state.clone());
         let mut req = req;
@@ -522,7 +524,6 @@ impl PluginHost {
                 }
                 return;
             };
-            let answer = unspell(&answer);
             let by = resolved.by.clone().unwrap_or_else(|| manifest.to_string());
             let (published, view) = match validated(&answer, pane, &by) {
                 Ok(view) => (answer, view),
@@ -556,7 +557,6 @@ impl PluginHost {
                     by: by.clone(),
                     every_s: 0,
                     next_at: None,
-                    size,
                 });
             open.state = view.state.clone();
             open.spec = view.look.clone();
@@ -594,8 +594,17 @@ impl PaneDriver for PluginHost {
         self.announce(hub);
     }
 
-    fn open(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str) {
+    fn open(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str, size: (u32, u32)) {
+        self.record_size(pane, size);
         self.render(hub, pane, Req::fresh());
+    }
+
+    /// **The pane is off the screen, so it comes off the refresh clock.** Nothing else is touched:
+    /// the layer's view is dropped with the entry, and the next open asks for a fresh one anyway
+    /// (C4's *a view is a moment*). The rectangle the pane was drawn in stays recorded, so a
+    /// reopen on the same screen does not go back to the host's default for one frame.
+    fn close(&self, _session_id: &str, pane: &str) {
+        self.lock().panes.remove(pane);
     }
 
     fn action(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str, item: &str, action: &str) {
@@ -709,72 +718,6 @@ fn unavailable(pane: &str, layer: &str, why: &str) -> Value {
         ..View::default()
     };
     serde_json::to_value(&view).unwrap_or(Value::Null)
-}
-
-/// **The pane's own `look`, put back under the name C3 gives it** — see [`PANE_LOOK`].
-fn unspell(answer: &Value) -> Value {
-    let mut answer = answer.clone();
-    if let Some(map) = answer.as_object_mut()
-        && !map.contains_key("look")
-        && let Some(look) = map.remove(PANE_LOOK)
-    {
-        map.insert("look".to_string(), look);
-    }
-    answer
-}
-
-/// **The same, the other way** — a pane hook's `look` that names no layer below becomes
-/// [`PANE_LOOK`] so the stack's answer protocol does not read it as *ask below*. A real look
-/// below is untouched: it carries `below`, which no `LookSpec` can.
-fn spell(hook: &str, text: &str) -> String {
-    if !hook.starts_with("pane_") {
-        return text.to_string();
-    }
-    let Ok(mut value) = serde_json::from_str::<Value>(text) else {
-        // Not JSON is the stack's failure to record, not this seam's.
-        return text.to_string();
-    };
-    let Some(map) = value.as_object_mut() else {
-        return text.to_string();
-    };
-    let spec = matches!(map.get("look"), Some(Value::Object(l)) if !l.contains_key("below"));
-    if !spec {
-        return text.to_string();
-    }
-    let look = map.remove("look").expect("just checked");
-    map.insert(PANE_LOOK.to_string(), look);
-    value.to_string()
-}
-
-/// **A stack whose modules speak C3's `look`, not C2's** — see [`PANE_LOOK`].
-struct Spelled {
-    inner: Arc<dyn Loader>,
-}
-
-impl Loader for Spelled {
-    fn load(&self, wasm: &Path, caps: &[Capability]) -> Result<Box<dyn Module>, String> {
-        Ok(Box::new(SpelledModule {
-            inner: self.inner.load(wasm, caps)?,
-        }))
-    }
-}
-
-struct SpelledModule {
-    inner: Box<dyn Module>,
-}
-
-impl Module for SpelledModule {
-    fn hooks(&self) -> Vec<String> {
-        self.inner.hooks()
-    }
-
-    fn call(&self, hook: &str, input: &str) -> Result<Option<String>, String> {
-        Ok(self.inner.call(hook, input)?.map(|text| spell(hook, &text)))
-    }
-
-    fn fuel(&self) -> u64 {
-        self.inner.fuel()
-    }
 }
 
 /// Say each stack failure once, and queue it for the model — which is the one that can fix a
@@ -1246,5 +1189,124 @@ mod tests {
             views(&hub).is_empty(),
             "a hook nobody exports is not a pane with a view"
         );
+    }
+
+    /// **A module that answers its own input's `size`** — the only place a test can read, from
+    /// outside, that the rectangle a head sent reached the plugin. The title is C3's one field
+    /// that is free text, so the plugin reports the rectangle there and the assertion is the
+    /// answer the head would draw.
+    struct SizeModule;
+
+    impl Module for SizeModule {
+        fn hooks(&self) -> Vec<String> {
+            vec!["pane_dashboard".to_string()]
+        }
+
+        fn call(&self, _hook: &str, input: &str) -> Result<Option<String>, String> {
+            let input: Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+            Ok(Some(
+                json!({
+                    "title": format!("{}\u{d7}{}", input["size"]["w"], input["size"]["h"]),
+                    "panels": [{"id": "plan", "key": "t", "title": "plan"}],
+                })
+                .to_string(),
+            ))
+        }
+
+        fn fuel(&self) -> u64 {
+            7
+        }
+    }
+
+    struct SizeLoader;
+
+    impl Loader for SizeLoader {
+        fn load(&self, _wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+            Ok(Box::new(SizeModule))
+        }
+    }
+
+    /// **The rectangle the head is drawing the pane in reaches the plugin** — C4's `PaneOpen`
+    /// `w`/`h`, which exist because the daemon has no screen: a dashboard laid out for 120×40 in a
+    /// 70-column pane wraps every label for a terminal nobody is looking at.
+    #[test]
+    fn the_rectangle_a_head_sends_is_the_one_the_pane_is_asked_at() {
+        let (root, hub) = project("size", A_VIEW);
+        let host = PluginHost::discover(
+            "s-plugins",
+            &root,
+            None,
+            None,
+            Arc::new(SizeLoader),
+            Arc::new(FileBuilder),
+        );
+        host.open("s-plugins", &hub, "plan-dashboard/dashboard", (77, 21));
+        assert_eq!(
+            views(&hub).last().map(|(_, v)| v["title"].clone()),
+            Some(json!("77\u{d7}21")),
+            "the plugin was handed the head's rectangle"
+        );
+        // **A resize is the same frame again**, with the new rectangle — one way to say *draw it
+        // at this size*, whether it is the first time or the fifth.
+        host.open("s-plugins", &hub, "plan-dashboard/dashboard", (100, 30));
+        assert_eq!(
+            views(&hub).last().map(|(_, v)| v["title"].clone()),
+            Some(json!("100\u{d7}30"))
+        );
+        // **And a head built before protocol 51 sends neither** — `0` is *the head did not say*,
+        // which asks for the host's default rather than for a pane zero columns wide.
+        host.open("s-plugins", &hub, "plan-dashboard/dashboard", (0, 0));
+        assert_eq!(
+            views(&hub).last().map(|(_, v)| v["title"].clone()),
+            Some(json!(format!("{SIZE_W}\u{d7}{SIZE_H}")))
+        );
+    }
+
+    /// **A pane the head closed comes off the refresh clock** — C4's `PaneClose`. Without it the
+    /// host believes somebody is looking at a closed dashboard for the rest of the session, and
+    /// asks it again every `every_s`: a wasm call and a look per interval, for a screen nobody has.
+    #[test]
+    fn a_closed_pane_is_not_refreshed_again() {
+        let (root, hub) = project("close", A_VIEW);
+        let layer = root.join(".letibot/plugins/plan-dashboard");
+        // On the clock: `every_s` 5 is C3's floor.
+        std::fs::write(
+            layer.join("answer.json"),
+            r#"{"title":"one","panels":[{"id":"plan","key":"t","title":"plan"}],
+                "every_s":5}"#,
+        )
+        .expect("an answer on the clock");
+        let host = Arc::new(host(&root));
+        let pane = "plan-dashboard/dashboard";
+        host.open("s-plugins", &hub, pane, (80, 24));
+        assert!(host.lock().panes.contains_key(pane), "the pane is open");
+        // **Due now**, rather than waiting five seconds for it.
+        host.lock().panes.get_mut(pane).expect("open").next_at =
+            Some(Instant::now() - Duration::from_secs(1));
+        let before = views(&hub).len();
+        host.clone().tick(hub.clone());
+        assert_eq!(
+            views(&hub).len(),
+            before + 1,
+            "an open pane whose clock is up is asked again"
+        );
+
+        host.close("s-plugins", pane);
+        assert!(
+            !host.lock().panes.contains_key(pane),
+            "a closed pane is not held"
+        );
+        let after = views(&hub).len();
+        host.clone().tick(hub.clone());
+        assert_eq!(
+            views(&hub).len(),
+            after,
+            "and a closed pane is not asked again: {}",
+            views(&hub).len()
+        );
+        // Closing twice, or a pane this session never had, is quiet rather than an error.
+        host.close("s-plugins", pane);
+        host.close("s-plugins", "plan-dashboard/never");
+        assert_eq!(views(&hub).len(), after);
     }
 }

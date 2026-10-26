@@ -216,6 +216,16 @@ impl App {
             }
             None => self.conversation_hint(),
         };
+        // **A plugin pane's legend answers on hover** (C3: *a legend documents every label, and
+        // the same text answers on hover*). Said FIRST, because it is the sentence the pointer
+        // asked for: the key hints still follow and fall off the right of a narrow bar, which is
+        // the right way round — a reader who is pointing at a word wants the word explained.
+        let tail = match self.plugin_hover_legend() {
+            Some(text) if self.drawn() == Drawn::Surface(Surface::PluginPane) => {
+                format!("{text} · {tail}")
+            }
+            _ => tail,
+        };
         crate::ui::render::row(
             &HintBar {
                 editor,

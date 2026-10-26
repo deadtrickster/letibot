@@ -151,7 +151,11 @@ fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
             }
         }
     });
-    client.pane_open(PANE).expect("asking for the pane");
+    // **The rectangle the pane is drawn in** (protocol 51): a real width and height, not the
+    // daemon's default, so the frame that comes back was laid out for a screen somebody has.
+    client
+        .pane_open(PANE, 100, 30)
+        .expect("asking for the pane");
 
     let mut seen = Vec::new();
     let began = Instant::now();

@@ -251,10 +251,25 @@ pub struct App {
     /// that panel's view (C3's *a click on a panel opens it*). Not stops: a panel's title is a
     /// door, and Enter is for the rows behind it.
     pub(crate) plugin_panel_rows: Vec<(usize, usize)>,
+    /// **The pane rows whose label the view's legend documents**, `(row, legend key)` — what a
+    /// hover reads to answer *what does this label mean* (C3: *the same text answers on hover*).
+    /// Written by the frame that drew the rows, like every other row record here.
+    pub(crate) plugin_legend_rows: Vec<(usize, String)>,
+    /// **The same record in SCREEN rows**, translated where the pane's top and scroll are known
+    /// (`App::record_main_hits`) — a pointer arrives with a screen row and nothing else.
+    pub(crate) plugin_legend_at: Vec<(usize, String)>,
     /// **The stop a detail overlay was opened on**: the screen it was read out of, and its
     /// index in that screen's stops. Kept as a value because the overlay covers the pane and
     /// the pane's own screen never becomes the detail's.
     pub(crate) plugin_detail: Option<(crate::ui::panes::plugin::Screen, usize)>,
+    /// **What this head last told the daemon about a pane's rectangle** — its name and its size
+    /// (`ClientFrame::PaneOpen`'s `w` and `h`, protocol 51).
+    ///
+    /// The rectangle is only known while drawing (`main_area` has the width and the room, and the
+    /// chrome above them is not the head's to predict), so the open sends the best value it has and
+    /// the frame that draws the pane corrects it — the same change detector `Action::TermResize`
+    /// is, and for the same reason: a frame per draw would be a frame per keystroke.
+    pub(crate) plugin_sent: Option<(String, u32, u32)>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
@@ -1805,7 +1820,10 @@ impl App {
             plugin_sel: 0,
             plugin_stop_rows: Vec::new(),
             plugin_panel_rows: Vec::new(),
+            plugin_legend_rows: Vec::new(),
+            plugin_legend_at: Vec::new(),
             plugin_detail: None,
+            plugin_sent: None,
             picker_sel: 0,
             picker_hits: Vec::new(),
             screen_rows: 0,

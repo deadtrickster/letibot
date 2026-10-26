@@ -21,7 +21,7 @@
 //! # This crate has no wasm engine in it, on purpose
 //!
 //! It talks to a module through [`Module`] and to the compiler through [`Loader`], so the whole
-//! of §2.1–§2.4 is testable with fakes: precedence, pass, mask, the look below, a trap falling to
+//! of §2.1–§2.4 is testable with fakes: precedence, pass, mask, the ask-below, a trap falling to
 //! the next layer, and a gate that refuses a build failure, a load failure or a trap in replay
 //! are all in-crate tests that compile nothing. The rano engine is one `Loader`; a mock is
 //! another. That also keeps this crate's dependency set at three crates, none of which links C++,
@@ -35,14 +35,14 @@
 //! |---|---|
 //! | `Ok(None)` (unchanged) or `{"pass":true}` | the next layer down is asked |
 //! | `{"mask":true}` | nothing below is asked and there is no answer: the hook is switched off from here down |
-//! | `{"look":{"below":<input>}}` | the layer below is resolved with `<input>`, and this layer is asked **again** with the original input plus `"below": <that answer>` — a fix that edits one field of a lower answer instead of re-implementing the hook (§2.1) |
+//! | `{"below":<input>}` | the layer below is resolved with `<input>`, and this layer is asked **again** with the original input plus `"below": <that answer>` — a fix that edits one field of a lower answer instead of re-implementing the hook (§2.1) |
 //! | anything else | that is the answer, and this layer is `by` |
 //!
 //! A layer that traps, runs out of fuel, or answers something that is not JSON is **skipped and
 //! recorded**, and the next one down answers: fail down, loudly (§1, principle 4). One broken
 //! layer never stops a resolution, and it never stops the layer below it either.
 //!
-//! The order of the three markers is fixed — `mask`, then `look`, then `pass` — because an answer
+//! The order of the three markers is fixed — `mask`, then `below`, then `pass` — because an answer
 //! carrying two of them has to mean one thing, and the strongest statement is the one that gets
 //! to speak.
 
