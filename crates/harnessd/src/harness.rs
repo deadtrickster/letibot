@@ -47,7 +47,9 @@ use letibot_sessionlog::event::{TodoEntry, TodoStatus as WireTodoStatus};
 use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_sessionlog::{LogSink, SessionEvent, ToolLogSink};
 use letibot_tokencore::store::TodoItem;
-use letibot_tokencore::store::{JobRecord, SessionRecord, StablePrefixRecord, Store};
+use letibot_tokencore::store::{
+    JobRecord, SessionRecord, StablePrefixRecord, Store, StoredSession,
+};
 use letibot_tokencore::{Vocab, ledger::hex as hex32};
 // The same hash `letibot_tokencore::store` content-addresses a stable prefix with, taken
 // directly rather than through a helper there: the fingerprint is over the FROZEN text,
@@ -3373,7 +3375,23 @@ impl Harness {
         // tools, so the seat alone would re-confine it to a project its parent left.
         // Resolve it once here, before the backend, so it is in the `cfg` a subagent
         // clones as its base.
-        cfg.unconfined = cfg.unconfined || cfg.seat == Seat::Leticode;
+        //
+        // **And read back from the store for a session the SPAWN did not build.** The
+        // spawn inherits the standing through `sub_cfg`'s `..self.base.clone()`, and the
+        // row it leaves says only the SEAT — so a subagent reopened from the store (a
+        // parked child its parent messaged, a tree restored after a restart) came back
+        // `coder` with nothing said about the boundary, and `Seat::Coder` is what decides
+        // the backend. On Linux that was a subagent silently re-confined to the tree its
+        // parent had left, which is the defect the inheritance exists to prevent; on a Mac
+        // it is a session that does not open at all (*"the `coder` role needs a confined
+        // execution backend and one could not be built"*), so a leticode session's parked
+        // children could never come back.
+        cfg.unconfined = cfg.unconfined
+            || cfg.seat == Seat::Leticode
+            || match (&store, &stored) {
+                (Some(store), Some(st)) => unconfined_by_inheritance(store, st),
+                _ => false,
+            };
 
         // **The backend the seat needs, and the constructor is the disclosure.**
         //
@@ -21154,6 +21172,154 @@ fn downgraded_ruleset(
         rules.push(Rule::new(&name, "*", Action::Deny));
     }
     rules
+}
+
+/// **Did this session inherit a whole-host standing from an ancestor?**
+///
+/// [`Config::unconfined`] is set for [`Seat::Leticode`] and **inherited by its subagents**
+/// (`sub_cfg` builds a child from `..self.base.clone()`), which is the only way a `coder`
+/// subagent is ever unconfined — its own seat does not say so and neither does anything
+/// else on its row. So the rule the spawn applies is applied *again* here, from the rows
+/// it left: a session stands where its ancestors stand, and an ancestor that recorded
+/// `leticode` is one whose whole tree is unconfined.
+///
+/// # Why the walk instead of a recorded flag
+///
+/// The store's `session` row records the SEAT (`role`, v2) and not the standing, and the
+/// two are not the same fact for exactly the sessions this is about: a subagent's row says
+/// `coder` whether its parent was a leticode session or a coder one. So it is read back the
+/// way it was handed down — up the `parent_session_id` chain the row already carries (v4).
+/// A top-level session has no parent and is off this path entirely: its own seat is the
+/// whole answer, which is the line above this call.
+///
+/// **A row this walk cannot read is not an answer and not an error.** A vanished ancestor,
+/// a role the build cannot parse, or a chain longer than `MAX_ANCESTORS` all leave the
+/// standing unproven, and an unproven standing is the confined one — which is what every
+/// session that predates this had, and a refusal to open over an ancestor's bad row would
+/// cost a conversation for a fact about somebody else.
+fn unconfined_by_inheritance(store: &Store, from: &StoredSession) -> bool {
+    // The cap is [`Config::max_subagent_depth`]'s order of magnitude and not its value: the
+    // chain is a real parent tree, so this only bounds a cycle a corrupted store could have.
+    const MAX_ANCESTORS: usize = 32;
+    let mut parent = from.parent_session_id.clone();
+    let mut seen = 0usize;
+    while let Some(id) = parent {
+        seen += 1;
+        if seen > MAX_ANCESTORS {
+            return false;
+        }
+        let Ok(Some(row)) = store.session(&id) else {
+            return false;
+        };
+        if row.role.as_deref() == Some(Seat::Leticode.as_str()) {
+            return true;
+        }
+        parent = row.parent_session_id.clone();
+    }
+    false
+}
+
+#[cfg(test)]
+mod unconfined_by_inheritance_tests {
+    use super::unconfined_by_inheritance;
+    use letibot_tokencore::store::{SessionRecord, Store};
+
+    /// A store holding `rows` — `(id, role, parent)`, in order — and the id of the LAST
+    /// one, which is the session the walk is asked about.
+    fn chain(tag: &str, rows: &[(&str, Option<&str>, Option<&str>)]) -> (Store, String) {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-inherit-{tag}-{}-{}.db",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        let store = Store::open(&path).expect("a store");
+        for (id, role, parent) in rows {
+            store
+                .put_session(&SessionRecord {
+                    id: (*id).to_string(),
+                    title: None,
+                    model_id: "a model".into(),
+                    dialect_sha: "a dialect".into(),
+                    workspace_root: "/tmp".into(),
+                    owner: "dead".into(),
+                    approvers: Vec::new(),
+                    role: role.map(str::to_string),
+                    parent_session_id: parent.map(str::to_string),
+                })
+                .expect("the row");
+        }
+        let last = rows.last().expect("at least one row").0.to_string();
+        (store, last)
+    }
+
+    fn stands(store: &Store, id: &str) -> bool {
+        let row = store
+            .session(id)
+            .expect("the store answers")
+            .expect("the row is there");
+        unconfined_by_inheritance(store, &row)
+    }
+
+    /// **A subagent's standing is its ancestors', and the row says only the seat.** A
+    /// `coder` child of a leticode session is unconfined, and so is ITS child — that is
+    /// what `sub_cfg`'s `..self.base.clone()` hands down at every spawn, and what a
+    /// reopened session has to be given back.
+    #[test]
+    fn a_coder_child_of_a_leticode_session_stands_where_its_root_stood() {
+        let (store, child) = chain(
+            "subagent",
+            &[
+                ("s-root", Some("leticode"), None),
+                ("s-root-sub-1", Some("coder"), Some("s-root")),
+            ],
+        );
+        assert!(
+            stands(&store, &child),
+            "a coder child of leticode is unconfined"
+        );
+        let (store, grandchild) = chain(
+            "grandchild",
+            &[
+                ("s-root", Some("leticode"), None),
+                ("s-root-sub-1", Some("coder"), Some("s-root")),
+                ("s-root-sub-1-sub-2", Some("coder"), Some("s-root-sub-1")),
+            ],
+        );
+        assert!(
+            stands(&store, &grandchild),
+            "the standing travels the whole chain, not one level"
+        );
+    }
+
+    /// **A coder session's child stays confined**, which is the other half of the rule the
+    /// spawn applies (see `Config::unconfined`): its parent is, so it is.
+    #[test]
+    fn a_child_of_a_coder_session_stays_confined() {
+        let (store, child) = chain(
+            "confined",
+            &[
+                ("s-root", Some("coder"), None),
+                ("s-root-sub-1", Some("coder"), Some("s-root")),
+            ],
+        );
+        assert!(!stands(&store, &child));
+    }
+
+    /// **A chain the store cannot answer for is not an answer.** An ancestor whose row is
+    /// gone leaves the standing unproven, and unproven is confined — the state every
+    /// session that predates this had, and not a reason to refuse an open.
+    #[test]
+    fn an_ancestor_the_store_does_not_hold_is_not_unconfined() {
+        let (store, child) = chain(
+            "orphan",
+            &[(
+                "s-root-sub-1",
+                Some("coder"),
+                Some("s-a-parent-that-is-gone"),
+            )],
+        );
+        assert!(!stands(&store, &child));
+    }
 }
 
 /// The role a seat resolves to, with `bash` removed when it was not asked for.
