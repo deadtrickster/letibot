@@ -1873,3 +1873,46 @@ fn a_snapshot_drops_the_held_counter_the_daemon_will_say_again() {
         a.turn_status(160)
     );
 }
+
+/// **The status row says what the session is WAITING on, when no turn is running.**
+///
+/// The case it exists for is the one no transcript row can say: a turn that ended and a session
+/// that is nonetheless going to act again on its own, because a job the plan depends on is still
+/// running. Drawn in the row a turn's state uses — the row is reserved whether or not a turn runs,
+/// so it costs the conversation no line — and drawn in the muted register, because it is a fact
+/// about the session and not something the model said.
+///
+/// It is the daemon's list (`PROTOCOL_VERSION` 52), so what is asserted here is the drawing: the
+/// words, that a turn of its own takes the row back, and that a quiet session draws nothing.
+#[test]
+fn a_waiting_list_is_drawn_while_no_turn_runs() {
+    use letibot_sessionlog::activity::{Activity, Waiting};
+    let mut a = app();
+    let waiting = |waiting_on: Vec<Waiting>| SessionEvent::ActivityChanged {
+        activity: Activity::of(waiting_on),
+    };
+    a.apply(ServerFrame::Event(env(
+        1,
+        waiting(vec![
+            Waiting::Job("j8032".into()),
+            Waiting::Monitor("ci".into()),
+        ]),
+    )));
+    let line = a.turn_status(120);
+    assert!(
+        line.contains("waiting on: job j8032 · monitor ci"),
+        "the row says what it waits on: {line:?}"
+    );
+
+    // **A turn of its own takes the row back.** `Responding · …` is the turn's, and a list of what
+    // is running beside it would say the same thing twice.
+    a.apply(ServerFrame::Event(env(2, testing::turn_started("t1"))));
+    let line = a.turn_status(120);
+    assert!(!line.contains("waiting on:"), "{line:?}");
+
+    // And a quiet session draws nothing at all — which is what makes this invisible to a head
+    // talking to a daemon older than 52, whose value is always quiet.
+    a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+    a.apply(ServerFrame::Event(env(4, waiting(Vec::new()))));
+    assert!(a.turn_status(120).is_empty(), "quiet draws nothing");
+}

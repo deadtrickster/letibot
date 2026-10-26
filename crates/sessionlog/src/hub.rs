@@ -530,6 +530,12 @@ struct Inner {
     /// this a head that attached mid-turn showed nothing held while results were, and one that
     /// reconnected after missing the zero kept a stale count for good.
     held_now: Option<SessionEvent>,
+    /// **The last [`SessionEvent::ActivityChanged`] this hub published** — republished to a head
+    /// when it attaches (after a snapshot, a gap or on a resync), for [`Inner::held_now`]'s reason
+    /// exactly: [`crate::activity::Activity`] is ephemeral — scrubbed from every replay — and the
+    /// daemon says it only when the value CHANGES. Without this a head that attached mid-turn or
+    /// reconnected across a change kept the activity from before it.
+    activity_now: Option<SessionEvent>,
     closed: bool,
     /// Rung when this hub takes a command, so **one** worker can wait on many
     /// sessions without a timer. See [`crate::registry`].
@@ -554,6 +560,21 @@ struct Inner {
     /// already carries. See [`crate::metrics_tap`].
     tap: crate::metrics_tap::Tap,
 }
+
+/// **How the daemon above a hub computes what the session is waiting on** — see
+/// [`Hub::refresh_activity`].
+///
+/// A closure rather than a trait object with methods, because there is one question and it is
+/// asked with the hub it is about: the answer is derived from the hub's own view (the turn, its
+/// calls, the cards still open) *and* from facts no event on this hub carries (the watchers on
+/// its jobs and children, the monitors it armed, the settlements it is owed). The hub cannot see
+/// the second half — `letibot-sessionlog` has no idea what a job is — so the half that owns them
+/// registers how to ask, and the hub owns the one thing that must not be duplicated: when the
+/// value changed.
+///
+/// The hub is handed back in so the closure cannot answer about a different session than the one
+/// it was registered on, and so it holds no `Arc<Hub>` of its own (which would be a cycle).
+pub type ActivitySource = Arc<dyn Fn(&Hub) -> crate::activity::Activity + Send + Sync>;
 
 /// What a session looks like from outside it: enough for a picker, and cheap
 /// enough to compute for every session on every list.
@@ -654,6 +675,15 @@ pub struct Hub {
     /// exec backend so the `bash` tool's wait loop can honour it without the worker
     /// — which is blocked inside that wait — having to deliver it.
     promote: Arc<Mutex<Option<String>>>,
+    /// **What this session is waiting on, as it was last published** — see
+    /// [`Hub::set_activity`]. Outside [`Inner`] on purpose: the compare-and-publish must not run
+    /// under the lock every head's fan-out takes, and the value is read by callers that want one
+    /// fact and no view.
+    activity: Mutex<crate::activity::Activity>,
+    /// **How the daemon above this hub computes the value** — see [`Hub::refresh_activity`].
+    /// Registered once by whoever owns the session (`letibot_harnessd`'s `activity` module), and
+    /// given the hub it is about so the two cannot disagree about which session they mean.
+    activity_source: Mutex<Option<ActivitySource>>,
 }
 
 impl Hub {
@@ -677,6 +707,7 @@ impl Hub {
                 commands: VecDeque::new(),
                 own_wake: false,
                 held_now: None,
+                activity_now: None,
                 closed: false,
                 bell: None,
                 answers: None,
@@ -689,6 +720,8 @@ impl Hub {
             cv: Condvar::new(),
             owner: std::sync::atomic::AtomicU8::new(0),
             promote: Arc::new(Mutex::new(None)),
+            activity: Mutex::new(crate::activity::Activity::Quiet),
+            activity_source: Mutex::new(None),
         })
     }
 
@@ -916,12 +949,123 @@ impl Hub {
 
     /// Append an event and fan it out. **Never blocks on a head.**
     pub fn publish(&self, event: SessionEvent) -> Envelope {
+        // **What the session is waiting on is re-derived after anything that could have moved
+        // it, and it costs nothing when nothing did** — [`Hub::set_activity`] publishes only on a
+        // change. The trigger is here rather than at a dozen call sites in the daemon because the
+        // sites that matter are the ones that publish: a turn starting or ending, a call proposed
+        // or finished, a card raised or answered, a job settled, a child reported. A site that
+        // forgot to ask would leave a head reading *done* at a session with work left in it, which
+        // is the defect this whole mechanism exists to end.
+        let touches = event.touches_activity();
         let env = {
             let mut g = self.lock();
             g.append_and_fan(event)
         };
         self.cv.notify_all();
+        if touches {
+            self.refresh_activity();
+        }
         env
+    }
+
+    /// **What this session is waiting on**, as it was last published — the same value a head has.
+    pub fn activity(&self) -> crate::activity::Activity {
+        self.activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// **Publish [`SessionEvent::ActivityChanged`] if — and only if — the value changed.**
+    ///
+    /// The one place the *changed* in *published only when the value changes* is decided, so no
+    /// caller has to hold a copy to compare against: a turn's twenty rounds publish one value, and
+    /// a job settling under a running turn publishes none. Returns whether anything was published.
+    pub fn set_activity(&self, now: crate::activity::Activity) -> bool {
+        {
+            let mut last = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+            if *last == now {
+                return false;
+            }
+            *last = now.clone();
+        }
+        self.publish(SessionEvent::ActivityChanged { activity: now });
+        true
+    }
+
+    /// **Register how the daemon computes the value** — see [`ActivitySource`]. Called once, by
+    /// whoever owns the session; a second call replaces the first, which is what a re-opened
+    /// session needs.
+    pub fn set_activity_source(&self, source: ActivitySource) {
+        *self
+            .activity_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    /// **Re-derive the value and publish it if it moved.** The daemon's own state is what the
+    /// source closure reads, so this is how a change that no event announces — a settlement
+    /// leaving a watcher's hands, a monitor firing, a prompt sitting in the queue — becomes news.
+    ///
+    /// Nothing happens for a hub nobody registered a source on (every test, and every hub built
+    /// below the daemon), which is the honest reading: such a hub has no jobs to be waiting on.
+    pub fn refresh_activity(&self) -> bool {
+        let source = self
+            .activity_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(source) = source else {
+            return false;
+        };
+        let now = source(self);
+        self.set_activity(now)
+    }
+
+    /// **A settlement, a monitor's firing, or a prompt is owed to this session's model** — the
+    /// third of [`crate::activity::Waiting`]'s three unnamed entries, asked of the queue that owes
+    /// it.
+    ///
+    /// Both halves are the *model's* work and not the head's: a command a head submitted is a turn
+    /// the worker has not reached yet, and a wake is a settlement some thread has already queued
+    /// for it ([`Hub::wake_its_own_reader`]). It is read outside the lock and is therefore a
+    /// moment, not a guarantee — which is right for a value that is republished when it moves.
+    pub fn work_pending(&self) -> bool {
+        let g = self.lock();
+        !g.commands.is_empty() || g.own_wake
+    }
+
+    /// **The turn and its calls, as the view sees them right now** — `(a round is generating, a
+    /// call of this round is still running)`. The two of [`crate::activity::Waiting`] that come
+    /// from the hub's own state rather than from the daemon's watchers.
+    pub fn turn_shape(&self) -> (bool, bool) {
+        let g = self.lock();
+        match g.view.turn() {
+            Some(t) => match &t.state {
+                crate::view::TurnState::Running => (true, false),
+                crate::view::TurnState::Finished { .. } => (
+                    false,
+                    t.calls
+                        .iter()
+                        .any(|c| !matches!(c.state, crate::view::CallState::Finished { .. })),
+                ),
+                // Terminated, whatever its calls were left as — [`Hub::turn_in_flight`]'s rule.
+                crate::view::TurnState::Interrupted { .. }
+                | crate::view::TurnState::Failed { .. } => (false, false),
+            },
+            None => (false, false),
+        }
+    }
+
+    /// **The cards still owed an answer**, oldest first — the one entry of
+    /// [`crate::activity::Waiting`] that does not end by itself.
+    pub fn open_ask_ids(&self) -> Vec<String> {
+        self.lock()
+            .view
+            .open_decisions()
+            .iter()
+            .map(|d| d.req_id.clone())
+            .collect()
     }
 
     /// **A frame that is not the record, fanned out to every head of this session.**
@@ -1058,6 +1202,12 @@ impl Hub {
             if let Some(held) = g.held_now.clone() {
                 g.append_and_fan(held);
             }
+            // **And what the session is waiting on, for the same reason and in the same place**
+            // (52): the event is ephemeral, so a head that attached or reconnected without it would
+            // draw a session idle that a turn is running in.
+            if let Some(activity) = g.activity_now.clone() {
+                g.append_and_fan(activity);
+            }
 
             Attached {
                 head_id,
@@ -1093,6 +1243,10 @@ impl Hub {
                 // carried the last change was just thrown away.
                 if let Some(held) = g.held_now.clone() {
                     g.append_and_fan(held);
+                }
+                // And the activity, for the reason the attach arm gives (52).
+                if let Some(activity) = g.activity_now.clone() {
+                    g.append_and_fan(activity);
                 }
                 return Delivery::Resync {
                     reason,
@@ -1640,6 +1794,13 @@ impl Hub {
         if let Some((bell, id)) = ring {
             bell.ring(&id);
         }
+        // **A command waiting for the worker is a turn the model has not taken yet**
+        // (`PROTOCOL_VERSION` 52). Said here because nothing else will: the command queue is hub
+        // state and no event announces a push, so a session whose worker is pinned inside ANOTHER
+        // session's turn — one worker, many sessions — would read as quiet for as long as that
+        // turn ran, and a caller waiting on it would be told the work was done. The value is
+        // dropped if it did not move, which is the ordinary case.
+        self.refresh_activity();
         frame
     }
 
@@ -1782,6 +1943,15 @@ impl Hub {
     /// without being notified; the loop re-checks work first so a command arriving at the
     /// deadline's moment is answered before the clock is.
     pub fn take_own_work_until(&self, deadline: Option<std::time::Instant>) -> OwnWork {
+        // **No activity refresh here, and that is deliberate** (52). A command leaving this queue
+        // is not *the work is over* — it is the opposite: the worker has it and the turn it makes
+        // has not started yet. `work_pending` therefore stays true through that gap (`Delivery`),
+        // and what ends it is the turn's own `TurnStarted` or the `Warning` a verb that runs no turn
+        // answers with — both of which the hub re-derives the value after.
+        self.pop_own_work_until(deadline)
+    }
+
+    fn pop_own_work_until(&self, deadline: Option<std::time::Instant>) -> OwnWork {
         let mut g = self.lock();
         loop {
             // **A command first**, because a command has a head behind it (or a parent's
@@ -1897,6 +2067,9 @@ impl Hub {
         // Outside the lock, for the reason `submit` rings outside it: a waiter takes its own
         // mutex on the way out and must not be doing that while this one is held.
         self.cv.notify_all();
+        // Work handed back to this session's own reader is a turn it owes again (52) — the same
+        // fact `submit` says for a command.
+        self.refresh_activity();
         true
     }
 
@@ -1911,6 +2084,7 @@ impl Hub {
         if self.owner() != Owner::Worker {
             return None;
         }
+        // See `take_own_work_until`: a command taken is not a delivery finished.
         self.lock().commands.pop_front()
     }
 
@@ -2168,6 +2342,12 @@ impl Inner {
     fn append_and_fan(&mut self, event: SessionEvent) -> Envelope {
         if matches!(event, SessionEvent::HeldResults { .. }) {
             self.held_now = Some(event.clone());
+        }
+        // **The last activity, kept for the head that was not listening** — see
+        // [`Inner::activity_now`]. Recorded here, where every publish passes, rather than in
+        // [`Hub::set_activity`], so a value replayed from a log read back into a hub is kept too.
+        if matches!(event, SessionEvent::ActivityChanged { .. }) {
+            self.activity_now = Some(event.clone());
         }
         self.tap.observe(self.log.session_id(), &event);
         let env = self.log.append(event);

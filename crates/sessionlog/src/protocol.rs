@@ -765,7 +765,34 @@ use crate::view::Snapshot;
 /// to parse a `PaneClose` mid-session and a version-50 head cannot decode one — the version-4
 /// argument in both directions. A head that reads `51` knows its open carries a size the daemon
 /// will honour.
-pub const PROTOCOL_VERSION: u32 = 51;
+/// # 52: what a session is waiting on ([`crate::SessionEvent::ActivityChanged`])
+///
+/// A new event — *quiet, or busy with the list of what it waits on* — published **only when the
+/// value changes**, and carried in [`crate::view::Snapshot::activity`] for the head that attaches
+/// in the middle of a turn.
+///
+/// **Why it exists, in the operator's words:** *"it is easy to see if any jobs are running, etc
+/// etc, why timeouts?"* — on the third false wake of the Claude Code bridge, which had to guess
+/// the difference between *this session is done* and *this session will act again on its own* from
+/// outside the daemon, with a ten-second settle window, a `wake_due` flag and an edge off the todo
+/// board. Each guess fixed one false wake and left the next, because the facts that decide it are
+/// not on the wire at the round granularity: `TurnStarted`/`TurnFinished` fire **once per ROUND**
+/// (`Hub::turn_in_flight`'s doc, and the `TurnEnded` row in `TODO.md`), so the whole of a round's
+/// tool calls reads as *idle*.
+///
+/// **The daemon is the only process that knows** — it holds the turn, the calls it proposed, the
+/// watchers on its jobs and children, the monitors it armed, the settlements it has not delivered
+/// and the cards nobody has answered. So it answers, rather than a caller timing a guess.
+/// [`crate::activity`] defines the vocabulary and, entry by entry, which of them mean *the session
+/// moves without a person* (turn, calls, delivery, and the jobs, monitors and children whose
+/// settlement will reach its model) and which one means *a person must* (ask).
+///
+/// **A new variant is a bump**, by 46's and 49's rule: an older head has no arm for it and would
+/// fail to decode the frame mid-session — the version-4 argument in the direction the events take
+/// it. It is **ephemeral** as well (scrubbed from every replay, like [`crate::SessionEvent::Filling`])
+/// and republished to a head after a snapshot, a gap or a resync, like `HeldResults` — a value from
+/// before a gap describes a session that may since have gone quiet.
+pub const PROTOCOL_VERSION: u32 = 52;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -3088,6 +3115,7 @@ mod tests {
         fn event(e: &crate::SessionEvent) {
             match e {
                 crate::SessionEvent::CommandIssued { .. }
+                | crate::SessionEvent::ActivityChanged { .. }
                 | crate::SessionEvent::DecisionAnswered { .. }
                 | crate::SessionEvent::DecisionRequested { .. }
                 | crate::SessionEvent::Delta { .. }
@@ -3167,8 +3195,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 51,
-            "the match above was last reconciled with the frame list at 51 — 51 added \
+            PROTOCOL_VERSION, 52,
+            "the match above was last reconciled with the frame list at 52 — 52 added \
+             `SessionEvent::ActivityChanged`, what a session is waiting on (a version-51 head cannot \
+             decode it mid-session; the snapshot's `activity` field is defaulted, but the EVENT is \
+             what makes the bump). 51 added \
              `ClientFrame::PaneClose` (a new frame, so a version-50 daemon fails to parse it) and \
              `PaneOpen`'s `w`/`h` (defaulted, and a version-50 daemon would ignore a size a head \
              promised its pane; the frame is what makes the bump, not the fields). 50 was \

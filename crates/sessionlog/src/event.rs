@@ -2289,9 +2289,65 @@ pub enum SessionEvent {
         /// See [`SessionEvent::PluginPane::pane`].
         pane: String,
     },
+    /// **What this session is waiting on, as the daemon computed it** — `PROTOCOL_VERSION` 52.
+    ///
+    /// The daemon's own answer to *will this act again by itself*, published **only when the value
+    /// changes**: never per round, never per token. [`crate::activity`] is the whole argument for
+    /// why the daemon had to be the one to answer it — before this, `crates/bridge` guessed from
+    /// outside with a settle window, a `wake_due` flag and an edge off the todo board, and every
+    /// guess fixed one false wake and left the next (*"it is easy to see if any jobs are running,
+    /// etc etc, why timeouts?"*).
+    ///
+    /// **A new variant is a bump** (52, by the rule 46 and 49 state): an older head has no arm for
+    /// it and would fail to decode the frame mid-session — the version-4 argument, in the
+    /// direction the events take it.
+    ///
+    /// **Ephemeral, and said again to a head that attaches** ([`crate::scrub`] drops it from a
+    /// replay, and the hub republishes the current value after a snapshot, a gap or a resync, the
+    /// way it does the held counts): a value from four minutes ago is a lie about now, and a
+    /// reconnecting head that kept it would draw a session stopped on a job that ended. What makes
+    /// that safe is that there is always a current value to say — it travels from the daemon's own
+    /// state and not from a threshold somebody crossed.
+    ActivityChanged {
+        /// Quiet, or the list of what it waits on — [`crate::activity::Activity`] carries the
+        /// definition of which entries mean *this session moves on its own* and which one means
+        /// *a person must*.
+        activity: crate::activity::Activity,
+    },
 }
 
 impl SessionEvent {
+    /// **Could publishing this have moved what the session is waiting on?** — the set
+    /// [`Hub::publish`] re-derives [`crate::activity::Activity`] after.
+    ///
+    /// It is a whitelist and not *everything but the deltas*, because a re-derivation asks the
+    /// daemon's own state and costs a walk of its watchers: the events below are the ones whose fold
+    /// changes that state — a turn, a call, a card, a settlement, a child, a held count — and the
+    /// rest (tokens, text, rows, warnings, heads) cannot move it at all. `ActivityChanged` is
+    /// deliberately NOT here, and that is the recursion guard: it is the answer.
+    pub fn touches_activity(&self) -> bool {
+        matches!(
+            self,
+            SessionEvent::TurnStarted { .. }
+                | SessionEvent::TurnFinished { .. }
+                | SessionEvent::TurnInterrupted { .. }
+                | SessionEvent::TurnFailed { .. }
+                | SessionEvent::ToolCallProposed { .. }
+                | SessionEvent::ToolFinished { .. }
+                | SessionEvent::DecisionRequested { .. }
+                | SessionEvent::DecisionAnswered { .. }
+                | SessionEvent::JobSettled { .. }
+                | SessionEvent::Subagent { .. }
+                | SessionEvent::HeldResults { .. }
+                // **A warning, because it is a verb's answer.** A command the worker took off the
+                // queue is `Delivery` until something says otherwise, and every command that runs no
+                // turn at all — a `/mode`, a refusal, an interrupt that found nothing to stop — ends
+                // by saying why on the log. One of these is cheap and closes the last window in
+                // which a session that owes nothing would still read as owing a turn.
+                | SessionEvent::Warning { .. }
+        )
+    }
+
     /// The variant name, for counters and for a head's status line.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -2335,6 +2391,7 @@ impl SessionEvent {
             SessionEvent::HeldResults { .. } => "HeldResults",
             SessionEvent::PluginPane { .. } => "PluginPane",
             SessionEvent::PluginPaneGone { .. } => "PluginPaneGone",
+            SessionEvent::ActivityChanged { .. } => "ActivityChanged",
         }
     }
 }

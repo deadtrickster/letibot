@@ -3476,6 +3476,20 @@ and a two-round stream on each head shows the status row up across every round b
 the marked end — asserted, not watched: a test per head, and on this head that test replaces the one
 that currently pins the flicker.
 
+**UPDATE 2026-10-26 — the fact this row is about is on the wire now, and the choice above is
+smaller.** `PROTOCOL_VERSION` 52 publishes `SessionEvent::ActivityChanged` — quiet, or busy with
+`turn`, `calls`, `delivery`, the jobs and children whose settlement will wake the model, the
+monitors it armed, and the cards nobody has answered — computed by the daemon from its own state
+and published only when it changes (`crates/sessionlog/src/activity.rs` is the argument). No head
+has to infer *is this turn over* from the round-level pair any more: `calls` IS the window between
+a round's end and the next round's start, and a row that stays up while it is set needs no new
+event, no `Caps` feature and no bump — this head already folds it
+(`crates/tui/src/app/events/turn.rs`). **What 52 does not do is fill the last window this row
+names**: a round's last call finishing *before* the next round's `TurnStarted` still reads as
+quiet, because the daemon does not know a round is coming until it starts one. So the marker at
+the convergence point is still the thing to build, and the two routes (a filtered `TurnEnded`, or a
+bump whose `Hello` echo says what is honoured) are still the operator's to pick.
+
 ## R56 — the view can be held, so a selection survives a streaming turn — **BOTH HEADS HAVE IT (`c9634bc` leticl, `2b49304` here)**
 
 The operator, on losing a text selection while a turn streams: *"leticl resets selection if screen

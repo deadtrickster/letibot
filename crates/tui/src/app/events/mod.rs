@@ -72,6 +72,10 @@ impl App {
         // **The held counts are not in a snapshot** (R91.12): the daemon says them again right
         // after one, so whatever this head last read is dropped rather than carried over.
         self.held = None;
+        // **The activity IS in one** (`PROTOCOL_VERSION` 52), and it is read from the snapshot for
+        // the reason the turn in flight is: a head that attached between two rounds has seen no
+        // `ActivityChanged`, and the round-level turn would draw it as idle while a call runs.
+        self.activity = s.activity.clone();
         // The rows are replaced, so the pairings by row index go with them (re-made after it).
         self.absorbed.clear();
         // **The same conversation, or a different one**, read once and at the top: the
@@ -570,6 +574,7 @@ impl App {
             e @ (SessionEvent::Filling { .. }
             | SessionEvent::CompactionProgress { .. }
             | SessionEvent::HeldResults { .. }
+            | SessionEvent::ActivityChanged { .. }
             | SessionEvent::TurnStarted { .. }
             | SessionEvent::PromptProgress { .. }
             | SessionEvent::TokensGenerated { .. }

@@ -360,6 +360,19 @@ pub struct Snapshot {
     /// children* — and a head then draws the list-derived rows it always did.
     #[serde(default)]
     pub subagents: Vec<SubagentView>,
+    /// **What this session is waiting on, as the daemon last published it** — the value a head that
+    /// attaches late needs before it can tell *done* from *between two rounds*.
+    ///
+    /// It is carried in the snapshot for the reason the turn in flight is: it is a fact about NOW,
+    /// and the head that attaches in the middle of a turn has seen no `ActivityChanged` and would
+    /// otherwise draw an idle session that is working. The event is ephemeral in a *replay*
+    /// (`crate::scrub`) because a replayed value is a value from before the gap; the hub republishes
+    /// the current one after a snapshot, a gap or a resync, so the field is filled and never stale.
+    ///
+    /// `#[serde(default)]` so a snapshot from a daemon built before the field parses: an absent
+    /// value reads as [`Activity::Quiet`], which is exactly what such a daemon's head drew before.
+    #[serde(default)]
+    pub activity: crate::activity::Activity,
 }
 
 /// **One child of this session, as the `Subagent` event last reported it.**
@@ -453,6 +466,9 @@ pub struct SessionView {
     /// **This session's children, as the `Subagent` events reported them** — see the
     /// `SessionEvent::Subagent` arm for why a snapshot carries them.
     subagents: Vec<SubagentView>,
+    /// See [`Snapshot::activity`]. Folded rather than asked for: the daemon publishes the value when
+    /// it changes, so a view holding the last one has the current one at every seq.
+    activity: crate::activity::Activity,
 }
 
 /// **How much one session's view holds**, by part — for the daemon's memory census. Counts,
@@ -493,6 +509,7 @@ impl SessionView {
             warnings: Vec::new(),
             heads: Vec::new(),
             subagents: Vec::new(),
+            activity: crate::activity::Activity::Quiet,
         }
     }
 
@@ -977,6 +994,13 @@ impl SessionView {
             // late head as a fact about now. A head that attaches mid-turn draws nothing until the
             // held set next changes.
             SessionEvent::HeldResults { .. } => {}
+            // **The one live value this view does keep**, and the exception is the point: what a
+            // session is waiting on is a fact about NOW that a head attaching mid-turn cannot
+            // derive from anything else it is handed — the round-level `TurnStarted` is the defect
+            // this whole event exists for. It is scrubbed from a REPLAY (a value from before a gap
+            // is a lie) and republished by the hub after every snapshot, gap and resync, so what a
+            // late head reads here is current.
+            SessionEvent::ActivityChanged { activity } => self.activity = activity.clone(),
             // **Nothing to fold, and the snapshot must not carry one.** A pane's view is what its
             // last look answered: stored here it would be handed to a head that attaches hours
             // later as a dashboard of that moment, drawn with no sign that it is old. A head asks
@@ -1080,6 +1104,7 @@ impl SessionView {
             warnings: self.warnings.clone(),
             heads: self.heads.clone(),
             subagents: self.subagents.clone(),
+            activity: self.activity.clone(),
         }
     }
 

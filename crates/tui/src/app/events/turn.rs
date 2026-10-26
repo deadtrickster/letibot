@@ -39,6 +39,16 @@ impl App {
                 self.redraw = true;
                 Disposition::Rendered
             }
+            // **What the session is waiting on** (`PROTOCOL_VERSION` 52): the daemon's own answer
+            // to *will this act again by itself*. Folded whole — the last value is the truth, and
+            // the daemon publishes it only when it changes — and drawn as one muted line on the
+            // status row ([`App::activity_line`]). No transcript row: it is a fact about now, and a
+            // row is a fact about when.
+            SessionEvent::ActivityChanged { activity } => {
+                self.activity = activity;
+                self.redraw = true;
+                Disposition::Control
+            }
             // **The held counts, replaced whole** — the daemon sends the set as it is now every
             // time it changes, so the last one is the truth and all zeros is nothing held.
             // Ephemeral, so a late head never replays a stale count.

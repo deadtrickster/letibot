@@ -253,7 +253,16 @@ impl Bridge {
             // The model's own background jobs still running: each will wake it again, so an
             // idle session with any of these is waiting, not done.
             "jobs_open": s.jobs_open.iter().collect::<Vec<_>>(),
-            // Whether an unfinished todo needs one of them: `wait` holds while this is true.
+            // **What the DAEMON says the session is waiting on** (`PROTOCOL_VERSION` 52) — the
+            // replacement for the settle windows this verb used to time. `waiting_on` is the
+            // list in a reader's words (`["job j8032", "monitor ci"]`), and `activity` is the
+            // value itself (`quiet`, or `busy` with the entries tagged by kind), so a caller can
+            // branch on the kind instead of on a sentence.
+            "activity": serde_json::to_value(&s.activity).unwrap_or(Value::Null),
+            "waiting_on": s.waiting_on(),
+            // Whether an unfinished todo needs one of the running jobs: `wait` does not hold on
+            // this any more — the daemon's activity does — and the key stays because it is a
+            // question a caller already asks, answered now from the daemon's own list.
             "waiting_on_jobs": s.waiting_on_jobs(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
             // **What the daemon said to the last frame it refused.** An answer that arrives

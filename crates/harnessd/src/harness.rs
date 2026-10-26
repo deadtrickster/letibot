@@ -5555,6 +5555,21 @@ impl Harness {
         h.asks_said = crate::operator_ask::waiting(&h.todos.snapshot());
         h.publish_settings();
         h.publish_jobs();
+        // **What this session is waiting on** (`PROTOCOL_VERSION` 52), and how to work it out again.
+        //
+        // Registered here rather than at the hub's construction because this is the first point at
+        // which the three halves exist together: the hub (the turn, its calls, the open cards), the
+        // watcher set (the jobs and children), the monitor table, and the board the job rule is read
+        // against. From here on the hub re-derives the value after any event that can have moved it
+        // (`Hub::publish`) and drops an unchanged one, so what the daemon has to say explicitly is
+        // only the changes no event announces — see `crate::activity`.
+        h.hub.set_activity_source(crate::activity::source(
+            h.job_watch.clone(),
+            h.monitors.clone(),
+            h.monitor_cursor.clone(),
+            h.todos.clone(),
+        ));
+        h.publish_activity();
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
         // is answered from it, so it has to be installed before a head can attach. See
         // `Harness::install_notes_source`.
@@ -8321,6 +8336,22 @@ impl Harness {
         );
     }
 
+    /// **Say what this session is waiting on, if it has changed** — `PROTOCOL_VERSION` 52.
+    ///
+    /// Almost every move is caught by the hub itself: [`Hub::publish`] re-derives the value after an
+    /// event whose fold can have moved it (`SessionEvent::touches_activity` — a turn starting or
+    /// ending, a call, a card, a settlement, a child) and [`Hub::set_activity`] drops an unchanged
+    /// one. So this is for the changes that happen with **no event at all**: a monitor firing on the
+    /// waiter's own thread, a settlement queued by a watcher thread, a prompt sitting in the
+    /// command queue. Called at the points the harness knows one of those to be true, and
+    /// idempotent by construction: a value equal to the last one publishes nothing.
+    ///
+    /// **Why it is not a timer.** A tick would make the value eventually right, which is the shape
+    /// of every heuristic this replaces. Each call site is a place where a fact changed.
+    pub(crate) fn publish_activity(&self) -> bool {
+        self.hub.refresh_activity()
+    }
+
     /// Push the job table to the registry, where a head's `ListJobs` is answered
     /// from. Called wherever the table can have changed, for the same reason
     /// `publish_settings` is: a mailbox nobody refills is a stale answer that
@@ -9852,6 +9883,12 @@ impl Harness {
         ];
         // **The held batch last**, after everything said now.
         notices.extend(held_batch);
+        // **What this session is waiting on has moved** (`PROTOCOL_VERSION` 52): the monitor cursor
+        // above took the firings, and `between_turns_unread` took the queue and the held set — none
+        // of which publishes an event of its own. Said before the early return below, because the
+        // move that matters most is the one that empties the list: a wake with nothing left to say
+        // is a session that has just gone quiet.
+        self.publish_activity();
         self.meter_wake(causes, !notices.is_empty());
         if notices.is_empty() {
             return Ok(None);

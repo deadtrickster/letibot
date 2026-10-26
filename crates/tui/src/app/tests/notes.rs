@@ -907,6 +907,7 @@ fn the_head_retires_every_note_the_file_it_wrote_says_it_retired() {
             .collect(),
         heads: Vec::new(),
         subagents: Vec::new(),
+        activity: letibot_sessionlog::activity::Activity::Quiet,
     };
     snapshot.warnings.truncate(facts.len());
     a.apply(hello("s", vec![brief("s", "one", false)], snapshot));

@@ -36,10 +36,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use letibot_sessionlog::activity::{Activity, Waiting};
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
-use letibot_sessionlog::event::{
-    DeltaTarget, Envelope, SessionEvent, TodoEntry, TodoNeed, TodoStatus,
-};
+use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, TodoEntry};
 use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
@@ -49,29 +48,19 @@ use serde_json::{Value, json};
 
 use crate::daemon::{Daemon, HEAD_KIND, IDENTITY};
 
-/// **How long `wait` gives a turn to appear before it answers with what it sees.**
+/// **How long `wait` gives a just-sent prompt to start before it answers with what it sees.**
 ///
 /// A prompt is queued the moment it is sent and starts when the daemon's worker reaches
 /// it, so a `wait` that attached in the same breath as a `send` can find the session
-/// still idle. Answering `0 — the turn ended` there would be a lie about a prompt nobody
+/// still quiet — the daemon's own `Delivery` covers most of that window, and this covers
+/// the rest. Answering `0 — the turn ended` there would be a lie about a prompt nobody
 /// had run yet, and waiting for ever would turn a healthy session into a timeout; the
 /// window is what makes the difference visible without inventing one.
 ///
-/// It is not a poll interval: nothing happens in this time except a turn starting, and a
-/// session that has one starts it in milliseconds.
+/// It is not a poll interval and it is **not the settle window this used to be**: nothing
+/// happens in this time except a turn starting, and whether it did is read from the
+/// daemon's own [`Activity`] rather than guessed from a clock. See [`Head::wait`].
 pub const START_GRACE: Duration = Duration::from_secs(3);
-
-/// **How long a turn has to stay quiet before `wait` calls it ended.**
-///
-/// The engine publishes `TurnStarted`/`TurnFinished` once per ROUND, not per prompt
-/// (`Hub::turn_in_flight` says so at length), and the calls a round proposed are what keep
-/// the turn going after its `TurnFinished`. [`State`] holds the turn as running until they
-/// finish; what it cannot see is the gap between the last call finishing and the next
-/// round's `TurnStarted`, where the daemon appends results and opens the next request. The
-/// first `wait` the bridge ran on a real package exited `0` ten seconds in, between round
-/// one and round two of a brief that had an hour of work left; quiet for this long is what
-/// separates *the turn ended* from *the turn is between rounds*.
-pub const SETTLE: Duration = Duration::from_secs(10);
 
 /// How long a head gives a `Switch` to land before it reports that it is on the wrong
 /// session. A re-seat is a second `Hello` on the same socket — one round trip — so the
@@ -430,8 +419,9 @@ pub struct State {
     /// last message is that, and a report read only from the last message was lost under
     /// it on the first package that used jobs (P1).
     pub last_report: Option<String>,
-    /// `call_id` → the tool's name, joined into an ask. Bounded: a session's calls are
-    /// many and this only has to answer for cards that are still open.
+    /// The calls proposed and not yet finished, joined to their tool's name. Bounded, because a
+    /// session's calls are many. **Not turn bookkeeping** — *is the turn still going* is the
+    /// daemon's [`Activity`] now — this is only how an ask names the tool it is about.
     calls: std::collections::HashMap<String, String>,
     /// **The children whose start this head has announced**, by child session id.
     ///
@@ -439,26 +429,25 @@ pub struct State {
     /// are two events about the same child, and a resync's snapshot says a third time what
     /// a head already knew.
     children: std::collections::HashSet<String>,
-    /// The calls proposed and not yet finished. A round's `TurnFinished` with any of these
-    /// open is a turn that goes on: its calls run, and the next round reads their results.
-    in_flight: std::collections::HashSet<String>,
-    /// When the turn last went idle, so `wait` can tell a turn that ended from a gap
-    /// between rounds (see [`SETTLE`]).
-    pub idle_since: Option<Instant>,
-    /// **Background jobs started and not yet settled.** A model that backgrounds a build and
-    /// ends its turn to wait for it is woken by the job's settlement and goes on: QA's turn
-    /// ended *waiting on the last probe target*, and a `wait` that answered there handed the
-    /// orchestrator a package with an hour of work left. Joined from the `Backgrounded`
-    /// handle and the `JobSettled` that names it.
+    /// **Background jobs started and not yet settled**, from the `Backgrounded` handle and the
+    /// `JobSettled` that names it — `leticode_status`' own list, and nothing else: whether a job
+    /// holds the work open is the daemon's [`Activity`] (`waiting_on`), not this set.
     pub jobs_open: std::collections::BTreeSet<String>,
-    /// **A job the work waited on has settled, and its wake has not started yet.** The
-    /// daemon delivers a settlement in its own time (`delivery.rs` batches), so the turn
-    /// it starts can come later than [`SETTLE`]: QC's `wait` exited in exactly that gap,
-    /// between `j8032` settling and the turn it woke. Cleared by the next `TurnStarted`.
-    pub wake_due: bool,
-    /// Whether the round in view has finished generating: calls that finish while it is
-    /// still writing are not the turn's last.
-    round_done: bool,
+    /// **What the DAEMON says this session is waiting on** — `PROTOCOL_VERSION` 52.
+    ///
+    /// The replacement for four guesses this head used to make from outside: a ten-second settle
+    /// window, a `wake_due` flag raised by a `JobSettled` an unfinished todo row needed, an
+    /// `in_flight` set that decided when a round's calls were done, and a `round_done` flag. Every
+    /// one of them was a model of the daemon's state built from events that do not carry it — the
+    /// engine publishes `TurnStarted`/`TurnFinished` once per ROUND — and each fixed one false wake
+    /// and left the next. The operator: *"it is easy to see if any jobs are running, etc etc, why
+    /// timeouts?"*
+    ///
+    /// Folded from [`SessionEvent::ActivityChanged`], which the daemon publishes **only when the
+    /// value changes**, and seeded from the snapshot, which carries the current one so a head that
+    /// attaches mid-turn is not blind. Quiet is the default, which is what a daemon older than 52
+    /// can only ever say: such a head then falls back to the round-level turn it always had.
+    pub activity: Activity,
     /// **Whether a turn has ever run here**, from the snapshot's own turn or from one this
     /// head watched. `wait` needs it to tell *a session between turns* from *a session that
     /// has never run one* — and only the first of those is a turn that ended.
@@ -502,41 +491,50 @@ impl State {
         }
     }
 
-    /// **Whether the work is waiting on a job of its own**: an unfinished todo row that needs
-    /// a job still running. Not every open job — a server left running, or the test's
-    /// `sleep 30`, must not hold a later turn open for ever — only the jobs the model said
-    /// its work waits on, which is what the board's `needs` edge is (QA's row read
-    /// `needs: job j7262` while its turn had ended).
+    /// **Whether the work is waiting on a job or a child of its own** — the daemon's own answer
+    /// ([`Activity`]), which is what this replaced.
+    ///
+    /// This used to be a guess built here: an unfinished todo row that `needs` a handle in
+    /// `jobs_open`, plus a `wake_due` flag. It is read from the daemon now, and the rule behind the
+    /// entries is `delivery::decide`'s — a job counts only when its settlement is one the model is
+    /// WOKEN by, not every open handle, because a server left running must not hold a later turn
+    /// open for ever. Kept as a method so a reader of `leticode_status` asks the same question it
+    /// always did.
     pub fn waiting_on_jobs(&self) -> bool {
-        self.wake_due || self.jobs_open.iter().any(|j| self.needed(j))
+        self.activity
+            .waiting_on()
+            .iter()
+            .any(|w| matches!(w, Waiting::Job(_) | Waiting::Child(_)))
     }
 
-    /// Whether an unfinished todo row needs this job.
-    fn needed(&self, job: &str) -> bool {
-        self.todos.iter().any(|t| {
-            t.status != TodoStatus::Completed
-                && t.needs
-                    .iter()
-                    .any(|n| matches!(n, TodoNeed::Job { handle } if handle == job))
-        })
-    }
-
-    fn go_idle(&mut self) {
-        self.turn = Turn::Idle;
-        self.idle_since = Some(Instant::now());
+    /// **The words a person reads for what this session waits on** — `["job j8032", "monitor
+    /// ci"]`, empty for a quiet session.
+    pub fn waiting_on(&self) -> Vec<String> {
+        self.activity.waiting_labels()
     }
 
     /// The word `leticode_status` answers with. `asking` wins over `running` because a
     /// turn blocked on a card is a turn whose next step is a person's.
+    ///
+    /// **`running` is read from two places on purpose.** The activity's `Turn`/`Calls` is the
+    /// daemon's own answer and is right through the whole of a round's tool calls; the round-level
+    /// turn is the fallback for a daemon older than `PROTOCOL_VERSION` 52, which can send no
+    /// `ActivityChanged` at all — and such a head then says exactly what it said before.
     pub fn word(&self) -> &'static str {
         if !self.asks.is_empty() {
             "asking"
+        } else if matches!(self.turn, Turn::Failed(_)) {
+            "failed"
+        } else if self.turn == Turn::Running
+            || self
+                .activity
+                .waiting_on()
+                .iter()
+                .any(|w| matches!(w, Waiting::Turn | Waiting::Calls))
+        {
+            "running"
         } else {
-            match self.turn {
-                Turn::Running => "running",
-                Turn::Idle => "idle",
-                Turn::Failed(_) => "failed",
-            }
+            "idle"
         }
     }
 
@@ -584,12 +582,18 @@ impl State {
     /// is what makes a `Switch` or a resync land correctly.
     fn seed(&mut self, snap: &Snapshot) {
         self.seq = self.seq.max(snap.seq);
+        // **What the session is waiting on, as the daemon last said it.** Seeded before the turn
+        // because it is the finer fact: the snapshot's turn state is round-level, and a head that
+        // attached between two rounds would read `idle` from it while a call is still running.
+        self.activity = snap.activity.clone();
         self.turn = match &snap.turn {
             None => Turn::Idle,
             Some(t) => match &t.state {
                 ViewTurnState::Running => Turn::Running,
                 ViewTurnState::Interrupted { .. } => Turn::Idle,
-                // The round ended and its calls are running: the turn is not over.
+                // The round ended and its calls are running: the turn is not over. The activity's
+                // own `Calls` says the same thing; this keeps `leticode_status.state` right against
+                // a daemon too old to send one.
                 ViewTurnState::Finished { .. }
                     if !t
                         .calls
@@ -602,18 +606,6 @@ impl State {
                 ViewTurnState::Failed { error, .. } => Turn::Failed(error.clone()),
             },
         };
-        self.in_flight = snap
-            .turn
-            .iter()
-            .flat_map(|t| &t.calls)
-            .filter(|c| !matches!(c.state, CallState::Finished { .. }))
-            .map(|c| c.call_id.clone())
-            .collect();
-        self.idle_since = (self.turn != Turn::Running).then(Instant::now);
-        self.round_done = snap
-            .turn
-            .as_ref()
-            .is_none_or(|t| !matches!(t.state, ViewTurnState::Running));
         self.turn_id = snap
             .turn
             .as_ref()
@@ -742,9 +734,6 @@ impl State {
         match env.event {
             SessionEvent::TurnStarted { turn_id, .. } => {
                 self.turn = Turn::Running;
-                self.idle_since = None;
-                self.round_done = false;
-                self.wake_due = false;
                 self.turned = true;
                 self.turn_id = turn_id;
                 self.streaming.clear();
@@ -756,12 +745,11 @@ impl State {
                 }
             }
             SessionEvent::TurnFinished { usage, .. } => {
-                // A round that proposed calls hands the turn to them; only a round that left
-                // nothing running is the turn going idle.
-                self.round_done = true;
-                if self.in_flight.is_empty() {
-                    self.go_idle();
-                }
+                // **The turn is over at the level this event can see; whether it is really over is
+                // the daemon's** — a round that proposed calls leaves the session busy with them,
+                // and that fact reaches this head as `ActivityChanged` and `ToolFinished`, never as
+                // this event. So nothing here decides it.
+                self.turn = Turn::Idle;
                 self.turned = true;
                 if !self.streaming.is_empty() {
                     self.last_row = std::mem::take(&mut self.streaming);
@@ -785,8 +773,7 @@ impl State {
             }
             SessionEvent::TurnInterrupted { reason, .. } => {
                 // An interrupted turn is over, whatever its calls were left as.
-                self.in_flight.clear();
-                self.go_idle();
+                self.turn = Turn::Idle;
                 self.turned = true;
                 if !self.streaming.is_empty() {
                     self.last_row = std::mem::take(&mut self.streaming);
@@ -795,8 +782,6 @@ impl State {
                     .push(Entry::of("turn", "interrupted").saying(one_line(&reason, LINE)));
             }
             SessionEvent::TurnFailed { error, .. } => {
-                self.in_flight.clear();
-                self.idle_since = Some(Instant::now());
                 self.turn = Turn::Failed(error.clone());
                 self.turned = true;
                 self.streaming.clear();
@@ -835,7 +820,6 @@ impl State {
                         .named(name.clone())
                         .saying(one_line(&target, LINE)),
                 );
-                self.in_flight.insert(call_id.clone());
                 self.calls.insert(call_id, name);
                 // A session that runs a thousand calls must not grow a map for ever; the
                 // asks that are open are the only ones anything looks a name up for.
@@ -847,15 +831,6 @@ impl State {
                 call_id, outcome, ..
             } => {
                 let tool = self.calls.get(&call_id).cloned().unwrap_or_default();
-                // A backgrounded call has finished as far as the round is concerned: the
-                // model gets its handle and goes on.
-                if self.in_flight.remove(&call_id)
-                    && self.in_flight.is_empty()
-                    && self.turn == Turn::Running
-                    && self.round_done
-                {
-                    self.go_idle();
-                }
                 // **A backgrounded call is the job STARTING**: there is no `JobStarted` on
                 // the wire, and the handle only exists here and on `JobSettled`.
                 if let ToolOutcome::Backgrounded {
@@ -891,9 +866,9 @@ impl State {
                 elapsed_ms,
                 ..
             } => {
-                if self.needed(&job) {
-                    self.wake_due = true;
-                }
+                // **Whether this settlement holds the work open is the daemon's** — it publishes
+                // `Delivery` the moment the result is queued, and `Job(j)` only while the job is
+                // one the plan waits on. This head keeps the list a reader sees and nothing else.
                 self.jobs_open.remove(&job);
                 self.events.push(
                     Entry::of("job", "ended")
@@ -901,6 +876,16 @@ impl State {
                         .saying(one_line(&state, LINE))
                         .lasting(elapsed_ms),
                 );
+            }
+            // **What the session is waiting on** (`PROTOCOL_VERSION` 52) — the whole of the
+            // replacement for the four guesses `State`'s `activity` doc names. It is read, never
+            // derived: nothing here compares a job against a todo row or times a quiet turn.
+            SessionEvent::ActivityChanged { activity } => {
+                if activity != self.activity {
+                    self.activity = activity.clone();
+                    self.events
+                        .push(Entry::of("activity", "").saying(one_line(&activity.line(), LINE)));
+                }
             }
             SessionEvent::Warning { code, detail, .. } => {
                 self.events.push(
@@ -1215,11 +1200,8 @@ impl Head {
             last_report: g.last_report.clone(),
             calls: g.calls.clone(),
             children: g.children.clone(),
-            in_flight: g.in_flight.clone(),
-            idle_since: g.idle_since,
-            round_done: g.round_done,
             jobs_open: g.jobs_open.clone(),
-            wake_due: g.wake_due,
+            activity: g.activity.clone(),
             turned: g.turned,
             events: g.events.clone(),
             closed: g.closed.clone(),
@@ -1381,18 +1363,29 @@ impl Head {
     ///
     /// The precedence is the whole of `wait`'s meaning:
     ///
-    /// * an **open ask** wins over everything — the turn is stopped on it, so waiting past
-    ///   it would be waiting for a person who was never told;
+    /// * an **open ask** wins over everything — the session is stopped on it, so one of the
+    ///   daemon's [`Waiting::Ask`] entries ends the wait with exit 10;
     /// * a **failure** is terminal and is reported as one;
-    /// * otherwise the turn this head watched run ends;
-    /// * and a turn that never appears inside [`START_GRACE`] is answered with what the
-    ///   session looks like — but **only on a session that has run a turn before**.
-    ///   `idle is a real answer` is true of a session between turns and false of one that
-    ///   has never had one: the first real `leticode_start` was followed by a `wait` that
-    ///   exited `0 — the turn ended` in three seconds on a session no prompt had reached,
-    ///   and the orchestrator read that as the brief having finished. A session that has
-    ///   never turned has nothing to report as ended, so the only honest answers there are
-    ///   a turn starting and ending, an ask, a failure, or the timeout saying so.
+    /// * otherwise **the daemon's own [`Activity`] says when the session is quiet** — nothing
+    ///   running, nothing owed, nobody asked — and that is `0`, the turn ended;
+    /// * and a session that is quiet **when the wait starts** is answered with what it looks like
+    ///   after [`START_GRACE`], but **only on a session that has run a turn before**: the first
+    ///   real `leticode_start` was followed by a `wait` that exited `0 — the turn ended` in three
+    ///   seconds on a session no prompt had reached, and the orchestrator read that as the brief
+    ///   having finished. A session that has never turned has nothing to report as ended, so the
+    ///   only honest answers there are a turn starting and ending, an ask, a failure, or the
+    ///   timeout saying so.
+    ///
+    /// **What this is not, any more.** It used to be a model of the daemon built from round-level
+    /// events: a turn that stayed `running` while a set of calls was open, a `wake_due` flag an
+    /// unfinished todo row raised, and ten seconds of quiet before a turn counted as ended
+    /// ([`SETTLE`], which this deleted). Every one of those was a guess at a fact the daemon holds
+    /// exactly, and each guess was a false wake waiting to happen: a round that spent an hour in
+    /// tool calls read as *between rounds* for as long as the settle window held, and a settlement
+    /// the daemon delivered late read as *done*. The activity is the same question answered by the
+    /// process that has the answers — a job the work waits on, a settlement queued, a monitor
+    /// armed, a child running are all *this session acts again on its own*, and only a card is
+    /// *a person must*.
     ///
     /// **A failure that was already there when this head attached does not count**: a
     /// `wait` fired after a `send` must not report the previous turn's death as this
@@ -1403,61 +1396,62 @@ impl Head {
             Turn::Failed(why) => Some(why.clone()),
             _ => None,
         };
-        let mut armed = g.turn == Turn::Running;
+        // **Whether this wait saw the session working.** Turn and calls only: `delivery` says a turn
+        // is OWED, which is not the same as one having run — a prompt queued behind another
+        // session's turn would otherwise answer `0` the moment the worker took it off the queue, with
+        // the previous turn's words. What that queue is for is the *quiet-from-the-start* case
+        // below, where the activity is not quiet and the wait keeps waiting.
+        let mut armed = g
+            .activity
+            .waiting_on()
+            .iter()
+            .any(|w| matches!(w, Waiting::Turn | Waiting::Calls));
         let grace = Instant::now() + START_GRACE;
         loop {
             if let Some(a) = g.asks.first() {
                 return Attention::Ask(Box::new(a.clone()));
             }
-            match &g.turn {
-                Turn::Failed(why) if baseline.as_deref() != Some(why.as_str()) => {
-                    return Attention::Failed { why: why.clone() };
-                }
-                Turn::Running => armed = true,
-                // Ended means quiet for [`SETTLE`]: a round's end is not the turn's, and the
-                // next round's `TurnStarted` re-arms this before the window runs out.
-                // A job still running will wake the model again, so the turn that ended to
-                // wait for it is not the end of the work; a failure ends it regardless.
-                Turn::Idle
-                    if armed
-                        && !g.waiting_on_jobs()
-                        && g.idle_since.is_none_or(|t| t.elapsed() >= SETTLE) =>
-                {
-                    return Attention::TurnEnded {
-                        message: g.last_message().to_string(),
-                    };
-                }
-                Turn::Failed(_) if armed && g.idle_since.is_none_or(|t| t.elapsed() >= SETTLE) => {
-                    return Attention::TurnEnded {
-                        message: g.last_message().to_string(),
-                    };
-                }
-                _ => {}
+            if let Turn::Failed(why) = &g.turn
+                && baseline.as_deref() != Some(why.as_str())
+            {
+                return Attention::Failed { why: why.clone() };
             }
             let now = Instant::now();
+            if g.activity.is_quiet() {
+                if armed {
+                    // **Quiet is the answer**: nothing is running, nothing is owed, nobody was
+                    // asked. That is what the orchestrator needs, and it is a fact the daemon
+                    // stated rather than a window this head sat out.
+                    return Attention::TurnEnded {
+                        message: g.last_message().to_string(),
+                    };
+                }
+                if g.turned && now >= grace {
+                    // Nothing ran during this wait, and something has run before: this session
+                    // was already between turns when the caller got here, so the honest answer is
+                    // the last thing it said rather than a timeout about a session doing nothing
+                    // wrong.
+                    return Attention::TurnEnded {
+                        message: g.last_message().to_string(),
+                    };
+                }
+            } else if g
+                .activity
+                .waiting_on()
+                .iter()
+                .any(|w| matches!(w, Waiting::Turn | Waiting::Calls))
+            {
+                armed = true;
+            }
             if now >= deadline {
                 return Attention::Timeout;
             }
-            if !armed && g.turned && !g.waiting_on_jobs() && now >= grace {
-                // Nothing turned, and something has turned before: answer with what is here
-                // rather than waiting out a timeout that would report a health problem this
-                // session does not have.
-                return match &g.turn {
-                    Turn::Failed(why) => Attention::Failed { why: why.clone() },
-                    _ => Attention::TurnEnded {
-                        message: g.last_message().to_string(),
-                    },
-                };
-            }
             // A session that has never turned waits the whole deadline: there is no grace
             // question to ask about a session with no turn to have ended.
-            let until = match g.idle_since {
-                // Open jobs: nothing to time here, the job's settlement rings the bell.
-                Some(t) if armed && g.turn != Turn::Running && !g.waiting_on_jobs() => {
-                    deadline.min(t + SETTLE)
-                }
-                _ if armed || !g.turned || g.waiting_on_jobs() => deadline,
-                _ => deadline.min(grace),
+            let until = if armed || !g.turned {
+                deadline
+            } else {
+                deadline.min(grace)
             };
             let wait = until.saturating_duration_since(now);
             let (next, _) = self
@@ -1694,72 +1688,89 @@ mod tests {
         }
     }
 
-    /// **A round's end is not the turn's.** The engine publishes `TurnFinished` per round,
-    /// and the round's calls run after it: the first `wait` on a real package woke its
-    /// caller between rounds one and two of an hour-long brief. The turn stays running
-    /// while a call is open, goes idle only when the last finishes after its round did,
-    /// and the next round's start takes the idle stamp back.
+    /// **A snapshot as the daemon cuts one**: events folded by the view this crate does not own.
+    /// Used where a test needs what a head that attached LATE was handed, which is the one path
+    /// the fold alone cannot exercise.
+    fn snapshot_of(events: Vec<SessionEvent>) -> Snapshot {
+        let mut view = letibot_sessionlog::view::SessionView::new(
+            "s-recorded",
+            letibot_sessionlog::view::ViewBounds::default(),
+        );
+        for (i, event) in events.into_iter().enumerate() {
+            view.apply(&env(i as u64, event));
+        }
+        view.snapshot(0, 0)
+    }
+
+    /// **A round's end is not the turn's, and the head no longer has to work that out.**
+    ///
+    /// The engine publishes `TurnFinished` per round and the round's calls run after it. This head
+    /// used to keep an `in_flight` set and a `round_done` flag to decide what that meant, and the
+    /// first `wait` on a real package still woke its caller between rounds one and two. What it
+    /// reads now is the daemon's `Activity`: `Turn` while a round generates, `Calls` while the round
+    /// that ended has calls running, and quiet only when there is nothing left.
     #[test]
-    fn a_turn_runs_through_its_rounds_calls() {
+    fn the_daemons_activity_says_what_the_rounds_events_cannot() {
         let mut state = State::default();
         let mut seq = 0;
         let mut feed = |state: &mut State, event: SessionEvent| {
             seq += 1;
             state.fold(ServerFrame::Event(env(seq, event)));
         };
+        let activity = |waiting_on: Vec<Waiting>| SessionEvent::ActivityChanged {
+            activity: Activity::of(waiting_on),
+        };
         feed(&mut state, testing::turn_started("t1"));
-        feed(
-            &mut state,
-            testing::proposed_on("t1", "c1", "read", "docs/plan.md"),
-        );
-        feed(
-            &mut state,
-            testing::proposed_on("t1", "c2", "bash", "git status"),
-        );
+        feed(&mut state, activity(vec![Waiting::Turn]));
+        assert_eq!(state.word(), "running");
+
+        // The round ended and its calls are running: still busy, and the round's own
+        // `TurnFinished` below does not change that.
+        feed(&mut state, activity(vec![Waiting::Calls]));
         feed(&mut state, testing::turn_finished("t1"));
         assert_eq!(
             state.word(),
             "running",
             "the round's calls are still to run"
         );
-        assert!(state.idle_since.is_none());
 
-        feed(&mut state, finished("c1", ToolOutcome::Ok));
-        assert_eq!(state.word(), "running", "one call is still open");
-        feed(&mut state, finished("c2", ToolOutcome::Ok));
-        assert_eq!(state.word(), "idle", "the gap before the next round");
-        assert!(state.idle_since.is_some(), "wait settles from this stamp");
-
-        feed(&mut state, testing::turn_started("t1"));
+        // The next round starts, and the whole turn ends quiet.
+        feed(&mut state, activity(vec![Waiting::Turn]));
         assert_eq!(state.word(), "running");
-        assert!(
-            state.idle_since.is_none(),
-            "the next round re-arms the turn"
-        );
-
-        // A call that finishes while its round is still writing is not the turn's last.
-        feed(&mut state, testing::proposed_on("t1", "c3", "read", "a.rs"));
-        feed(&mut state, finished("c3", ToolOutcome::Ok));
-        assert_eq!(state.word(), "running", "the round is still generating");
         feed(&mut state, testing::turn_finished("t1"));
+        feed(&mut state, activity(Vec::new()));
+        assert_eq!(state.word(), "idle", "nothing left: the turn is over");
+        assert!(state.activity.is_quiet());
+
+        // **Published only when it changes is the daemon's**, so a repeated value is not news
+        // here either: the ring gains no second entry for a value it already held.
+        let before = state.events.page(0, RING).next;
+        feed(&mut state, activity(Vec::new()));
         assert_eq!(
-            state.word(),
-            "idle",
-            "a round that left nothing open ends idle"
+            state.events.page(0, RING).next,
+            before,
+            "an unchanged value says nothing"
         );
     }
 
-    /// **A turn that ended to wait on its own job is not the end of the work.** QA ended a
-    /// turn *waiting on the last probe target*; the job's settlement woke it again. The
-    /// open set follows the backgrounded handle to its `JobSettled`, and a fresh head
-    /// (which is what `wait` is) seeds it from the daemon's job list.
+    /// **A turn that ended to wait on its own job is not the end of the work** — and whether a job
+    /// holds the work open is the DAEMON's answer now (R79's rule: a settlement the model is woken
+    /// by), not an edge this head derives off the todo board.
+    ///
+    /// QA's case is the first half: a turn ended *waiting on the last probe target*, and a `wait`
+    /// that answered there handed the orchestrator a package with an hour of work left. The second
+    /// half is the correction that makes the first usable: a server left running, or the test's own
+    /// `sleep 30`, is not something the work waits on and must not hold a later turn open for ever.
     #[test]
-    fn a_job_left_running_keeps_the_work_open() {
+    fn a_job_the_work_waits_on_keeps_the_session_busy_and_a_server_does_not() {
         let mut state = State::default();
         let mut seq = 0;
         let mut feed = |state: &mut State, event: SessionEvent| {
             seq += 1;
             state.fold(ServerFrame::Event(env(seq, event)));
+        };
+        let activity = |waiting_on: Vec<Waiting>| SessionEvent::ActivityChanged {
+            activity: Activity::of(waiting_on),
         };
         feed(&mut state, testing::turn_started("t1"));
         feed(
@@ -1779,36 +1790,51 @@ mod tests {
             ),
         );
         feed(&mut state, testing::turn_finished("t1"));
+        // **An open job nothing waits on** — a dev server, the test's `sleep 30`: the daemon says
+        // the session is quiet, and this head says exactly what the daemon said.
+        feed(&mut state, activity(Vec::new()));
         assert_eq!(state.word(), "idle");
         assert!(state.jobs_open.contains("j9"), "the job is still running");
         assert!(
             !state.waiting_on_jobs(),
-            "an open job nothing waits on (a server, a sleep) holds nothing open"
+            "an open job the work does not wait on holds nothing open"
         );
-        let row = |status| TodoEntry {
-            status,
-            needs: vec![TodoNeed::Job {
-                handle: "j9".into(),
-            }],
-            ..serde_json::from_value(json!({"content": "run the tests", "status": "pending"}))
-                .expect("a todo row")
-        };
-        state.fold(ServerFrame::Todos {
-            session_id: "s-recorded".into(),
-            todos: vec![row(TodoStatus::InProgress)],
-        });
-        assert!(
-            state.waiting_on_jobs(),
-            "the board says the work waits on j9"
-        );
+
+        // **The work waits on it now.** The daemon re-reads the board and says `job j9`.
+        feed(&mut state, activity(vec![Waiting::Job("j9".into())]));
+        assert!(state.waiting_on_jobs(), "the plan depends on j9");
+        assert_eq!(state.waiting_on(), vec!["job j9".to_string()]);
+
+        // It settled, and the turn its settlement wakes has not started: the daemon says
+        // `delivery`, which is the window QC's `wait` exited in.
         feed(&mut state, settled("j9", "exited 0", 60_000));
         assert!(state.jobs_open.is_empty(), "its settlement closes it");
+        feed(&mut state, activity(vec![Waiting::Delivery]));
+        assert!(!state.activity.is_quiet(), "the wake is owed");
         assert!(
-            state.waiting_on_jobs(),
-            "but the turn it wakes has not started: the daemon delivers it in its own time"
+            !state.waiting_on_jobs(),
+            "the job is over; what is left is the turn it wakes"
         );
+
         feed(&mut state, testing::turn_started("t1"));
-        assert!(!state.waiting_on_jobs(), "the wake started");
+        feed(&mut state, activity(vec![Waiting::Turn]));
+        assert_eq!(state.word(), "running", "the wake started");
+    }
+
+    /// **A head that attaches mid-turn is not blind**: the value travels in the snapshot, so a
+    /// `wait` that attached as the brief started sees `turn` rather than an idle session.
+    #[test]
+    fn a_snapshot_carries_the_activity_it_was_taken_with() {
+        let mut state = State::default();
+        let mut snap = snapshot_of(testing::one_of_each());
+        snap.activity = Activity::of(vec![Waiting::Calls, Waiting::Job("j8032".into())]);
+        state.seed(&snap);
+        assert_eq!(state.word(), "running");
+        assert!(state.waiting_on_jobs());
+        assert_eq!(
+            state.waiting_on(),
+            vec!["calls".to_string(), "job j8032".to_string()]
+        );
     }
 
     /// **The report outlives the chatter after it, and the spend is the package's.** P1

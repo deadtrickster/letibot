@@ -1656,6 +1656,13 @@ pub struct App {
     /// counter of how much and what kind is held - somewhere close to Responding ...."*. Drawn on
     /// the turn's status row ([`App::held_label`]).
     pub(crate) held: Option<(u64, u64, u64)>,
+    /// **What the daemon says this session is waiting on** (`PROTOCOL_VERSION` 52) — quiet, or
+    /// busy with the list.
+    ///
+    /// Folded from `ActivityChanged` and seeded from a snapshot, and drawn as one muted line on the
+    /// status row ([`App::activity_line`]). `Quiet` is what a daemon older than 52 can only ever
+    /// say, and the row then draws exactly what it drew before this existed.
+    pub(crate) activity: letibot_sessionlog::activity::Activity,
     /// **A fold's long wait** ([`SessionEvent::CompactionProgress`](letibot_sessionlog::SessionEvent::CompactionProgress)),
     /// in the compaction's own units.
     ///
@@ -2024,6 +2031,7 @@ impl App {
             compacting_since: 0,
             status_click: None,
             held: None,
+            activity: letibot_sessionlog::activity::Activity::Quiet,
             auto_compact_off: None,
             nags_paused: None,
             asks_setting: None,

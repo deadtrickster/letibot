@@ -100,6 +100,12 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Ephemeral, for `Filling`'s reason: a held count is true NOW, and the delivery that ends
         // the hold is a durable row of its own.
         SessionEvent::HeldResults { .. } => true,
+        // **Ephemeral, and what replaces it is the hub's own republish**: what a session is
+        // waiting on is true NOW, and a value replayed from before a gap describes a session that
+        // may since have gone quiet or stopped on a card. The hub says the current one to every
+        // head that attaches, reconnects or resyncs (`Inner::activity_now`), exactly as it does the
+        // held counts — so the *snapshot* carries the value and the replay never does.
+        SessionEvent::ActivityChanged { .. } => true,
         // **Ephemeral, and it is the same reason one turn on**: a pane's view is the answer to a
         // look, and a look from four minutes ago describes four minutes ago. Replaying it would
         // hand a head that attached later a dashboard with no sign of its age, and the screen a
@@ -285,6 +291,11 @@ impl StoredProjection {
             // count from before the gap, and it reached this arm unhandled (a debug-build panic
             // on every reconnect after a hold). Not counted: the report's fields are on the wire.
             SessionEvent::HeldResults { .. } => None,
+            // The activity is true NOW, and the hub says the current one to every head that
+            // attaches, reconnects or resyncs (`Inner::activity_now`) — a replayed one is the value
+            // from before the gap, and a head that kept it would draw a session stopped on a job
+            // that ended. Dropped for `HeldResults`' reason and by the same mechanism.
+            SessionEvent::ActivityChanged { .. } => None,
             // An unsettled request survives the scrub. It is still owed an answer
             // and the reattaching head is who owes it.
             _ => {
@@ -447,6 +458,21 @@ mod tests {
                     | SessionEvent::ToolProgress { .. }
                     | SessionEvent::DecisionRequested { .. }
                     | SessionEvent::JobOutput { .. }
+                    // What the session is waiting on is true NOW: a replayed one would describe a
+                    // session that may since have gone quiet, and the hub says the current one
+                    // after every snapshot, gap and resync (`Inner::activity_now`).
+                    | SessionEvent::ActivityChanged { .. }
+                    // Ephemeral for the same reason `JobOutput` is: a window is what the job had
+                    // written, and a held count is what was held at that moment. Neither is
+                    // durable and neither is drawn from a replay.
+                    | SessionEvent::Filling { .. }
+                    | SessionEvent::CompactionProgress { .. }
+                    | SessionEvent::HeldResults { .. }
+                    | SessionEvent::PluginPane { .. }
+                    | SessionEvent::PluginPaneGone { .. }
+                    | SessionEvent::SecretRequested { .. }
+                    | SessionEvent::PromptRequested { .. }
+                    | SessionEvent::ScreenRequested { .. }
             );
             assert_eq!(interactive, expected, "{}", e.kind());
         }

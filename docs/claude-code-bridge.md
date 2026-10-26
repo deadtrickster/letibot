@@ -60,7 +60,7 @@ holds one head connection per leticode session it started or attached to, so ask
 | `leticode_start` | `worktree` (absolute path), `brief`, `model` (e.g. `deepseek`), `mode` (default `writes-allowed`) | `{session}` — starts the folder's daemon if needed (as the `letibot` launcher does), opens a session, sends the brief as the first prompt, stays attached |
 | `leticode_attach` | `worktree` (a folder whose daemon holds the session), `session` (an id, or `gatekeeper`), `watch_only` (default `true`) | as `leticode_start` minus the brief — **joins** a running daemon (never starts one), attaches a head, answers `{session, daemon_started: false, watch_only, can_decide, state, pending_asks, last_message}` |
 | `leticode_send` | `session`, `text` | `{queued: true}` — an operator line into the running session (queued behind a running turn, as the head's own) |
-| `leticode_status` | `session` | `{state: running\|idle\|asking\|failed, turn, todos, last_message, report?, cost_usd, tokens, pending_asks}` |
+| `leticode_status` | `session` | `{state: running\|idle\|asking\|failed, turn, todos, last_message, report?, cost_usd, tokens, pending_asks, activity, waiting_on}` — `activity` is what the daemon says the session is waiting on (`quiet`, or `busy` with the entries tagged by kind) and `waiting_on` is the same list in a reader's words (`["job j8032", "monitor ci"]`) |
 | `leticode_events` | `session`, `since` (cursor) | the compact progress since the cursor: tool calls (name + one line), job starts and ends, failures, asks, the **subagents a session spawns** (slug, the branch their task named, how they ended) — never banner or memwatch lines — and the next cursor |
 | `leticode_asks` | `session` | the pending permission asks: id, the call (tool, arguments), the options the gate offers |
 | `leticode_answer` | `session`, `ask`, `option` (one the ask offered), `note` | `{answered: true}` — sent as the protocol's `Answer`, so it lands in the decision corpus like the operator's own |
@@ -76,6 +76,26 @@ folder's daemon as a head and **exits when the session needs Claude**: its turn 
 last assistant message on stdout), an ask is pending (exit 10, the ask on stdout), it failed (exit
 20), or the timeout passed (exit 30). Claude runs it as a background command after every
 `leticode_start` and `leticode_send`; its exit is the notification.
+
+**"Its turn ended" means the DAEMON says the session is quiet** — `PROTOCOL_VERSION` 52's
+`Activity`: nothing generating, no call of the last round running, no settlement owed to the model,
+no job or child whose ending will wake it, no monitor armed, no card open. Exit 10 is
+`Activity::ask()` — the one entry of that list that does not end without a person.
+
+**This used to be inferred from outside, and every inference was a timer.** The engine publishes
+`TurnStarted`/`TurnFinished` once per ROUND, so a turn's tool calls and the boundary between two
+rounds read as *idle*; the bridge answered that with a ten-second settle window, then with a
+`wake_due` flag raised when a `JobSettled` an unfinished todo row needed, and QA found the next
+hole inside a day (a turn that ended *waiting on the last probe target*). Each guess fixed one
+false wake and left the next, and the operator's question is the whole argument for the event:
+*"it is easy to see if any jobs are running, etc etc, why timeouts?"* — the daemon holds the jobs,
+the calls, the monitors, the children and the cards, so the daemon answers.
+
+A job counts when its settlement is one the model is **woken** by (R79's `delivery::decide`: an
+open row needs it or has a `when:` condition on it, a wait asked for it, `wake: "now"`), not every
+open handle — a dev server left running would otherwise hold every `wait` for its whole life. What
+keeps a merely-held settlement from slipping through is `Delivery`: the moment the result is queued
+the session is owed a turn, and that is the window a `wait` used to exit in.
 
 ### Claude Code as the approver
 

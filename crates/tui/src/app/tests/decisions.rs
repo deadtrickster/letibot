@@ -1366,6 +1366,7 @@ fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
             warnings: Vec::new(),
             heads: Vec::new(),
             subagents: Vec::new(),
+            activity: letibot_sessionlog::activity::Activity::Quiet,
         })),
         resumed_from: None,
         scrubbed: Default::default(),

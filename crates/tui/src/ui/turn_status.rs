@@ -49,7 +49,11 @@ impl App {
     fn turn_line(&self, w: usize) -> Line {
         let t = match self.turn.as_ref() {
             Some(t) if self.turn_busy() => t,
-            _ => return Line::default(),
+            // **No turn running, but the session is not idle either** — it is waiting on a job the
+            // work depends on, on a settlement it is owed, on a monitor, or on a person. The row is
+            // reserved whether or not a turn runs (`rano::agent::fit`), so this is drawn in the slot
+            // `Responding…` uses and takes no line from the conversation.
+            _ => return self.activity_line(w),
         };
         let status = TurnStatus {
             busy: true,
@@ -71,6 +75,31 @@ impl App {
                 .push(rano::render::Span::role(format!(" · {held}"), Role::Faint));
             line = rano::render::text::truncate_owned(line, w);
         }
+        line
+    }
+
+    /// **What this session is waiting on, one muted line** — `waiting on: job j8032 · monitor ci`.
+    ///
+    /// The daemon's own list (`PROTOCOL_VERSION` 52), drawn where a turn's state is drawn because it
+    /// answers the same question: *is this session doing anything, and what*. The case it exists for
+    /// is the one no row of the transcript can say — a session whose turn has ended and which is
+    /// nonetheless going to act again on its own, because a job the plan depends on is still running.
+    ///
+    /// **Only when no turn is running**, and that is not a layout detail: a turn's own row owns the
+    /// slot while it generates, and `Responding · 2m30s · …` plus a list of what is running is a row
+    /// that says the same thing twice. What a running turn is waiting on is legible in the jobs and
+    /// monitors panes; what an IDLE session is waiting on had nowhere to be said at all.
+    ///
+    /// **Empty for a quiet session**, and empty for a daemon older than 52 — which is what makes
+    /// this invisible to a head talking to one.
+    fn activity_line(&self, w: usize) -> Line {
+        let text = self.activity.line();
+        if text.is_empty() {
+            return Line::default();
+        }
+        let mut line = Line::default();
+        line.spans
+            .push(rano::render::Span::role(trim_to(&text, w), Role::Faint));
         line
     }
 

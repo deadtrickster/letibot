@@ -333,6 +333,19 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             lines: vec!["building".into(), "done".into()],
             next: None,
         },
+        // **What the session is waiting on** (`PROTOCOL_VERSION` 52) — the value a caller reads
+        // instead of inventing a settle window. One of each: the two turn entries, the delivery
+        // window, a job and a child by name, a monitor and the card that needs a person.
+        SessionEvent::ActivityChanged {
+            activity: crate::activity::Activity::of(vec![
+                crate::activity::Waiting::Calls,
+                crate::activity::Waiting::Delivery,
+                crate::activity::Waiting::Job("j7".into()),
+                crate::activity::Waiting::Monitor("ci".into()),
+                crate::activity::Waiting::Child("s-sub-1".into()),
+                crate::activity::Waiting::Ask("adj-s1-0001".into()),
+            ]),
+        },
     ]
 }
 
