@@ -97,6 +97,15 @@ out="$(run '' --dense "one question")"
 expect "a flag's model with no home is named" "$out" "no endpoint for this run: --dense asked"
 expect "  ...and the daemon is started anyway" "$out" "^harnessd "
 
+# **`--host NAME` is forwarded to the daemon, value and all** — the session's tools run on
+# that machine (`docs/remote-hosts.md`). The launcher does not resolve the name: the daemon
+# reads the operator's `hosts.toml` and refuses an unknown one by naming the ones it knows,
+# so the shell's whole job here is to pass the pair through intact (and to consume the value
+# so the name is not mistaken for the prompt).
+out="$(run '' --host lab2x1 "one question")"
+expect "--host is passed to the daemon with its name" "$out" "^harnessd .*--host lab2x1"
+refuse "  ...and the name is not taken for the prompt" "$out" "--prompt lab2x1"
+
 LOCAL='[model."local.flash"]
 url = "http://127.0.0.1:59999"
 model = "qwen-3.8-flash-next"

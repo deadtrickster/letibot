@@ -88,3 +88,44 @@ a later decision, not this slice's.
 | RH2 | the bridge's `leticode_start { host }`; a live smoke test on lab2x1 run by the orchestrator |
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
 | RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
+
+## As built (RH1)
+
+Everything above is what was built, with these decisions taken where the contract left a
+choice — each one written down because a slice that quietly narrows its own contract is the
+defect this tree keeps paying for:
+
+* **The seam is a branch, and the branch is checked.** `task`'s `seam:` line for a remote
+  child says what comes back (`remote/<host>/<short id>`) and when (when it ends) — the
+  opposite of the VM's line, which had to stop promising a branch.
+* **`git fetch` runs through the same ssh** (`-c core.sshCommand=…` built from the
+  backend's own flags and ControlPath), so the fetch reuses the connection the session's
+  commands used and the fake-ssh tests exercise the real transport shape rather than a
+  second code path.
+* **`~` in `root` is expanded by the remote shell, once, and the answer must be
+  absolute.** Quoting it (`cd '~/x'`) silently makes a directory literally named `~`, and
+  the result is a worktree neither this box nor `git fetch` can name; a non-absolute answer
+  is refused rather than used.
+* **A remote job's exit is its exit file.** `<worktree>/.letibot-remote/jobs/<id>.{sh,pid,out,exit}`;
+  `wait_job` polls that file every 120 ms, which is the one cost of this shape (one ssh
+  round trip per check) and is bounded by the run's own deadline.
+* **The deadline is armed on the remote**, not on this Mac: a detached `sleep … kill` over
+  the same connection. A local thread would die with this daemon while the process it guards
+  does not — a job outlives this machine sleeping, so its deadline has to as well.
+* **A group kill only when the pid leads one.** `kill -TERM -<pid>` on a pid that is not a
+  process-group leader signals *this shell's* group; `ps -o pgid=` is asked first, and a host
+  without `setsid` gets a single-process kill and a note on the record saying so.
+* **`task_start` from a remote session is refused by name.** It makes git worktrees with
+  the local `git` against a local path; a tree made here is one the child could not reach.
+  The way to have a remote child is `task` (or `task_start` run from a host session), whose
+  `open` arranges the checkout where the tree is.
+* **No monitors on the remote.** `monitor` refuses by name (the process host says it has no
+  monitor mechanism) rather than watching a condition nothing would reap. Watchers are the
+  next slice's business, with the rest of the host's.
+* **A command's stderr arrives merged into its stdout**, because ssh carries one channel —
+  the same trade `firecode in` makes, said in `SshBackend::describe` rather than left to be
+  discovered.
+* **There is no `remote_sync` verb**: the branch comes back when the session ends
+  (`ExecBackend::close`). The contract allows either.
+* **`host:NAME` is also spelled `remote:NAME`**, and `--where host:NAME` is the same act as
+  `--host NAME` — one rule, with the name checked against `hosts.toml` in both places.

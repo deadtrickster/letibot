@@ -389,6 +389,14 @@ already up, then attaches the TUI head to it.
                               a sibling directory when it ends
   letibot --vm-copy           with --vm: a copy even on a Mac
   letibot --vm-arg ARG        passed to `firecode up`, repeatable (--mem, --vcpu, --add-dir)
+  letibot --host NAME         run the session's TOOLS on that machine over ssh, while the
+                              model, the store and the gate stay here. NAME is declared by
+                              you, never by a project: [host.NAME] in
+                              ~/.config/letibot/hosts.toml (hostname, user, key, root).
+                              The repository's HEAD goes over as a checkout on the branch
+                              remote/<id>; what it commits comes back as remote/NAME/<id>
+                              when the session ends. Not a boundary -- it is your machine
+                              with your files, so the gate is the same one
   letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered.
                               Optional: with no model reachable, letibot asks on the
                               first message and saves the answer as the default
@@ -439,13 +447,13 @@ for a in "$@"; do
   # `--vm-arg --mem` hands `--mem` to firecode.
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in
-    --vm-arg|--provider|--model|--mode|--session|-s|--rename|--delete|\
+    --vm-arg|--host|--provider|--model|--mode|--session|-s|--rename|--delete|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms) skip=1 ;;
   esac
   case "$a" in
     --help|-h|help|--read-only|--writes|--bash|--no-bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
-    --rename|--delete|--mode|--force|--vm|--vm-arg|--provider|--model|\
+    --rename|--delete|--mode|--force|--vm|--vm-arg|--host|--provider|--model|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
     --*) die "unknown flag: $a
          ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
@@ -763,6 +771,12 @@ while [ $# -gt 0 ]; do
     --vm-arg)
       [ $# -ge 2 ] || die "--vm-arg ARG"
       EXTRA_ARGS+=(--vm-arg "$2"); shift 2 ;;
+    # **Tools on another machine** (`docs/remote-hosts.md`). Forwarded verbatim;
+    # harnessd owns the meaning and refuses a name that is not in the file, so this
+    # line does not have to know what a host is.
+    --host)
+      [ $# -ge 2 ] || die "--host NAME   (a [host.NAME] in ~/.config/letibot/hosts.toml)"
+      EXTRA_ARGS+=(--host "$2"); shift 2 ;;
     --provider)
       [ $# -ge 2 ] || die "--provider NAME   (deepseek, glm, grok)"
       EXTRA_ARGS+=(--provider "$2"); PROVIDER_SET=1; PROVIDER_NAME="$2"; shift 2 ;;

@@ -1440,6 +1440,14 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
                 seat.extra.push(need("--vm-arg ARG")?);
                 i += 2;
             }
+            // **The session's tools run on another machine** (`docs/remote-hosts.md`),
+            // forwarded verbatim: the daemon refuses a name the operator never declared, so
+            // this parse does not have to know what a host is.
+            "--host" => {
+                seat.extra.push("--host".into());
+                seat.extra.push(need("--host NAME")?);
+                i += 2;
+            }
             "--provider" => {
                 let v = need("--provider NAME   (deepseek, glm, glm-coding, glm-coding-cn, grok)")?;
                 seat.extra.push("--provider".into());
@@ -1794,6 +1802,7 @@ pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String>
 /// it is one `const` here rather than two chances to forget an entry.
 pub const VALUE_FLAGS: &[&str] = &[
     "--vm-arg",
+    "--host",
     "--provider",
     "--model",
     "--mode",
@@ -1844,6 +1853,7 @@ pub const KNOWN_FLAGS: &[&str] = &[
     "--force",
     "--vm",
     "--vm-arg",
+    "--host",
     "--provider",
     "--model",
     "--web-search",
