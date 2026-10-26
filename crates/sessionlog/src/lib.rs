@@ -120,3 +120,18 @@ pub use lift_tools::{ToolLogSink, from_tool_event};
 /// gatekeeper is the queue's, not a child the operator started. The role is the better mark and
 /// a live `Subagent` event carries it; a row rebuilt from the session list has only the title.
 pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
+
+/// **The id the review queue's session has, in every daemon and on every box.**
+///
+/// Session ids are `s-<now_ns>` — unique per creation and meaningless. This one is the
+/// opposite, on purpose: it is the key three things are decided by (`harnessd`'s
+/// `sessions::gatekeeper::SESSION` states them at length — *started once* across daemon
+/// restarts, *attachable by name* tomorrow, and the session a review row names as its own).
+///
+/// **It is spelled here, one crate below the daemon that owns the session**, because a
+/// session id is the wire's business and a HEAD has to be able to name it. The bridge is
+/// that head: `docs/claude-code-bridge.md`'s B6 watches the review queue from Claude Code,
+/// and it must say *which session* without linking `harnessd` — which is the daemon, its
+/// providers and its wasm JIT — to learn one string. Two spellings of an id that has to be
+/// the same string forever is the defect this constant exists to make impossible.
+pub const GATEKEEPER_SESSION: &str = "s-gatekeeper";

@@ -158,8 +158,14 @@ use letibot_tools::builtins::task::Placement;
 ///   reviewed it* — which is the column's own documented meaning, and the reason the review is
 ///   spawned by THIS harness and not by the tree the branch came from.
 ///
+/// **The string itself lives one crate down**, in
+/// [`letibot_sessionlog::GATEKEEPER_SESSION`], and this is the daemon's name for it: a head
+/// has to be able to say *which session* — the bridge's `leticode_attach` takes the name
+/// `gatekeeper` — and a head that linked this crate to learn one id would be linking the
+/// daemon, its providers and its wasm JIT. One definition, two names for it.
+///
 /// [`Registry::resumable`]: letibot_sessionlog::registry::Registry::resumable
-pub const SESSION: &str = "s-gatekeeper";
+pub const SESSION: &str = letibot_sessionlog::GATEKEEPER_SESSION;
 
 /// What the session is called in a picker, and on its own store row. A title is set once and only
 /// changed on purpose (`SessionBrief::title`), so this is what a person reads in `--sessions`.
