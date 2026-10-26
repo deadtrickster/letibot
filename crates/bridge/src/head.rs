@@ -30,7 +30,9 @@ use std::time::{Duration, Instant};
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, TodoEntry};
 use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
-use letibot_sessionlog::view::{OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState};
+use letibot_sessionlog::view::{
+    CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
+};
 use letibot_transcript::{ToolOutcome, TranscriptItem};
 use serde_json::{Value, json};
 
@@ -47,6 +49,18 @@ use crate::daemon::{Daemon, HEAD_KIND, IDENTITY};
 /// It is not a poll interval: nothing happens in this time except a turn starting, and a
 /// session that has one starts it in milliseconds.
 pub const START_GRACE: Duration = Duration::from_secs(3);
+
+/// **How long a turn has to stay quiet before `wait` calls it ended.**
+///
+/// The engine publishes `TurnStarted`/`TurnFinished` once per ROUND, not per prompt
+/// (`Hub::turn_in_flight` says so at length), and the calls a round proposed are what keep
+/// the turn going after its `TurnFinished`. [`State`] holds the turn as running until they
+/// finish; what it cannot see is the gap between the last call finishing and the next
+/// round's `TurnStarted`, where the daemon appends results and opens the next request. The
+/// first `wait` the bridge ran on a real package exited `0` ten seconds in, between round
+/// one and round two of a brief that had an hour of work left; quiet for this long is what
+/// separates *the turn ended* from *the turn is between rounds*.
+pub const SETTLE: Duration = Duration::from_secs(10);
 
 /// How long a head gives a `Switch` to land before it reports that it is on the wrong
 /// session. A re-seat is a second `Hello` on the same socket — one round trip — so the
@@ -377,6 +391,15 @@ pub struct State {
     /// `call_id` → the tool's name, joined into an ask. Bounded: a session's calls are
     /// many and this only has to answer for cards that are still open.
     calls: std::collections::HashMap<String, String>,
+    /// The calls proposed and not yet finished. A round's `TurnFinished` with any of these
+    /// open is a turn that goes on: its calls run, and the next round reads their results.
+    in_flight: std::collections::HashSet<String>,
+    /// When the turn last went idle, so `wait` can tell a turn that ended from a gap
+    /// between rounds (see [`SETTLE`]).
+    pub idle_since: Option<Instant>,
+    /// Whether the round in view has finished generating: calls that finish while it is
+    /// still writing are not the turn's last.
+    round_done: bool,
     /// **Whether a turn has ever run here**, from the snapshot's own turn or from one this
     /// head watched. `wait` needs it to tell *a session between turns* from *a session that
     /// has never run one* — and only the first of those is a turn that ended.
@@ -399,6 +422,11 @@ impl State {
         } else {
             &self.last_row
         }
+    }
+
+    fn go_idle(&mut self) {
+        self.turn = Turn::Idle;
+        self.idle_since = Some(Instant::now());
     }
 
     /// The word `leticode_status` answers with. `asking` wins over `running` because a
@@ -457,10 +485,31 @@ impl State {
             Some(t) => match &t.state {
                 ViewTurnState::Running => Turn::Running,
                 ViewTurnState::Interrupted { .. } => Turn::Idle,
+                // The round ended and its calls are running: the turn is not over.
+                ViewTurnState::Finished { .. }
+                    if !t
+                        .calls
+                        .iter()
+                        .all(|c| matches!(c.state, CallState::Finished { .. })) =>
+                {
+                    Turn::Running
+                }
                 ViewTurnState::Finished { .. } => Turn::Idle,
                 ViewTurnState::Failed { error, .. } => Turn::Failed(error.clone()),
             },
         };
+        self.in_flight = snap
+            .turn
+            .iter()
+            .flat_map(|t| &t.calls)
+            .filter(|c| !matches!(c.state, CallState::Finished { .. }))
+            .map(|c| c.call_id.clone())
+            .collect();
+        self.idle_since = (self.turn != Turn::Running).then(Instant::now);
+        self.round_done = snap
+            .turn
+            .as_ref()
+            .is_none_or(|t| !matches!(t.state, ViewTurnState::Running));
         self.turn_id = snap
             .turn
             .as_ref()
@@ -487,6 +536,8 @@ impl State {
         match env.event {
             SessionEvent::TurnStarted { turn_id, .. } => {
                 self.turn = Turn::Running;
+                self.idle_since = None;
+                self.round_done = false;
                 self.turned = true;
                 self.turn_id = turn_id;
                 self.streaming.clear();
@@ -498,7 +549,12 @@ impl State {
                 }
             }
             SessionEvent::TurnFinished { usage, .. } => {
-                self.turn = Turn::Idle;
+                // A round that proposed calls hands the turn to them; only a round that left
+                // nothing running is the turn going idle.
+                self.round_done = true;
+                if self.in_flight.is_empty() {
+                    self.go_idle();
+                }
                 self.turned = true;
                 if !self.streaming.is_empty() {
                     self.last_row = std::mem::take(&mut self.streaming);
@@ -512,7 +568,9 @@ impl State {
                 self.events.push(Entry::of("turn", "ended"));
             }
             SessionEvent::TurnInterrupted { reason, .. } => {
-                self.turn = Turn::Idle;
+                // An interrupted turn is over, whatever its calls were left as.
+                self.in_flight.clear();
+                self.go_idle();
                 self.turned = true;
                 if !self.streaming.is_empty() {
                     self.last_row = std::mem::take(&mut self.streaming);
@@ -521,6 +579,8 @@ impl State {
                     .push(Entry::of("turn", "interrupted").saying(one_line(&reason, LINE)));
             }
             SessionEvent::TurnFailed { error, .. } => {
+                self.in_flight.clear();
+                self.idle_since = Some(Instant::now());
                 self.turn = Turn::Failed(error.clone());
                 self.turned = true;
                 self.streaming.clear();
@@ -556,6 +616,7 @@ impl State {
                         .named(name.clone())
                         .saying(one_line(&target, LINE)),
                 );
+                self.in_flight.insert(call_id.clone());
                 self.calls.insert(call_id, name);
                 // A session that runs a thousand calls must not grow a map for ever; the
                 // asks that are open are the only ones anything looks a name up for.
@@ -567,6 +628,15 @@ impl State {
                 call_id, outcome, ..
             } => {
                 let tool = self.calls.get(&call_id).cloned().unwrap_or_default();
+                // A backgrounded call has finished as far as the round is concerned: the
+                // model gets its handle and goes on.
+                if self.in_flight.remove(&call_id)
+                    && self.in_flight.is_empty()
+                    && self.turn == Turn::Running
+                    && self.round_done
+                {
+                    self.go_idle();
+                }
                 // **A backgrounded call is the job STARTING**: there is no `JobStarted` on
                 // the wire, and the handle only exists here and on `JobSettled`.
                 if let ToolOutcome::Backgrounded {
@@ -860,6 +930,9 @@ impl Head {
             todos: g.todos.clone(),
             meter: g.meter,
             calls: g.calls.clone(),
+            in_flight: g.in_flight.clone(),
+            idle_since: g.idle_since,
+            round_done: g.round_done,
             turned: g.turned,
             events: g.events.clone(),
             closed: g.closed.clone(),
@@ -1025,7 +1098,11 @@ impl Head {
                     return Attention::Failed { why: why.clone() };
                 }
                 Turn::Running => armed = true,
-                Turn::Idle | Turn::Failed(_) if armed => {
+                // Ended means quiet for [`SETTLE`]: a round's end is not the turn's, and the
+                // next round's `TurnStarted` re-arms this before the window runs out.
+                Turn::Idle | Turn::Failed(_)
+                    if armed && g.idle_since.is_none_or(|t| t.elapsed() >= SETTLE) =>
+                {
                     return Attention::TurnEnded {
                         message: g.last_message().to_string(),
                     };
@@ -1049,10 +1126,10 @@ impl Head {
             }
             // A session that has never turned waits the whole deadline: there is no grace
             // question to ask about a session with no turn to have ended.
-            let until = if armed || !g.turned {
-                deadline
-            } else {
-                deadline.min(grace)
+            let until = match g.idle_since {
+                Some(t) if armed && g.turn != Turn::Running => deadline.min(t + SETTLE),
+                _ if armed || !g.turned => deadline,
+                _ => deadline.min(grace),
             };
             let wait = until.saturating_duration_since(now);
             let (next, _) = self
@@ -1287,6 +1364,61 @@ mod tests {
                 truncated: false,
             }),
         }
+    }
+
+    /// **A round's end is not the turn's.** The engine publishes `TurnFinished` per round,
+    /// and the round's calls run after it: the first `wait` on a real package woke its
+    /// caller between rounds one and two of an hour-long brief. The turn stays running
+    /// while a call is open, goes idle only when the last finishes after its round did,
+    /// and the next round's start takes the idle stamp back.
+    #[test]
+    fn a_turn_runs_through_its_rounds_calls() {
+        let mut state = State::default();
+        let mut seq = 0;
+        let mut feed = |state: &mut State, event: SessionEvent| {
+            seq += 1;
+            state.fold(ServerFrame::Event(env(seq, event)));
+        };
+        feed(&mut state, testing::turn_started("t1"));
+        feed(
+            &mut state,
+            testing::proposed_on("t1", "c1", "read", "docs/plan.md"),
+        );
+        feed(
+            &mut state,
+            testing::proposed_on("t1", "c2", "bash", "git status"),
+        );
+        feed(&mut state, testing::turn_finished("t1"));
+        assert_eq!(
+            state.word(),
+            "running",
+            "the round's calls are still to run"
+        );
+        assert!(state.idle_since.is_none());
+
+        feed(&mut state, finished("c1", ToolOutcome::Ok));
+        assert_eq!(state.word(), "running", "one call is still open");
+        feed(&mut state, finished("c2", ToolOutcome::Ok));
+        assert_eq!(state.word(), "idle", "the gap before the next round");
+        assert!(state.idle_since.is_some(), "wait settles from this stamp");
+
+        feed(&mut state, testing::turn_started("t1"));
+        assert_eq!(state.word(), "running");
+        assert!(
+            state.idle_since.is_none(),
+            "the next round re-arms the turn"
+        );
+
+        // A call that finishes while its round is still writing is not the turn's last.
+        feed(&mut state, testing::proposed_on("t1", "c3", "read", "a.rs"));
+        feed(&mut state, finished("c3", ToolOutcome::Ok));
+        assert_eq!(state.word(), "running", "the round is still generating");
+        feed(&mut state, testing::turn_finished("t1"));
+        assert_eq!(
+            state.word(),
+            "idle",
+            "a round that left nothing open ends idle"
+        );
     }
 
     /// **A recorded turn folds into the compact entries `leticode_events` answers with.**
