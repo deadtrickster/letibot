@@ -2725,6 +2725,85 @@ impl Store {
         Ok(())
     }
 
+    /// **The prefix a transcript was seated with** — `None` when the transcript is not there.
+    ///
+    /// The id and not the record: it is compared with what this daemon would compose now, which
+    /// is content-addressed, so two ids that differ are two different prompts.
+    pub fn transcript_prefix_id(&self, transcript_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT stable_prefix_id FROM transcript WHERE id = ?1",
+                params![transcript_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// **Re-seat a transcript that has no rows onto another prefix** — the one prefix
+    /// change that costs nothing.
+    ///
+    /// A session's message 0 is frozen because every row under it was tokenized against it
+    /// and `restore` rebuilds the chain from it. With **zero rows** nothing depends on the
+    /// frozen value: there is no chain to rebuild and no cache to keep, and the first turn
+    /// prefills cold either way. So an empty transcript whose stored prefix is not the one
+    /// this daemon composes is re-seated rather than kept — `Harness::open` does it, and
+    /// the alternative (`prefix_stale`'s ruling, keeping the old prompt for a session with
+    /// rows) would hand a brand-new conversation a message 0 the model cannot call the
+    /// current tools from, plus a `prefix_stale` sentence for a conversation nobody has had.
+    ///
+    /// **Refuses when a row exists**, and that refusal is the whole guarantee: this is the
+    /// only writer of `transcript.stable_prefix_id` that is not an INSERT, so it has to be
+    /// unable to move a prefix out from under a row. `NotFound` for an unknown transcript,
+    /// `Refused` naming the row count for one that holds rows.
+    pub fn set_transcript_prefix(&self, transcript_id: &str, stable_prefix_id: &str) -> Result<()> {
+        let n = self.exec(
+            "UPDATE transcript SET stable_prefix_id = ?2
+              WHERE id = ?1
+                AND NOT EXISTS (SELECT 1 FROM transcript_item WHERE transcript_id = ?1)",
+            params![transcript_id, stable_prefix_id],
+        )?;
+        if n > 0 {
+            return Ok(());
+        }
+        let rows: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1)
+                   FROM transcript WHERE id = ?1",
+                params![transcript_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match rows {
+            None => Err(StoreError::NotFound(format!("transcript {transcript_id}"))),
+            Some(rows) => Err(StoreError::Refused(format!(
+                "transcript {transcript_id} holds {rows} row(s), and its steady prefix is what \
+                 those rows were tokenized against: moving it would make every one of them \
+                 unreadable. Nothing was changed. A conversation that must change its prompt \
+                 forked onto a new transcript (`/reseat`, `/clear`, a compaction) rather than \
+                 having message 0 swapped under it."
+            ))),
+        }
+    }
+
+    /// **Every stored prefix that is exactly `n_tokens` long** — the candidates a transcript
+    /// is checked against when its rows do not rebuild under the prefix it names.
+    ///
+    /// A length and not an id because the id is content-addressed on the prompt's *text*,
+    /// which is exactly what a mis-seated transcript cannot tell us: all it records of the
+    /// prefix its rows were written under is where its first row starts. The caller picks
+    /// among the answers by rebuilding, which is the only test that can tell two prefixes of
+    /// one length apart.
+    pub fn stable_prefix_ids_of_len(&self, n_tokens: u32) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM stable_prefix WHERE LENGTH(tokens) / 4 = ?1
+              ORDER BY created_at DESC, rowid DESC",
+        )?;
+        let rows = stmt.query_map(params![n_tokens as i64], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
     fn insert_transcript(
         &self,
         transcript_id: &str,
@@ -2748,11 +2827,78 @@ impl Store {
         Ok(())
     }
 
+    /// **Where row `seq` of this transcript must start**, from the store's own numbers —
+    /// the transcript's stable-prefix length plus the `tok_len` of every row before it.
+    ///
+    /// This is the one number `TokenLedger::restore` checks a chain against (`cursor`
+    /// starts at `prefix_tokens.len()`), so a row written anywhere else is a row a resume
+    /// refuses. `NotFound` when the transcript itself is not there.
+    fn anchored_offset(&self, transcript_id: &str, seq: u32) -> Result<u32> {
+        // `LENGTH` of the blob, not `n_tokens`: the bytes are what a restore replays, and
+        // the two can only differ for a prefix row somebody wrote by hand.
+        let prefix_len: i64 = self
+            .conn
+            .query_row(
+                "SELECT LENGTH(sp.tokens) / 4
+                   FROM transcript t JOIN stable_prefix sp ON sp.id = t.stable_prefix_id
+                  WHERE t.id = ?1",
+                params![transcript_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("transcript {transcript_id}")))?;
+        let before: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(tok_len), 0) FROM transcript_item
+              WHERE transcript_id = ?1 AND seq < ?2",
+            params![transcript_id, seq as i64],
+            |r| r.get(0),
+        )?;
+        Ok((prefix_len + before) as u32)
+    }
+
+    /// **The append refuses a run of rows that does not start where the transcript's
+    /// prefix ends.**
+    ///
+    /// MEASURED 2026-10-26, in the operator's own store: `s-gatekeeper#t0` was seated
+    /// 2026-10-11 under a 24,407-token prefix, had no rows, and a daemon running newer
+    /// binaries opened it on 2026-10-25 and appended fourteen rows starting at **32162** —
+    /// the prefix *that* build composes. Every one of those rows is correctly hashed and
+    /// the trigger accepted all of them, because the trigger's offset rule starts at
+    /// `seq > 0`: there was nothing for row 0 to continue, so nothing checked it. The
+    /// transcript has never been restorable since, and `restore.rs` says so every run:
+    /// `row 0 starts at 32162, should start at 24407`.
+    ///
+    /// So the anchor is checked here, where the store still knows the prefix and the rows
+    /// before this one: `tok_offset` must equal the prefix's length plus what is already
+    /// stored. A row anywhere else is refused by name rather than written — the store's job
+    /// is to hold a chain a resume can rebuild, and a chain that cannot be rebuilt is
+    /// exactly what row 0 at the wrong offset creates.
+    ///
+    /// Checked before the INSERT rather than inside it, and that is not a hole: a
+    /// concurrent append between this read and the write is refused by the trigger's own
+    /// `seq` rule (the seq is taken), so the only thing a race can produce is a refusal.
+    fn assert_anchored(&self, transcript_id: &str, seq: u32, tok_offset: u32) -> Result<()> {
+        let expected = self.anchored_offset(transcript_id, seq)?;
+        if tok_offset == expected {
+            return Ok(());
+        }
+        Err(StoreError::Refused(format!(
+            "row {seq} of {transcript_id} would start at token {tok_offset}, but this \
+             transcript's rows start where its stable prefix ends: {expected}. A resume \
+             rebuilds the chain from the prefix, so a row written there would be refused \
+             with `row {seq} starts at {tok_offset}, should start at {expected}` and the \
+             conversation could never be loaded again. Nothing was written. This is the \
+             shape a daemon makes when it appends to a transcript under a prompt the \
+             transcript was not seated with — see `Store::set_transcript_prefix`."
+        )))
+    }
+
     /// Append one item and its ledger row, together.
     ///
     /// One statement, so the row and the tokens it describes cannot end up
     /// disagreeing; and the insert trigger refuses it if `seq` or `tok_offset`
-    /// does not continue the previous row.
+    /// does not continue the previous row. `seq` 0 has no previous row to continue, so
+    /// [`Store::assert_anchored`] is what refuses it at the wrong offset.
     pub fn append_item(
         &self,
         transcript_id: &str,
@@ -2761,6 +2907,7 @@ impl Store {
         row: &LedgerRow,
         tokens: &[TokenId],
     ) -> Result<()> {
+        self.assert_anchored(transcript_id, seq, row.tok_offset)?;
         self.exec(
             APPEND_SQL,
             params![
@@ -2810,6 +2957,12 @@ impl Store {
         I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,
     {
         let rows: Vec<_> = rows.into_iter().collect();
+        // The same anchor [`Store::append_item`] checks, once for the run: the rows inside a
+        // chunk continue each other by the trigger's rule, and every later chunk continues
+        // the chunk before it, so the first row is the only one with nothing before it.
+        if let Some((_, row, _)) = rows.first() {
+            self.assert_anchored(transcript_id, first_seq, row.tok_offset)?;
+        }
         for (c, chunk) in rows.chunks(Self::APPEND_CHUNK).enumerate() {
             let base = first_seq + (c * Self::APPEND_CHUNK) as u32;
             // Serialised once, outside the retry: a busy retry re-runs only SQL.

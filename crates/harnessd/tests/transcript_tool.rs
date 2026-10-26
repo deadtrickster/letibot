@@ -47,7 +47,10 @@ fn tool_result(name: &str, payload: &str) -> TranscriptItem {
 fn row(seq: u32) -> LedgerRow {
     LedgerRow {
         item_id: format!("i{seq}"),
-        tok_offset: seq,
+        // The prefix these fixtures seat is three tokens long, so row 0 starts after it:
+        // the store refuses a row at any other offset, because a resume rebuilds the chain
+        // from the prefix's length.
+        tok_offset: 3 + seq,
         tok_len: 1,
         h_k: [0u8; 32],
     }

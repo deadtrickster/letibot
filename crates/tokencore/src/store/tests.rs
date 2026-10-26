@@ -422,7 +422,9 @@ fn store_round_trip_rebuilds_the_same_ledger() {
 fn kinds_are_denormalised_correctly() {
     let s = store();
     let (tr, _) = seeded(&s);
-    let mut ledger = TokenLedger::new(&tr, &[]).unwrap();
+    // The ledger's prefix is the STORE's — `seeded`'s four tokens — so the first row starts
+    // where they end. A ledger over an empty prefix would be a row the store refuses.
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
     let item = TranscriptItem::ToolResult {
         call_id: "c".into(),
         name: "read".into(),
@@ -2298,4 +2300,125 @@ fn an_unsealed_fork_is_not_current_until_it_is_sealed() {
         "sealed, the fork is the conversation"
     );
     assert!(s.seal_transcript("nope").is_err());
+}
+
+/// **A row that does not start where the transcript's prefix ends is refused** — the
+/// assertion the insert trigger cannot make for `seq` 0, and the one the operator's store
+/// needed on 2026-10-25: at that point `s-gatekeeper#t0` was seated under a 24,407-token
+/// prefix, had no rows, and a newer daemon appended fourteen rows starting at **32162**
+/// (its own prefix length). Every one of those rows is correctly hashed and the trigger
+/// accepted all fourteen, because row 0 continues nothing — and no resume has been able to
+/// rebuild that transcript since.
+#[test]
+fn a_first_row_that_does_not_start_after_the_prefix_is_refused() {
+    let s = store();
+    let (tr, _) = seeded(&s);
+    let item = TranscriptItem::Assistant {
+        text: "x".into(),
+        tool_calls: vec![],
+        truncated: false,
+    };
+    let toks = vec![5u32, 6];
+    // The prefix is four tokens long, so row 0 starts at 4 and nowhere else.
+    for wrong in [0u32, 3, 5, 32162] {
+        let row = LedgerRow {
+            item_id: "a".into(),
+            tok_offset: wrong,
+            tok_len: 2,
+            h_k: [7; 32],
+        };
+        let err = s
+            .append_item(&tr, 0, &item, &row, &toks)
+            .expect_err("a row at the wrong offset must be refused");
+        let said = err.to_string();
+        assert!(
+            said.contains(&format!("would start at token {wrong}")),
+            "the refusal must name the offset it was given: {said}"
+        );
+        assert!(
+            said.contains("ends: 4"),
+            "and the one the store requires: {said}"
+        );
+        assert_eq!(s.item_count(&tr).unwrap(), 0, "nothing was written");
+    }
+
+    // The batched form is the same assertion once for the run — `Harness::persist`'s path.
+    let row = LedgerRow {
+        item_id: "b".into(),
+        tok_offset: 9,
+        tok_len: 2,
+        h_k: [8; 32],
+    };
+    let err = s
+        .append_items(&tr, 9, [(&item, &row, toks.as_slice())])
+        .expect_err("a run that starts anywhere else is refused too");
+    assert!(err.to_string().contains("ends: 4"), "{err}");
+    assert_eq!(s.item_count(&tr).unwrap(), 0);
+
+    // And the honest row lands, as many times as the prefix and the rows so far allow.
+    let good = LedgerRow {
+        item_id: "c".into(),
+        tok_offset: 4,
+        tok_len: 2,
+        h_k: [9; 32],
+    };
+    s.append_item(&tr, 0, &item, &good, &toks).unwrap();
+    let after = LedgerRow {
+        item_id: "d".into(),
+        tok_offset: 6,
+        tok_len: 2,
+        h_k: [10; 32],
+    };
+    s.append_item(&tr, 1, &item, &after, &toks).unwrap();
+    assert_eq!(s.item_count(&tr).unwrap(), 2);
+}
+
+/// **An empty transcript is re-seated; one with rows is refused, because those rows speak
+/// the prefix they were written under.** The first half is what `Harness::open` does to a
+/// transcript an older build seated and nobody has written to — the second is the guard
+/// that makes it safe to do it.
+#[test]
+fn a_transcript_is_reseated_only_while_it_holds_no_rows() {
+    let s = store();
+    let (tr, old) = seeded(&s);
+    let mut other = prefix();
+    other.system = "a newer build's prompt".into();
+    other.tokens = vec![9u32; 12];
+    other.h_init = hash_tokens(&other.tokens);
+    let new = s.put_stable_prefix(&other).unwrap();
+
+    assert_eq!(s.transcript_prefix_id(&tr).unwrap().as_deref(), Some(&*old));
+    assert_eq!(s.stable_prefix_ids_of_len(12).unwrap(), vec![new.clone()]);
+    assert!(
+        s.stable_prefix_ids_of_len(4).unwrap().contains(&old),
+        "the four-token prefix is one of the four-token answers"
+    );
+
+    s.set_transcript_prefix(&tr, &new).unwrap();
+    assert_eq!(s.transcript_prefix_id(&tr).unwrap().as_deref(), Some(&*new));
+
+    // Now it has a row, and the same call must refuse rather than make that row unreadable.
+    let item = TranscriptItem::Assistant {
+        text: "x".into(),
+        tool_calls: vec![],
+        truncated: false,
+    };
+    let toks = vec![5u32, 6, 7];
+    let row = LedgerRow {
+        item_id: "a".into(),
+        // Twelve tokens of prefix now, which is also what the anchor requires.
+        tok_offset: 12,
+        tok_len: 3,
+        h_k: [1; 32],
+    };
+    s.append_item(&tr, 0, &item, &row, &toks).unwrap();
+    let err = s
+        .set_transcript_prefix(&tr, &old)
+        .expect_err("a transcript with rows must not have its prefix moved");
+    assert!(err.to_string().contains("holds 1 row(s)"), "{err}");
+    assert_eq!(s.transcript_prefix_id(&tr).unwrap().as_deref(), Some(&*new));
+
+    // An unknown transcript is `NotFound`, not a silent success.
+    assert!(s.set_transcript_prefix("no-such", &new).is_err());
+    assert_eq!(s.transcript_prefix_id("no-such").unwrap(), None);
 }

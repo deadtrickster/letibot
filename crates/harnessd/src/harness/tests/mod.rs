@@ -40,6 +40,7 @@ mod intent;
 mod jobs;
 mod misc;
 mod operator_ask;
+mod prefix_on_open;
 mod questions;
 mod store_writes;
 mod workspace;

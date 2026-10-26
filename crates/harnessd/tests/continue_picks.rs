@@ -126,7 +126,10 @@ fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
                 },
                 &LedgerRow {
                     item_id: format!("{transcript}.{seq}"),
-                    tok_offset: seq * 3,
+                    // The prefix above is three tokens long, so the first row starts after
+                    // them — the store refuses a row that starts anywhere else, because a
+                    // resume rebuilds the chain from the prefix's length.
+                    tok_offset: 3 + seq * 3,
                     tok_len: 3,
                     h_k: [0u8; 32],
                 },

@@ -4970,9 +4970,42 @@ impl Harness {
                         None,
                     )
                 } else {
-                    let session = Session::restore(&loaded).map_err(|e| {
-                        HarnessError::Store(format!("session {}: {e}", cfg.session_id))
-                    })?;
+                    // **A transcript whose rows do not rebuild is repaired, not refused for
+                    // ever** — `prefix_repair`'s module header has the measured shape (an empty
+                    // transcript opened by a newer build, appended at THAT build's prefix
+                    // length). It forks onto the prefix the rows were really written under and
+                    // leaves the old transcript untouched; anything that is not provably that
+                    // shape keeps the refusal it has always had.
+                    let mut transcript_id = transcript_id;
+                    // The prefix the conversation is seated with — the row's own, or the one a
+                    // repair found the rows chaining from.
+                    let mut seated_prefix_id = loaded.stable_prefix_id.clone();
+                    let mut repaired = false;
+                    let session = match Session::restore(&loaded) {
+                        Ok(session) => session,
+                        Err(e) => match prefix_repair::rows_on_another_prefix(
+                            s,
+                            &cfg.session_id,
+                            &loaded,
+                            &e,
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?
+                        {
+                            Some(fixed) => {
+                                transcript_id = fixed.transcript_id;
+                                seated_prefix_id = fixed.prefix_id;
+                                repaired = true;
+                                notes.push(fixed.note);
+                                fixed.session
+                            }
+                            None => {
+                                return Err(HarnessError::Store(format!(
+                                    "session {}: {e}",
+                                    cfg.session_id
+                                )));
+                            }
+                        },
+                    };
                     // What a head attaching to this session should be told, or `None` when the
                     // session speaks the prompt this daemon would compose now.
                     let mut stale: Option<String> = None;
@@ -4981,12 +5014,22 @@ impl Harness {
                     // record, not the daemon's current render. A compaction fork keeps
                     // it, exactly as the resume itself does.
                     let own = s
-                        .stable_prefix_record(&loaded.stable_prefix_id)
+                        .stable_prefix_record(&seated_prefix_id)
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
                     let own_prefix = StablePrefix {
                         system: own.system,
                         tools_json: own.tools_json,
                     };
+                    let own_fingerprint = prefix_fingerprint(cfg.seat, &own_prefix);
+                    // **The fingerprint follows the transcript** — the rule its column was born
+                    // with (`fork_onto`, and the arm below that writes one per new transcript).
+                    // A repair forked onto another prompt, so the column has to follow it or the
+                    // very next resume reports this session stale against a prompt nobody is
+                    // speaking — the same defect the re-render fork's write exists to prevent.
+                    if repaired {
+                        s.set_prefix_fingerprint(&cfg.session_id, &own_fingerprint)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    }
 
                     // **Message 0 is frozen, and this is where that is held up against what
                     // this daemon would seat now.**
@@ -5013,10 +5056,17 @@ impl Harness {
                     // the moment of seating, the row is the text it was taken over. `None`
                     // from both means *nothing here can say*, and the honest answer to that is
                     // silence.
-                    let seated = stored
-                        .as_ref()
-                        .and_then(|r| r.prefix_fingerprint.clone())
-                        .unwrap_or_else(|| prefix_fingerprint(cfg.seat, &own_prefix));
+                    // **A repaired session speaks the prompt its rows were written under**, and
+                    // that is the fact the comparison's "was" side has to be. The COLUMN still
+                    // holds the fingerprint of the prompt the transcript row names — the one
+                    // nobody is speaking — so it is only consulted when nothing was repaired.
+                    let seated = match repaired {
+                        true => own_fingerprint.clone(),
+                        false => stored
+                            .as_ref()
+                            .and_then(|r| r.prefix_fingerprint.clone())
+                            .unwrap_or_else(|| own_fingerprint.clone()),
+                    };
                     if seated != prefix_fingerprint(cfg.seat, &prefix) {
                         let (was, is) = (
                             tool_schemas(&own_prefix.tools_json),
@@ -5100,7 +5150,7 @@ impl Harness {
                         rows,
                         Some(report),
                         own_prefix,
-                        loaded.stable_prefix_id,
+                        seated_prefix_id,
                         stale,
                     )
                 }
@@ -5160,17 +5210,65 @@ impl Harness {
                         // where its transcript row is written — the one rule the column has,
                         // and the reason it is not a field on `SessionRecord` above: a fork
                         // re-seats a session long after its creation and rewrites this.
-                        //
-                        // Here and not beside `put_session`, because a session row can
-                        // already exist with a transcript under a DIFFERENT prefix (the
-                        // daemon that made it never got a prompt), and in that case this
-                        // branch does not run and the row keeps the fingerprint of the
-                        // transcript it actually speaks.
                         s.set_prefix_fingerprint(
                             &cfg.session_id,
                             &prefix_fingerprint(cfg.seat, &prefix),
                         )
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    } else if s
+                        .item_count(&transcript_id)
+                        .map_err(|e| HarnessError::Store(e.to_string()))?
+                        == 0
+                        && s.transcript_prefix_id(&transcript_id)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?
+                            .as_deref()
+                            != Some(prefix_id.as_str())
+                    {
+                        // **An empty transcript on ANOTHER prompt is re-seated onto the one this
+                        // daemon composes, and this is the defect that made it necessary.**
+                        //
+                        // MEASURED 2026-10-26 in the operator's store: `s-gatekeeper#t0` was
+                        // seated 2026-10-11 under a 24,407-token prompt with no rows, a daemon
+                        // running newer binaries opened it on 2026-10-25 on its own 32,162-token
+                        // prompt, and the rows it appended started at 32162 — in a transcript
+                        // whose prefix is 24,407 tokens, so no resume has been able to rebuild it
+                        // since (`row 0 starts at 32162, should start at 24407`). The open went
+                        // through here: the transcript row already existed, so nothing rewrote
+                        // it, and the ledger was seated on the new prompt.
+                        //
+                        // **(a), re-seat, and not (b), keep the stored prefix.** The frozen-prefix
+                        // rule (`prefix_stale`) exists because every row was tokenized under
+                        // message 0 and a resume rebuilds the chain from it. With no rows there
+                        // is no chain to rebuild and no server cache to keep: the first turn
+                        // prefills cold whichever prompt is used. So keeping the old prefix would
+                        // buy nothing and cost a brand-new conversation a message 0 that cannot
+                        // call the tools seated since — a `prefix_stale` sentence for a
+                        // conversation nobody has had yet.
+                        //
+                        // A transcript that already HOLDS rows is not touched here: those rows
+                        // speak the prefix the row names, and moving it would make them
+                        // unreadable. `set_transcript_prefix` refuses that case itself — the
+                        // `item_count` above is what keeps this arm from reaching it.
+                        s.set_transcript_prefix(&transcript_id, &prefix_id)
+                            .map_err(|e| HarnessError::Store(e.to_string()))?;
+                        // **And the fingerprint follows**, for the reason its column exists: a
+                        // session whose fingerprint still describes the old prompt would report
+                        // itself stale on the next resume, having just been re-seated onto the one
+                        // this daemon composes.
+                        s.set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
+                        notes.push(format!(
+                            "this session's transcript `{transcript_id}` was seated earlier with a \
+                             prompt this daemon does not compose (a different build wrote its \
+                             prefix row) and had no rows in it, so it has been re-seated onto the \
+                             prompt this daemon composes. Nothing was lost: an empty transcript \
+                             has no tokens whose chain depends on message 0. The work is done now \
+                             and not at the first turn, which is where it used to fail — see \
+                             `Store::set_transcript_prefix`."
+                        ));
                     }
                 }
                 (transcript_id, session, 0, None, prefix, prefix_id, None)
@@ -21472,6 +21570,11 @@ mod subagent_model_tests {
 // it closes and what it still cannot reach.
 mod clear;
 pub use clear::{ClearReport, clear_reply};
+
+// **A transcript whose rows do not rebuild under the prefix it names** — the repair to the fork
+// that a store already in that state needs, so a conversation is not refused for ever. See the
+// module's header for the shape it is, and why only that shape is repaired.
+mod prefix_repair;
 
 // **The branch is the deliverable** — the brief's rule checked when a worktree child's turn ends,
 // and the line its parent reads when it ends dirty anyway. See the module's header.
