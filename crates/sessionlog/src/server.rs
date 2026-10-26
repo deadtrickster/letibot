@@ -1666,13 +1666,18 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     ),
                     compaction: None,
                 });
+                // **Closed before it is acked**: `--migrate` copies the session the moment it
+                // reads `Accepted`, so the answer has to mean the registry has let go. Acked
+                // first, a busy box let the copy (and the test) see the session still held.
+                // This seat keeps its own hub, so the write below still reaches the head.
+                let seq = seat.hub.head_seq();
+                registry.close_session(&session);
                 let f = crate::protocol::ServerFrame::Accepted {
                     client_request_id,
-                    seq: seat.hub.head_seq(),
+                    seq,
                     note: crate::protocol::NOTE_SESSION_CLOSED.into(),
                 };
                 writer.lock().unwrap().write(&f)?;
-                registry.close_session(&session);
             }
             // **The stop does NOT go through the command queue**, and that was
             // the whole of its first version's failure. One worker drains that
