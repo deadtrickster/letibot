@@ -252,14 +252,16 @@ fn an_unchanged_prompt_is_silent_and_a_changed_one_names_reseat() {
 /// named as added.
 ///
 /// `--bash` is the lever because seating it is a flag and nothing else, and it is the same
-/// lever `wired.rs` uses for the same reason: `m2_coder` names `bash` and the daemon strips
-/// it back off unless the flag is passed. So the two opens are one session, one
+/// lever `wired.rs` uses for the same reason: the `leticode` role names `bash` and the daemon
+/// strips it back off unless the flag is passed. So the two opens are one session, one
 /// conversation and a different tool list in the prompt it was created under — which is
 /// what a build that grew a tool's schema looks like from here.
 ///
-/// The seat is `coder` because `bash` is not in the orchestrator's role at all: the flag
+/// The seat is `leticode` because `bash` is not in `orchestrator`'s role at all: the flag
 /// toggles a name that is already there, and on the default seat it would toggle nothing.
-/// `wired.rs` skips this shape when the box cannot build a boundary, and so does this.
+/// **Not `coder`**, which names `bash` too but is a CONFINED seat: on a Mac it refuses to
+/// open, so this test could only ever report that absence instead of the sentence it is
+/// about (and did — the assertion inside `Err` below is what it reported).
 #[test]
 fn a_tool_that_arrived_is_named_in_the_sentence() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -270,7 +272,7 @@ fn a_tool_that_arrived_is_named_in_the_sentence() {
     let store = dir.path().join("sessions.db");
     let session_id = "prefix-tools";
     let mut bare = config(&store, session_id, ws.path());
-    bare.seat = Seat::Coder;
+    bare.seat = Seat::Leticode;
     let parts = empty_modes(Parts::load(&bare).expect("the vocabulary must load"));
 
     {

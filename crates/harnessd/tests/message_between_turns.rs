@@ -106,11 +106,20 @@ const PATIENCE: Duration = Duration::from_secs(20);
 fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // **`coder` because that is the seat the delegation trio lives on** — `task`,
-    // `task_result`, `task_message`. The default seat is `orchestrator`, which seats none
-    // of them, and a test that invoked a tool the session does not seat would be measuring
-    // the seat table rather than this door.
-    cfg.seat = Seat::Coder;
+    // **`leticode` because it is the UNCONFINED seat that has the delegation trio** —
+    // `task`, `task_result`, `task_message`. The trio is what this file is about, and the
+    // default seat (`orchestrator`) seats none of them; a test that invoked a tool the
+    // session does not seat would be measuring the seat table rather than this door.
+    //
+    // It was `coder`, which has the trio too — and then a Mac answered *"the `coder` role
+    // needs a confined execution backend and one could not be built"* and all seven tests
+    // stopped at the open, measuring nothing. `coder` and `runner` are the confined seats by
+    // design and macOS has no boundary to give them; every test in this tree that wants a
+    // session which can DO things seats `leticode` (`operator_shell.rs`, `sudo_ask.rs`,
+    // `clear_context.rs`, `run_off_worker.rs`), because opencode's model — which leticode is
+    // — has no workspace boundary at all. Nothing here asserts anything about a boundary, so
+    // the seat costs this file no coverage.
+    cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     // No retry ladder: nothing here should fail, and a failure that retried would spend
     // the suite's time hiding behind doubling waits.

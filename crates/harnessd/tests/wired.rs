@@ -84,6 +84,22 @@ fn parts(cfg: &Config) -> Parts {
     p
 }
 
+/// **The coder seat for a test about the SEAT and not about its boundary.**
+///
+/// `coder` is one of the two confined seats, so `Harness::open` refuses it where no boundary
+/// can be built — macOS, where there are no namespaces to enter — and that refusal is a fact
+/// the grant and runner tests below report rather than work around. The three tests that take
+/// this one are about the seat's WIRING: its tools, its adjudicator, its trail, its denials.
+/// The unconfined shape keeps every one of those and drops only the jail,
+/// and it is not an invention: `cfg.unconfined` is the field a subagent of a `leticode`
+/// session inherits (`harness.rs`'s `sub_cfg`), so this is a session shape the daemon makes.
+/// What it cannot measure here is confinement — and nothing in those three asserts one.
+fn seat_config(seat: Seat) -> Config {
+    let mut cfg = config(seat);
+    cfg.unconfined = cfg!(target_os = "macos");
+    cfg
+}
+
 /// An adjudicator that would admit anything, and never gets the chance to.
 ///
 /// It exists so a *seating* test does not need a human at a terminal. It is not a
@@ -231,7 +247,7 @@ fn a_write_seat_with_no_adjudicator_refuses_to_start_and_says_what_to_attach() {
         return;
     };
     let e = open(
-        config(Seat::Coder),
+        seat_config(Seat::Coder),
         Some(Box::new(letibot_tools::NoAdjudicator)),
     )
     .expect_err("a coder seat with `NoAdjudicator` must not open");
@@ -259,7 +275,7 @@ fn a_write_seat_with_an_adjudicator_opens_fully_wired() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    let cfg = config(Seat::Coder);
+    let cfg = seat_config(Seat::Coder);
     let p = parts(&cfg);
     let hub = Hub::new(&cfg.session_id);
     let h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)
@@ -1040,7 +1056,7 @@ fn seat_facts_are_the_seated_tools() {
         Seat::Orchestrator,
     ] {
         for bash in [true, false] {
-            let mut cfg = config(seat);
+            let mut cfg = seat_config(seat);
             cfg.allow_bash = bash;
             cfg.session_id = format!("seat-facts-{}-{bash}", seat.as_str());
             cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());

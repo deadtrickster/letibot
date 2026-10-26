@@ -58,8 +58,12 @@ const PATIENCE: Duration = Duration::from_secs(30);
 fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // `coder` seats the delegation trio (`task`, `task_result`, `task_message`).
-    cfg.seat = Seat::Coder;
+    // **`leticode`, the unconfined seat with the delegation trio** (`task`, `task_result`,
+    // `task_message`) — and not `coder`, which has the trio but is a CONFINED seat: on a Mac
+    // it refuses to open (*"needs a confined execution backend and one could not be built"*)
+    // and every test in this file measured the absence of a boundary instead of a lifecycle.
+    // Nothing here asserts a boundary.
+    cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     cfg.http_retries = 0;
     cfg.context_window = Some(32_768);

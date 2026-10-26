@@ -144,11 +144,16 @@ const PATIENCE: Duration = Duration::from_secs(20);
 fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // **`coder` because that is the seat the delegation trio lives on** — `task`,
-    // `task_result`, `task_message`. The default seat is `orchestrator`, which seats none of
-    // them, and a test that invoked a tool the session does not seat would be measuring the
-    // seat table rather than this door.
-    cfg.seat = Seat::Coder;
+    // **`leticode`: the unconfined seat that has the delegation trio** — `task`,
+    // `task_result`, `task_message`. The trio is what this file is about, and the default
+    // seat (`orchestrator`) seats none of them; a test that invoked a tool the session does
+    // not seat would be measuring the seat table rather than this channel.
+    //
+    // It was `coder`. `coder` has the trio too, and on a Mac it refuses to open at all
+    // (*"needs a confined execution backend and one could not be built"*), so all six tests
+    // here measured the absence of a boundary instead of a message. Nothing in this file
+    // asserts a boundary, so the seat costs it nothing.
+    cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     cfg.http_retries = 0;
     cfg.context_window = Some(32_768);

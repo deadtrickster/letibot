@@ -115,10 +115,14 @@ const PATIENCE: Duration = Duration::from_secs(20);
 fn config(session_id: &str, endpoint: Endpoint, store: &std::path::Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // **`coder`, and no `bash`.** This file's turn is answered, not run: the seat is
+    // **`leticode`, and no `bash`.** This file's turn is answered, not run: the seat is
     // one with no shell so the fixture needs no exec host, and the run's half arrives
     // as the pieces the worker dispatches.
-    cfg.seat = Seat::Coder;
+    //
+    // `leticode` and not `coder` — the same tools-minus-bash, and the one of the two that
+    // needs no boundary: `coder` is a confined seat, so on a Mac it refuses to open and this
+    // file measured that refusal instead of the turn after an operator shell.
+    cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     // No retry ladder: nothing here should fail, and a failure that retried would
     // spend the suite's time hiding behind doubling waits.
