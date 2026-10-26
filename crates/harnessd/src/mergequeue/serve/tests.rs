@@ -140,6 +140,10 @@ impl QueueDoor for Door {
     fn session_live(&self, session_id: &str) -> bool {
         self.live.lock().unwrap().iter().any(|s| s == session_id)
     }
+    /// This door has a list of live sessions, so a reviewer absent from it is a reviewer gone.
+    fn sees_sessions(&self) -> bool {
+        true
+    }
 }
 
 impl Door {
@@ -1173,7 +1177,8 @@ fn a_gate_that_needs_an_ignored_input_is_told_its_name_and_passes_once_it_is_car
 /// **An amended target supersedes the review of its old red tip** (R76 item 4). FAILS before
 /// R76: the review of the amended-away tip stayed open — and, once its commit was gone, `blocked`
 /// on *"fatal: unable to read tree"* (pg-noop's `red-main-ec3cb01e8a6f`). After: withdrawn as
-/// `superseded: the target was rewritten from X to Y`, and the new tip is gated.
+/// `superseded by <the new tip>`, and the new tip is gated. (A rewritten tip is one way the tip
+/// moves; `supersede_older_tip` withdraws for every move, and the tests below are the rest.)
 #[test]
 fn an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_one() {
     let w = World::new("amend");
@@ -1234,9 +1239,7 @@ fn an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_
     let moves = s.transitions("review", &old.id).unwrap();
     let why = &moves.last().unwrap().why;
     assert!(
-        why.starts_with(&format!(
-            "superseded: the target was rewritten from {red} to {amended}"
-        )),
+        why.starts_with(&format!("superseded by {amended}")),
         "{why}"
     );
     let gone = s.review_row("red-main-gone").unwrap().unwrap();
@@ -1484,6 +1487,311 @@ fn a_rejected_branch_that_moves_goes_back_to_review() {
         "{r:?}"
     );
     assert_eq!(r.head_sha, newer);
+}
+
+// ===== ONE tip: a target review is about the tip that is there now (2026-10-26) =====
+
+/// **Four red tips in a row leave ONE open review** — and three withdrawn, each naming the tip
+/// that replaced it.
+///
+/// The morning this is against: `e51847ed`, `f35d19c0`, `54e5a372` and `0158b957` were four tips
+/// of one branch, and all four `red-main-<sha>` rows were open at once. A newer tip never closed
+/// the older rows, so each got a reviewer child (one ran to its hour), each was rejected, and each
+/// opened a fix branch with its own worktree — for reds `main` had already left.
+#[test]
+fn four_red_tips_leave_one_open_row_and_three_superseded_by_the_tip_that_replaced_them() {
+    let w = World::new("reds-supersede");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    let mut tips: Vec<String> = Vec::new();
+    for n in 1..=4 {
+        tips.push(commit(
+            &w.repo,
+            "broken",
+            &format!("{n}\n"),
+            &format!("tip {n}, still red"),
+        ));
+        run(&q, 1);
+    }
+    let s = w.store();
+    let rows: Vec<_> = s
+        .review_rows(Some(&w.key()))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.kind == ReviewKind::Target)
+        .collect();
+    assert_eq!(rows.len(), 4, "one review per red tip: {rows:?}");
+    let open: Vec<_> = rows.iter().filter(|r| r.state.is_open()).collect();
+    assert_eq!(open.len(), 1, "one tip is open, not four: {open:?}");
+    assert_eq!(
+        open[0].head_sha, tips[3],
+        "and it is the tip that is red now"
+    );
+    for r in rows.iter().filter(|r| !r.state.is_open()) {
+        assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
+        let i = tips
+            .iter()
+            .position(|t| *t == r.head_sha)
+            .expect("a tip this test made");
+        let why = s
+            .transitions("review", &r.id)
+            .unwrap()
+            .last()
+            .expect("a transition")
+            .why
+            .clone();
+        assert!(
+            why.starts_with(&format!("superseded by {}", tips[i + 1])),
+            "the row for tip {i} says which tip superseded it: {why}"
+        );
+    }
+}
+
+/// **A green tip after a red leaves nothing open** — the red row is withdrawn by the same rule,
+/// saying which tip replaced it (the reviewer of a tip nobody has is a reviewer wasted).
+#[test]
+fn a_green_tip_withdraws_the_red_rows_review_and_leaves_nothing_open() {
+    let w = World::new("green-supersedes");
+    let red = commit(&w.repo, "broken", "x\n", "a tip that breaks the gate");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    assert_eq!(
+        w.store()
+            .target_health(&w.key(), "main")
+            .unwrap()
+            .unwrap()
+            .state,
+        HealthState::Red,
+        "the fixture's tip really is red"
+    );
+    // `broken` goes, so the next tip is green.
+    sh(&w.repo, &["rm", "-q", "broken"]);
+    sh(&w.repo, &["commit", "-q", "-m", "the tip that fixes it"]);
+    let green = w.tip();
+    run(&q, 2);
+    let s = w.store();
+    assert_eq!(
+        s.target_health(&w.key(), "main").unwrap().unwrap().state,
+        HealthState::Green
+    );
+    let rows: Vec<_> = s
+        .review_rows(Some(&w.key()))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.kind == ReviewKind::Target)
+        .collect();
+    assert!(
+        rows.iter().all(|r| !r.state.is_open()),
+        "nothing is left open on a green target: {rows:?}"
+    );
+    let was = rows
+        .iter()
+        .find(|r| r.head_sha == red)
+        .expect("the red tip's review");
+    assert_eq!(was.state, ReviewState::Withdrawn, "{was:?}");
+    let why = s
+        .transitions("review", &was.id)
+        .unwrap()
+        .last()
+        .unwrap()
+        .why
+        .clone();
+    assert!(why.starts_with(&format!("superseded by {green}")), "{why}");
+}
+
+/// **A `reviewing` row whose reviewer child is not alive goes back to `waiting`** — the operator's
+/// other report: after a daemon restart two rows stayed `reviewing` with reviewer children that no
+/// longer existed, until their hour was up.
+///
+/// Liveness is the session registry's, through [`QueueDoor::session_live`]: a subagent is a real
+/// registered session (that is what lets an operator attach to one), so a handle the registry does
+/// not hold is a child that finished, died, or did not come back. The reviewers' host collects a
+/// child that ends WHILE the daemon is up; this is the door for one whose host will never look
+/// again — and the attempt is counted, so a child that keeps vanishing reaches `blocked` rather
+/// than looping for ever.
+#[test]
+fn a_reviewing_row_whose_reviewer_is_not_alive_is_re_seated_on_the_next_pass() {
+    let w = World::new("reviewer-gone");
+    let (wt, base, head) = branch(&w.repo, "g", "g.txt");
+    w.enqueue("g", &wt, &base, &head);
+    let q = w.worker(Arc::new(GreenGate), "a");
+    run(&q, 1);
+    let s = w.store();
+    let claimed = s.review_row("g").unwrap().unwrap();
+    assert_eq!(claimed.state, ReviewState::Reviewing, "{claimed:?}");
+    // A reviewer was started on it, and its child is in no registry this daemon holds.
+    assert!(
+        s.move_review(
+            "g",
+            ReviewState::Reviewing,
+            ReviewState::Reviewing,
+            &Move::new("pool", "reviewer sub-1 started").set("reviewer", "sub-1"),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+    run(&q, 1);
+    let r = s.review_row("g").unwrap().unwrap();
+    assert_eq!(r.attempts, 1, "the attempt is counted: {r:?}");
+    let why = s
+        .transitions("review", "g")
+        .unwrap()
+        .into_iter()
+        .rfind(|t| t.to_state == "waiting")
+        .expect("the row was re-seated")
+        .why;
+    assert!(
+        why.contains("sub-1") && why.contains("not alive"),
+        "the transition says why: {why}"
+    );
+
+    // The negative half: a child the daemon DOES hold is left where it is, and costs no attempt.
+    w.door.live.lock().unwrap().push("sub-1".into());
+    assert!(
+        s.move_review(
+            "g",
+            r.state,
+            ReviewState::Reviewing,
+            &Move::new("pool", "reviewer sub-1 started again")
+                .set("owner", "test/a")
+                .set("reviewer", "sub-1"),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+    run(&q, 1);
+    let r = s.review_row("g").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Reviewing, "left under review: {r:?}");
+    assert_eq!(r.attempts, 1, "a live child spends no attempt");
+}
+
+/// **A fix branch opened for a tip the target has moved past is withdrawn, and its empty tree and
+/// branch go with it** — the queue opened four of these in one morning, each with a worktree and a
+/// fixer child, and every one ended empty.
+#[test]
+fn a_superseded_fix_branch_is_withdrawn_and_its_empty_tree_removed() {
+    let w = World::new("fix-superseded");
+    let red = commit(&w.repo, "broken", "x\n", "a commit that breaks the gate");
+    let (branch_name, wt) = a_fix_tree(&w, &red, "0123abcd");
+    fix_branch(&w, "fixer-1", &branch_name, &wt, &red);
+    // `main` moves: the tip the fix was cut from is not the target's any more.
+    let tip = commit(&w.repo, "broken", "y\n", "the tip after it");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let s = w.store();
+    let r = s.review_row("fixer-1").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
+    let why = s
+        .transitions("review", "fixer-1")
+        .unwrap()
+        .last()
+        .unwrap()
+        .why
+        .clone();
+    assert!(why.starts_with(&format!("superseded by {tip}")), "{why}");
+    assert!(
+        !wt.exists(),
+        "the tree of a fix that carries nothing is removed: {}",
+        wt.display()
+    );
+    assert_eq!(
+        git::branch_head(&w.repo, &branch_name),
+        None,
+        "and so is the branch"
+    );
+}
+
+/// **…but a fix that carries a commit of its own keeps its tree, and a person is told where it
+/// is** — `main` moving past a tip does not make the fixer's work wrong, only unlandable.
+#[test]
+fn a_superseded_fix_branch_that_carries_work_keeps_its_tree_and_says_so() {
+    let w = World::new("fix-carries");
+    let red = commit(&w.repo, "broken", "x\n", "a commit that breaks the gate");
+    let (wt, base, head) = branch(&w.repo, "fixx", "f.txt");
+    assert_eq!(base, red, "cut from the red tip");
+    let branch_name = "agent/fixx".to_string();
+    fix_branch(&w, "fixer-2", &branch_name, &wt, &red);
+    let tip = commit(&w.repo, "broken", "y\n", "the tip after it");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let s = w.store();
+    let r = s.review_row("fixer-2").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
+    assert!(wt.exists(), "the tree holds the fixer's commit");
+    assert_eq!(git::branch_head(&w.repo, &branch_name), Some(head));
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("carries 1 commit") && said[0].contains("agent/fixx"),
+        "{}",
+        said[0]
+    );
+    assert!(said[0].contains(&tip), "and it names the tip that did it");
+}
+
+/// **A superseded fix whose session is still live keeps its tree too** (R92.24): nothing is
+/// removed from under a session that is still working in it.
+#[test]
+fn a_superseded_fix_branch_whose_session_is_live_keeps_its_tree() {
+    let w = World::new("fix-live");
+    let red = commit(&w.repo, "broken", "x\n", "a commit that breaks the gate");
+    let (branch_name, wt) = a_fix_tree(&w, &red, "abcd0123");
+    fix_branch(&w, "fixer-3", &branch_name, &wt, &red);
+    w.door.live.lock().unwrap().push("s-fixer-3".into());
+    commit(&w.repo, "broken", "y\n", "the tip after it");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let r = w.store().review_row("fixer-3").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
+    assert!(wt.exists(), "a live session's tree is not removed");
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("still live"), "{}", said[0]);
+}
+
+/// A worktree on a fresh branch cut from `at`, with nothing committed on it — what a fixer's tree
+/// is between the spawn and its first commit.
+fn a_fix_tree(w: &World, at: &str, short: &str) -> (String, PathBuf) {
+    let branch = format!("agent/fix-main-{short}");
+    let wt = w.dir.0.join(format!("wt-fix-{short}"));
+    sh(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &branch,
+            &wt.to_string_lossy(),
+            at,
+        ],
+    );
+    (branch, wt)
+}
+
+/// The review row a fixer's finished branch gets (`enqueue_finished`), carrying the red tip it was
+/// opened for — the fact that makes it a fix and the only branch a red target lands.
+fn fix_branch(w: &World, id: &str, branch: &str, wt: &Path, red: &str) {
+    w.store()
+        .enqueue_review(
+            &NewReview {
+                id: id.into(),
+                repository: w.key(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: format!("s-{id}"),
+                branch: branch.into(),
+                worktree: Some(wt.display().to_string()),
+                base_sha: red.into(),
+                head_sha: git::branch_head(&w.repo, branch).unwrap_or_else(|| red.into()),
+                brief: "fix main".into(),
+                priority: MergePriority::Urgent,
+                fixes: Some(red.into()),
+                evidence: format!("put up for review onto `main` — it fixes the red tip {red}"),
+            },
+            "test",
+            gate::now_ms(),
+        )
+        .unwrap();
 }
 
 /// **Recovery after a lease changes hands** — a row the gone owner was gating goes back in line;

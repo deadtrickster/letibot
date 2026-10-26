@@ -315,6 +315,33 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         }
     }
 
+    // ---- Stop a fixer whose red tip the target has moved past (`RepoQueue` withdraws the fix
+    // branch it opened): the same rule a reviewer follows — a child working for a row nobody will
+    // act on is stopped, not waited out. `Running` is the whole test, so a fixer that has finished
+    // is not asked about again on the next pass.
+    for r in rows
+        .iter()
+        .filter(|r| r.kind == ReviewKind::Target && !r.state.is_open())
+    {
+        let Some(fixer) = r.fixes.as_deref() else {
+            continue;
+        };
+        let Some(tip) = git::branch_head(Path::new(&r.repository), &r.target) else {
+            continue;
+        };
+        if tip == r.head_sha {
+            // Still the red tip it was opened for: the fixer has something to fix.
+            continue;
+        }
+        if matches!(
+            p.runner.collect(fixer, std::time::Duration::ZERO),
+            TaskStatus::Running { .. }
+        ) {
+            let _ = p.runner.kill(fixer);
+            out.moved = true;
+        }
+    }
+
     // ---- Collect: verdicts, deaths, and reviewers whose row moved on without them.
     let mut still: Vec<String> = Vec::new();
     for open in p.desk.open(p.host) {
@@ -583,6 +610,31 @@ fn open_fix_branch(
                  was opened — the target needs a person's fix."
             ),
         );
+        return Ok(());
+    }
+    // **A fix is for the tip that is red NOW** (the operator, 2026-10-26: four fix branches were
+    // opened in one morning for tips `main` had left, and all four ended empty). The reviewer
+    // judges the tip it was sent at, and the target may have moved by the time it answers: a
+    // branch cut from a tip the target no longer has can never land, so nothing is opened — and
+    // the reason is written on the row, because a refusal nobody records is a review that looks
+    // like it did nothing.
+    if let Some(tip) = git::branch_head(&repo, &r.target)
+        && tip != r.head_sha
+    {
+        let why = format!(
+            "no fix branch was opened: `{}` has moved from {} to {tip} since this reviewer was \
+             sent at it, so the red it judged is superseded by {tip} and a branch cut from it could \
+             never land. The tip at {tip} is gated, and reviewed if it is red too",
+            r.target, r.head_sha
+        );
+        p.mv(
+            &ReviewRow {
+                state: ReviewState::Rejected,
+                ..r.clone()
+            },
+            ReviewState::Rejected,
+            Move::new(p.me, why),
+        )?;
         return Ok(());
     }
     let short: String = r.head_sha.chars().take(8).collect();

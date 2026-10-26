@@ -623,3 +623,139 @@ fn needs_human_raises_for_the_operator_once_and_tells_no_session() {
     assert_eq!(r.state, ReviewState::CannotDecide, "{r:?}");
     assert_eq!(r.verdict.as_deref(), Some("needs_human"));
 }
+
+// ===== A fix is for the tip that is red NOW (2026-10-26) =====
+
+/// **A red tip's reject opens no fix branch once the target has moved past that tip** — the queue
+/// opened four fix branches in one morning for tips `main` had already left, each with a worktree
+/// and a fixer child, and every one of them ended empty: the reviewer judged a tree the target no
+/// longer has.
+///
+/// The refusal is written on the row, because a refusal nobody records is a review that looks like
+/// it did nothing — and it is NOT raised: the tip at the new sha is gated, and reviewed if it is
+/// red too, which is the whole of what anybody has to act on.
+#[test]
+fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
+    let dir = TempDir::new("fix-superseded");
+    let repo = crate::mergequeue::serve::tests::repo(&dir.0);
+    let red = crate::mergequeue::serve::tests::commit(
+        &repo,
+        "broken",
+        "x\n",
+        "a commit that breaks the gate",
+    );
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "red-main-1".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Target,
+                session_id: String::new(),
+                branch: "main".into(),
+                worktree: None,
+                base_sha: red.clone(),
+                head_sha: red.clone(),
+                brief: "what broke main".into(),
+                priority: MergePriority::Urgent,
+                fixes: None,
+                evidence: "`main` went red".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the red tip's review");
+    // `main` moves before the reviewer hands its verdict in.
+    let moved = crate::mergequeue::serve::tests::commit(&repo, "broken", "y\n", "the tip after it");
+    assert!(
+        store
+            .move_review(
+                "red-main-1",
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new(ME, "claimed")
+                    .set("owner", ME)
+                    .set("reviewer", "sub-1"),
+                2,
+            )
+            .unwrap()
+    );
+    let desk = ReviewDesk::new();
+    desk.opened(
+        HOST,
+        "sub-1",
+        "red-main-1",
+        ReviewRequest {
+            brief: "what broke main".into(),
+            branch: "main".into(),
+            base_sha: red.clone(),
+            head_sha: red.clone(),
+            cwd: String::new(),
+        },
+    );
+    desk.submit(
+        "sub-1",
+        Submission {
+            decision: Decision::Reject,
+            reasons: vec!["the commit before it broke the build".into()],
+            looked_at: LookedAt {
+                files: vec!["AGENTS.md".into()],
+                commands: vec!["git log --oneline -20".into()],
+            },
+        },
+    )
+    .expect("the verdict is taken at the desk");
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = {
+        let heard = heard.clone();
+        move |e: SessionEvent| {
+            if let SessionEvent::Warning { code, detail, .. } = e {
+                heard.raised.lock().unwrap().push((code, detail));
+            }
+        }
+    };
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &Reviewers,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, e| events(e),
+        deliver: &deliver,
+        settings: &settings,
+        clones: std::env::temp_dir(),
+        slots: &Vec::new,
+    };
+    serve(&pool).expect("a pass");
+
+    let r = store.review_row("red-main-1").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Rejected, "{r:?}");
+    let why = store
+        .transitions("review", "red-main-1")
+        .unwrap()
+        .last()
+        .unwrap()
+        .why
+        .clone();
+    assert!(why.starts_with("no fix branch was opened:"), "{why}");
+    assert!(why.contains(&red) && why.contains(&moved), "{why}");
+    assert!(
+        heard.raised("target_red").is_empty(),
+        "nothing is raised: the new tip is gated, and reviewed if it is red too — {:?}",
+        heard.raised("target_red")
+    );
+    assert!(
+        store
+            .review_row("red-main-1")
+            .unwrap()
+            .unwrap()
+            .fixes
+            .is_none(),
+        "no fixer was recorded on the row"
+    );
+}

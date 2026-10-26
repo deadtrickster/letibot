@@ -80,6 +80,13 @@ pub trait QueueDoor: Send + Sync {
         let _ = session_id;
         false
     }
+    /// **Whether this door has sessions to be asked about at all.** A door that does not — a test
+    /// door that holds nothing, a daemon with no sessions — never reads as *the child is gone*:
+    /// [`Self::session_live`]'s default `false` is the right answer to *is this tree in use* and
+    /// the wrong one to *has the child that was working on this row died*.
+    fn sees_sessions(&self) -> bool {
+        false
+    }
 }
 
 /// How a project's `[queue]` settings are read — the project's `leticode.toml` in production.
@@ -692,8 +699,12 @@ impl RepoQueue {
         let now = gate::now_ms();
         let me = self.me().to_string();
         let mut moved = false;
-        // **A rewritten target supersedes the reviews of its old tips** (R76 item 4) — before
-        // anything else reads them, so a stale one is neither claimed nor raised again.
+        // **A target review is about ONE tip** (the operator, 2026-10-26) — before anything else
+        // reads them, so a stale one is neither claimed nor raised again. Every move of the tip
+        // supersedes, not only a rewrite: R76 item 4 kept a review whose tip had merely moved
+        // FORWARD, and four `red-main-<sha>` rows were open at once by lunchtime for tips `main`
+        // had already left — each with a reviewer child, each rejected, each opening a fix branch
+        // for a red that was no longer there.
         for r in self.store.review_rows(Some(&self.key))? {
             if r.kind == ReviewKind::Target
                 && matches!(
@@ -704,9 +715,12 @@ impl RepoQueue {
                         | ReviewState::CannotDecide
                 )
             {
-                moved |= self.supersede_if_rewritten(&r)?;
+                moved |= self.supersede_older_tip(&r)?;
             }
         }
+        // And the branches those tips opened (`red_target = "fix"`), which can never land once
+        // the tip they were cut from is not the target's.
+        moved |= self.supersede_fix_branches()?;
         let rows = self.store.review_rows(Some(&self.key))?;
         let target_default = settings::target_for(&self.repo, settings);
 
@@ -717,6 +731,18 @@ impl RepoQueue {
                 ReviewState::Reviewing if r.owner == me => {
                     let never_started = r.reviewer.is_none()
                         && now.saturating_sub(r.state_ms) > self.env.reviewer_start_grace_ms;
+                    // **A reviewer child that is not alive in this daemon** — the operator's
+                    // half of the report: *"after a daemon restart two rows stayed reviewing
+                    // with reviewer children that no longer existed until their deadline"*.
+                    // Liveness is the session registry's (`QueueDoor::session_live`: a subagent
+                    // is a real registered session, so a handle the registry does not hold is a
+                    // child that finished, died, or never came back through a restart). The
+                    // reviewers' host collects a child that ends while the daemon is up; this is
+                    // the door for one whose host will never look again.
+                    let gone = self.env.door.sees_sessions()
+                        && r.reviewer
+                            .as_deref()
+                            .is_some_and(|c| !self.env.door.session_live(c));
                     let late = r.deadline_ms.is_some_and(|d| now > d);
                     if never_started {
                         let why = format!(
@@ -727,13 +753,22 @@ impl RepoQueue {
                             self.env.reviewer_start_grace_ms / 1000
                         );
                         moved |= self.block(r, &why, settings)?;
-                    } else if late {
+                    } else if gone || late {
                         let attempts = r.attempts + 1;
-                        let why = format!(
-                            "the reviewer {} was still at it at its deadline and was stopped — attempt \
-                             {attempts} of {MAX_REVIEW_ATTEMPTS}",
-                            r.reviewer.as_deref().unwrap_or("?")
-                        );
+                        let child = r.reviewer.as_deref().unwrap_or("?");
+                        let why = if gone {
+                            format!(
+                                "the reviewer {child} is not alive in this daemon any more (it \
+                                 finished without handing a verdict in, died, or a restart left the \
+                                 row claimed), so the row is re-seated now rather than waiting out \
+                                 its deadline — attempt {attempts} of {MAX_REVIEW_ATTEMPTS}"
+                            )
+                        } else {
+                            format!(
+                                "the reviewer {child} was still at it at its deadline and was stopped \
+                                 — attempt {attempts} of {MAX_REVIEW_ATTEMPTS}"
+                            )
+                        };
                         if attempts >= MAX_REVIEW_ATTEMPTS {
                             moved |= self.block(r, &why, settings)?;
                         } else {
@@ -1007,44 +1042,137 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **The review of a red tip the target no longer holds** (R76 item 4). An amend, a
-    /// force-push or a reset leaves the target's tip NOT a descendant of the head the review was
-    /// opened on — or the head is gone altogether (pg-noop, 2026-10-11: `red-main-ec3cb01e8a6f`
-    /// sat `blocked` on *"fatal: unable to read tree"* after `main` was amended from `ec3cb01` to
-    /// `62b0296`). Such a review judges a history nobody has; it is withdrawn, saying so, and the
-    /// new tip is gated by the health pass like any change of the target. A tip that merely moved
-    /// FORWARD keeps its review: the red may still be in it.
-    fn supersede_if_rewritten(&self, r: &ReviewRow) -> Result<bool, StoreError> {
+    /// **The review of a tip the target no longer has** (R76 item 4, and the operator's ruling of
+    /// 2026-10-26: *"a target review row is about ONE tip"*). Yesterday's four `red-main-<sha>`
+    /// rows for `e51847ed`, `f35d19c0`, `54e5a372` and `0158b957` were one morning's tips of one
+    /// branch: a newer tip never closed the older rows, so each got its own reviewer, each was
+    /// rejected, and each opened a fix branch for a red `main` had already left.
+    ///
+    /// So **every move of the tip withdraws the reviews of the tips before it**, whatever the new
+    /// tip's verdict: the health pass gates it, and if it is red its own row is the one review
+    /// anybody acts on. That is wider than R76 item 4, which withdrew only a tip the target had
+    /// been REWRITTEN past (an amend, a force-push, a reset — a tip whose history nobody has) and
+    /// kept a review whose tip had merely moved forward, on the argument that *the red may still be
+    /// in it*. It usually is — and the fix for it is the reviewer of the tip that is red NOW.
+    ///
+    /// **The row is moved; its reviewer is stopped by the host that started it.**
+    /// [`super::review::serve`] kills a reviewer whose row is no longer `reviewing` under it, which
+    /// is exactly how the deadline path stops one — so a withdrawal is all this side has to do.
+    ///
+    /// Nothing is deleted: the row keeps its state, its verdict and its history, with the sha it
+    /// judged and the sha that superseded it in that history.
+    fn supersede_older_tip(&self, r: &ReviewRow) -> Result<bool, StoreError> {
         if r.target.is_empty() || r.head_sha.is_empty() {
             return Ok(false);
         }
         let Some(tip) = git::branch_head(&self.repo, &r.target) else {
+            // A target git cannot name is not a tip that moved; the health pass says so.
             return Ok(false);
         };
         if tip == r.head_sha {
             return Ok(false);
         }
-        let exists = git::rev_parse(&self.repo, &r.head_sha).is_some();
-        if exists && git::is_ancestor(&self.repo, &r.head_sha, &tip).unwrap_or(true) {
-            return Ok(false);
-        }
         let me = self.me().to_string();
         let why = format!(
-            "superseded: the target was rewritten from {} to {tip}{} — `{}` no longer holds the \
-             tip this review was opened on, so it judges nothing; the new tip is gated instead",
-            r.head_sha,
-            if exists {
-                ""
-            } else {
-                " (that commit no longer exists)"
-            },
-            r.target
+            "superseded by {tip}: a target review is about ONE tip, and `{}`'s has moved from {} \
+             to {tip} — this review judges a tree the target no longer has, so {tip} is what is \
+             gated now and, if it is red, the only review of `{}` anybody acts on",
+            r.target, r.head_sha, r.target
         );
         let mut mv = Move::new(&me, why).set("owner", "").clear("deadline_ms");
         if r.state == ReviewState::Reviewing {
             mv = mv.owned_by(r.owner.clone());
         }
         self.review_to(r, ReviewState::Withdrawn, mv)
+    }
+
+    /// **A branch opened to fix a red tip the target has moved past.** Decision 11 has the red
+    /// tip's reviewer open one, and it is the only branch a red target lands — so a fix cut from a
+    /// tip that is no longer the target's is a branch that can never land. This box opened four of
+    /// them in one morning, each with its own worktree and its own fixer child, and every one ended
+    /// empty: `main` had moved past the tip whose reviewer asked for it.
+    ///
+    /// It is withdrawn like the review that opened it — *superseded by* the tip that replaced it —
+    /// together with any landing it had queued. Its worktree and branch go **only when there is
+    /// nothing in them to lose** ([`git::retire_if_empty`]), and a tree still held by a live
+    /// session is never removed from under it (R92.24). Either way a person is told where the tree
+    /// is, because a fixer's tree is the only copy of whatever it had not committed.
+    fn supersede_fix_branches(&self) -> Result<bool, StoreError> {
+        let me = self.me().to_string();
+        let mut moved = false;
+        let landings = self.store.merge_rows(Some(&self.key))?;
+        for r in self.store.review_rows(Some(&self.key))? {
+            if r.kind != ReviewKind::Branch {
+                continue;
+            }
+            let Some(red) = r.fixes.clone() else {
+                continue;
+            };
+            // **A fix is a row in either queue** — the review of the fixer's branch, or the
+            // landing an approval put behind it — and it is superseded if either is still open. A
+            // row being GATED is left to its gate: `land` rebases onto the tip as it is then and
+            // gates the result, so it judges a tree the target really has.
+            let open_landing: Vec<&MergeRow> = landings
+                .iter()
+                .filter(|m| {
+                    m.review_id == r.id
+                        && matches!(m.state, MergeState::Queued | MergeState::Blocked)
+                })
+                .collect();
+            if !r.state.is_open() && open_landing.is_empty() {
+                continue;
+            }
+            let Some(tip) = git::branch_head(&self.repo, &r.target) else {
+                continue;
+            };
+            if tip == red {
+                continue;
+            }
+            let why = format!(
+                "superseded by {tip}: this branch was opened to fix the red tip {red}, and `{}`'s \
+                 tip has moved to {tip} — a fix is the only branch a red target lands, and this one \
+                 was cut from a tip the target no longer has, so it could never land",
+                r.target
+            );
+            let mut done = false;
+            if r.state.is_open() {
+                done |= self.review_to(&r, ReviewState::Withdrawn, Move::new(&me, why.clone()))?;
+            }
+            for m in open_landing {
+                done |= self.merge_to(
+                    m,
+                    m.state,
+                    MergeState::Withdrawn,
+                    Move::new(&me, why.clone()),
+                )?;
+            }
+            if !done {
+                // Somebody else moved it first: its history is that move's to write.
+                continue;
+            }
+            moved = true;
+            let Some(wt) = r.worktree.as_deref() else {
+                continue;
+            };
+            let live = !r.session_id.is_empty() && self.env.door.session_live(&r.session_id);
+            let kept = if live {
+                Err(format!(
+                    "the worktree {wt} and `{}` are kept: the session `{}` that works in it is \
+                     still live",
+                    r.branch, r.session_id
+                ))
+            } else {
+                git::retire_if_empty(&self.repo, &tip, &r.branch, Some(wt))
+            };
+            if let Err(kept) = kept {
+                // Said where a person reads it (R92.4), not only in the daemon's log.
+                self.raise(
+                    "queue_branch_kept",
+                    format!("after withdrawing a superseded fix branch: {kept}"),
+                );
+            }
+        }
+        Ok(moved)
     }
 
     /// **Raise a review that cannot run** (decision 4) — `blocked`, at high severity.

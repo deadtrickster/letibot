@@ -578,5 +578,40 @@ pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Resul
     git(repo, &["branch", "-D", branch]).map(|_| ())
 }
 
+/// **Remove a superseded branch's worktree and the branch, but only when there is nothing in them
+/// to lose** — no commit over `base`, and (through [`retire_branch`]) nothing uncommitted. `Err`
+/// says what was kept and why, which the caller raises where a person reads it.
+///
+/// The distinction from [`retire_branch`] is what a landing knows and a supersede does not: a
+/// branch that has just landed carries nothing, so its tree may go; a branch cut from a red tip
+/// may carry the fixer's work, and `main` moving past that tip does not make the work wrong — it
+/// makes it a candidate for somewhere else. The tree is the only copy of whatever was never
+/// committed, so it is never thrown away with the branch.
+pub fn retire_if_empty(
+    repo: &Path,
+    base: &str,
+    branch: &str,
+    worktree: Option<&str>,
+) -> Result<(), String> {
+    if let Some(head) = branch_head(repo, branch) {
+        match commits_over(repo, base, &head) {
+            Ok(0) => {}
+            Ok(n) => {
+                return Err(format!(
+                    "`{branch}` carries {n} commit(s) over {base}, so it and its tree are kept — \
+                     the work is not this tip's, but it may be worth putting somewhere else"
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "`{branch}` could not be counted against {base} ({e}), so it and its tree \
+                     are kept"
+                ));
+            }
+        }
+    }
+    retire_branch(repo, branch, worktree)
+}
+
 #[cfg(test)]
 mod tests;
