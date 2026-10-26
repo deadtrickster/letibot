@@ -11,15 +11,13 @@
 //! The alternative is asking every developer and every CI job to export
 //! `LD_LIBRARY_PATH`, which works until somebody runs the daemon a different way.
 
-use std::path::PathBuf;
-
-const DEFAULT_LLAMA_LIB: &str = "/home/dead/Projects/llama.cpp/build-glm/bin";
+include!("../llama/build-support.rs");
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_LIB");
-    let lib = PathBuf::from(
-        std::env::var("LETIBOT_LLAMA_LIB").unwrap_or_else(|_| DEFAULT_LLAMA_LIB.to_string()),
-    );
+    println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_DIR");
+    println!("cargo:rerun-if-env-changed=HOME");
+    let lib = llama_lib_dir();
     println!("cargo:rustc-link-search=native={}", lib.display());
     // **`$ORIGIN` FIRST, and it is the entry that makes a RELEASE possible.**
     //

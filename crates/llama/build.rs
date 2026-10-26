@@ -1,41 +1,33 @@
 //! Compiles the C shim (see `csrc/shim.c` for why one exists) and links the
 //! fork's `libllama`.
 //!
-//! The llama.cpp checkout is located by `LETIBOT_LLAMA_DIR` / `LETIBOT_LLAMA_LIB`,
-//! defaulting to the fork and build tree this project targets. An rpath is
-//! baked in so tests and binaries find `libggml*.so` next to `libllama.so`
-//! without the caller setting `LD_LIBRARY_PATH`.
+//! Where the checkout and its library are is `build-support.rs`, included rather than
+//! copied — five crates need the same answer and they had five copies of it (why:
+//! `docs/build-notes.md`). This is the only one of the five that ASSERTS: it is the only
+//! crate that links the library, so a box with no llama.cpp must fail here, with the list
+//! of paths tried, rather than link a binary that cannot start.
+//!
+//! **The search is not politeness — it is the merge gate.** MEASURED 2026-10-26: `main`
+//! went red at `0f9ddad8` on the gate's `cargo clippy --all-targets`, exit 101, and not
+//! from a lint: this script asserted its way out looking for `/home/dead/Projects/llama.cpp`
+//! — the *Linux* box's path — because the gate is a child of a daemon running on a Mac
+//! whose environment carries neither `LETIBOT_LLAMA_DIR` nor `LETIBOT_LLAMA_LIB`. The
+//! checkout was there the whole time; only the path was, and only inside whatever shell
+//! had exported it. A build script that can find its header only when a human exported a
+//! variable cannot be run by a queue, and the queue is what says whether the tree is good.
 
-use std::path::PathBuf;
-
-const DEFAULT_LLAMA_DIR: &str = "/home/dead/Projects/llama.cpp";
-const DEFAULT_LLAMA_LIB: &str = "/home/dead/Projects/llama.cpp/build-glm/bin";
+include!("build-support.rs");
 
 fn main() {
     println!("cargo:rerun-if-changed=csrc/shim.c");
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_DIR");
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_LIB");
+    // The search reads `HOME`, so a checkout that moves with the home it is under has to
+    // be able to re-run this script.
+    println!("cargo:rerun-if-env-changed=HOME");
 
-    let dir = PathBuf::from(
-        std::env::var("LETIBOT_LLAMA_DIR").unwrap_or_else(|_| DEFAULT_LLAMA_DIR.to_string()),
-    );
-    let lib = PathBuf::from(
-        std::env::var("LETIBOT_LLAMA_LIB").unwrap_or_else(|_| DEFAULT_LLAMA_LIB.to_string()),
-    );
-
-    let header = dir.join("include/llama.h");
-    assert!(
-        header.is_file(),
-        "llama.h not found at {}. Set LETIBOT_LLAMA_DIR to the llama.cpp checkout.",
-        header.display()
-    );
-    assert!(
-        ["libllama.so", "libllama.dylib", "libllama.a"]
-            .iter()
-            .any(|f| lib.join(f).exists()),
-        "libllama not found in {}. Set LETIBOT_LLAMA_LIB to the build tree's lib dir.",
-        lib.display()
-    );
+    let dir = locate_checkout();
+    let lib = locate_lib(&dir);
 
     cc::Build::new()
         .file("csrc/shim.c")
@@ -52,4 +44,44 @@ fn main() {
     // dependency explicit instead of relying on the link order picking it up.
     println!("cargo:rustc-link-lib=dylib=ggml");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+}
+
+/// The checkout holding `include/llama.h`, or a failure that lists every path tried.
+fn locate_checkout() -> std::path::PathBuf {
+    match llama_checkout_found() {
+        Some(dir) => dir,
+        None => panic!(
+            "llama.h not found. Tried:\n{}Set LETIBOT_LLAMA_DIR to the llama.cpp checkout.",
+            llama_listing(
+                llama_checkout_candidates()
+                    .into_iter()
+                    .map(|d| d.join("include/llama.h"))
+            )
+        ),
+    }
+}
+
+/// The directory holding `libllama`, or a failure that lists every path tried.
+///
+/// `LETIBOT_LLAMA_LIB` is an instruction rather than a hint, so a directory that was
+/// named and holds nothing is a failure naming it — not a quiet fall back to one that
+/// does.
+fn locate_lib(checkout: &std::path::Path) -> std::path::PathBuf {
+    let candidates = llama_lib_candidates(checkout);
+    let lib = match std::env::var_os("LETIBOT_LLAMA_LIB") {
+        Some(lib) => std::path::PathBuf::from(lib),
+        None => match candidates.iter().find(|d| llama_has_library(d)) {
+            Some(lib) => lib.clone(),
+            None => panic!(
+                "libllama not found. Tried:\n{}Set LETIBOT_LLAMA_LIB to the build tree's lib dir.",
+                llama_listing(candidates.into_iter())
+            ),
+        },
+    };
+    assert!(
+        llama_has_library(&lib),
+        "libllama not found in {}. Set LETIBOT_LLAMA_LIB to the build tree's lib dir.",
+        lib.display()
+    );
+    lib
 }

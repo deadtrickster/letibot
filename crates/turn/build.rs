@@ -11,16 +11,20 @@
 //! until somebody runs the tests a different way.
 //!
 //! The note every crate-adder should read first: `docs/build-notes.md`.
+//!
+//! Which directory is `build-support.rs`, included rather than copied: five crates need
+//! the same answer, and until 2026-10-26 each had its own copy of a *Linux* path — so
+//! every test binary of this crate was linked against an rpath that exists on one box and
+//! aborted at exec on the other, while the gate that says whether the tree is good could
+//! not start them at all.
 
-use std::path::PathBuf;
-
-const DEFAULT_LLAMA_LIB: &str = "/home/dead/Projects/llama.cpp/build-glm/bin";
+include!("../llama/build-support.rs");
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_LIB");
-    let lib = PathBuf::from(
-        std::env::var("LETIBOT_LLAMA_LIB").unwrap_or_else(|_| DEFAULT_LLAMA_LIB.to_string()),
-    );
+    println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_DIR");
+    println!("cargo:rerun-if-env-changed=HOME");
+    let lib = llama_lib_dir();
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }

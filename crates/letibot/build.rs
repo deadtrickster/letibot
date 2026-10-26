@@ -39,15 +39,13 @@
 //! llama needs its own copy of this file: `harnessd`, now `letibot`, and
 //! `crates/tui` (which needed one for a reason that only appears on aarch64).
 
-use std::path::PathBuf;
-
-const DEFAULT_LLAMA_LIB: &str = "/home/dead/Projects/llama.cpp/build-glm/bin";
+include!("../llama/build-support.rs");
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_LIB");
-    let lib = PathBuf::from(
-        std::env::var("LETIBOT_LLAMA_LIB").unwrap_or_else(|_| DEFAULT_LLAMA_LIB.to_string()),
-    );
+    println!("cargo:rerun-if-env-changed=LETIBOT_LLAMA_DIR");
+    println!("cargo:rerun-if-env-changed=HOME");
+    let lib = llama_lib_dir();
     println!("cargo:rustc-link-search=native={}", lib.display());
     // dyld has no `$ORIGIN`; `@loader_path` is the same idea in its spelling.
     let origin = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
