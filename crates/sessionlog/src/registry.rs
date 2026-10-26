@@ -2429,6 +2429,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "what did you find?".into(),
+                attachments: Vec::new(),
             },
         );
         let soon = Instant::now() + std::time::Duration::from_millis(50);
@@ -2663,6 +2664,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "for b".into(),
+                attachments: Vec::new(),
             },
         );
         a.submit(
@@ -2671,6 +2673,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "for a".into(),
+                attachments: Vec::new(),
             },
         );
 
@@ -2681,7 +2684,8 @@ mod tests {
         assert_eq!(
             c1.kind,
             CommandKind::Prompt {
-                text: "for b".into()
+                text: "for b".into(),
+                attachments: Vec::new(),
             }
         );
         let (id2, c2) = r.next_command().unwrap();
@@ -2689,7 +2693,8 @@ mod tests {
         assert_eq!(
             c2.kind,
             CommandKind::Prompt {
-                text: "for a".into()
+                text: "for a".into(),
+                attachments: Vec::new(),
             }
         );
     }
@@ -2712,13 +2717,17 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "alice one".into(),
+                attachments: Vec::new(),
             },
         );
         a.submit(
             &hb.head_id,
             "c2",
             0,
-            CommandKind::Prompt { text: "bob".into() },
+            CommandKind::Prompt {
+                text: "bob".into(),
+                attachments: Vec::new(),
+            },
         );
         a.submit(
             &ha.head_id,
@@ -2726,6 +2735,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "alice two".into(),
+                attachments: Vec::new(),
             },
         );
         a.submit(&ha.head_id, "c4", 0, CommandKind::WithdrawPrompts);
@@ -2738,7 +2748,13 @@ mod tests {
         // take back.
         let left: Vec<_> = (0..2).filter_map(|_| a.try_steering_command()).collect();
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].kind, CommandKind::Prompt { text: "bob".into() });
+        assert_eq!(
+            left[0].kind,
+            CommandKind::Prompt {
+                text: "bob".into(),
+                attachments: Vec::new(),
+            }
+        );
         // And the take-back itself is consumed: a second one finds nothing.
         assert!(!a.try_withdraw_command());
     }
@@ -2770,6 +2786,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "lol, it is a bag".into(),
+                attachments: Vec::new(),
             },
         );
         // Up — the recall itself
@@ -2781,6 +2798,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "lol, it is a bug".into(),
+                attachments: Vec::new(),
             },
         );
 
@@ -2794,7 +2812,8 @@ mod tests {
         assert_eq!(
             left[0].kind,
             CommandKind::Prompt {
-                text: "lol, it is a bug".into()
+                text: "lol, it is a bug".into(),
+                attachments: Vec::new(),
             },
             "the prompt typed AFTER the take-back survives it"
         );
@@ -2904,6 +2923,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "hello".into(),
+                attachments: Vec::new(),
             },
         );
 
@@ -2991,6 +3011,7 @@ mod tests {
             0,
             CommandKind::Prompt {
                 text: "hello".into(),
+                attachments: Vec::new(),
             },
         );
         assert!(
@@ -3028,7 +3049,10 @@ mod tests {
             &hb.head_id,
             "c1",
             0,
-            CommandKind::Prompt { text: "x".into() },
+            CommandKind::Prompt {
+                text: "x".into(),
+                attachments: Vec::new(),
+            },
         );
         r.next_command().unwrap();
         assert_eq!(r.default_id(), "s-b");

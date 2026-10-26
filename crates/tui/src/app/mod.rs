@@ -359,6 +359,20 @@ pub struct App {
     /// saying `queued` while the words it stood for were already in the
     /// conversation above it. See [`App::bound_prompts`].
     pub(crate) pending_prompts: Vec<String>,
+    /// **The chips in the composer** — the pictures and files the operator pasted, each with the
+    /// text it was inserted as (`app::attachments`).
+    ///
+    /// The list is not the truth about what is sent: the CHIP TEXT in the editor is, and this is
+    /// only what turns it back into an `Attachment` at send time. A chip deleted from the words is
+    /// an attachment that is simply not there — no separate bookkeeping to fall out of step with
+    /// what the operator is looking at.
+    pub(crate) chips: Vec<crate::app::attachments::Chip>,
+    /// **Where a pasted picture comes from.** A trait object because a test must never read the
+    /// operator's real clipboard — see `app::attachments`.
+    pub(crate) clipboard: Box<dyn crate::app::attachments::Clipboard>,
+    /// How many pictures this head has taken from the clipboard, so two pastes in one session get
+    /// two files rather than one overwritten.
+    pub(crate) pasted_images: u64,
     /// **The echo in the transcript's own place, before its body lands.**
     ///
     /// `item_id` → the echo text this head optimistically bound to an announced
@@ -1805,6 +1819,9 @@ impl App {
             shell_walks: 0,
             queued: Vec::new(),
             pending_prompts: Vec::new(),
+            chips: Vec::new(),
+            clipboard: crate::app::attachments::default_clipboard(),
+            pasted_images: 0,
             bound_prompts: std::collections::HashMap::new(),
             fork_pending: Vec::new(),
             want_new_session: false,
@@ -2201,6 +2218,7 @@ pub fn line_width(s: &str) -> usize {
 
 mod action;
 mod asks;
+mod attachments;
 mod attention;
 mod commands;
 mod composer;

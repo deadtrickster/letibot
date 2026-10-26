@@ -324,6 +324,7 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
         0,
         CommandKind::Prompt {
             text: "first".into(),
+            attachments: Vec::new(),
         },
     );
     let b = registry
@@ -336,6 +337,7 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
         0,
         CommandKind::Prompt {
             text: "second".into(),
+            attachments: Vec::new(),
         },
     );
 
@@ -349,7 +351,8 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
             assert_eq!(
                 cmd.kind,
                 CommandKind::Prompt {
-                    text: "first".into()
+                    text: "first".into(),
+                    attachments: Vec::new(),
                 }
             );
         }
@@ -361,7 +364,8 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
             assert_eq!(
                 cmd.kind,
                 CommandKind::Prompt {
-                    text: "second".into()
+                    text: "second".into(),
+                    attachments: Vec::new(),
                 }
             );
         }

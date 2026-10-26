@@ -250,6 +250,7 @@ fn a_long_reseat_is_watched_by_a_boot_window_head_and_its_queued_prompt_is_taken
         0,
         CommandKind::Prompt {
             text: "pull".into(),
+            attachments: Vec::new(),
         },
     );
 

@@ -500,7 +500,7 @@ impl App {
             // out at RENDER time instead, by `queued_lines` and by `user_block`,
             // which is where a decision about what to show belongs.
             self.pending_prompts.push(text.clone());
-            return Some(Action::Prompt(text));
+            return Some(Action::Prompt(Prompt::new(text)));
         }
         if let Some(title) = verb_arg(cmd, "new") {
             self.want_new_session = true;

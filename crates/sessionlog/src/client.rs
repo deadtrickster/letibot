@@ -195,11 +195,27 @@ impl HeadClient {
     }
 
     pub fn prompt(&mut self, expected_seq: u64, text: &str) -> Result<String, ClientError> {
+        self.prompt_attached(expected_seq, text, Vec::new())
+    }
+
+    /// **A prompt with files beside it** — `ClientFrame::Prompt.attachments`
+    /// (`PROTOCOL_VERSION` 50).
+    ///
+    /// A second door rather than a changed signature: every caller that has nothing to
+    /// attach is a head, a fixture or an example, and a `Vec::new()` at thirty call sites is
+    /// a line each of them can be wrong about. [`Self::prompt`] is this call with none.
+    pub fn prompt_attached(
+        &mut self,
+        expected_seq: u64,
+        text: &str,
+        attachments: Vec<crate::protocol::Attachment>,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Prompt {
             client_request_id: client_request_id.clone(),
             expected_seq,
             text: text.to_string(),
+            attachments,
         })?;
         Ok(client_request_id)
     }

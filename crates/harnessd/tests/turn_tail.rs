@@ -235,6 +235,7 @@ fn every_door_of_a_session_the_daemon_holds_runs_one_tail() {
             0,
             CommandKind::Prompt {
                 text: "carry on".into(),
+                attachments: Vec::new(),
             },
         );
         let cmd = hub.try_command().expect("the prompt is queued");
@@ -329,6 +330,7 @@ fn a_subagents_door_runs_the_same_tail() {
         0,
         CommandKind::Prompt {
             text: "what did you find?".into(),
+            attachments: Vec::new(),
         },
     );
     let began = std::time::Instant::now();

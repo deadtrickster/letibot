@@ -510,6 +510,19 @@ impl App {
             return self.switch_to(parent);
         }
 
+        // **A paste is read before the editor sees it**: a drop of files is chips, an empty paste
+        // with a picture on the clipboard is the picture, and everything else is text — see
+        // `app::attachments`. A backspace at the end of (or inside) a chip takes the whole chip,
+        // because a chip deleted a character at a time leaves `[image 1 · png · 9` in the message.
+        if let Key::Paste(s) = &k
+            && self.paste_arrived(s.clone())
+        {
+            self.redraw = true;
+            return None;
+        }
+        if matches!(k, Key::Backspace) && self.backspace_chip() {
+            return None;
+        }
         let now = self.now_ms;
         let cols = self.composer_cols();
         let reaction = match k {

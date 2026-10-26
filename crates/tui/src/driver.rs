@@ -778,8 +778,9 @@ impl Link {
                     // `expected_seq` is what this head was looking at when the operator
                     // acted. The daemon decides what that means per command; the head's
                     // job is to report it honestly.
-                    Action::Prompt(text) => {
-                        self.client.prompt(app.seq, &text)?;
+                    Action::Prompt(p) => {
+                        self.client
+                            .prompt_attached(app.seq, &p.text, p.attachments)?;
                     }
                     Action::WithdrawPrompts => {
                         self.client.withdraw_prompts(app.seq)?;

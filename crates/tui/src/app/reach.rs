@@ -194,7 +194,7 @@ impl App {
         if let Some(text) = self.reach.held.take() {
             self.scroll = 0;
             self.pending_prompts.push(text.clone());
-            self.queued.push(Action::Prompt(text));
+            self.queued.push(Action::Prompt(Prompt::new(text)));
             self.redraw = true;
         }
     }

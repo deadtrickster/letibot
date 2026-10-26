@@ -339,6 +339,13 @@ impl App {
         if self.hold_for_model(&text) {
             return None;
         }
+        // **The chips this message carries — read before the words leave, and refused while they
+        // are still the operator's.** A chip whose file has gone is not sent empty and not sent
+        // without: the line goes back into the composer with a sentence, which is the rule every
+        // other refusal here keeps (`app::attachments` has the argument).
+        let Some(attachments) = self.chips_to_send(&text) else {
+            return None;
+        };
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.
@@ -367,7 +374,11 @@ impl App {
         } else {
             self.pending_prompts.push(text.clone());
         }
-        Some(Action::Prompt(text))
+        // **The chips went with it.** The composer is empty again — the editor took its buffer —
+        // so a chip left in this list would be a chip with no words to be found in, and the next
+        // message would carry it a second time.
+        self.chips.clear();
+        Some(Action::Prompt(Prompt::with(text, attachments)))
     }
 
     /// Columns the composer's text has, inside the box.

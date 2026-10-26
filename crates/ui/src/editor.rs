@@ -587,6 +587,25 @@ impl Editor {
         self.replace(self.cursor..self.cursor, s, Kind::Insert);
     }
 
+    /// **Remove a span whole**, as one undo entry — the composer's attachment chip, which Backspace
+    /// takes in one press rather than a character at a time.
+    ///
+    /// A chip is a span of the buffer and the editor is the only thing that may move it, so the
+    /// deletion belongs here rather than in a head that would have to re-spell `text`, `cursor`,
+    /// `last_kind` and the undo snapshot itself — four fields that must move together.
+    ///
+    /// Clamped rather than panicking on a range past the end: the caller is a head acting on a
+    /// buffer it searched a moment ago, and a message that changed between the search and the
+    /// delete must leave a shorter line, never a crash.
+    pub fn kill_range(&mut self, range: std::ops::Range<usize>) {
+        let end = range.end.min(self.text.len());
+        let start = range.start.min(end);
+        if start == end {
+            return;
+        }
+        self.replace(start..end, "", Kind::Delete);
+    }
+
     /// Take a paste. Normalises line endings, and collapses a large one to a
     /// placeholder.
     pub fn paste(&mut self, raw: &str) {

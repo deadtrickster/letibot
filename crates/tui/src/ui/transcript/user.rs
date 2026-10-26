@@ -153,9 +153,26 @@ fn reply_note(re: &str, cfg: &crate::ui::render::RenderConfig) -> Vec<String> {
     crate::ui::render::row_strings(&[line], cfg.palette())
 }
 
-/// **A user row's text, as one string** — the parts joined the way the row draws them. The
-/// transcript walk and the notice click map read the same words through this.
+/// **A user row's text, as the row draws it** — the operator's words, and not what an attachment
+/// added beside them. The transcript walk and the notice click map read the same words through
+/// this.
+///
+/// **The first `Text` part is the message; the ones after it are the attachments'.** A prompt's
+/// parts are the words first and then what each chip became (`PROTOCOL_VERSION` 50, and
+/// `harnessd::attachments` states the reason the words stay whole and first): a picture's bytes
+/// and a text file's inlined content ride in parts of their own, and the chip in the operator's
+/// own sentence — `[image 1 · png · 92 KiB]` — is what names it on the screen. Drawing the parts
+/// after the first would put a 30 KB CSV into the conversation under a question about it, and
+/// drawing a part as well as the chip would make one attachment look like two.
+///
+/// A row with no words at all still says what it carries, for a producer that ever writes one.
 pub(crate) fn user_text(parts: &[UserPart]) -> String {
+    if let Some(words) = parts.iter().find_map(|p| match p {
+        UserPart::Text { text } => Some(text.clone()),
+        _ => None,
+    }) {
+        return words;
+    }
     parts
         .iter()
         .map(|p| match p {

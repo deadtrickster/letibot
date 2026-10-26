@@ -29,7 +29,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use letibot_transcript::{TranscriptItem, UserPart};
 
 /// A message that arrived mid-turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SteeringMessage {
     pub text: String,
     /// Interrupt at the next token rather than at the next step boundary.
@@ -41,6 +41,15 @@ pub struct SteeringMessage {
     /// into the operator's text would put the harness's words in the
     /// operator's mouth.
     pub from_operator: bool,
+    /// **The parts that are not the operator's words** — a picture or a file the
+    /// composer attached (`PROTOCOL_VERSION` 50), already turned into
+    /// [`UserPart`]s by the side that can read a file.
+    ///
+    /// Here rather than in `text` because they are what the model is SENT and not what the
+    /// operator typed: the words still carry the chip the person saw (`[image 1 · png · 92
+    /// KiB]`), and the bytes ride beside them. A `SteeringMessage` with none is byte-for-byte
+    /// the message it always was — one `Text` part and no envelope.
+    pub extra: Vec<UserPart>,
 }
 
 impl SteeringMessage {
@@ -49,6 +58,7 @@ impl SteeringMessage {
             text: text.into(),
             urgent: false,
             from_operator: false,
+            extra: Vec::new(),
         }
     }
 
@@ -58,6 +68,18 @@ impl SteeringMessage {
             text: text.into(),
             urgent: false,
             from_operator: true,
+            extra: Vec::new(),
+        }
+    }
+
+    /// **The operator's words with what they attached** — the same message, with the parts a
+    /// picture or a file became. See [`SteeringMessage::extra`].
+    pub fn operator_with(text: impl Into<String>, extra: Vec<UserPart>) -> Self {
+        SteeringMessage {
+            text: text.into(),
+            urgent: false,
+            from_operator: true,
+            extra,
         }
     }
 
@@ -66,6 +88,7 @@ impl SteeringMessage {
             text: text.into(),
             urgent: true,
             from_operator: false,
+            extra: Vec::new(),
         }
     }
 
@@ -87,9 +110,16 @@ impl SteeringMessage {
             } else {
                 letibot_transcript::Speaker::Agent
             },
-            parts: vec![UserPart::Text {
-                text: self.text.clone(),
-            }],
+            parts: {
+                // **The words first, and as ONE part** — that is what the head's echo is
+                // matched against (`row_says` joins the text parts, and `retire_pending`
+                // spends the row's first lines), so an attachment must never split them.
+                let mut parts = vec![UserPart::Text {
+                    text: self.text.clone(),
+                }];
+                parts.extend(self.extra.iter().cloned());
+                parts
+            },
         }
     }
 }
@@ -321,6 +351,10 @@ impl Pending {
             {
                 last.text.push('\n');
                 last.text.push_str(&m.text);
+                // **And the parts come along**, or a prompt typed behind another one
+                // would lose its picture at the boundary — the merge keeps one item, so
+                // it has to keep everything that item was going to be.
+                last.extra.extend(m.extra);
             } else {
                 self.queued.push(m);
             }

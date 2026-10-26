@@ -86,6 +86,7 @@
 //! view carry the same bytes, on channels that agree.
 
 pub mod answers;
+pub mod attachments;
 pub mod backfill;
 pub mod bangrun;
 pub mod calibrate;

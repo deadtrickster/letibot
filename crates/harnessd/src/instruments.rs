@@ -725,7 +725,10 @@ mod tests {
             client_request_id: "c1".into(),
             at_seq: 0,
             enqueued_ms: 1_000,
-            kind: CommandKind::Prompt { text: "hi".into() },
+            kind: CommandKind::Prompt {
+                text: "hi".into(),
+                attachments: Vec::new(),
+            },
         };
         let ((), got) = letibot_metrics::capture(|| {
             let at = Clock {

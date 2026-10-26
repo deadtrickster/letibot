@@ -728,7 +728,27 @@ use crate::view::Snapshot;
 /// The action frame carries no `expected_seq`, unlike every other mutating command: what it
 /// asks for is a pane's own view, which is no more the session's state than a `ListJobs` is,
 /// and a stale-mark refusal would turn an operator's keypress into a sentence about a turn.
-pub const PROTOCOL_VERSION: u32 = 49;
+///
+/// # 50: a prompt can carry files and pictures ([`ClientFrame::Prompt`]'s `attachments`)
+///
+/// The operator: *"how i can paste an image to letibot?"* — until this, the only way to show
+/// a session a picture was to name its path and hope the model called `read`. A chip in the
+/// composer now travels as an [`Attachment`], and the daemon turns it into the
+/// [`letibot_transcript::UserPart`] a `read` of the same file would have produced.
+///
+/// **A field on an existing frame, so it is `#[serde(default)]` and a version-49 daemon still
+/// reads the frame** — which is why the number moves anyway: an OLD daemon drops the
+/// attachments in silence, and the operator sees a message they attached a picture to arrive
+/// without it. A head that wants to know whether that can happen reads the number it attached
+/// with; the daemon that understands attachments is the one that answers `50` (`Hello`).
+///
+/// The payload contract is the one `read` already keeps: an image becomes
+/// [`letibot_transcript::UserPart::Image`] with a `data:image/…;base64,` reference (the form
+/// the server takes, MEASURED in `letibot_transcript::media`), a text file becomes its content
+/// under a header naming it, and anything else becomes a [`letibot_transcript::UserPart::FileRef`]
+/// — a path the model may then `read`. Nothing here is a permission: the operator attached the
+/// file themselves, and the daemon reads it as the same act a `read` call is.
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1542,6 +1562,58 @@ pub enum PeekShape {
     Rows,
 }
 
+/// **One file the operator attached to a prompt** — a chip in the composer, on the wire.
+///
+/// # Why the head sends a PATH rather than the bytes
+///
+/// The head and the daemon are on one box and the file is already there: a clipboard picture
+/// is written to disk by the head that took it from the clipboard, and a dragged-in file was
+/// never anywhere else. Sending a megabyte of base64 down the socket would be a second copy of
+/// a file both processes can open, and the copy the daemon makes is the one the transcript
+/// keeps (`UserPart::Image`'s `data_ref`), so nothing is lost by reading it at the far end.
+///
+/// # And why the head still sends the metadata
+///
+/// Because the daemon must be able to say what it *did* with each one, and a refusal that
+/// names a file it had to re-open and guess at is a worse refusal. `kind` is the head's own
+/// reading of the file (a chip is drawn `image` or `file` and the operator must not see it
+/// change kind when the message lands); `media_type`, `bytes_len` and `name` are the chip's
+/// own words. The daemon still sniffs an image from its BYTES before building a part — a name
+/// is a claim and a magic number is not, which is `letibot_transcript::media`'s existing rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// Which of the two a chip said it was.
+    pub kind: AttachmentKind,
+    /// **The absolute path**, because the daemon's working directory is its own and a
+    /// relative path would name a different file. The head resolves it before sending for
+    /// the same reason: what it stat'ed to build `bytes_len` is what the daemon will read.
+    pub path: String,
+    /// `image/png`, or the head's guess for anything else (`text/plain`, `text/csv`), empty
+    /// when the head had nothing to guess from. Advisory: the daemon trusts the bytes.
+    #[serde(default)]
+    pub media_type: String,
+    /// The file's size when the head made the chip. A fact about the file, not about what is
+    /// sent — the daemon re-reads it, and a file that grew is the daemon's to describe.
+    #[serde(default)]
+    pub bytes_len: u64,
+    /// The file's own name, for a refusal that can be read: `report.csv`.
+    #[serde(default)]
+    pub name: String,
+}
+
+/// **Image or file** — the two chips the composer mints.
+///
+/// The distinction is the head's and it is deliberate: an image is handed to the model
+/// (`UserPart::Image`) and a file is either inlined or named by its path, and which of those
+/// a chip is decides what the operator's screen said it was. A daemon still sniffs before it
+/// believes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentKind {
+    Image,
+    File,
+}
+
 /// Head → daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
@@ -1569,10 +1641,17 @@ pub enum ClientFrame {
     Resync,
     /// A user message. If a turn is running this is **queued as a follow-up user
     /// item**, not rejected (§13.2), and the queuing is announced.
+    ///
+    /// `attachments` is `PROTOCOL_VERSION` 50's field: the files and pictures the operator
+    /// put in the composer beside their words. Defaulted, because a frame a version-49 head
+    /// sends is a prompt with nothing attached and must keep parsing — see the version note
+    /// for the half that is *not* free (an old daemon drops them silently).
     Prompt {
         client_request_id: String,
         expected_seq: u64,
         text: String,
+        #[serde(default)]
+        attachments: Vec<Attachment>,
     },
     /// Take back what this head queued: every [`ClientFrame::Prompt`] from this
     /// head that has not been consumed by the running turn yet is dropped, and
@@ -3042,8 +3121,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 49,
-            "the match above was last reconciled with the frame list at 49 — \
+            PROTOCOL_VERSION, 50,
+            "the match above was last reconciled with the frame list at 50 — \
+             `ClientFrame::Prompt.attachments`, an ADDED, DEFAULTED field that is still a bump: a \
+             version-49 daemon parses the frame and DROPS the attachments in silence, so the bump \
+             is what a head reads to refuse to promise a picture it cannot send. 49 was \
              `SessionEvent::PluginPane`/`PluginPaneGone` and `ClientFrame::PaneOpen`/`PaneAction`, \
              plugin panes (a version-48 head cannot decode the first event, a version-48 daemon \
              cannot parse the first frame). 48 was \
@@ -3291,6 +3373,53 @@ mod tests {
         );
     }
 
+    /// **A prompt from a head that never heard of attachments** — the wire's own bytes, from
+    /// before `PROTOCOL_VERSION` 50 existed.
+    ///
+    /// The field is `#[serde(default)]` for exactly this: a version-49 head (`letibot`
+    /// before this feature, `leticl`, the bridge) keeps sending `{frame, client_request_id,
+    /// expected_seq, text}`, and the daemon must read it as a prompt with nothing attached
+    /// rather than as a malformed frame — a `missing field` here would disconnect every
+    /// head older than this build, which is the shape `SetOperatorTodos::items` already paid
+    /// for.
+    #[test]
+    fn an_old_prompt_frame_decodes_with_no_attachments() {
+        let f: ClientFrame = serde_json::from_str(
+            r#"{"frame":"prompt","client_request_id":"leticl-1","expected_seq":41,
+                 "text":"what is in this picture?"}"#,
+        )
+        .expect("a version-49 head's prompt must still parse");
+        let ClientFrame::Prompt {
+            expected_seq,
+            text,
+            attachments,
+            ..
+        } = f
+        else {
+            panic!("not a prompt: {f:?}");
+        };
+        assert_eq!(expected_seq, 41, "the rest of the frame still reads");
+        assert_eq!(text, "what is in this picture?");
+        assert!(attachments.is_empty(), "none attached: {attachments:?}");
+
+        // And the NEW spelling, on the wire: the kind is a word, and the path is what the
+        // daemon opens. Asserted as JSON rather than as a struct so the spelling a head in
+        // another language has to produce is pinned here and not only in serde's defaults.
+        let with: ClientFrame = serde_json::from_str(
+            r#"{"frame":"prompt","client_request_id":"r2","expected_seq":9,"text":"look",
+                 "attachments":[{"kind":"image","path":"/tmp/a.png","media_type":"image/png",
+                                  "bytes_len":1024,"name":"a.png"}]}"#,
+        )
+        .expect("the new spelling parses");
+        let ClientFrame::Prompt { attachments, .. } = with else {
+            panic!("not a prompt")
+        };
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].kind, AttachmentKind::Image);
+        assert_eq!(attachments[0].path, "/tmp/a.png");
+        assert_eq!(attachments[0].bytes_len, 1024);
+    }
+
     #[test]
     fn dropped_is_present_and_zero_on_hello() {
         let f = ServerFrame::Hello {
@@ -3357,6 +3486,22 @@ mod tests {
                 client_request_id: "r1".into(),
                 expected_seq: 12,
                 text: "hello".into(),
+                attachments: vec![Attachment {
+                    kind: AttachmentKind::Image,
+                    path: "/tmp/shot.png".into(),
+                    media_type: "image/png".into(),
+                    bytes_len: 94_208,
+                    name: "shot.png".into(),
+                }],
+            },
+            // A frame from a version-49 head has no `attachments` key at all, which is
+            // asserted on the wire's own bytes in
+            // `an_old_prompt_frame_decodes_with_no_attachments` below.
+            ClientFrame::Prompt {
+                client_request_id: "r1b".into(),
+                expected_seq: 12,
+                text: "no attachments here".into(),
+                attachments: Vec::new(),
             },
             ClientFrame::WithdrawPrompts {
                 client_request_id: "r1w".into(),

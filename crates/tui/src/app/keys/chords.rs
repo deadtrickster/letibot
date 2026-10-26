@@ -35,6 +35,21 @@ impl App {
                 )));
             }
             Key::CtrlV => {
+                // **A picture on the clipboard is what this key attaches, and that comes first.**
+                //
+                // The operator's question was *"how i can paste an image to letibot?"*, and
+                // ctrl-v is the key a person reaches for. When the clipboard holds no picture
+                // nothing is said and the key is the window it always was — a silent `osascript`
+                // lookup is the whole cost, and `App::attach_from_clipboard` is the one place
+                // that decides. A terminal that intercepts ctrl-v as its own paste sends
+                // `Key::Paste` instead, which reaches the same door (`App::paste_arrived`).
+                //
+                // **Not while a window is open**: the press that closes the one result a reader
+                // opened must close it, whether or not they copied a picture a minute earlier.
+                if self.payload_sel.is_none() && self.attach_from_clipboard() {
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
+                }
                 // **One row, not a switch — R10's ruling on the overload.**
                 //
                 // This used to flip the conversation-wide tool fold *and* seed a window

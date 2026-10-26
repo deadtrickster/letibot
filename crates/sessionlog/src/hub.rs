@@ -127,6 +127,13 @@ pub struct QueuedCommand {
 pub enum CommandKind {
     Prompt {
         text: String,
+        /// **The chips the operator put in the composer** (`PROTOCOL_VERSION` 50).
+        ///
+        /// Carried through the queue as the frame sent them and converted by the harness at
+        /// the turn's own seam — the daemon reads the files (`crate::attachments`), so a
+        /// prompt is still one item in the queue however much it carries, and a take-back
+        /// (`WithdrawPrompts`) drops the chips with the words that named them.
+        attachments: Vec<crate::protocol::Attachment>,
     },
     /// Compact the session: one summary turn, then the history is replaced by
     /// that summary through a transcript fork. Serialized on the queue like a
@@ -2411,6 +2418,7 @@ mod tests {
             enqueued_ms: 0,
             kind: CommandKind::Prompt {
                 text: "hello".into(),
+                attachments: Vec::new(),
             },
         };
         assert!(
@@ -2576,6 +2584,7 @@ mod tests {
             1, // deliberately stale
             CommandKind::Prompt {
                 text: "also check the logs".into(),
+                attachments: Vec::new(),
             },
         );
         let ServerFrame::Accepted { note, .. } = f else {
@@ -2877,6 +2886,7 @@ mod mode_steering_tests {
             0,
             CommandKind::Prompt {
                 text: "stop and look at this".into(),
+                attachments: Vec::new(),
             },
         );
         assert!(hub.has_queued_prompt());
@@ -2979,6 +2989,7 @@ mod mode_steering_tests {
             (
                 CommandKind::Prompt {
                     text: "speak as the operator".into(),
+                    attachments: Vec::new(),
                 },
                 "send a prompt",
             ),

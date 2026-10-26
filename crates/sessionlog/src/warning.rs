@@ -396,6 +396,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // **A session's workspace is gone** (R92.24) — said when it opens or wakes on a directory
     // that no longer exists. A Failure: nothing the session runs can work until somebody acts.
     ("workspace_gone", Class::Failure),
+    // **A file the operator chipped into a prompt was not there when it was sent** — protocol 50,
+    // `harnessd::attachments`. A Failure and not a routine hiccup: the message went out, the
+    // model read a sentence naming a file it was never given, and the answer is about something
+    // it could not see. Only the operator can put the file back, and the row is where they learn
+    // which one.
+    ("attachment_refused", Class::Failure),
     // **The daemon's boot** (R92.2, R92.3; `cli::Boot`): each step from the socket's bind to the
     // worker's start (`daemon_starting`) and the start itself (`daemon_started`) are Routine — a
     // head draws them as the tail's line and a queued prompt's label, not as rows. A boot that
@@ -1173,10 +1179,12 @@ mod the_register_census {
         //   · **151, not 146**: the plugin host's `plugin_layer`, `plugin_refused`,
         //     `plugin_view_refused` and the image retry's `model_refused_images` (Routine, hiccups
         //     handled), and `model_switch_refused` (Failure, the new model's first round refused).
-        assert_eq!(TABLE.len(), 151, "the table's size");
+        //   · **152, not 151**: `attachment_refused` (Failure) — a file chipped into a prompt was
+        //     gone when the message was sent, so the model answered about a file it never got.
+        assert_eq!(TABLE.len(), 152, "the table's size");
         assert_eq!(count(Class::Routine), 57);
         assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 83);
+        assert_eq!(count(Class::Failure), 84);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

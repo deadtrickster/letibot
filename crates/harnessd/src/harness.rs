@@ -1786,16 +1786,30 @@ impl SteeringSource for HubSteering {
         // [`Hub::try_steering_command`].
         if let Some(cmd) = self.hub.try_steering_command() {
             return match cmd.kind {
-                CommandKind::Prompt { text } => {
+                CommandKind::Prompt { text, attachments } => {
                     // The operator, typing into a running turn. This is the case
                     // §2's *"yeah restart"* is about, and it is the one utterance
                     // that can authorise the action it is racing. Marked as the
                     // operator's so consecutive prompts coalesce into one held
                     // message and a take-back drops them.
+                    //
+                    // **The chips are read HERE and not by the engine**, because a turn's
+                    // library has no business opening the operator's files: what it is
+                    // handed is parts. A file that vanished between the frame and this
+                    // poll is said on the session's log, so nothing about the prompt is
+                    // silent — see `crate::attachments`.
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Operator, &text, Some(Instant::now()));
                     }
-                    Some(SteeringMessage::operator(text))
+                    let (extra, refused) = crate::attachments::parts(&attachments);
+                    for said in &refused {
+                        self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                            code: "attachment_refused".into(),
+                            detail: said.clone(),
+                            compaction: None,
+                        });
+                    }
+                    Some(SteeringMessage::operator_with(text, extra))
                 }
                 CommandKind::Interrupt { reason } => {
                     // **THE CHILDREN FIRST, THEN THIS SESSION.** The operator's design in their
@@ -7038,6 +7052,42 @@ impl Harness {
         self.submit_spoken(Speaker::Operator, text)
     }
 
+    /// **The operator's words with the chips they put beside them** — `PROTOCOL_VERSION` 50.
+    ///
+    /// The files are read HERE, by the daemon, because the daemon is the half that writes the
+    /// transcript: the row is the durable artifact, and what it carries is the `data:` URI and
+    /// the inlined text rather than a path that may be gone by the time the next round renders
+    /// the conversation (`letibot_transcript::media`'s own argument for putting `Media` on a
+    /// row). See [`crate::attachments`] for what each kind becomes.
+    ///
+    /// A file that could not be read is said in the row and warned on the log — the words still
+    /// send, because they are the operator's and the attachment is not — and an EMPTY list is
+    /// [`Harness::submit`], byte for byte.
+    pub fn submit_attached(
+        &mut self,
+        text: &str,
+        attachments: &[letibot_sessionlog::protocol::Attachment],
+    ) -> Result<Reply, HarnessError> {
+        if attachments.is_empty() {
+            return self.submit(text);
+        }
+        let (extra, refused) = crate::attachments::parts(attachments);
+        for said in &refused {
+            self.warn("attachment_refused", said.clone());
+        }
+        self.submit_spoken_parts(Speaker::Operator, text, extra)
+    }
+
+    /// **A warning on this session's log** — the operator's own sentence about something that
+    /// did not go as asked. One writer for the two doors that can refuse an attachment.
+    pub(crate) fn warn(&self, code: &str, detail: String) {
+        self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
+            code: code.into(),
+            detail,
+            compaction: None,
+        });
+    }
+
     /// **One turn, with the speaker given** — the operator's own words through
     /// [`Harness::submit`], a parent's correction through
     /// [`Harness::submit_a_parents_message`].
@@ -7049,6 +7099,16 @@ impl Harness {
     /// inline here for the same reason `TrailMirror::seed` matches them inline: the one place
     /// they meet is the one place a reader has to look for the mapping.
     fn submit_spoken(&mut self, speaker: Speaker, text: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken_parts(speaker, text, Vec::new())
+    }
+
+    /// The same, with the parts an attachment became — see [`Harness::submit_attached`].
+    fn submit_spoken_parts(
+        &mut self,
+        speaker: Speaker,
+        text: &str,
+        extra: Vec<UserPart>,
+    ) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
         // **R79: the results held for this break ride in with the turn** — as the harness's
         // own row, BEFORE the words that started the turn, so what the operator (or a parent)
@@ -7071,7 +7131,13 @@ impl Harness {
                 // them is the operator's words, and none may be drawn as them.
                 Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
             },
-            parts: vec![UserPart::Text { text: text.into() }],
+            // **The words first and whole, the chips after** — a head retires its `queued`
+            // echo by the row's leading lines, so nothing may be spliced in front of them.
+            parts: {
+                let mut parts = vec![UserPart::Text { text: text.into() }];
+                parts.extend(extra);
+                parts
+            },
         });
         self.submit_items(items)
     }
@@ -17126,11 +17192,15 @@ fn serve_child_with(
                 }
             }
             ChildCommand::Answer => {
-                let text = match &kind {
-                    letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
+                let (text, attachments) = match &kind {
+                    letibot_sessionlog::CommandKind::Prompt { text, attachments } => {
+                        (text.clone(), attachments.clone())
+                    }
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                later_turn(sub, turns, Door::Prompt, |h| h.submit(&text).map(Some));
+                later_turn(sub, turns, Door::Prompt, |h| {
+                    h.submit_attached(&text, &attachments).map(Some)
+                });
             }
             // **A parent's message, and there is no turn to steer it into — so one is started.**
             // The between-turns half of the operator's ruling (*"fix task_message - it should

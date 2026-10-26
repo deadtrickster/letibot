@@ -52,7 +52,7 @@ fn cells_sends_the_screen_with_the_message() {
     // The pending row holds what was SENT, byte for byte — that is what the
     // transcript's user item will match when it lands.
     let echo = a.pending_prompts.last().expect("the message is echoed");
-    assert_eq!(echo, &text);
+    assert_eq!(echo, &text.text);
     // And it is DRAWN folded: the operator's words and one line, never a copy
     // of the screen inside the screen.
     // **Unfolded**, because this test is about what the words ARE — the fold's own

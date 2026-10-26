@@ -2243,7 +2243,7 @@ impl<'a> Sessions<'a> {
     /// traffic. It goes through the same `harness()` as the worker, so a scripted
     /// run and a driven one open a session the same way.
     pub fn submit(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
-        self.run_prompt(session_id, text)
+        self.run_prompt(session_id, text, &[])
     }
 
     /// **One turn, and everything that has to happen around one.**
@@ -2259,7 +2259,12 @@ impl<'a> Sessions<'a> {
     ///
     /// A second copy of a sequence is a second place to forget one of its steps, so
     /// there is one.
-    fn run_prompt(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
+    fn run_prompt(
+        &mut self,
+        session_id: &str,
+        text: &str,
+        attachments: &[letibot_sessionlog::protocol::Attachment],
+    ) -> Result<Reply, HarnessError> {
         // **Opened first, lazily** — the resume a head reaches (`/resume`, a switch from the
         // picker). A session that cannot be opened ran nothing, and says so on its own log.
         if let Err(e) = self.harness(session_id) {
@@ -2275,8 +2280,10 @@ impl<'a> Sessions<'a> {
         // (measured 2026-10-02: a resumed session sent 1,463,497 tokens against a 1,048,576
         // window, because every check ran after a turn), the clock, the failure, the
         // compaction, the continuation past the wall, the title, the wake and the clocks after.
-        self.turn(session_id, Door::Prompt, |h| h.submit(text).map(Some))
-            .expect("a prompt always runs a turn")
+        self.turn(session_id, Door::Prompt, |h| {
+            h.submit_attached(text, attachments).map(Some)
+        })
+        .expect("a prompt always runs a turn")
     }
 
     /// **A message to a session the daemon holds, between that session's turns** — the row it
@@ -3436,13 +3443,13 @@ impl<'a> Sessions<'a> {
     pub fn dispatch(&mut self, session_id: &str, cmd: &QueuedCommand) -> Outcome {
         let hub = self.registry.get(session_id);
         match &cmd.kind {
-            CommandKind::Prompt { text } => {
+            CommandKind::Prompt { text, attachments } => {
                 // One line, because everything a turn needs around it — the title,
                 // the wake, the failure notice, the compaction at the wall — is in
                 // `run_prompt`, which the scripted path also calls. This arm used
                 // to be the second copy of that sequence, and the copy was missing
                 // the compaction.
-                match self.run_prompt(session_id, text) {
+                match self.run_prompt(session_id, text, attachments) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
                     Err(e) => Outcome::Failed(e.to_string()),
                 }

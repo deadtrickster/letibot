@@ -11,10 +11,96 @@ pub enum Disposition {
     Control,
 }
 
+/// **One message to send** — the words and whatever the composer chipped into them.
+///
+/// A struct rather than two fields on the variant so that the overwhelming majority of prompts —
+/// no chips at all — keep the shape they had: [`Prompt::new`] is the door with nothing attached,
+/// and it is what every caller that has no composer reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    /// The words, chips and all — the same string the operator saw in the composer.
+    pub text: String,
+    /// The files and pictures, in the order their chips were minted. Empty is the ordinary case.
+    pub attachments: Vec<letibot_sessionlog::Attachment>,
+}
+
+impl Prompt {
+    /// A message with nothing attached.
+    pub fn new(text: impl Into<String>) -> Self {
+        Prompt {
+            text: text.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    /// A message with the chips the composer carries.
+    pub fn with(text: impl Into<String>, attachments: Vec<letibot_sessionlog::Attachment>) -> Self {
+        Prompt {
+            text: text.into(),
+            attachments,
+        }
+    }
+}
+
+/// **A message with nothing attached, from its words** — so the thirty call sites that have never
+/// heard of attachments keep the spelling they had (`Action::Prompt("hi".into())`), and the tests
+/// that compare against one are asserting *no chips* as well as the words, without a second field
+/// to forget.
+impl From<&str> for Prompt {
+    fn from(text: &str) -> Self {
+        Prompt::new(text)
+    }
+}
+
+impl From<String> for Prompt {
+    fn from(text: String) -> Self {
+        Prompt::new(text)
+    }
+}
+
+/// **A message compares with its words.** What a caller means by `prompt == "hi"` is the sentence;
+/// the attachments are asserted where they are made (`app::attachments`) and sent (the daemon's
+/// own tests), not at every site that checks what the composer said.
+impl PartialEq<str> for Prompt {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+
+impl PartialEq<&str> for Prompt {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+/// **A message reads as its words.** Every reader of a `Prompt` that is not sending it — a test
+/// checking what the composer said, the log line, the echo — wants the sentence and nothing else,
+/// and `prompt.starts_with(..)` is that sentence. The attachments are the second thing a caller
+/// asks for when it is asking about them.
+impl std::ops::Deref for Prompt {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::fmt::Display for Prompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// Something the head wants the daemon to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    Prompt(String),
+    /// **The operator's words, with the chips they put beside them** — the pictures and files the
+    /// composer attached (`PROTOCOL_VERSION` 50).
+    ///
+    /// The attachments ride the action rather than a field on the app, because the action IS the
+    /// message: a driver that read them off `App` afterwards would be reading a second copy, and a
+    /// refusal between the submit and the send would have to undo it.
+    Prompt(Prompt),
     Interrupt(String),
     /// Move the running command to the background (Ctrl+B), like Claude Code.
     Promote,

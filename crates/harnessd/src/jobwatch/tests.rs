@@ -516,6 +516,7 @@ fn a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_th
         0,
         letibot_sessionlog::CommandKind::Prompt {
             text: "answer me first".into(),
+            attachments: Vec::new(),
         },
     );
     match r.next_work() {

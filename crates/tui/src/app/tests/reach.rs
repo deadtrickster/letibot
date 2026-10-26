@@ -86,7 +86,7 @@ fn prompts(actions: &[Action]) -> Vec<String> {
     actions
         .iter()
         .filter_map(|x| match x {
-            Action::Prompt(t) => Some(t.clone()),
+            Action::Prompt(t) => Some(t.text.clone()),
             _ => None,
         })
         .collect()
