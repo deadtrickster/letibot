@@ -43,6 +43,10 @@ use letibot_turn::Endpoint;
 
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
+// **The descriptors a binary's parallel tests need** — see [`room`]'s own note: on this box the
+// soft open-file limit is 256 and fifty concurrent subagents want ~350.
+#[path = "support/room.rs"]
+mod room;
 
 use canned::Frame;
 
@@ -563,6 +567,11 @@ fn answered(sessions: &Sessions<'_>, handle: &str) -> bool {
 #[test]
 fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Fifty children at once: ~6 descriptors each for the store and its corpus, plus a socket per
+    // turn — `room`'s note has the measurement, and the limit this box starts a run with is 256.
+    let Some(_) = room::room_for("fifty concurrent subagents", 512) else {
         return;
     };
     let _one = serial();

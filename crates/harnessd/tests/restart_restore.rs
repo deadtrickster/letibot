@@ -48,6 +48,10 @@ use letibot_turn::Endpoint;
 
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
+// **The descriptors a binary's parallel tests need** — see [`room`]'s own note: on this box the
+// soft open-file limit is 256 and eighteen daemons and their children at once want more.
+#[path = "support/room.rs"]
+mod room;
 
 use canned::Frame;
 
@@ -440,6 +444,11 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-resume");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -647,6 +656,11 @@ fn a_child_stopped_in_a_later_turn_is_resumed_not_left_as_finished() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-later-turn");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -736,6 +750,11 @@ fn a_later_turn_that_ends_on_its_own_leaves_the_row_settled() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-later-turn-ends");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -793,6 +812,11 @@ fn a_later_turn_that_ends_on_its_own_leaves_the_row_settled() {
 #[test]
 fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-helpers");
@@ -928,6 +952,11 @@ fn a_job_the_orderly_stop_ended_is_reminded() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-job-stopped");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1002,6 +1031,11 @@ fn relics_alone_draw_no_notice_and_are_closed_quietly() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-relics-only");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1041,6 +1075,11 @@ fn relics_alone_draw_no_notice_and_are_closed_quietly() {
 #[test]
 fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-relic-and-real");
@@ -1094,6 +1133,11 @@ fn a_relic_beside_a_real_record_takes_the_down_time_from_the_real_one() {
 #[test]
 fn past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-remind");
@@ -1193,6 +1237,11 @@ fn a_grandchild_comes_back_when_its_parent_does() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-nested");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1249,6 +1298,11 @@ fn a_grandchild_comes_back_when_its_parent_does() {
 #[test]
 fn what_must_not_be_respawned_is_reported_or_delivered() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-edges");
@@ -1437,6 +1491,11 @@ fn monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-monitors");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1546,6 +1605,11 @@ fn past_the_threshold_monitors_and_jobs_are_only_reminded() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-monitors-late");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1592,6 +1656,11 @@ fn past_the_threshold_monitors_and_jobs_are_only_reminded() {
 #[test]
 fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-idle");
@@ -1655,6 +1724,11 @@ fn a_session_reopened_by_the_daemon_that_wrote_its_records_restores_nothing() {
 #[test]
 fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-unknown");
@@ -1751,6 +1825,11 @@ fn a_stop_no_record_dates_is_said_unknown_and_restores_nothing() {
 #[test]
 fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("restart-jobs-only");
@@ -1852,6 +1931,11 @@ fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-held-job");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1912,6 +1996,11 @@ fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
     let dir = Scratch::new("restart-job-ids");
     let parts = parts_for(&config(
         &dir.repo(),
@@ -1941,6 +2030,11 @@ fn a_job_handle_minted_after_a_restart_is_above_every_one_the_store_holds() {
 #[test]
 fn the_jobs_a_closing_backend_takes_with_it_are_named_and_their_rows_settled() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
         return;
     };
     let dir = Scratch::new("vm-lost-jobs");
