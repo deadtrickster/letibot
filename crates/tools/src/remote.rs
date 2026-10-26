@@ -849,6 +849,18 @@ enum Retry {
     Never,
 }
 
+/// **Whether a call owes the record a line** — rule 7's ring, and how a heartbeat stays out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reported {
+    /// Every attempt goes into the ring: this is a call somebody asked for.
+    Always,
+    /// **Only the attempts that did not answer.** A status poll is a heartbeat — [`POLL_BOUND`],
+    /// once every 120 ms for as long as a job is waited on — and [`crate::rpc::RECORD_RING`]
+    /// entries of it are half a minute's worth, which would push out every call that mattered. A
+    /// poll that *fails* is news, and is kept like anything else.
+    Failures,
+}
+
 /// **How one bounded ssh call ended** — the shape the retry rule is written against.
 enum Call {
     /// The far side answered: what the command printed, ssh's own stderr, and the exit status.
@@ -1202,7 +1214,7 @@ impl Ssh {
             Some(file) => grouped(script, file),
             None => script.to_string(),
         };
-        let ended = self.call(step, &wrapped, Retry::Never, self.bound)?;
+        let ended = self.call(step, &wrapped, Retry::Never, self.bound, Reported::Always)?;
         match ended {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => {
@@ -1263,7 +1275,7 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(step, script, Retry::Once, within)? {
+        match self.call(step, script, Retry::Once, within, Reported::Always)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -1283,7 +1295,25 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(step, script, Retry::Never, within)? {
+        match self.call(step, script, Retry::Never, within, Reported::Always)? {
+            Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
+            other => Err(BackendError::Io(self.no_answer(step, &other, within))),
+        }
+    }
+
+    /// **A status poll**: the same call, but only a poll that fails is recorded.
+    ///
+    /// [`RemoteProcesses::refresh`] runs this every 120 ms for as long as a job is waited on. The
+    /// record ring is 256 entries, so a `job_wait` of thirty seconds' worth of *successful*
+    /// heartbeats would evict every call a reader could act on — and a successful poll says only
+    /// *the machine is still there*, which is the one thing a report does not need.
+    fn sh_poll_within(
+        &self,
+        step: &str,
+        script: &str,
+        within: Duration,
+    ) -> Result<(String, Vec<u8>, i32), BackendError> {
+        match self.call(step, script, Retry::Never, within, Reported::Failures)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -1303,7 +1333,7 @@ impl Ssh {
         retry: Retry,
         within: Duration,
     ) -> Result<String, BackendError> {
-        let (out, stderr, exit) = match self.call(what, script, retry, within)? {
+        let (out, stderr, exit) = match self.call(what, script, retry, within, Reported::Always)? {
             Call::Answered(out, stderr, exit) => (out, stderr, exit),
             other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
         };
@@ -1353,10 +1383,11 @@ impl Ssh {
         script: &str,
         retry: Retry,
         within: Duration,
+        reported: Reported,
     ) -> Result<Call, BackendError> {
         let pass = rpc::before(&self.host.name).map_err(BackendError::Io)?;
         self.fresh_master();
-        let first = self.attempt(step, script, within);
+        let first = self.attempt(step, script, within, reported);
         let first = match first {
             Ok(call) => call,
             // The local process could not be started at all: nobody knows what happened, and the
@@ -1373,7 +1404,7 @@ impl Ssh {
         if retry == Retry::Once && !matches!(first, Call::Answered(..) | Call::Denied(..)) {
             // The master may be what died, and a second attempt through the same dead socket would
             // fail the same way. This one is not a probe: the cooldown's one call was already spent.
-            let second = self.attempt(step, script, within);
+            let second = self.attempt(step, script, within, reported);
             return match second {
                 Ok(call) => {
                     rpc::after(
@@ -1402,18 +1433,26 @@ impl Ssh {
     /// command is built, because building it may itself ask the host a question (where is mise?)
     /// and a slot held across another call's slot is how a queue becomes a deadlock. It gives the
     /// place up when it returns, whichever way it returns.
-    fn attempt(&self, step: &str, script: &str, within: Duration) -> Result<Call, BackendError> {
+    fn attempt(
+        &self,
+        step: &str,
+        script: &str,
+        within: Duration,
+        reported: Reported,
+    ) -> Result<Call, BackendError> {
         let command = self.remote_command(script);
         let _slot = rpc::enter(&self.host.name, within).map_err(BackendError::Io)?;
         let began = Instant::now();
+        // **The one place a call is written down** (rule 7), and [`Reported`] is the whole of the
+        // policy: a heartbeat is only news when it fails.
+        let note = |outcome: rpc::Outcome| {
+            if reported == Reported::Always || outcome != rpc::Outcome::Ok {
+                rpc::record(&self.host.name, step, began.elapsed(), outcome);
+            }
+        };
         match rpc::run_bounded(&self.program, &self.argv(&command), within) {
             rpc::Ended::Unstartable(why) => {
-                rpc::record(
-                    &self.host.name,
-                    step,
-                    began.elapsed(),
-                    rpc::Outcome::Unknown,
-                );
+                note(rpc::Outcome::Unknown);
                 Err(BackendError::Io(format!(
                     "{why} — the ssh for {} could not be started at all, so nothing was sent \
                      and nothing on that machine changed",
@@ -1423,12 +1462,7 @@ impl Ssh {
             rpc::Ended::TimedOut => {
                 // **The master may be the thing that stopped answering**, and a socket that is
                 // still there would make the next call wait on it too.
-                rpc::record(
-                    &self.host.name,
-                    step,
-                    began.elapsed(),
-                    rpc::Outcome::TimedOut,
-                );
+                note(rpc::Outcome::TimedOut);
                 self.drop_socket();
                 Ok(Call::TimedOut(within))
             }
@@ -1447,23 +1481,13 @@ impl Ssh {
                 if exit == 255 && said.is_empty() {
                     self.drop_socket();
                     if let Some(kind) = auth_refusal(&String::from_utf8_lossy(&stderr)) {
-                        rpc::record(
-                            &self.host.name,
-                            step,
-                            began.elapsed(),
-                            rpc::Outcome::Refused,
-                        );
+                        note(rpc::Outcome::Refused);
                         return Ok(Call::Denied(kind, stderr));
                     }
-                    rpc::record(
-                        &self.host.name,
-                        step,
-                        began.elapsed(),
-                        rpc::Outcome::Dropped,
-                    );
+                    note(rpc::Outcome::Dropped);
                     return Ok(Call::Dropped(stderr));
                 }
-                rpc::record(&self.host.name, step, began.elapsed(), rpc::Outcome::Ok);
+                note(rpc::Outcome::Ok);
                 Ok(Call::Answered(said, stderr, exit))
             }
         }
@@ -2997,7 +3021,7 @@ impl RemoteProcesses {
         // deadline open for twice as long as it should.
         let Ok((line, _, 0)) = self
             .ssh
-            .sh_once_within("asking about a job", &script, within)
+            .sh_poll_within("asking about a job", &script, within)
         else {
             return;
         };

@@ -1604,6 +1604,66 @@ fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
+/// **A job's wait is a heartbeat, and it does not fill the record ring.**
+///
+/// A status poll is one ssh call every 120 ms for as long as a job is waited on, so a single
+/// `job_wait` of half a minute is [`letibot_tools::rpc::RECORD_RING`] entries — and it would evict
+/// every call a reader could act on. A poll that *succeeds* says only *the machine is still
+/// there*, which is the one thing a report does not need; a poll that fails is still recorded.
+#[test]
+fn a_jobs_polling_does_not_fill_the_record_ring() {
+    let host = format!("polls-{}", std::process::id());
+    let fake = Fake::new("polls", "exec bash -lc \"$last\"");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+    let processes = b.processes_arc().expect("this backend starts processes");
+    let id = processes
+        .spawn(&SpawnRequest {
+            command: "sleep 1".into(),
+            slug: None,
+            cwd: String::new(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: Vec::new(),
+            tty: false,
+            memory: None,
+        })
+        .expect("the job starts");
+    // A second and a half of waiting: about a dozen polls, plus the launch's own pid poll.
+    let _ = processes.wait_job(&id, Duration::from_secs(20));
+
+    let mine = letibot_tools::rpc::recent(&host, letibot_tools::rpc::RECORD_RING);
+    let polls = mine
+        .iter()
+        .filter(|r| r.step == "asking about a job")
+        .count();
+    assert_eq!(
+        polls, 0,
+        "a successful poll is a heartbeat and is not written down"
+    );
+    // …and the count is what a launch plus a wait really was — under a hundred — rather than the
+    // hundreds a recorded heartbeat would have added. (Not *which* records: the ring is shared by
+    // every test in this process, so a placement's early lines may legitimately have been evicted
+    // by another host's traffic.)
+    assert!(
+        mine.len() < 100,
+        "the polls did not put a single extra entry in: {}",
+        mine.len()
+    );
+    assert!(
+        mine.iter().any(|r| r.step == "the job was starting"),
+        "and the job's own start is recorded: {mine:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
 /// Is there a run-group file left in the checkout? The cancel deletes the one it used.
 fn pidfile_is_stale(b: &letibot_tools::remote::SshBackend) -> bool {
     let dir = Path::new(b.worktree_path()).join(".letibot-remote");
