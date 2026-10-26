@@ -1041,6 +1041,21 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         .registry
         .get(&session)
         .unwrap_or_else(|| panic!("the daemon holds `{session}`"));
+    // **A head count converges, and it is polled rather than sampled** — `wait` attaches a
+    // watching head per call and drops it on the way out, and the daemon unregisters a head when
+    // its connection's read loop sees the close. So a head from the `wait` two lines up can still
+    // be in the map for a few milliseconds after the verb has returned, which is a race the
+    // assertion used to lose about once in twenty runs once `wait` stopped taking ten seconds to
+    // answer. What it asserts is the same fact, at the moment it is true.
+    let deadline = Instant::now() + PATIENCE;
+    while hub.attached_heads() > 2 {
+        assert!(
+            Instant::now() < deadline,
+            "waited {PATIENCE:?} for the two heads; the daemon says {}",
+            hub.attached_heads()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(
         hub.attached_heads(),
         2,

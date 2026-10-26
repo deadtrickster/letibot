@@ -618,6 +618,26 @@ struct Seat {
     pump: Option<JoinHandle<()>>,
 }
 
+/// **A seat is detached however the connection ends** — measured. 2026-10-26.
+///
+/// The loop below writes to the head in ~45 places, every one of them a `?`, and any of them
+/// returns from `serve_conn` through the error arm — which used to leave the head REGISTERED: the
+/// hub had counted it since `Hub::attach`, so `attached_heads` said 3 where a caller expected 2,
+/// the pane kept a pump that was `Closed`-bound, and nothing would ever remove it. There is no
+/// telling a closed socket from a live one at that point, so the only correct answer on every path
+/// is detach, and a `Drop` is how you get *every* path.
+///
+/// **`Hub::detach` is idempotent**, which is what makes this safe beside the explicit detaches the
+/// reader and the `Switch` arm already do: a head already gone is not an error and not a second
+/// event. The pump's `JoinHandle` is *not* joined here — the two callers that need the frames in
+/// order ([`leave`] and the read loop's own ending) join it themselves, before the next session's
+/// `Hello` can be written.
+impl Drop for Seat {
+    fn drop(&mut self) {
+        self.hub.detach(&self.head_id);
+    }
+}
+
 /// One connection, from ATTACH to detach — through however many sessions.
 pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), WireError> {
     let out = stream.try_clone()?;
@@ -1925,19 +1945,38 @@ fn seat_in(
     }
     {
         let mut w = writer.lock().unwrap();
-        w.write(&ServerFrame::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            session_id: session_id.clone(),
-            head_id: head_id.clone(),
-            dropped: a.dropped,
-            snapshot: a.snapshot.map(Box::new),
-            resumed_from: a.resumed_from,
-            scrubbed: a.scrubbed,
-            wiring: registry.wiring(&session_id),
-            sessions: registry.list(),
-        })?;
-        for env in &a.backlog {
-            w.write(&ServerFrame::Event(env.clone()))?;
+        // **A head this daemon registered but could not tell it is here must not stay
+        // registered** (measured, 2026-10-26). The `Hello` and the backlog are the first things a
+        // head is sent, and a head whose socket has already gone — a caller that attached, learned
+        // what it wanted and dropped the connection, which is exactly what a bridge `wait` does —
+        // fails this write. Returning on that error used to leave the head in the hub for ever:
+        // `attached_heads` counted it, nothing would ever detach it, and the `Seat` that owns the
+        // detach had not been built yet. So the write's failure is answered here by hand.
+        let wrote = w
+            .write(&ServerFrame::Hello {
+                protocol_version: PROTOCOL_VERSION,
+                session_id: session_id.clone(),
+                head_id: head_id.clone(),
+                dropped: a.dropped,
+                snapshot: a.snapshot.map(Box::new),
+                resumed_from: a.resumed_from,
+                scrubbed: a.scrubbed,
+                wiring: registry.wiring(&session_id),
+                sessions: registry.list(),
+            })
+            .and_then(|()| {
+                let mut out = Ok(());
+                for env in &a.backlog {
+                    out = w.write(&ServerFrame::Event(env.clone()));
+                    if out.is_err() {
+                        break;
+                    }
+                }
+                out
+            });
+        if let Err(e) = wrote {
+            hub.detach(&head_id);
+            return Err(e);
         }
     }
 
