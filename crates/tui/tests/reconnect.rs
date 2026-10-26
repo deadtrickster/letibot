@@ -43,9 +43,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::ScrubReport;
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{Envelope, SessionEvent};
-use letibot_sessionlog::protocol::{ClientFrame, PROTOCOL_VERSION, ServerFrame};
-use letibot_sessionlog::registry::SessionWiring;
+use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::registry::{Registry, SessionWiring};
+use letibot_sessionlog::server::serve_registry;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_transcript::{TranscriptItem, UserPart};
 
@@ -445,4 +447,130 @@ fn an_absent_daemon_fails_the_attach_rather_than_running_detached() {
         said.contains("No such file") || said.contains("connect") || said.contains("refused"),
         "{said}"
     );
+}
+
+/// **A head that reconnects names the session it is IN, and lands there.**
+///
+/// MEASURED 2026-10-26 (S2), from the operator's report: *"I had a session running in
+/// stroppy-io with that habr article, and then I resumed another session that does the rust
+/// rewrite, and the habr head switched to the rust session wtf"*.
+///
+/// # The mechanism, which is in this file's own field
+///
+/// A head the launcher starts is handed `--resume ID` or nothing at all, and either way its
+/// first `ATTACH` carries the **empty** session id — an empty id means *whatever the daemon
+/// calls current*, and the `ResumeSession` + `Switch` that follow are what actually name a
+/// session. `Switch` also calls `Registry::set_default`, so from that moment the daemon's
+/// *current* session is the one the OTHER terminal asked for.
+///
+/// A reconnect used to send the empty id the launcher had passed, so it was answered with the
+/// new current session: the head in the habr conversation came back from a hiccup sitting in
+/// the rust rewrite, with nothing on the screen having said so — and with a read mark from one
+/// log sent against another.
+///
+/// The fix is in `Link`: it keeps the session the last `Hello` named, which is the only
+/// statement of where the head actually is, and sends that. This test drives the exact case:
+/// a real registry on a real socket, a head in one session, another head moving the daemon's
+/// default, and then a reconnect.
+#[test]
+fn a_reconnecting_head_lands_on_the_session_it_is_in_not_the_daemons_current_one() {
+    const HABR: &str = "s-habr";
+    const RUST: &str = "s-rust";
+
+    let registry = Registry::new();
+    registry
+        .create(HABR, "the habr article", SessionWiring::default())
+        .expect("a conversation");
+    registry
+        .create(RUST, "the rust rewrite", SessionWiring::default())
+        .expect("another one");
+    let path = socket_path("names-its-session");
+    let server = serve_registry(registry.clone(), &path).expect("the socket binds");
+
+    // **The head the operator is looking at**, started in a folder whose daemon was already
+    // up: `leticode` sends no session id, so it is seated on the daemon's current session.
+    let mut a = app();
+    let mut link = Link::open(&path, "", 0, "tui", "reconnect-test").expect("attach");
+    settle(&mut link, &mut a);
+    assert_eq!(
+        a.session_id(),
+        HABR,
+        "a bare attach lands on the current session"
+    );
+
+    // **And the other terminal**: `leticode --session s-rust`, which is a bare attach, a
+    // resume, and a switch to what the daemon named.
+    let (mut other, hello, reader) =
+        HeadClient::attach(&path, "", 0, "tui", "dead", Caps::default()).expect("the second head");
+    let ServerFrame::Hello { session_id, .. } = hello else {
+        panic!("the first frame must be Hello")
+    };
+    assert_eq!(session_id, HABR);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pumping = std::thread::spawn(move || pump(reader, tx));
+    other.resume_session(RUST).expect("the resume");
+    until(
+        &rx,
+        |f| matches!(f, ServerFrame::Sessions { .. }),
+        "the resume's answer",
+    );
+    other.switch(RUST, 0).expect("the switch");
+    until(
+        &rx,
+        |f| matches!(f, ServerFrame::Hello { .. }),
+        "the switch's Hello",
+    );
+    assert_eq!(
+        registry.default_id(),
+        RUST,
+        "a switch moves the session a bare attach lands on — which is what the defect rode"
+    );
+
+    // **The first head's socket comes back.** `reconnect` is what the binary calls when the
+    // link has dropped; the old connection is hung up here, which is the same thing from the
+    // daemon's side.
+    link.reconnect(&path, a.seq).expect("the retry");
+    a.reconnect_sent();
+    settle(&mut link, &mut a);
+
+    assert_eq!(
+        a.session_id(),
+        HABR,
+        "a reconnect is a resume of the conversation the head was in — not an attach to \
+         whatever session the daemon calls current, which another head's switch had moved"
+    );
+    assert_eq!(
+        registry.get(RUST).unwrap().attached_heads(),
+        1,
+        "the only head in the rust session is the one that asked for it"
+    );
+    assert_eq!(registry.get(HABR).unwrap().attached_heads(), 1);
+
+    let _ = other.detach();
+    let _ = pumping.join();
+    link.detach();
+    server.shutdown();
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Read frames until `f` says stop — the second head's own socket, which nothing in this
+/// file's scripted peer needs.
+fn until(
+    rx: &std::sync::mpsc::Receiver<Inbound>,
+    mut f: impl FnMut(&ServerFrame) -> bool,
+    what: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(frame) => {
+                if f(&frame.frame()) {
+                    return;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    panic!("{what} never arrived");
 }

@@ -65,9 +65,17 @@ pub struct Link {
     /// `None` only while [`Link::close`] is running. A test never sees it, and keeping
     /// it an `Option` is what lets `join` take the handle out of `self`.
     reader: Option<JoinHandle<()>>,
-    /// The session this connection is for, kept so `reconnect` does not need the caller
-    /// to remember it — a head that lost the name of the session it was in has lost
-    /// more than its socket.
+    /// **The session this head is IN** — not the one it was opened for, and the difference is
+    /// the whole of the operator's 2026-10-26 report.
+    ///
+    /// `Link::open` is given what the launcher knew, which for `leticode` and for
+    /// `leticode --session B` is the empty string (both are a bare `ATTACH`, and the second
+    /// sends `ResumeSession` + `Switch` once it is attached). A reconnect that named THAT is a
+    /// reconnect into *whatever the daemon calls current* — and `Switch` moves the default
+    /// (`Registry::set_default`), so a head in the habr session came back from a hiccup inside
+    /// the rust rewrite after another terminal switched. The field is therefore kept up to
+    /// date from the `Hello` the HEAD applied ([`Link::tick`]), which is the only thing that
+    /// knows where it is; see [`Link::reconnect`].
     session: String,
     kind: String,
     identity: String,
@@ -461,8 +469,27 @@ impl Link {
     }
 
     /// Take the seat the daemon named in a `Hello` this caller read itself.
+    ///
+    /// The FIRST attach of a head that did not go through [`Link::tick`] yet — the binary reads
+    /// this `Hello` itself, before the tick loop starts, so that a refused attach never claims
+    /// the screen. The session comes with it: the daemon may have seated this connection
+    /// somewhere other than what was asked for (an empty id means *the current session*), and
+    /// that is the name a reconnect has to send back.
     pub fn seated_by(&mut self, hello: &ServerFrame) {
+        self.note_session(hello);
         self.client.seated_by(hello);
+    }
+
+    /// **Where this head is, from the `Hello` that said so** — the one writer of
+    /// [`Link::session`] after the first attach.
+    ///
+    /// A `Hello` is four different events on one frame (an attach, a switch, a re-attach, a
+    /// resync) and all four leave the head in the session it names, so there is nothing to
+    /// distinguish and nothing to guess. A frame that is not a `Hello` says nothing about it.
+    fn note_session(&mut self, frame: &ServerFrame) {
+        if let ServerFrame::Hello { session_id, .. } = frame {
+            self.session = session_id.clone();
+        }
     }
 
     /// The session this connection is for.
@@ -488,6 +515,11 @@ impl Link {
         since_seq: u64,
     ) -> Result<(), ClientError> {
         self.close();
+        // `self.session` is the session this head is IN (see the field), so the retry is a
+        // resume of the same conversation rather than an attach to the daemon's current one —
+        // and `since_seq`, which is this head's read mark, is a mark in *that* log and in no
+        // other. The two facts belong together: a mark sent against another session is either a
+        // bogus gap or a snapshot that throws the conversation away.
         let (client, reader) = HeadClient::start_attach(
             path,
             &self.session,
@@ -593,6 +625,11 @@ impl Link {
                         // "last rendered seq" variable here, on purpose.
                         last_seq = env.seq;
                     }
+                    // **And where this head is, from the frame that says so** — a `Hello` is an
+                    // attach, a switch, a re-attach or a resync, and all four leave the head in
+                    // the session they name. This is the mark a reconnect sends; see
+                    // [`Link::reconnect`] for what it cost to leave it out.
+                    self.note_session(&frame);
                     match app.apply(frame) {
                         Disposition::Rendered => rendered += 1,
                         Disposition::Filtered => filtered += 1,
