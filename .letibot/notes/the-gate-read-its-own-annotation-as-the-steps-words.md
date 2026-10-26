@@ -38,3 +38,37 @@ Both in `crates/harnessd/src/mergequeue/`: strip the runner's own `[...]` annota
 `shows_code_failing` the shapes a workspace `cargo test` failure really takes here. Neither is a
 package's change; and until the *step's* own 101 is explained, fixing the classifier only moves the
 word, not the verdict.
+
+## UPDATE 2026-10-27 — the list IS cargo's, and it names FAILING targets
+
+MEASURED on this box (cargo 1.99.0, a two-member scratch workspace whose two test targets assert
+`false`, `cargo test --offline --workspace --no-fail-fast`), exit 101:
+
+```
+error: test failed, to rerun pass `-p b --test two`
+   Doc-tests a
+…
+test result: ok. 0 passed; 0 failed; …
+error: 2 targets failed:
+    `-p a --test one`
+    `-p b --test two`
+```
+
+So the tail in every notice is cargo's **failing-target summary** — `N targets failed:` followed by
+one backticked `` `-p X --test Y` `` per target that failed — and the count line is the line
+immediately above it, which the tail's line budget cuts off. It is in
+`src/tools/cargo/src/diagnostics/passes.rs` (the strings in `~/.rustup/toolchains/1.99.0-*/bin/cargo`
+carry `1 target failed:` / ` targets failed:` / `, to rerun pass `` next to it).
+
+Therefore step 3 on `main` is **not** "its build and tests passed": ~28 test *targets* failed, and
+`setup_failure` took its second branch only because `shows_code_failing` saw none of its markers in
+the step's output — no `test result: FAILED`, no `failures:`, no `panicked at`. A target that fails
+an assertion prints all three (the measurement above), so these targets printed **nothing**: they
+died at exec, before libtest ran. That is the shape this repository already measured once
+(`the-gate-could-not-find-llama-cpp.md`: 70 targets aborting with `dyld: Library not loaded:
+@rpath/libllama.0.dylib`), and the tip that can produce it is one touching a build script's rpath.
+
+What to read, in `gate_steps_json`: `error: N targets failed:` for the count, and for each target
+`error: test failed, to rerun pass …` + its `Caused by: …` line — `(signal: 6, SIGABRT)` and
+`Library not loaded` mean the rpath/load class (a build, not the target's history), while a
+`Caused by: exited with code 101` means the binary ran and something else is going on.
