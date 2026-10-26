@@ -623,6 +623,10 @@ pub const TABLE: &[(&str, Class)] = &[
     // not build). The reader's own line answered, with the session left on a model that works:
     // `mode_set_refused`'s register, beside the pending note it belongs to.
     ("model_switch_not_applied", Class::Refused),
+    // **This session was closed so it could move to another machine** (`letibot --migrate`): the
+    // operator asked for it, nothing is deleted, and the row says where the live copy is now —
+    // news about where the session lives, not something that went wrong.
+    ("session_closed", Class::Routine),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript store cannot be written, the decision corpus cannot be consulted, the
     // title cannot be recorded, the session the operator asked for does not resume, and
@@ -1203,8 +1207,10 @@ mod the_register_census {
         //     and `model_switch_applied` (Routine: the request taken, and the same request landing)
         //     and `model_switch_not_applied` (Refused: their line, answered by a session that stays
         //     on a model that works). See the rows for why a switch waits for the turn to end.
-        assert_eq!(TABLE.len(), 155, "the table's size");
-        assert_eq!(count(Class::Routine), 59);
+        //   · **156, not 155**: `session_closed` (Routine) — a session closed so `letibot
+        //     --migrate` could carry it to another machine; the operator's own act.
+        assert_eq!(TABLE.len(), 156, "the table's size");
+        assert_eq!(count(Class::Routine), 60);
         assert_eq!(count(Class::Refused), 12, "the twelve in READER_INPUT");
         assert_eq!(count(Class::Failure), 84);
         // A code with an id is read by its family.

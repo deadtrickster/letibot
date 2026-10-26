@@ -101,16 +101,26 @@ fn closing_one_session_leaves_the_others_and_rings_the_worker_to_let_go() {
     );
 
     // And the worker is told to drop the harness, which is the half only it can do.
-    let work = registry.next_work_until(Some(Instant::now() + Duration::from_secs(5)));
-    match work {
-        WorkOrIdle::Work(Work::Close(id)) => assert_eq!(id, "s-closed"),
-        WorkOrIdle::Work(Work::Open(_))
-        | WorkOrIdle::Work(Work::Command(..))
-        | WorkOrIdle::Work(Work::Woken(_)) => {
-            panic!("the worker was rung for something else, not to let go of the closed session")
+    // **Other work may come first**: the session that stays can be opened or woken before the
+    // close reaches the worker, and under a loaded gate it was (2026-10-26). What matters is that
+    // the close arrives, for the closed session, before the deadline.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match registry.next_work_until(Some(deadline)) {
+            WorkOrIdle::Work(Work::Close(id)) => {
+                assert_eq!(id, "s-closed");
+                break;
+            }
+            WorkOrIdle::Work(Work::Open(_))
+            | WorkOrIdle::Work(Work::Command(..))
+            | WorkOrIdle::Work(Work::Woken(_)) => continue,
+            WorkOrIdle::Idle => {
+                panic!("the worker was not rung to let go, so the harness stays held")
+            }
+            WorkOrIdle::Closed => {
+                panic!("the registry closed, which a close of ONE session must not")
+            }
         }
-        WorkOrIdle::Idle => panic!("the worker was not rung at all, so the harness stays held"),
-        WorkOrIdle::Closed => panic!("the registry closed, which a close of ONE session must not"),
     }
 
     drop(reader);
