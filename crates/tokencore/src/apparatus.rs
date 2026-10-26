@@ -50,6 +50,11 @@
 //! That is how a run says "I am on the box and I mean it" — the operator's own
 //! machine, or a runner somebody has provisioned. Without it a skip cannot be
 //! refused, and a skip nobody can refuse is a suite that quietly stops testing.
+//!
+//! **The operator's real session store is the one thing it cannot demand**, because that store is
+//! the box's DATA rather than a prerequisite of the code under review: a red on somebody's
+//! corrupted transcript says nothing about a diff. [`check_real_store`] is the opt-in
+//! (`LETIBOT_CHECK_REAL_STORE`) that keeps that canary available to whoever runs it on purpose.
 
 use std::path::PathBuf;
 
@@ -168,6 +173,48 @@ pub fn absent(what: &str) {
     let _ = present(what, false);
 }
 
+/// **Is the operator's REAL session store something this run may open?**
+/// `LETIBOT_CHECK_REAL_STORE`.
+///
+/// Yes only when the variable is set to something other than empty or `0`. With it unset,
+/// [`check_real_store`] announces the skip and answers `false`.
+///
+/// # Why this is NOT [`present`]
+///
+/// `~/.local/share/letibot/sessions.db` is not apparatus in the sense the rest of this module
+/// means: it is the BOX'S DATA, and the tests that read it are a canary for that data rather
+/// than proof about the code a merge gate judges. MEASURED 2026-10-26: this is the test the
+/// queue's `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace` step went red on, failing on ONE
+/// corrupted transcript the operator's own box had accumulated — a red no change
+/// to the tree could fix, on a gate whose result nobody could trust because it was red for days.
+/// So the prefix must not be able to demand this one: a run that insists on its apparatus is
+/// insisting that the CODE's prerequisites be here, and it cannot insist that somebody's history
+/// be intact. An opt-in flag keeps the canary available to the person who wants it.
+pub fn real_store_allowed() -> bool {
+    real_store_allowed_given(std::env::var("LETIBOT_CHECK_REAL_STORE").ok().as_deref())
+}
+
+/// [`real_store_allowed`] with the reading handed in rather than read — the seam its test uses,
+/// so the test never sets a variable under a run that set it for real (R67 item 17).
+fn real_store_allowed_given(flag: Option<&str>) -> bool {
+    matches!(flag, Some(v) if !v.is_empty() && v != "0")
+}
+
+/// The same decision, plus the skip line a reader needs, and never a panic.
+///
+/// Nothing here consults [`required`]: see [`real_store_allowed`] for why the operator's data
+/// cannot be made a gate requirement.
+pub fn check_real_store() -> bool {
+    if real_store_allowed() {
+        return true;
+    }
+    eprintln!(
+        "SKIPPED: this run does not read the operator's real session store (set \
+         LETIBOT_CHECK_REAL_STORE=1 to check it by hand) — THIS IS NOT A PASS."
+    );
+    false
+}
+
 /// The vocabulary, or `None` with the skip already announced.
 ///
 /// The convenience most tests want, because "does the GGUF exist" is the whole
@@ -213,6 +260,26 @@ mod tests {
             blew,
             "with LETIBOT_REQUIRE_APPARATUS set, a missing fixture must fail"
         );
+    }
+
+    /// **The real store is opt-in, and the apparatus prefix cannot demand it.**
+    ///
+    /// The two decisions side by side, because the difference is the whole point: a run with
+    /// `LETIBOT_REQUIRE_APPARATUS=1` refuses a missing APPARATUS, and still skips the operator's
+    /// data. If this ever went through `present`, the queue's `--workspace` step would go red on
+    /// somebody's corrupted transcript again.
+    #[test]
+    fn the_real_store_is_opt_in_and_the_apparatus_prefix_cannot_demand_it() {
+        assert!(real_store_allowed_given(Some("1")));
+        assert!(real_store_allowed_given(Some("yes")));
+        assert!(!real_store_allowed_given(None));
+        assert!(!real_store_allowed_given(Some("")));
+        assert!(!real_store_allowed_given(Some("0")));
+
+        // The prefix DOES refuse a missing apparatus — that is what it is for …
+        assert!(std::panic::catch_unwind(|| present_given("a store", false, true)).is_err());
+        // … and the real store's decision is not that one: no flag, no panic, no reading.
+        assert!(!real_store_allowed_given(None));
     }
 
     /// `gguf_path` honours the override and never returns an empty path — the

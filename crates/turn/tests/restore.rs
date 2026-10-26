@@ -13,6 +13,28 @@
 //! that produced a different chain would be strictly worse than the honest refusal it
 //! replaces, because the refusal at least told the truth.
 //!
+//! # The real-store half is OPT IN, and the merge gate does not opt in
+//!
+//! `every_session_in_the_real_store_restores_with_its_chain_intact` is the canary that found
+//! real corruption in the operator's store — a row whose `tok_offset` did not continue its
+//! predecessor (`s-gatekeeper#t0`). So it is kept working, and it is kept out of the gate:
+//! a red produced by the box's accumulated data is a red no change to this tree can fix, and
+//! the merge queue spent days red on exactly that until its result was ignored.
+//!
+//! Run it by hand, on the box that has the store:
+//!
+//! ```text
+//! LETIBOT_CHECK_REAL_STORE=1 cargo test -p letibot-turn --test restore -- --nocapture
+//! ```
+//!
+//! Without that variable the three tests below print one line saying they were skipped and why,
+//! and return. `LETIBOT_REQUIRE_APPARATUS=1` — the queue's prefix, which makes an absent
+//! vocabulary GGUF or cgroup tree fail instead of skipping — deliberately does NOT apply here:
+//! the store is the operator's data, not a prerequisite of the code under review. See
+//! `letibot_tokencore::apparatus::check_real_store`.
+//!
+//! The rest of this module is about what the restore ASSERTS, and it says why each one is here.
+//!
 //! # What is asserted, and why each one is here
 //!
 //! 1. **Every restored row's `h_k` is the one the store recorded**, byte for byte,
@@ -33,9 +55,8 @@
 //!    against tokens a real Qwen produced, including tool results and interleaved
 //!    reasoning.
 //!
-//! The real-store half is skipped when there is no store — and says so loudly rather
-//! than passing quietly, because a test that goes green when the thing it tests is
-//! absent reports the health of a `Path::exists`.
+//! The real-store half announces its own skip rather than passing quietly, because a test that
+//! goes green when the thing it tests is absent reports the health of a `Path::exists`.
 
 use letibot_tokencore::ledger::{LedgerError, hex};
 use letibot_tokencore::store::LoadedTranscript;
@@ -53,6 +74,12 @@ use letibot_turn::{Session, resume};
 /// each reads one transcript at a time, so [`LiveView`] attaches the file `mode=ro` and
 /// copies one transcript into memory per load, in one read transaction. See its module doc.
 fn real_store() -> Option<LiveView> {
+    // **Opt in, and asked for separately from the apparatus** — see the module doc. A run that
+    // insists on its apparatus is insisting about the CODE's prerequisites; it cannot insist
+    // that the operator's history be intact.
+    if !letibot_tokencore::apparatus::check_real_store() {
+        return None;
+    }
     sweep_stale_copies();
     let src = std::env::var("LETIBOT_STORE").unwrap_or_else(|_| {
         format!(
@@ -62,9 +89,32 @@ fn real_store() -> Option<LiveView> {
     });
     let src = std::path::PathBuf::from(src);
     if !src.is_file() {
+        eprintln!(
+            "SKIPPED: LETIBOT_CHECK_REAL_STORE is set, but there is no session store at {} — \
+             THIS IS NOT A PASS.",
+            src.display()
+        );
         return None;
     }
     Some(LiveView::open(&src).unwrap_or_else(|e| panic!("opening {}: {e}", src.display())))
+}
+
+/// **Is the process `pid` still there?** — `kill(pid, 0)`, which every POSIX system answers.
+///
+/// This was `/proc/<pid>`, and `/proc` does not exist on macOS: the sweep below therefore did
+/// NOTHING there, so a Mac kept every copy for ever while a Linux box cleaned up. A liveness
+/// probe that is a fact on one platform and an absence on another is the shape that hides.
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 is not delivered, so this asks the kernel only whether `pid` exists —
+    // no memory is shared with it and no handler can run in response.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    // `EPERM` is the other "it is there": a process this one may not signal still exists.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// **The copies older builds of this file left behind**, removed once their owner is gone.
@@ -73,14 +123,11 @@ fn real_store() -> Option<LiveView> {
 /// full copy of the store, and lost it whenever the test panicked past its guard or was
 /// killed. Those builds still exist in other checkouts, so this sweeps their leftovers: only
 /// that exact name shape, and only when no process `<pid>` exists — a live pid, even a reused
-/// one, keeps its directory. Linux only, because `/proc` is the probe; elsewhere it does
-/// nothing rather than guess.
+/// one, keeps its directory. Liveness is [`process_alive`]'s `kill(pid, 0)`, so this sweeps on
+/// macOS as well as Linux instead of doing nothing on the platform this box runs.
 fn sweep_stale_copies() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        if !std::path::Path::new("/proc/self").exists() {
-            return;
-        }
         let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
             return;
         };
@@ -102,7 +149,7 @@ fn sweep_stale_copies() {
             {
                 continue;
             }
-            if std::path::Path::new("/proc").join(pid).exists() {
+            if pid.parse::<u32>().is_ok_and(process_alive) {
                 continue;
             }
             match std::fs::remove_dir_all(entry.path()) {
@@ -207,15 +254,14 @@ fn restores_faithfully(loaded: &LoadedTranscript) -> Session {
 #[test]
 fn every_session_in_the_real_store_restores_with_its_chain_intact() {
     let Some(view) = real_store() else {
-        // **Absent apparatus, not a failed assertion** — and the comment it replaces
-        // is kept in substance, because it is right about FIXTURES: a synthetic store
-        // holds tokens this harness produced, not tokens a model did, so it cannot
-        // stand in. That argues against fabricating one, not against skipping: on the
-        // box that has a real store this runs in full, and on the box that does not it
-        // says so. See `letibot_tokencore::apparatus`.
-        return letibot_tokencore::apparatus::absent(
-            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
-        );
+        // **Not a failed assertion** — and the comment it replaces is kept in substance,
+        // because it is right about FIXTURES: a synthetic store holds tokens this harness
+        // produced, not tokens a model did, so it cannot stand in. That argues against
+        // fabricating one, not against skipping: on the box that has a real store, and a
+        // run that asked for it, this runs in full. [`real_store`] has already said why it
+        // did not — and it never panics, so the queue's `LETIBOT_REQUIRE_APPARATUS` cannot
+        // make this test's absence a failure.
+        return;
     };
 
     let ids = view.transcripts().expect("listing transcripts");
@@ -249,9 +295,7 @@ fn every_session_in_the_real_store_restores_with_its_chain_intact() {
 #[test]
 fn a_row_whose_tokens_were_changed_is_refused_by_name() {
     let Some(view) = real_store() else {
-        return letibot_tokencore::apparatus::absent(
-            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
-        );
+        return;
     };
     let mut loaded = a_transcript_with_rows(&view);
 
@@ -280,9 +324,7 @@ fn a_row_whose_tokens_were_changed_is_refused_by_name() {
 #[test]
 fn rows_and_items_that_do_not_pair_are_refused_rather_than_zipped() {
     let Some(view) = real_store() else {
-        return letibot_tokencore::apparatus::absent(
-            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
-        );
+        return;
     };
     let loaded = a_transcript_with_rows(&view);
 

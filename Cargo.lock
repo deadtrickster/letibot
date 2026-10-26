@@ -1160,6 +1160,7 @@ dependencies = [
  "letibot-tokencore",
  "letibot-transcript",
  "letibot-turn",
+ "libc",
  "serde",
  "serde_json",
 ]

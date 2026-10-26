@@ -80,3 +80,36 @@ unconditional, and `crates/llama`'s own script asserts with the full tried-list.
 shared file has no `use` and qualifies everything, because a duplicate `use` inside an
 `include!` is a compile error in a build script. `docs/build-notes.md` now says include,
 do not copy.
+
+## UPDATE 2026-10-26 — with the llama.cpp path fixed, step 3 goes red on a SECOND absent thing
+
+MEASURED against `main` at `f35d19c066fc`, reproduced in `wt-qa`: step 3 (the tests) failed **48
+targets**, and 47 of them are one absent FILE, not code:
+
+```
+LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline -p letibot-turn --test engine_decisions
+test result: FAILED. 0 passed; 22 failed
+panicked at crates/tokencore/src/apparatus.rs:151:9:
+LETIBOT_REQUIRE_APPARATUS is set, and a vocabulary GGUF
+(/Users/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf)
+is not on this machine.
+```
+
+`~/models` does not exist on this Mac, and there is no `.gguf` under `/Users/dead` at depth 3. So the
+sentence `AGENTS.md` relies on — *"The default vocabulary path does resolve on this box … so the
+prefix changes nothing here today"* — is true of the Linux box and FALSE of the Mac the queue's
+daemon runs on, and the prefix then makes ~46 targets red every run. The 48th target is
+`crates/turn/tests/restore.rs` on the operator's own corrupted `s-gatekeeper#t0`.
+
+**The llama.cpp test vocabularies are not a substitute — measured.** With
+`LETIBOT_VOCAB_GGUF=$HOME/Projects/llama.cpp/models/ggml-vocab-qwen35.gguf` the same 22 tests still
+fail, differently: `ControlFailure { role: ThinkOpen, literal: "<think>", cause: NotSingleToken {
+ids: [13708, 766, 29] } }` and `one token decodes: BadTokenId { id: 248069 }`. The MODEL GGUF is
+load-bearing for the control literals being one token and for the ids a fixture's canned frames name.
+
+**And the evidence for the earlier of two causes is gone afterwards.** `gate.rs` writes each step to
+`$TMPDIR/letibot-gate/<pid>-<ms>-<n>-<repo>.log` and `remove_file`s it when the step ends
+(gate.rs:532/584); `target_health.gate_steps_json` keeps only `read_tail`'s 4 KiB
+(`… [397250 byte(s) dropped from the front]`). Step 3's tail began mid-restore-panic, so the
+vocabulary panics in 47 other targets were invisible from the row — reproduce a red target by target
+instead of reading the row's output.

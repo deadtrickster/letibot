@@ -101,6 +101,24 @@ installs. The default vocabulary path does resolve on this box (`$HOME/models/qw
 so the prefix changes nothing here today and is what makes a box that lacks it go RED rather than
 green.
 
+**The gate judges CODE, and this box's own data is not code — which is why one class of test opted
+out of it.** `crates/turn/tests/restore.rs`'s real-store tests read
+`~/.local/share/letibot/sessions.db`, the operator's history, and so they run only when
+`LETIBOT_CHECK_REAL_STORE=1` is set: a red there is a fact about the store and not about the diff
+(MEASURED 2026-10-26 — the `--workspace` step failed on one corrupted transcript,
+`s-gatekeeper#t0`, and no change to the tree could have fixed it), `LETIBOT_REQUIRE_APPARATUS=1`
+deliberately does NOT turn their skip into a failure, and the queue was "red most of the time
+everywhere" so its result "is ignored" — a gate whose red is ignored is a constant that has stopped
+carrying information. The canary those tests hold is still worth running, BY HAND, on the box that
+has the store:
+
+```sh
+LETIBOT_CHECK_REAL_STORE=1 cargo test -p letibot-turn --test restore -- --nocapture
+```
+
+It is what found a stored row whose `tok_offset` did not continue its predecessor — real corruption
+nothing else in this tree looks for.
+
 **The first four are PROOF and not INSTALLATION, and the fifth is the gap.** The queue runs
 every step with `CARGO_TARGET_DIR` pointed at `<worktree>/target` (`mergequeue.rs`'s
 `GATE_TARGET_DIR`), so a branch is never judged with the main tree's artifacts — right, and it

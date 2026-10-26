@@ -47,3 +47,6 @@ required-features = ["local"]
 [dev-dependencies]
 letibot-turn = { path = ".", default-features = false, features = ["glm"] }
 letibot-dialect-glm.workspace = true
+# `kill(pid, 0)` — the liveness probe `tests/restore.rs` uses to tell a stale store copy from
+# one a running test still owns. It is a test-only need, and portable where `/proc` is not.
+libc = "0.2"

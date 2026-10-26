@@ -12,10 +12,18 @@
 //!
 //! This measures that on the operator's own store rather than asserting it from
 //! a reading: load a real transcript recorded under the other dialect, render
-//! every item through this one, and report what it costs. Skips when the store
-//! or the vocabulary is not on this box.
+//! every item through this one, and report what it costs.
 //!
-//!     cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
+//! # It reads the operator's store, so it is OPT IN — the merge gate does not opt in
+//!
+//! This is a MEASUREMENT against the box's data, not proof about the code under review, so
+//! `LETIBOT_CHECK_REAL_STORE=1` is what asks for it:
+//!
+//!     LETIBOT_CHECK_REAL_STORE=1 cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
+//!
+//! Without it the test prints one line saying it was skipped and why. `LETIBOT_REQUIRE_APPARATUS`
+//! deliberately does not reach it: the store is somebody's history, not the apparatus the code
+//! needs. See `letibot_tokencore::apparatus::check_real_store`.
 //!
 //! # The store is read through a read-only view, never opened and never copied
 //!
@@ -55,6 +63,9 @@ fn home() -> String {
 
 #[test]
 fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
+    if !letibot_tokencore::apparatus::check_real_store() {
+        return;
+    }
     let store_path = env_path(
         "LETIBOT_STORE",
         format!("{}/.local/share/letibot/sessions.db", home()),
@@ -65,7 +76,8 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     );
     if !store_path.is_file() || !vocab_path.is_file() {
         eprintln!(
-            "skipped: need {} and {}",
+            "SKIPPED: LETIBOT_CHECK_REAL_STORE is set, but this box has no {} or no {} — \
+             THIS IS NOT A PASS.",
             store_path.display(),
             vocab_path.display()
         );
