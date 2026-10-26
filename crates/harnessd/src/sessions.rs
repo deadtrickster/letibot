@@ -145,6 +145,24 @@ const OPERATOR_ADD_NAG_AFTER: Duration = Duration::from_secs(10);
 /// back on the third door (R67 item 10). It lives beside the clock it arms so every door can.
 pub const SWEEP_AFTER: Duration = Duration::from_secs(2);
 
+/// **How long a `Sessions` being dropped waits for the threads that served its sessions.**
+///
+/// The same job [`Sessions::drain_subagents`] does for subagents, for the threads this daemon armed
+/// itself: a `Court` owns its session's `Harness` AND its own clone of [`Parts`], so a court still
+/// tearing either down when the process runs its ELF finalizers is the SIGSEGV that drain's own
+/// sentence names — "a thread still inside libllama when `exit()` runs the ELF finalizers".
+///
+/// MEASURED 2026-10-26, or this would not exist: `--test promote_midflight` printed
+/// `test result: ok. 1 passed` and then died of `Segmentation fault: 11` — **2 runs in 10** under
+/// load, and never with a `panicked at` anywhere, because the crash is the exit and not the test.
+/// The court was parked on its channel and woken by the disconnect, and the process was gone before
+/// it finished freeing the vocabulary.
+///
+/// Short on purpose: a court parked between items leaves in microseconds, and a court inside a model
+/// call cannot be interrupted at all — waiting minutes for one is a hang, which is the case
+/// `drain_subagents` names rather than waits for.
+const COURT_TEARDOWN: Duration = Duration::from_secs(2);
+
 /// **How often this daemon reads the store for the merge-queue reviews its sessions are owed.**
 ///
 /// The queue's ring ([`crate::mergequeue::GatekeeperDoor`]) is the fast path, and it only reaches
@@ -1217,6 +1235,67 @@ fn court_main(
             if job(&mut s) == Follow::Finish {
                 break;
             }
+        }
+    }
+}
+
+/// **Wait for the given threads to leave, bounded and shared** — one deadline for all of them, so
+/// a second session cannot double the wait.
+///
+/// A poll rather than `join`, because the caller holds a `&self` or is inside `Drop` and
+/// `JoinHandle::join` takes the handle by value; the tree already reads its shutdowns this way
+/// ([`Sessions::drain_subagents`] does the same thing for the same reason).
+fn wait_for_threads(threads: &[std::thread::JoinHandle<()>], patience: Duration) -> usize {
+    let began = Instant::now();
+    let mut left = 0;
+    for thread in threads {
+        while !thread.is_finished() && began.elapsed() < patience {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if !thread.is_finished() {
+            left += 1;
+        }
+    }
+    left
+}
+
+impl Drop for Sessions<'_> {
+    /// **No session's thread outlives the `Sessions` that armed it.**
+    ///
+    /// A court owns its session's harness and its own clone of `Parts`, so a thread still inside
+    /// either when the process exits is a SIGSEGV in `_dl_fini` — measured, see [`COURT_TEARDOWN`].
+    /// Dropping the channel is what wakes a parked court (`recv` answers `Disconnected`); the wait
+    /// is for the teardown that follows it.
+    ///
+    /// **Only when the registry is closed**, because that is when this really is the end: a
+    /// `Sessions` dropped while its daemon is still serving is a caller giving up its handle, and a
+    /// session whose hub is still open and whose queue may still be written has to keep its reader.
+    /// In that case the threads are detached, exactly as they were before this drop existed.
+    fn drop(&mut self) {
+        if self.courts.is_empty() {
+            return;
+        }
+        let mut threads = Vec::new();
+        for (_, court) in std::mem::take(&mut self.courts) {
+            // The sender goes FIRST: a court parked on its channel leaves on the disconnect, and a
+            // drop that waited before dropping them would wait for a thread nothing had woken.
+            let Court { jobs, thread, .. } = court;
+            drop(jobs);
+            if let Some(thread) = thread {
+                threads.push(thread);
+            }
+        }
+        if !self.registry.is_closed() {
+            return;
+        }
+        let left = wait_for_threads(&threads, COURT_TEARDOWN);
+        if left > 0 {
+            eprintln!(
+                "  {left} of {} session thread(s) did not leave inside {COURT_TEARDOWN:?}; exiting \
+                 anyway — a thread still inside libllama when the process runs its ELF finalizers \
+                 can die of SIGSEGV after this line",
+                threads.len()
+            );
         }
     }
 }
@@ -3437,14 +3516,26 @@ impl<'a> Sessions<'a> {
         // **A session on its own thread is closed THERE**: the harness, its backend and its
         // children are on that thread, and closing them from here would be the second writer this
         // whole change exists to remove.
-        if let Some(court) = self.courts.get(session_id) {
+        if self.courts.contains_key(session_id) {
             let id = session_id.to_string();
-            let closed = court.ask(move |s: &mut Sessions<'static>| s.close(&id));
+            let closed = self
+                .courts
+                .get(session_id)
+                .and_then(|court| court.ask(move |s: &mut Sessions<'static>| s.close(&id)));
             // The court's own close took the registry entry with it, which is what the caller's
             // `bool` means; a thread that is already gone answers nothing, and the entry goes the
             // same way here so a hub is never left open behind a session nobody serves.
             self.registry.remove(session_id);
-            self.courts.remove(session_id);
+            // **And its thread leaves before this returns.** Not for the answer — a close is not an
+            // exit, and a thread that could not leave is not a crash waiting here — but because the
+            // harness it is tearing down is the thing a later exit must not catch mid-flight
+            // ([`COURT_TEARDOWN`]).
+            if let Some(Court { jobs, thread, .. }) = self.courts.remove(session_id) {
+                drop(jobs);
+                if let Some(thread) = thread {
+                    let _ = wait_for_threads(&[thread], COURT_TEARDOWN);
+                }
+            }
             return closed.unwrap_or(false);
         }
         let held = self.open.remove(session_id);

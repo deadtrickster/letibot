@@ -57,3 +57,39 @@ regression. Use `ulimit -Sn 256` (hard unlimited) to reproduce the gate.
 single-threaded path they always did. The suites that DO call `daemon.run` (run_off_worker,
 promote_midflight, loop_closes, plugins_pane, model_change_mid_retry, steering_survives_retry,
 restart_seats, idle_clock, bridge/end_to_end) pass with courts underneath them.
+
+## UPDATE 2026-10-26 (gate): a `Sessions` that drops leaves its courts running — and that is the SIGSEGV
+
+MEASURED with the S1 rebase, `ulimit -Sn 256`, `LETIBOT_REQUIRE_APPARATUS=1`, the test binaries run
+directly so the load is real: `--test promote_midflight` printed `test result: ok. 1 passed` and
+then died of `Segmentation fault: 11` — **2 runs in 10**, and never a `panicked at` anywhere,
+because the crash is the *exit* and not the test. A court owns its session's `Harness` and its own
+owned `Parts`; `Sessions` dropped the channel senders and walked away, so the court woke on the
+disconnect and was still freeing the vocabulary when `exit()` ran the ELF finalizers.
+
+`impl Drop for Sessions` is the fix: take the `Court`s (dropping each `jobs` sender FIRST, so a
+parked court wakes on `Disconnected`), then wait for the threads — bounded by `COURT_TEARDOWN`
+(2 s, one deadline for all of them) — **only when `registry.is_closed()`**, because a `Sessions`
+dropped while its daemon still serves is a caller giving up a handle and its sessions need their
+reader. `Sessions::close` joins the court it closes for the same reason. 20/20 under load after.
+
+**Rake:** a thread a `Sessions` armed must not outlive it at exit, and the symptom is silence — a
+passing suite that segfaults on the way out. `promote_midflight` is the canary (it drops `Sessions`
+without ever calling `drain_subagents`).
+
+## UPDATE (same day): the session_channel flake was a POSITIONAL script, not a court
+
+`--test session_channel`'s `a_refusing_verdict_goes_back_to_the_child_that_did_the_work` timed out
+once under load at `wait_for`. **No court runs in that binary** (`serve_each_on_its_own_thread` has
+one caller, `Daemon::run`, and `session_channel` never constructs one), so it was not the threads.
+The cause is the fixture: three sessions talk to one stub, and the stub answered by ARRIVAL ORDER.
+After the reviewer hands its verdict in, the reviewer's second round and the child's turn on the
+complaints both start on their own threads; when the child's request overtook the reviewer's, the
+child was answered with the reviewer's afterword — the hub dump shows the child's turn generating
+*"I read the diff against the brief…"* — and the answer the test waits for had gone to the reviewer.
+Fixed with `Stub::answering_by`: a `(marker, script)` rule matched against the detokenized prompt
+("message from your parent session"), tried before the positional script, which keeps its own
+cursor so a rule never eats a later request's place.
+
+**Rake:** a stub shared by several sessions that answers by position is a race with extra steps;
+answer by *who is asking*, or make the racing answers interchangeable.

@@ -442,8 +442,44 @@ impl Stub {
         stub
     }
 
+    /// **The same, and the answers are chosen by WHO is asking** — a `(marker, script)` pair
+    /// matched against the detokenized prompt before the positional script is consulted.
+    ///
+    /// Written because three sessions talk to this one listener from three threads and two of them
+    /// RACE: after the reviewer hands its verdict in, the reviewer's second round and the CHILD's
+    /// turn on the complaints both start, and which request arrives first is the scheduler's
+    /// answer. A positional script answers the wrong session whenever one overtakes the other.
+    /// MEASURED 2026-10-26 under load, in `a_refusing_verdict_goes_back_to_the_child_that_did_the_work`:
+    /// the child's request came second, took the reviewer's `after` script, and the answer the test
+    /// waited for was in the script that then went to the reviewer — a 20 s timeout with the
+    /// child's log showing the reviewer's prose as its own answer.
+    fn answering_by(
+        scripts: Vec<Vec<Frame>>,
+        requests: usize,
+        rules: Vec<(&str, Vec<Frame>)>,
+        vocab: Arc<Vocab>,
+    ) -> Stub {
+        let stub = Stub::held_by(
+            scripts,
+            requests,
+            rules.into_iter().map(|(m, f)| (m.to_string(), f)).collect(),
+            Some(vocab),
+        );
+        stub.release(requests);
+        stub
+    }
+
     /// The same, and nothing is answered until [`Stub::release`] says so.
     fn held(scripts: Vec<Vec<Frame>>, requests: usize) -> Stub {
+        Stub::held_by(scripts, requests, Vec::new(), None)
+    }
+
+    fn held_by(
+        scripts: Vec<Vec<Frame>>,
+        requests: usize,
+        rules: Vec<(String, Vec<Frame>)>,
+        vocab: Option<Arc<Vocab>>,
+    ) -> Stub {
         let listener = TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
         let addr = listener.local_addr().unwrap();
         let shared = Arc::new(Gate {
@@ -452,8 +488,13 @@ impl Stub {
         });
         let mine = shared.clone();
         let handle = std::thread::spawn(move || {
-            let mut i = 0usize;
-            while i < requests {
+            // **Two counters, deliberately**: `answered` is the request's own index (the gate and
+            // the `requests` bound), `script` is which POSITIONAL answer is next. They part company
+            // the moment a rule answers one, which is the whole point — a rule must not eat the
+            // place of the script a later request is owed.
+            let mut answered = 0usize;
+            let mut script = 0usize;
+            while answered < requests {
                 let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
@@ -462,16 +503,31 @@ impl Stub {
                     let _ = write_props(stream);
                     continue;
                 }
+                // **Borrowed, not cloned**: `Frame` is not `Clone`, and nothing here needs a copy.
+                let ruled = vocab.as_ref().and_then(|v| {
+                    rules
+                        .iter()
+                        .find(|(marker, _)| prompt_holds(&body, v, marker))
+                        .map(|(_, frames)| frames.as_slice())
+                });
                 {
                     let mut g = mine.inner.lock().unwrap();
                     g.bodies.push(body);
                     mine.cv.notify_all();
-                    while g.released <= i {
+                    while g.released <= answered {
                         g = mine.cv.wait(g).unwrap();
                     }
                 }
-                let _ = write_frames(stream, &scripts[i % scripts.len()]);
-                i += 1;
+                let frames: &[Frame] = match ruled {
+                    Some(frames) => frames,
+                    None => {
+                        let at = script % scripts.len();
+                        script += 1;
+                        scripts[at].as_slice()
+                    }
+                };
+                let _ = write_frames(stream, frames);
+                answered += 1;
             }
         });
         Stub {
@@ -538,6 +594,28 @@ impl Drop for Stub {
             drop(h);
         }
     }
+}
+
+/// **Whether this request's prompt holds `marker`** — the body's token ids detokenized with the
+/// vocabulary the session tokenized with, which is the same reading [`Stub::prompt_of`] makes of a
+/// recorded request.
+///
+/// `false` for a body that will not decode, deliberately: a rule is a nicety and a listener thread
+/// that panicked on one would turn a fixture's mistake into a hang.
+fn prompt_holds(body: &str, vocab: &Vocab, marker: &str) -> bool {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(ids) = json["prompt"].as_array() else {
+        return false;
+    };
+    let ids: Vec<u32> = ids
+        .iter()
+        .filter_map(|v| v.as_u64().map(|n| n as u32))
+        .collect();
+    vocab
+        .detokenize(&ids, true)
+        .is_ok_and(|prompt| prompt.contains(marker))
 }
 
 /// Drain one request — headers plus the body `Content-Length` names — so the client's write
@@ -1099,7 +1177,18 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
         30,
     );
     let hearing = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PEER, 30);
-    let stub = Stub::answering(vec![work, verdict, after, hearing], 4);
+    // **The child's own turn on the complaints is answered by WHAT IT IS, not by when it arrives.**
+    // The reviewer's second round and this turn both start the moment the verdict is handed in, on
+    // two threads, and which reaches the stub first is the scheduler's answer — so the last answer
+    // is chosen by the one phrase only this prompt carries. See `Stub::answering_by` for what a
+    // positional script did here instead (measured under load: the child was handed the reviewer's
+    // prose and this test timed out waiting for its own answer).
+    let stub = Stub::answering_by(
+        vec![work, verdict, after],
+        4,
+        vec![("message from your parent session", hearing)],
+        parts.vocab.clone(),
+    );
 
     // **The reviewer stays on this machine, and this test says nothing to get that.** A config
     // built the ordinary way — `config` above is `Config::for_this_box` — states no VM, so a
