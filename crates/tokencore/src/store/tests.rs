@@ -2761,4 +2761,124 @@ mod reader_floor {
             "a floor above this build is refused by a view too"
         );
     }
+/// **A v33 store gains the supervisor's `process` table, and nothing else moves** — v34's arm in
+/// the shape v29-v33 use: one new table, `IF NOT EXISTS`, no existing row read or rewritten.
+///
+/// What is asserted is what the arm DOES and what the record can say: the table appears on a
+/// store that did not have it, a v33 store's `job` rows are untouched (a supervisor's record is
+/// not a rewrite of the history), the six states round-trip, and `open_processes` answers exactly
+/// the open ones — `lost` included, because a host that could not be reached is a job that may
+/// still run.
+#[test]
+fn a_v33_store_gains_the_process_table() {
+    let (dir, s) = job_store("v34");
+    let path = dir.join("sessions.db");
+    s.put_job("s-a", &job_row("j1", "running")).unwrap();
+    drop(s);
+    {
+        // Walk the store back to v33 by removing what the arm adds, which is this table and its
+        // indexes. A fixture that only lowered the number would be testing the number.
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("DROP TABLE process;").unwrap();
+        c.execute("UPDATE schema_version SET version = 33", [])
+            .unwrap();
+        assert!(
+            c.prepare("SELECT 1 FROM process").is_err(),
+            "the fixture still has a process table, so it is not a v33 store"
+        );
+    }
+
+    let s = Store::open(&path).unwrap();
+    let v: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
+    assert_eq!(
+        s.jobs("s-a").unwrap().len(),
+        1,
+        "the job history is not the supervisor's to rewrite"
+    );
+
+    let mut running = ProcessRecord::starting("s-a", "j1", None, 4242);
+    running.state = ProcState::Running;
+    running.pgid = Some(4242);
+    running.identity = "starttime:1771".into();
+    running.command = "cargo test --offline".into();
+    running.cwd = "/w".into();
+    running.scope = "session.s-a".into();
+    running.deadline_ms = Some(1_700_000_600_000);
+    s.put_process(&running).unwrap();
+
+    let mut remote = ProcessRecord::starting("s-b", "j2", Some("lab2x1".into()), 88);
+    remote.identity = "pid 88, cmdline sleep 30".into();
+    s.put_process(&remote).unwrap();
+
+    let mut finished = ProcessRecord::starting("s-a", "j0", None, 11);
+    finished.identity = "starttime:1700".into();
+    s.put_process(&finished).unwrap();
+    s.check_process(
+        "s-a",
+        "j0",
+        &Check::new(ProcState::Done, 1_700_000_000_000, 3, "proc").with_exit(0),
+    )
+    .unwrap();
+
+    let got = s.process("s-a", "j1").unwrap().expect("the record");
+    assert_eq!(got.state, ProcState::Running);
+    assert_eq!(got.pgid, Some(4242));
+    assert_eq!(got.identity, "starttime:1771");
+    assert_eq!(got.deadline_ms, Some(1_700_000_600_000));
+    assert_eq!((got.check_ms, got.check_how), (None, None));
+
+    // **The one query the supervisor runs**: every open process, on every host. `lost` is open —
+    // a host that could not be reached is a job that may still run — and `done` is not.
+    let open = s.open_processes().unwrap();
+    let handles: Vec<&str> = open.iter().map(|p| p.handle.as_str()).collect();
+    assert_eq!(
+        handles,
+        vec!["j1", "j2"],
+        "the ended job is not open, and the remote one is beside the local one"
+    );
+    let ended = s.process("s-a", "j0").unwrap().expect("the record");
+    assert_eq!((ended.state, ended.exit), (ProcState::Done, Some(0)));
+
+    // A check writes the state and the clock that dates it in one statement, and a state the
+    // record did not change keeps its exit.
+    s.check_process(
+        "s-b",
+        "j2",
+        &Check::new(ProcState::Lost, 1_700_000_001_000, 20_000, "ssh"),
+    )
+    .unwrap();
+    let lost = s.process("s-b", "j2").unwrap().unwrap();
+    assert_eq!(lost.state, ProcState::Lost);
+    assert_eq!(lost.check_ms, Some(1_700_000_001_000));
+    assert_eq!(lost.check_how.as_deref(), Some("ssh"));
+    assert!(
+        s.open_processes().unwrap().iter().any(|p| p.handle == "j2"),
+        "lost is still looked after"
+    );
+
+    // Every word round-trips through the column, which is what a reader of a restart sees.
+    for state in [
+        ProcState::Starting,
+        ProcState::Running,
+        ProcState::Done,
+        ProcState::Stopped,
+        ProcState::Dead,
+        ProcState::Lost,
+    ] {
+        let mut p = ProcessRecord::starting("s-a", "j9", None, 5);
+        p.state = state;
+        p.identity = "starttime:1".into();
+        s.put_process(&p).unwrap();
+        assert_eq!(s.process("s-a", "j9").unwrap().unwrap().state, state);
+    }
+
+    // And a handle the store never supervised writes nothing rather than inventing a row.
+    s.check_process("s-a", "j404", &Check::new(ProcState::Dead, 1, 1, "proc"))
+        .unwrap();
+    assert!(s.process("s-a", "j404").unwrap().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
 }

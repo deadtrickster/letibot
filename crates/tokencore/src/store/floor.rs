@@ -143,6 +143,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (31, Arm::Additive), // session.lives_on/moved_ms: NULLed columns
     (32, Arm::Additive), // session_writer: a new table
     (33, Arm::Additive), // session.origin: a NULLed column
+    (34, Arm::Additive), // process: a new table (the supervisor's records)
 ];
 
 /// **The floor a store at `version` carries**: the newest arm at or below `version` that [`Arm::Breaks`],

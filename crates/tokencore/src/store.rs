@@ -98,7 +98,9 @@ pub use modes::ProjectMode;
 mod subagents;
 pub use subagents::*;
 mod citations;
+mod procs;
 mod told;
+pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use told::Told;
 
 /// Why `session.role` is nullable, and why the comment is here and not in the DDL.
@@ -417,7 +419,14 @@ pub struct ShapelessAdmit {
 /// [`READER_ARMS`], and from then on the store refuses a reader below it, by name. Read the
 /// module doc before writing an arm here: *did I change something an older reader READS* is the
 /// one question, and it is not the same question as *did I delete a row*.
-pub const SCHEMA_VERSION: i64 = 33;
+///
+/// **34** since **every process the daemon supervises is a row** — `process`, a new table,
+/// described at [`procs`]. RH7's supervisor: the `job` table answers *what became of a handle*,
+/// and it is written twice per job by two callers who each know half. It cannot say where a
+/// process runs, what makes a reused pid not it, which group a teardown signals, when it must be
+/// gone, or how it was last looked at — and it has no row at all for a process a restarted daemon
+/// ADOPTED rather than started. Those are one record's questions, and that record is this table.
+pub const SCHEMA_VERSION: i64 = 34;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -1923,6 +1932,7 @@ impl Store {
         self.conn.execute_batch(told::TOLD_SQL)?;
         self.conn.execute_batch(citations::CITATIONS_SQL)?;
         self.conn.execute_batch(writers::WRITERS_SQL)?;
+        self.conn.execute_batch(procs::PROCS_SQL)?;
         self.conn.execute("DELETE FROM schema_version", [])?;
         self.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2712,6 +2722,16 @@ impl Store {
                 self.conn
                     .execute_batch("ALTER TABLE session ADD COLUMN origin TEXT")?;
             }
+        }
+        if from < 34 {
+            // v34: **every process the daemon supervises, as a row** — [`procs`] carries the
+            // whole of it. One new table, `IF NOT EXISTS`, and nothing existing is read or
+            // rewritten: a store from before it has no record of a process, which is the honest
+            // state of a store whose daemons never wrote one down. The jobs such a store was
+            // running are `job` rows and are reminded as ever — the supervisor adopts nothing it
+            // has no record of, because a pid it was never told and cannot identify is a pid it
+            // has no business signalling.
+            self.conn.execute_batch(procs::PROCS_SQL)?;
         }
         Ok(())
     }
