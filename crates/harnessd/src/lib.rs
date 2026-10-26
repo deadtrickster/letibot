@@ -127,6 +127,7 @@ pub mod restart;
 pub mod sessions;
 pub mod slash;
 pub mod standing_notes;
+pub mod store_floor;
 pub mod subagent_record;
 pub mod sudo;
 pub mod suggest;

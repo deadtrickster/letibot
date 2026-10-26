@@ -323,11 +323,18 @@ fn a_stale_lease_is_released_with_its_history_and_never_after_a_heartbeat() {
     assert!(last.why.contains("600 s old"), "{}", last.why);
 }
 
-/// **A daemon whose build does not match the store never takes a lease** — the store's schema
-/// is read live, in the claim's own transaction, so a daemon running when a newer build migrated
-/// the file finds out at its next claim or heartbeat.
+/// **A daemon whose build the store has moved past never takes a lease** — the store's schema is
+/// read live, in the claim's own transaction, so a daemon running when a newer build migrated the
+/// file finds out at its next claim or heartbeat.
+///
+/// **What "moved past" means is the READER FLOOR, not the version** (2026-10-26). This test used to
+/// raise the version by one and expect the lease to go, which is exactly the refusal the floor
+/// exists to stop: a build one schema behind an ADDITIVE migration reads every table it serves the
+/// queue from, so it goes on serving. The two halves below are therefore the two facts — an
+/// additive version bump keeps the lease, a raised floor takes it away — and the second is the one
+/// a breaking migration produces, because `migrate` raises the floor to the arm that broke.
 #[test]
-fn a_store_of_another_schema_grants_no_lease_and_stops_a_heartbeat() {
+fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
     let d = TempDir::new("schema");
     let s = Store::open(&d.db()).unwrap();
     assert!(matches!(
@@ -335,21 +342,40 @@ fn a_store_of_another_schema_grants_no_lease_and_stops_a_heartbeat() {
             .unwrap(),
         LeaseOutcome::Held { .. }
     ));
+
+    // An additive migration by a newer build: the version moves, the floor does not.
     s.conn
         .execute(
             "UPDATE schema_version SET version = ?1",
             params![SCHEMA_VERSION + 1],
         )
         .unwrap();
+    assert!(
+        matches!(
+            s.acquire_queue_lease("/repo", &claim("A"), 2, 60_000)
+                .unwrap(),
+            LeaseOutcome::Held { .. }
+        ),
+        "a version above this build's that only added things is still this build's to serve"
+    );
+    assert!(s.heartbeat_queue_lease("/repo", "A", 3).unwrap());
+
+    // A breaking one: the version moves AND the floor moves past this build.
+    s.conn
+        .execute(
+            "UPDATE schema_reader_floor SET min_reader = ?1 WHERE only_row = 1",
+            params![SCHEMA_VERSION + 1],
+        )
+        .unwrap();
     assert_eq!(
-        s.acquire_queue_lease("/repo", &claim("A"), 2, 60_000)
+        s.acquire_queue_lease("/repo", &claim("A"), 4, 60_000)
             .unwrap(),
         LeaseOutcome::WrongSchema {
             store: SCHEMA_VERSION + 1,
             mine: SCHEMA_VERSION
         }
     );
-    assert!(!s.heartbeat_queue_lease("/repo", "A", 3).unwrap());
+    assert!(!s.heartbeat_queue_lease("/repo", "A", 5).unwrap());
 }
 
 /// **Recovery touches only this repository's rows, and only those another owner held** — on v23

@@ -81,6 +81,8 @@ use crate::ledger::LedgerRow;
 use crate::vocab::TokenId;
 
 mod busy;
+mod floor;
+pub use floor::{Arm, FIRST_SCHEMA, NewerStore, READER_ARMS, READER_FLOOR_SQL, reader_floor_for};
 pub mod live_view;
 mod transfer;
 
@@ -407,6 +409,14 @@ pub struct ShapelessAdmit {
 /// convention says *review queue*; what no column could say is *a package started this* or
 /// *this is a one-shot's*, and those are the two the daemon knows at creation and nowhere
 /// afterwards.
+/// **Nobody bumps this alone.** The number says what the file holds; [`floor`] says what a
+/// reader must know to read it, and the two are separate on purpose. A migration that only
+/// ADDS — a table, a nullable column, an index — leaves the floor where it was, so a daemon
+/// from an older build keeps serving a store that a newer build has already migrated. A
+/// migration that takes away or rewrites something older code reads declares itself in
+/// [`READER_ARMS`], and from then on the store refuses a reader below it, by name. Read the
+/// module doc before writing an arm here: *did I change something an older reader READS* is the
+/// one question, and it is not the same question as *did I delete a row*.
 pub const SCHEMA_VERSION: i64 = 33;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
@@ -744,9 +754,18 @@ pub enum StoreError {
     Refused(String),
     NotFound(String),
     /// The file was written by a newer build.
+    ///
+    /// **`floor` is the store's reader floor** ([`floor`]): the lowest schema a reader may know
+    /// and still read this file. It is here rather than folded into `found` because the two
+    /// numbers say different things and the sentence a person needs depends on both — a store at
+    /// 34 whose floor is 24 is *fine for this build* and is not an error at all, and a store whose
+    /// floor is 34 is refused **by name** whichever way round the versions are. `None` is a store
+    /// written before floors existed: this build cannot tell, and says so instead of assuming the
+    /// best case.
     SchemaTooNew {
         found: i64,
         known: i64,
+        floor: Option<i64>,
     },
 }
 
@@ -758,10 +777,29 @@ impl std::fmt::Display for StoreError {
             StoreError::Corrupt(m) => write!(f, "store is corrupt: {m}"),
             StoreError::Refused(m) => write!(f, "{m}"),
             StoreError::NotFound(m) => write!(f, "not found: {m}"),
-            StoreError::SchemaTooNew { found, known } => write!(
-                f,
-                "store schema is version {found}; this build knows {known}"
-            ),
+            // **Both numbers, then the fix**, because the reader of this sentence is a person
+            // whose daemon just refused to start and whose one question is *what do I do*.
+            StoreError::SchemaTooNew {
+                found,
+                known,
+                floor,
+            } => {
+                write!(
+                    f,
+                    "store schema is version {found}; this build knows {known}"
+                )?;
+                match floor {
+                    Some(floor) => write!(f, ", and the store needs a reader of at least {floor}")?,
+                    None => write!(
+                        f,
+                        ", and the store records no reader floor to compare against"
+                    )?,
+                }
+                write!(
+                    f,
+                    " — restart this daemon from a current build: letibot --stop"
+                )
+            }
         }
     }
 }
@@ -1737,6 +1775,11 @@ pub struct Store {
     /// **Where this store lives**, so a second connection can be opened to it — see
     /// [`Store::path`]. `None` for `open_in_memory`, which is a store with no file to reach.
     path: Option<std::path::PathBuf>,
+    /// **The store is written by a build newer than this one, and this build opened it anyway**
+    /// — see [`floor`]. A `Cell` because the fact is settled in `migrate` (which takes `&self`,
+    /// the connection being already owned) and read afterwards by the daemon, and because a
+    /// `Store` is `Send` and not `Sync` for reasons the connection already gave.
+    newer: std::cell::Cell<Option<NewerStore>>,
 }
 
 impl Store {
@@ -1804,7 +1847,11 @@ impl Store {
         // tokens. A lost commit is a lost turn.
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        let store = Store { conn, path };
+        let store = Store {
+            conn,
+            path,
+            newer: std::cell::Cell::new(None),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -1825,12 +1872,14 @@ impl Store {
             Err(e) => return Err(e.into()),
         };
         match found {
-            Some(v) if v > SCHEMA_VERSION => {
-                return Err(StoreError::SchemaTooNew {
-                    found: v,
-                    known: SCHEMA_VERSION,
-                });
-            }
+            // **A store AHEAD of this build is opened when its reader floor allows it.** The rule
+            // used to be unconditional: *any* version above `SCHEMA_VERSION` was refused, so one
+            // nullable column in a newer build stopped every daemon on the box
+            // (`store schema is version 33; this build knows 32`, 2026-10-26). See [`floor`] for
+            // what the floor is, why it is recorded outside `schema_version`, and what is refused
+            // here instead — a store whose floor is above this build, and one too old to carry a
+            // floor at all. **Nothing is written on this path**: not the version, not the floor.
+            Some(v) if v > SCHEMA_VERSION => return self.open_newer(v),
             // An older store is MIGRATED, not left alone and not rebuilt. Before v2
             // this arm was `Some(_) => return Ok(())`, so `SCHEMA_SQL` only ever ran
             // on an empty file and there was no way to add a column to a store that
@@ -1843,9 +1892,28 @@ impl Store {
                     "INSERT INTO schema_version (version) VALUES (?1)",
                     params![SCHEMA_VERSION],
                 )?;
+                // **The floor AFTER the version, never before.** A floor above the version it sits
+                // beside would refuse an older build a store that has not been migrated yet — and
+                // the two writes cannot share a transaction without holding the file's single
+                // write lock across the whole migration. So a crash between them leaves the
+                // version right and the floor behind, which the next opener repairs
+                // (`ensure_reader_floor`); the other order would leave a store that lies about
+                // what its readers may know.
+                let floor = self.ensure_reader_floor(SCHEMA_VERSION)?;
+                debug_assert!(
+                    floor <= SCHEMA_VERSION,
+                    "a floor above the version it describes"
+                );
                 return Ok(());
             }
-            Some(_) => return Ok(()),
+            // A store this build knows is also a store that RECORDS its floor — the repair for
+            // one created by a build from before [`READER_FLOOR_SQL`], which a newer build could
+            // not tell apart from a store whose schema silently broke it. Costs one `SELECT` on
+            // the ordinary open and writes nothing then.
+            Some(_) => {
+                self.ensure_reader_floor(SCHEMA_VERSION)?;
+                return Ok(());
+            }
             None => {}
         }
         self.conn.execute_batch(SCHEMA_SQL)?;
@@ -1860,6 +1928,10 @@ impl Store {
             "INSERT INTO schema_version (version) VALUES (?1)",
             params![SCHEMA_VERSION],
         )?;
+        // A fresh store's floor is what its migrations WOULD have raised: it was created by this
+        // build, so it holds everything this build knows, and *nothing older than the newest
+        // breaking migration is a reader of it* — see [`reader_floor_for`].
+        self.ensure_reader_floor(SCHEMA_VERSION)?;
         Ok(())
     }
 
@@ -1867,6 +1939,12 @@ impl Store {
     ///
     /// One arm per version, each idempotent on its own, so a store two versions
     /// behind is carried forward by running both rather than by a special case.
+    ///
+    /// **An arm that breaks an older READER declares itself in [`READER_ARMS`]** — this
+    /// function is not where the floor is set, [`Store::ensure_reader_floor`] is, but the list is
+    /// read against these arms and an arm with no row there is a store a lower build will be
+    /// handed something it cannot read. `the_floor_names_every_arm` in `store/tests.rs` reads this
+    /// file and refuses one that is missing — in either direction.
     ///
     /// **A step may add and it may not destroy.** `transcript_item` carries a
     /// `BEFORE DELETE` trigger that raises, so a migration that wanted to rewrite

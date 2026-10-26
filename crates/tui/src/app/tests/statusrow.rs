@@ -695,3 +695,97 @@ fn a_switch_waiting_for_the_turn_rides_the_status_row_until_it_lands() {
         );
     }
 }
+
+/// **A daemon older than its store says so in RED on the status row, and keeps saying it.**
+///
+/// The operator's ask of 2026-10-26, verbatim: *an older binary should keep working when the newer
+/// schema only ADDED things, and must say so in red on the head's usual status line*. Three claims
+/// and this test is all three: it is on the STATUS row (the line directly above the composer's
+/// box, which is the row `Responding…` uses and which costs the conversation no line at all); it
+/// is in the red register (the span's role is `Role::Failure`, and the code is classified `Failure`
+/// in `sessionlog::warning`, which is the one place a register is decided); and it is STATE, not a
+/// note — the same row says it on the next frame, and on the frame after a minute has passed.
+///
+/// It is drawn at 160 columns because the sentence is long on purpose: it names both schemas AND
+/// the command that fixes it, and a test at the row's usual 100 would be asserting a cut.
+#[test]
+fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
+    const SAID: &str = "this daemon (schema 33) is older than its store (34) — restart it: \
+                        letibot --stop · running /home/dead/bin/letibot-harnessd, built 10-26 \
+                        22:39";
+    const WIDE: usize = 160;
+    for busy in [false, true] {
+        let (mut a, _hub) = conversation(busy);
+        let before = a.screen(WIDE, H);
+        assert!(
+            !before.iter().any(|r| r.contains("older than its store")),
+            "an ordinary daemon says nothing about the store:\n{}",
+            before.join("\n")
+        );
+
+        let seq = a.seq;
+        a.apply(ServerFrame::Event(env(seq + 1, boot("store_newer", SAID))));
+        let during = a.screen(WIDE, H);
+        let at = during
+            .iter()
+            .position(|r| r.contains("older than its store"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the store's age is not on the screen:\n{}",
+                    during.join("\n")
+                )
+            });
+        // **It is the status row**: the line directly above the composer's box, and the whole
+        // sentence is there — the fix included, which is the half a cut would take.
+        assert!(
+            during[at + 1].trim_start().starts_with('╭'),
+            "the store's age is not on the row above the box:\n{}",
+            during.join("\n")
+        );
+        assert!(
+            during[at].contains("restart it: letibot --stop"),
+            "the fix is not on the row: {}",
+            during[at]
+        );
+        if busy {
+            // After the turn's own words, like every other segment of this row: what the turn is
+            // doing, then what else is true.
+            let (turn, store) = (
+                during[at].find("Responding").expect("the turn's words"),
+                during[at].find("older than its store").unwrap(),
+            );
+            assert!(turn < store, "the turn's clock comes first: {}", during[at]);
+        }
+        // **Nothing above it moved** — a transient in this row takes no line from the conversation.
+        assert_eq!(
+            &before[..at],
+            &during[..at],
+            "the row above the status row moved:\n{}",
+            during.join("\n")
+        );
+
+        // **RED**, and not by the spelling of a colour code: the first transient's role is
+        // `Role::Failure`, and the code the daemon sent is classified `Failure` in the one table
+        // that decides registers. Both, because a head could paint it red and a second head could
+        // classify it quietly.
+        let (text, role, is_notice) = a.transients().remove(0);
+        assert!(text.contains("older than its store"), "{text}");
+        assert_eq!(role, Role::Failure, "{text}");
+        assert!(!is_notice, "the red line is state, not the flash notice");
+        assert_eq!(
+            letibot_sessionlog::warning::class("store_newer"),
+            letibot_sessionlog::warning::Class::Failure,
+            "`store_newer` is drawn in the register this row paints red"
+        );
+
+        // **And it is state, not a note** — a minute later the same row still says it, and no
+        // notice timer takes it down.
+        a.clock(1_000 + 60_000);
+        let later = a.screen(WIDE, H);
+        assert!(
+            later[at].contains("older than its store"),
+            "the store's age went away on its own:\n{}",
+            later.join("\n")
+        );
+    }
+}

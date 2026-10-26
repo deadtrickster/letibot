@@ -410,6 +410,20 @@ pub const TABLE: &[(&str, Class)] = &[
     ("daemon_starting", Class::Routine),
     ("daemon_started", Class::Routine),
     ("daemon_start_failed", Class::Failure),
+    // **This daemon's binary is older than the store it is serving, and it went on serving it**
+    // (`store::floor` in `letibot-tokencore`). The schema in the file was written by a newer
+    // build, the store's reader floor says older code still reads it, so the daemon opened it and
+    // kept working — and the operator is owed the one fact it cannot get from anything else: the
+    // process they are looking at is a build behind its own file, and `letibot --stop` is the fix.
+    //
+    // **Failure, by the ruling rather than by the rule's letter.** Nothing is broken THIS minute
+    // and the session runs; what is at stake is that every write it makes is made by the older
+    // half of a pair, and only a restart ends that. The operator asked for exactly this register:
+    // *an older binary should keep working when the newer schema only ADDED things, and must say
+    // so in red on the head's usual status line*. A head draws it as STATE on the status row (see
+    // `tui::ui::turn_status`), not as a row of the conversation, and it is said on every attach —
+    // a second head, or the same one tomorrow, must be told the same true thing.
+    ("store_newer", Class::Failure),
     // **A review waiting for a free VM slot** (TODO R86): firecode had no free tap for its
     // reviewer, so the row went back to `waiting` with no attempt counted and is asked again in
     // 1, 2, 5 and then every 5 minutes. Routine: the queue handling a hiccup, said ONCE per wait
@@ -1209,10 +1223,14 @@ mod the_register_census {
         //     on a model that works). See the rows for why a switch waits for the turn to end.
         //   · **156, not 155**: `session_closed` (Routine) — a session closed so `letibot
         //     --migrate` could carry it to another machine; the operator's own act.
-        assert_eq!(TABLE.len(), 156, "the table's size");
+        //   · **157, not 156**: `store_newer` (Failure) — the daemon's binary is older than the
+        //     store it serves and opened it anyway, because the store's reader floor says older
+        //     code still reads it; `store::floor` is the mechanism and the red line on the head's
+        //     status row is the saying of it.
+        assert_eq!(TABLE.len(), 157, "the table's size");
         assert_eq!(count(Class::Routine), 60);
         assert_eq!(count(Class::Refused), 12, "the twelve in READER_INPUT");
-        assert_eq!(count(Class::Failure), 84);
+        assert_eq!(count(Class::Failure), 85);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

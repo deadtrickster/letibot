@@ -11,6 +11,11 @@ use letibot_ui::text::without_control;
 pub(crate) const DAEMON_STARTING: &str = "daemon_starting";
 pub(crate) const DAEMON_STARTED: &str = "daemon_started";
 
+/// **This daemon's binary is older than the store it serves** (`store::floor` in
+/// `letibot-tokencore`). Said on every attach by `server::seat_in` while it is true, and taken as
+/// STATE rather than as a note — see [`App::store_newer`].
+pub(crate) const STORE_NEWER: &str = "store_newer";
+
 impl App {
     /// **A boot step, taken as the state it is** — `true` when `code` was one, so the caller
     /// draws no row for it. The live arm and the snapshot both come here, so a head that attaches
@@ -47,6 +52,18 @@ impl App {
                 // **The daemon's boot, as a state and not as rows** (R92.2) — the line on the
                 // tail and the label on a queued prompt; the steps are not the conversation.
                 if self.boot_warning(&code, &detail) {
+                    self.redraw = true;
+                    return Disposition::Filtered;
+                }
+                // **This daemon is a build behind its own store, and it says so in red.** A state
+                // rather than a row, for `daemon_starting`'s reason one step up and for the
+                // operator's own: they asked for a line *where the Responding text is shown*,
+                // which is a row that is redrawn every frame rather than a note that scrolls
+                // away. The daemon re-says it on every attach, so a head that arrives late gets
+                // it too; nothing has to clear it, because the only thing that ends it is a
+                // restart — which ends this head's connection as well.
+                if code == STORE_NEWER {
+                    self.store_newer = Some(detail.to_string());
                     self.redraw = true;
                     return Disposition::Filtered;
                 }

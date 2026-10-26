@@ -2033,6 +2033,26 @@ fn seat_in(
             compaction: None,
         });
     }
+    // **And that this daemon's binary is older than the store it is serving** — the operator's ask
+    // of 2026-10-26, verbatim: *an older binary should keep working when the newer schema only
+    // ADDED things, and must say so in red on the head's usual status line*. The opening half is
+    // `store::floor`'s (the store records the lowest schema a reader may know, so an additive
+    // migration by a newer build does not stop an older daemon); this is the saying half.
+    //
+    // **Every attach, for `prefix_stale`'s reason and more so**: the fact does not expire until
+    // the process is restarted, so a second head, or the same one after a reconnect, is owed the
+    // same true sentence. A head that reconnects across a `Switch` on the same socket is told
+    // again too, which is a repeated true sentence — the direction that costs nothing.
+    //
+    // A daemon that opened a store it may read says `None` here and this publishes nothing, which
+    // is every ordinary attach in this tree.
+    if let Some(said) = registry.store_older() {
+        hub.publish(SessionEvent::Warning {
+            code: "store_newer".into(),
+            detail: said,
+            compaction: None,
+        });
+    }
     {
         let mut w = writer.lock().unwrap();
         // **A head this daemon registered but could not tell it is here must not stay

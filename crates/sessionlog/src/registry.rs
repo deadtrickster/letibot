@@ -1156,6 +1156,16 @@ pub struct Registry {
     /// **The names of the subagents this daemon spawned**, by session id — see
     /// [`Registry::set_slug`].
     slugs: Mutex<std::collections::HashMap<String, String>>,
+    /// **The sentence this daemon owes every head because its binary is older than the store it
+    /// serves**, or `None` — the ordinary case. Set once at startup from the store's own answer
+    /// (`letibot_tokencore`'s `Store::newer_store`) and read by `seat_in`, which says it on
+    /// every attach: a fact about the PROCESS, so it does not belong on an entry and does not
+    /// change while the daemon lives.
+    ///
+    /// See `store::floor` for the mechanism — the store records the lowest schema a reader may
+    /// know, so an additive migration by a newer build leaves an older daemon working — and
+    /// `warning.rs`'s `store_newer` row for why a head draws it in red.
+    store_older: Mutex<Option<String>>,
 }
 
 /// What the worker was woken for.
@@ -1296,6 +1306,7 @@ impl Registry {
             started_ms: now_ms(),
             stopping: std::sync::atomic::AtomicBool::new(false),
             slugs: Mutex::new(std::collections::HashMap::new()),
+            store_older: Mutex::new(None),
         })
     }
 
@@ -1997,6 +2008,31 @@ impl Registry {
     pub fn stale_prefix(&self, session_id: &str) -> Option<String> {
         let g = self.lock();
         g.entry(session_id).and_then(|e| e.stale_prefix.clone())
+    }
+
+    /// **Say that this daemon's binary is older than the store it serves** — the sentence every
+    /// head is told on every attach, or `None` for the ordinary case.
+    ///
+    /// Set once at startup by the daemon from the store's own answer
+    /// (`letibot_tokencore`'s `Store::newer_store`), and read by `server::seat_in`, which is the
+    /// one place a head is greeted: a fact about the PROCESS has to be said on the attach rather
+    /// than published once, because a head that arrives later was not there for the once.
+    ///
+    /// **No `PROTOCOL_VERSION` bump.** The sentence travels as
+    /// `SessionEvent::Warning { code: "store_newer", .. }`, which is a variant both ends already
+    /// carry: a head older than this file draws it as a red note in the conversation, which is
+    /// the safe direction — it is a fault, and `warning.rs`'s rule is that an unrecognised code
+    /// is drawn loudly rather than skipped.
+    pub fn set_store_older(&self, said: Option<String>) {
+        *self.store_older.lock().unwrap_or_else(|e| e.into_inner()) = said;
+    }
+
+    /// What an attaching head must be told, or `None`. See [`Registry::set_store_older`].
+    pub fn store_older(&self) -> Option<String> {
+        self.store_older
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// **The jobs a session's harness last published.**

@@ -2422,3 +2422,343 @@ fn a_transcript_is_reseated_only_while_it_holds_no_rows() {
     assert!(s.set_transcript_prefix("no-such", &new).is_err());
     assert_eq!(s.transcript_prefix_id("no-such").unwrap(), None);
 }
+
+/// **The reader floor** — a build older than its store, kept working when the newer schema only
+/// added things and refused by name when it did not. See `store/floor.rs`.
+mod reader_floor {
+    use super::*;
+
+    /// A store file of this test's own, removed when it drops. The house pattern in this file is
+    /// four lines of temp path plus a `Clean` guard per test; one struct is enough here.
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new(tag: &str) -> TempDb {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "letibot-floor-{tag}-{}-{}-{}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_file(&p);
+            TempDb(p)
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// The version the file carries, read on a connection of its own — so what is asserted is what
+    /// is ON DISK, not what this build's `Store` believes.
+    fn version_of(path: &std::path::Path) -> i64 {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// What a fresh store's floor is: the newest arm that breaks a reader.
+    fn floor_now() -> Option<i64> {
+        Some(reader_floor_for(SCHEMA_VERSION))
+    }
+
+    /// The floor the file records, or `None` when it records none.
+    fn floor_of(path: &std::path::Path) -> Option<i64> {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("SELECT min_reader FROM schema_reader_floor", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .unwrap()
+    }
+
+    /// **A store one version ahead of this build, migrated additively** — the state a daemon from
+    /// before a nullable column opens.
+    ///
+    /// The bump is done the way a newer build's arm would do it: a real `ALTER TABLE … ADD COLUMN`,
+    /// the version raised, and the floor left where it was. Nothing written here is anything this
+    /// build reads, which is the whole of the additive case.
+    fn bump_additively(path: &std::path::Path) {
+        let c = rusqlite::Connection::open(path).unwrap();
+        c.execute("ALTER TABLE session ADD COLUMN newer_only TEXT", [])
+            .unwrap();
+        c.execute(
+            "UPDATE schema_version SET version = ?1",
+            params![SCHEMA_VERSION + 1],
+        )
+        .unwrap();
+    }
+
+    /// **The arithmetic, and the numbers this tree actually carries.** A store at 33 is readable by
+    /// anything that knows 24 and by nothing older, because v24 is where the queue's tables changed
+    /// shape under an older reader.
+    #[test]
+    fn the_floor_is_the_newest_breaking_arm_at_or_below_the_version() {
+        assert_eq!(reader_floor_for(FIRST_SCHEMA), FIRST_SCHEMA);
+        assert_eq!(
+            reader_floor_for(22),
+            FIRST_SCHEMA,
+            "nothing below 23 broke a reader"
+        );
+        assert_eq!(reader_floor_for(23), 23, "the arm that cleared the queue");
+        assert_eq!(
+            reader_floor_for(24),
+            24,
+            "the arm that took the tables away"
+        );
+        assert_eq!(reader_floor_for(SCHEMA_VERSION), 24);
+        assert_eq!(
+            reader_floor_for(SCHEMA_VERSION + 1),
+            24,
+            "a version this build has never seen cannot raise the floor it knows"
+        );
+    }
+
+    /// **Every arm of `migrate_from` declares itself, and the declaration covers every arm.**
+    ///
+    /// This reads the source rather than a list a test keeps in step by hand: the failure it
+    /// exists to catch is a migration written by somebody who did not know this file exists, and a
+    /// hand-kept list is exactly what such a person would not update. Both directions matter — an
+    /// arm with no row is a floor nobody computed, and a row with no arm is a version this build
+    /// claims to know and does not.
+    #[test]
+    fn every_migration_arm_declares_whether_it_breaks_a_reader() {
+        let src = include_str!("../store.rs");
+        let mut arms: Vec<i64> = Vec::new();
+        for line in src.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("if from < ") else {
+                continue;
+            };
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            assert!(
+                !digits.is_empty(),
+                "an arm whose number does not parse: {line}"
+            );
+            arms.push(digits.parse().unwrap());
+        }
+        let declared: Vec<i64> = READER_ARMS.iter().map(|(v, _)| *v).collect();
+        // **Sorted, because the arms are not written in order**: 19, 20 and 21 arrived out of
+        // sequence and stay where they landed (each says why), so the sequence is not the claim —
+        // the SET of arms is.
+        let mut sorted_arms = arms.clone();
+        sorted_arms.sort_unstable();
+        let mut sorted_declared = declared.clone();
+        sorted_declared.sort_unstable();
+        assert_eq!(
+            sorted_arms, sorted_declared,
+            "every `if from < N` arm needs one row in `READER_ARMS` — and a row with no arm is a \
+             version this build claims to migrate and does not"
+        );
+        assert_eq!(
+            arms.last().copied(),
+            Some(SCHEMA_VERSION),
+            "the last arm is the version this build stamps"
+        );
+        assert_eq!(
+            arms.len(),
+            (SCHEMA_VERSION - FIRST_SCHEMA) as usize,
+            "no gap: every version from 2 to SCHEMA_VERSION has an arm"
+        );
+    }
+
+    /// **A store ahead of this build, migrated additively, OPENS** — and says so.
+    ///
+    /// This is the night of 2026-10-26 in one test: a nullable column was added, the version went
+    /// 32 → 33, and every daemon built before it refused a store it could read perfectly well.
+    #[test]
+    fn a_store_one_version_ahead_opens_when_its_floor_allows_it() {
+        let db = TempDb::new("ahead");
+        {
+            let s = Store::open(&db.0).unwrap();
+            assert_eq!(
+                s.newer_store(),
+                None,
+                "a store this build wrote is not newer"
+            );
+            let (tr, _) = seeded(&s);
+            assert_eq!(
+                s.session("sess-1")
+                    .unwrap()
+                    .unwrap()
+                    .transcript_id
+                    .as_deref(),
+                Some(&*tr)
+            );
+        }
+        assert_eq!(floor_of(&db.0), floor_now());
+        bump_additively(&db.0);
+        let ahead = SCHEMA_VERSION + 1;
+
+        let s = Store::open(&db.0).expect("an additive schema ahead of this build must open");
+        let newer = s.newer_store().expect("the daemon has to be told");
+        assert_eq!(newer.found, ahead);
+        assert_eq!(newer.known, SCHEMA_VERSION);
+        assert_eq!(
+            newer.sentence(),
+            format!(
+                "this daemon (schema {SCHEMA_VERSION}) is older than its store ({ahead}) — \
+                 restart it: letibot --stop"
+            )
+        );
+
+        // It is a store this build can USE, not a read-only courtesy: the rows are there and a
+        // write lands.
+        assert!(s.session("sess-1").unwrap().is_some(), "the old session");
+        s.set_title("sess-1", "renamed by an older build").unwrap();
+        assert_eq!(
+            s.session("sess-1").unwrap().unwrap().title.as_deref(),
+            Some("renamed by an older build")
+        );
+
+        // **And nothing of the newer build's was overwritten**: the version it stamped is still
+        // there, and the floor is still the one its migrations declared.
+        assert_eq!(version_of(&db.0), ahead);
+        assert_eq!(floor_of(&db.0), floor_now());
+    }
+
+    /// **A store whose floor is above this build is REFUSED, and the message names the fix.**
+    ///
+    /// The floor is the newer build's declaration that it changed something an older reader reads.
+    /// What a person is owed is not a version comparison but the command that fixes it.
+    #[test]
+    fn a_store_whose_floor_is_above_this_build_is_refused_naming_the_fix() {
+        let db = TempDb::new("floor");
+        Store::open(&db.0).unwrap();
+        let ahead = SCHEMA_VERSION + 2;
+        let needed = SCHEMA_VERSION + 1;
+        {
+            let c = rusqlite::Connection::open(&db.0).unwrap();
+            c.execute("UPDATE schema_version SET version = ?1", params![ahead])
+                .unwrap();
+            c.execute(
+                "UPDATE schema_reader_floor SET min_reader = ?1 WHERE only_row = 1",
+                params![needed],
+            )
+            .unwrap();
+        }
+
+        let err = Store::open(&db.0)
+            .err()
+            .expect("a store that needs a newer reader");
+        let said = err.to_string();
+        assert!(
+            said.contains(&format!(
+                "store schema is version {ahead}; this build knows {SCHEMA_VERSION}"
+            )),
+            "{said}"
+        );
+        assert!(
+            said.contains(&format!("the store needs a reader of at least {needed}")),
+            "{said}"
+        );
+        assert!(
+            said.contains("restart this daemon from a current build: letibot --stop"),
+            "{said}"
+        );
+        // **A lower build never stamps its own version over a higher one**, and does not lower a
+        // floor it is not fit to read.
+        assert_eq!(version_of(&db.0), ahead);
+        assert_eq!(floor_of(&db.0), Some(needed));
+    }
+
+    /// **A store ahead of this build that records no floor is refused too**, and says which of the
+    /// two facts it is: this build cannot tell whether the newer schema is additive.
+    ///
+    /// It is the gap the module doc names — a store bumped by a build from before the floor
+    /// existed — and it fails closed on purpose: *nobody said* is not *it was safe*.
+    #[test]
+    fn a_store_ahead_with_no_floor_record_is_refused() {
+        let db = TempDb::new("nofloor");
+        Store::open(&db.0).unwrap();
+        {
+            let c = rusqlite::Connection::open(&db.0).unwrap();
+            c.execute(
+                "UPDATE schema_version SET version = ?1",
+                params![SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+            c.execute("DROP TABLE schema_reader_floor", []).unwrap();
+        }
+
+        let err = Store::open(&db.0)
+            .err()
+            .expect("a store with no floor to compare");
+        let said = err.to_string();
+        assert!(
+            said.contains("records no reader floor to compare against"),
+            "{said}"
+        );
+        assert!(
+            said.contains("restart this daemon from a current build: letibot --stop"),
+            "{said}"
+        );
+        assert_eq!(version_of(&db.0), SCHEMA_VERSION + 1);
+    }
+
+    /// **The two ordinary opens did not change**: a store at this build's version opens saying
+    /// nothing, and one behind it migrates up as it always did — and now gains a floor.
+    #[test]
+    fn a_store_at_this_version_or_behind_is_opened_exactly_as_before() {
+        let db = TempDb::new("same");
+        Store::open(&db.0).unwrap();
+        assert_eq!(version_of(&db.0), SCHEMA_VERSION);
+        assert_eq!(floor_of(&db.0), floor_now(), "a fresh store's floor");
+        // A second open at the same version: nothing to do, nothing said, nothing written.
+        {
+            let s = Store::open(&db.0).unwrap();
+            assert_eq!(s.newer_store(), None);
+        }
+        assert_eq!(version_of(&db.0), SCHEMA_VERSION);
+
+        // Now the same store walked back to a version behind this build, the way every fixture in
+        // this file does it — a dropped column and a lowered version — and with the floor table
+        // gone, which is what a store from before this change looks like.
+        {
+            let c = rusqlite::Connection::open(&db.0).unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN origin", [])
+                .unwrap();
+            c.execute("UPDATE schema_version SET version = 20", [])
+                .unwrap();
+            c.execute("DROP TABLE schema_reader_floor", []).unwrap();
+        }
+        let s = Store::open(&db.0).expect("a store behind this build migrates up");
+        assert_eq!(s.newer_store(), None, "a migrated store is not a newer one");
+        assert_eq!(version_of(&db.0), SCHEMA_VERSION);
+        assert_eq!(
+            floor_of(&db.0),
+            floor_now(),
+            "the migration records the floor it moved the store to"
+        );
+    }
+
+    /// **A live view answers the same question the open does**, because it is the same reader: it
+    /// reads a store a newer build migrated additively, and refuses one whose floor it is below.
+    #[test]
+    fn a_live_view_follows_the_same_rule() {
+        let db = TempDb::new("view");
+        Store::open(&db.0).unwrap();
+        bump_additively(&db.0);
+        crate::store::live_view::LiveView::open(&db.0).expect("an additive schema ahead of us");
+
+        {
+            let c = rusqlite::Connection::open(&db.0).unwrap();
+            c.execute(
+                "UPDATE schema_reader_floor SET min_reader = ?1 WHERE only_row = 1",
+                params![SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+        }
+        assert!(
+            crate::store::live_view::LiveView::open(&db.0).is_err(),
+            "a floor above this build is refused by a view too"
+        );
+    }
+}

@@ -973,6 +973,13 @@ mod tests {
     /// not recorded (store schema is version 30; this build knows 29)"*, and the next daemon read
     /// a crash. The store every daemon on the box shares moved to a newer schema while this one
     /// ran; the stop goes through the connection the start opened, which still writes.
+    ///
+    /// **What makes a fresh open refuse is the store's READER FLOOR, and the fixture raises it on
+    /// purpose** (2026-10-26). A bare version bump is now the additive case — a newer build that
+    /// only added something leaves the floor where it was, and an older daemon goes on serving
+    /// (`letibot_tokencore`'s `store::floor`). The migration this test stands for is the other
+    /// kind: it took away something an older reader reads, so it moved the floor past this build
+    /// and a fresh open is refused — which is exactly the state the stop has to survive.
     #[test]
     fn the_stop_is_recorded_after_a_newer_build_migrated_the_store() {
         let dir = Scratch::new("lifeline-newer-schema");
@@ -987,9 +994,17 @@ mod tests {
                 [letibot_tokencore::store::SCHEMA_VERSION + 1],
             )
             .unwrap();
+        reader
+            .connection()
+            .execute(
+                "UPDATE schema_reader_floor SET min_reader = ?1 WHERE only_row = 1",
+                [letibot_tokencore::store::SCHEMA_VERSION + 1],
+            )
+            .unwrap();
         assert!(
             Store::open(&dir.store()).is_err(),
-            "a fresh open refuses the newer schema — the stop must not depend on one"
+            "a fresh open refuses a store whose floor is past this build — the stop must not \
+             depend on one"
         );
         registry.close();
         life.stopped();

@@ -1697,6 +1697,18 @@ pub struct App {
     /// to a session that cannot run anything yet; this is what says so, and what labels a
     /// prompt typed meanwhile as running once the daemon has started.
     pub(crate) booting: Option<String>,
+    /// **This daemon's binary is older than the store it is serving**, as the daemon's own
+    /// sentence — `this daemon (schema 33) is older than its store (34) — restart it: letibot
+    /// --stop`, plus which binary it is. `None` is every ordinary attach.
+    ///
+    /// The operator's ask of 2026-10-26: *an older binary should keep working when the newer
+    /// schema only ADDED things, and must say so in red on the head's usual status line*. So this
+    /// is STATE rather than a row: drawn on every frame, in the slot `Responding…` uses
+    /// ([`App::transients`]), in the red register — and re-told by the daemon on every attach, so
+    /// a head that arrives late is told it too (see `server::seat_in`). Taken from
+    /// `SessionEvent::Warning { code: "store_newer" }`, which is the existing wire and needs no
+    /// protocol bump.
+    pub(crate) store_newer: Option<String>,
     /// **What the daemon is holding back from the model right now** — `(jobs, subagents,
     /// failed)` from the last [`SessionEvent::HeldResults`](letibot_sessionlog::SessionEvent::HeldResults),
     /// `None` once they are all zero. The operator, 2026-10-11: *"what would be useful is a
@@ -2092,6 +2104,7 @@ impl App {
             filling: None,
             filling_since: 0,
             booting: None,
+            store_newer: None,
             compacting: None,
             compacting_since: 0,
             status_click: None,

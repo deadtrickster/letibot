@@ -1162,6 +1162,29 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     say_memory_caps();
     crate::instruments::start_writer(&cfg);
     let registry = Registry::new();
+    // **An older binary on a newer store: keep working, and say so in red on every head.**
+    //
+    // Asked once, here, for the same reason `say_memory_caps` is: this is past every verb that
+    // answers and exits, and before every session opens — so the sentence is on the registry
+    // before the first head can attach, and a store this build may NOT serve is a startup error
+    // naming the fix rather than a session that fails to open halfway through a boot. See
+    // `store_floor` for what each of the three answers means.
+    //
+    // **The store is opened for this and then dropped**, which is one more connection among the
+    // several a daemon already holds (the session store, the corpus, the queues): the fact is
+    // settled once per process and the connection has no second use, so paying for it here is
+    // cheaper than threading it to every opener that would otherwise have to keep it.
+    // **Asked with `?`, so a store this build may not serve is a startup error**: the sentence it
+    // carries already names the command that fixes it, and a daemon that went on would be
+    // building sessions on a file it cannot read.
+    let said = crate::store_floor::said(&cfg)?;
+    // **Said here as well as on the heads**, and this is the daemon's own log — the file an
+    // operator reads a week later when they wonder why a build was behind. Cheap, and the one
+    // place the fact is on disk before any head exists.
+    if let Some(said) = &said {
+        eprintln!("  {said}");
+    }
+    registry.set_store_older(said);
     // **The daemon watches its own memory** — `memwatch`. One line a minute in this log, a
     // census when it crosses a step, and a warning on every session.
     crate::memwatch::spawn(

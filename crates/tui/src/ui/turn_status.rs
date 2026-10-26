@@ -261,8 +261,20 @@ impl App {
     ///   the conversation.
     /// * The flash notice ([`App::say`]) — `resync: …`, `reading output of job …`, every
     ///   acknowledgement and refusal — prefixed `· ` as it always was, in its own violet.
+    ///
+    /// **And FIRST of all, because it outranks everything above: this daemon is a build behind
+    /// the store it is serving** ([`App::store_newer`]). The operator's ask, 2026-10-26: *an older
+    /// binary should keep working when the newer schema only ADDED things, and must say so in red
+    /// on the head's usual status line*. Red is `Role::Failure` — the register
+    /// `warning.rs`'s `store_newer` row is in — and the position is the one every transient is in,
+    /// so it is the row `Responding…` uses and it costs the conversation no line at all. First
+    /// because a cut row drops from the END: whatever else is being shouted about, *restart this
+    /// daemon* is the sentence that most needs its room.
     pub(crate) fn transients(&self) -> Vec<(String, Role, bool)> {
         let mut out = Vec::new();
+        if let Some(said) = &self.store_newer {
+            out.push((format!("⚠ {said}"), Role::Failure, false));
+        }
         if let Some(why) = self.link_blip() {
             out.push((
                 format!("⚠ daemon connection is down — reconnecting. {why}"),

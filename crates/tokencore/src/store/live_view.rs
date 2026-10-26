@@ -63,7 +63,7 @@ pub struct LiveView {
 
 impl LiveView {
     /// Attach `path` read-only. Refuses a file written by a newer build, as
-    /// [`Store::open`] would.
+    /// [`Store::open`] would — including one whose reader floor this build is below.
     pub fn open(path: &Path) -> Result<Self> {
         let store = Store::open_in_memory()?;
         let conn = store.connection();
@@ -89,10 +89,16 @@ impl LiveView {
             [],
             |r| r.get(0),
         )?;
-        if found > SCHEMA_VERSION {
+        // **The same rule `Store::open` applies**, floor and all: a live view is a reader, and a
+        // store a newer build migrated additively is one this build can still read. A view is
+        // read-only, so it can neither record a floor nor repair a missing one — a file from
+        // before floors is refused here exactly as it is refused at an open.
+        let floor = super::floor::read_floor(conn, LIVE)?;
+        if found > SCHEMA_VERSION && !floor.is_some_and(|f| f <= SCHEMA_VERSION) {
             return Err(StoreError::SchemaTooNew {
                 found,
                 known: SCHEMA_VERSION,
+                floor,
             });
         }
         Ok(LiveView { store })

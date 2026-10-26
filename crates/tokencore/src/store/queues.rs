@@ -1153,10 +1153,10 @@ impl Store {
     /// **Claim, or renew, the lease on `repository`'s queues** — by compare-and-swap.
     ///
     /// In ONE immediate transaction: the file's schema is read and compared to this build's
-    /// (a mismatch claims nothing — requirement 1's *"a daemon whose build does not match the
-    /// store serves no queue"*); then the row is taken only if nobody holds it, the claimant
-    /// already does, or the holder's heartbeat is older than `ttl_ms`. A live holder is never
-    /// displaced.
+    /// (**what a reader this store has moved past is the FLOOR's to say**, requirement 1's *"a
+    /// daemon whose build does not match the store serves no queue"* — see `store::floor`); then
+    /// the row is taken only if nobody holds it, the claimant already does, or the holder's
+    /// heartbeat is older than `ttl_ms`. A live holder is never displaced.
     pub fn acquire_queue_lease(
         &self,
         repository: &str,
@@ -1166,7 +1166,14 @@ impl Store {
     ) -> Result<LeaseOutcome> {
         let tx = self.immediate()?;
         let stored: i64 = tx.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
-        if stored != SCHEMA_VERSION {
+        // **What the mismatch means is the FLOOR's to say, not the version's** — the version is
+        // re-read live, in this transaction, so a daemon already running when a newer build
+        // migrates the file finds out at its next claim (requirement 1). A schema ABOVE this
+        // build's that only added things is a store this daemon still reads: refusing it here
+        // would be the 2026-10-26 refusal a layer down, where the daemon keeps its session and
+        // loses its queue. A schema whose floor moved past this build — or one old enough that
+        // nobody said — still claims nothing.
+        if !super::floor::readable_here(&tx, stored)? {
             return Ok(LeaseOutcome::WrongSchema {
                 store: stored,
                 mine: SCHEMA_VERSION,
@@ -1245,7 +1252,9 @@ impl Store {
 
     /// **Say this owner is alive.** `Ok(false)` is *the lease is not yours any more* — the
     /// caller stops serving at once. The schema is re-read too, so a store migrated under a
-    /// running daemon stops it at its next heartbeat.
+    /// running daemon stops it at its next heartbeat — and, like the claim above, what stops it
+    /// is the FLOOR rather than the version: an additive migration by a newer build is a store
+    /// this daemon goes on serving, which is the whole point of the floor.
     pub fn heartbeat_queue_lease(
         &self,
         repository: &str,
@@ -1253,7 +1262,7 @@ impl Store {
         now_ms: u64,
     ) -> Result<bool> {
         let stored = self.stored_schema_version()?;
-        if stored != SCHEMA_VERSION {
+        if !super::floor::readable_here(&self.conn, stored)? {
             return Ok(false);
         }
         let n = self.exec(
