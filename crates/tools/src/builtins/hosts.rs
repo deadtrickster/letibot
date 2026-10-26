@@ -405,6 +405,20 @@ fn format_facts(host: &Host, f: &Facts) -> String {
         None => tools.push_str("no git on PATH"),
     }
     let mut extra = String::new();
+    // **The boundary (RH3).** Three answers and they are three different facts: a boundary that
+    // really runs, a host that was asked and cannot, and a host nobody has asked about in this
+    // process. The last one says so rather than claiming either — a `confined` line nobody
+    // measured is the banner defect this slice removed.
+    match (&f.confine, &f.bwrap) {
+        (Some(what), _) => extra.push_str(&format!("  confine:  {what}\n")),
+        (None, Some(version)) => extra.push_str(&format!(
+            "  confine:  {version} is installed here, and no placement has measured it in this \
+             process yet — one does, once, and the answer is what a command's boundary is\n"
+        )),
+        (None, None) => extra.push_str(
+            "  confine:  no `bwrap` on that machine, so a command there would run UNCONFINED\n",
+        ),
+    }
     match &f.mise {
         Some(version) => {
             tools.push_str(&format!(", mise {version}"));

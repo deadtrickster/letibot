@@ -3599,15 +3599,22 @@ impl Harness {
             });
             return Err(HarnessError::Setup(said));
         }
-        let (backend, backend_confined): (HostBackend, bool) = if in_vm || remote.is_some() {
-            // A placeholder the VM and ssh arms below replace; the host tree is not touched
-            // by a session whose tools run elsewhere, and this read-only view is never used.
-            (
-                HostBackend::new(&cfg.workspace).map_err(|e| {
-                    HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
-                })?,
-                true,
-            )
+        // **`backend_confined` is the VM's and nothing else here**, and it stops being a guess
+        // one line after the substrate is chosen: see the `let backend_confined` below, which
+        // asks the backend that was actually built. RH3 removed the `true` this arm used to
+        // carry for a remote placement — a host whose tools run over ssh confines nothing by
+        // itself, and claiming it did made `Prereq::Confinement` (and so `allow-all`) pass for a
+        // session that had no boundary at all.
+        let backend: HostBackend = if in_vm {
+            // A placeholder the VM arm below replaces; the host tree is not touched by a
+            // session whose tools run elsewhere, and this read-only view is never used.
+            HostBackend::new(&cfg.workspace)
+                .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
+        } else if remote.is_some() {
+            // The same placeholder, and nothing measured yet: the question is settled by
+            // `SshBackend::place` below, which probes the host.
+            HostBackend::new(&cfg.workspace)
+                .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
         } else if cfg.unconfined {
             let b = if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
@@ -3623,48 +3630,37 @@ impl Harness {
             .map_err(|e| {
                 HarnessError::Setup(format!("workspace {:?} as cwd: {e}", cfg.workspace))
             })?;
-            (b, false)
+            b
         } else if cfg.seat.needs_exec_backend() && may_exec {
-            (
-                HostBackend::confined_granting(
-                    &cfg.workspace,
-                    confined_grants(&cfg, cfg.landing_root.as_deref()),
-                )
-                .map_err(|e| {
-                    HarnessError::Setup(format!(
-                        "the `{}` role needs a confined execution backend and one could not be \
-                         built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
-                         alternative is `HostBackend::executable`, which gives a process the \
-                         cgroup that bounds its lifetime and NO boundary on what it can read \
-                         — the operator's whole filesystem, with a banner that would have to \
-                         say so. Two things it needs and the error above says which is \
-                         missing: a delegated cgroup v2 subtree, and a usable unprivileged \
-                         namespace boundary (bwrap). A third thing the message above may \
-                         name instead: the project root itself. Both `runner` and `coder` \
-                         root their view at the workspace, so a workspace that is a file, \
-                         a dangling symlink or absent fails here and no boundary is the \
-                         wrong thing to blame. Seat `--role orchestrator` for a session \
-                         with no exec path at all.",
-                        cfg.seat.as_str(),
-                        cfg.workspace
-                    ))
-                })?,
-                true,
+            HostBackend::confined_granting(
+                &cfg.workspace,
+                confined_grants(&cfg, cfg.landing_root.as_deref()),
             )
+            .map_err(|e| {
+                HarnessError::Setup(format!(
+                    "the `{}` role needs a confined execution backend and one could not be \
+                     built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
+                     alternative is `HostBackend::executable`, which gives a process the \
+                     cgroup that bounds its lifetime and NO boundary on what it can read \
+                     — the operator's whole filesystem, with a banner that would have to \
+                     say so. Two things it needs and the error above says which is \
+                     missing: a delegated cgroup v2 subtree, and a usable unprivileged \
+                     namespace boundary (bwrap). A third thing the message above may \
+                     name instead: the project root itself. Both `runner` and `coder` \
+                     root their view at the workspace, so a workspace that is a file, \
+                     a dangling symlink or absent fails here and no boundary is the \
+                     wrong thing to blame. Seat `--role orchestrator` for a session \
+                     with no exec path at all.",
+                    cfg.seat.as_str(),
+                    cfg.workspace
+                ))
+            })?
         } else if cfg.seat.needs_writable_backend() && may_write {
-            (
-                HostBackend::writable(&cfg.workspace).map_err(|e| {
-                    HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
-                })?,
-                false,
-            )
+            HostBackend::writable(&cfg.workspace)
+                .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
         } else {
-            (
-                HostBackend::new(&cfg.workspace).map_err(|e| {
-                    HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
-                })?,
-                false,
-            )
+            HostBackend::new(&cfg.workspace)
+                .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
         };
         // The home the backend expands `~` against is the session's, read once from
         // the surroundings the gate will also carry — so a `~` and the gate's own
@@ -3790,6 +3786,27 @@ impl Harness {
                 // The bound every call that is not a command carries ([`STEP_BOUND`]): a session's
                 // tools must not be able to hold the daemon on a host that has stopped answering.
                 bound: None,
+                // **The session's network rule, which the boundary expresses.** Denied unless the
+                // point SEATS network calls: a session that carries `web_fetch` must not have its
+                // `curl` fail at the socket after the gate said yes, and a session that carries
+                // none must not reach out because a sandbox defaulted the other way. `Ask` counts
+                // as seated — the card decides the call, and a boundary that refused it after the
+                // answer would be a second decision nobody made.
+                egress: if cfg.mode.seats(letibot_tools::schema::Access::Network) {
+                    letibot_tools::exec::Egress::Host {
+                        why: format!(
+                            "the `{}` mode seats network calls, so a confined command on {} \
+                             shares its network namespace rather than being handed an empty one",
+                            cfg.mode.name, host.name
+                        ),
+                    }
+                } else {
+                    letibot_tools::exec::Egress::Denied
+                },
+                // **Ask the host, which is what production always does.** A placement probes once
+                // per host (cached), and a host that cannot answer runs unconfined with the reason
+                // on the session's own notes — see `SshBackend::place`.
+                confine: None,
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;
@@ -3914,6 +3931,19 @@ impl Harness {
             let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
             (Box::new(backend), described, writable, monitors)
         };
+
+        // **`backend_confined`, asked of the backend that was actually built.** The arm above is
+        // where the substrate is chosen and this is where the answer exists, so the fact is read
+        // rather than promised: a VM is a boundary by construction, and a host or ssh backend is
+        // one only where a confinement was really measured (`ExecBackend::boundary`). A remote
+        // session on a machine whose probe failed is unconfined — every call a decision — which
+        // is what its `describe` says and what `Prereq::Confinement` now sees.
+        //
+        // This fixes two things at once, and the second is why RH3 came with a gate clause: before
+        // it, a remote placement passed this test on a hardcoded `true`.
+        let backend_confined = in_vm || backend.boundary().is_some();
+        let backend_boundary = backend.boundary();
+        let backend_boundary_refusal = backend.boundary_refusal();
 
         // Retrieval is inert and stays inert: `ask_code` and `ask_corpus` abstain,
         // and nothing is behind them. T16.6 checked rather than recalled — no MCP
@@ -4693,6 +4723,10 @@ impl Harness {
                     // §2. Without this the trail is `NotCollected` — *nobody
                     // looked*, which is not the same fact as an empty trail.
                     .with_trail_source(move |_call: &GateCall<'_>| trail_for_gate.trail())
+                    // **Where the tools actually run**, so a card tells the truth about the
+                    // boundary instead of reciting one fixed sentence (RH3). Read off the
+                    // backend above, so this is the boundary that produced the argv.
+                    .with_boundary(backend_boundary, backend_boundary_refusal)
                     // What the agent says it is doing, so the guard can connect the
                     // operator's words to a call that does not repeat them. Outside
                     // the trail's numbering by construction, so it can never be what

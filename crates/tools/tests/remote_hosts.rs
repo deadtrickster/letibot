@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use letibot_tools::backend::{BackendError, Command, ExecBackend};
 use letibot_tools::builtins::hosts::HostsTool;
-use letibot_tools::exec::{JobId, JobState, ScopeKind, SpawnRequest, Waited};
+use letibot_tools::exec::{Egress, JobId, JobState, ScopeKind, SpawnRequest, Waited};
 use letibot_tools::remote::{Host, Hosts, Mise, Paths, SshBackend, SshSpec};
 
 /// The short id this suite's session gets: the last eight of `s-01abcdef`.
@@ -160,6 +160,12 @@ impl Rig {
             ssh: Some(self.ssh.clone()),
             paths: Some(self.paths.clone()),
             bound: Some(Duration::from_secs(5)),
+            // **This fixture's host confines nothing, and says so.** The probe runs on the machine
+            // behind the fake — the machine running the test — so an unpinned answer would make
+            // the same assertion mean two things on two boxes (confined on Linux with `bwrap`,
+            // unconfined on a Mac). `remote_confine.rs` is the suite that tests the boundary.
+            egress: Egress::Denied,
+            confine: Some(false),
         }
     }
 
@@ -635,6 +641,8 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         ssh: Some(rig.ssh.clone()),
         paths: Some(rig.paths.clone()),
         bound: Some(Duration::from_secs(5)),
+        egress: Egress::Denied,
+        confine: Some(false),
     })
     .expect_err("a folder is not a repository");
     let said = refused.to_string();
@@ -809,6 +817,8 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path, bound: Duration) -> SshS
         ssh: Some(program.to_path_buf()),
         paths: Some(paths.clone()),
         bound: Some(bound),
+        egress: Egress::Denied,
+        confine: Some(false),
     }
 }
 
@@ -1456,6 +1466,8 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
         ssh: Some(program.to_path_buf()),
         paths: Some(paths.clone()),
         bound: Some(Duration::from_secs(3)),
+        egress: Egress::Denied,
+        confine: Some(false),
     }
 }
 

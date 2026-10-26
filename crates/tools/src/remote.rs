@@ -954,6 +954,32 @@ const CANCEL_BOUND: Duration = Duration::from_secs(10);
 static MISE: std::sync::LazyLock<Mutex<BTreeMap<String, Option<String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// **What a host said when it was asked whether it can confine a command**, per process.
+///
+/// Keyed by host name because that is the identity of the machine and the answer is a fact
+/// about its kernel, its `bwrap` and its `PATH` — not about a session. **The measurement is
+/// cached, not a boundary**: the view is the session's (its own checkout, its own grants), so a
+/// second session on the same host re-applies the same measurement to its own view rather than
+/// paying for another round trip.
+///
+/// A probe that did **not answer** is not cached, for the reason [`MISE`] gives: a host that was
+/// briefly unreachable has not told us it cannot confine, and remembering a timeout as a fact is
+/// how a session spends the rest of its life unconfined. An answer that says *`bwrap` is not
+/// there*, or one where `bwrap` ran and did not enter the namespaces, **is** cached: those are
+/// facts about the machine.
+static CONFINE: std::sync::LazyLock<Mutex<BTreeMap<String, crate::exec::confine::HostProbe>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+/// **Where a confined remote command's `$HOME` is** — under the host's own `root`, never the
+/// operator's home.
+///
+/// It has to be writable and it has to be somewhere the host already keeps letibot's work: a
+/// command needs a `$HOME` that is not read-only (a compiler writes there by habit), and it must
+/// not be the operator's, because that directory is the one the boundary exists to leave
+/// outside. `~/.cargo` and `~/.rustup` are still the operator's, read-only — see
+/// [`crate::exec::confine::GRANT_CANDIDATES`].
+pub const HOME_DIR: &str = ".letibot-home";
+
 /// **One host's ssh connection**, opened by [`Ssh::connect`] after the two refusals that make
 /// it letibot's own: its identity file, and its host key.
 ///
@@ -1176,6 +1202,57 @@ impl Ssh {
             ),
             _ => None,
         }
+    }
+
+    /// **Ask the host whether it can confine a command, once per process** — RH3's one round
+    /// trip.
+    ///
+    /// The script is [`crate::exec::confine::probe_script`]'s, run the way every other remote
+    /// command is run (`bash -lc` with the host's `PATH` in front, inside `mise exec` where the
+    /// host has mise) so that the argv it measures is the argv a command will be wrapped in:
+    /// the keep-list of that run is that shell's, which is the whole reason a remote probe is
+    /// not [`crate::exec::Bwrap::probe`].
+    ///
+    /// The answer is cached per host ([`CONFINE`]), and only when the host **answered**: a
+    /// timeout or a dropped connection is not a fact about what the machine has installed, so
+    /// it is not remembered and the next attempt asks again.
+    fn confinement_probe(
+        &self,
+        view: &crate::exec::ViewSpec,
+        egress: &crate::exec::Egress,
+    ) -> Result<crate::exec::confine::HostProbe, String> {
+        if let Some(hit) = CONFINE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.host.name)
+        {
+            return Ok(hit.clone());
+        }
+        let script = crate::exec::confine::probe_script(view, egress);
+        let within = self.bound.min(STEP_BOUND);
+        let (said, stderr, _exit) = self
+            .sh_step_within(
+                &format!("asking {} whether it can confine a command", self.host.name),
+                &script,
+                within,
+            )
+            .map_err(|e| format!("{e}"))?;
+        // **stderr is read too**, and it is where a helper that refused says so: ssh carries one
+        // channel for the command's own output but this call is not wrapped in one shell, so the
+        // two arrive separately here. A `bwrap: ` line is the sentence a reader needs.
+        let mut all = said;
+        if !stderr.is_empty() {
+            if !all.is_empty() && !all.ends_with('\n') {
+                all.push('\n');
+            }
+            all.push_str(&String::from_utf8_lossy(&stderr));
+        }
+        let probe = crate::exec::confine::read_probe(&all);
+        CONFINE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.host.name.clone(), probe.clone());
+        Ok(probe)
     }
 
     /// **The prefix git's `upload-pack` is invoked with**, for the fetch that brings a branch
@@ -1883,6 +1960,18 @@ pub struct Facts {
     pub mise: Option<String>,
     /// **`mise ls --current`** in the host's root: one entry per tool, as `name version`.
     pub mise_tools: Vec<String>,
+    /// **The confinement helper's version**, when the host has one at all — `bubblewrap 0.11.1`.
+    ///
+    /// A presence fact, and the cheap half of RH3's question. Whether the helper *works* cannot be
+    /// read off a version: it is measured, by a placement, with the real argv and against that
+    /// box's own namespace inodes — and that answer is cached per host for this process, so
+    /// [`Facts::confine`] carries it once anything has asked.
+    pub bwrap: Option<String>,
+    /// **Whether a command on this host would run inside a boundary**, from the cache a placement
+    /// fills: `confined (bubblewrap 0.11.1 …)`, or the measured refusal. `None` means *nothing has
+    /// asked in this process*, which is said rather than guessed either way — a boundary nobody
+    /// measured is exactly what RH3 took out of the banner.
+    pub confine: Option<String>,
     /// **What this host's ssh calls have been doing**, as [`crate::rpc::report`] renders it — the
     /// last few and the slowest. Empty when nothing in this process has called the host yet.
     pub calls: String,
@@ -1905,6 +1994,11 @@ echo "mem_total_kb=$(awk '/^MemTotal:/ {{print $2}}' /proc/meminfo 2>/dev/null |
 echo "mem_avail_kb=$(awk '/^MemAvailable:/ {{print $2}}' /proc/meminfo 2>/dev/null | head -1)"
 echo "disk_path=$r"
 echo "disk_free_kb=$(df -Pk "$r" 2>/dev/null | awk 'NR==2 {{print $4}}')"
+# **The confinement helper, if the machine has one** (RH3). Existence and version only: whether it
+# can enter a namespace is measured by a placement, with the argv a command would really run and
+# against this box's own inodes — see `crate::exec::confine::probe_script`.
+_bw=$(command -v bwrap 2>/dev/null)
+if [ -n "$_bw" ]; then echo "bwrap=$("$_bw" --version 2>&1 | head -1)"; fi
 echo "git=$(command -v git 2>/dev/null)"
 echo "cargo=$(command -v cargo 2>/dev/null)"
 # **The toolchain, which on these machines means mise.** Found the way every remote command
@@ -1978,7 +2072,185 @@ pub fn probe(
     }
     let mut facts = facts_of(&said);
     facts.calls = crate::rpc::report(&host.name);
+    // **What this process has already measured about a boundary on the host**, when anything has.
+    // It is the cache a placement fills ([`CONFINE`]) and not a second probe: `hosts {probe}` is a
+    // question about capacity, and the boundary question costs a full readback — so it is answered
+    // here from the one place that already asked it, and its absence is reported as *nothing has
+    // asked yet* rather than guessed at.
+    facts.confine = confined_here(&host.name);
     Ok(facts)
+}
+
+/// **The boundary a host was measured with, in this process** — the cache, or `None`.
+///
+/// `Some("confined (…)")` is a boundary that really runs; `Some("nothing was confined — …")` is a
+/// host that answered and cannot; `None` is *nobody has asked here yet*.
+fn confined_here(host: &str) -> Option<String> {
+    let probe = CONFINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(host)
+        .cloned()?;
+    if probe.helper.trim().is_empty() {
+        return Some("nothing was confined: no `bwrap` on that host's `PATH`".to_string());
+    }
+    // The version is what the probe reported; whether the namespaces were entered is what the
+    // readback said, and the two are compared the way `measured_from_probe` compares them.
+    let mut entered = 0;
+    for n in crate::exec::confine::Namespace::REQUIRED {
+        let inside = probe.inside.get(n.proc_name());
+        let outer = probe.outer.get(n.proc_name());
+        if inside.is_some() && inside != outer {
+            entered += 1;
+        }
+    }
+    Some(
+        if entered == crate::exec::confine::Namespace::REQUIRED.len() {
+            format!(
+                "confined ({}): user, mount and pid namespaces measured from inside",
+                probe.version
+            )
+        } else {
+            format!(
+                "nothing was confined: the helper did not enter the namespaces ({} of {} measured)",
+                entered,
+                crate::exec::confine::Namespace::REQUIRED.len()
+            )
+        },
+    )
+}
+
+/// **The command line a confined remote spawn becomes** — the helper's argv, `--`, then the
+/// command's own argv.
+///
+/// One function for both spawns (a foreground `run` and a job's launcher) because they differ in
+/// nothing this cares about, and two spellings of it is how the *group kill* half gets lost: the
+/// session is [`crate::exec::Session::Kept`] in both, so everything the helper starts stays in the
+/// process group the remote side recorded, and `kill -TERM -<pgid>` reaches it.
+///
+/// **The refusal is returned, not swallowed.** A cwd outside the view — `bash {cwd: "/tmp"}` in a
+/// session whose view is its checkout — makes [`crate::exec::Bwrap::remote_pieces`] refuse, and
+/// the two answers available to a caller are *refuse the command* and *run it unconfined*; the
+/// second is the boundary quietly not being there, which is the defect this module exists against.
+/// So this returns the refusal and each caller turns it into its own error.
+fn wrap_confined(
+    confine: &crate::exec::Bwrap,
+    cwd: &str,
+    env: &[(String, String)],
+    argv: &[String],
+) -> Result<String, crate::exec::ExecError> {
+    let plan = crate::exec::ConfinePlan {
+        cwd: std::path::Path::new(cwd),
+        env,
+    };
+    let pieces = confine.remote_pieces(&plan, crate::exec::Session::Kept)?;
+    let mut line = crate::exec::confine::join(&pieces);
+    for a in argv {
+        line.push(' ');
+        line.push_str(&quote(a));
+    }
+    Ok(line)
+}
+
+/// **One session's view on a host, and the boundary measured for it** — or the reason there is
+/// none.
+///
+/// The view is the same policy a local confined session gets, spelled for the far machine: the
+/// **checkout** read-write at its own path (so a compiler's error names the file the tools name),
+/// the **system roots** read-only, the **toolchain** read-only from what the probe found, a
+/// `$HOME` that is letibot's own directory on that host and not the operator's, and the session's
+/// egress rule.
+///
+/// **Two views, one boundary.** The probe is run with the *provisional* view — the checkout, the
+/// system roots and that home — because the probe's own argv needs binds and the toolchain list
+/// is what the probe is there to discover. The measurement it returns is about the namespaces and
+/// the two seals, which no bind can change; the grants are added afterwards. A bind that then
+/// fails is loud rather than silent: the helper prints `bwrap: …` and
+/// [`crate::exec::Confinement::launcher_failure`] reports *the boundary failed, this is not the
+/// command's answer*.
+fn confine_a_checkout(
+    ssh: &Ssh,
+    home: &str,
+    worktree: &str,
+    egress: &crate::exec::Egress,
+) -> (Option<crate::exec::Bwrap>, Option<String>) {
+    use crate::exec::confine::{Grant, HomeView, ViewSpec};
+    let provisional =
+        ViewSpec::project_only(worktree).with_home(HomeView::Dir(PathBuf::from(home)));
+    let probe = match ssh.confinement_probe(&provisional, egress) {
+        Ok(p) => p,
+        Err(why) => return (None, Some(why)),
+    };
+    // **What the host said is there, in the order [`crate::exec::confine::GRANT_CANDIDATES`] lists
+    // it** — the probe answers in the shell's glob order, which is not an order a reader can
+    // reason about, and a view whose `describe` lists `.gitconfig` before `.cargo` reads as though
+    // something had been decided.
+    let mut ordered: Vec<&String> = probe.toolchains.iter().collect();
+    let rank = |p: &str| {
+        crate::exec::confine::GRANT_CANDIDATES
+            .iter()
+            .position(|c| {
+                let leaf = c.trim_start_matches("$HOME");
+                p.ends_with(leaf)
+            })
+            .unwrap_or(usize::MAX)
+    };
+    ordered.sort_by_key(|p| rank(p));
+    let mut view = provisional;
+    for path in ordered {
+        let why = if path.ends_with(".gitconfig") {
+            "the identity a commit is recorded under — without it every `git commit` in this \
+             view fails, and the branch is the whole deliverable"
+        } else {
+            "the toolchain on that machine, so a build does not re-download what is already \
+             installed — READABLE INTO CONTEXT, and read-only: a new dependency cannot be \
+             fetched into it from inside the boundary"
+        };
+        view = view.granting(Grant::ReadOnly {
+            path: PathBuf::from(path),
+            why: why.to_string(),
+        });
+    }
+    match crate::exec::confine::measured_from_probe(&probe, view, egress.clone()) {
+        Ok(b) => (Some(b), None),
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
+/// **The environment that makes the operator's toolchain the one that runs**, when it is in the
+/// view.
+///
+/// Measured 2026-10-26 on `lab2x1`: with `$HOME` a fresh directory, `cargo` is on `PATH` (the far
+/// shell's keep-list) but `rustup` looks for its toolchain under `$HOME/.rustup` and answers
+/// *rustup could not choose a version of cargo to run*. The toolchains are granted read-only at the
+/// operator's paths, so the two variables are set to those paths and the toolchain works from a
+/// home that carries nothing.
+fn toolchain_env(confine: Option<&crate::exec::Bwrap>) -> Vec<(String, String)> {
+    let Some(b) = confine else {
+        return Vec::new();
+    };
+    let Some(boundary) = crate::exec::Confinement::boundary(b) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (var, leaf) in [
+        ("CARGO_HOME", ".cargo"),
+        ("RUSTUP_HOME", ".rustup"),
+        // mise keeps its installs and its state apart, and `mise` itself reads both.
+        ("MISE_DATA_DIR", ".local/share/mise"),
+        ("MISE_STATE_DIR", ".local/state/mise"),
+    ] {
+        if let Some(p) = boundary
+            .view
+            .grants
+            .iter()
+            .map(|g| g.path())
+            .find(|p| p.ends_with(leaf))
+        {
+            out.push((var.to_string(), p.display().to_string()));
+        }
+    }
+    out
 }
 
 /// The `key=value` lines of [`facts_script`] as a [`Facts`]. Unknown keys are ignored and missing
@@ -2010,6 +2282,7 @@ pub fn facts_of(said: &str) -> Facts {
                     .map(str::to_string)
                     .collect()
             }
+            "bwrap" => f.bwrap = (!value.is_empty()).then(|| value.to_string()),
             _ => {}
         }
     }
@@ -2071,6 +2344,27 @@ pub struct SshSpec {
     /// `None` is [`STEP_BOUND`]. A test's door: a fake ssh that never answers should be measured
     /// in a second rather than in twenty.
     pub bound: Option<Duration>,
+    /// **The session's network rule, as the confined view expresses it.** A boundary denies the
+    /// network by default (`Egress::Denied`, which is [`crate::exec::Bwrap::project`]'s answer and
+    /// the local Layer 1 default); a point that seats network calls passes
+    /// [`crate::exec::Egress::Host`] with the sentence that decided it, and the boundary shares
+    /// that machine's network instead of taking it away.
+    ///
+    /// It is a field of the SPEC rather than a constant because the two answers are a decision
+    /// somebody makes above this file: a session whose mode admits `web_fetch` must not have its
+    /// `curl` fail at the socket after the gate said yes, and a session whose mode does not must
+    /// not be able to reach out because a sandbox defaulted the other way.
+    pub egress: crate::exec::Egress,
+    /// **Whether to ask this host whether it can confine** — `None` (production) asks, and is the
+    /// only value a real caller passes.
+    ///
+    /// `Some(false)` is a fixture's door and it exists for the reason `mise = false` does: the
+    /// probe runs ON THE MACHINE BEHIND THE FAKE, which is the machine running the test, so the
+    /// same test would take two different paths on two boxes — confined on a Linux host with
+    /// `bwrap`, unconfined on a Mac without one — and an assertion about the shape of a command
+    /// line would mean two things. `Some(true)` is the other half: a test that means *this host
+    /// confines* says so, and the probe still has to answer.
+    pub confine: Option<bool>,
 }
 
 /// **A session whose tools run on another machine.**
@@ -2094,6 +2388,22 @@ pub struct SshBackend {
     base: String,
     processes: Option<Arc<RemoteProcesses>>,
     writable: bool,
+    /// **The boundary this session's commands run inside, when there is one** — measured on the
+    /// host by [`Ssh::confinement_probe`] and applied to this session's own view. `None` with
+    /// [`SshBackend::unconfined`] set is a host that cannot confine, and that is a fact the mode,
+    /// the banner and every card have to be able to read.
+    confine: Option<crate::exec::Bwrap>,
+    /// **The view, kept beside the confinement** so the file tools can ask the same question a
+    /// command's view answers — *is this path in here at all* — without cloning a `Boundary` on
+    /// every call.
+    view: Option<crate::exec::ViewSpec>,
+    /// The environment a confined command carries so that the *operator's* toolchain is what runs
+    /// — `RUSTUP_HOME` and `CARGO_HOME` at the read-only grants. Without these a confined `cargo`
+    /// looks for its toolchain under the session's own (empty) `$HOME` and answers *rustup could
+    /// not choose a version of cargo to run*, measured 2026-10-26 on `lab2x1`.
+    confined_env: Vec<(String, String)>,
+    /// Why it is not confined, when it is not: the probe's own reason.
+    unconfined: Option<String>,
     /// What the placement had to say: the worktree, and the local edits that stayed here.
     notes: Vec<String>,
     /// What [`ExecBackend::close`] found when it brought the branch back, said once.
@@ -2365,14 +2675,78 @@ impl SshBackend {
             ));
         }
 
+        // **RH3: can this machine bound a command, and if so in what view.** Asked once per host
+        // per process ([`CONFINE`]), after the checkout exists because the checkout is the
+        // writable root of the view.
+        //
+        // A machine that cannot confine is **not** a failed placement: the session runs as it did
+        // before RH3 — unconfined, every call a decision — and says so, in `describe` and in the
+        // note this returns. What it must never do is *claim* the boundary: `backend_confined`
+        // is read off this answer by `harnessd`, so a host whose probe failed no longer counts as
+        // a confinement for the mode's prerequisite or for a card's facts. That claim was the
+        // live defect RH3 fixes — the remote arm of `Harness::open` hardcoded it to `true`.
+        let mut home = None;
+        let (confine, unconfined) = if !spec.exec {
+            // **Nothing runs here, so there is nothing to bound.** A downgraded child seats no exec
+            // tools, and probing a host for a boundary no command will use is a round trip spent
+            // on a question nobody asked.
+            (
+                None,
+                Some(
+                    "this session seats no exec, so no command of it runs and nothing was \
+                     probed"
+                        .to_string(),
+                ),
+            )
+        } else {
+            match spec.confine {
+                Some(false) => (
+                    None,
+                    Some(
+                        "this caller asked for no boundary, so nothing was probed and nothing was \
+                         measured"
+                            .to_string(),
+                    ),
+                ),
+                _ => {
+                    let dir = format!("{root}/{HOME_DIR}/{short}");
+                    ssh.must(
+                        "making the session's own home on that machine",
+                        &format!("mkdir -p {}", quote(&dir)),
+                    )
+                    .map_err(place)?;
+                    let measured = confine_a_checkout(&ssh, &dir, &worktree, &spec.egress);
+                    home = Some(dir);
+                    measured
+                }
+            }
+        };
+        if let Some(why) = &unconfined {
+            notes.push(format!(
+                "commands on {host} run UNCONFINED — {why} — so every one of them is a decision \
+                 and the tree there is your own home with your own files in it"
+            ));
+        } else if let Some(b) = &confine {
+            notes.push(format!(
+                "commands on {host} run inside a measured boundary ({}): the checkout is \
+                 writable, the toolchain is read-only, everything else of that machine is absent \
+                 from the view, and `$HOME` there is {}",
+                crate::exec::Confinement::describe(b)
+                    .lines()
+                    .next()
+                    .unwrap_or("bubblewrap"),
+                home.as_deref().unwrap_or("the session's own directory")
+            ));
+        }
+        let confined_env = toolchain_env(confine.as_ref());
+
         let processes = if spec.exec {
             // The same connection, cloned: one ControlPath and one identity file, so a job `ssh`
             // pays the round trip the session's own commands already paid for.
-            Some(Arc::new(RemoteProcesses::new(
-                ssh.clone(),
-                host.clone(),
-                worktree.clone(),
-            )))
+            Some(Arc::new(
+                RemoteProcesses::new(ssh.clone(), host.clone(), worktree.clone())
+                    .confined(confine.clone(), confined_env.clone()),
+            ))
         } else {
             None
         };
@@ -2390,6 +2764,13 @@ impl SshBackend {
             processes,
             writable: spec.writable,
             notes,
+            view: confine
+                .as_ref()
+                .and_then(crate::exec::Confinement::boundary)
+                .map(|b| b.view.clone()),
+            confine,
+            confined_env,
+            unconfined,
             brought_back: Mutex::new(None),
         })
     }
@@ -2397,6 +2778,55 @@ impl SshBackend {
     /// The host's name, for a card, a progress line or a test.
     pub fn host_name(&self) -> &str {
         &self.host
+    }
+
+    /// **The boundary this session's commands run inside**, when there is one.
+    ///
+    /// The measured view, so a caller can answer *is this path inside it* and *what is the
+    /// disclosure* from the same fact that produced the argv — rather than from a second
+    /// opinion about what the confinement is.
+    pub fn confinement(&self) -> Option<crate::exec::Boundary> {
+        self.confine
+            .as_ref()
+            .and_then(crate::exec::Confinement::boundary)
+            .cloned()
+    }
+
+    /// **Why a command on this host is not confined**, when it is not: the probe's own reason,
+    /// with the host in it.
+    pub fn unconfined_reason(&self) -> Option<&str> {
+        self.unconfined.as_deref()
+    }
+
+    /// Is a command run by this backend inside a measured boundary? `false` for a host whose
+    /// probe failed, which is the fact `harnessd` reads as `backend_confined` and the gate reads
+    /// for its boundary facts.
+    pub fn is_confined(&self) -> bool {
+        self.confine.is_some()
+    }
+
+    /// **The script a command becomes**, confined where there is a boundary: the helper's argv,
+    /// then `--`, then the command's own `argv`.
+    ///
+    /// The argv is spliced rather than wrapped in another shell: `Command::argv` is already the
+    /// shell the caller chose (`/bin/sh -c …`), so a second one would change what `$0` and the
+    /// quoting mean.
+    fn confined_script(
+        &self,
+        cwd: &str,
+        env: &[(String, String)],
+        argv: &[String],
+    ) -> Result<String, crate::exec::ExecError> {
+        let mut pairs: Vec<(String, String)> = self.confined_env.clone();
+        pairs.extend(env.iter().cloned());
+        wrap_confined(
+            self.confine
+                .as_ref()
+                .expect("only called where a boundary was measured"),
+            cwd,
+            &pairs,
+            argv,
+        )
     }
 
     /// The remote root the worktrees live under.
@@ -2423,6 +2853,26 @@ impl SshBackend {
     /// the local edits that were left behind. Printed by the opener, not by the session.
     pub fn placement_notes(&self) -> &[String] {
         &self.notes
+    }
+
+    /// **Is this path in the view at all?** — the question a command's own sandbox answers, asked
+    /// by the file tools.
+    ///
+    /// `Ok(abs)` when there is no view (nothing was confined, so nothing is claimed) or when the
+    /// path is inside it; [`BackendError::Outside`] when it is not. **This is what makes RH5's
+    /// refusal hold on a placed session**: that rule resolves a path on *this* box, so a path on
+    /// the far machine — the operator's `~/.ssh` over there — resolves to nothing here and would
+    /// pass it. A view has no such trouble: that directory is not in it, so it is not there.
+    ///
+    /// It is the VIEW's rule, not the checkout's: `/etc/passwd` is bound read-only into a command's
+    /// view, so `read` reaches it too — what a command can see, the tools see, which is one answer
+    /// to one question rather than two.
+    fn in_view(&self, path: &str) -> Result<String, BackendError> {
+        let abs = self.abs(path);
+        match &self.view {
+            Some(v) if v.outside(std::path::Path::new(&abs)) => Err(BackendError::Outside(abs)),
+            _ => Ok(abs),
+        }
     }
 
     /// A path relative to the checkout, as the remote shell must spell it.
@@ -2640,6 +3090,13 @@ fn git_within(repo: &Path, args: &[&str], within: Duration) -> Result<String, Ba
 }
 
 impl ExecBackend for SshBackend {
+    fn boundary(&self) -> Option<crate::exec::Boundary> {
+        self.confinement()
+    }
+
+    fn boundary_refusal(&self) -> Option<String> {
+        self.unconfined.clone()
+    }
     fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
         if self.processes.is_none() {
             return Err(BackendError::Unsupported(
@@ -2673,11 +3130,19 @@ impl ExecBackend for SshBackend {
         // may be a build, and this file has no idea how long that takes; what this file does know
         // is that a command which loses its connection is not a failure — it may be running still
         // — so it is reported as an unknown outcome and never re-sent.
-        let (out, _stderr, exit) = self.ssh.sh_run(
-            "this command ran",
-            &format!("cd {} && {env_prefix}{joined}", quote(&cwd)),
-            Some(&pgid),
-        )?;
+        //
+        // **RH3: the command runs inside the boundary**, in the same view the probe measured — the
+        // checkout writable, the toolchain read-only, the rest of that machine absent. The
+        // `cd`/`ENV=` shape is what an unconfined command keeps, and it is not an alternative to
+        // the confined one: a boundary's `--chdir` is the `cd`, and its `--clearenv`/`--setenv` is
+        // the environment, so splicing both would set the variables twice in two places.
+        let script = match &self.confine {
+            Some(_) => self
+                .confined_script(&cwd, &cmd.env, &cmd.argv)
+                .map_err(|e| BackendError::Io(e.to_string()))?,
+            None => format!("cd {} && {env_prefix}{joined}", quote(&cwd)),
+        };
+        let (out, _stderr, exit) = self.ssh.sh_run("this command ran", &script, Some(&pgid))?;
         Ok(Output {
             stdout: out.into_bytes(),
             // Merged by ssh itself — see `Ssh::remote_command`.
@@ -2687,7 +3152,7 @@ impl ExecBackend for SshBackend {
     }
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
-        self.ssh.read_abs(&self.abs(path))
+        self.ssh.read_abs(&self.in_view(path)?)
     }
 
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
@@ -2696,7 +3161,7 @@ impl ExecBackend for SshBackend {
                 "this subagent was downgraded to no write; nothing on its host changed",
             ));
         }
-        self.ssh.write_abs(&self.abs(path), bytes)
+        self.ssh.write_abs(&self.in_view(path)?, bytes)
     }
 
     fn processes(&self) -> Option<&dyn ProcessHost> {
@@ -2711,13 +3176,22 @@ impl ExecBackend for SshBackend {
         self.writable
     }
 
-    /// **A remote path means nothing on this host.** `root_path` is the answer to *is
-    /// this path inside the boundary*, and inventing `/home/dead/letibot-remote` here
-    /// would make the gate answer confidently about a filesystem it is not looking at.
-    /// [`Self::workspace_path`] is the other question — *which directory is this session
-    /// working in* — and that one has an answer.
+    /// **What this backend will call the root of the boundary** — the checkout, when a boundary
+    /// was measured, and nothing when it was not.
+    ///
+    /// Two different questions meet here and the docs of both are worth keeping apart.
+    /// `root_path` answers *is this path inside the boundary*, and for a substrate that only knows
+    /// a root the honest answer is the writable one. **The narrower truth is
+    /// [`Self::in_view`]**: the view holds the system roots and the toolchain read-only as well,
+    /// so the file tools admit more than this path and refuse what the view does not contain. This
+    /// method is what a caller that has only one path to print gets.
+    ///
+    /// Unconfined it is `None`, because inventing `/home/dead/letibot-remote` here would make the
+    /// gate answer confidently about a filesystem it is not looking at.
+    /// [`Self::workspace_path`] is the other question — *which directory is this session working
+    /// in* — and that one has an answer either way.
     fn root_path(&self) -> Option<String> {
-        None
+        self.confine.as_ref().map(|_| self.worktree.clone())
     }
 
     fn workspace_path(&self) -> Option<String> {
@@ -2734,11 +3208,11 @@ impl ExecBackend for SshBackend {
 
     /// Where a tool's `cwd` starts: the checkout, not this machine's root.
     fn workdir(&self, cwd: &str) -> Result<String, BackendError> {
-        Ok(self.abs(cwd))
+        self.in_view(cwd)
     }
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
-        let q = format!("'{}'", self.abs(path).replace('\'', r#"'\\''"#));
+        let q = format!("'{}'", self.in_view(path)?.replace('\'', r#"'\\''"#));
         let (out, _, exit) = self.ssh.sh_step(
             &format!("listing {path}"),
             &format!(
@@ -2783,7 +3257,7 @@ impl ExecBackend for SshBackend {
         limit: usize,
         skip: &dyn Fn(&DirEntry) -> bool,
     ) -> Result<(Vec<DirEntry>, bool), BackendError> {
-        let abs = self.abs(root);
+        let abs = self.in_view(root)?;
         let q = quote(&abs);
         let (_, _, gate) = self.ssh.sh_step(
             &format!("looking at {root}"),
@@ -2810,7 +3284,7 @@ impl ExecBackend for SshBackend {
     }
 
     fn stat(&self, path: &str) -> Option<DirEntry> {
-        let abs = self.abs(path);
+        let abs = self.in_view(path).ok()?;
         let q = quote(&abs);
         let (out, _, exit) = self
             .ssh
@@ -2837,16 +3311,33 @@ impl ExecBackend for SshBackend {
     }
 
     fn describe(&self) -> String {
+        // **What the boundary IS, or why there is none** — never a fixed sentence. `NOT CONFINED`
+        // was true until RH3 and is now one of two answers, and the old constant is exactly the
+        // shape `Boundary::describe`'s own doc warns about: a banner that asserts what it did not
+        // measure. `bwrap` was measured on the host, so the first arm prints the view that runs.
+        let boundary = match (&self.confine, &self.unconfined) {
+            (Some(b), _) => format!(
+                "CONFINED, and measured on that machine — {}. Every command and every job runs \
+                 inside it: the checkout is writable, the toolchain is read-only, the rest of \
+                 that machine is ABSENT from the view rather than denied, and a process it \
+                 starts cannot see this box's daemon or the other sessions on that host.",
+                crate::exec::Confinement::describe(b)
+            ),
+            (None, Some(why)) => format!(
+                "NOT CONFINED — {why}. So it is your machine with your files, the gate is this \
+                 box's own gate, and every command it runs is a decision rather than a bounded one."
+            ),
+            (None, None) => "NOT CONFINED: no boundary was measured for this host.".to_string(),
+        };
         format!(
             "ssh host `{}` ({}): every tool call runs there — its files, its commands, its \
-             processes — while this session's model, store and gate stay on this machine. \
-             NOT CONFINED: it is your machine with your files, so the gate is the host's gate \
-             and every call is decided by it. The tree is a checkout of {} at {}, on branch \
-             `{}`; what it commits comes back as `{}` when the session ends, and uncommitted \
-             edits stay there. A command's stderr arrives merged into its output (ssh carries \
-             one channel). {}",
+             processes — while this session's model, store and gate stay on this machine. {}\n\
+             The tree is a checkout of {} at {}, on branch `{}`; what it commits comes back as \
+             `{}` when the session ends, and uncommitted edits stay there. A command's stderr \
+             arrives merged into its output (ssh carries one channel). {}",
             self.host,
             self.ssh.destination(),
+            boundary,
             self.local_repo.display(),
             self.worktree,
             self.branch,
@@ -2925,6 +3416,10 @@ pub struct RemoteProcesses {
     reaps: Mutex<Vec<Reaping>>,
     session_scope: Mutex<Option<ScopeId>>,
     turn_scope: Mutex<Option<ScopeId>>,
+    /// The boundary this session's jobs start inside — the same one its commands use.
+    confine: Option<crate::exec::Bwrap>,
+    /// The toolchain environment a confined job carries. See [`toolchain_env`].
+    confined_env: Vec<(String, String)>,
 }
 
 /// One job, as this daemon remembers it. The files are the truth; this is the index.
@@ -2997,6 +3492,40 @@ impl RemoteProcesses {
             reaps: Mutex::new(Vec::new()),
             session_scope: Mutex::new(None),
             turn_scope: Mutex::new(None),
+            confine: None,
+            confined_env: Vec::new(),
+        }
+    }
+
+    /// **Put every job of this session inside the session's own boundary**, and give it the same
+    /// environment a command of the model's gets — the operator's toolchain at its read-only
+    /// grants.
+    ///
+    /// A job and a foreground command are the same spawn here: both go through
+    /// [`wrap_confined`], so a job cannot be the door that runs unconfined in a session whose
+    /// commands are confined.
+    pub fn confined(
+        mut self,
+        confine: Option<crate::exec::Bwrap>,
+        env: Vec<(String, String)>,
+    ) -> RemoteProcesses {
+        self.confine = confine;
+        self.confined_env = env;
+        self
+    }
+
+    /// [`wrap_confined`] with this session's own environment folded in.
+    fn confined_line(
+        &self,
+        cwd: &str,
+        env: &[(String, String)],
+        argv: &[String],
+    ) -> Result<String, ExecError> {
+        let mut pairs = self.confined_env.clone();
+        pairs.extend(env.iter().cloned());
+        match &self.confine {
+            Some(c) => wrap_confined(c, cwd, &pairs, argv),
+            None => Ok(String::new()),
         }
     }
 
@@ -3168,9 +3697,29 @@ impl RemoteProcesses {
         // launcher before it could write the status, and the job was then read as "died
         // without writing one". Measured with `exit 7`: pid written, output written, no exit
         // file. `( … )` is a child shell, so its `exit` is the status and not the end.
+        //
+        // **RH3: inside the boundary when there is one**, and still a child of this launcher —
+        // which is `setsid`'d, so the sandbox is in the job's process group and `job_kill`'s
+        // group kill reaches it. The command is handed to `/bin/sh -c` exactly as before, so a
+        // job means what it meant; only the shell it runs in is the sandbox's.
+        let command = match &self.confine {
+            Some(_) => self
+                .confined_line(
+                    &cwd,
+                    &req.env,
+                    &["/bin/sh".into(), "-c".into(), req.command.clone()],
+                )
+                .map_err(|e| {
+                    ExecError::Spawn(format!(
+                        "this job cannot run inside the boundary on {}: {e}",
+                        self.host
+                    ))
+                })?,
+            None => req.command.clone(),
+        };
         launcher.push_str(&format!(
             "( {} ) > {} 2>&1\necho $? > {}\n",
-            req.command,
+            command,
             quote(&out),
             quote(&exit)
         ));
@@ -3414,12 +3963,20 @@ fn pid_path_message(jobs: &str, n: &str) -> String {
 
 impl ProcessHost for RemoteProcesses {
     fn describe(&self) -> String {
+        let boundary = match &self.confine {
+            Some(b) => format!(
+                "CONFINED, and measured on that machine: {}.",
+                crate::exec::Confinement::describe(b)
+            ),
+            None => "NOT CONFINED: no boundary was measured for this host.".to_string(),
+        };
         format!(
             "processes on ssh host `{}`: a job is started there under setsid, with its output \
              in `{}`, so it outlives the ssh call that started it and this machine going to \
-             sleep. NOT CONFINED: no boundary and no cgroup on this machine — the remote's own \
-             process tree owns it, and job_kill signals that group over ssh.",
-            self.host, self.jobs_dir
+             sleep. {} There is no cgroup on this machine — the remote's own process tree owns \
+             it, and job_kill signals that group over ssh, which is why the sandbox does not take \
+             a session of its own.",
+            self.host, self.jobs_dir, boundary
         )
     }
 

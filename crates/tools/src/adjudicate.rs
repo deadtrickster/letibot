@@ -1827,6 +1827,11 @@ pub struct AdjudicatedGate {
     permission_sink: Option<
         std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>,
     >,
+    /// **The boundary this session's commands run inside**, read off the backend at open — see
+    /// [`AdjudicatedGate::with_boundary`]. `None` is *no boundary*, and `boundary_refusal` says
+    /// whether that is a choice or a host that could not confine.
+    boundary: Option<crate::exec::Boundary>,
+    boundary_refusal: Option<String>,
     /// **opencode parity: exec follows the mode.**
     ///
     /// Off by default, which is the operator's rule (2026-09-11): no point admits an
@@ -1905,6 +1910,8 @@ impl AdjudicatedGate {
             permission: crate::permission::Ruleset::new(),
             permission_sink: None,
             exec_follows_mode: false,
+            boundary: None,
+            boundary_refusal: None,
             log: Vec::new(),
             seq: 0,
             surroundings: crate::intent::Surroundings::default(),
@@ -1925,6 +1932,29 @@ impl AdjudicatedGate {
     /// [`AdjudicatedGate::exec_follows_mode`]. Off by default; leticode turns it on.
     pub fn with_exec_follows_mode(mut self, v: bool) -> Self {
         self.exec_follows_mode = v;
+        self
+    }
+
+    /// **Where this session's commands actually run**, for the facts a card carries — the measured
+    /// boundary, or the reason there is none.
+    ///
+    /// §11.2's `boundary_facts` is *what the backend can truthfully state about where this lands*,
+    /// and until RH3 the host arm stated one fixed sentence — *"the host filesystem is not
+    /// sandboxed; §11.4's boundary arrives with firecode"* — which was true of an unconfined
+    /// backend and false of a confined one. A card that says the wrong thing about the boundary is
+    /// worse than a card that says nothing: it is the one fact that tells a person how much the
+    /// answer they are about to give is worth.
+    ///
+    /// It changes no verdict. What it changes is what a reader is told, and
+    /// [`crate::exec::Boundary::describe`] is the sentence: the view, the egress, and what the
+    /// boundary does **not** confine.
+    pub fn with_boundary(
+        mut self,
+        boundary: Option<crate::exec::Boundary>,
+        refusal: Option<String>,
+    ) -> Self {
+        self.boundary = boundary;
+        self.boundary_refusal = refusal;
         self
     }
 
@@ -2410,10 +2440,32 @@ impl AdjudicatedGate {
                         .to_string(),
                 );
             }
-            f.push(
-                "the host filesystem is not sandboxed; §11.4's boundary arrives with firecode"
-                    .to_string(),
-            );
+            // **The fact about the boundary is the measured one** — see
+            // [`AdjudicatedGate::with_boundary`]. Three answers, and they are three different
+            // things a person deciding needs to know: a boundary that bounds this call, a
+            // boundary that was wanted and could not be built (with its reason), and no question
+            // asked at all.
+            f.push(match (&self.boundary, &self.boundary_refusal) {
+                (Some(b), _) => format!(
+                    "this call runs INSIDE a measured boundary on the host that owns these \
+                     files: {}. A path outside that view is ABSENT from it — not denied, not \
+                     there — so what the command cannot see, it cannot leak either{}",
+                    b.view.summary().replace('\n', "; "),
+                    if b.egress.allowed() {
+                        "; the network namespace is the host's, by the session's own rule"
+                    } else {
+                        "; it has no network at all"
+                    }
+                ),
+                (None, Some(why)) => format!(
+                    "the host filesystem is NOT sandboxed for this call, and confinement was \
+                     asked for and refused — {why}"
+                ),
+                (None, None) => {
+                    "the host filesystem is not sandboxed; §11.4's boundary arrives with firecode"
+                        .to_string()
+                }
+            });
             f
         };
         if creates && !network {

@@ -284,7 +284,7 @@ would remove:
 |---|---|
 | RH1 | hosts.toml; `SshBackend: ExecBackend` (run, read, write, list, stat, processes with remote jobs); `Placement::Remote(host)`; the git placement both ways; `task where: "host:NAME"`; `--host NAME` for a root session; the progress and seam lines; tests with a fake `ssh` (a script that runs the command locally against a temp "remote root"), never a real host |
 | RH2 | **done, but for the smoke test**: the bridge's `leticode_start { host }`, the host-name check, the placement record, and the refusal to reuse a daemon placed elsewhere (§ *As built (RH2)*). A live smoke test on lab2x1 is the orchestrator's, and nothing here contacted a host |
-| RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
+| RH3 | **done, but for per-host trust and a remote's GPU/model as the provider**: a remote command and every remote job run inside `bwrap` **on the host**, in the same view a local confined session gets; the probe is one round trip per host, cached; a host whose probe fails falls back to today's shape and says why; and `backend_confined` is read off the backend instead of being hardcoded `true` (§ *As built (RH3)*) |
 | RH6 | **done**: the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4; auth refusals made definite; `migrate`'s steps bounded; toolchains through `mise`; the `notes` tool's body exempt from the never-write list |
 | RH7 | harnessd's process supervisor: store records for every started process, the supervising loop, ownership teardown, restart recovery; `bash background` on it |
 | RH8 | `fanout` (growing into the matrix runner: capacity placement, interleaved reps, every-cell check, resume) and `scenario` (service fixtures) on the supervisor |
@@ -533,3 +533,93 @@ timeouts, which is the cost the breaker exists to remove.
   because the default probes *the machine running the test*: on a developer's Mac that finds the
   real `/opt/homebrew/bin/mise` behind the fake ssh and puts it in front of every assertion. The
   mise tests are the ones that name a path or plant `$HOME/.local/bin/mise`.
+
+## As built (RH3): a command on a host runs inside a boundary
+
+Written 2026-10-26. The measurement that asked for it: a session placed with `--host lab2x1` at
+`writes-allowed` asked the operator **over a hundred times** across one package — *"the remote
+side has no confinement, so every shell command is a decision"* — and an `allow_session` grant
+barely helps, because it is keyed on a pipeline's last program plus the exact intent set. A
+**local** Linux session's commands run inside `bwrap` (`crates/tools/src/exec/confine.rs`, Layer
+1) and the gate answers with a boundary behind them. This is the same thing, one machine over.
+
+* **One builder, two renderings.** `confine.rs`'s argv builder now produces `Piece`s — an ordinary
+  argument, or a fragment the **far** shell must expand — and each caller joins them for the medium
+  it has: `Bwrap::wrap` for a process this box starts, `Bwrap::remote_pieces` for a shell script on
+  another machine. The view, the egress decision, the two seals and the `--unshare-*` set are
+  spelled **once**. A second spelling of the binds is how a policy drifts, and the first cut of the
+  remote wrapper was that second spelling.
+* **Why the keep-list has to be the far shell's.** `--clearenv` puts back `KEEP_ENV`, and its values
+  are facts of the machine the command runs on: a Mac's `PATH` inside a Linux sandbox is a list of
+  directories that do not exist there. So the remote rendering emits `--setenv PATH "$PATH"` and
+  the role is played by the remote's own login shell, evaluated just before the helper runs.
+* **The probe is one round trip per host, and it is cached — including a negative answer.**
+  `Bwrap::probe` cannot be used: the helper is there, the namespaces are that kernel's, and the
+  denominator a readback is compared against is *that box's* `/proc/self/ns/*`, not this one's. So
+  `confine::probe_script` prints the helper's version, the **outer** inode map, the toolchain paths
+  that exist under that `$HOME`, and then the readback from inside the same argv a command will be
+  wrapped in; `read_probe` + `measured_from_probe` read it through the same `state_of` and the same
+  three refusals a local probe uses. Cached per host (`remote::CONFINE`) because the answer is a
+  fact about a kernel, not about a session; **a probe that did not answer is not cached**, because
+  remembering a timeout as a fact is how a session spends its life unconfined — while *`bwrap` is
+  not installed here* and *it ran and entered nothing* are facts, and are kept.
+* **The view, and the one thing deliberately not in it.** The checkout read-write at its own path;
+  the system roots read-only; the **toolchain read-only** at `~/.cargo`, `~/.rustup`, `~/.local/bin`,
+  `~/.local/{share,state}/mise`, `~/bin` and a `~/Projects/llama.cpp/build*` when one is there;
+  `~/.gitconfig` read-only, because without it every `git commit` inside the boundary fails with
+  *Author identity unknown* and the branch **is** the deliverable; and a `$HOME` that is letibot's
+  own directory (`<root>/.letibot-home/<short>`), never the operator's. The operator's ssh
+  directory is not on that list and cannot be: it is not a toolchain, RH5's refusal is about
+  letibot never reading it, and a view whose `$HOME` is not theirs does not contain it in the first
+  place. **A read-only cargo home cannot fetch a new dependency** — that is the stated cost, and the
+  answer to it is a wider view, not a writable operator cache.
+* **The toolchain variables travel.** Measured on `lab2x1`: with `$HOME` a fresh directory, `cargo`
+  is on `PATH` but `rustup` looks for its toolchain under `$HOME/.rustup` and answers *rustup could
+  not choose a version of cargo to run*. So `CARGO_HOME`/`RUSTUP_HOME` (and mise's two data/state
+  variables) are set to the grants, and the operator's toolchain works from a home that carries
+  nothing.
+* **No `--new-session` on a remote spawn, and that is load-bearing.** A group kill reaches the
+  processes that are in the group; `--new-session` moves the sandbox out of it, so `job_kill` would
+  end the launcher and leave the work running. The flag is now `exec::Session` — `Detached` for a
+  local job, `Kept` for a pane (its pty is its own) and for a remote command (its process group is
+  what an interrupt kills). Nothing is given up: a remote command's stdio is pipes and files, so
+  there is no terminal for `TIOCSTI` to reach.
+* **Jobs go through the same wrapper.** The launcher's `( … )` subshell now runs the helper's argv
+  with `/bin/sh -c '<command>'` after it, and a job's environment pairs travel as `--setenv` (they
+  would be discarded by `--clearenv` otherwise). The launcher is `setsid`'d, so the sandbox is in
+  the job's process group and `kill -TERM -<pid>` still reaches everything.
+* **The network is the session's rule, not a default.** `Egress::Denied` unless the point seats
+  network calls, in which case the boundary shares the host's namespace with the sentence that
+  decided it (`SshSpec::egress`). A session carrying `web_fetch` must not have its `curl` fail at
+  the socket after the gate said yes, and a session carrying none must not reach out because a
+  sandbox defaulted the other way.
+* **The gate: `backend_confined` is now read, not asserted.** The remote arm of `Harness::open`
+  hardcoded it to `true` — so a placement that confined nothing passed the mode's
+  `Prereq::Confinement` and could sit at `allow-all`, whose whole promise is that a structural
+  boundary is doing the deciding. It is now `in_vm || backend.boundary().is_some()`
+  (`ExecBackend::boundary`), which fixes the local confined seat the same way. A host whose probe
+  failed is unconfined: every call a decision, the banner and the placement note say why, and the
+  **card** says why — `AdjudicatedGate::with_boundary` replaces the fixed sentence *"the host
+  filesystem is not sandboxed; §11.4's boundary arrives with firecode"* with the measured view, or
+  with the probe's refusal, or with that old sentence when no question was asked at all.
+* **A confined session's file tools see what a command sees, and nothing else.** `read`, `write`,
+  `edit`, `list` and `glob` refuse a path the view does not contain (`BackendError::Outside`), and
+  admit one it does — the checkout, the system roots, the toolchain grants. **This is the half RH5's
+  refusal cannot reach on a placed session**: that rule resolves a path on *this* box, so a path on
+  the far machine resolves to nothing here and would pass it; a view has no such trouble. Before
+  this slice `root_path` answered `None` for every remote session — honest when there was no
+  boundary, wrong once there is one.
+* **What is still not confined, stated rather than left to be found.** The placement's own SSH
+  traffic (a bundle out, a branch back, the probe) runs as letibot's ssh invocation outside the
+  boundary, because it is this side's transport and not a session's command. A `--grant-ro` is a
+  path on **this** machine and is not carried into a remote view; the toolchain list is the remote's
+  own facts. And the operator's ssh directory is unreachable from a command because `$HOME` is not
+  theirs — which is stronger than a rule against reading it.
+* **Tests never contact a host.** `crates/tools/tests/remote_confine.rs` is RH1's pattern with a
+  `bwrap` shim behind the fake ssh: it answers `--version`, **fabricates the readback** in the
+  probe's own vocabulary, and otherwise runs the command after `--` with the
+  `--clearenv`/`--setenv` environment it was handed. So the assertions are about the argv that
+  crosses the connection — the binds, the `$HOME`, the absent `--new-session`, the toolchain at
+  read-only — and they hold on a Mac with no `bwrap` at all. The kernel itself is measured where it
+  always was: `tests/confine.rs` runs the real helper for a local spawn, and once, by hand, on
+  `lab2x1` for this slice.

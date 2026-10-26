@@ -100,6 +100,29 @@ pub trait ExecBackend: Send + Sync {
     /// `run(cmd, cwd, env) -> (stdout, stderr, exit)`.
     fn run(&self, cmd: &Command) -> Result<Output, BackendError>;
 
+    /// **The boundary this backend's commands run inside**, when it has one: the view and the
+    /// egress that were *measured*, not the ones that were asked for.
+    ///
+    /// This is the seam that makes *is this session confined* a fact read off the backend rather
+    /// than a field a caller sets. It matters twice: `harnessd` reads it as `backend_confined`
+    /// (which the mode's `Confinement` prerequisite and `allow-all` turn on), and the gate reads
+    /// it for the facts a card carries about where a call lands. Before RH3 the remote arm of
+    /// `Harness::open` hardcoded that answer to `true` for a placement that confined nothing.
+    ///
+    /// By value because a local backend's confinement can be *replaced* by a grant, so it lives
+    /// behind a lock and cannot be borrowed out of it.
+    fn boundary(&self) -> Option<crate::exec::Boundary> {
+        None
+    }
+
+    /// **Why a command here is not confined, when confinement was wanted and is not there** —
+    /// the probe's own reason, for the card and the banner. `None` means *no question was asked*
+    /// (an unconfined seat by choice), which is a different fact from *asked and the host could
+    /// not answer*.
+    fn boundary_refusal(&self) -> Option<String> {
+        None
+    }
+
     /// **Bind a path into this session's view**, after somebody decided it may be.
     ///
     /// Refusing is the right answer for a backend with no view — an unconfined
@@ -719,6 +742,13 @@ impl HostBackend {
 }
 
 impl ExecBackend for HostBackend {
+    /// **The boundary this backend's commands run inside**, read off the process host rather
+    /// than off the constructor that was called: a grant replaces the confinement, so the
+    /// measured one is the one that answers.
+    fn boundary(&self) -> Option<crate::exec::Boundary> {
+        self.processes.as_ref().and_then(|p| p.boundary())
+    }
+
     fn grant_into_view(
         &self,
         path: &Path,

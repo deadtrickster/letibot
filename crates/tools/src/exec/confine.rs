@@ -909,6 +909,84 @@ pub struct ConfinePlan<'a> {
     pub env: &'a [(String, String)],
 }
 
+/// **Whether the wrapped command gets a session of its own.**
+///
+/// One flag, two callers, and each one's reason is different — which is why it is a
+/// type with two variants rather than a bool (a bool called `controlling_terminal`
+/// was the first spelling, and it named only the pty's reason):
+///
+/// | variant | flag | who needs it |
+/// |---|---|---|
+/// | [`Session::Detached`] | `--new-session` | a job or a command this box spawns, so `TIOCSTI` cannot push characters back into the operator's shell |
+/// | [`Session::Kept`] | none | a program whose pty is its own (a `!term` pane), and **a command on another machine**, whose remote process group is what an interrupt kills |
+///
+/// The second row's remote half is the one that is not obvious: a group kill reaches a
+/// process that is in the group, and `--new-session` moves the sandbox (and everything it
+/// starts) out of it. `docs/remote-hosts.md`'s rule 6 is *an interrupt leaves nothing
+/// running there*, so the remote argv must not take the session away. Nothing is given up:
+/// a remote command's stdio is pipes and files, so there is no terminal for `TIOCSTI` to
+/// reach.
+///
+/// What it buys locally is [`SealKind`]'s and the pane's business, not this type's: the
+/// probe measures the namespaces and the two seals, and `setsid` is neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Session {
+    Detached,
+    Kept,
+}
+
+/// **One element of a command line, kept typed until it is joined.**
+///
+/// A local spawn is an `argv` — every element a literal, no shell in between. A spawn on
+/// another machine is a *shell script*: the far side's `bash -lc` splits it. The two are the
+/// same policy and must not become two builders (a second spelling of the binds is how a
+/// policy drifts), so the builder emits pieces and each caller joins them for the medium it
+/// has.
+///
+/// The distinction matters for exactly one thing, and getting it wrong is silent:
+/// `--setenv PATH "$PATH"` must reach the *far* shell as an expansion, and a literal
+/// `--setenv PATH '$PATH'` puts the five characters `$PATH` in the environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Piece {
+    /// An ordinary argument: quoted for whichever shell joins it.
+    Literal(String),
+    /// A fragment the **far** shell must expand — the keep-list's `"$PATH"`. Already
+    /// spelled for the shell it is going into, so a joiner passes it through.
+    Shell(String),
+}
+
+impl Piece {
+    fn literal(s: impl Into<String>) -> Piece {
+        Piece::Literal(s.into())
+    }
+}
+
+/// **Where the keep-list's values come from.**
+///
+/// [`KEEP_ENV`] is a keep-list rather than an unset-list, so its *values* have to be read
+/// somewhere, and the somewhere is not the same on both sides of an ssh connection: this
+/// Mac's `PATH` inside a Linux sandbox is a list of directories that do not exist there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvSource {
+    /// This process's own environment — a command this box spawns.
+    Process,
+    /// The **far** shell's, expanded there just before the helper runs.
+    Remote,
+}
+
+/// Join pieces into a POSIX shell command line: literals quoted, shell fragments as
+/// written.
+pub fn join(pieces: &[Piece]) -> String {
+    pieces
+        .iter()
+        .map(|p| match p {
+            Piece::Literal(s) => crate::remote::quote(s),
+            Piece::Shell(s) => s.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The seam, and the mirror of [`super::ScopeTree`]: lifetime is one mechanism,
 /// view is another, and a backend can have either without the other.
 pub trait Confinement: Send + Sync {
@@ -926,6 +1004,19 @@ pub trait Confinement: Send + Sync {
     /// [`Unconfined`] returns it, and [`Unconfined::describe`] says so in the same
     /// breath.
     fn wrap(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError>;
+
+    /// **[`Confinement::wrap`] as typed pieces**, for a caller whose command is a shell
+    /// script rather than an `argv` — a command on another machine.
+    ///
+    /// The default is [`Confinement::wrap`] with every element a [`Piece::Literal`], which
+    /// is what a confinement with no far side means.
+    fn wrap_pieces(
+        &self,
+        plan: &ConfinePlan<'_>,
+        _env: EnvSource,
+    ) -> Result<Vec<Piece>, ExecError> {
+        Ok(self.wrap(plan)?.into_iter().map(Piece::Literal).collect())
+    }
 
     /// Is this path outside the view? `false` when there is no view, because
     /// "outside" is meaningless then and answering `true` would produce a note
@@ -1187,39 +1278,15 @@ impl Bwrap {
 
         let mut ns = BTreeMap::new();
         for n in Namespace::ALL {
-            let want_shared = n == Namespace::Net && egress.allowed();
-            let state = match inside.get(n.proc_name()) {
-                None => NsState::NotEntered {
-                    why: format!(
-                        "`readlink /proc/self/ns/{}` printed nothing from inside, so \
-                         this namespace could not be confirmed and is treated as absent",
-                        n.proc_name()
-                    ),
-                },
-                Some(inode) if Some(inode) == mine.get(n.proc_name()) => {
-                    if want_shared {
-                        NsState::SharedByDecision {
-                            why: match &egress {
-                                Egress::Host { why } => why.clone(),
-                                Egress::Denied => "unreachable".into(),
-                            },
-                        }
-                    } else {
-                        NsState::NotEntered {
-                            why: format!(
-                                "the inode inside ({inode}) is the harness's own, so \
-                                 `--unshare-{}` did not take effect however the \
-                                 arguments read",
-                                unshare_flag(n)
-                            ),
-                        }
-                    }
-                }
-                Some(inode) => NsState::Entered {
-                    inode: inode.clone(),
-                },
-            };
-            ns.insert(n, state);
+            ns.insert(
+                n,
+                state_of(
+                    n,
+                    inside.get(n.proc_name()),
+                    mine.get(n.proc_name()),
+                    &egress,
+                ),
+            );
         }
 
         let boundary = Boundary {
@@ -1230,52 +1297,7 @@ impl Bwrap {
             seals: parse_seals(&text),
             measured_at: SystemTime::now(),
         };
-
-        // A seal measured **open** is the case the coordinator's survey caught and
-        // this brief did not originally ask for: mount, PID and network namespaces
-        // entered by a parent are not a boundary if the child can `unshare` its own.
-        // It refuses rather than describing itself as partial, because "partial"
-        // implies the part that is there still holds, and this is the part that
-        // makes the others hold.
-        if let Some((k, why)) = boundary.seals.iter().find_map(|(k, s)| match s {
-            Seal::Open { why } => Some((*k, why.clone())),
-            _ => None,
-        }) {
-            return Err(ExecError::NoConfinement(format!(
-                "the namespaces were entered but the boundary is not sealed: {k} is \
-                 OPEN — {why}. A process inside could step back out of the view its \
-                 parent built, which makes every namespace above it decoration. \
-                 `--disable-userns`/`--assert-userns-disabled` were passed to \
-                 `{}` and did not take. What was measured: {}",
-                helper.display(),
-                boundary.describe()
-            )));
-        }
-
-        // Fail closed on the three that are the boundary. A partial boundary in a
-        // non-required namespace is kept and *described* as partial; a missing
-        // required one is not a boundary at all, and running a command inside it
-        // while calling it confined is the defect this whole module is written
-        // against.
-        if !boundary.complete() {
-            let missing = Namespace::REQUIRED
-                .iter()
-                .filter(|n| !boundary.ns.get(n).map(|s| s.entered()).unwrap_or(false))
-                .map(|n| format!("{n} ({})", n.buys()))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(ExecError::NoConfinement(format!(
-                "the helper ran but did not enter every required namespace: {missing}. \
-                 Measured, not assumed — the inode read from inside matched the \
-                 harness's own. On a host with \
-                 `kernel.apparmor_restrict_unprivileged_userns=1` this is what a \
-                 direct `unshare` looks like; `/usr/bin/bwrap` needs its \
-                 `bwrap-userns-restrict` AppArmor profile loaded. What was measured: \
-                 {}",
-                boundary.describe()
-            )));
-        }
-        Ok(Bwrap { helper, boundary })
+        judged(helper, boundary)
     }
 
     /// The default confinement for a workspace root: project-only view, tmpfs
@@ -1283,6 +1305,339 @@ impl Bwrap {
     pub fn project(root: impl Into<PathBuf>) -> Result<Bwrap, ExecError> {
         Bwrap::probe(ViewSpec::project_only(root), Egress::Denied)
     }
+
+    /// **A boundary that was measured on ANOTHER machine**, out of what
+    /// [`probe_script`] printed there.
+    ///
+    /// A remote host's probe cannot be [`Bwrap::probe`]: the helper is on that machine, the
+    /// namespaces it enters are that kernel's, and the denominator the readback is compared
+    /// against is that box's own inodes rather than this one's. So the script prints both —
+    /// the outer `/proc/self/ns/*` of the shell that runs the helper, and the readback from
+    /// inside — and this reads them the same way, through [`state_of`] and the same three
+    /// refusals.
+    ///
+    /// **What is checked here and what is not.** The view's paths are checked at spawn and not
+    /// here: `Bwrap::probe` stats the project because a local view is built from this box's
+    /// paths, and a `--bind` of a path that is not there makes the helper fail with `bwrap: `
+    /// on stderr, which [`Confinement::launcher_failure`] turns into *the boundary failed, this
+    /// is not the command's answer*. A view whose root is missing is therefore refused as a
+    /// launcher failure naming the bind, which is the honest sentence — a client cannot stat
+    /// the far machine.
+    pub fn measured_on_a_host(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
+        judged(helper, boundary)
+    }
+}
+
+/// **One namespace's state**, from the inode read inside, the denominator read outside, and
+/// what the egress decision says.
+///
+/// Shared by the local probe and the remote one so that the two cannot disagree about what
+/// *entered* means — the comparison against the caller's own inode is the whole point of the
+/// readback, and a second spelling of it would be a second answer.
+fn state_of(
+    n: Namespace,
+    inside: Option<&String>,
+    mine: Option<&String>,
+    egress: &Egress,
+) -> NsState {
+    let want_shared = n == Namespace::Net && egress.allowed();
+    match inside {
+        None => NsState::NotEntered {
+            why: format!(
+                "`readlink /proc/self/ns/{}` printed nothing from inside, so \
+                 this namespace could not be confirmed and is treated as absent",
+                n.proc_name()
+            ),
+        },
+        Some(inode) if Some(inode) == mine => {
+            if want_shared {
+                NsState::SharedByDecision {
+                    why: match egress {
+                        Egress::Host { why } => why.clone(),
+                        Egress::Denied => "unreachable".into(),
+                    },
+                }
+            } else {
+                NsState::NotEntered {
+                    why: format!(
+                        "the inode inside ({inode}) is the harness's own, so \
+                         `--unshare-{}` did not take effect however the \
+                         arguments read",
+                        unshare_flag(n)
+                    ),
+                }
+            }
+        }
+        Some(inode) => NsState::Entered {
+            inode: inode.clone(),
+        },
+    }
+}
+
+/// **The three refusals a measurement has to survive**, for both sides of an ssh
+/// connection: a seal measured open, a required namespace missing, and the boundary that is
+/// left.
+fn judged(helper: PathBuf, boundary: Boundary) -> Result<Bwrap, ExecError> {
+    // A seal measured **open** is the case the coordinator's survey caught and
+    // this brief did not originally ask for: mount, PID and network namespaces
+    // entered by a parent are not a boundary if the child can `unshare` its own.
+    // It refuses rather than describing itself as partial, because "partial"
+    // implies the part that is there still holds, and this is the part that
+    // makes the others hold.
+    if let Some((k, why)) = boundary.seals.iter().find_map(|(k, s)| match s {
+        Seal::Open { why } => Some((*k, why.clone())),
+        _ => None,
+    }) {
+        return Err(ExecError::NoConfinement(format!(
+            "the namespaces were entered but the boundary is not sealed: {k} is \
+             OPEN — {why}. A process inside could step back out of the view its \
+             parent built, which makes every namespace above it decoration. \
+             `--disable-userns`/`--assert-userns-disabled` were passed to \
+             `{}` and did not take. What was measured: {}",
+            helper.display(),
+            boundary.describe()
+        )));
+    }
+
+    // Fail closed on the three that are the boundary. A partial boundary in a
+    // non-required namespace is kept and *described* as partial; a missing
+    // required one is not a boundary at all, and running a command inside it
+    // while calling it confined is the defect this whole module is written
+    // against.
+    if !boundary.complete() {
+        let missing = Namespace::REQUIRED
+            .iter()
+            .filter(|n| !boundary.ns.get(n).map(|s| s.entered()).unwrap_or(false))
+            .map(|n| format!("{n} ({})", n.buys()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(ExecError::NoConfinement(format!(
+            "the helper ran but did not enter every required namespace: {missing}. \
+             Measured, not assumed — the inode read from inside matched the \
+             shell's own. On a host with \
+             `kernel.apparmor_restrict_unprivileged_userns=1` this is what a \
+             direct `unshare` looks like; `/usr/bin/bwrap` needs its \
+             `bwrap-userns-restrict` AppArmor profile loaded. What was measured: \
+             {}",
+            boundary.describe()
+        )));
+    }
+    Ok(Bwrap { helper, boundary })
+}
+
+/// **What a probe of another machine found**, before any view is applied to it.
+///
+/// The parts are kept apart because they answer different questions and are cached
+/// together: *can this box confine at all* ([`HostProbe::helper`], [`HostProbe::version`],
+/// [`HostProbe::outer`], [`HostProbe::inside`], [`HostProbe::seals`]) and *what is there to
+/// put in the view* ([`HostProbe::home`], [`HostProbe::toolchains`]). The second half is why
+/// the paths in a remote [`ViewSpec`] can be absolute: `~/.cargo` is a fact about that
+/// machine's home, and a `~` in a bind is a literal `~`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostProbe {
+    /// Where the helper is **there**, as that shell spelled it. Empty means it is not there.
+    pub helper: String,
+    /// `bwrap --version`, first line.
+    pub version: String,
+    /// That machine's `$HOME`, from its own shell.
+    pub home: String,
+    /// The toolchain paths that exist there, absolute — the candidates [`GRANT_CANDIDATES`]
+    /// names, reduced to the ones that are really there.
+    pub toolchains: Vec<String>,
+    /// `/proc/self/ns/*` of the shell that ran the helper: the denominator.
+    pub outer: BTreeMap<String, String>,
+    /// The same, read from **inside** the boundary.
+    pub inside: BTreeMap<String, String>,
+    pub seals: BTreeMap<SealKind, Seal>,
+    /// Everything the helper and the readback said, for a refusal that has to quote it.
+    pub said: String,
+}
+
+/// **The paths a remote view holds read-only, by default** — the toolchain, and the one
+/// config file a commit cannot happen without.
+///
+/// Each entry is a path **under that machine's `$HOME`**, expanded there by the probe, and
+/// none of them is the home itself: a view that bound `$HOME` would put the operator's mail,
+/// their browser profile and their `.ssh` inside a sandbox whose whole purpose is to have none
+/// of that. `~/.ssh` is not on this list and cannot be: it is not a toolchain, and
+/// `docs/remote-hosts.md` RH5's refusal is about letibot never reading it.
+///
+/// * `.cargo` and `.rustup` — the Rust toolchain, and the registry that makes a build
+///   possible without the network. **Read-only, and the cost is stated**: a *new* dependency
+///   cannot be fetched into it from inside the boundary, so a build that needs one says so
+///   and the answer is a wider view, not a writable operator cache.
+/// * `.local/bin`, `.local/share/mise`, `.local/state/mise` — the tools the operator's
+///   machines install through mise, and the shims `PATH` already names.
+/// * `Project/llama.cpp/build*` — the one build tree a session that links against a local
+///   llama.cpp needs, and only when it is there. A glob with a fixed prefix, so it cannot
+///   reach anything but that.
+/// * `.gitconfig` — a commit made inside the boundary is recorded under the identity in this
+///   file; without it every `git commit` on a remote session fails with *Author identity
+///   unknown*, and the branch that comes back is the whole deliverable.
+pub const GRANT_CANDIDATES: &[&str] = &[
+    "$HOME/.cargo",
+    "$HOME/.rustup",
+    "$HOME/.local/bin",
+    "$HOME/.local/share/mise",
+    "$HOME/.local/state/mise",
+    "$HOME/bin",
+    "$HOME/.gitconfig",
+];
+
+/// The globbed candidate, kept separate because it is one: a fixed prefix and a `*`, never a
+/// walk.
+pub const GRANT_GLOBS: &[&str] = &[
+    "$HOME/Projects/llama.cpp/build",
+    "$HOME/Projects/llama.cpp/build-*",
+];
+
+/// **The one script a remote probe runs** — the same readback the local probe runs, plus the
+/// two facts a view needs (where that home is, which toolchain directories exist) and the
+/// denominator read *outside* the boundary.
+///
+/// The denominator is the whole reason this is a script rather than one command: an inode read
+/// from inside proves nothing without the number to compare it against, and on a remote that
+/// number is **that shell's**, not this daemon's.
+///
+/// `key=value` and `outer …` lines, as [`crate::remote::probe`] does, so the parser here has no
+/// opinions about the far side's locale. Nothing here writes: the placement has already made
+/// the checkout and the home directory, and a probe is still a question.
+pub fn probe_script(view: &ViewSpec, egress: &Egress) -> String {
+    let mut s = String::new();
+    s.push_str("b=$(command -v bwrap 2>/dev/null || true)\n");
+    s.push_str("echo \"helper=$b\"\n");
+    s.push_str("echo \"home=$HOME\"\n");
+    s.push_str("for d in");
+    for c in GRANT_CANDIDATES {
+        s.push_str(&format!(" \"{c}\""));
+    }
+    s.push_str("; do [ -e \"$d\" ] && echo \"have=$d\"; done\n");
+    s.push_str("for d in");
+    for c in GRANT_GLOBS {
+        s.push_str(&format!(" {c}"));
+    }
+    s.push_str("; do [ -d \"$d\" ] && echo \"have=$d\"; done\n");
+    s.push_str("if [ -n \"$b\" ]; then echo \"version=$(\"$b\" --version 2>&1 | head -1)\"; fi\n");
+    s.push_str(
+        "for n in user mnt pid net ipc uts cgroup; do \
+         printf 'outer %s %s\\n' \"$n\" \"$(readlink /proc/self/ns/$n)\"; done\n",
+    );
+    // The readback, inside the same argv a command will be wrapped in — the probe and the
+    // spawn share [`pieces_of`], so what was measured is what runs.
+    s.push_str("if [ -n \"$b\" ]; then\n");
+    let pieces = pieces_of(
+        Piece::Shell("\"$b\"".to_string()),
+        view,
+        egress,
+        &ConfinePlan {
+            cwd: &view.project,
+            env: &[],
+        },
+        Session::Detached,
+        EnvSource::Remote,
+    );
+    s.push_str(&join(&pieces));
+    s.push_str(&format!(" /bin/sh -c {}\n", crate::remote::quote(READBACK)));
+    s.push_str("else echo 'bwrap: no helper on this host' >&2; fi\n");
+    s
+}
+
+/// **Read [`probe_script`]'s output** — or the sentence that says why it is not an answer.
+///
+/// A helper that is not there is a **fact** and is returned as [`HostProbe::helper`] empty;
+/// a helper that ran and did not enter the namespaces is a refusal from
+/// [`Bwrap::measured_on_a_host`], not from here, because that judgement is [`judged`]'s and
+/// must not exist twice.
+pub fn read_probe(said: &str) -> HostProbe {
+    let mut p = HostProbe {
+        said: said.to_string(),
+        seals: parse_seals(said),
+        ..HostProbe::default()
+    };
+    let mut inside_text = String::new();
+    for line in said.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.starts_with("ns ") {
+            // The readback's own lines, collected for `parse_readback` — the one parser
+            // for them, so the remote readback is read by the same code as the local one.
+            inside_text.push_str(line);
+            inside_text.push('\n');
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("outer ") {
+            let mut it = rest.split_whitespace();
+            if let (Some(n), Some(inode)) = (it.next(), it.next()) {
+                p.outer.insert(n.to_string(), inode.to_string());
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "helper" => p.helper = value.to_string(),
+            "version" => p.version = value.to_string(),
+            "home" => p.home = value.to_string(),
+            "have" if !value.is_empty() => p.toolchains.push(value.to_string()),
+            _ => {}
+        }
+    }
+    p.inside = parse_readback(&inside_text);
+    p
+}
+
+/// The boundary a [`HostProbe`] measured, applied to the view this session needs.
+///
+/// The refusals are [`judged`]'s, so a remote host that cannot enter the namespaces is
+/// refused with the same sentence a local one is — and the fallback to *unconfined, and the
+/// card says why* is the caller's ([`crate::remote`]), not this function's.
+pub fn measured_from_probe(
+    probe: &HostProbe,
+    view: ViewSpec,
+    egress: Egress,
+) -> Result<Bwrap, ExecError> {
+    if probe.helper.trim().is_empty() {
+        return Err(ExecError::NoConfinement(
+            "`bwrap` is not on `PATH` there. Layer 1's namespaces are entered through \
+             bubblewrap rather than a direct `unshare` because this crate has no `libc`, and \
+             because a host with `kernel.apparmor_restrict_unprivileged_userns=1` denies \
+             `CAP_SYS_ADMIN` in a freshly created user namespace — `/usr/bin/bwrap` has the \
+             `bwrap-userns-restrict` profile that permits it. Install it there (`apt install \
+             bubblewrap`) and ask again. Nothing was run confined, and nothing was run in a \
+             way that claimed to be."
+                .to_string(),
+        ));
+    }
+    let mut ns = BTreeMap::new();
+    for n in Namespace::ALL {
+        ns.insert(
+            n,
+            state_of(
+                n,
+                probe.inside.get(n.proc_name()),
+                probe.outer.get(n.proc_name()),
+                &egress,
+            ),
+        );
+    }
+    let boundary = Boundary {
+        mechanism: if probe.version.is_empty() {
+            "bubblewrap (version unknown)".to_string()
+        } else {
+            probe.version.clone()
+        },
+        // **The egress as asked for, and the network namespace as measured.** The two are
+        // kept apart on purpose: if a run asked for the host's network and came back with a
+        // network namespace of its own, the [`NsState`] says `entered` and a reader sees that
+        // the decision did not take — where rewriting the egress here would hide it.
+        egress,
+        view,
+        ns,
+        seals: probe.seals.clone(),
+        measured_at: SystemTime::now(),
+    };
+    Bwrap::measured_on_a_host(PathBuf::from(probe.helper.trim()), boundary)
 }
 
 impl Confinement for Bwrap {
@@ -1295,11 +1650,24 @@ impl Confinement for Bwrap {
     }
 
     fn wrap(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
-        self.wrap_with(plan, false)
+        self.wrap_with(plan, Session::Detached)
     }
 
     fn wrap_terminal(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
-        self.wrap_with(plan, true)
+        self.wrap_with(plan, Session::Kept)
+    }
+
+    fn wrap_pieces(&self, plan: &ConfinePlan<'_>, env: EnvSource) -> Result<Vec<Piece>, ExecError> {
+        match env {
+            // The far side's own shell supplies the keep-list; the session is the
+            // remote one, so a group kill still reaches the sandbox — see [`Session`].
+            EnvSource::Remote => self.remote_pieces(plan, Session::Kept),
+            EnvSource::Process => Ok(self
+                .wrap_with(plan, Session::Detached)?
+                .into_iter()
+                .map(Piece::Literal)
+                .collect()),
+        }
     }
 
     fn outside_view(&self, path: &Path) -> bool {
@@ -1340,19 +1708,53 @@ impl Confinement for Bwrap {
 }
 
 impl Bwrap {
-    /// [`Confinement::wrap`] and [`Confinement::wrap_terminal`], which differ by one flag: see
-    /// the latter for why a pane keeps its controlling terminal.
+    /// [`Confinement::wrap`] and [`Confinement::wrap_terminal`] (and a command on
+    /// another machine), which differ by one flag: [`Session`].
     ///
-    /// **The probe measured the argv WITH `--new-session`**, and the terminal argv is that argv
+    /// **The probe measured the argv WITH `--new-session`**, and every other argv is that argv
     /// less the one flag. What the probe reads — which namespaces were entered, and the two
     /// seals — does not depend on the session: `setsid` is not a namespace and neither seal is
-    /// granted or withheld by it. So the boundary [`Boundary::describe`] reports is the one the
-    /// pane runs in; the difference is stated here rather than measured twice.
+    /// granted or withheld by it. So the boundary [`Boundary::describe`] reports is the one every
+    /// spawn runs in; the difference is stated here rather than measured twice.
     fn wrap_with(
         &self,
         plan: &ConfinePlan<'_>,
-        controlling_terminal: bool,
+        session: Session,
     ) -> Result<Vec<String>, ExecError> {
+        self.check(plan)?;
+        Ok(build_argv_with(
+            &self.helper,
+            &self.boundary.view,
+            &self.boundary.egress,
+            plan,
+            session,
+        ))
+    }
+
+    /// **[`Confinement::wrap_pieces`], the far side's rendering**: the same view, the same
+    /// egress and the same session flag, with the keep-list taken from the shell that runs
+    /// the helper there rather than from this process.
+    ///
+    /// This is the one function a command on another machine is wrapped by. It is `Bwrap`'s
+    /// and not the backend's so that there is exactly one spelling of the binds.
+    pub fn remote_pieces(
+        &self,
+        plan: &ConfinePlan<'_>,
+        session: Session,
+    ) -> Result<Vec<Piece>, ExecError> {
+        self.check(plan)?;
+        Ok(pieces_of(
+            Piece::literal(self.helper.display().to_string()),
+            &self.boundary.view,
+            &self.boundary.egress,
+            plan,
+            session,
+            EnvSource::Remote,
+        ))
+    }
+
+    /// The two refusals every wrap makes, for both renderings.
+    fn check(&self, plan: &ConfinePlan<'_>) -> Result<(), ExecError> {
         // Belt and braces against the one mistake that matters: a `Bwrap` whose
         // boundary lost a required namespace between the probe and now cannot
         // produce an argv. There is no code path that mutates it, which is exactly
@@ -1370,13 +1772,12 @@ impl Bwrap {
                 view: self.boundary.view.summary(),
             });
         }
-        Ok(build_argv_with(
-            &self.helper,
-            &self.boundary.view,
-            &self.boundary.egress,
-            plan,
-            controlling_terminal,
-        ))
+        Ok(())
+    }
+
+    /// **The helper this boundary was measured with**, as the far side spells it.
+    pub fn helper(&self) -> &Path {
+        &self.helper
     }
 }
 
@@ -1435,7 +1836,23 @@ fn build_argv(
     egress: &Egress,
     plan: &ConfinePlan<'_>,
 ) -> Vec<String> {
-    build_argv_with(helper, view, egress, plan, false)
+    pieces_of(
+        Piece::literal(helper.display().to_string()),
+        view,
+        egress,
+        plan,
+        Session::Detached,
+        EnvSource::Process,
+    )
+    .into_iter()
+    .map(|p| match p {
+        Piece::Literal(s) => s,
+        // Unreachable by construction: [`EnvSource::Process`] never emits a shell
+        // fragment, and a fragment in an argv would be a literal `$PATH` in the
+        // environment rather than a bug worth panicking over.
+        Piece::Shell(s) => s,
+    })
+    .collect()
 }
 
 /// [`build_argv`], and for a pane the same argv without `--new-session` — see
@@ -1445,18 +1862,50 @@ fn build_argv_with(
     view: &ViewSpec,
     egress: &Egress,
     plan: &ConfinePlan<'_>,
-    controlling_terminal: bool,
+    session: Session,
 ) -> Vec<String> {
-    let mut a: Vec<String> = vec![helper.display().to_string()];
-    let mut push = |s: &str| a.push(s.to_string());
+    pieces_of(
+        Piece::literal(helper.display().to_string()),
+        view,
+        egress,
+        plan,
+        session,
+        EnvSource::Process,
+    )
+    .into_iter()
+    .map(|p| match p {
+        Piece::Literal(s) => s,
+        Piece::Shell(s) => s,
+    })
+    .collect()
+}
 
-    push("--unshare-user");
-    push("--unshare-pid");
-    push("--unshare-ipc");
-    push("--unshare-uts");
-    push("--unshare-cgroup");
+/// **The one builder**, in pieces: the local argv, the pane's argv and a command on
+/// another machine all come out of this function.
+///
+/// `helper` is a [`Piece`] rather than a path because a remote probe has to spell it
+/// `"$(command -v bwrap)"` — the helper's location is a fact of the far machine and is not
+/// known here until that script has run.
+fn pieces_of(
+    helper: Piece,
+    view: &ViewSpec,
+    egress: &Egress,
+    plan: &ConfinePlan<'_>,
+    session: Session,
+    env: EnvSource,
+) -> Vec<Piece> {
+    let mut a: Vec<Piece> = vec![helper];
+    fn arg(a: &mut Vec<Piece>, s: impl Into<String>) {
+        a.push(Piece::literal(s));
+    }
+
+    arg(&mut a, "--unshare-user");
+    arg(&mut a, "--unshare-pid");
+    arg(&mut a, "--unshare-ipc");
+    arg(&mut a, "--unshare-uts");
+    arg(&mut a, "--unshare-cgroup");
     if !egress.allowed() {
-        push("--unshare-net");
+        arg(&mut a, "--unshare-net");
     }
     // **Seal the boundary against a child stepping out of it.** See
     // [`SealKind::NestedNamespaces`]: without this, `unshare(CLONE_NEWUSER)` is
@@ -1465,63 +1914,64 @@ fn build_argv_with(
     // view the parent built. `--assert-userns-disabled` makes the helper refuse
     // rather than run if the seal did not take, which is the fail-closed half — and
     // the probe measures it anyway, because a flag is a request.
-    push("--disable-userns");
-    push("--assert-userns-disabled");
+    arg(&mut a, "--disable-userns");
+    arg(&mut a, "--assert-userns-disabled");
     // If the harness dies, this dies. A third mechanism on top of the cgroup and
     // the join script, and it is free.
-    push("--die-with-parent");
+    arg(&mut a, "--die-with-parent");
     // No controlling terminal, so `TIOCSTI` cannot push characters back into the
-    // operator's shell. Safe here because a job's stdio is pipes — and kept off for a
-    // pane, whose pty is its own: see `Confinement::wrap_terminal`.
-    if !controlling_terminal {
-        push("--new-session");
+    // operator's shell. Safe here because a job's stdio is pipes — kept off for a
+    // pane, whose pty is its own, and for a remote command, whose process group an
+    // interrupt has to be able to kill: see [`Session`].
+    if session == Session::Detached {
+        arg(&mut a, "--new-session");
     }
 
     // The system roots, read-only and `-try`: a host without `/lib64` is not a
     // failure, and a merged-`/usr` host has symlinks where a split one has
     // directories.
     for p in &view.system {
-        push("--ro-bind-try");
-        push(&p.display().to_string());
-        push(&p.display().to_string());
+        arg(&mut a, "--ro-bind-try");
+        arg(&mut a, p.display().to_string());
+        arg(&mut a, p.display().to_string());
     }
     // The kernel interfaces a process needs to be a process. `--proc` is the one
     // that makes the PID namespace visible as isolation rather than as a lie:
     // without it the sandbox would read the host's `/proc` and see every pid.
-    push("--proc");
-    push("/proc");
-    push("--dev");
-    push("/dev");
-    push("--tmpfs");
-    push("/tmp");
-    push("--tmpfs");
-    push("/var/tmp");
-    push("--tmpfs");
-    push("/run");
+    arg(&mut a, "--proc");
+    arg(&mut a, "/proc");
+    arg(&mut a, "--dev");
+    arg(&mut a, "/dev");
+    arg(&mut a, "--tmpfs");
+    arg(&mut a, "/tmp");
+    arg(&mut a, "--tmpfs");
+    arg(&mut a, "/var/tmp");
+    arg(&mut a, "--tmpfs");
+    arg(&mut a, "/run");
 
     // The project, read-write, **at its own path**.
-    push("--bind");
-    push(&view.project.display().to_string());
-    push(&view.project.display().to_string());
+    arg(&mut a, "--bind");
+    arg(&mut a, view.project.display().to_string());
+    arg(&mut a, view.project.display().to_string());
 
     for g in &view.grants {
         match g {
             Grant::ReadOnly { path, .. } => {
-                push("--ro-bind");
-                push(&path.display().to_string());
-                push(&path.display().to_string());
+                arg(&mut a, "--ro-bind");
+                arg(&mut a, path.display().to_string());
+                arg(&mut a, path.display().to_string());
             }
             Grant::ReadWrite { path, .. } => {
-                push("--bind");
-                push(&path.display().to_string());
-                push(&path.display().to_string());
+                arg(&mut a, "--bind");
+                arg(&mut a, path.display().to_string());
+                arg(&mut a, path.display().to_string());
             }
             Grant::AgentSocket { path, .. } => {
                 // Bound at a fixed path so `SSH_AUTH_SOCK` inside does not carry
                 // the operator's `/run/user/<uid>/…` out into the transcript.
-                push("--bind");
-                push(&path.display().to_string());
-                push(AGENT_SOCKET);
+                arg(&mut a, "--bind");
+                arg(&mut a, path.display().to_string());
+                arg(&mut a, AGENT_SOCKET);
             }
         }
     }
@@ -1529,53 +1979,64 @@ fn build_argv_with(
     let home = match &view.home {
         HomeView::Tmpfs => TMPFS_HOME.to_string(),
         HomeView::Dir(d) => {
-            push("--bind");
-            push(&d.display().to_string());
-            push(&d.display().to_string());
+            arg(&mut a, "--bind");
+            arg(&mut a, d.display().to_string());
+            arg(&mut a, d.display().to_string());
             d.display().to_string()
         }
     };
     if matches!(view.home, HomeView::Tmpfs) {
         // `/run` is already a tmpfs above; this is the directory inside it.
-        push("--dir");
-        push(TMPFS_HOME);
+        arg(&mut a, "--dir");
+        arg(&mut a, TMPFS_HOME);
     }
 
     // **Clear, then put back a keep-list.** See `KEEP_ENV`: absence beats denial
     // applied to the environment.
-    push("--clearenv");
+    arg(&mut a, "--clearenv");
     for k in KEEP_ENV {
-        if let Ok(v) = std::env::var(k) {
-            push("--setenv");
-            push(k);
-            push(&v);
+        match env {
+            EnvSource::Process => {
+                if let Ok(v) = std::env::var(k) {
+                    arg(&mut a, "--setenv");
+                    arg(&mut a, *k);
+                    arg(&mut a, v);
+                }
+            }
+            // Expanded by the shell that runs the helper — the far one — because the
+            // value has to be that machine's.
+            EnvSource::Remote => {
+                arg(&mut a, "--setenv");
+                arg(&mut a, *k);
+                a.push(Piece::Shell(format!("\"${k}\"")));
+            }
         }
     }
-    push("--setenv");
-    push("HOME");
-    push(&home);
+    arg(&mut a, "--setenv");
+    arg(&mut a, "HOME");
+    arg(&mut a, home);
     if view
         .grants
         .iter()
         .any(|g| matches!(g, Grant::AgentSocket { .. }))
     {
-        push("--setenv");
-        push("SSH_AUTH_SOCK");
-        push(AGENT_SOCKET);
+        arg(&mut a, "--setenv");
+        arg(&mut a, "SSH_AUTH_SOCK");
+        arg(&mut a, AGENT_SOCKET);
     }
     // The caller's own environment last, so an explicit request wins over the
     // keep-list.
     for (k, v) in plan.env {
-        push("--setenv");
-        push(k);
-        push(v);
+        arg(&mut a, "--setenv");
+        arg(&mut a, k);
+        arg(&mut a, v);
     }
 
-    push("--chdir");
-    push(&plan.cwd.display().to_string());
+    arg(&mut a, "--chdir");
+    arg(&mut a, plan.cwd.display().to_string());
     // Everything after this is the command, never an option, whatever it is
     // spelled like. A command beginning `--` would otherwise be read by the helper.
-    push("--");
+    arg(&mut a, "--");
     a
 }
 
