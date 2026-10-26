@@ -351,6 +351,12 @@ fn usage() -> String {
      \x20 --idle-exit 3600          seconds with no head, turn, job, subagent, monitor\n\
      \x20                           or queue work after which the daemon exits; its\n\
      \x20                           sessions stay in the store. 0 never exits\n\
+      \x20 --no-queue                serve NO merge or review queue: no lease is\n\
+      \x20                           claimed, no target gated and no branch landed\n\
+      \x20                           here, and this daemon's sessions are told no\n\
+      \x20                           queue news (a package worker must not be set\n\
+      \x20                           to fixing a `main` nobody asked it about). The\n\
+      \x20                           store watcher stays, so a head still moves\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
@@ -782,6 +788,18 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 let secs: u64 = next()?.parse().map_err(|e| format!("--idle-exit: {e}"))?;
                 cfg.idle_exit_after = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
+            // **A daemon that serves no queue.** The merge and review queues belong to the
+            // repository's session daemons, which means a daemon the Claude Code bridge starts
+            // in a package's worktree is one of them by construction — and on 2026-10-26 the one
+            // started for package P1 took letibot's lease, found `main` red, and put an
+            // EMERGENCY in front of the package's model before its brief. A package worker is
+            // not the repository's queue holder and must not be told to fix its `main`.
+            //
+            // It changes two things and nothing else: no `QueueService` is spawned (so no lease
+            // is claimed, no gate is run and no landing happens here), and a `Harness` composes
+            // no model-facing queue notice (see `Config::serve_queues`). The store watcher
+            // stays, so a head attached here still redraws when another daemon moves a row.
+            "--no-queue" => cfg.serve_queues = false,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not
             // have to be the model doing the work, and on this fleet it should not

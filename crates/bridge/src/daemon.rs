@@ -224,6 +224,16 @@ fn daemon_binary() -> Result<PathBuf, String> {
 /// (`docs/claude-code-bridge.md`) is `writes-allowed` plus the gate's asks reaching this
 /// head — a daemon started at `always-ask` with no shell would ask about nothing and do
 /// nothing.
+///
+/// **And `--no-queue`, which the launcher never passes.** A daemon the bridge starts on a
+/// package's worktree is one of that repository's session daemons by the queue's own rule
+/// (`mergequeue::serves`: the checkout, under it, or one of its worktrees), so without the
+/// flag it claims the repository's lease and runs the queue itself: on 2026-10-26 the daemon
+/// started for package P1 found letibot's `main` red and put an EMERGENCY in front of the
+/// package's model before its brief. A package worker is not the repository's queue holder —
+/// the operator's own daemon is — and two daemons interleaving landings for one repository is
+/// the second half of that defect. A daemon that is already up is not this call's to change;
+/// `ensure` returns it as it is.
 fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--workspace".into(),
@@ -242,6 +252,8 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str) -> Vec<String> {
         "--mode".into(),
         mode.into(),
         "--bash".into(),
+        // See this function's doc: a package's daemon serves no queue.
+        "--no-queue".into(),
     ];
     if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
         // `deepseek`, `glm`, `grok` are providers (the turns leave the box); anything else
@@ -426,6 +438,23 @@ mod tests {
     fn a_folder_that_is_not_there_is_refused() {
         let e = resolve(Path::new("/definitely/not/a/checkout")).expect_err("refused");
         assert!(e.contains("definitely/not/a/checkout"), "{e}");
+    }
+
+    /// **A package's daemon serves no queue.** The flag is not a nicety: without it the daemon
+    /// in a package's worktree is one of the repository's session daemons, takes its lease and
+    /// tells the package's model to fix `main` (2026-10-26). Asserted on the argument list
+    /// rather than on a started daemon, because what has to hold is the flag every start
+    /// carries — `ensure` does not touch a daemon that is already up.
+    #[test]
+    fn every_daemon_the_bridge_starts_serves_no_queue() {
+        let d = a_daemon();
+        for model in [None, Some("deepseek"), Some("qwen-3.8-27b")] {
+            let args = daemon_args(&d, model, "writes-allowed");
+            assert!(
+                args.iter().any(|a| a == "--no-queue"),
+                "a daemon started without --no-queue claims the repository's lease: {args:?}"
+            );
+        }
     }
 
     /// A provider is `--provider NAME`; anything else is the local binding `--model`. The

@@ -9218,7 +9218,23 @@ impl Harness {
         crate::pr_watch::told(url, &armed, &refused)
     }
 
+    /// **Whether the queues' news is this daemon's to tell a model.** False under `--no-queue`
+    /// ([`Config::serve_queues`]), and it is the whole of the model-facing half of that flag: a
+    /// daemon that holds no lease composes no sentence about a lease — not the emergency
+    /// ([`Harness::queue_emergency_notices`]), not the project's missing gate
+    /// ([`Harness::queue_notices`]), not a branch handed back to it
+    /// ([`Harness::handover_notices`]) — because every one of them would be about work another
+    /// daemon owns, and a package worker told to fix a red `main` is the defect the flag exists
+    /// for (2026-10-26). The heads still draw the queue's alerts from the watcher; only the
+    /// model's copy is withheld.
+    fn queue_news_is_mine(&self) -> bool {
+        self.cfg.serve_queues
+    }
+
     pub fn queue_notices(&mut self) -> Vec<String> {
+        if !self.queue_news_is_mine() {
+            return Vec::new();
+        }
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
@@ -9276,6 +9292,9 @@ impl Harness {
     /// The queue's worker rings the session (`QueueDoor::ring_repository` / `ring_project`); these
     /// are the words its wake reads.
     pub fn queue_emergency_notices(&mut self) -> Vec<String> {
+        if !self.queue_news_is_mine() {
+            return Vec::new();
+        }
         let me = self.hub.session_id();
         if self.is_the_queue() {
             return Vec::new();
@@ -9377,6 +9396,9 @@ impl Harness {
     /// per-project option, `[queue] merge_via_session = true`): a review that could not run, so
     /// the project gates and merges the branch itself — told once, read off the row.
     pub fn handover_notices(&mut self) -> Vec<String> {
+        if !self.queue_news_is_mine() {
+            return Vec::new();
+        }
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
             return Vec::new();

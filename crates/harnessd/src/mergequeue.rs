@@ -435,7 +435,15 @@ impl RegistryDoor {
     }
 }
 
-/// **Start the queues for a daemon** — `None` with no `--store` (the queues live in the store).
+/// **Start the queues for a daemon** — `None` with no `--store` (the queues live in the store),
+/// and `None` under `--no-queue` ([`crate::config::Config::serve_queues`]).
+///
+/// The watcher is spawned in both cases and the supervisor only without the flag: a daemon that
+/// serves no queue still has heads that must redraw when another daemon moves a row (`watch`),
+/// and it is the claiming of a lease, the gating of a target and the landing of a branch that
+/// `--no-queue` takes away. A package worker's daemon is one of the repository's session daemons
+/// by the queue's own rule, so it would take the lease and tell its model to fix `main`
+/// (2026-10-26); it must not.
 pub fn spawn_for(
     cfg: &crate::config::Config,
     stop: Arc<AtomicBool>,
@@ -464,6 +472,17 @@ pub fn spawn_for(
         ) {
             eprintln!("  queues: other daemons' moves will not be heard here: {e}");
         }
+    }
+    if !cfg.serve_queues {
+        // The line the daemon's log carries, which is where an operator asks why nothing lands
+        // from this daemon: the flag, why it exists, and what still works here.
+        eprintln!(
+            "  queues: this daemon serves NO queue (--no-queue) — it neither claims a merge-queue \
+             lease nor gates a target nor lands a branch, so a package worker cannot be set to \
+             fixing a `main` nobody asked it about; other daemons' moves are still relayed to its \
+             heads"
+        );
+        return None;
     }
     let service = serve::QueueService::new(store_path, &cfg.workspace, env);
     match service.spawn(stop) {

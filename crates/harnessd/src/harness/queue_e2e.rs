@@ -767,6 +767,185 @@ fn a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_
 
 // ===== A refusal, at the end that reaches a model =====
 
+/// **A `--no-queue` daemon tells its sessions' models nothing about the queue** — not the red
+/// target, not the target with no gate, not a branch handed back — and the store in this test is
+/// the same store a daemon that DOES serve the queues is told from, so the assertions are about
+/// the flag and not about a store with nothing in it.
+///
+/// The defect (`docs/claude-code-bridge.md`, 2026-10-26): the daemon the Claude Code bridge
+/// started for package P1 in a fresh worktree of this repository is one of its session daemons by
+/// the queue's own rule, so it took letibot's lease and put an EMERGENCY in front of the package's
+/// model before its brief. [`Harness::queue_emergency_notices`], [`Harness::queue_notices`] and
+/// [`Harness::handover_notices`] are every model-facing queue notice there is, and this is the
+/// one place all three are checked against the flag.
+///
+/// No vocabulary is needed: a session with no GGUF and no provider opens on the byte vocabulary
+/// (`Parts::load`), and this test runs no turn.
+#[test]
+fn a_no_queue_daemon_tells_its_sessions_nothing_about_the_queues() {
+    use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
+    let dir = TempDir::new("letibot-no-queue-notices");
+    let db = dir.path().join("sessions.db");
+    let (root, _base, _) = repo_with_children(dir.path(), &[]);
+    let repository = std::fs::canonicalize(&root).unwrap().display().to_string();
+    let mut cfg = Config::for_this_box(dir.path());
+    cfg.store = Some(db.clone());
+    let parts = Parts::load(&cfg).expect("the byte vocabulary needs no apparatus");
+    let s = Store::open(&db).expect("the store opens");
+
+    // A red target, with the failing step a real gate would have left.
+    s.set_target_health(
+        &TargetHealth {
+            repository: repository.clone(),
+            target: "main".into(),
+            sha: "8b9366aa12ffffffffffffffffffffffffffffff".into(),
+            state: HealthState::Red,
+            checked_ms: 1,
+            evidence: "`scripts/merge_gate.sh` failed".into(),
+            gate_steps: vec![MergeGateStep {
+                command: "scripts/merge_gate.sh".into(),
+                outcome: MergeGateOutcome::Failed,
+                output: "merge gate: FAIL".into(),
+                started_ms: 0,
+                elapsed_ms: 0,
+            }],
+        },
+        "test",
+    )
+    .unwrap();
+    // And a second target with no gate declared, which is `Harness::queue_notices`'s notice.
+    s.set_target_health(
+        &TargetHealth {
+            repository: repository.clone(),
+            target: "next".into(),
+            sha: "1111111111111111111111111111111111111111".into(),
+            state: HealthState::Blocked,
+            checked_ms: 2,
+            evidence: format!(
+                "{}: no `## Merge gate` section in AGENTS.md",
+                crate::mergequeue::WAITING_FOR_GATE
+            ),
+            gate_steps: vec![],
+        },
+        "test",
+    )
+    .unwrap();
+    // One session's rows each: the waiting one, and one the queue handed back to it.
+    let rows = |session: &str| {
+        let waiting = format!("waiting-{session}");
+        s.enqueue_review(
+            &NewReview {
+                id: waiting.clone(),
+                repository: repository.clone(),
+                target: "next".into(),
+                kind: ReviewKind::Branch,
+                session_id: session.into(),
+                branch: format!("agent/{session}"),
+                worktree: None,
+                base_sha: "base".into(),
+                head_sha: "head".into(),
+                brief: "the ask".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            1,
+        )
+        .unwrap();
+        let handed = format!("handed-{session}");
+        s.enqueue_review(
+            &NewReview {
+                id: handed.clone(),
+                repository: repository.clone(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: session.into(),
+                branch: format!("agent/{session}-handed"),
+                worktree: None,
+                base_sha: "base".into(),
+                head_sha: "head".into(),
+                brief: "the ask".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            1,
+        )
+        .unwrap();
+        assert!(
+            s.move_review(
+                &handed,
+                ReviewState::Waiting,
+                ReviewState::Blocked,
+                &Move::new(
+                    "queue",
+                    format!(
+                        "{}: no reviewer could start",
+                        crate::mergequeue::HANDED_TO_PROJECT
+                    )
+                ),
+                2,
+            )
+            .unwrap()
+        );
+    };
+    rows("s-pkg");
+    rows("s-proj");
+
+    // The package's daemon first: while every notice below is still DUE in this store.
+    let pkg_registry = SessionRegistry::new();
+    pkg_registry
+        .create("s-pkg", "", SessionWiring::default())
+        .expect("the package's session registers");
+    let mut pkg_cfg = cfg.clone();
+    pkg_cfg.session_id = "s-pkg".into();
+    pkg_cfg.serve_queues = false;
+    let mut package =
+        Sessions::open_first(&parts, pkg_cfg, pkg_registry).expect("the package's session opens");
+    {
+        let package = package.held("s-pkg").expect("the package's session");
+        assert!(
+            package.queue_emergency_notices().is_empty(),
+            "a --no-queue daemon tells its model nothing about a red main"
+        );
+        assert!(
+            package.queue_notices().is_empty(),
+            "nor that its target has no gate"
+        );
+        assert!(
+            package.handover_notices().is_empty(),
+            "nor that a branch was handed back to it"
+        );
+    }
+
+    // The same store, a daemon that serves the queues: all three ARE due, so the three
+    // assertions above are the flag's and not the fixture's.
+    let proj_registry = SessionRegistry::new();
+    proj_registry
+        .create("s-proj", "", SessionWiring::default())
+        .expect("the project's session registers");
+    let mut proj_cfg = cfg.clone();
+    proj_cfg.session_id = "s-proj".into();
+    let mut project =
+        Sessions::open_first(&parts, proj_cfg, proj_registry).expect("the project's session opens");
+    let project = project.held("s-proj").expect("the project's session");
+    let said = project.queue_emergency_notices();
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(said[0].starts_with("EMERGENCY"), "{}", said[0]);
+    let no_gate = project.queue_notices();
+    assert_eq!(no_gate.len(), 1, "{no_gate:#?}");
+    assert!(
+        no_gate[0].contains("no `Merge gate` section"),
+        "{}",
+        no_gate[0]
+    );
+    let handed = project.handover_notices();
+    assert_eq!(handed.len(), 1, "{handed:#?}");
+    assert!(handed[0].contains("agent/s-proj-handed"), "{}", handed[0]);
+}
+
 /// **A review row of the child `s-parent-sub-1`, under this fixture's `s-parent`**, with the
 /// child's session row naming its parent — the root is only reachable by walking the store, so a
 /// row written as its own root would pass whether the walk worked or not.

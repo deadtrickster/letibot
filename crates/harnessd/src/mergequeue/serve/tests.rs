@@ -1844,6 +1844,65 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
     );
 }
 
+/// **`--no-queue`: a daemon seated in a package's worktree serves no queue** — it claims no
+/// lease and gates nothing — and the flag is the whole of the difference, because the same tree
+/// without it claims the lease at once.
+///
+/// The defect (`docs/claude-code-bridge.md`, 2026-10-26): a daemon started by the Claude Code
+/// bridge for package P1 in a fresh worktree of this repository is one of its session daemons by
+/// [`crate::mergequeue::serves`]'s rule, so it took letibot's lease, found `main` red and put an
+/// EMERGENCY in front of the package's model before its brief. This is the queue's half of that
+/// flag; the model's half is `harness::queue_e2e`'s
+/// `a_no_queue_daemon_tells_its_sessions_nothing_about_the_queues`.
+#[test]
+fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
+    use letibot_sessionlog::registry::Registry;
+    let w = World::new("noqueue");
+    let (wt, _, _) = branch(&w.repo, "nq", "nq.txt");
+    let mut cfg = crate::config::Config::for_this_box(&wt);
+    cfg.store = Some(w.db.clone());
+
+    cfg.serve_queues = false;
+    let stop = Arc::new(AtomicBool::new(false));
+    let spawned = crate::mergequeue::spawn_for(&cfg, stop.clone(), Registry::new());
+    assert!(
+        spawned.is_none(),
+        "a --no-queue daemon starts no queue thread at all"
+    );
+    // Four supervisor passes' worth of time — how the neighbour test measures *it did nothing*:
+    // a supervisor that meant to claim would have by now.
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(4500) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        w.store().queue_leases().unwrap().is_empty(),
+        "no lease taken"
+    );
+    assert!(
+        w.store().target_health(&w.key(), "main").unwrap().is_none(),
+        "nothing gated"
+    );
+
+    // The same worktree and the same store without the flag: the lease IS taken — so the two
+    // assertions above are about the flag, not about a supervisor that could never claim here.
+    cfg.serve_queues = true;
+    let stop = Arc::new(AtomicBool::new(false));
+    let spawned = crate::mergequeue::spawn_for(&cfg, stop.clone(), Registry::new())
+        .expect("the queue's thread starts without --no-queue");
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while w.store().queue_leases().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < until,
+            "a daemon seated in a worktree never claimed its repository's lease"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    spawned.join().unwrap();
+}
+
 /// **The hubs a repository's alert reaches**: the sessions whose workspace is that repository
 /// or one of its worktrees, and the review queue's board — not a session seated above it.
 #[test]

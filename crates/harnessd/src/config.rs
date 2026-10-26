@@ -686,6 +686,25 @@ pub struct Config {
     /// `~/.local/share/letibot`. A confined session binds its repository's landing tree under
     /// this root read-only (`harness::confined_grants`), and the queue lands under it.
     pub landing_root: Option<std::path::PathBuf>,
+    /// **Whether this daemon runs the merge and review queues** — `true` unless `--no-queue` says
+    /// otherwise.
+    ///
+    /// A daemon that holds a repository's lease gates its target, lands its branches and tells
+    /// the project's sessions when its `main` is red. That is right for the daemon an operator
+    /// sits in front of and wrong for a **package worker**: a session the Claude Code bridge
+    /// starts in a package's worktree (`docs/claude-code-bridge.md`) is one of that repository's
+    /// session daemons by the queue's own rule, so on 2026-10-26 the daemon started for package
+    /// P1 took letibot's lease, found `main` red, and put an EMERGENCY in front of the package's
+    /// model before its brief — a worker told to fix a tree it was never asked about, and two
+    /// daemons interleaving landings for one repository.
+    ///
+    /// `false` ends the queue's work here and nothing else: no lease is claimed, no worker runs,
+    /// no model-facing queue notice is composed ([`crate::harness::Harness`] reads this field),
+    /// and the store watcher still relays other daemons' moves to this daemon's heads. A daemon
+    /// started without the flag is byte-for-byte what it was, and `for_this_box` — which every
+    /// fixture builds on — leaves it `true` because its store is a temp file: the flag is what
+    /// makes the difference, not the constructor.
+    pub serve_queues: bool,
     /// **Where the daemon's own logs live** — `<data dir>/logs`, one directory per session under
     /// it (`delivery-log.jsonl`, `context-claims.jsonl`, `notes-offers.jsonl`; see
     /// [`Config::daemon_logs`]). Set by [`Config::for_the_daemon`]; `None` in every fixture, which
@@ -2092,6 +2111,7 @@ impl Config {
             seat: Seat::default(),
             grants_ro: Vec::new(),
             landing_root: None,
+            serve_queues: true,
             logs_root: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),

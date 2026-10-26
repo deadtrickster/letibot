@@ -33,6 +33,21 @@ Claude Code ──stdio MCP── letibot-mcp ──unix socket── harnessd (
      └── background `letibot-mcp wait …` exits when a session needs attention
 ```
 
+### The daemon a package gets serves no queue
+
+Added 2026-10-26, after the first day of packages: a worktree of this repository IS one of its
+session daemons by the merge queue's own rule (`mergequeue::serves` — the checkout, under it, or
+one of its worktrees), so the daemon the bridge started for package P1 took letibot's merge-queue
+lease, found `main` red, and put an `EMERGENCY` in front of the package's model **before its
+brief**. A package worker is not the repository's queue holder — the operator's own daemon is —
+and two daemons interleaving landings for one repository is the second half of that defect.
+
+So `daemon_args` passes **`--no-queue`** on every start: no lease is claimed, no target gated, no
+branch landed, and none of the queue's model-facing notices (`queue_emergency_notices`,
+`queue_notices`, `handover_notices`) is composed for a session of that daemon. The store watcher
+still runs, so a head attached here redraws when another daemon moves a row. A daemon that is
+already up is not the bridge's to change: `ensure` attaches to it as it is.
+
 ### `letibot-mcp`: an MCP server over stdio
 
 A new binary (crate `crates/bridge`, package `letibot-bridge`, bin `letibot-mcp`). MCP over stdio is
