@@ -391,7 +391,9 @@ look or behave differently from the built-in ones.
   with a `badge` shows it in the status row, like the waits-on-you counter.
 - **Hot and gated like any hook**: a pane's change goes through the shadow gate, where the view it
   returns for the recorded inputs is rendered to text and diffed — the gate's diff for a pane is
-  what the pane looks like.
+  what the pane looks like. *(Built: slice 1 draws panes and gates a change; the text diff of a
+  rendered view is not yet reported — the gate reports diffs of the JSON answers, which is the same
+  fact before it is drawn.)*
 
 ### Not hooks
 
@@ -502,6 +504,12 @@ similarity check keeps pointing at it.
 
 ## 5. What the model gets
 
+**Built, for `pane`** (as of P2, 2026-10-26 — see "As built" below): `scaffold`, `build`, `load`,
+`stack`, `disable`, `enable`, `test`, `plugin_hooks` and the skill. The list is the plan's, and the
+entries marked *not yet* are the ones no package has shipped: `squash` and `promote` (§7 step 5),
+and `test`'s replay of the whole session's recorded inputs (§7 step 2's recorded-input store is
+per-hook already; the replay verb is not).
+
 - **`plugin` tool** with actions:
   - `scaffold` — a new session plugin from a template for a hook kind (a crate depending on the
     letibot plugin SDK, `plugin.toml`, a test).
@@ -513,20 +521,67 @@ similarity check keeps pointing at it.
     recent answers and recent failures.
   - `disable` / `enable` — a layer, without deleting it (the bisect).
   - `test` — call a hook with a given input through the whole stack or one layer, and show the
-    output, which layer answered, fuel used and any trap; or replay the session's recorded inputs.
+    output, which layer answered, fuel used and any trap; or replay the session's recorded inputs
+    (*not yet*: the recorded inputs are what `load` replays).
   - `squash` — merge session layers into one, through the gate, refused while the replay differs
-    (§2.2).
-  - `promote` — move a layer into `.letibot/plugins/` on the session's branch.
+    (§2.2). *Not yet.*
+  - `promote` — move a layer into `.letibot/plugins/` on the session's branch. *Not yet*; today it
+    is a copy and a commit.
 - **`plugin_hooks`** — the contracts of §4 with a worked example each, read from the host itself so
-  it cannot drift from what the host accepts.
+  it cannot drift from what the host accepts. Today it documents `pane` (C3), because that is the
+  one hook kind this host runs.
 - **A skill** walking through the main loop end to end: the operator reports a harness problem, the
   model finds the hook it lives at, writes a layer, tests it against the input that misbehaved,
-  and loads it.
+  and loads it. `skills/plugin-pane/SKILL.md`, compiled into the binary so a box needs no setup.
 - **Recorded inputs**: the host keeps the last inputs of each hook per session, so a layer is
   written and tested against the very call or firing that went wrong.
 
 The SDK is `letibot-plugin`, in this repository: rano's `rano-plugin` ABI plus serde types for
 each hook's input and output, so a plugin is `#[hook] fn condition(i: ConditionIn) -> ConditionOut`.
+*Today the template depends on rano's `rano-plugin` by path and does its own `serde_json`, which is
+what the example dashboard (C5) does; `letibot-plugin` is the same idea with the types.*
+
+### As built (P2), 2026-10-26: the pane
+
+One package built §5 for the **`pane`** hook, end to end and hot. What a session can do now, from
+the model's side:
+
+| call | what it answers |
+|---|---|
+| `plugin {"action":"scaffold","name","purpose","hook":"pane"}` | three files under `<data>/sessions/<id>/plugins/<name>/`: `Cargo.toml` (cdylib + rlib, rano's SDK by path, the release profile), `plugin.toml` (`capabilities = []`), `src/lib.rs` (one pure `view`, a native test of it, and the two rakes a guest meets first written down in it: no I/O, no clock) |
+| `plugin {"action":"build","name"}` | `cargo build --offline --release --target wasm32-unknown-unknown`, artifact → `plugin.wasm`; the compiler's words verbatim on a failure. `Access::Exec` — it runs a build, and a build runs build scripts |
+| `plugin {"action":"test","name","input"?}` | one hook called with the input (default: a synthetic C3 first frame), the view, the answering layer, the fuel, any trap, and whether `View::validate` would refuse the answer |
+| `plugin {"action":"load","name"}` | the shadow gate (§2.4: build, load, shadow, replay, report) **plus** a call of every pane hook on the SHADOW with the recorded inputs and a synthetic one — because a NEW layer has no recorded inputs, and a first-time pane applied without running once is the rake of this slice. A pass applies it hot and the pane is announced; a refusal keeps the old version and says why |
+| `plugin {"action":"stack"}` | the layers newest first, the topmost layer per hook, capabilities, `sha256` prefix, disabled layers, recorded inputs per hook, and discovery/apply failures |
+| `plugin {"action":"disable"/"enable","name"}` | a layer off or on without deleting it; every open pane is re-resolved (asked again with its look), gone panes are published as `PluginPaneGone` |
+| `plugin_hooks [{"hook":"pane"}]` | the C3 input and output, the host's keys and the refusal rules, and a worked example **built from `crates/sessionlog/src/pane.rs`'s own types** (a renamed field breaks compilation, not a sentence) |
+| `skill plugin-pane` | the loop as a procedure, compiled in from `skills/plugin-pane/SKILL.md` |
+
+Where a session layer lives, and why: **`<data>/sessions/<id>/plugins/<name>/`** — slice 1's C2
+already declares a session scope, and `PluginHost::for_session` discovers exactly that directory, so
+the scaffold writes where discovery reads. It is `<data>/sessions/<id>` (`$XDG_DATA_HOME/letibot`,
+else `~/.local/share/letibot`) and not a scratch or `.letibot/plugins/session/` because a session
+layer belongs to the session: session discovery (§2.2) finds it, no repository holds it, and no
+other session sees it. Two consequences worth knowing:
+
+* **A scaffolded plugin is not in force until `plugin load`.** The stack lists what is ANSWERING;
+a fresh directory with no module is a source, and `plugin stack` says `no layers at all` until the
+loop has been through `load`. At the next session open it *is* discovered — with a `Failure` naming
+the missing module if it was never built.
+* **A layer that is loaded persists across a restart**, because discovery finds it: the loop needs
+`load` once per change, not once per session.
+
+Capabilities are slice 1's, unchanged (§3): `read` is the one a look may use and an `exec` look is
+refused with `exit 126` and a sentence. A session plugin reaches nothing outside its session, and a
+capability is declared in its `plugin.toml` and checked by the host when the look runs.
+
+**Two defects found while building it, both fixed here.** `CargoBuilder` inherited
+`CARGO_TARGET_DIR`, so a guest built from a daemon that had one landed outside the layer and a
+successful build was reported as *"cargo succeeded but there is no built module"* — a plugin's build
+is its own crate and its own target directory, and the variable is now removed for it. And hot
+reload re-rendered an open pane WITHOUT its look, which put a look-asking dashboard back on its
+loading frame with `every_s: 0` — stuck until reopened; `PluginHost::refresh_panes` asks an open pane
+again with its look and announces only the panes nobody has opened.
 
 ## 6. The harness butler
 
@@ -615,6 +670,9 @@ why its work runs between the session's turns when the two share a server.
 2. **The four patch points — `on_tool_call`, `on_tool_result`, `notice`, `condition`** — the
    `letibot-plugin` SDK, and the `plugin` tool (`scaffold`, `build`, `load`, `stack`, `disable`,
    `test`) plus `plugin_hooks` and the skill. From here the operator can fix things in a session.
+   **Split, 2026-10-26:** the `plugin` tool, `plugin_hooks` and the skill landed first for `pane`
+   (P2, §5's "As built") — the loop works today, against the one hook kind the host runs — and the
+   four patch points, the four kinds and the SDK's typed contracts are the rest of this step.
 3. **The GitHub family as built-in plugins**: `github-pr` (checks, review, comment, closed,
    merged, conflict) and `coderabbit` as conditions, `pr-create` as `on_tool_result`. Delete
    `GithubCondition`'s decision half and `pr_watch`'s; keep the host's `gh` look runner and the
@@ -627,6 +685,9 @@ why its work runs between the session's turns when the two share a server.
    as the gate's shell steps.
 5. **Consolidation**: `squash`, `promote`, and session discovery over layers.
 6. **`pane`** (§4.9) and **the example plan dashboard** (§4.10).
+   *Built:* the pane contract (C3), the daemon's pane host and `plugin` loop (§5's "As built"),
+   the head's pane, and the example dashboard. *Left:* the gate's rendered-text diff, and the
+   example's promotion to a project layer by the queue.
    **WASI** (§3.1) beside it: the second `Loader` (`abi = "wasi-p2"`), the `hook` and `script`
    worlds, `letibot:host/exec`, the capability mapping, and shfmt as the first WASI gate tool.
 7. **A real trial**: a stroppy session writes a project plugin for something it needs (its own CI
