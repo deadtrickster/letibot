@@ -9,7 +9,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use letibot_tokencore::store::{LeaseClaim, SCHEMA_VERSION};
+use letibot_tokencore::store::{LeaseClaim, QueueLease, SCHEMA_VERSION};
 
 /// **How old a heartbeat may be before the lease is anybody's** — ninety seconds: eighteen missed
 /// beats at [`HEARTBEAT_EVERY`], so a daemon held up by a slow store write is not mistaken for a
@@ -20,6 +20,55 @@ pub const LEASE_TTL_MS: u64 = 90_000;
 /// while the passes go on (R92 item 8), so a thirty-minute gate does not lose its lease; the
 /// gate's polls read what the last beat found.
 pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
+
+/// **A lease no claimant will ever take over, and why the supervisor gives it up** (2026-10-26).
+///
+/// Takeover is [`letibot_tokencore::store::Store::acquire_queue_lease`]'s, and it handles a
+/// silence: a claim on a lease whose heartbeat is older than [`LEASE_TTL_MS`] takes it. What it
+/// cannot do is reach a lease nobody CLAIMS — and the operator's store held `queue_lease` rows
+/// from daemons that had been dead for weeks (`letim`, `fctop`), for repositories no running
+/// daemon serves, so nobody ever passed to take them over and the pane went on drawing them as
+/// *served by*. So a supervisor's pass releases them: the row goes, the history says why, and a
+/// daemon that starts there claims a free lease.
+///
+/// **The pid is the second fact, and it is what makes the deletion safe.** An expired heartbeat
+/// alone is enough for a claimant to take over, but deleting a LIVE process's row is a different
+/// act: the daemon that owns it would find its next heartbeat answered `false` and stop serving.
+/// So the pid is asked, on this host only — a lease from another box is expired by the TTL and
+/// nothing else, since its pids mean nothing here. `Some(why)` is *gone*; `None` is *leave it*.
+pub fn gone(l: &QueueLease, me: &LeaseClaim, now_ms: u64) -> Option<String> {
+    if l.owner == me.owner {
+        return None;
+    }
+    let age = now_ms.saturating_sub(l.heartbeat_ms);
+    if age <= LEASE_TTL_MS {
+        return None;
+    }
+    let alive_here = l.host == me.host && process_alive(l.pid);
+    if alive_here {
+        return None;
+    }
+    Some(if l.host == me.host {
+        format!(
+            "its heartbeat was {} s old and pid {} is not running on {}",
+            age / 1000,
+            l.pid,
+            l.host
+        )
+    } else {
+        format!(
+            "its heartbeat was {} s old on {}, a host this daemon cannot ask about its pids",
+            age / 1000,
+            l.host
+        )
+    })
+}
+
+/// Whether `pid` names a live, non-zombie process — the same reading `pkill` and the monitors
+/// take, so a pid the kernel has since reused is a judgement this does not have to make.
+fn process_alive(pid: u32) -> bool {
+    letibot_tools::exec::procs::read(pid).is_some_and(|p| p.state != 'Z')
+}
 
 /// **This daemon's identity on the queues** — host, pid and start time, so a pid the kernel
 /// reuses is not mistaken for the daemon that held it; and the build, so the pane can say WHICH

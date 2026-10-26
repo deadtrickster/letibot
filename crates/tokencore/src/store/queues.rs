@@ -1287,6 +1287,44 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// **Give up a lease whose holder is gone** — the supervisor's sweep (2026-10-26), not the
+    /// holder's own [`Store::release_queue_lease`]: the row goes and the history says why, so a
+    /// repository is not drawn as *served by* a pid that has been dead for weeks.
+    ///
+    /// Guarded on the heartbeat the caller judged (`heartbeat_ms < expired_before_ms`), so a
+    /// holder that beat in between keeps its lease — the same compare-and-swap every other move
+    /// in this file is, and the reason a sweep cannot take a live daemon's queue by being slow.
+    pub fn release_stale_lease(
+        &self,
+        repository: &str,
+        owner: &str,
+        by: &str,
+        why: &str,
+        expired_before_ms: u64,
+        now_ms: u64,
+    ) -> Result<bool> {
+        let tx = self.immediate()?;
+        let n = tx.execute(
+            "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2 AND heartbeat_ms < ?3",
+            params![repository, owner, expired_before_ms as i64],
+        )?;
+        if n == 1 {
+            record(
+                &tx,
+                "lease",
+                repository,
+                repository,
+                Some(owner),
+                "released",
+                now_ms,
+                by,
+                why,
+            )?;
+        }
+        tx.commit()?;
+        Ok(n == 1)
+    }
+
     pub fn queue_leases(&self) -> Result<Vec<QueueLease>> {
         let mut st = self.conn.prepare(&format!(
             "SELECT {LEASE_COLUMNS} FROM queue_lease ORDER BY repository"

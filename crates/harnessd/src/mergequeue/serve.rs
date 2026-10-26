@@ -2101,6 +2101,11 @@ impl QueueService {
         stop_all: &Arc<AtomicBool>,
         said_schema: &mut bool,
     ) -> Result<(), StoreError> {
+        // **A lease whose holder is gone is given up by whoever passes** (2026-10-26), and it is
+        // done before anything is served: the rows the operator's pane drew as *served by* were
+        // daemons dead for weeks, on repositories no running daemon claims — so `acquire`'s
+        // takeover, which needs a claimant, never reached them.
+        self.sweep_leases(store)?;
         self.resolve_carried(store)?;
         for repo in self.repositories(store)? {
             let key = repo.display().to_string();
@@ -2185,6 +2190,38 @@ impl QueueService {
             }
         }
         Ok(())
+    }
+
+    /// **Every lease whose holder is gone is released, with the history saying why** — see
+    /// [`super::lease::gone`] for the two facts (an expired heartbeat, and a pid that is not
+    /// running on this host) and why neither alone would do. Returns how many were released.
+    ///
+    /// Every pass, over the whole store rather than over this daemon's repositories: a lease the
+    /// supervisor would never pass on is exactly the one that stays stale for ever.
+    fn sweep_leases(&self, store: &Store) -> Result<usize, StoreError> {
+        let now = gate::now_ms();
+        let expired_before = now.saturating_sub(LEASE_TTL_MS);
+        let mut released = 0;
+        for lease in store.queue_leases()? {
+            let Some(why) = super::lease::gone(&lease, &self.env.me, now) else {
+                continue;
+            };
+            if store.release_stale_lease(
+                &lease.repository,
+                &lease.owner,
+                &self.env.me.owner,
+                &why,
+                expired_before,
+                now,
+            )? {
+                eprintln!(
+                    "  merge queue: gave up the lease of {}: {why}",
+                    lease.repository
+                );
+                released += 1;
+            }
+        }
+        Ok(released)
     }
 
     /// **Why `repo` is not a queue target, if it is not one** — the target branch it lands on,

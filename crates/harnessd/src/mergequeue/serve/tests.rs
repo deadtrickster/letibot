@@ -2124,6 +2124,79 @@ fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     );
 }
 
+/// **A stale lease whose holder is gone is given up by whoever passes** — the operator's store
+/// held `queue_lease` rows from daemons that had been dead for weeks (`letim`, `fctop`), each drawn
+/// as a repository *served by* a pid nobody could reach. Takeover is `acquire_queue_lease`'s and it
+/// needs a claimant: no daemon serves those repositories now, so nobody ever passed and the rows
+/// stood. A supervisor's pass sweeps them, and the history says why.
+#[test]
+fn a_stale_lease_whose_holder_is_gone_is_released_by_a_passing_supervisor() {
+    let dir = TempDir::new("stale-lease");
+    let db = dir.0.join("sessions.db");
+    let store = Store::open(&db).unwrap();
+    let now = gate::now_ms();
+    // **No such pid**: above every box's `pid_max` and inside `pid_t`, so the kernel answers
+    // *gone* on either platform rather than the test having to kill something to make it so.
+    let dead_pid = 999_999_999u32;
+    let claim = |owner: &str, pid: u32| LeaseClaim {
+        owner: owner.into(),
+        pid,
+        host: "test".into(),
+        build: "harnessd test".into(),
+    };
+    let long_ago = now - 10 * 60_000;
+    for (repo, owner, pid, at) in [
+        ("/projects/letim", "letim/1/1", dead_pid, long_ago),
+        ("/projects/fctop", "fctop/2/2", std::process::id(), long_ago),
+        ("/projects/stroppy", "stroppy/3/3", dead_pid, now),
+    ] {
+        assert!(matches!(
+            store
+                .acquire_queue_lease(repo, &claim(owner, pid), at, LEASE_TTL_MS)
+                .unwrap(),
+            LeaseOutcome::Held { .. }
+        ));
+    }
+    // A workspace that is a session of no repository at all: the sweep is the SUPERVISOR's, which
+    // is the half that matters — the rows the operator saw were for repositories nobody passes on.
+    let door = Arc::new(Door::default());
+    let store = serve_until(&dir.0, Arc::new(GreenGate), door.clone(), &db, "me", &|s| {
+        s.queue_leases().unwrap().len() == 2
+    });
+    let left: Vec<String> = store
+        .queue_leases()
+        .unwrap()
+        .into_iter()
+        .map(|l| l.repository)
+        .collect();
+    assert_eq!(
+        left,
+        vec![
+            "/projects/fctop".to_string(),
+            "/projects/stroppy".to_string()
+        ],
+        "the dead daemon's lease is gone; a live pid's and a fresh heartbeat's are not"
+    );
+    let moves = store.transitions("lease", "/projects/letim").unwrap();
+    let last = moves.last().expect("the release is in the history");
+    assert_eq!(last.to_state, "released");
+    assert_eq!(last.from_state.as_deref(), Some("letim/1/1"));
+    assert!(
+        last.why.contains("999999999") && last.why.contains("600 s old"),
+        "the history says which pid and how old the heartbeat was: {}",
+        last.why
+    );
+    assert_eq!(
+        store.transitions("lease", "/projects/fctop").unwrap().len(),
+        1,
+        "a pid that IS running here keeps its row — the sweep deletes no live daemon's lease"
+    );
+    assert!(
+        door.events.lock().unwrap().is_empty(),
+        "it is said in the store's history, not on a hub: a dead lease is not an alarm"
+    );
+}
+
 // ===== A gate does not stop the review queue (R92 item 8) =====
 
 /// **A gate held shut until the test opens it** — a thirty-minute gate in miniature. It counts

@@ -282,6 +282,47 @@ fn the_lease_is_held_by_one_daemon_and_taken_over_only_when_its_heartbeat_expire
     );
 }
 
+/// **A lease nobody will claim can still be given up, and only while it is still expired** — the
+/// supervisor's sweep (2026-10-26): the operator's store held `queue_lease` rows from daemons dead
+/// for weeks on repositories no running daemon serves, so `acquire`'s takeover — which needs a
+/// claimant — never reached them. Released with the history saying why, and a holder that beat in
+/// between is left alone, because the delete is guarded on the heartbeat the sweep judged.
+#[test]
+fn a_stale_lease_is_released_with_its_history_and_never_after_a_heartbeat() {
+    let d = TempDir::new("release-stale");
+    let s = Store::open(&d.db()).unwrap();
+    assert!(matches!(
+        s.acquire_queue_lease("/letim", &claim("A"), 1_000, 60_000)
+            .unwrap(),
+        LeaseOutcome::Held { .. }
+    ));
+    // A heartbeat AFTER the cutoff the sweep worked from: nothing is deleted.
+    assert!(s.heartbeat_queue_lease("/letim", "A", 50_000).unwrap());
+    assert!(
+        !s.release_stale_lease("/letim", "A", "sweep", "gone", 40_000, 90_000)
+            .unwrap(),
+        "the row moved on: a sweep cannot delete a lease that has been renewed"
+    );
+    assert!(
+        s.release_stale_lease(
+            "/letim",
+            "A",
+            "sweep",
+            "its heartbeat was 600 s old and pid 42 is not running on box",
+            80_000,
+            90_000
+        )
+        .unwrap()
+    );
+    assert!(s.queue_leases().unwrap().is_empty());
+    let moves = s.transitions("lease", "/letim").unwrap();
+    let last = moves.last().expect("the release is in the history");
+    assert_eq!(last.to_state, "released");
+    assert_eq!(last.from_state.as_deref(), Some("A"));
+    assert_eq!(last.by, "sweep");
+    assert!(last.why.contains("600 s old"), "{}", last.why);
+}
+
 /// **A daemon whose build does not match the store never takes a lease** — the store's schema
 /// is read live, in the claim's own transaction, so a daemon running when a newer build migrated
 /// the file finds out at its next claim or heartbeat.
