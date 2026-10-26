@@ -1103,7 +1103,10 @@ fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
                 // still the terminal, not the variable, that turns the colour on.
                 "TERM=xterm-256color ls -G"
             } else {
-                "ls --color=auto"
+                // GNU `ls` also reads `TERM` before it colours, and a run inherits whatever the
+                // environment says — on lab2x1 a systemd user service carries the desktop's
+                // `TERM=qterminal`, which `ls` does not count as a colour terminal (2026-10-26).
+                "TERM=xterm-256color ls --color=auto"
             }
         })
         .to_string(),
