@@ -36,6 +36,7 @@ mod children;
 mod citations;
 mod context;
 mod delivery;
+mod fallback;
 mod intent;
 mod jobs;
 mod misc;

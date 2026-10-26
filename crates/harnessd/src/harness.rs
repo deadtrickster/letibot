@@ -2365,6 +2365,24 @@ pub struct Harness {
     /// ([`Harness::end_turn_clock`]). A queue would let two switches stack and make *which one
     /// wins* a question about the order a worker happened to drain them in.
     pending_switch: Option<PendingSwitch>,
+    /// **The turn the daemon owes after it moved this session off a model that was out** — the
+    /// notice that opens it, built where the refusal is ([`Harness::fall_back_from`]), taken by
+    /// [`crate::turn_tail::run_turn`] where a turn ends.
+    ///
+    /// The operator's ruling, 2026-10-12, is the whole requirement: *"when it finally applied the
+    /// turn didnt continue"*. Ending the turn on the refusal and moving the session was half an
+    /// answer; the work is carried on by a NEW turn, opened by a user item in the harness's own
+    /// voice — which is also what a model's first request has to follow (see
+    /// [`Harness::set_provider`]).
+    ///
+    /// **At most one**: the continuation turn is `Door::Fallback`, and a turn that is itself a
+    /// continuation never earns another (see the tail's own note), so a fallback chain cannot
+    /// ping-pong between two names — a chain that pays a model change per turn and never stops.
+    fallback_continuation: Option<String>,
+    /// **This turn IS the automatic continuation a fallback earned** — set while it runs, so
+    /// [`Harness::fall_back_from`] moves the session to the next name without arming a second
+    /// continuation. See `fallback_continuation` for why the bound exists.
+    continuation_of_fallback: bool,
 }
 
 /// **A switch waiting for the turn in flight to end** — recorded, said, and applied where the
@@ -5631,6 +5649,9 @@ impl Harness {
             switch_back: None,
             // Nothing waiting: a switch asked for between turns takes effect at once.
             pending_switch: None,
+            // And no turn owed: only a fallback ever arms one.
+            fallback_continuation: None,
+            continuation_of_fallback: false,
         };
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
@@ -10640,6 +10661,70 @@ impl Harness {
         })
     }
 
+    /// **The turn a fallback earned, opened by the notice that says so** — the operator's ruling
+    /// of 2026-10-12 (*"when it finally applied the turn didnt continue"*), built as an act.
+    ///
+    /// `turn_tail::run_turn` is the only caller, and it makes this a whole turn of its own through
+    /// the same sequence every door gets: the refusal ended the last one, and this one starts with
+    /// a user item in the harness's own voice (`Speaker::Agent`, as a wake's and a plan-check's
+    /// notices are) — which is also what makes the work legal for the model that took over, since
+    /// a model's first request has to follow a user message.
+    ///
+    /// **The held batch rides in**, by R79's rule: this is a turn the model takes anyway, so the
+    /// results it is owed at a turn start go with it rather than waiting for a prompt.
+    pub fn continue_after_fallback(&mut self, notice: String) -> Result<Reply, HarnessError> {
+        let mut text = notice;
+        if let Some(meanwhile) = self.deliveries().and_then(|d| d.at_turn_start()) {
+            text.push_str("\n\n");
+            text.push_str(&meanwhile);
+        }
+        // The wall is checked BEFORE the send, like every other door: a session that inherited a
+        // refusal is not more likely to fit, and a first round refused for LENGTH would be read as
+        // another provider failure.
+        self.compact_if_at_the_wall();
+        self.trail.begin_turn();
+        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+        self.submit_item(TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text { text }],
+        })
+    }
+
+    /// **The continuation turn a fallback owed, taken — at most once, and never over a stop.**
+    ///
+    /// `None` is the ordinary case. Two ways to get it back empty, and both are the point:
+    ///
+    /// * the turn that just ended was itself a fallback continuation — see
+    ///   [`crate::turn_tail::run_turn`], which never takes one twice, so a fallback chain cannot
+    ///   ping-pong between two names and pay a model change per turn for ever;
+    /// * **the operator asked for a stop the failed turn did not take.** An interrupt that
+    ///   arrived after that turn's last round sits in the queue with nothing to act on it, and a
+    ///   fresh turn started on top of it would either be aborted by it or, worse, ignore their
+    ///   stop. Their word ends the work here, and the session stays on the fallback model.
+    ///
+    /// **It always clears the field**, taken or not: a notice left armed would open a turn nobody
+    /// asked for at the end of some later turn.
+    pub(crate) fn take_fallback_continuation(&mut self) -> Option<String> {
+        let notice = self.fallback_continuation.take()?;
+        if self.hub.has_queued_interrupt() {
+            return None;
+        }
+        Some(notice)
+    }
+
+    /// **The turn a fallback earned is running** — the one-shot, seen from inside it: read by
+    /// [`Harness::fall_back_from`], which moves the session to the next name in the list but does
+    /// not arm a second continuation.
+    pub(crate) fn in_fallback_continuation(&self) -> bool {
+        self.continuation_of_fallback
+    }
+
+    /// Marked by `turn_tail::run_turn` around the continuation turn and cleared after it, so the
+    /// flag can never outlive the turn it describes.
+    pub(crate) fn set_fallback_continuation(&mut self, on: bool) {
+        self.continuation_of_fallback = on;
+    }
+
     pub fn continue_after_wall(&mut self) -> Result<Reply, HarnessError> {
         // R93.E1: no "context wall" (the context check tells the model not to size by it), and
         // the compaction note right above already says what the summary is. Sent only after a
@@ -13020,9 +13105,14 @@ impl Harness {
                     // about the model.
                     if let Some(next) = self.fall_back_from(&e, &mut tried_fallbacks) {
                         let was = self.provider_line();
+                        // **Whether a turn was armed decides what may be promised.** This turn is
+                        // the continuation a fallback earns whenever one is already running (the
+                        // bound), and then no second turn is opened — so the sentence must not
+                        // say one is.
+                        let opens_a_turn = self.fallback_continuation.is_some();
                         self.hub.publish(SessionEvent::Warning {
                             code: "model_endpoint_retry".into(),
-                            detail: fallback_notice(&was, &next, &e),
+                            detail: fallback_notice(&was, &next, &e, opens_a_turn),
 
                             compaction: None,
                         });
@@ -13979,6 +14069,16 @@ impl Harness {
             // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
             let target = model_name_of(&Some(pc.clone()));
             self.pend_switch(Some(pc), target.clone());
+            // **And the work goes on by itself** — the operator's ruling of 2026-10-12, and the
+            // half a switch alone does not do: *"when it finally applied the turn didnt
+            // continue"*. `turn_tail::run_turn` opens this turn when the one that met the refusal
+            // has ended, with the notice as its user item.
+            //
+            // **Not when THIS turn is already such a continuation**: a fallback chain would then
+            // ping-pong between two names, paying a model change per turn and never stopping.
+            if !self.in_fallback_continuation() {
+                self.fallback_continuation = Some(fallback_continuation_notice(&here, &target, e));
+            }
             return Some(target);
         }
         None
@@ -16162,16 +16262,69 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
 /// five facts, because this is a model change the operator did not type and every one of them is
 /// a question they will have. The WHEN is the one that changed on 2026-10-26: the switch takes at
 /// the end of this turn, never inside it (see [`Harness::set_provider`]), so the notice must not
-/// promise the round continues — it does not.
-fn fallback_notice(was: &str, now: &str, e: &letibot_turn::HttpError) -> String {
+/// promise the round continues — it does not. **The WORK continues**, which is a different promise
+/// and the daemon's own to keep: [`Harness::continue_after_fallback`] opens the next turn on the
+/// model named here.
+fn fallback_notice(
+    was: &str,
+    now: &str,
+    e: &letibot_turn::HttpError,
+    opens_a_turn: bool,
+) -> String {
+    // **One continuation per fallback, so this branch is real**: a chain whose second name is also
+    // out moves the session again and opens nothing, and a sentence promising a turn nobody will
+    // run is the kind of lie this tree keeps deleting.
+    let on = if opens_a_turn {
+        format!(
+            "the daemon opens the next turn itself, on {now}, and the work goes on without you."
+        )
+    } else {
+        format!(
+            "the daemon opens no second turn of its own — this one was already the continuation a \
+             fallback earns — so the next thing you send is what goes to {now}."
+        )
+    };
     format!(
         "the model at {was} is out — {e} — and the retry ladder has nothing left to wait \
          for, so this turn ends here and the session moves to {now}, the first name in \
-         `[fallback]` that answers. The switch takes when the turn ends and not inside it: a \
-         new model's first request has to follow a user message, so the next prompt is the one \
-         that goes there. Nothing was recorded. `/models` moves it back, and the list is in \
+         `[fallback]` that answers. The switch takes when the turn ends and not inside it, \
+         because a new model's first request has to follow a user message: {on} Nothing was \
+         recorded by the turn that failed. `/models` moves the session back, and the list is in \
          `[fallback] models` in providers.toml."
     )
+}
+
+/// **The notice that OPENS the turn a fallback earned** — the model's own copy, as a user item in
+/// the harness's voice (`Speaker::Agent`), which is the same shape a plan-check's and a wake's
+/// notice take.
+///
+/// The register is the harness's: `[fallback]` first, like `[todo]`, `[workspace]` and
+/// `[reseat]`, so a reader can tell a notice the daemon wrote from the operator's words. What it
+/// carries is the three facts the model cannot recover from the transcript alone: **what
+/// refused** (this is not the model's own failure), **where it is now** (a different model is
+/// answering), and **that nothing was lost** — the failed round committed nothing, so the tool
+/// results above it are the work's real state and re-doing them is waste the operator pays for.
+fn fallback_continuation_notice(was: &str, now: &str, e: &letibot_turn::HttpError) -> String {
+    format!(
+        "[fallback] {was} refused ({}); continuing this task on {now}. The turn before this one \
+         ended on that refusal and nothing it did was lost — its tool results are above. Pick the \
+         work up where it stopped and carry on; do not repeat what is already done.",
+        refusal_word(e)
+    )
+}
+
+/// **The refusal in the few words a notice can afford** — `http 429`, or the kind of failure for
+/// one that is not a status at all.
+///
+/// Deliberately NOT the provider's body: the body goes to the operator in [`fallback_notice`],
+/// where a person reading a quota message is worth the tokens. This is the model's copy, and what
+/// it needs to know is *the model moved*, not what the old one said.
+fn refusal_word(e: &letibot_turn::HttpError) -> String {
+    match e {
+        letibot_turn::HttpError::Status { code, .. } => format!("http {code}"),
+        letibot_turn::HttpError::Io(_) => "the connection failed".to_string(),
+        letibot_turn::HttpError::Malformed(_) => "the answer did not parse".to_string(),
+    }
 }
 
 /// **A refusal no retry can lift: the account cannot pay for the call.**
@@ -22188,7 +22341,8 @@ mod endpoint_retry {
     //! codes except unauthenticated"*.
     use super::{
         ContextLengthRefusal, MAX_HTTP_RETRIES, SilenceWatch, context_length_refusal,
-        fallback_notice, http_retry_after, model_refused, retry_host, silence_host, silence_notice,
+        fallback_continuation_notice, fallback_notice, http_retry_after, model_refused, retry_host,
+        silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
 
@@ -22354,15 +22508,21 @@ mod endpoint_retry {
     /// back — and it must not promise the round continues, which is what it said until
     /// 2026-10-26: a model's first request has to follow a user message, so the round that met
     /// the refusal ends with it (see `Harness::set_provider`).
+    ///
+    /// **Two verdicts, because there are two cases**: the usual one opens the continuation turn,
+    /// and a chain whose second name is also out opens nothing — the sentence must not promise a
+    /// turn the tail will not run.
     #[test]
     fn a_fallback_names_the_way_back_and_says_when_the_switch_takes() {
+        let out = || HttpError::Status {
+            code: 429,
+            body: "Weekly/Monthly Limit Exhausted".into(),
+        };
         let moved = fallback_notice(
             "glm-coding/glm-5.3 (metered)",
             "deepseek/deepseek-flash",
-            &HttpError::Status {
-                code: 429,
-                body: "Weekly/Monthly Limit Exhausted".into(),
-            },
+            &out(),
+            true,
         );
         assert!(moved.contains("deepseek/deepseek-flash"), "{moved}");
         assert!(
@@ -22378,12 +22538,72 @@ mod endpoint_retry {
             "and when it takes, which is the whole of the change: {moved}"
         );
         assert!(
+            moved.contains("the daemon opens the next turn itself"),
+            "and that the work goes on without the operator — the 2026-10-12 ruling: {moved}"
+        );
+        assert!(
             !moved.contains("the round is being taken again"),
             "a round is not re-issued on the new model any more: {moved}"
         );
         assert!(
             moved.contains("/models"),
             "and how a person undoes it: {moved}"
+        );
+
+        // **And the case where no turn is opened says so**: the session still moves, and the
+        // sentence names what actually happens next at the operator's hand.
+        let again = fallback_notice("glm/glm-4.6", "grok/grok-4", &out(), false);
+        assert!(
+            !again.contains("the daemon opens the next turn itself"),
+            "a turn nobody will run was promised: {again}"
+        );
+        assert!(
+            again.contains("the daemon opens no second turn of its own")
+                && again.contains("the next thing you send is what goes to grok/grok-4"),
+            "and the operator is told what does happen: {again}"
+        );
+    }
+
+    /// **The notice that OPENS the turn a fallback earned**, in the harness's own register —
+    /// `[fallback]`, like `[todo]`, `[workspace]` and `[reseat]`, because a head draws the row and
+    /// a reader has to be able to tell the daemon's words from the operator's.
+    #[test]
+    fn the_continuation_notice_names_the_refusal_the_new_model_and_that_nothing_was_lost() {
+        let notice = fallback_continuation_notice(
+            "glm-coding/glm-5.3",
+            "glm/glm-4.6",
+            &HttpError::Status {
+                code: 429,
+                body: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-12 \
+                       15:01:48."
+                    .into(),
+            },
+        );
+        assert!(
+            notice.starts_with("[fallback] "),
+            "the register is the harness's, and it is spelled the way every other notice is: \
+             {notice}"
+        );
+        assert!(
+            notice.contains("glm-coding/glm-5.3 refused (http 429)"),
+            "what refused, by name and status: {notice}"
+        );
+        assert!(
+            notice.contains("continuing this task on glm/glm-4.6"),
+            "where the work goes on: {notice}"
+        );
+        assert!(
+            notice.contains("nothing it did was lost"),
+            "and that the failed round's tool results are still the work's state: {notice}"
+        );
+        assert!(
+            !notice.contains("reset at"),
+            "the provider's body is the OPERATOR's copy, not the model's — it is in \
+             `fallback_notice`: {notice}"
+        );
+        assert!(
+            notice.contains("do not repeat what is already done"),
+            "and what to do with it: {notice}"
         );
     }
 

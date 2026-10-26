@@ -2153,6 +2153,22 @@ impl Hub {
             .any(|c| matches!(c.kind, CommandKind::Prompt { .. }))
     }
 
+    /// **Has the operator asked for a stop this turn has not taken yet?** — without taking it.
+    ///
+    /// [`Self::has_queued_prompt`]'s shape one variant along, and for the same reason: a caller
+    /// deciding whether to hand the work on must be able to LOOK. The caller is
+    /// `Harness::take_fallback_continuation` — a fallback the daemon owes a continuation turn
+    /// (the operator's 2026-10-12 ruling, *"when it finally applied the turn didnt continue"*)
+    /// must not be carried out over a stop the operator pressed at the end of the failed turn:
+    /// the interrupt arrived after that turn's last round, so nothing in it would act on it, and
+    /// a fresh turn started on top of it is either aborted by it or — worse — ignores it.
+    pub fn has_queued_interrupt(&self) -> bool {
+        self.lock()
+            .commands
+            .iter()
+            .any(|c| matches!(c.kind, CommandKind::Interrupt { .. }))
+    }
+
     /// **The next mode change a running turn can act on.**
     ///
     /// A mode command used to sit here until the worker came back, which is

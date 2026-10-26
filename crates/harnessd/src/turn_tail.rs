@@ -1,9 +1,11 @@
 //! **One turn tail for every door** — `TODO.md` R68.4.
 //!
-//! A turn reaches a session through seven doors: a head's prompt, a peer's or parent's message,
+//! A turn reaches a session through eight doors: a head's prompt, a peer's or parent's message,
 //! a wake (a monitor fired, a job or child settled, a condition came due), the idle plan-check,
-//! the operator's own `!` line, a subagent's task, and the continuation after a wall. Each one
-//! used to carry its own copy of what has to happen around a turn, and the copies had drifted.
+//! the operator's own `!` line, a subagent's task, the continuation after a wall, and the
+//! continuation after a FALLBACK — the model was out, the session moved, and the work goes on
+//! without the operator. Each one used to carry its own copy of what has to happen around a turn,
+//! and the copies had drifted.
 //! The 2026-10-11 review of the daemon (`TODO.md` section 4, *the daemon*, finding 6) listed what
 //! each copy was missing:
 //!
@@ -71,6 +73,16 @@ pub enum Door {
     OperatorShell,
     /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
     Reseat,
+    /// **The turn the daemon owes after it moved the session off a model that was out** — the
+    /// operator's ruling, 2026-10-12: *"when it finally applied the turn didnt continue"*. The
+    /// model that refused has already been replaced and the turn that met the refusal has ended
+    /// (see [`Harness::fall_back_from`]); this one opens with a notice in the harness's voice and
+    /// the work goes on without the operator.
+    ///
+    /// **It is a door of its own for one reason beyond the metrics**: a turn that IS this
+    /// continuation never earns another, which is what keeps a fallback chain from ping-ponging
+    /// between two names — see the take in [`run_turn`].
+    Fallback,
 }
 
 impl Door {
@@ -83,6 +95,7 @@ impl Door {
             Door::Nag(_) => "nag",
             Door::OperatorShell => "bang",
             Door::Reseat => "reseat",
+            Door::Fallback => "fallback",
         }
     }
 
@@ -132,15 +145,54 @@ impl TurnOwner for Bare {
 /// whose settlement was already delivered, a nag whose plan moved) — no turn ran, nothing is
 /// tidied after it, and the answer is `None`.
 ///
+/// **And the turn a fallback owes**: when the turn that just ended is the one that met a model
+/// that was out, the daemon opens the next one itself — [`Harness::continue_after_fallback`]'s
+/// notice as its user item, on the model the session has just moved to — through *this same*
+/// sequence ([`one_turn`]), so it is a turn like any other: its own clock, its own tail, its own
+/// `turn.start` row. That is the operator's ruling of 2026-10-12 (*"when it finally applied the
+/// turn didnt continue"*), and it is bounded: a turn that IS a continuation never earns another,
+/// and nothing is started over a stop the operator pressed — see
+/// [`Harness::take_fallback_continuation`].
+///
 /// **The prompt's clock is NOT started here**, and it used to be. A door that finds nothing to say
 /// runs no turn, but a clock started on the way in had already published `waiting on: turn` — and
 /// a `wait` blocked on that session armed on it and answered `0 — the turn ended` about a session
 /// that had run nothing. MEASURED 2026-10-26: the daemon's own first session, woken by the startup
 /// ring (`Sessions::put_a_restored_session_to_work`) with nothing to say, read as a turn in flight
-/// for as long as `Harness::wake` took to answer `Ok(None)`. The clock starts where a turn actually
-/// speaks instead — [`Harness::submit_items_then`], and [`Harness::run_rounds`] for a door whose
-/// rows are already in. See [`Harness::begin_turn_clock`].
+/// for as long as `Harness::wake` took to answer `Ok(None)`.
+///
+/// **Two functions and not one loop**, because the fallback continuation is a SECOND turn through
+/// the same sequence: a recursive `run_turn` with a closure made inside itself does not
+/// monomorphise (each level would want the one below), and a `loop` cannot, because `turn` is
+/// `FnOnce`. So the sequence is [`one_turn`] and this is the pair.
 pub fn run_turn(
+    h: &mut Harness,
+    owner: &mut dyn TurnOwner,
+    door: Door,
+    turn: impl FnOnce(&mut Harness) -> Result<Option<Reply>, HarnessError>,
+) -> Option<Result<Reply, HarnessError>> {
+    // Read before the door is moved: a continuation never earns a second one.
+    let is_continuation = door == Door::Fallback;
+    let out = one_turn(h, owner, door, turn);
+    // **The notice is taken whatever happens** (so a fallback can never arm a turn nobody asked
+    // for later), and only a turn that FAILED can have armed it.
+    let continuation = h.take_fallback_continuation();
+    if !is_continuation
+        && matches!(&out, Some(Err(_)))
+        && let Some(notice) = continuation
+    {
+        h.set_fallback_continuation(true);
+        let ran = one_turn(h, owner, Door::Fallback, |h| {
+            h.continue_after_fallback(notice).map(Some)
+        });
+        h.set_fallback_continuation(false);
+        return ran;
+    }
+    out
+}
+
+/// **One turn's whole sequence** — the body of [`run_turn`], and never called from inside itself.
+fn one_turn(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
     door: Door,

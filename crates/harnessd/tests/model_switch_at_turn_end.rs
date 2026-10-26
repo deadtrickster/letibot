@@ -64,7 +64,7 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::Registry;
-use letibot_transcript::TranscriptItem;
+use letibot_transcript::{TranscriptItem, UserPart};
 
 /// The answer the new model streams. A marker, so the row can be found.
 const ANSWER: &str = "the-round-went-through";
@@ -310,6 +310,9 @@ struct Sent {
     /// deepseek's thinking mode refuses — another model's half-finished turn — and the reason the
     /// switch waits for the turn to end.
     ends_mid_tool_run: bool,
+    /// The last message's text: the operator's prompt for a turn they started, and the daemon's
+    /// `[fallback]` notice for the turn it started itself.
+    last_text: String,
 }
 
 fn sent(body: &str) -> Sent {
@@ -320,6 +323,15 @@ fn sent(body: &str) -> Sent {
         .iter()
         .map(|m| m["role"].as_str().unwrap_or("?").to_string())
         .collect();
+    // **The last message's own words** — for the continuation, that is the notice the daemon
+    // wrote, which is the only thing that says where the work is being picked up from.
+    let last_text = msgs
+        .last()
+        .map(|m| match &m["content"] {
+            serde_json::Value::String(s) => s.clone(),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
     let after_last_user = match msgs.iter().rposition(|m| m["role"] == "user") {
         Some(i) => &msgs[i + 1..],
         None => &msgs[..],
@@ -334,6 +346,7 @@ fn sent(body: &str) -> Sent {
         model,
         roles,
         ends_mid_tool_run,
+        last_text,
     }
 }
 
@@ -476,6 +489,37 @@ fn answered(hub: &Hub) -> bool {
         .iter()
         .filter_map(|i| i.item.as_ref())
         .any(|i| matches!(i, TranscriptItem::Assistant { text, .. } if text.contains(ANSWER)))
+}
+
+/// **Every user row's speaker and first words**, off the daemon's snapshot — the transcript is
+/// where "whose words are these" is recorded, and a notice the daemon wrote must not read as the
+/// operator's (`Speaker::Agent`, R42).
+fn user_rows(hub: &Hub) -> Vec<(String, String)> {
+    hub.snapshot()
+        .items
+        .iter()
+        .filter_map(|i| i.item.as_ref())
+        .filter_map(|i| match i {
+            TranscriptItem::User { speaker, parts } => Some((
+                speaker.as_str().to_string(),
+                parts
+                    .iter()
+                    .find_map(|p| match p {
+                        UserPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Does the transcript carry the daemon's `[fallback]` notice, in the harness's own voice?**
+fn carries_the_daemons_notice(hub: &Hub) -> bool {
+    user_rows(hub)
+        .iter()
+        .any(|(speaker, text)| speaker == "agent" && text.starts_with("[fallback] "))
 }
 
 /// **A config for one session of this file**, on the box's own vocabulary.
@@ -829,21 +873,24 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.slashes
     );
 
-    // ── C. `[fallback]` is the same rule for the daemon's own switch
+    // ── C. `[fallback]` — the switch takes at the turn's end, and the WORK GOES ON
     //
-    // No `/models` at all: the model is out, the list names where this session goes, and it goes
-    // there at the end of the turn rather than the round being re-issued there.
+    // No `/models` at all and no second prompt either: the model is out, the list names where this
+    // session goes, and the daemon opens the next turn itself — in the harness's voice, on the new
+    // model, with the notice as its user item. That is the operator's ruling of 2026-10-12 (*"when
+    // it finally applied the turn didnt continue"*) measured end to end: nobody types anything,
+    // and the work is carried on.
     old.forget();
     new.forget();
     let mut cfg = config(&scratch, &gguf, "fallback", "deepseek", "deepseek-chat");
     cfg.fallback = vec!["glm/glm-4.6".to_string()];
-    let (rec, _hub, _cfg) = drive(&parts, cfg, |client, rx, hub, rec| {
+    let (rec, hub, _cfg) = drive(&parts, cfg, move |client, rx, hub, rec| {
+        // The first turn is the operator's.
         client.prompt(0, PROMPT).expect("the prompt is accepted");
+        // **And then nothing**: the daemon's own turn is what answers, so this waits for the answer
+        // row rather than sending a prompt to provoke it.
+        until("the continuation turn's answer", || answered(hub));
         watch(rx, rec, |rec| rec.failed > 0 && !rec.applied.is_empty());
-        client
-            .prompt(0, NEXT)
-            .expect("the second prompt is accepted");
-        until("the new model's answer", || answered(hub));
     });
     let said = rec
         .fell_back()
@@ -859,18 +906,55 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "the notice names where it went and where that came from: {said}"
     );
     assert!(
-        said.contains("when the turn ends"),
-        "and that it takes then, not inside the turn: {said}"
+        said.contains("the daemon opens the next turn itself"),
+        "and that the work goes on without anyone typing: {said}"
     );
+    // **One request, and it is the continuation's** — no operator prompt follows the fallback in
+    // this scenario, so a second request here would be a turn nobody started.
     let new_sent: Vec<Sent> = new.sent().iter().map(|b| sent(b)).collect();
     assert_eq!(
         new_sent.len(),
         1,
-        "the fallback's first request is the next turn's, not a re-issued round: {:?}",
+        "the continuation is the only turn the new model saw: {:?}",
         new_sent.iter().map(|s| &s.roles).collect::<Vec<_>>()
     );
-    assert_eq!(new_sent[0].roles.last().map(String::as_str), Some("user"));
-    assert!(!new_sent[0].ends_mid_tool_run);
+    let continuation = &new_sent[0];
+    assert_eq!(
+        continuation.model, "glm-4.6",
+        "and it ran on the model the fallback named"
+    );
+    assert_eq!(
+        continuation.roles.last().map(String::as_str),
+        Some("user"),
+        "its first request ends at a USER message: {:?}",
+        continuation.roles
+    );
+    assert!(
+        !continuation.ends_mid_tool_run,
+        "and not inside the refused turn's tool rounds: {:?}",
+        continuation.roles
+    );
+    assert!(
+        continuation.last_text.starts_with("[fallback] "),
+        "the message is the daemon's own notice, in its own register: {:?}",
+        continuation.last_text
+    );
+    assert!(
+        continuation.last_text.contains("refused (http 429)")
+            && continuation
+                .last_text
+                .contains("continuing this task on glm/glm-4.6"),
+        "which names what refused and where the work goes on: {:?}",
+        continuation.last_text
+    );
+    // **And it is the harness's row, not the operator's.** A head draws the two differently
+    // (R42), and a continuation that read as a prompt would be the session talking as a person
+    // who said nothing.
+    assert!(
+        carries_the_daemons_notice(&hub),
+        "the continuation's user row is not marked as the harness's own: {:?}",
+        user_rows(&hub)
+    );
     assert!(
         rec.listing.contains("now answering: glm/glm-4.6 (metered)"),
         "and the session stays there, which is what makes the move a switch rather than a detour: \
