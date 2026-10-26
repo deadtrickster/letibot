@@ -110,6 +110,7 @@ pub mod permission;
 pub mod references;
 pub mod remote;
 pub mod result;
+pub mod rpc;
 pub mod runtime;
 pub mod schema;
 pub mod similarity;

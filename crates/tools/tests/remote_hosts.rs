@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use letibot_tools::backend::{BackendError, Command, ExecBackend};
 use letibot_tools::builtins::hosts::HostsTool;
 use letibot_tools::exec::{JobId, JobState, ScopeKind, SpawnRequest, Waited};
-use letibot_tools::remote::{Host, Hosts, Paths, SshBackend, SshSpec};
+use letibot_tools::remote::{Host, Hosts, Mise, Paths, SshBackend, SshSpec};
 
 /// The short id this suite's session gets: the last eight of `s-01abcdef`.
 const SHORT: &str = "01abcdef";
@@ -126,6 +126,12 @@ impl Rig {
             key: None,
             path: Vec::new(),
             root: "~/letibot-remote".into(),
+            // **A fixture's host has no mise**, and says so rather than letting the default probe
+            // find this box's own (`/opt/homebrew/bin/mise`) and wrap every command in it: these
+            // tests assert the shape of the command line, and a machine-dependent wrapper would
+            // make the same assertion mean two things on two boxes. `the_mise_wrapper_*` below
+            // are the tests that do have one.
+            mise: Some(Mise::Off),
         };
         Rig {
             dir,
@@ -788,6 +794,8 @@ fn host_named(name: &str) -> Host {
         key: None,
         path: Vec::new(),
         root: "~/letibot-remote".into(),
+        // See `Rig::new`: a fixture's host has no mise unless the test is about mise.
+        mise: Some(Mise::Off),
     }
 }
 
@@ -902,8 +910,13 @@ fn every_step_that_is_not_a_command_stops_at_its_bound() {
             "the refusal for `{step}` must name the host: {said}"
         );
         assert!(
-            said.contains("no answer within") || said.contains("lost the connection"),
-            "the refusal for `{step}` must say it never answered: {said}"
+            said.contains("no answer within")
+                || said.contains("lost the connection")
+                || said.contains("is unavailable"),
+            "the refusal for `{step}` must say it never answered — or, once the third failure has \
+             opened the breaker ([`letibot_tools::rpc`], measured by \
+             `three_failed_calls_open_the_breaker_and_the_next_fails_at_once`), that the host is \
+             not being dialled at all: {said}"
         );
     }
     let _ = std::fs::remove_file(&silent);
@@ -1237,8 +1250,8 @@ fn the_hosts_tool_probes_two_hosts_in_parallel() {
     let file = dir.join("hosts.toml");
     std::fs::write(
         &file,
-        "[host.h1]\nhostname = \"h1.invalid\"\nuser = \"tester\"\n\n\
-         [host.h2]\nhostname = \"h2.invalid\"\nuser = \"tester\"\n",
+        "[host.h1]\nhostname = \"h1.invalid\"\nuser = \"tester\"\nmise = false\n\n\
+         [host.h2]\nhostname = \"h2.invalid\"\nuser = \"tester\"\nmise = false\n",
     )
     .expect("a hosts file");
 
@@ -1302,27 +1315,32 @@ fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
             .unwrap_or(0)
     ));
     // `h1` refuses the connection the way ssh does — 255 with nothing on stdout.
+    //
+    // **`u1`, not `h1`**: two connection failures count towards the process-wide breaker
+    // ([`letibot_tools::rpc`]), and a host name another test in this binary also uses would carry
+    // that streak into it. Three failures would open the breaker and turn that test's *reachable*
+    // into *not reached*, from a state no line of it mentions.
     let fake = Fake::new(
         "unreachable",
-        "case \"$*\" in *h1.invalid*) echo 'ssh: connect to host h1.invalid port 22: Connection refused' >&2; exit 255 ;; esac\n\
+        "case \"$*\" in *u1.invalid*) echo 'ssh: connect to host u1.invalid port 22: Connection refused' >&2; exit 255 ;; esac\n\
          exec bash -lc \"$last\"",
     );
     let paths = Paths::in_home(dir.join("home"));
     std::fs::create_dir_all(paths.keys()).expect("the keys directory");
-    for name in ["h1", "h2"] {
+    for name in ["u1", "u2"] {
         std::fs::write(paths.default_key(name), b"a dedicated key").expect("a key");
     }
     std::fs::write(
         paths.known_hosts(),
-        "h1.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n\
-         h2.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
+        "u1.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n\
+         u2.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
     )
     .expect("the host keys");
     let file = dir.join("hosts.toml");
     std::fs::write(
         &file,
-        "[host.h1]\nhostname = \"h1.invalid\"\nuser = \"tester\"\n\n\
-         [host.h2]\nhostname = \"h2.invalid\"\nuser = \"tester\"\n",
+        "[host.u1]\nhostname = \"u1.invalid\"\nuser = \"tester\"\nmise = false\n\n\
+         [host.u2]\nhostname = \"u2.invalid\"\nuser = \"tester\"\nmise = false\n",
     )
     .expect("a hosts file");
     let tool = HostsTool::new()
@@ -1334,11 +1352,11 @@ fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
     assert_eq!(said.matches("REACHABLE").count(), 1, "{said}");
     assert!(said.contains("NOT REACHED"), "{said}");
     assert!(
-        said.contains("lost the connection") && said.contains("h1.invalid"),
+        said.contains("lost the connection") && said.contains("u1.invalid"),
         "the unreachable host is reported with what ssh said: {said}"
     );
     assert!(
-        said.contains("`h2`") && said.contains("cores:"),
+        said.contains("`u2`") && said.contains("cores:"),
         "the host that answers is still reported in full: {said}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1370,8 +1388,8 @@ fn a_host_with_no_key_is_refused_before_anything_connects() {
     let file = dir.join("hosts.toml");
     std::fs::write(
         &file,
-        "[host.h1]\nhostname = \"h1.invalid\"\nuser = \"tester\"\n\n\
-         [host.h2]\nhostname = \"h2.invalid\"\nuser = \"tester\"\n",
+        "[host.h1]\nhostname = \"h1.invalid\"\nuser = \"tester\"\nmise = false\n\n\
+         [host.h2]\nhostname = \"h2.invalid\"\nuser = \"tester\"\nmise = false\n",
     )
     .expect("a hosts file");
     let tool = HostsTool::new()
@@ -1396,4 +1414,545 @@ fn a_host_with_no_key_is_refused_before_anything_connects() {
         "the host that could be reached was still probed"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// The RPC practices — rules 5 to 8, and what ssh's two refusals mean
+// ---------------------------------------------------------------------------
+//
+// `docs/remote-hosts.md`: *"a remote is an RPC, and the client follows the practices"*. Rules 1–4
+// are above (deadlines, failure detection, retries by idempotency, an unknown outcome said as
+// unknown); these are the rest, and each one is measured against the same fake ssh.
+
+/// **The spec these tests place with** — this fake ssh, this host, three seconds on every call
+/// that is not a command.
+fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -> SshSpec {
+    // **The two facts a connection is refused without**, for THIS host's name: the breaker and
+    // back-pressure tests use a name of their own, so `repo_and_paths`'s `fake` material would not
+    // open them.
+    std::fs::create_dir_all(paths.keys()).expect("the keys directory");
+    std::fs::write(paths.default_key(&host.name), b"a dedicated key").expect("the key");
+    let mut known = std::fs::read_to_string(paths.known_hosts()).unwrap_or_default();
+    known.push_str(&format!(
+        "{} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
+        host.hostname
+    ));
+    std::fs::write(paths.known_hosts(), known).expect("the host key");
+    SshSpec {
+        host,
+        name: "s-01abcdef".into(),
+        source: repo.to_path_buf(),
+        writable: true,
+        exec: true,
+        ssh: Some(program.to_path_buf()),
+        paths: Some(paths.clone()),
+        bound: Some(Duration::from_secs(3)),
+    }
+}
+
+/// **Rule 5: three connection failures in a row and the host is not dialled any more.**
+///
+/// The measured shape of the defect this replaces: a host that has gone away costs every call its
+/// own timeout, one after another, and a session that keeps asking pays for each. Here the third
+/// failure opens the breaker, the fourth call fails **at once** with a sentence naming the reason,
+/// the time the host was last reached and when the next probe is, and the fake's own log proves no
+/// ssh was spawned for it.
+#[test]
+fn three_failed_calls_open_the_breaker_and_the_next_fails_at_once() {
+    // A unique host name: the breaker is process-wide, and a name another test also uses would
+    // carry its streak (and its opened state) into that test.
+    let host = format!("breaker-{}", std::process::id());
+    let fake = Fake::new(
+        "breaker",
+        "if [ -f @DIR@/down ]; then echo 'ssh: connect to host nowhere port 22: Operation timed out' >&2; exit 255; fi\n\
+         exec bash -lc \"$last\"",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+
+    // The host goes away, and every call from here is a connection failure.
+    std::fs::write(fake.path("down"), b"gone").expect("the marker");
+
+    // A step of this backend's own work: two attempts, then the third call opens the breaker.
+    for _ in 0..2 {
+        let _ = b
+            .read("README")
+            .expect_err("a dropped connection is a refusal");
+    }
+    let before = fake.calls().len();
+    assert!(before >= 3, "the failures really were attempted: {before}");
+
+    let began = Instant::now();
+    let refused = b.read("README").expect_err("an open breaker refuses");
+    let took = began.elapsed();
+    let said = refused.to_string();
+    assert!(
+        took < Duration::from_millis(500),
+        "a call to an unavailable host must not wait: {took:?}"
+    );
+    assert!(said.contains(&host), "the refusal names the host: {said}");
+    assert!(
+        said.contains("is unavailable") && said.contains("connection failures"),
+        "the refusal says why: {said}"
+    );
+    assert!(
+        said.contains("last reached"),
+        "and when it was last reached: {said}"
+    );
+    assert!(
+        said.contains("probe"),
+        "and that one probe will decide whether it is back: {said}"
+    );
+    assert_eq!(
+        fake.calls().len(),
+        before,
+        "nothing was dialled for the refused call: {:#?}",
+        fake.calls()
+    );
+
+    // **Rule 7's record is how a report sees the same thing.**
+    let report = letibot_tools::rpc::report(&host);
+    assert!(report.contains("dropped"), "{report}");
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// **Rule 6: a command that has to be abandoned takes its remote process group with it.**
+///
+/// The fake ssh *is* the remote here, so a `sleep 300 &` under it is a process on this box in a
+/// session of its own — which is exactly the shape a real command has on a real host. The command
+/// is wrapped so its group is written down, the call is killed at its bound, and the cancel reaches
+/// that group: the child that would have outlived the ssh is gone.
+#[test]
+fn a_cancelled_command_leaves_nothing_running_on_the_far_side() {
+    let host = format!("cancel-{}", std::process::id());
+    let fake = Fake::new("cancel", "exec bash -lc \"$last\"");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    // A short bound on the connection: `run` keeps it, so the command is abandoned in a second
+    // rather than in twenty.
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+    let pidfile = fake.path("child-pid");
+    let refused = b
+        .run(&Command {
+            // The whole point: a child that is NOT in the ssh's own process group, so killing the
+            // local ssh does not reach it. Only the recorded group does.
+            argv: vec![
+                "sh".into(),
+                "-c".into(),
+                format!("sleep 300 & echo $! > {}; wait", pidfile.display()),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect_err("a command that outlives its bound is abandoned");
+    let said = refused.to_string();
+    assert!(
+        said.contains("may have run, partly run, or still be running"),
+        "the outcome is reported as unknown: {said}"
+    );
+
+    let child: u32 = std::fs::read_to_string(&pidfile)
+        .expect("the command started and wrote its child's pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    // **The cancel is the whole proof, and the group is why.** The `setsid` wrapper put the command
+    // in a session of its own, so the kill that ended the local ssh cannot have reached this child;
+    // nothing but the recorded group id could. And the run only returned after
+    // [`Ssh::cancel_group`] signalled it, so the child is gone by now.
+    let mut gone = !alive(child);
+    for _ in 0..40 {
+        if gone {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        gone = !alive(child);
+    }
+    // A last-resort cleanup, so a failing assertion does not leave a `sleep 300` behind.
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", &child.to_string()])
+        .output();
+    assert!(
+        gone,
+        "the cancelled command's group was ended on the far side"
+    );
+    // And the file that recorded it is gone, so nothing can signal a stale id later.
+    assert!(
+        !b.worktree_path().is_empty() && !pidfile_is_stale(&b),
+        "the group file is removed when the group is ended"
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// Is there a run-group file left in the checkout? The cancel deletes the one it used.
+fn pidfile_is_stale(b: &letibot_tools::remote::SshBackend) -> bool {
+    let dir = Path::new(b.worktree_path()).join(".letibot-remote");
+    std::fs::read_dir(&dir)
+        .map(|d| {
+            d.flatten()
+                .any(|e| e.path().extension().is_some_and(|x| x == "pgid"))
+        })
+        .unwrap_or(false)
+}
+
+/// **Rule 7: every call is recorded, and the report says what it did.**
+///
+/// One host, three shapes of call: a read that worked, a command that worked, and a command that
+/// dropped. The records carry the host, the step, the duration and the outcome — and the report is
+/// the row `hosts {probe: true}` shows.
+#[test]
+fn every_call_is_recorded_and_the_report_names_host_step_duration_and_outcome() {
+    let host = format!("records-{}", std::process::id());
+    let fake = Fake::new(
+        "records",
+        "case \"$last\" in *drops-now*) echo 'ssh: connection reset by peer' >&2; exit 255 ;; esac\n\
+         exec bash -lc \"$last\"",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+
+    let _ = b.read("README").expect("the read lands");
+    let _ = b
+        .run(&Command {
+            argv: vec!["true".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect("the command runs");
+    let _ = b
+        .run(&Command {
+            argv: vec!["echo".into(), "drops-now".into()],
+            cwd: String::new(),
+            env: Vec::new(),
+        })
+        .expect_err("this one drops");
+
+    let records = letibot_tools::rpc::recent(&host, 8);
+    let steps: Vec<(&str, &str)> = records
+        .iter()
+        .map(|r| (r.step.as_str(), r.outcome.as_str()))
+        .collect();
+    assert!(
+        steps
+            .iter()
+            .any(|(s, o)| s.starts_with("reading") && *o == "ok"),
+        "the read is recorded as ok: {steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|(s, o)| *s == "this command ran" && *o == "ok"),
+        "the command is recorded as ok: {steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|(s, o)| *s == "this command ran" && *o == "dropped"),
+        "the dropped command is recorded as dropped: {steps:?}"
+    );
+    // No payload: a record is a name, a time and a verdict, and a `bash` body is none of them.
+    assert!(
+        !records.iter().any(|r| r.step.contains("drops-now")),
+        "a record must not carry the command: {records:#?}"
+    );
+    let report = letibot_tools::rpc::report(&host);
+    assert!(report.contains("last "), "{report}");
+    assert!(report.contains("slowest"), "{report}");
+    assert!(report.contains("dropped"), "{report}");
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// **Rule 8: a host takes a bounded number of ssh sessions, and a call beyond it queues under its
+/// own deadline.**
+///
+/// The fake holds each call for 300 ms and counts how many are inside at once. Sixteen steps are
+/// sent at once against a host whose bound is
+/// [`letibot_tools::rpc::MAX_SESSIONS_PER_HOST`]; the most that may ever be in flight is that bound
+/// (a client that opened sixteen would have sshd refuse the eleventh, which reads as a fault on
+/// the host), and every call still answers inside its own deadline.
+#[test]
+fn concurrent_calls_to_one_host_queue_at_the_session_bound() {
+    let host = format!("busy-{}", std::process::id());
+    let fake = Fake::new(
+        "busy",
+        "n=$(cat @DIR@/live 2>/dev/null || echo 0); n=$((n+1)); echo $n > @DIR@/live\n\
+         m=$(cat @DIR@/most 2>/dev/null || echo 0); if [ \"$n\" -gt \"$m\" ]; then echo $n > @DIR@/most; fi\n\
+         sleep 0.3\n\
+         n=$(cat @DIR@/live); echo $((n-1)) > @DIR@/live\n\
+         exec bash -lc \"$last\"",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = std::sync::Arc::new(
+        SshBackend::place(&place_spec_for_test(
+            &fake.program,
+            &repo,
+            &paths,
+            host_named(&host),
+        ))
+        .expect("placed"),
+    );
+
+    let mut threads = Vec::new();
+    for _ in 0..(letibot_tools::rpc::MAX_SESSIONS_PER_HOST * 2) {
+        let b = b.clone();
+        threads.push(std::thread::spawn(move || b.stat("README").is_some()));
+    }
+    let answered = threads
+        .into_iter()
+        .filter(|_| true)
+        .map(|t| t.join().expect("the thread ran"))
+        .filter(|hit| *hit)
+        .count();
+    assert_eq!(
+        answered,
+        letibot_tools::rpc::MAX_SESSIONS_PER_HOST * 2,
+        "every call answered inside its own deadline"
+    );
+    let most: usize = std::fs::read_to_string(fake.path("most"))
+        .expect("the fake counted")
+        .trim()
+        .parse()
+        .expect("a number");
+    assert!(
+        most <= letibot_tools::rpc::MAX_SESSIONS_PER_HOST,
+        "{most} ssh calls were in flight at once against a bound of {}",
+        letibot_tools::rpc::MAX_SESSIONS_PER_HOST
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// **An auth refusal is definite: said in those words, never retried, exactly one invocation.**
+///
+/// Measured live on 2026-10-26: three hosts whose key was not installed answered `Permission denied
+/// (publickey)`, and the client called it *lost the connection, it may not have happened* and asked
+/// **twice**. The machine answered; the key is not there; nothing about a second offer changes it.
+#[test]
+fn an_auth_refusal_is_definite_and_is_never_asked_twice() {
+    let host = format!("auth-{}", std::process::id());
+    let fake = Fake::new(
+        "auth",
+        "case \"$last\" in *plainly-refused*) \
+           echo 'tester@nowhere: Permission denied (publickey).' >&2; exit 255 ;; esac\n\
+         exec bash -lc \"$last\"",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+
+    let refused = b
+        .read("plainly-refused")
+        .expect_err("a refused key is not a result");
+    let said = refused.to_string();
+    assert!(
+        said.contains("key is not authorised") && said.contains("host key changed"),
+        "the refusal is the one the contract names: {said}"
+    );
+    assert!(said.contains("ssh-copy-id"), "and it names the fix: {said}");
+    assert!(
+        !said.contains("lost the connection") && !said.contains("may not have happened"),
+        "a refusal is not a lost connection: {said}"
+    );
+    assert_eq!(
+        fake.count("plainly-refused"),
+        1,
+        "an idempotent step would normally be retried; a refusal never is: {:#?}",
+        fake.calls()
+    );
+    // The breaker is not opened by it: the host is up and will keep answering until a key is
+    // installed.
+    assert_eq!(
+        letibot_tools::rpc::standing(&host),
+        letibot_tools::rpc::Standing::Closed,
+        "a refusal does not make a host unavailable"
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// **A host key that does not verify is the other definite refusal, and its fix is the other file.**
+#[test]
+fn a_host_key_mismatch_is_refused_with_the_scan_command() {
+    let host = format!("hostkey-{}", std::process::id());
+    let fake = Fake::new(
+        "hostkey",
+        "if [ -f @DIR@/mismatch ]; then\n\
+           echo 'No ED25519 host key is known for nowhere and you have requested strict checking.' >&2\n\
+           echo 'Host key verification failed.' >&2\n\
+           exit 255\n\
+         fi\n\
+         exec bash -lc \"$last\"",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+    std::fs::write(fake.path("mismatch"), b"changed").expect("the marker");
+    let said = b.read("README").expect_err("it is refused").to_string();
+    assert!(said.contains("host key changed"), "{said}");
+    assert!(said.contains("ssh-keyscan"), "the fix is a scan: {said}");
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// **A script that writes `$HOME/.local/bin/mise` is the host's mise**, and every remote command
+/// goes through `<mise> exec -C <the checkout> -- bash -lc '<cmd>'`.
+///
+/// The default (no `mise` line in `hosts.toml`) is *probe `~/.local/bin/mise`, then `PATH`, once,
+/// and cache the answer*: the fake's home has one, so the probe finds it — and the wrapper is
+/// asserted on the argv the next command was handed, not on a field.
+#[test]
+fn the_default_probe_finds_mise_and_every_command_runs_through_it() {
+    let host = format!("mise-{}", std::process::id());
+    let fake = Fake::new("mise", "exec bash -lc \"$last\"");
+    let mise = fake.dir.join("home/.local/bin/mise");
+    std::fs::create_dir_all(mise.parent().expect("a bin")).expect("the mise directory");
+    write_executable(
+        &mise,
+        &format!(
+            "#!/bin/bash\n\
+             printf 'MISE %s\\n' \"$*\" >> '{}'\n\
+             shift 4\n\
+             exec \"$@\"\n",
+            fake.path("mise.log").display()
+        ),
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        Host {
+            mise: None,
+            ..host_named(&host)
+        },
+    ))
+    .expect("placed");
+
+    let log = std::fs::read_to_string(fake.path("mise.log")).expect("mise was run");
+    let worktree = b.worktree_path();
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("MISE exec -C ") && l.contains(worktree)),
+        "the wrapper names `mise exec -C <the checkout>`: {log}"
+    );
+    // **A multi-line script makes one MISE line span several lines**, so this asks the lines mise
+    // actually began: every one of them wraps a login shell.
+    assert!(
+        !log.is_empty()
+            && log
+                .lines()
+                .filter(|l| l.starts_with("MISE "))
+                .all(|l| l.starts_with("MISE exec -C ") && l.contains("-- bash -lc ")),
+        "every wrapped command is `mise exec -C <dir> -- bash -lc <script>`: {log}"
+    );
+    // The calls the placement made BEFORE the checkout existed ran in `$HOME` — the honest answer
+    // for a directory that does not exist yet. The argv is where that is visible: the shell on the
+    // far side expands it, so the fake's log shows a path and the ssh call shows `"$HOME"`.
+    assert!(
+        fake.calls()
+            .iter()
+            .any(|c| c.contains("exec -C \"$HOME\" -- bash -lc ")),
+        "a command before the checkout was named ran in the remote's home: {:#?}",
+        fake.calls()
+    );
+    // The probe itself is asked once and cached: one `finding mise` record, not one per call.
+    let probes = letibot_tools::rpc::recent(&host, 256)
+        .iter()
+        .filter(|r| r.step == "finding mise")
+        .count();
+    assert_eq!(
+        probes, 1,
+        "the answer is probed once per process, not per call"
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
+}
+
+/// **`mise = false` turns the wrapper off**, and a host that names a program uses that program
+/// with its `~` expanded **there**.
+#[test]
+fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
+    // Off.
+    let host = format!("nomise-{}", std::process::id());
+    let fake = Fake::new("nomise", "exec bash -lc \"$last\"");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        host_named(&host),
+    ))
+    .expect("placed");
+    let _ = b.read("README").expect("the read lands");
+    assert!(
+        !fake.calls().iter().any(|c| c.contains(" exec -C ")),
+        "`mise = false` means no wrapper and no probe: {:#?}",
+        fake.calls()
+    );
+
+    // A path, spelled with a `~` that is the REMOTE's home.
+    let host = format!("miseat-{}", std::process::id());
+    let fake = Fake::new("miseat", "exec bash -lc \"$last\"");
+    let mise = fake.dir.join("home/.local/bin/mise");
+    std::fs::create_dir_all(mise.parent().expect("a bin")).expect("the mise directory");
+    write_executable(
+        &mise,
+        &format!(
+            "#!/bin/bash\n\
+             printf 'MISE %s\\n' \"$*\" >> '{}'\n\
+             shift 4\n\
+             exec \"$@\"\n",
+            fake.path("mise.log").display()
+        ),
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        Host {
+            mise: Some(Mise::At("~/.local/bin/mise".into())),
+            ..host_named(&host)
+        },
+    ))
+    .expect("placed");
+    let _ = b.read("README").expect("the read lands");
+    let log = std::fs::read_to_string(fake.path("mise.log")).expect("mise was run");
+    assert!(
+        log.lines().any(|l| l.starts_with("MISE exec -C ")),
+        "a named program is the wrapper: {log}"
+    );
+    // **`~` is expanded on the remote**: the argv says `"$HOME/.local/bin/mise"`, and the shell
+    // there turns it into the fake home's copy — which is the file that wrote this log.
+    assert!(
+        fake.calls()
+            .iter()
+            .any(|c| c.contains("\"$HOME/.local/bin/mise\" exec -C ")),
+        "the program is spelled with the REMOTE's home: {:#?}",
+        fake.calls()
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
 }

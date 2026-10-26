@@ -50,7 +50,6 @@
 //! group, and a daemon that restarts finds the job again from those files.
 
 use std::collections::BTreeMap;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -63,6 +62,7 @@ use crate::exec::{
     ExecError, JobId, JobState, JobView, MemoryCap, OutputSlice, ProcessHost, Promotion, Protected,
     Reaped, Reaping, ScopeId, ScopeKind, SpawnRequest, Waited,
 };
+use crate::rpc;
 
 // ---------------------------------------------------------------------------
 // hosts.toml
@@ -98,6 +98,27 @@ pub struct Host {
     /// there, once, at placement ([`SshBackend::place`]) — so the paths this backend
     /// hands around are absolute and mean the same thing to `git fetch` a minute later.
     pub root: String,
+    /// **How the host's toolchains are found** — `None` is *probe and cache*, which is what
+    /// every host without a `mise` line gets. See [`Mise`].
+    pub mise: Option<Mise>,
+}
+
+/// **Toolchains through `mise`**, which is how the operator's machines are set up: *"regarding
+/// cargo and stuff - we do it via mise generally"* (2026-10-26).
+///
+/// Measured on all four hosts that day: `mise` lives at `~/.local/bin/mise` and is **not on a
+/// non-login shell's `PATH`**, the globally installed tools differ per machine, and a project
+/// pins its own with `mise.toml` or `.tool-versions`. So a remote command that runs without
+/// `mise` sees the wrong `cargo` or none at all — which is why the wrapper is the default rather
+/// than an option, and why `path` (the list in front of `PATH`) stays as the escape hatch for a
+/// machine that gets its toolchain some other way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mise {
+    /// `mise = false` — do not wrap. A host whose toolchain is on `PATH`, or one where mise is
+    /// broken, says so here instead of paying a probe and a wrapper on every call.
+    Off,
+    /// `mise = "~/.local/bin/mise"` — this program, expanded **on the remote**, once.
+    At(String),
 }
 
 impl Host {
@@ -244,6 +265,27 @@ impl Hosts {
                 })?,
                 None => Vec::new(),
             };
+            // **`mise` is two shapes in one key**: `false` turns the wrapper off, and a string is
+            // the program to run. A `true` is refused rather than read as "find it yourself",
+            // because that is what leaving the line out already means — and two spellings of one
+            // meaning is how a file starts disagreeing with itself.
+            let mise = match kv.get("mise") {
+                None => None,
+                Some(raw) => {
+                    let raw = raw.trim();
+                    if raw == "false" {
+                        Some(Mise::Off)
+                    } else if raw.starts_with('"') || raw.starts_with('\'') {
+                        get("mise").map(|v| Mise::At(v.to_string()))
+                    } else {
+                        return Err(format!(
+                            "`host.{name}.mise` is either `false` (do not run commands through \
+                             mise) or the program's path in quotes — `mise = \"~/.local/bin/mise\"`. \
+                             `{raw}` is neither, and a `true` is what leaving the line out means."
+                        ));
+                    }
+                }
+            };
             hosts.insert(
                 name.clone(),
                 Host {
@@ -252,6 +294,7 @@ impl Hosts {
                     key: get("key").map(|k| expand_tilde(Path::new(k))),
                     path,
                     root: get("root").unwrap_or("~/letibot-remote").to_string(),
+                    mise,
                     name,
                 },
             );
@@ -291,8 +334,9 @@ impl Hosts {
              declared by the operator, in that file and never in a project: \
              `[host.{name}]` with `hostname` (what ssh connects to), `user`, `key` (the \
              dedicated identity file, default `~/.config/letibot/keys/{name}`), `path` \
-             (directories to put in front of the remote `PATH`) and `root` (where remote \
-             worktrees live, default `~/letibot-remote`).",
+             (directories to put in front of the remote `PATH`), `root` (where remote \
+             worktrees live, default `~/letibot-remote`) and `mise` (the toolchain wrapper, \
+             default: found once and cached).",
             hosts_file().display()
         )
     }
@@ -301,7 +345,7 @@ impl Hosts {
 /// The keys a `[host.NAME]` table may carry. Anything else is refused by name: this file decides
 /// which machine a session runs on and which file ssh reads, and a typo in it is not a detail to
 /// be ignored.
-const HOST_KEYS: &[&str] = &["hostname", "user", "key", "path", "root"];
+const HOST_KEYS: &[&str] = &["hostname", "user", "key", "path", "root", "mise"];
 
 /// `["a", "b"]` → the strings, with the quotes and spaces off, and an empty list for `[]`.
 ///
@@ -812,9 +856,91 @@ enum Call {
     /// The bound passed with nothing to show for it. The local ssh was killed.
     TimedOut(Duration),
     /// ssh failed before the command could say anything — exit 255 with nothing on stdout: the
-    /// connection dropped, the key was refused, the name does not resolve.
+    /// connection dropped, the name does not resolve.
     Dropped(Vec<u8>),
+    /// **The far side said no and meant it** — `Permission denied (publickey)`, a host key that
+    /// does not verify. Definite: not a lost connection, never retried, and its sentence names the
+    /// fix ([`Ssh::denied`]).
+    Denied(AuthRefusal, Vec<u8>),
 }
+
+/// **The two ways ssh says *not you*.** They are separated because the fix differs — a key that is
+/// not installed, versus a machine whose key is not the one this box recorded — and a sentence that
+/// offered both would send the operator to the wrong file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthRefusal {
+    /// `Permission denied (publickey[,…]).`
+    Key,
+    /// `Host key verification failed.` / `No … host key is known for …`.
+    HostKey,
+}
+
+/// **Did the far side say anything at all?** A refusal counts — `Permission denied` is a machine
+/// that is up — and a lost connection or a passed deadline does not.
+fn connected(call: &Call) -> bool {
+    matches!(call, Call::Answered(..) | Call::Denied(..))
+}
+
+/// **Read ssh's own words as *refused* or *lost*.** OpenSSH prints these and exits 255 with
+/// nothing on stdout, which is exactly the shape a dropped connection has — so the difference has
+/// to be read from stderr, and it has to be read here rather than guessed at by a caller.
+///
+/// Matched as substrings rather than whole lines: these arrive prefixed by `user@host:`, and
+/// `Host key verification failed.` is preceded by the message that says which key and why
+/// (`No ED25519 host key is known for x and you have requested strict checking.`).
+fn auth_refusal(stderr: &str) -> Option<AuthRefusal> {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("permission denied (") || lower.contains("too many authentication failures") {
+        return Some(AuthRefusal::Key);
+    }
+    if lower.contains("host key verification failed")
+        || lower.contains("host key is known for")
+        || lower.contains("remote host identification has changed")
+    {
+        return Some(AuthRefusal::HostKey);
+    }
+    None
+}
+
+/// **A command wrapped so its remote process group is known** — rule 6's half that runs there.
+///
+/// `setsid` makes the shell a session leader, so its pid *is* its process group and
+/// `kill -TERM -<pid>` reaches everything it forks. The pid is written to `file` before the
+/// command starts, and removed when it ends normally, so the file is either the live group or
+/// nothing — never a stale id a later cancel could signal by mistake. Where the host has no
+/// `setsid` the wrapper still runs, and [`Ssh::cancel_group`] asks `ps -o pgid=` before it
+/// signals, so a pid that does not lead a group gets a single-process kill and never a group one.
+fn grouped(script: &str, file: &str) -> String {
+    let q = quote(file);
+    let dir = match file.rfind('/') {
+        Some(i) => quote(&file[..i]),
+        None => ".".to_string(),
+    };
+    let inner = format!(
+        "mkdir -p {dir} 2>/dev/null; echo $$ > {q}; ( {script} ); rc=$?; rm -f {q}; exit $rc"
+    );
+    format!(
+        "if command -v setsid >/dev/null 2>&1; then setsid bash -c {}; else bash -c {}; fi",
+        quote(&inner),
+        quote(&inner)
+    )
+}
+
+/// **The bound on ending a remote process group** — [`Ssh::cancel_group`]'s call.
+///
+/// Ten seconds: long enough to dial a fresh master and signal, short enough that a command which
+/// already spent its own bound is not made to spend a second one twice. It is a cleanup, and the
+/// sentence the caller already has says the outcome there is unknown when it cannot be confirmed.
+const CANCEL_BOUND: Duration = Duration::from_secs(10);
+
+/// **Which `mise` a host turned out to have**, per process — `None` meaning *asked, and it has
+/// none*.
+///
+/// A cache because the answer costs a round trip and does not change under a running daemon; a
+/// negative entry because a host without mise must pay for that fact once and not once per
+/// command.
+static MISE: std::sync::LazyLock<Mutex<BTreeMap<String, Option<String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
 /// **One host's ssh connection**, opened by [`Ssh::connect`] after the two refusals that make
 /// it letibot's own: its identity file, and its host key.
@@ -836,9 +962,17 @@ pub struct Ssh {
     key: PathBuf,
     control: PathBuf,
     paths: Paths,
-    /// The wall clock on every call that is not a command — [`STEP_BOUND`] unless a caller (a
+    /// The wall clock on every call that is *not* a command — [`STEP_BOUND`] unless a caller (a
     /// test, mostly) names another.
     bound: Duration,
+    /// **Where the remote command's work is**, as an absolute path on that machine — the
+    /// checkout once a placement has made one, and the host's `root` before that.
+    ///
+    /// It is `mise exec -C <dir>`'s argument, and it is why this is a field: a toolchain is
+    /// pinned by a `mise.toml` or a `.tool-versions` in the *tree the work is in*, so the
+    /// wrapper must be told which tree. `None` is the remote's home, which is what a probe or a
+    /// connection test has.
+    dir: Option<String>,
 }
 
 impl Ssh {
@@ -869,7 +1003,25 @@ impl Ssh {
             control,
             paths,
             bound: STEP_BOUND,
+            dir: None,
         })
+    }
+
+    /// **Tell the connection which tree the work is in**, once a placement knows: the remote
+    /// checkout, absolute. It is `mise exec -C`'s argument, so it decides which `mise.toml` a
+    /// remote command's toolchain is read from.
+    pub fn with_dir(mut self, dir: impl Into<String>) -> Ssh {
+        self.dir = Some(dir.into());
+        self
+    }
+
+    /// The directory a wrapped command is run in — `-C`'s argument.
+    fn dir_arg(&self) -> String {
+        match &self.dir {
+            Some(d) => quote(d),
+            // `"$HOME"`, unquoted as a path: quoting it would name a directory called `$HOME`.
+            None => "\"$HOME\"".to_string(),
+        }
     }
 
     /// **The wall clock this connection's own work is given.** A test that wants a fake ssh's
@@ -927,27 +1079,171 @@ impl Ssh {
         v
     }
 
-    /// One ssh call, with the remote command wrapped in a login shell — the contract's
-    /// `ssh host 'cd <worktree> && bash -lc …'`, spelled once.
+    /// **Every remote command this connection runs, spelled once** — the contract's
+    /// `ssh host '<mise> exec -C <worktree> -- bash -lc …'`.
     ///
-    /// **The host's `path` list goes in front**, inside the login shell and not beside it: a
-    /// login shell reads the remote's profiles, and a profile that sets `PATH` would otherwise
-    /// undo a prefix applied before it. Every command this backend runs goes through here, so a
-    /// job's launcher, a status probe and a command of the model's all get the same `PATH`.
+    /// Three things are put around a script, and each is a rule from `docs/remote-hosts.md`:
+    ///
+    /// * **`bash -lc`**, because a login shell is what reads the remote's profiles.
+    /// * **The host's `path` list in front of `PATH`, inside that shell and not beside it** — a
+    ///   login shell reads the remote's profiles, and a profile that sets `PATH` would otherwise
+    ///   undo a prefix applied before it.
+    /// * **`mise exec -C <dir> --` around the lot**, when the host has mise: the operator's
+    ///   toolchains are pinned per project (*"regarding cargo and stuff - we do it via mise
+    ///   generally"*), so the wrapper is what makes `cargo` mean the pinned one. A `mise exec`
+    ///   may install a pinned tool on its first use — network, on the remote, as the command
+    ///   asked for.
+    ///
+    /// **Every door goes through here** — a foreground command, a step of this backend's own
+    /// work, a job's launcher, a probe, git's `upload-pack` — so the three cannot drift apart.
     ///
     /// The returned stderr is the ssh client's own (a refused key, a name that does not
     /// resolve) and never the remote command's: ssh does not carry two channels apart
     /// into two pipes. That is [`crate::firecode`]'s trade as well, and it is stated in
     /// [`SshBackend::describe`] rather than left to be discovered.
-    ///
-    /// **This is the one unbounded door, and only `run` may use it**: a model's command has a
-    /// deadline of its own (`bash`'s `timeout_ms`, the run's budget) and this file has no business
-    /// inventing a second one. Everything else goes through [`Ssh::sh_step`].
-    fn sh_run(&self, step: &str, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(script, Retry::Never, self.bound)? {
-            Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
-            other => Err(BackendError::Io(self.unknown(step, &other))),
+    pub fn remote_command(&self, script: &str) -> String {
+        let body = format!("bash -lc {}", quote(&self.host.with_path(script)));
+        match self.mise_program() {
+            Some(program) => format!("{program} exec -C {} -- {body}", self.dir_arg()),
+            None => body,
         }
+    }
+
+    /// **The `mise` this host runs with, or `None`** — [`Mise::Off`], a host with no mise, or a
+    /// probe that could not answer.
+    ///
+    /// `hosts.toml` wins when it says anything. Otherwise the answer is **probed once per host
+    /// per process** and cached, including *no mise*: `~/.local/bin/mise` first (that is where
+    /// the operator's hosts keep it), then `PATH`, in one bounded call. Caching the negative is
+    /// the point — a host without mise must pay one round trip for that fact and not one per
+    /// command.
+    ///
+    /// A probe that did **not answer** is not cached: a host that was briefly unreachable has
+    /// not told us it has no mise, and remembering a timeout as a fact is how a session spends
+    /// the rest of its life without a toolchain.
+    fn mise_program(&self) -> Option<String> {
+        match &self.host.mise {
+            Some(Mise::Off) => None,
+            // Expanded THERE, once — `~` is that machine's home.
+            Some(Mise::At(program)) => Some(one_entry(program)),
+            None => {
+                {
+                    let cache = MISE.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(hit) = cache.get(&self.host.name) {
+                        return hit.clone().map(|p| quote(&p));
+                    }
+                }
+                let found = self.probe_mise()?;
+                MISE.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(self.host.name.clone(), found.clone());
+                found.map(|p| quote(&p))
+            }
+        }
+    }
+
+    /// **Ask the host where its mise is**, once, or answer `None` when it has none — or when the
+    /// question did not get an answer, which the caller deliberately does not remember.
+    fn probe_mise(&self) -> Option<Option<String>> {
+        let script = "if [ -x \"$HOME/.local/bin/mise\" ]; then echo \"$HOME/.local/bin/mise\"; \
+                      elif command -v mise >/dev/null 2>&1; then command -v mise; fi";
+        let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
+        let within = self.bound.min(STEP_BOUND);
+        match self.raw("finding mise", &command, within) {
+            Some(Ok(Call::Answered(said, _, 0))) => Some(
+                Some(said.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.lines().next().unwrap_or("").trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            ),
+            _ => None,
+        }
+    }
+
+    /// **The prefix git's `upload-pack` is invoked with**, for the fetch that brings a branch
+    /// home.
+    ///
+    /// sshd runs the far side of a `git` fetch as `<upload-pack> '<path>'` — not a login shell,
+    /// so no profile and no mise — which is why the toolchain wrapper has to be spliced here too.
+    /// "Background jobs and git steps run through the same wrapper" is the contract's sentence,
+    /// and this is the git half of it.
+    pub fn upload_pack_prefix(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(prefix) = self.host.path_prefix() {
+            parts.push(prefix);
+        }
+        if let Some(program) = self.mise_program() {
+            parts.push(format!("{program} exec -C {} --", self.dir_arg()));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
+    }
+
+    /// **One command of the model's — [`SshBackend::run`]'s door, and the only caller.**
+    ///
+    /// A command keeps the deadline it is given and nothing else ([`Ssh::bound`]), and it is
+    /// **at most once**: a call that died in flight may have run, partly run, or still be running
+    /// there, so it is reported by [`Ssh::unknown`] and never re-sent.
+    ///
+    /// When `pgid` is given, the command is wrapped so **its remote process group is known** —
+    /// `setsid bash -c 'echo $$ > <file>; …'` — and a call that stopped answering kills that
+    /// group ([`Ssh::cancel_group`]). That is rule 6: an interrupt or a timeout leaves nothing
+    /// running on the far side, rather than only closing the local ssh and hoping.
+    fn sh_run(
+        &self,
+        step: &str,
+        script: &str,
+        pgid: Option<&str>,
+    ) -> Result<(String, Vec<u8>, i32), BackendError> {
+        let wrapped = match pgid {
+            Some(file) => grouped(script, file),
+            None => script.to_string(),
+        };
+        let ended = self.call(step, &wrapped, Retry::Never, self.bound)?;
+        match ended {
+            Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
+            other => {
+                if let Some(file) = pgid {
+                    self.cancel_group(file);
+                }
+                Err(BackendError::Io(self.unknown(step, &other)))
+            }
+        }
+    }
+
+    /// **Rule 6: kill the remote process group of a command that stopped answering.**
+    ///
+    /// Its own bounded call, because the call that timed out had its local ssh killed and that
+    /// is exactly the case where the far side may still be running: sshd's hang-up usually takes
+    /// the group with it, and "usually" is not a rule. The group is signalled **only when the pid
+    /// really leads one** — `kill -TERM -<pid>` on a pid that does not signals *this shell's*
+    /// group — and the read-back is inside the same call so a group that ignores `TERM` is still
+    /// gone when this returns.
+    ///
+    /// Best effort by construction: if the connection is gone, the sentence the caller already
+    /// has says the outcome is unknown, and this adds nothing false to it.
+    fn cancel_group(&self, file: &str) {
+        let script = format!(
+            "f={f}\n\
+             if [ -f \"$f\" ]; then\n\
+               g=$(cat \"$f\" 2>/dev/null)\n\
+               pg=$(ps -p \"$g\" -o pgid= 2>/dev/null | tr -d ' ')\n\
+               if [ -n \"$g\" ] && [ \"$pg\" = \"$g\" ]; then t=\"-$g\"; else t=\"$g\"; fi\n\
+               if [ -n \"$g\" ]; then\n\
+                 kill -TERM \"$t\" 2>/dev/null\n\
+                 i=0; while [ $i -lt 40 ]; do kill -0 \"$g\" 2>/dev/null || break; \
+                   sleep 0.05; i=$((i+1)); done\n\
+                 kill -KILL \"$t\" 2>/dev/null\n\
+               fi\n\
+               rm -f \"$f\"\n\
+             fi",
+            f = quote(file)
+        );
+        let command = format!("bash -lc {}", quote(&self.host.with_path(&script)));
+        let _ = self.raw("ending the remote process group", &command, CANCEL_BOUND);
     }
 
     /// **One step of this backend's own work** — bounded by [`Ssh::bound`], and asked again once
@@ -967,7 +1263,7 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(script, Retry::Once, within)? {
+        match self.call(step, script, Retry::Once, within)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -987,7 +1283,7 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(script, Retry::Never, within)? {
+        match self.call(step, script, Retry::Never, within)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -1007,7 +1303,7 @@ impl Ssh {
         retry: Retry,
         within: Duration,
     ) -> Result<String, BackendError> {
-        let (out, stderr, exit) = match self.call(script, retry, within)? {
+        let (out, stderr, exit) = match self.call(what, script, retry, within)? {
             Call::Answered(out, stderr, exit) => (out, stderr, exit),
             other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
         };
@@ -1030,109 +1326,218 @@ impl Ssh {
         Ok(out)
     }
 
-    /// **One step, with the retry its caller allows** — the rule lives here and nowhere else.
+    /// **One step, with the retry its caller allows** — the rule lives here and nowhere else —
+    /// and with rules 5, 7 and 8 around it.
     ///
-    /// A stale `ControlMaster` socket is cleared first ([`Ssh::fresh_master`]), because ssh would
-    /// otherwise try to multiplex through a master that is gone and fail — or wait — on the socket
-    /// rather than on the host.
-    fn call(&self, script: &str, retry: Retry, within: Duration) -> Result<Call, BackendError> {
+    /// The order is the design:
+    ///
+    /// 1. **The breaker** ([`rpc::before`]) refuses at once when this host is known to be down,
+    ///    rather than paying another timeout to find that out again.
+    /// 2. A stale `ControlMaster` socket is cleared ([`Ssh::fresh_master`]), because ssh would
+    ///    otherwise try to multiplex through a master that is gone and fail — or wait — on the
+    ///    socket rather than on the host.
+    /// 3. The attempts, each of which records itself ([`rpc::record`]) and queues for a slot
+    ///    ([`rpc::enter`]).
+    /// 4. **The breaker's verdict** ([`rpc::after`]), with *connected* meaning *the far side said
+    ///    something* — which a `Permission denied` does, and counting it as a lost connection
+    ///    would open the breaker on a host whose only problem is a key nobody installed.
+    ///
+    /// A step's retry is not itself subject to the breaker: it is the same call, and letting the
+    /// breaker refuse the second half of it would replace *it did not answer* with a sentence
+    /// about the host's history. **Both attempts are counted**, though — a step that retried once
+    /// and failed twice is two connection failures, which is what the threshold's arithmetic
+    /// (three attempts) is written against.
+    fn call(
+        &self,
+        step: &str,
+        script: &str,
+        retry: Retry,
+        within: Duration,
+    ) -> Result<Call, BackendError> {
+        let pass = rpc::before(&self.host.name).map_err(BackendError::Io)?;
         self.fresh_master();
-        let first = self.attempt(script, within)?;
-        if retry == Retry::Once && !matches!(first, Call::Answered(..)) {
-            // **The one thing worth asking twice**, and only because the operation cannot have
-            // changed anything: no answer arrived. The master may be what died, so it is dropped
-            // first — a second attempt through the same dead socket would fail the same way.
-            let second = self.attempt(script, within)?;
-            return Ok(second);
+        let first = self.attempt(step, script, within);
+        let first = match first {
+            Ok(call) => call,
+            // The local process could not be started at all: nobody knows what happened, and the
+            // breaker is told that nothing was reached.
+            Err(e) => {
+                rpc::after(&self.host.name, pass, false);
+                return Err(e);
+            }
+        };
+        rpc::after(&self.host.name, pass, connected(&first));
+        // **The one thing worth asking twice**, and only because the operation cannot have
+        // changed anything: no answer arrived. A refusal is definite, so it is not retried — a key
+        // that is not authorised does not become authorised by being offered again.
+        if retry == Retry::Once && !matches!(first, Call::Answered(..) | Call::Denied(..)) {
+            // The master may be what died, and a second attempt through the same dead socket would
+            // fail the same way. This one is not a probe: the cooldown's one call was already spent.
+            let second = self.attempt(step, script, within);
+            return match second {
+                Ok(call) => {
+                    rpc::after(
+                        &self.host.name,
+                        rpc::Pass { probe: false },
+                        connected(&call),
+                    );
+                    Ok(call)
+                }
+                Err(e) => {
+                    rpc::after(&self.host.name, rpc::Pass { probe: false }, false);
+                    Err(e)
+                }
+            };
         }
         Ok(first)
     }
 
-    /// **One attempt, with the wall clock on it.** The local ssh is killed at the deadline; nothing
-    /// is signalled on the far side, because a process there is not this box's to kill and the
-    /// command it is running may be the operator's work.
-    fn attempt(&self, script: &str, within: Duration) -> Result<Call, BackendError> {
-        let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
-        let mut child = std::process::Command::new(&self.program)
-            .args(self.argv(&command))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            // **Its own process group**, so the deadline can end everything this call started.
-            // Killing only the direct child leaves a `sleep` IT ran holding the pipes open, and
-            // the drain threads below would then block for as long as that grandchild lives —
-            // which is the hang coming back in through the window.
-            .process_group(0)
-            .spawn()
-            .map_err(|e| {
-                BackendError::Io(format!(
-                    "running `{}` for {}: {e}",
-                    self.program.display(),
-                    self.host.name
-                ))
-            })?;
-        let pid = child.id();
-        // **Both streams are drained while the process waits**, on threads of their own: a pipe
-        // holds a buffer's worth and no more, so a child that fills it blocks for ever and the
-        // `try_wait` below would never see it finish — a walk of a large tree writes far more
-        // than a buffer.
-        let out = drain(child.stdout.take());
-        let err = drain(child.stderr.take());
+    /// **One attempt, with the wall clock on it and a record of how it went.**
+    ///
+    /// The local ssh is killed at the deadline. What happens on the far side is [`Ssh::sh_run`]'s
+    /// business (rule 6) or nobody's: a step of this backend's own work is a question, and a
+    /// question that is abandoned leaves nothing to end.
+    ///
+    /// The call first takes a place in the host's queue ([`rpc::enter`], rule 8) — **after** the
+    /// command is built, because building it may itself ask the host a question (where is mise?)
+    /// and a slot held across another call's slot is how a queue becomes a deadlock. It gives the
+    /// place up when it returns, whichever way it returns.
+    fn attempt(&self, step: &str, script: &str, within: Duration) -> Result<Call, BackendError> {
+        let command = self.remote_command(script);
+        let _slot = rpc::enter(&self.host.name, within).map_err(BackendError::Io)?;
         let began = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if began.elapsed() >= within => {
-                    kill_group(pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => {
-                    kill_group(pid);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = (out.join(), err.join());
-                    return Err(BackendError::Io(format!(
-                        "waiting for `{}` for {}: {e}",
-                        self.program.display(),
-                        self.host.name
-                    )));
-                }
+        match rpc::run_bounded(&self.program, &self.argv(&command), within) {
+            rpc::Ended::Unstartable(why) => {
+                rpc::record(
+                    &self.host.name,
+                    step,
+                    began.elapsed(),
+                    rpc::Outcome::Unknown,
+                );
+                Err(BackendError::Io(format!("{} for {}", why, self.host.name)))
             }
-        };
-        let Some(status) = status else {
-            // **The master may be the thing that stopped answering**, and a socket that is still
-            // there would make the next call wait on it too. The two readers are NOT joined: the
-            // group is dead, so they end on their own, and a timed-out call has no use for what
-            // it did not finish reading.
-            let _ = (out, err);
-            self.drop_socket();
-            return Ok(Call::TimedOut(within));
-        };
-        let stdout = out.join().unwrap_or_default();
-        let stderr = err.join().unwrap_or_default();
-        let exit = match status.code() {
-            Some(c) => c,
-            None => {
-                use std::os::unix::process::ExitStatusExt;
-                128 + status.signal().unwrap_or(0)
+            rpc::Ended::TimedOut => {
+                // **The master may be the thing that stopped answering**, and a socket that is
+                // still there would make the next call wait on it too.
+                rpc::record(
+                    &self.host.name,
+                    step,
+                    began.elapsed(),
+                    rpc::Outcome::TimedOut,
+                );
+                self.drop_socket();
+                Ok(Call::TimedOut(within))
             }
-        };
-        let said = String::from_utf8_lossy(&stdout).into_owned();
-        // ssh's own failure: 255 with nothing from the command. A command that exits 255 and says
-        // something did run, and its words are the answer.
-        if exit == 255 && said.is_empty() {
-            self.drop_socket();
-            return Ok(Call::Dropped(stderr));
+            rpc::Ended::Answered(out) => {
+                let exit = match out.status.code() {
+                    Some(c) => c,
+                    None => {
+                        use std::os::unix::process::ExitStatusExt;
+                        128 + out.status.signal().unwrap_or(0)
+                    }
+                };
+                let said = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = out.stderr;
+                // ssh's own failure: 255 with nothing from the command. A command that exits 255
+                // and says something did run, and its words are the answer.
+                if exit == 255 && said.is_empty() {
+                    self.drop_socket();
+                    if let Some(kind) = auth_refusal(&String::from_utf8_lossy(&stderr)) {
+                        rpc::record(
+                            &self.host.name,
+                            step,
+                            began.elapsed(),
+                            rpc::Outcome::Refused,
+                        );
+                        return Ok(Call::Denied(kind, stderr));
+                    }
+                    rpc::record(
+                        &self.host.name,
+                        step,
+                        began.elapsed(),
+                        rpc::Outcome::Dropped,
+                    );
+                    return Ok(Call::Dropped(stderr));
+                }
+                rpc::record(&self.host.name, step, began.elapsed(), rpc::Outcome::Ok);
+                Ok(Call::Answered(said, stderr, exit))
+            }
         }
-        Ok(Call::Answered(said, stderr, exit))
+    }
+
+    /// **A call nobody asked the breaker about and nobody will be told of**: the mise probe, and
+    /// the kill that ends a cancelled command's remote group.
+    ///
+    /// It takes a slot and records itself like any other call — a remote call is a remote call —
+    /// but it is deliberately outside the retry rule and outside the breaker's counting: it is
+    /// infrastructure this backend uses to make the *real* call correctly, and a probe that fails
+    /// must not be what opens a breaker.
+    fn raw(
+        &self,
+        step: &str,
+        command: &str,
+        within: Duration,
+    ) -> Option<Result<Call, BackendError>> {
+        let _slot = rpc::enter(&self.host.name, within).ok()?;
+        let began = Instant::now();
+        match rpc::run_bounded(&self.program, &self.argv(command), within) {
+            rpc::Ended::Unstartable(_) => {
+                rpc::record(
+                    &self.host.name,
+                    step,
+                    began.elapsed(),
+                    rpc::Outcome::Unknown,
+                );
+                Some(Err(BackendError::Io(format!(
+                    "`{}` on {} could not be started",
+                    step, self.host.name
+                ))))
+            }
+            rpc::Ended::TimedOut => {
+                rpc::record(
+                    &self.host.name,
+                    step,
+                    began.elapsed(),
+                    rpc::Outcome::TimedOut,
+                );
+                self.drop_socket();
+                Some(Ok(Call::TimedOut(within)))
+            }
+            rpc::Ended::Answered(out) => {
+                let exit = out.status.code().unwrap_or(-1);
+                let said = String::from_utf8_lossy(&out.stdout).into_owned();
+                if exit == 255 && said.is_empty() {
+                    self.drop_socket();
+                    let stderr = out.stderr;
+                    if let Some(kind) = auth_refusal(&String::from_utf8_lossy(&stderr)) {
+                        rpc::record(
+                            &self.host.name,
+                            step,
+                            began.elapsed(),
+                            rpc::Outcome::Refused,
+                        );
+                        return Some(Ok(Call::Denied(kind, stderr)));
+                    }
+                    rpc::record(
+                        &self.host.name,
+                        step,
+                        began.elapsed(),
+                        rpc::Outcome::Dropped,
+                    );
+                    return Some(Ok(Call::Dropped(stderr)));
+                }
+                rpc::record(&self.host.name, step, began.elapsed(), rpc::Outcome::Ok);
+                Some(Ok(Call::Answered(said, out.stderr, exit)))
+            }
+        }
     }
 
     /// The sentence a step that never answered is refused with: the host, the step, the bound, and
     /// what was done about it.
     fn no_answer(&self, step: &str, ended: &Call, within: Duration) -> String {
+        if let Call::Denied(kind, stderr) = ended {
+            return self.denied(step, *kind, stderr);
+        }
         let how = match ended {
             Call::TimedOut(_) => {
                 format!("got no answer within {} s", within.as_secs_f32().max(0.0))
@@ -1141,7 +1546,7 @@ impl Ssh {
                 "lost the connection before it answered ({})",
                 first_line(&String::from_utf8_lossy(stderr))
             ),
-            Call::Answered(..) => "did not answer".to_string(),
+            _ => "did not answer".to_string(),
         };
         format!(
             "`{step}` on {} {how}: the local ssh was killed rather than waited on, and the call \
@@ -1155,6 +1560,9 @@ impl Ssh {
     /// are not idempotent, so a call that died in flight is reported as exactly that — never as a
     /// failure, which would read as *it did not happen* and could be run again on that reading.
     fn unknown(&self, step: &str, ended: &Call) -> String {
+        if let Call::Denied(kind, stderr) = ended {
+            return self.denied(step, *kind, stderr);
+        }
         let how = match ended {
             Call::TimedOut(within) => {
                 format!("stopped answering for {} s", within.as_secs_f32().max(0.0))
@@ -1162,13 +1570,60 @@ impl Ssh {
             Call::Dropped(stderr) => {
                 format!("dropped ({})", first_line(&String::from_utf8_lossy(stderr)))
             }
-            Call::Answered(..) => "ended without an answer".to_string(),
+            _ => "ended without an answer".to_string(),
         };
         format!(
             "the connection to {} {how} while {step}: it may have run, partly run, or still be \
              running there — check before running it again. It was NOT retried: this is not an \
              operation that can be asked twice.",
             self.host.name
+        )
+    }
+
+    /// **The sentence a caller that is not this file needs for a refusal** — `None` when the words
+    /// are not one.
+    ///
+    /// `letibot --migrate` is the other caller of [`Ssh`], and it reached the same defect this file
+    /// did: `Permission denied (publickey)` arrived as *lost the connection, it may not have
+    /// happened* and was retried. The classification is here, once, so the two callers cannot
+    /// disagree about what ssh's words mean.
+    pub fn refusal(&self, step: &str, stderr: &[u8]) -> Option<String> {
+        auth_refusal(&String::from_utf8_lossy(stderr)).map(|kind| self.denied(step, kind, stderr))
+    }
+
+    /// **A refusal that is an answer, not a lost connection.**
+    ///
+    /// `Permission denied (publickey)` and a host key that does not verify used to arrive as
+    /// [`Call::Dropped`] — *lost the connection, it may not have happened* — and be **retried**,
+    /// which was measured live on 2026-10-26 against three hosts whose key had not been installed:
+    /// every call said the connection was lost and every call was made twice. Neither is a
+    /// transport problem: the machine answered, and it will go on answering the same way until a
+    /// key is installed. So it is its own outcome ([`rpc::Outcome::Refused`]), it is never
+    /// retried, and the sentence names the one thing that fixes it.
+    fn denied(&self, step: &str, kind: AuthRefusal, stderr: &[u8]) -> String {
+        let said = first_line(&String::from_utf8_lossy(stderr));
+        let host = &self.host.name;
+        let fix = match kind {
+            AuthRefusal::Key => format!(
+                "Install letibot's own key there, once:\n    \
+                 ssh-copy-id -i {} -o 'IdentitiesOnly=yes' -o 'IdentityAgent=none' {}",
+                self.key.with_extension("pub").display(),
+                self.host.destination()
+            ),
+            AuthRefusal::HostKey => format!(
+                "letibot checks the host key against its own file and `StrictHostKeyChecking=yes` \
+                 means it neither asks nor learns. If the machine's key really changed, remove the \
+                 old line from {} and add the new one yourself:\n    \
+                 ssh-keyscan -t ed25519 {} >> {}",
+                self.paths.known_hosts().display(),
+                self.host.hostname,
+                self.paths.known_hosts().display()
+            ),
+        };
+        format!(
+            "`{step}` on {host}: **letibot's key is not authorised on {host} (or {host}'s host key \
+             changed)** — ssh answered `{said}`. This is definite, not a lost connection: the call \
+             was not retried and will keep failing until the key is fixed. {fix}",
         )
     }
 
@@ -1343,85 +1798,19 @@ fn first_line(text: &str) -> String {
     }
 }
 
-/// **Drain a pipe on its own thread**, so a child that writes more than a pipe buffer does not
-/// block on it while this side waits for it to finish.
-fn drain<R: std::io::Read + Send + 'static>(
-    mut pipe: Option<R>,
-) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = pipe.as_mut() {
-            let _ = std::io::Read::read_to_end(p, &mut buf);
-        }
-        buf
-    })
-}
-
-/// **Run a program to completion, or kill it at the deadline.** The one place a local process
-/// this file starts for its own purposes — never a model's command — is given a wall clock.
+/// **Run a program to completion, or kill it at the deadline** — [`rpc::run_bounded`]'s question,
+/// asked by the calls that only want an answer or nothing.
 ///
 /// `None` is *the bound passed and it was killed*; a program that cannot be started at all is
 /// also `None`, because every caller of this is asking a question it can do without
-/// (`is the master alive?`, `drop the master`).
+/// (`is the master alive?`, `drop the master`). The runner itself is one implementation for the
+/// whole tree ([`rpc::run_bounded`]), so this file and `letibot --migrate` cannot drift apart on
+/// what "bounded" means.
 fn run_bounded(program: &Path, args: &[String], within: Duration) -> Option<std::process::Output> {
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .ok()?;
-    let pid = child.id();
-    let out = drain(child.stdout.take());
-    let err = drain(child.stderr.take());
-    let began = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if began.elapsed() >= within => {
-                kill_group(pid);
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => {
-                kill_group(pid);
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
-    };
-    let Some(status) = status else {
-        // The readers belong to a group that is now dead, so they end on their own.
-        let _ = (out, err);
-        return None;
-    };
-    let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
-    Some(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-/// **End everything one call started**, by the process group it leads.
-///
-/// A child killed on its own leaves whatever it spawned holding the pipes it inherited, and this
-/// side's readers then block for as long as that grandchild lives — measured: a fake `ssh` that
-/// ran `sleep 30` made a 2 s bound cost 120 s, because the sleeps outlived every kill. `kill` is
-/// used rather than a libc call because this crate has no `libc` dependency and a `/bin/kill` that
-/// is missing is a box with worse problems than this one.
-fn kill_group(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .args(["-KILL", &format!("-{pid}")])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    match rpc::run_bounded(program, args, within) {
+        rpc::Ended::Answered(out) => Some(out),
+        rpc::Ended::TimedOut | rpc::Ended::Unstartable(_) => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1449,10 +1838,20 @@ pub struct Facts {
     /// been made yet.
     pub disk_path: String,
     pub disk_free_kb: Option<u64>,
-    /// Where `git` and `cargo` are, when the host's own `PATH` — with its `path` list in front —
-    /// finds them. This is the fact that decides whether a session can build there.
+    /// Where `git` is, when the host's own `PATH` — with its `path` list in front — finds it. This
+    /// is one of the two facts that decide whether a session can work there at all.
     pub git: Option<String>,
+    /// Where `cargo` is on `PATH`. **Reported only as a fallback**: on a host with mise the
+    /// toolchain is whatever mise pins, and `cargo` on a non-login `PATH` is not the question.
     pub cargo: Option<String>,
+    /// **`mise --version`, first line**, when the host has mise at all — the fact that says the
+    /// toolchains on this machine are pinned per project rather than installed globally.
+    pub mise: Option<String>,
+    /// **`mise ls --current`** in the host's root: one entry per tool, as `name version`.
+    pub mise_tools: Vec<String>,
+    /// **What this host's ssh calls have been doing**, as [`crate::rpc::report`] renders it — the
+    /// last few and the slowest. Empty when nothing in this process has called the host yet.
+    pub calls: String,
 }
 
 /// **The one script a probe runs**, and it only ever reads.
@@ -1474,6 +1873,15 @@ echo "disk_path=$r"
 echo "disk_free_kb=$(df -Pk "$r" 2>/dev/null | awk 'NR==2 {{print $4}}')"
 echo "git=$(command -v git 2>/dev/null)"
 echo "cargo=$(command -v cargo 2>/dev/null)"
+# **The toolchain, which on these machines means mise.** Found the way every remote command
+# finds it (`~/.local/bin/mise`, then `PATH`), and asked from the host's own root so the answer
+# is the project's pinned versions rather than some other directory's.
+m=$(command -v mise 2>/dev/null)
+if [ -z "$m" ] && [ -x "$HOME/.local/bin/mise" ]; then m="$HOME/.local/bin/mise"; fi
+if [ -n "$m" ]; then
+  echo "mise=$("$m" --version 2>/dev/null | head -1)"
+  echo "mise_tools=$("$m" -C "$r" ls --current 2>/dev/null | awk 'NF {{printf "%s%s %s", sep, $1, $2; sep="; "}}')"
+fi
 "#,
         root = quote(root)
     )
@@ -1489,6 +1897,10 @@ echo "cargo=$(command -v cargo 2>/dev/null)"
 ///
 /// A host that does not answer within `within` is reported by the sentence [`Ssh::no_answer`]
 /// gives, so a probe of four machines with one dead host takes a bound, not four.
+///
+/// The answer also carries **what this process's calls to the host have been doing**
+/// ([`crate::rpc::report`]) — and so does a refusal, because a host that cannot be reached is the
+/// one whose history the reader most needs.
 pub fn probe(
     host: &Host,
     program: Option<PathBuf>,
@@ -1496,13 +1908,23 @@ pub fn probe(
     within: Duration,
 ) -> Result<Facts, String> {
     let ssh = Ssh::connect(host.clone(), program, paths)?.with_bound(within);
-    let (said, stderr, exit) = ssh
-        .sh_step_within(
-            &format!("a probe of {}", host.name),
-            &facts_script(&host.root),
-            within,
-        )
-        .map_err(|e| e.to_string())?;
+    let answer = ssh.sh_step_within(
+        &format!("a probe of {}", host.name),
+        &facts_script(&host.root),
+        within,
+    );
+    let (said, stderr, exit) = match answer {
+        Ok(t) => t,
+        Err(e) => {
+            // **The records go out with the refusal.** A probe that failed is the one that has
+            // something to say about why, and a caller that read only the sentence would be back
+            // to guessing at a flaky host.
+            return Err(format!(
+                "{e}\n{}",
+                crate::rpc::report(&host.name).trim_end()
+            ));
+        }
+    };
     if exit != 0 {
         let why = if stderr.is_empty() {
             said.trim().to_string()
@@ -1510,16 +1932,19 @@ pub fn probe(
             String::from_utf8_lossy(&stderr).trim().to_string()
         };
         return Err(format!(
-            "the probe of {} exited {exit}: {}",
+            "the probe of {} exited {exit}: {}\n{}",
             host.name,
             if why.is_empty() {
                 "it said nothing"
             } else {
                 &why
-            }
+            },
+            crate::rpc::report(&host.name).trim_end()
         ));
     }
-    Ok(facts_of(&said))
+    let mut facts = facts_of(&said);
+    facts.calls = crate::rpc::report(&host.name);
+    Ok(facts)
 }
 
 /// The `key=value` lines of [`facts_script`] as a [`Facts`]. Unknown keys are ignored and missing
@@ -1542,6 +1967,15 @@ pub fn facts_of(said: &str) -> Facts {
             "disk_free_kb" => f.disk_free_kb = number(),
             "git" => f.git = (!value.is_empty()).then(|| value.to_string()),
             "cargo" => f.cargo = (!value.is_empty()).then(|| value.to_string()),
+            "mise" => f.mise = (!value.is_empty()).then(|| value.to_string()),
+            "mise_tools" => {
+                f.mise_tools = value
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            }
             _ => {}
         }
     }
@@ -1568,6 +2002,11 @@ pub(crate) fn quote(s: &str) -> String {
 
 /// Inline writes up to this many bytes ride in one ssh command.
 const INLINE_WRITE_BYTES: usize = 48 * 1024;
+
+/// **How many commands this process has run on a remote host**, for the per-command name of the
+/// file that records its process group. A counter rather than a timestamp: two runs in the same
+/// millisecond would otherwise share a file, and one of them would then cancel the other's group.
+static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What to place.
 #[derive(Debug, Clone)]
@@ -1736,6 +2175,12 @@ impl SshBackend {
         }
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
+
+        // **The connection now knows which tree the work is in.** It is `mise exec -C`'s
+        // argument, and it is why the toolchain wrapper is right: a project pins its versions in
+        // a `mise.toml` in ITS tree, so a wrapper that ran in `$HOME` would find the global ones
+        // and quietly build with the wrong compiler.
+        ssh = ssh.with_dir(worktree.clone());
 
         // **A bare mirror, once.** Reused by every later session onto the same repository,
         // so a second child on the same host sends only its own commits.
@@ -1982,10 +2427,12 @@ impl SshBackend {
             ];
             // **The far side's `git-upload-pack` is a remote command**, and ssh runs it as
             // `<this> '<path>'` — a login shell does not read a profile for it, so a host whose
-            // `git` is not on the default `PATH` needs the prefix here too. `--upload-pack` is
-            // the only door git gives for it, and its argument is spliced into the remote
-            // command line, so it is a **prefix assignment** rather than an `export`.
-            if let Some(prefix) = self.ssh.host().path_prefix() {
+            // `git` is not on the default `PATH` needs the prefix here too, and a host whose
+            // toolchain is pinned by mise needs the same wrapper every other remote command gets
+            // ([`Ssh::upload_pack_prefix`]). `--upload-pack` is the only door git gives for it,
+            // and its argument is spliced into the remote command line, so it is a **prefix
+            // assignment** rather than an `export`.
+            if let Some(prefix) = self.ssh.upload_pack_prefix() {
                 argv.push("--upload-pack".into());
                 argv.push(format!("{prefix} git-upload-pack"));
             }
@@ -2168,6 +2615,17 @@ impl ExecBackend for SshBackend {
             .map(|(k, v)| format!("{}={} ", quote(k), quote(v)))
             .collect::<String>();
         let cwd = self.abs(&cmd.cwd);
+        // **Rule 6: the command's remote process group is recorded as it starts**, in this
+        // session's own directory on that machine, so a command that has to be abandoned can be
+        // ended *there* rather than only by closing the local ssh. The name carries this
+        // process's id and a counter, so two runs cannot overwrite each other's group — a stale id
+        // is a kill pointed at whatever now owns it.
+        let pgid = format!(
+            "{}/.letibot-remote/run-{}-{}.pgid",
+            self.worktree,
+            std::process::id(),
+            RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         // **`run` is the one call that keeps the tool's deadline and nothing else.** The command
         // may be a build, and this file has no idea how long that takes; what this file does know
         // is that a command which loses its connection is not a failure — it may be running still
@@ -2175,10 +2633,11 @@ impl ExecBackend for SshBackend {
         let (out, _stderr, exit) = self.ssh.sh_run(
             "this command ran",
             &format!("cd {} && {env_prefix}{joined}", quote(&cwd)),
+            Some(&pgid),
         )?;
         Ok(Output {
             stdout: out.into_bytes(),
-            // Merged by ssh itself — see `Ssh::sh_run`.
+            // Merged by ssh itself — see `Ssh::remote_command`.
             stderr: Vec::new(),
             exit,
         })
@@ -2699,7 +3158,7 @@ impl RemoteProcesses {
         // carries says so ([`Ssh::unknown`]).
         let (said, stderr, code) = self
             .ssh
-            .sh_run("the job was starting", &launch)
+            .sh_run("the job was starting", &launch, None)
             .map_err(|e| ExecError::Spawn(format!("starting a job on {}: {e}", self.host)))?;
         if code != 0 {
             return Err(ExecError::Spawn(format!(
@@ -3434,6 +3893,8 @@ user     = "root"
             key: None,
             path,
             root: "~/letibot-remote".into(),
+            // A fixture's host is not the operator's machine: no probe, nothing to find.
+            mise: Some(Mise::Off),
         }
     }
 

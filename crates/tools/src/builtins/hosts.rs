@@ -130,17 +130,17 @@ impl Tool for HostsTool {
             TOOL,
             "The machines this box may place work on — the operator's `hosts.toml`, read now, so \
              a host added a minute ago is here. With no arguments: one line per host (name, \
-             user@hostname, root) and whether its key and its host key are in place, which needs no \
-             connection. With `probe: true`: one bounded connection per host, in parallel, and the \
-             live facts — cores, load average, memory available, free disk, and whether `git` and \
-             `cargo` are on its PATH — or the refusal or timeout sentence for a host that cannot be \
-             reached. `names` narrows either answer. Read-only, and it never asks: nothing is \
-             written on any host. This is how a `where: \"host:NAME\"` is chosen; the list is never \
-             in the prompt, because the file changes and the prompt is a cache.",
+             user@hostname, root) and whether its key and its host key are in place — no connection. \
+             With `probe: true`: one bounded connection per host, in parallel, and the live facts \
+             — cores, load average, memory, free disk, `git`, and the mise version with the tool \
+             versions it pins — or the refusal or timeout sentence, plus the last few ssh calls \
+             made to it. `names` narrows either answer. Read-only: nothing is written anywhere. \
+             This is how `where: \"host:NAME\"` is chosen; the list is never in the prompt, \
+             because the file changes and the prompt is a cache.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "probe": {"type": "boolean", "description": "Connect to each host and report its live facts — cores, load average, memory, free disk, and whether `git`/`cargo` are on its PATH — or the refusal or timeout sentence. Off by default: a listing needs no connection and works with every machine off."},
+                    "probe": {"type": "boolean", "description": "Connect to each host and report its live facts — cores, load average, memory, free disk, `git`, and the mise version with the tool versions it pins — or the refusal or timeout sentence, plus the last few ssh calls this process made to it. Off by default: a listing needs no connection and works with every machine off."},
                     "names": {"type": "array", "items": {"type": "string"}, "description": "Only these hosts, by the name `where: \"host:NAME\"` takes."},
                     "timeout_s": {"type": "integer", "description": "With `probe`: how long the whole probe may take, in seconds. Never more than the tool's own bound (10 s); hosts that have not answered by then are reported as timed out."}
                 }
@@ -393,9 +393,41 @@ fn format_facts(host: &Host, f: &Facts) -> String {
         ),
         None => format!("free space under {} unknown", f.disk_path),
     };
+    // **The toolchain, and mise is what a toolchain means here.** The operator: *"regarding cargo
+    // and stuff - we do it via mise generally"*. So the line this reports is the mise version and
+    // the versions it currently pins — which is the fact a model needs to decide *can I build
+    // there* — rather than *is `cargo` on `PATH`*, which is the wrong question on a host whose
+    // versions come from a `mise.toml` in the tree. A host with no mise falls back to the old
+    // answer, because on such a machine `PATH` is the whole story.
+    let mut tools = String::new();
+    match &f.git {
+        Some(p) => tools.push_str(&format!("git {p}")),
+        None => tools.push_str("no git on PATH"),
+    }
+    let mut extra = String::new();
+    match &f.mise {
+        Some(version) => {
+            tools.push_str(&format!(", mise {version}"));
+            extra.push_str(&format!(
+                "  mise:     {}\n",
+                if f.mise_tools.is_empty() {
+                    "no tool is pinned or installed globally here".to_string()
+                } else {
+                    f.mise_tools.join(", ")
+                }
+            ));
+        }
+        None => {
+            // No mise: `PATH` is then the only door, so it is reported.
+            match &f.cargo {
+                Some(p) => tools.push_str(&format!(", cargo {p}")),
+                None => tools.push_str(", no cargo on PATH and no mise"),
+            }
+        }
+    }
     format!(
         "\n`{}` ({})  REACHABLE{}\n  cores:    {}\n  load:     {}\n  memory:   {} available of {}\n  \
-         disk:     {}\n  tools:    {}\n",
+         disk:     {}\n  tools:    {}\n{}{}",
         host.name,
         host.destination(),
         if f.uname.is_empty() {
@@ -416,18 +448,10 @@ fn format_facts(host: &Host, f: &Facts) -> String {
         gib(f.mem_avail_kb),
         gib(f.mem_total_kb),
         free,
-        {
-            let mut tools = Vec::new();
-            match &f.git {
-                Some(p) => tools.push(format!("git {p}")),
-                None => tools.push("no git on PATH".to_string()),
-            }
-            match &f.cargo {
-                Some(p) => tools.push(format!("cargo {p}")),
-                None => tools.push("no cargo on PATH".to_string()),
-            }
-            tools.join(", ")
-        }
+        tools,
+        extra,
+        // **Rule 7, where a person reads it**: what this host's calls have been doing lately.
+        f.calls,
     )
 }
 
@@ -443,6 +467,9 @@ mod tests {
             key: None,
             path: Vec::new(),
             root: "~/letibot-remote".to_string(),
+            // A fixture's host is a fake on this box: no mise wrapper, so no probe and no
+            // dependence on what this machine happens to have on its `PATH`.
+            mise: Some(crate::remote::Mise::Off),
         }
     }
 
@@ -619,5 +646,23 @@ mod tests {
             format_facts(&host("x"), &bare).contains("no git on PATH"),
             "an absent tool is said, not implied"
         );
+    }
+
+    /// **A host with mise reports the version and what it pins**, and a host without falls back
+    /// to `PATH` — because on that machine `PATH` is the only door there is.
+    #[test]
+    fn the_toolchain_line_is_mise_when_there_is_mise() {
+        let said = crate::remote::facts_of(
+            "uname=lab2x1\ngit=/usr/bin/git\ncargo=/usr/bin/cargo\n\
+             mise=2025.10.3 macos-arm64\nmise_tools=cargo 1.90.0; node 22.4.1\n",
+        );
+        let line = format_facts(&host("lab2x1"), &said);
+        assert!(line.contains("mise 2025.10.3 macos-arm64"), "{line}");
+        assert!(line.contains("cargo 1.90.0, node 22.4.1"), "{line}");
+        assert!(
+            !line.contains("/usr/bin/cargo"),
+            "with mise, `cargo on PATH` is the wrong question: {line}"
+        );
+        assert!(line.contains("git /usr/bin/git"), "{line}");
     }
 }
