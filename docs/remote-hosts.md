@@ -187,8 +187,13 @@ Every remote command therefore runs as
 
 when the host has mise — a foreground command, a step of the backend's own work, a background
 job's launcher, a probe, and git's `git-upload-pack`, which is the one that has to be spliced in
-by hand because sshd runs it without a login shell. `path` stays as the escape hatch, and
-`mise = false` turns the wrapper off for a host whose toolchain is on `PATH`.
+by hand because sshd runs it without a login shell. **`-C` has to be a directory that exists**:
+mise refuses one that does not (`mise ERROR Directory specified with --cd does not exist`, exit 1),
+so the wrapper is pointed at the host's `root` — which the placement has already made — until the
+checkout exists, and at the checkout afterwards. A `~` in it is expanded **there**, the same way a
+`path` entry is; quoting it would hand mise a literal `~` to resolve against the wrong directory.
+`path` stays as the escape hatch, and `mise = false` turns the wrapper off for a host whose
+toolchain is on `PATH`.
 
 `mise exec` **may install a pinned tool on its first use** — that is network traffic on the remote
 machine, as the command asked for, and it is the one thing in this file that reaches the network.
@@ -480,10 +485,14 @@ timeouts, which is the cost the breaker exists to remove.
   first, then `command -v mise` — and the answer is cached **including "no mise"**, because a host
   without it must pay one round trip for that fact and not one per command. A probe that did not
   *answer* is not cached: a timeout is not a fact about what a machine has installed. The wrapper
-  is `<mise> exec -C <the checkout> -- bash -lc '<the host's PATH; the command>'`, and `-C` is the
-  checkout rather than `$HOME` because a project pins its versions in its own tree — before a
-  placement has made one, `-C` is `$HOME`, which is the honest answer for a directory that does
-  not exist yet. git's side is spliced by hand (`--upload-pack '<mise> exec -C … -- git-upload-pack'`)
+  is `<mise> exec -C <a directory that exists> -- bash -lc '<the host's PATH; the command>'`, and
+  `-C` is the checkout rather than `$HOME` because a project pins its versions in its own tree —
+  with two rules the first cut got wrong, both measured on a host with a real mise. **`-C` must
+  exist**, and the checkout does not until `git worktree add` has made it, so the wrapper points at
+  the host's `root` until then (a placement died at `making the mirror` on every one of the
+  operator's machines until this was fixed). And **a `~` in it is expanded on the remote**
+  (`one_entry`, as `path`'s entries are): a quoted `~` is a path mise resolves against the wrong
+  directory. git's side is spliced by hand (`--upload-pack '<mise> exec -C … -- git-upload-pack'`)
   because sshd runs it with no login shell at all; a background job inherits the environment its
   launcher was started with, so it is wrapped by the same act. `hosts {probe: true}` reports the
   mise version and `mise ls --current` in the host's root **instead of** *cargo on PATH* — on a
