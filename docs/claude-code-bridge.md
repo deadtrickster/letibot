@@ -48,6 +48,42 @@ branch landed, and none of the queue's model-facing notices (`queue_emergency_no
 still runs, so a head attached here redraws when another daemon moves a row. A daemon that is
 already up is not the bridge's to change: `ensure` attaches to it as it is.
 
+### A package whose tools run on another machine (RH2)
+
+Written 2026-10-26. `docs/remote-hosts.md` places a session's **tools** on an ssh host the
+operator declared: `bash`, `read`, `write`, `edit` and the jobs run there, while the model, the
+store and the gate stay here. For a person that is `leticode --host lab2x1`; for a Claude Code
+package it is `leticode_start { host: "lab2x1" }`, and what the bridge does with it is start (or
+join) that folder's daemon with `--host lab2x1`. **The bridge never speaks ssh** — `harnessd` owns
+the placement and the bridge only names it.
+
+Three rules, and each one is a refusal rather than a best effort:
+
+* **The name is checked before anything is started.** The tree's single `hosts.toml` reader
+  (`letibot_tools::remote::Hosts`) and the same refusal `task { where: "host:NAME" }` gives — the
+  file, and the names it does declare. A daemon started for an undeclared name would fail at its
+  own start, in a log the caller has to go and read, *after* this tool had answered that it
+  started one.
+* **A daemon already up for that folder is joined only where the call asked to be** — the same
+  placement, and no other, including *this box*. The daemon writes where it puts the tools beside
+  its socket (`<key>.placement`; `letibot_sessionlog::placement`), and the record names the
+  socket's own `(dev, ino)`, so a record left by a daemon that is gone reads as *nothing known*
+  rather than as the new daemon's answer. `ensure` reads it before joining and refuses a mismatch
+  naming the running daemon's placement and the command that ends it (`letibot --stop`): stopping
+  somebody else's daemon — the operator's own, usually — is the operator's act, not a tool's.
+  **Nothing recorded is refused in both directions**, because `None` is *unknown* and not *local*.
+* **Every answer says `placement`** — on `leticode_start`, `leticode_status`, `leticode_list` and
+  `leticode_attach`: `host` for this box, `host:lab2x1` for a machine, `null` when the daemon
+  recorded nothing this build can read. `leticode_start` also answers `tools_run`, the same fact
+  in the sentence a model reads, and that sentence carries what did **not** move — the model, the
+  store and the gate — because a result from a remote session is read here and means something
+  different when the toolchains were somebody else's.
+
+**The one sharp edge is a daemon from an older build.** It recorded no placement, so this build
+cannot place it, and `leticode_start` refuses it with the file it looked for rather than assuming
+*local*. `letibot --stop` and the next call is its own: the daemon it starts carries the placement
+and writes the record.
+
 ### `letibot-mcp`: an MCP server over stdio
 
 A new binary (crate `crates/bridge`, package `letibot-bridge`, bin `letibot-mcp`). MCP over stdio is
@@ -57,16 +93,16 @@ holds one head connection per leticode session it started or attached to, so ask
 
 | tool | input | answers |
 |---|---|---|
-| `leticode_start` | `worktree` (absolute path), `brief`, `model` (e.g. `deepseek`), `mode` (default `writes-allowed`) | `{session}` — starts the folder's daemon if needed (as the `letibot` launcher does), opens a session, sends the brief as the first prompt, stays attached |
-| `leticode_attach` | `worktree` (a folder whose daemon holds the session), `session` (an id, or `gatekeeper`), `watch_only` (default `true`) | as `leticode_start` minus the brief — **joins** a running daemon (never starts one), attaches a head, answers `{session, daemon_started: false, watch_only, can_decide, state, pending_asks, last_message}` |
+| `leticode_start` | `worktree` (absolute path), `brief`, `model` (e.g. `deepseek`), `mode` (default `writes-allowed`), `host` (a machine from `hosts.toml`; omitted = this box) | `{session, placement, tools_run}` — starts the folder's daemon if needed (as the `letibot` launcher does), opens a session, sends the brief as the first prompt, stays attached; with `host` the daemon is started `--host NAME` and the session's tools run there |
+| `leticode_attach` | `worktree` (a folder whose daemon holds the session), `session` (an id, or `gatekeeper`), `watch_only` (default `true`) | as `leticode_start` minus the brief — **joins** a running daemon (never starts one), attaches a head, answers `{session, daemon_started: false, watch_only, can_decide, placement, state, pending_asks, last_message}` |
 | `leticode_send` | `session`, `text` | `{queued: true}` — an operator line into the running session (queued behind a running turn, as the head's own) |
-| `leticode_status` | `session` | `{state: running\|idle\|asking\|failed, turn, todos, last_message, report?, cost_usd, tokens, pending_asks, activity, waiting_on}` — `activity` is what the daemon says the session is waiting on (`quiet`, or `busy` with the entries tagged by kind) and `waiting_on` is the same list in a reader's words (`["job j8032", "monitor ci"]`) |
+| `leticode_status` | `session` | `{state: running\|idle\|asking\|failed, placement, turn, todos, last_message, report?, cost_usd, tokens, pending_asks, activity, waiting_on}` — `activity` is what the daemon says the session is waiting on (`quiet`, or `busy` with the entries tagged by kind) and `waiting_on` is the same list in a reader's words (`["job j8032", "monitor ci"]`); `placement` is `host`, or `host:NAME` when its tools run on another machine |
 | `leticode_events` | `session`, `since` (cursor) | the compact progress since the cursor: tool calls (name + one line), job starts and ends, failures, asks, the **subagents a session spawns** (slug, the branch their task named, how they ended) — never banner or memwatch lines — and the next cursor |
 | `leticode_asks` | `session` | the pending permission asks: id, the call (tool, arguments), the options the gate offers |
 | `leticode_answer` | `session`, `ask`, `option` (one the ask offered), `note` | `{answered: true}` — sent as the protocol's `Answer`, so it lands in the decision corpus like the operator's own |
 | `leticode_diff` | `session` | the worktree's branch against its merge base: `git log --oneline` and `git diff --stat`, plus the full diff when asked |
 | `leticode_stop` | `session` | interrupts a running turn and detaches; the session stays on disk |
-| `leticode_list` | — | the sessions this bridge holds, with state and whether each is watched or driven |
+| `leticode_list` | — | the sessions this bridge holds, with state, `placement` (where each one's tools run) and whether each is watched or driven |
 
 ### `letibot-mcp wait`: the wake-up
 

@@ -1255,6 +1255,29 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // another daemon owns it, and finding that out after loading a vocabulary
     // wastes the load.
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
+    // **Where this daemon's tools run, said once and beside the socket** (RH2). The placement is
+    // a fact of the PROCESS — every session this daemon opens runs its `bash`, `read`, `write`
+    // and jobs in the same place — and the protocol carries it nowhere: a head attaching is told
+    // the model, the endpoint and the dialect, all per session, and nothing about the backend.
+    // So it is written down for the readers that need it, and the one that needs it is the
+    // bridge: `leticode_start { host }` must not join a daemon running its caller's tools
+    // somewhere else, and cannot tell from the socket alone.
+    //
+    // Written HERE and not before the bind, so only the daemon that actually holds the folder
+    // writes an answer: a second start refused for a live daemon has already failed, and must
+    // not overwrite the live daemon's record with the placement it was refused for.
+    //
+    // A failure is said and not fatal — no session depends on the file, only a head's question
+    // about one does, and a daemon that refused to start over this would be trading a whole
+    // session for a sentence.
+    if let Err(e) = letibot_sessionlog::placement::write(&cfg.socket, &cfg.placement.as_str()) {
+        eprintln!(
+            "  could not record the placement beside {}: {e} — a head asking where this daemon's \
+             tools run will be told there is no answer, and the bridge refuses to reuse a daemon \
+             it cannot place",
+            letibot_sessionlog::placement::path(&cfg.socket).display()
+        );
+    }
     daemon
         .catch_signals(cfg.one_shot)
         .map_err(|e| e.to_string())?;

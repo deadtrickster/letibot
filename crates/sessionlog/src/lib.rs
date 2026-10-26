@@ -53,6 +53,11 @@ pub mod log;
 pub mod metrics_tap;
 // **The pane contract's document** (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
 pub mod pane;
+// **Where a daemon's tools run, written beside its socket** (`docs/remote-hosts.md`): one process
+// fact the protocol does not carry, kept next to the claim that already says *this folder's daemon
+// is me* — so a head about to reuse a daemon can tell whether it would run its caller's tools
+// where the caller asked.
+pub mod placement;
 pub mod protocol;
 pub mod question;
 pub mod registry;

@@ -43,6 +43,7 @@ use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
 };
+use letibot_tools::builtins::task::Placement;
 use letibot_transcript::{ToolOutcome, TranscriptItem};
 use serde_json::{Value, json};
 
@@ -1094,6 +1095,12 @@ pub struct Head {
     /// `Caps::can_decide = false` and enforced here, because a head is not a person and the
     /// one thing it must not do to somebody else's session is act on it.
     pub watch_only: bool,
+    /// **Where this session's tools run**, taken from the daemon's own record when the head
+    /// attached ([`crate::daemon::Daemon::placement`]): `host` for this box, `host:NAME` for a
+    /// machine, `None` when the daemon recorded nothing this build can read. Held here rather
+    /// than looked up per answer, because it is a fact of the daemon the head joined and a
+    /// socket that is gone must not change what this head says about the session it holds.
+    pub placement: Option<Placement>,
     shared: Arc<Shared>,
     /// Shared with the collecting thread because an `Ack` is a client frame: a head that
     /// acked from a second borrow of the socket would be two writers on one stream.
@@ -1166,6 +1173,10 @@ impl Head {
             worktree: d.workspace.clone(),
             socket: d.socket.clone(),
             watch_only,
+            // The daemon's own answer, read when it was resolved. A head that attached to a
+            // daemon whose record it could not read says `None` — *not known* — rather than
+            // inventing this box.
+            placement: d.placement.clone(),
             shared,
             client,
         };

@@ -283,7 +283,7 @@ would remove:
 | id | builds |
 |---|---|
 | RH1 | hosts.toml; `SshBackend: ExecBackend` (run, read, write, list, stat, processes with remote jobs); `Placement::Remote(host)`; the git placement both ways; `task where: "host:NAME"`; `--host NAME` for a root session; the progress and seam lines; tests with a fake `ssh` (a script that runs the command locally against a temp "remote root"), never a real host |
-| RH2 | the bridge's `leticode_start { host }`; a live smoke test on lab2x1 run by the orchestrator |
+| RH2 | **done, but for the smoke test**: the bridge's `leticode_start { host }`, the host-name check, the placement record, and the refusal to reuse a daemon placed elsewhere (§ *As built (RH2)*). A live smoke test on lab2x1 is the orchestrator's, and nothing here contacted a host |
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
 | RH6 | **done**: the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4; auth refusals made definite; `migrate`'s steps bounded; toolchains through `mise`; the `notes` tool's body exempt from the never-write list |
 | RH7 | harnessd's process supervisor: store records for every started process, the supervising loop, ownership teardown, restart recovery; `bash background` on it |
@@ -333,6 +333,33 @@ defect this tree keeps paying for:
   (`ExecBackend::close`). The contract allows either.
 * **`host:NAME` is also spelled `remote:NAME`**, and `--where host:NAME` is the same act as
   `--host NAME` — one rule, with the name checked against `hosts.toml` in both places.
+
+## As built (RH2): `leticode_start { host }`, and a daemon that says where it is
+
+Written 2026-10-26. The third caller in the table above, Claude Code, and the one fact a head was
+missing: **a placement is a fact of the DAEMON, and the protocol carries it nowhere.** A head
+attaching is told the session's model, endpoint and dialect — all per session, all on the wire —
+and nothing about the backend, which is one per process anyway.
+
+* **`leticode_start { host }` passes `--host NAME`** to the daemon it starts, and checks the name
+  first with the tree's one `hosts.toml` reader and the one refusal (`task { where: "host:NAME" }`
+  gives that sentence, and the bridge gives the same). The bridge runs no ssh and builds no
+  backend: `harnessd` owns the placement.
+* **The daemon records its placement beside its socket** — `<key>.placement`, written by
+  `letibot_sessionlog::placement` after the folder's bind, so only the daemon that actually holds
+  the folder writes it. The record names the socket's `(dev, ino)` as well, which is what makes a
+  record left behind by a daemon that is gone read as *nothing known* rather than as the new
+  daemon's answer (the same pair `unlink_if_ours` compares, for the same reason: a filename is not
+  an identity).
+* **`leticode_start` joins an already-running daemon only where the call asked to be.** A
+  mismatch — another host, or this box, or a daemon that recorded nothing — is refused, naming the
+  running daemon's placement and `letibot --stop`: stopping somebody else's daemon is the
+  operator's act. The failure this closes is the one that would be silent: a package asking for
+  `host: lab2x1` that joined the local daemon would run its whole brief here, and every answer
+  would look working.
+* **`placement` is in every answer that can be asked** (`leticode_start`, `_status`, `_list`,
+  `_attach`), and `tools_run` on `leticode_start` is the same fact as a sentence — with the half
+  that did **not** move, because a remote session's test result is read here.
 
 ## As built (RH5): one ssh policy, and the operator's ssh material is never read
 

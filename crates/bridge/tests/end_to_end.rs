@@ -31,8 +31,15 @@
 //! | **a watching head is attached but is not a decider** | `Hub::attached_heads` against `Hub::deciding_heads` |
 //! | **`send`, `answer` and `stop` refuse on a watched session** | the three tools, watched and not held |
 //! | **`attach` refuses a folder with no daemon, and starts none** | the refusal, and the socket that was never created |
+//! | **where a session's tools run reaches every answer** (RH2) | `placement` on `leticode_start`, `leticode_status` and `leticode_list`, from the record the fixture wrote beside the socket |
 //!
 //! # What it deliberately does not cover
+//!
+//! **A daemon actually placed on a host.** Nothing here runs `ssh` or boots a machine: the record
+//! beside this fixture's socket says `host:lab2x1` and the daemon behind it is local, so what is
+//! measured is the bridge reporting the daemon's own record — which is the whole of the bridge's
+//! part. `leticode_start` *choosing* a placement is `daemon.rs`'s (the `--host` flag, and the
+//! refusal to join a daemon placed elsewhere), and the ssh half is `crates/tools`'s own suite.
 //!
 //! **`leticode_start` starting a daemon**: the daemon here is already up, so the branch
 //! that spawns `harnessd` is not taken. Spawning a second daemon inside a test would be the
@@ -399,6 +406,18 @@ impl World {
         // names this one — the same override the shell honours, and the only way a test can
         // be sure it is talking to the socket it started.
         unsafe { std::env::set_var("LETIBOT_SOCKET", &socket) };
+        // **The host this package is placed on**, as the operator's file would declare it. The
+        // daemon here runs on this box — nothing in this file boots a second machine or runs
+        // an `ssh` — and what the record below says is an INPUT: `leticode_status`'s
+        // `placement` is the bridge reporting the daemon's record, and a daemon on `lab2x1`
+        // would have written that line itself.
+        std::fs::write(
+            root.join("config/letibot/hosts.toml"),
+            "# Written by crates/bridge/tests/end_to_end.rs — a host no test connects to.\n\
+             [host.lab2x1]\nhostname = \"lab2x1.invalid\"\n",
+        )
+        .expect("hosts.toml");
+        unsafe { std::env::set_var("LETIBOT_HOSTS", root.join("config/letibot/hosts.toml")) };
 
         let mut cfg = Config::for_this_box(&worktree);
         cfg.dialect = Dialect::Qwen;
@@ -436,6 +455,9 @@ impl World {
         // daemon by connecting, and a socket that appears a moment later would be a race
         // between the test's first `start` and its own fixture.
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
+        // Where this daemon's tools run, written where harnessd writes it — see the host above
+        // for why the record says a host while the daemon is local.
+        letibot_sessionlog::placement::write(&socket, "host:lab2x1").expect("the record");
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
             let mut sessions = Sessions::open_first(parts, cfg, worker_registry)
@@ -558,6 +580,9 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
             BRIEF,
             Some("deepseek/deepseek-chat"),
             "writes-allowed",
+            // The placement the daemon's own record names: the whole point of asking is that
+            // an already-running daemon is joined only where the call asked to be.
+            Some("lab2x1"),
         )
         .expect("the bridge starts a session");
     let session = started["session"]
@@ -575,12 +600,24 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     // sent. (The other branch — a daemon this call started — is the one no test may take,
     // because a test that spawns `harnessd` leaves one running.)
     assert_eq!(started["session_opened"], "new", "{started}");
+    // **Where the tools run, said twice**: the spelling a caller can store and compare, and
+    // the sentence a model reads — which has to carry what stayed here as well, because a
+    // result from that session means something different if the store and the gate did not
+    // move with the tools.
+    assert_eq!(started["placement"], "host:lab2x1", "{started}");
+    let where_ = started["tools_run"].as_str().unwrap_or_default();
+    assert!(where_.contains("on `lab2x1`"), "{started}");
+    assert!(where_.contains("stay here"), "{started}");
 
     // `running` while the fake holds its first answer back for 400 ms.
     let running = until(&bridge, &session, "the first turn to start", |v| {
         state_is(v, "running")
     });
     assert_eq!(running["last_message"], "", "{running}");
+    assert_eq!(
+        running["placement"], "host:lab2x1",
+        "status reports the placement the daemon recorded, on every answer: {running}"
+    );
 
     // `idle` **with the answer in it**, not `idle` on its own: between two rounds of one
     // turn the session is briefly idle with the previous round's words still on it, and a
@@ -1121,6 +1158,11 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     assert_eq!(rows.len(), 1, "the watcher still holds it");
     assert_eq!(rows[0]["watch_only"], json!(true), "{rows:?}");
     assert_eq!(
+        rows[0]["placement"],
+        json!("host:lab2x1"),
+        "a listing says where each session's tools run: {rows:?}"
+    );
+    assert_eq!(
         watcher.diff(&session, false).expect("diff")["branch"],
         "bridge",
         "a watcher reads the worktree like any head"
@@ -1188,6 +1230,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
     let rows = listed["sessions"].as_array().expect("rows");
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["session"], session.as_str(), "{listed}");
+    assert_eq!(rows[0]["placement"], "host:lab2x1", "{listed}");
 
     bridge.stop(&session).expect("the session is left");
     assert_eq!(

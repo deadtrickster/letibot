@@ -325,6 +325,12 @@ impl World {
         // daemon by connecting, and a socket that appears a moment later would be a race
         // between the test's first `start` and its own fixture.
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
+        // **Where this daemon's tools run, as harnessd writes it at its own start** — the
+        // fixture's job here because the fixture is the daemon: without the record, a
+        // `leticode_start` asking for this box refuses to join a daemon it cannot place
+        // (`daemon::ensure`), which is the behaviour that keeps a package from running
+        // somewhere nobody named.
+        letibot_sessionlog::placement::write(&socket, "host").expect("the placement record");
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
             let mut sessions = Sessions::open_first(parts, cfg, worker_registry)
@@ -351,6 +357,9 @@ impl World {
                 BRIEF,
                 Some("deepseek/deepseek-chat"),
                 "writes-allowed",
+                // The daemon this world builds is on this box, and its record says so
+                // (`crates/bridge/tests/end_to_end.rs`'s fixture writes one the same way).
+                None,
             )
             .expect("the bridge starts a session");
         let session = started["session"]

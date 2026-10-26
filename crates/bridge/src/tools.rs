@@ -25,6 +25,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use letibot_tools::builtins::task::Placement;
+use letibot_tools::remote::Hosts;
+
 use crate::daemon;
 use crate::diff;
 use crate::head::{self, Attention, Head, Turn};
@@ -71,17 +74,33 @@ impl Bridge {
     /// it had just created and the brief ran in the daemon's own first one, so
     /// `leticode_status` watched an empty session report `idle` while a turn was happening
     /// one session over.
+    ///
+    /// **`host` is where the session's TOOLS run** (`docs/remote-hosts.md`): a name the
+    /// operator declared in `~/.config/letibot/hosts.toml`, passed to the daemon as `--host`,
+    /// so `bash`, `read`, `write`, `edit` and the jobs run on that machine while the model,
+    /// the store and the gate stay here. The name is checked before anything is started
+    /// ([`placement_arg`]), and a daemon already running for this folder with a different
+    /// placement (or none this build can read) is refused rather than joined
+    /// ([`daemon::ensure`]) — the one failure that would be silent, since a package whose
+    /// tools ran here while its caller asked for a host would look exactly like a working one.
     pub fn start(
         &self,
         worktree: &str,
         brief: &str,
         model: Option<&str>,
         mode: &str,
+        host: Option<&str>,
     ) -> Result<Value, String> {
         if brief.trim().is_empty() {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
         }
-        let d = daemon::ensure(Path::new(worktree), model, mode)?;
+        // **The host is checked before anything is done**, with the tree's own reader: a name
+        // this file does not declare is refused by the operator's rule, listing the names it
+        // does (`Hosts::refusal`, the sentence `task { where: "host:NAME" }` gives), and no
+        // daemon is started for it. The plan's whole point is that a caller can find out it
+        // misspelled a machine before a brief runs on the wrong one.
+        let placement = placement_arg(host, &Hosts::load())?;
+        let d = daemon::ensure(Path::new(worktree), model, mode, &placement)?;
         let (session, opened) = if d.started {
             (head::open_default(&d)?, "daemon")
         } else {
@@ -98,6 +117,15 @@ impl Bridge {
             // and a caller that expected to have opened one should be able to see that it
             // inherited the daemon's.
             "session_opened": opened,
+            // **Where this session's tools run**, from the daemon's own record and not from
+            // the argument: an already-running daemon was refused unless it agreed, so the two
+            // are one fact — but the fact is the daemon's, and a head that cannot tell would
+            // report a package's work as being somewhere it is not.
+            "placement": placement_json(h.placement.as_ref()),
+            // The same thing in a sentence, because this is the field a model reads to answer
+            // *where is my work happening* — and the half that matters as much is what did NOT
+            // move: the model, the store and the gate are this box's.
+            "tools_run": tools_run(h.placement.as_ref()),
         });
         // Before the brief, so the first tool call already runs at the point the caller
         // asked for: `Mode` is queued like a prompt and takes effect from the next call.
@@ -191,6 +219,9 @@ impl Bridge {
             "daemon_started": d.started,
             "watch_only": watch_only,
             "can_decide": !watch_only,
+            // A session somebody else opened: where ITS daemon runs the tools is the one fact
+            // an orchestrator following it from here has no other way to learn.
+            "placement": placement_json(h.placement.as_ref()),
             "state": s.word(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
             "last_message": first_line(s.last_message()),
@@ -231,6 +262,11 @@ impl Bridge {
         let mut out = json!({
             "session": session,
             "state": s.word(),
+            // **Where this session's tools run** — `host`, or `host:NAME`, or null when the
+            // daemon recorded nothing this build can read. A caller reading a diff or a test
+            // result needs it: the same words mean one thing on this box and another on a
+            // machine whose toolchains are its own.
+            "placement": placement_json(h.placement.as_ref()),
             // **Whether this head may act on the session at all** (B6): a caller that cannot
             // see the difference asks twice why `leticode_send` refused.
             "watch_only": h.watch_only,
@@ -377,6 +413,7 @@ impl Bridge {
                     "session": h.session,
                     "worktree": h.worktree.display().to_string(),
                     "socket": h.socket.display().to_string(),
+                    "placement": placement_json(h.placement.as_ref()),
                     "watch_only": h.watch_only,
                     "state": s.word(),
                     "pending_asks": s.asks.len(),
@@ -449,6 +486,59 @@ fn first_line(text: &str) -> String {
         .collect()
 }
 
+/// **The `host` argument, as a placement, checked before anything is started.**
+///
+/// `None` (or an empty string) is [`Placement::Host`] — *this box* is what a caller asked for
+/// when it asked for nothing, and it is a placement, so it is compared against a running
+/// daemon's record like any other.
+///
+/// A name is checked against the operator's `hosts.toml` **here**, with the reader and the
+/// refusal `task { where: "host:NAME" }` uses (`docs/remote-hosts.md`: one rule, whichever
+/// spelling asked): the refusal names the file and lists the hosts it declares, which is the
+/// difference between a caller that fixes its typo and one that guesses. A daemon started for
+/// a name the file does not declare would fail at its own start, in a log the caller has to go
+/// and read, after this tool had answered that it started one.
+fn placement_arg(host: Option<&str>, hosts: &Hosts) -> Result<Placement, String> {
+    let Some(name) = host.map(str::trim).filter(|n| !n.is_empty()) else {
+        return Ok(Placement::Host);
+    };
+    if hosts.get(name).is_none() {
+        return Err(format!(
+            "{} A `host` on `leticode_start` is the same check as `where: host:{name}`, and \
+             nothing was started. Call the `hosts` tool (or read that file) for the machines \
+             this box has, or leave `host` out to run the session's tools on this box.",
+            hosts.refusal(name)
+        ));
+    }
+    Ok(Placement::Remote(name.to_string()))
+}
+
+/// **Where a held session's tools run, as an answer's field.**
+///
+/// `host` for this box and `host:NAME` for a machine — the spellings [`Placement::parse`]
+/// reads back, so a value a caller stores is a value it can ask for again. `null` when the
+/// daemon recorded nothing this build can read: *not known*, which is not the same as *here*
+/// and must not be printed as though it were.
+fn placement_json(placement: Option<&Placement>) -> Value {
+    match placement {
+        Some(p) => json!(p.as_str()),
+        None => Value::Null,
+    }
+}
+
+/// The same fact as a sentence, for the answer a model reads: where the work happens, and what
+/// stayed on this box.
+fn tools_run(placement: Option<&Placement>) -> String {
+    match placement.and_then(Placement::host) {
+        Some(host) => format!(
+            "on `{host}`: this session's bash, read, write, edit and jobs run there; its model, \
+             the store and the gate stay here. What it commits comes back as the branch \
+             `remote/{host}/<short id>` when the session ends"
+        ),
+        None => "on this box".to_string(),
+    }
+}
+
 /// **The ten tools, exactly as the design's table names them.**
 ///
 /// The schemas are JSON Schema objects because MCP requires `inputSchema` to be one, and
@@ -462,14 +552,18 @@ pub fn list() -> Value {
               the first prompt, and stays attached so the gate's asks reach this bridge. \
               Answers the session id every other tool takes. Run the `wait` verb as a \
               background command afterwards — its exit is the notification that the turn \
-              ended or that a decision is pending.",
+              ended or that a decision is pending. `host` places the session's TOOLS on \
+              another machine: a daemon already running for this folder with a different \
+              placement is refused, naming where it runs and how to stop it, because a \
+              package must never end up running locally when its caller asked for a host.",
              json!({
                  "type": "object",
                  "properties": {
                      "worktree": { "type": "string", "description": "Absolute path to the checkout the work happens in." },
                      "brief": { "type": "string", "description": "The task, in full: what to build, the hard rules, and what to report." },
                      "model": { "type": "string", "description": "What answers the turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice." },
-                     "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." }
+                     "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
+                     "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." }
                  },
                  "required": ["worktree", "brief"]
              })),
@@ -510,7 +604,9 @@ pub fn list() -> Value {
         tool("leticode_status",
              "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
               assistant message, the todos, the last turn's tokens and cost, and which asks \
-              are pending. When that message is the brief's closing report, it also comes \
+              are pending. `placement` says where the session's tools run — `host` for this \
+              box, `host:NAME` for another machine, null when the daemon recorded nothing. \
+              When that message is the brief's closing report, it also comes \
               back parsed: `report.built`, `report.tested`, `report.could_not`, \
               `report.contracts` and the `report.commits` it named — the newest report, \
               with `report_is_last` false when words came after it. `spent` sums every \
@@ -593,7 +689,8 @@ pub fn list() -> Value {
                  "required": ["session"]
              })),
         tool("leticode_list",
-             "The sessions this bridge is holding, with their state, pending ask count and \
+             "The sessions this bridge is holding, with their state, pending ask count, \
+              where each one's tools run (`placement`) and \
               whether each is only watched (`leticode_attach`'s default) or driven. It lists \
               what this process holds, not what the daemon has on disk.",
              json!({ "type": "object", "properties": {} })),
@@ -669,7 +766,8 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let brief = arg_str(args, "brief")?;
             let model = arg_opt_str(args, "model")?;
             let mode = arg_opt_str(args, "mode")?.unwrap_or_else(|| DEFAULT_MODE.to_string());
-            bridge.start(&worktree, &brief, model.as_deref(), &mode)
+            let host = arg_opt_str(args, "host")?;
+            bridge.start(&worktree, &brief, model.as_deref(), &mode, host.as_deref())
         }
         "leticode_attach" => {
             let worktree = arg_str(args, "worktree")?;
@@ -774,6 +872,85 @@ mod tests {
         // them, which is what a client sees when it asks for one that is not here.
         let e = call(&Bridge::new(), "leticode_nope", &json!({})).expect_err("unknown");
         assert!(e.contains("leticode_start"), "{e}");
+    }
+
+    /// **`leticode_start` publishes `host`, and does not require it.** A field a client cannot
+    /// see is a feature nobody uses; a field in `required` is a call every existing caller
+    /// would have to change to keep working on this box.
+    #[test]
+    fn the_start_schema_names_host_without_requiring_it() {
+        let listed = list();
+        let start = listed["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|t| t["name"] == "leticode_start")
+            .expect("leticode_start");
+        let host = &start["inputSchema"]["properties"]["host"];
+        assert_eq!(host["type"], "string", "{host}");
+        let described = host["description"].as_str().unwrap_or_default();
+        // The two halves a caller needs: where the names come from, and what moves.
+        assert!(described.contains("hosts.toml"), "{described}");
+        assert!(described.contains("`hosts` tool"), "{described}");
+        assert!(
+            start["inputSchema"]["required"]
+                .as_array()
+                .expect("required")
+                .iter()
+                .all(|v| v != "host"),
+            "omitting `host` is a session on this box, and every earlier caller relies on it"
+        );
+    }
+
+    /// **A host name is checked before anything is started, with the tree's own refusal.**
+    ///
+    /// The `Hosts` is built from text rather than from `$LETIBOT_HOSTS`, because a unit test
+    /// that set a process-wide variable would race every other test in this binary — the same
+    /// reason `tools::builtins::hosts` takes the file as an argument. The variable's own path
+    /// is pinned end to end in `crates/bridge/tests/placement.rs`.
+    #[test]
+    fn an_undeclared_host_is_refused_with_the_names_this_box_has() {
+        let hosts = Hosts::parse("[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("a hosts file");
+        assert_eq!(
+            placement_arg(None, &hosts).expect("no host asked for"),
+            Placement::Host,
+            "asking for nothing is a placement, and it is this box"
+        );
+        assert_eq!(
+            placement_arg(Some("  "), &hosts).expect("an empty host is none"),
+            Placement::Host
+        );
+        assert_eq!(
+            placement_arg(Some("lab2x1"), &hosts).expect("a declared host"),
+            Placement::Remote("lab2x1".into())
+        );
+        // The typo: `lab2` is not `lab2x1`, and the refusal says so with the list.
+        let e = placement_arg(Some("lab2"), &hosts).expect_err("undeclared");
+        assert!(e.contains("there is no host `lab2`"), "{e}");
+        assert!(e.contains("it knows: lab2x1"), "{e}");
+        assert!(
+            e.contains("nothing was started"),
+            "the caller has to know no daemon was begun on its behalf: {e}"
+        );
+        assert!(e.contains("hosts.toml"), "{e}");
+    }
+
+    /// **The placement an answer carries is the spelling a caller can ask for again**, and
+    /// *nothing recorded* is `null` rather than the word for *here*.
+    #[test]
+    fn a_placement_is_answered_in_the_words_it_is_asked_for() {
+        assert_eq!(placement_json(Some(&Placement::Host)), json!("host"));
+        assert_eq!(
+            placement_json(Some(&Placement::Remote("lab2x1".into()))),
+            json!("host:lab2x1")
+        );
+        assert_eq!(placement_json(None), Value::Null);
+        // And the sentence says what moved AND what did not, because the second half is what
+        // decides whether a result from that session can be read here.
+        let remote = tools_run(Some(&Placement::Remote("lab2x1".into())));
+        assert!(remote.contains("on `lab2x1`"), "{remote}");
+        assert!(remote.contains("stay here"), "{remote}");
+        assert_eq!(tools_run(Some(&Placement::Host)), "on this box");
     }
 
     /// A missing or mistyped argument is refused by field name, before anything is sent.

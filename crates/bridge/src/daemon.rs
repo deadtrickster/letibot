@@ -25,6 +25,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use letibot_tools::builtins::task::Placement;
+
 /// The name a head attaches under — a fact of the daemon's log, so it is the bridge's own
 /// and not a guess: `HeadAttached`/`HeadDetached` name it, and the decision corpus records
 /// the answers given from it.
@@ -93,6 +95,12 @@ pub struct Daemon {
     pub log: PathBuf,
     /// Where the daemon keeps transcripts. `$LETIBOT_STORE` wins, as it does in the shell.
     pub store: PathBuf,
+    /// **Where this daemon's tools run** — the record it wrote beside its socket
+    /// ([`letibot_sessionlog::placement`]), so this is the daemon's own answer and not the
+    /// caller's hope. `None` is *nothing is known*: a daemon from a build before the record
+    /// existed, or one whose record names a socket that is gone. Never read as *local* — see
+    /// [`ensure_here`], which refuses rather than guesses.
+    pub placement: Option<Placement>,
     /// True when THIS call started the daemon, so the answer can say so — a bridge that
     /// claimed to have started a daemon somebody else's process was already serving would
     /// be describing the wrong process.
@@ -158,12 +166,17 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
         Some(s) if !s.is_empty() => PathBuf::from(s),
         _ => home()?.join(".local/share/letibot/sessions.db"),
     };
+    // The daemon's own record, with its socket's identity in it: a record left by a daemon that
+    // is gone answers nothing, which the caller must treat as *unknown*.
+    let placement =
+        letibot_sessionlog::placement::read(&socket).and_then(|s| Placement::parse(&s).ok());
     Ok(Daemon {
         workspace,
         key,
         socket,
         log,
         store,
+        placement,
         started: false,
     })
 }
@@ -234,7 +247,12 @@ fn daemon_binary() -> Result<PathBuf, String> {
 /// the operator's own daemon is — and two daemons interleaving landings for one repository is
 /// the second half of that defect. A daemon that is already up is not this call's to change;
 /// `ensure` returns it as it is.
-fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str) -> Vec<String> {
+///
+/// **`--host NAME` is the placement**, and it is spelled once: `docs/remote-hosts.md` names
+/// `leticode --host lab2x1` for the operator and `leticode_start { host }` for a Claude Code
+/// package, and both are this flag on a daemon whose sessions run their tools over ssh. The
+/// model, the store and the gate stay here — the daemon names the host, it does not move.
+fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placement) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--workspace".into(),
         d.workspace.display().to_string(),
@@ -255,6 +273,10 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str) -> Vec<String> {
         // See this function's doc: a package's daemon serves no queue.
         "--no-queue".into(),
     ];
+    if let Some(host) = placement.host() {
+        args.push("--host".into());
+        args.push(host.into());
+    }
     if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
         // `deepseek`, `glm`, `grok` are providers (the turns leave the box); anything else
         // is the local binding, which is what the launcher's `--model` means. A
@@ -296,6 +318,7 @@ fn start(
     d: &Daemon,
     model: Option<&str>,
     mode: &str,
+    placement: &Placement,
 ) -> Result<std::process::Child, String> {
     if let Some(dir) = d.log.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -312,7 +335,7 @@ fn start(
         .try_clone()
         .map_err(|e| format!("{}: {e}", d.log.display()))?;
     let mut cmd = Command::new(binary);
-    cmd.args(daemon_args(d, model, mode))
+    cmd.args(daemon_args(d, model, mode, placement))
         // The daemon links libllama for its TOKENIZER, and ggml registers every backend at
         // load — 1.1 GB of a card for ops it never runs. `scripts/letibot` blindfolds it
         // with the same variable, for the same reason and for harnessd only.
@@ -386,33 +409,80 @@ fn reap(mut child: std::process::Child) {
 ///
 /// The binary is the caller's so that the start path a test can drive is the one a daemon
 /// start really takes; resolving it ([`daemon_binary`]) is `ensure`'s business.
-fn spawn(binary: &Path, d: &Daemon, model: Option<&str>, mode: &str) -> Result<u32, String> {
-    let child = start(binary, d, model, mode)?;
+fn spawn(
+    binary: &Path,
+    d: &Daemon,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+) -> Result<u32, String> {
+    let child = start(binary, d, model, mode, placement)?;
     let pid = child.id();
     reap(child);
     Ok(pid)
 }
 
-/// **This folder's daemon, started if nothing is listening.**
+/// **This folder's daemon, started if nothing is listening, and never one whose placement is
+/// not the one asked for.**
+///
+/// `placement` is what the caller asked for — [`Placement::Host`] when it asked for nothing, so
+/// *nothing* is a placement and not an absence — and it is checked against the record the daemon
+/// wrote beside its socket before the daemon is reused.
+///
+/// **A daemon already up with another placement is refused, not reused, and it is not this
+/// call's to stop.** Stopping it would end sessions somebody else is running — the operator's
+/// own daemon for that folder is the usual case — so the refusal names what the running daemon
+/// says about itself and the command that ends it, and the caller decides. The defect this
+/// closes is silent and expensive: a package asking for `host: lab2x1` that joined the local
+/// daemon would run its whole brief on this box, and nothing in any answer would say so.
+///
+/// **A daemon that recorded nothing is refused too, in both directions.** `None` is *unknown*,
+/// not *local*: an older build, or a record whose socket is gone. Guessing *local* there is the
+/// same silent wrong answer, and guessing `remote` is worse.
 ///
 /// The wait is the launcher's: poll the cheap check — is anything accepting — up to sixty
 /// times at half a second, then report the log's tail rather than a bare timeout, because
 /// a daemon that did not come up has said why on its own log and the person reading the
 /// bridge's answer needs those lines.
-pub fn ensure(worktree: &Path, model: Option<&str>, mode: &str) -> Result<Daemon, String> {
-    let mut d = resolve(worktree)?;
+pub fn ensure(
+    worktree: &Path,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+) -> Result<Daemon, String> {
+    ensure_here(resolve(worktree)?, model, mode, placement)
+}
+
+/// [`ensure`] for a daemon already resolved — the shape a test drives, with a socket it bound
+/// itself and no folder to hash.
+pub fn ensure_here(
+    mut d: Daemon,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+) -> Result<Daemon, String> {
     if is_up(&d.socket) {
-        return Ok(d);
+        if d.placement.as_ref() == Some(placement) {
+            return Ok(d);
+        }
+        return Err(placed_elsewhere(&d, placement));
     }
     // **A second daemon for one folder is what corrupts a transcript**, and the refusal
     // that catches it is harnessd's own folder claim: it refuses a start over a live
     // daemon by name. So the start is attempted, and a refusal reaches the caller as the
     // log tail rather than being pre-empted by a guess about a lock this box may not let
     // a head read.
-    let pid = spawn(&daemon_binary()?, &d, model, mode)?;
+    let pid = spawn(&daemon_binary()?, &d, model, mode, placement)?;
     for _ in 0..60 {
         if is_up(&d.socket) {
             d.started = true;
+            // The daemon's own record, read back rather than echoed: what it wrote is what a
+            // later head will read, so the answer this call gives is the answer `status` gives.
+            // The flags this call passed are the fallback for a daemon whose build predates the
+            // record — it was started with them, so they are true of it.
+            d.placement = letibot_sessionlog::placement::read(&d.socket)
+                .and_then(|s| Placement::parse(&s).ok())
+                .or_else(|| Some(placement.clone()));
             return Ok(d);
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -425,6 +495,38 @@ pub fn ensure(worktree: &Path, model: Option<&str>, mode: &str) -> Result<Daemon
         d.log.display(),
         tail(&d.log, 15)
     ))
+}
+
+/// **The refusal for a daemon that is already up and placed somewhere else** (or nowhere this
+/// build can see).
+///
+/// It says three things, because a refusal a caller cannot act on costs an hour: where the
+/// running daemon's tools run, that this bridge will not change it, and the one command that
+/// ends it so the call can be made again.
+fn placed_elsewhere(d: &Daemon, asked: &Placement) -> String {
+    let running = match d.placement.as_ref().and_then(Placement::host) {
+        Some(host) => format!("its tools run on `{host}`"),
+        None => match d.placement {
+            Some(_) => "its tools run on this box".to_string(),
+            None => format!(
+                "it recorded no placement beside its socket ({}), so this bridge cannot tell \
+                 whether its tools run here or on a host — a daemon from a build before the \
+                 record existed, or one whose record belongs to a socket that is gone",
+                letibot_sessionlog::placement::path(&d.socket).display()
+            ),
+        },
+    };
+    format!(
+        "a daemon is already up for {} ({}) and {running}, but this call asked for `{}`. \
+         Nothing was started and nothing was joined: a package that joined it would run its \
+         tools somewhere other than it was told, and no answer would say so. Stop it — \
+         `letibot --stop {}` (or `letibot --stop` in that folder) — and call again; the next \
+         start is this call's own and carries the placement it asked for",
+        d.workspace.display(),
+        d.socket.display(),
+        asked.as_str(),
+        d.workspace.display()
+    )
 }
 
 /// The last `n` lines of a file, or the reason it could not be read.
@@ -488,6 +590,7 @@ mod tests {
             socket: PathBuf::from("/run/user/1000/letibot/42ce9f1aae08.sock"),
             log: PathBuf::from("/home/dead/logs/harnessd-42ce9f1aae08.log"),
             store: PathBuf::from("/home/dead/.local/share/letibot/sessions.db"),
+            placement: Some(Placement::Host),
             started: false,
         }
     }
@@ -541,9 +644,11 @@ mod tests {
             socket: dir.join("daemon.sock"),
             log: dir.join("daemon.log"),
             store: dir.join("sessions.db"),
+            placement: None,
             started: false,
         };
-        let pid = spawn(&script, &d, None, "writes-allowed").expect("the script starts");
+        let pid = spawn(&script, &d, None, "writes-allowed", &Placement::Host)
+            .expect("the script starts");
         let pid = pid as libc::pid_t;
 
         // **Its own session**, so nothing the bridge's process group is sent reaches it: a bridge
@@ -593,7 +698,7 @@ mod tests {
     fn every_daemon_the_bridge_starts_serves_no_queue() {
         let d = a_daemon();
         for model in [None, Some("deepseek"), Some("qwen-3.8-27b")] {
-            let args = daemon_args(&d, model, "writes-allowed");
+            let args = daemon_args(&d, model, "writes-allowed", &Placement::Host);
             assert!(
                 args.iter().any(|a| a == "--no-queue"),
                 "a daemon started without --no-queue claims the repository's lease: {args:?}"
@@ -608,19 +713,24 @@ mod tests {
     #[test]
     fn a_provider_is_a_provider_and_a_model_is_a_binding() {
         let d = a_daemon();
-        let args = daemon_args(&d, Some("deepseek"), "writes-allowed");
+        let args = daemon_args(&d, Some("deepseek"), "writes-allowed", &Placement::Host);
         assert!(
             args.windows(2).any(|w| w == ["--provider", "deepseek"]),
             "{args:?}"
         );
         assert!(!args.iter().any(|a| a == "--model"), "{args:?}");
-        let args = daemon_args(&d, Some("qwen-3.8-27b"), "writes-allowed");
+        let args = daemon_args(&d, Some("qwen-3.8-27b"), "writes-allowed", &Placement::Host);
         assert!(
             args.windows(2).any(|w| w == ["--model", "qwen-3.8-27b"]),
             "{args:?}"
         );
         assert!(!args.iter().any(|a| a == "--provider"), "{args:?}");
-        let args = daemon_args(&d, Some("deepseek/deepseek-chat"), "writes-allowed");
+        let args = daemon_args(
+            &d,
+            Some("deepseek/deepseek-chat"),
+            "writes-allowed",
+            &Placement::Host,
+        );
         assert!(
             args.windows(2).any(|w| w == ["--provider", "deepseek"]),
             "{args:?}"
@@ -630,10 +740,169 @@ mod tests {
             "{args:?}"
         );
         // No model named at all: neither flag, and the daemon's own choice stands.
-        let args = daemon_args(&d, None, "writes-allowed");
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host);
         assert!(
             !args.iter().any(|a| a == "--provider" || a == "--model"),
             "{args:?}"
         );
+    }
+
+    /// **A host is `--host NAME` on the daemon this call starts, and nothing when no host was
+    /// asked for.**
+    ///
+    /// The flag rather than a bridge-side backend: `docs/remote-hosts.md`'s placement is one
+    /// fact of the daemon (its sessions run their tools over ssh) and `harnessd --host` is
+    /// where the tree already checks the name and builds the backend. A bridge that ran ssh
+    /// itself would be a second implementation of the thing that doc exists to keep single.
+    ///
+    /// The empty case matters as much: a daemon started with `--host` on a call that asked for
+    /// none would run a package's tools on a machine nobody named.
+    #[test]
+    fn a_host_is_the_flag_the_daemon_is_started_with() {
+        let d = a_daemon();
+        let args = daemon_args(
+            &d,
+            None,
+            "writes-allowed",
+            &Placement::Remote("lab2x1".into()),
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--host", "lab2x1"]),
+            "a placement on a host must reach the daemon as --host: {args:?}"
+        );
+        // And once: two names would be one flag too many for harnessd's own parse.
+        assert_eq!(
+            args.iter().filter(|a| *a == "--host").count(),
+            1,
+            "{args:?}"
+        );
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host);
+        assert!(
+            !args.iter().any(|a| a == "--host"),
+            "a session on this box must not be started with a host: {args:?}"
+        );
+    }
+
+    /// **A daemon already up for the folder is joined only when it says it is placed where
+    /// this call asked.**
+    ///
+    /// Three answers, and the two refusals are the point: a package must not end up running on
+    /// this box (or on the wrong machine) because a daemon somebody else started happened to be
+    /// listening. The refusal names where the running daemon's tools are and the one command
+    /// that ends it, because it is not this call's to stop — the folder's daemon is usually the
+    /// operator's own.
+    ///
+    /// The daemon here is a bare `UnixListener` with a placement record beside it, which is
+    /// exactly what a real one leaves: `ensure` reads the socket and the record, and neither the
+    /// binary nor a started daemon is involved.
+    #[test]
+    fn a_daemon_already_up_is_joined_only_where_this_call_asked() {
+        let (d, _listener, dir) = a_listening_daemon("joined-only", "host");
+        // Asked for this box, and it says it is on this box: joined, and not started.
+        let joined = ensure_here(d.clone(), None, "writes-allowed", &Placement::Host)
+            .expect("a daemon on this box is the daemon this call asked for");
+        assert!(!joined.started, "nothing was started: it was already up");
+
+        // Asked for a host: refused, naming where it actually is and how to stop it.
+        let e = ensure_here(
+            d.clone(),
+            None,
+            "writes-allowed",
+            &Placement::Remote("lab2x1".into()),
+        )
+        .expect_err("a daemon running the tools here is not the one a host call asked for");
+        assert!(e.contains("its tools run on this box"), "{e}");
+        assert!(
+            e.contains("letibot --stop"),
+            "a refusal must say how to get what it wanted: {e}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A daemon placed on a host is joined by a call that asked for that host, and by nothing
+    /// else** — the other direction of the test above, and the one that used to be silent: a call
+    /// asking for this box joining a daemon whose tools are on `lab2x1` would run *nothing* here.
+    #[test]
+    fn a_daemon_placed_on_a_host_is_not_joined_as_this_box() {
+        let (d, _listener, dir) = a_listening_daemon("host-only", "host:lab2x1");
+        let asked = Placement::Remote("lab2x1".into());
+        assert!(
+            ensure_here(d.clone(), None, "writes-allowed", &asked).is_ok(),
+            "the same host is the same placement, and is joined"
+        );
+        let e = ensure_here(d.clone(), None, "writes-allowed", &Placement::Host)
+            .expect_err("this box is not where that daemon runs the tools");
+        assert!(e.contains("its tools run on `lab2x1`"), "{e}");
+        let other = Placement::Remote("lab2x2".into());
+        let e = ensure_here(d, None, "writes-allowed", &other).expect_err("another machine");
+        assert!(e.contains("lab2x1"), "{e}");
+        assert!(e.contains("lab2x2"), "the refusal says what was asked: {e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A daemon that recorded nothing is refused in both directions** — `None` is *unknown*,
+    /// never *local*.
+    ///
+    /// The case is real: a daemon from a build before the record existed, and a `.placement`
+    /// left by a daemon that is gone (the record names the socket's `(dev, ino)`, so a record
+    /// whose socket has been replaced reads as nothing — `letibot_sessionlog::placement`). The
+    /// refusal says which file it looked at, so the person who has to stop the daemon can see
+    /// why this build cannot place it.
+    #[test]
+    fn a_daemon_that_recorded_nothing_is_not_taken_for_this_box() {
+        let (d, _listener, dir) = a_listening_daemon("no-record", "");
+        let e = ensure_here(d.clone(), None, "writes-allowed", &Placement::Host)
+            .expect_err("nothing recorded is not an answer");
+        assert!(e.contains("recorded no placement"), "{e}");
+        assert!(e.contains("letibot --stop"), "{e}");
+        assert!(
+            e.contains(".placement"),
+            "the refusal names the file it read: {e}"
+        );
+        let e = ensure_here(
+            d,
+            None,
+            "writes-allowed",
+            &Placement::Remote("lab2x1".into()),
+        )
+        .expect_err("nothing recorded is not an answer for a host either");
+        assert!(e.contains("recorded no placement"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A daemon value for a folder with a real socket bound at it and, when `record` is not
+    /// empty, a placement record beside it — the two files a live daemon leaves.
+    ///
+    /// The listener is returned so it outlives the calls: dropping it would leave a socket path
+    /// nobody accepts on, which is a different test (`ensure` would start a daemon instead).
+    fn a_listening_daemon(
+        tag: &str,
+        record: &str,
+    ) -> (Daemon, std::os::unix::net::UnixListener, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = letibot_sessionlog::testing::scratch_root().join(format!(
+            "letibot-place-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let socket = dir.join("daemon.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket binds");
+        if !record.is_empty() {
+            letibot_sessionlog::placement::write(&socket, record).expect("the record is written");
+        }
+        let d = Daemon {
+            workspace: dir.clone(),
+            key: "place0000000".into(),
+            socket,
+            log: dir.join("daemon.log"),
+            store: dir.join("sessions.db"),
+            placement: letibot_sessionlog::placement::read(&dir.join("daemon.sock"))
+                .and_then(|s| Placement::parse(&s).ok()),
+            started: false,
+        };
+        (d, listener, dir)
     }
 }

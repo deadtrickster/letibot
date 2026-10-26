@@ -22,6 +22,13 @@ letibot-sessionlog.workspace = true
 # type — the session log re-exports its rows, and matching on them needs the type named.
 letibot-transcript.workspace = true
 serde_json.workspace = true
+# **Where a host name is checked, and it is the tree's one reader** (`crates/tools/src/remote.rs`,
+# RH5): `~/.config/letibot/hosts.toml`, parsed strictly, with the refusal that lists the declared
+# names. `leticode_start { host }` needs exactly that and must give exactly that refusal — a
+# second reader here would be the drift RH5 removed, and a name this file accepted would be one
+# the daemon then refused at its own start. `Placement` comes with it: one spelling of `host` and
+# `host:NAME` for the bridge, the daemon and a recorded subagent.
+letibot-tools.workspace = true
 # The socket's name is the first twelve hex of the workspace's SHA-256, exactly as
 # `scripts/letibot` derives it (`sha12`): a different hash names a socket no daemon
 # listened on and starts a second one for one folder.

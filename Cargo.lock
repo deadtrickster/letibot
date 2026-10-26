@@ -948,6 +948,7 @@ version = "0.4.0"
 dependencies = [
  "letibot-harnessd",
  "letibot-sessionlog",
+ "letibot-tools",
  "letibot-transcript",
  "libc",
  "serde_json",
