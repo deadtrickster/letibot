@@ -1,4 +1,4 @@
-//! **The eight verbs**, and the map of sessions the bridge holds.
+//! **The nine verbs**, and the map of sessions the bridge holds.
 //!
 //! `docs/claude-code-bridge.md` fixes the table: each tool's input, and what it answers.
 //! Two things in it are worth naming here because they are the design rather than a
@@ -31,6 +31,10 @@ use crate::head::{self, Attention, Head, Turn};
 /// the network and the always-ask list still ask, which is what the bridge is for.
 pub const DEFAULT_MODE: &str = "writes-allowed";
 
+/// The default page size of `leticode_events`. Fifty is a screenful of progress: a turn
+/// that produced more has produced more than a caller reads in one go.
+pub const EVENTS_LIMIT: usize = 50;
+
 /// What the bridge holds: one attached head per session it started, by session id.
 ///
 /// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time by
@@ -50,6 +54,20 @@ impl Bridge {
     /// The daemon is this folder's — started if nothing is listening, joined if one is —
     /// because a second daemon for one folder is how two processes come to interleave rows
     /// into one transcript.
+    ///
+    /// **Which session the brief runs in is the first thing that has to be right.** When
+    /// this call started the daemon, the daemon has already opened its first session —
+    /// eagerly, and it is the session its worker is holding — so that is the session to
+    /// use: one brief is one conversation, and a second one minted beside it only creates
+    /// the possibility of the reply naming one session while the work happens in the other.
+    /// When the daemon was already up, its first session is somebody else's conversation,
+    /// so a new one is created and the head attaches **to that id** before the brief is
+    /// sent; `Head::attach` then refuses to hand back a head the daemon seated elsewhere.
+    ///
+    /// The first real run got this wrong the other way round: the answer named the session
+    /// it had just created and the brief ran in the daemon's own first one, so
+    /// `leticode_status` watched an empty session report `idle` while a turn was happening
+    /// one session over.
     pub fn start(
         &self,
         worktree: &str,
@@ -61,38 +79,39 @@ impl Bridge {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
         }
         let d = daemon::ensure(Path::new(worktree), model, mode)?;
-        let session = head::create_session(&d, "")?;
+        let (session, opened) = if d.started {
+            (head::open_default(&d)?, "daemon")
+        } else {
+            (head::create_session(&d, "")?, "new")
+        };
         let h = Arc::new(Head::attach(&d, &session)?);
+        let mut answer = json!({
+            "session": session,
+            "worktree": d.workspace.display().to_string(),
+            "socket": d.socket.display().to_string(),
+            "model": model,
+            "daemon_started": d.started,
+            // Which of the two sessions this is, because the two look the same in an id
+            // and a caller that expected to have opened one should be able to see that it
+            // inherited the daemon's.
+            "session_opened": opened,
+        });
         // Before the brief, so the first tool call already runs at the point the caller
         // asked for: `Mode` is queued like a prompt and takes effect from the next call.
         if let Err(e) = h.set_mode(mode) {
             // A session that cannot be moved is still a session — say so and let the brief
             // run at the daemon's own point rather than losing the session to the failure.
-            let prompt = h.prompt(brief);
-            self.hold(&h);
-            return match prompt {
-                Ok(_) => Ok(json!({
-                    "session": session,
-                    "worktree": d.workspace.display().to_string(),
-                    "socket": d.socket.display().to_string(),
-                    "model": model,
-                    "mode_requested": mode,
-                    "mode_error": e,
-                    "daemon_started": d.started,
-                })),
-                Err(e) => Err(e),
-            };
+            answer["mode_requested"] = json!(mode);
+            answer["mode_error"] = json!(e);
+        } else {
+            answer["mode"] = json!(mode);
         }
-        h.prompt(brief)?;
+        let queued = h.prompt(brief);
+        // Held even when the send failed: the session exists, and a caller that wants to
+        // ask why must be able to reach it by the id it was told.
         self.hold(&h);
-        Ok(json!({
-            "session": session,
-            "worktree": d.workspace.display().to_string(),
-            "socket": d.socket.display().to_string(),
-            "model": model,
-            "mode": mode,
-            "daemon_started": d.started,
-        }))
+        queued?;
+        Ok(answer)
     }
 
     fn hold(&self, h: &Arc<Head>) {
@@ -120,7 +139,7 @@ impl Bridge {
             Turn::Running => json!("running"),
             Turn::Failed(why) => json!({ "state": "failed", "why": why }),
         };
-        Ok(json!({
+        let mut out = json!({
             "session": session,
             "state": s.word(),
             "turn": turn,
@@ -140,7 +159,44 @@ impl Bridge {
             // that could not see the refusal would keep believing it answered.
             "last_rejection": s.rejection,
             "seq": s.seq,
-        }))
+        });
+        // **The brief's report, when the last message is one.** Absent, not empty, when it
+        // is not: a status answer with four blank fields would have a reviewer asking
+        // whether the run produced nothing or the parser failed, and this build says
+        // nothing rather than something untrue.
+        if let Some(report) = crate::report::parse(s.last_message()) {
+            out["report"] = report.to_json();
+        }
+        Ok(out)
+    }
+
+    /// **The progress since a cursor**: tool calls, results, jobs, turns, asks, warnings and
+    /// the first line of what was said — and never the banner, the memory watcher or a
+    /// payload.
+    ///
+    /// A cursor older than the ring is answered with what remains *and* a `dropped` count:
+    /// a caller that believes it has the whole story when it has the tail of it would read
+    /// a report of ten calls as a turn that made ten calls.
+    pub fn events(
+        &self,
+        session: &str,
+        since: Option<u64>,
+        limit: Option<u64>,
+    ) -> Result<Value, String> {
+        let h = self.head(session)?;
+        let limit = limit
+            .unwrap_or(EVENTS_LIMIT as u64)
+            .clamp(1, head::RING as u64) as usize;
+        let page = h.events(since.unwrap_or(0), limit);
+        let mut out = json!({
+            "session": session,
+            "entries": page.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
+            "next": page.next,
+        });
+        if page.dropped > 0 {
+            out["dropped"] = json!(page.dropped);
+        }
+        Ok(out)
     }
 
     /// The cards still owed an answer, with the ladder each offers.
@@ -245,7 +301,7 @@ fn first_line(text: &str) -> String {
         .collect()
 }
 
-/// **The eight tools, exactly as the design's table names them.**
+/// **The nine tools, exactly as the design's table names them.**
 ///
 /// The schemas are JSON Schema objects because MCP requires `inputSchema` to be one, and
 /// `required` is stated rather than inferred: a client that sends `leticode_answer` without
@@ -284,11 +340,30 @@ pub fn list() -> Value {
         tool("leticode_status",
              "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
               assistant message, the todos, the last turn's tokens and cost, and which asks \
-              are pending. The report fields the design's later package adds are not here yet.",
+              are pending. When that message is the brief's closing report, it also comes \
+              back parsed: `report.built`, `report.tested`, `report.could_not`, \
+              `report.contracts` and the `report.commits` it named.",
              json!({
                  "type": "object",
                  "properties": {
                      "session": { "type": "string", "description": "The session id." }
+                 },
+                 "required": ["session"]
+             })),
+        tool("leticode_events",
+             "The session's progress since a cursor, folded to one line each: tool calls (name \
+              and what they act on), their outcomes, background jobs starting and ending, \
+              turns, permission asks opening and being answered, warnings and failures, and \
+              the first line of each assistant message. Never the banner, the memory watcher \
+              or a payload — for those, read the transcript. Pass the `next` of one answer \
+              as the `since` of the next; a cursor the ring has outlived is answered with \
+              what remains plus `dropped`, the count it can no longer show you.",
+             json!({
+                 "type": "object",
+                 "properties": {
+                     "session": { "type": "string", "description": "The session id." },
+                     "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer. Omitted: everything the ring still holds." },
+                     "limit": { "type": "integer", "minimum": 1, "description": "How many entries to answer with. Default 50; the ring holds 500." }
                  },
                  "required": ["session"]
              })),
@@ -359,6 +434,7 @@ pub fn names() -> Vec<&'static str> {
         "leticode_start",
         "leticode_send",
         "leticode_status",
+        "leticode_events",
         "leticode_asks",
         "leticode_answer",
         "leticode_diff",
@@ -394,6 +470,18 @@ fn arg_bool(args: &Value, key: &str, default: bool) -> Result<bool, String> {
     }
 }
 
+/// A whole-number argument that may be absent — a cursor, a limit.
+fn arg_count(args: &Value, key: &str) -> Result<Option<u64>, String> {
+    match args.get(key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(v) => Ok(Some(v)),
+            None => Err(format!("`{key}` must be a whole number, and `{n}` is not")),
+        },
+        Some(other) => Err(format!("`{key}` must be a whole number, not `{other}`")),
+    }
+}
+
 /// **Run one tool.** `Err` is a caller's mistake (an argument, a session this bridge does
 /// not hold); a tool that ran and failed says so in its answer with `isError`.
 pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> {
@@ -407,6 +495,12 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         }
         "leticode_send" => bridge.send(&arg_str(args, "session")?, &arg_str(args, "text")?),
         "leticode_status" => bridge.status(&arg_str(args, "session")?),
+        "leticode_events" => {
+            let session = arg_str(args, "session")?;
+            let since = arg_count(args, "since")?;
+            let limit = arg_count(args, "limit")?;
+            bridge.events(&session, since, limit)
+        }
         "leticode_asks" => bridge.asks(&arg_str(args, "session")?),
         "leticode_answer" => {
             let session = arg_str(args, "session")?;
@@ -457,14 +551,15 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Eight tools, each with a schema and a required list** — the count and the names the
-    /// design's table fixes. A tool added to `tools/list` and forgotten in `call` (or the
-    /// other way round) is the defect this pairs against.
+    /// **Nine tools, each with a schema and a required list** — the count and the names the
+    /// design's table fixes, with `leticode_events` added by package B2. A tool added to
+    /// `tools/list` and forgotten in `call` (or the other way round) is the defect this
+    /// pairs against.
     #[test]
-    fn the_eight_tools_are_listed_with_schemas() {
+    fn the_nine_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 8, "{listed}");
+        assert_eq!(tools.len(), 9, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
@@ -502,6 +597,17 @@ mod tests {
         )
         .expect_err("not a boolean");
         assert!(e.contains("`full`"), "{e}");
+        // A cursor is a whole number, and a string or a negative one says which field it was
+        // rather than being read as zero — a cursor silently read as zero re-sends a ring.
+        for bad in [json!(-1), json!("12"), json!(1.5)] {
+            let e = call(
+                &b,
+                "leticode_events",
+                &json!({ "session": "s-1", "since": bad }),
+            )
+            .expect_err("not a whole number");
+            assert!(e.contains("`since`"), "{bad}: {e}");
+        }
     }
 
     /// A session this bridge does not hold is refused by name, and the refusal says what it

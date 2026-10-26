@@ -14,11 +14,12 @@
 //!   the three facts it owns are spelled again here and asserted against its own values.
 //! * [`head`] — the head protocol, discharged by a program: attach, ack, collect the turn,
 //!   the last answer, the cards still open, the todos and the meter.
-//! * [`tools`] — the eight verbs from the design's table, and the `wait` verb whose exit code
+//! * [`tools`] — the nine verbs from the design's table, and the `wait` verb whose exit code
 //!   is the wake-up.
+//! * [`report`] — the brief's closing report, parsed into the fields a reviewer reads.
 //!
-//! [`mcp`] is the wire Claude Code speaks, and it is deliberately the thinnest layer of the
-//! four: JSON-RPC over lines, three methods, no library.
+//! [`mcp`] is the wire Claude Code speaks, and it is deliberately the thinnest layer of
+//! them all: JSON-RPC over lines, three methods, no library.
 //!
 //! **Nothing here runs a model or links one.** A leticode turn is the daemon's, on the other
 //! side of the socket; what the bridge does with a turn is watch it and answer for it.
@@ -27,4 +28,5 @@ pub mod daemon;
 pub mod diff;
 pub mod head;
 pub mod mcp;
+pub mod report;
 pub mod tools;

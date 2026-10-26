@@ -198,17 +198,27 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
     }
 
-    /// **Eight tools, each with a schema** — the design's table, and the shape MCP requires.
+    /// **Nine tools, each with a schema** — the design's table, and the shape MCP requires.
     #[test]
-    fn tools_list_lists_the_eight_tools_with_schemas() {
+    fn tools_list_lists_the_nine_tools_with_schemas() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 8, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 9, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
+        // The one B2 added is published with its cursor's own schema, not a bare object.
+        let events = tools
+            .iter()
+            .find(|t| t["name"] == "leticode_events")
+            .expect("leticode_events is in tools/list");
+        assert_eq!(
+            events["inputSchema"]["properties"]["since"]["type"],
+            "integer"
+        );
+        assert_eq!(&events["inputSchema"]["required"], &json!(["session"]));
     }
 
     /// A method this server does not serve is `-32601`, carrying the client's id so the
