@@ -28,6 +28,7 @@ fn main() {
 
     let dir = locate_checkout();
     let lib = locate_lib(&dir);
+    llama_watch(&lib);
 
     cc::Build::new()
         .file("csrc/shim.c")

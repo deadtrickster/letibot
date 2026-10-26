@@ -23,7 +23,7 @@
 //! (which runs the turn) and [`Harness::fork_to_summary`] (which does not) are two
 //! methods. `LETIBOT_VOCAB_GGUF` overrides the path.
 
-use letibot_harnessd::config::Config;
+use letibot_harnessd::config::{Config, WallBasis};
 use letibot_harnessd::harness::ForkTail;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
@@ -1098,15 +1098,22 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         None,
         "the switch carried a measurement made on another model"
     );
-    // **And the fact is SAYABLE**, which is the ruling's other half: a reader of an unscaled
-    // number must be able to tell it from a calibrated one.
+    // **And the fact is SAYABLE**, which is the ruling's other half: a reader of an
+    // estimated number must be able to tell it from a calibrated one. Since the carried
+    // scale (W6) the measurement made on the model switched away from stands in, NAMED, until
+    // a round on the new one measures: that is not "unscaled" (`context.rs`: *carried is not
+    // unmeasured*), it is an estimate that says whose it is.
     assert!(
-        h.config().tokens_are_unscaled(),
-        "a metered model with no measurement must say so"
+        !h.config().tokens_are_unscaled(),
+        "a carried measurement is not an unmeasured one"
     );
     assert!(
-        !h.config().tokens_are_converted(),
-        "and it is not converted"
+        matches!(h.config().wall_basis(), WallBasis::Carried(_)),
+        "the count says it is the other model's measurement standing in"
+    );
+    assert!(
+        h.config().carried_note().is_some(),
+        "and every line that prints it can name that model"
     );
 
     // **Back to local clears it too** — the direction that had the live defect.

@@ -99,8 +99,30 @@ fn llama_lib_found() -> Option<std::path::PathBuf> {
 /// what every one of these scripts emitted unconditionally before this file existed.
 #[allow(dead_code)]
 fn llama_lib_dir() -> std::path::PathBuf {
-    llama_lib_found()
-        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_LLAMA_DIR).join(LLAMA_LIB_SUBDIRS[0]))
+    let lib = llama_lib_found()
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_LLAMA_DIR).join(LLAMA_LIB_SUBDIRS[0]));
+    llama_watch(&lib);
+    lib
+}
+
+/// **Re-run when the library this build linked changes**, not only when a variable does.
+///
+/// The search above finds a directory, and `rerun-if-env-changed` fires on a variable
+/// changing — so a `target/` was frozen to whatever its first build found. MEASURED
+/// 2026-10-26: the merge queue's landing worktree kept linking llama.cpp 0.3.0 from
+/// `build/bin` after the fork's 0.4.0 was built into `build-glm/bin`, and every gate run
+/// failed on a vocabulary 0.3.0 cannot read. Watching the chosen library catches a rebuild
+/// or a replacement in place. A NEW higher-priority directory appearing is not caught —
+/// cargo cannot watch a path that does not exist without re-running on every build — and
+/// that is the one case that needs `cargo clean -p letibot-llama` (`docs/build-notes.md`).
+#[allow(dead_code)]
+fn llama_watch(lib: &std::path::Path) {
+    for name in LLAMA_LIBRARIES {
+        let f = lib.join(name);
+        if f.exists() {
+            println!("cargo:rerun-if-changed={}", f.display());
+        }
+    }
 }
 
 /// The paths a failure message shows, one per line and indented.

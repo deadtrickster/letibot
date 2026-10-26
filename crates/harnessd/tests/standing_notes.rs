@@ -49,7 +49,10 @@ impl Drop for TempDir {
 /// A session over a workspace with a nonce in its `AGENTS.md`, composed the
 /// way `Sessions` composes one: `seat_prompt` set, so the harness composes the
 /// prompt at open for its seated tools, notes included.
-fn opened(workspace: &std::path::Path, nonce: &str) -> Harness {
+/// The store's directory comes back with the harness: a `TempDir` dropped here removed the
+/// database out from under every later write (`sqlite: disk I/O error` on macOS, where a
+/// deleted directory cannot grow the WAL).
+fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
     let dir = TempDir::new("store");
     let mut cfg = Config::for_this_box(workspace);
     cfg.dialect = Dialect::Qwen;
@@ -65,7 +68,10 @@ fn opened(workspace: &std::path::Path, nonce: &str) -> Harness {
         .expect("fixture AGENTS.md");
     cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
     let hub = Hub::new(&cfg.session_id);
-    Harness::open(&parts, cfg, hub).expect("the session must open")
+    (
+        Harness::open(&parts, cfg, hub).expect("the session must open"),
+        dir,
+    )
 }
 
 /// **An `AGENTS.md` edited between the compose and the rebuild shows up in the
@@ -81,7 +87,7 @@ fn an_edited_agents_md_lands_in_the_next_base() {
         return;
     };
     let ws = TempDir::new("ws-rebuild");
-    let mut h = opened(ws.path(), "rebuild");
+    let (mut h, _store) = opened(ws.path(), "rebuild");
 
     // Nothing changed on disk and the seated tools are the same, so the next
     // base is the prompt being spoken: no fork, no new prefix row.
