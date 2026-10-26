@@ -388,6 +388,18 @@ pub struct State {
     pub asks: Vec<Ask>,
     pub todos: Vec<TodoEntry>,
     pub meter: Meter,
+    /// **The rounds this head watched, summed**: what the package cost so far. `meter` is
+    /// one round — the P1 run reported $0.0015 for an hour of work, which was its last
+    /// round's price. Since attach, because a snapshot carries no history of spend; the
+    /// bridge attaches before the brief, so for a package it is the whole run.
+    pub spent: Meter,
+    /// How many rounds `spent` sums.
+    pub rounds: u64,
+    /// **The newest assistant message that is a report.** A model that reports and is
+    /// then woken by its own background jobs says *nothing new in them* and stops: the
+    /// last message is that, and a report read only from the last message was lost under
+    /// it on the first package that used jobs (P1).
+    pub last_report: Option<String>,
     /// `call_id` → the tool's name, joined into an ask. Bounded: a session's calls are
     /// many and this only has to answer for cards that are still open.
     calls: std::collections::HashMap<String, String>,
@@ -523,6 +535,14 @@ impl State {
             .map(|t| t.text.clone())
             .unwrap_or_default();
         self.last_row = last_assistant(&snap.items).unwrap_or_default();
+        self.last_report = snap.items.iter().rev().find_map(|i| match i.item.as_ref() {
+            Some(TranscriptItem::Assistant { text, .. })
+                if crate::report::parse(text).is_some() =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        });
         // **A snapshot with a turn in it, or with words a turn produced, is a session that
         // has run one.** This is what `wait` must not mistake for *no turn yet*.
         if snap.turn.is_some() || !self.last_row.is_empty() {
@@ -565,6 +585,15 @@ impl State {
                     predicted_tokens: usage.predicted_tokens,
                     cost_micros_usd: usage.cost_micros_usd,
                 };
+                self.rounds += 1;
+                self.spent.prompt_tokens += usage.prompt_tokens;
+                self.spent.cached_tokens += usage.cached_tokens;
+                self.spent.predicted_tokens += usage.predicted_tokens;
+                // Unpriced stays unpriced until a priced round arrives; a priced round
+                // never turns a sum back into `None`.
+                if let Some(c) = usage.cost_micros_usd {
+                    *self.spent.cost_micros_usd.get_or_insert(0) += c;
+                }
                 self.events.push(Entry::of("turn", "ended"));
             }
             SessionEvent::TurnInterrupted { reason, .. } => {
@@ -595,6 +624,9 @@ impl State {
                     && !text.trim().is_empty()
                 {
                     self.last_row = text.clone();
+                    if crate::report::parse(text).is_some() {
+                        self.last_report = Some(text.clone());
+                    }
                     // **The committed row, and not the stream.** A turn's deltas build the
                     // same words the row then carries; an entry per `TurnFinished` would say
                     // them a second time, and one per delta would be a transcript.
@@ -929,6 +961,9 @@ impl Head {
             asks: g.asks.clone(),
             todos: g.todos.clone(),
             meter: g.meter,
+            spent: g.spent,
+            rounds: g.rounds,
+            last_report: g.last_report.clone(),
             calls: g.calls.clone(),
             in_flight: g.in_flight.clone(),
             idle_since: g.idle_since,
@@ -1418,6 +1453,54 @@ mod tests {
             state.word(),
             "idle",
             "a round that left nothing open ends idle"
+        );
+    }
+
+    /// **The report outlives the chatter after it, and the spend is the package's.** P1
+    /// reported, was woken by its own jobs, said *nothing new in them* and stopped: the
+    /// report must still be there, and the cost must be every round's, not the last one's.
+    #[test]
+    fn the_report_and_the_spend_survive_the_rounds_after_them() {
+        let mut state = State::default();
+        let mut seq = 0;
+        let mut feed = |state: &mut State, event: SessionEvent| {
+            seq += 1;
+            state.fold(ServerFrame::Event(env(seq, event)));
+        };
+        let priced = |micros| match testing::turn_finished("t1") {
+            SessionEvent::TurnFinished {
+                turn_id,
+                finish_reason,
+                mut usage,
+                timings,
+            } => {
+                usage.cost_micros_usd = Some(micros);
+                SessionEvent::TurnFinished {
+                    turn_id,
+                    finish_reason,
+                    usage,
+                    timings,
+                }
+            }
+            _ => unreachable!(),
+        };
+        let report = "## What I built\n\nthe pane\n\n## Test results\n\nall green";
+        feed(&mut state, testing::turn_started("t1"));
+        feed(&mut state, assistant(report));
+        feed(&mut state, priced(1_500));
+        feed(&mut state, testing::turn_started("t1"));
+        feed(&mut state, assistant("Nothing new in those jobs."));
+        feed(&mut state, priced(250));
+
+        assert_eq!(state.last_message(), "Nothing new in those jobs.");
+        assert_eq!(state.last_report.as_deref(), Some(report));
+        assert_eq!(state.rounds, 2);
+        assert_eq!(state.spent.cost_micros_usd, Some(1_750));
+        assert_eq!(state.spent.prompt_tokens, 2_000);
+        assert_eq!(
+            state.meter.cost_micros_usd,
+            Some(250),
+            "the meter is one round"
         );
     }
 

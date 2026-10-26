@@ -152,6 +152,15 @@ impl Bridge {
                 "cached": s.meter.cached_tokens,
                 "predicted": s.meter.predicted_tokens,
             },
+            // **The package so far**: every round this head watched, summed. `cost_usd`
+            // and `tokens` above are the last round only.
+            "spent": {
+                "cost_usd": s.spent.cost_micros_usd.map(|m| m as f64 / 1_000_000.0),
+                "prompt": s.spent.prompt_tokens,
+                "cached": s.spent.cached_tokens,
+                "predicted": s.spent.predicted_tokens,
+                "rounds": s.rounds,
+            },
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
             // **What the daemon said to the last frame it refused.** An answer that arrives
             // after its card closed is refused rather than applied (`docs`: a reply to a
@@ -164,8 +173,16 @@ impl Bridge {
         // is not: a status answer with four blank fields would have a reviewer asking
         // whether the run produced nothing or the parser failed, and this build says
         // nothing rather than something untrue.
+        //
+        // The newest report rather than the last message: a run that reports and is then
+        // woken by its own jobs ends on *nothing new in them*, and the report is the one
+        // before. `report_is_last` says which, so a reviewer knows words came after it.
         if let Some(report) = crate::report::parse(s.last_message()) {
             out["report"] = report.to_json();
+            out["report_is_last"] = json!(true);
+        } else if let Some(report) = s.last_report.as_deref().and_then(crate::report::parse) {
+            out["report"] = report.to_json();
+            out["report_is_last"] = json!(false);
         }
         Ok(out)
     }
@@ -342,7 +359,9 @@ pub fn list() -> Value {
               assistant message, the todos, the last turn's tokens and cost, and which asks \
               are pending. When that message is the brief's closing report, it also comes \
               back parsed: `report.built`, `report.tested`, `report.could_not`, \
-              `report.contracts` and the `report.commits` it named.",
+              `report.contracts` and the `report.commits` it named — the newest report, \
+              with `report_is_last` false when words came after it. `spent` sums every \
+              round since the bridge attached; `cost_usd` and `tokens` are the last round.",
              json!({
                  "type": "object",
                  "properties": {

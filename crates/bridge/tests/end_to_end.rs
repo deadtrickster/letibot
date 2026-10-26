@@ -795,12 +795,20 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         3,
         "the turn continued after the answer"
     );
-    // **An ordinary answer carries no report field**, which is the other half of "the report
-    // as data": a status answer with four empty fields would leave a reviewer unable to tell
-    // *nothing was produced* from *the parser failed*.
+    // **An ordinary answer after a report keeps the report, marked as not the last word.** A
+    // run that reports and is then woken by its own jobs ends on *nothing new in them*; P1's
+    // report was lost under exactly that until status answered with the newest report.
+    assert_eq!(
+        after["report_is_last"],
+        json!(false),
+        "the report is the earlier one, and status says so: {after}"
+    );
     assert!(
-        after.get("report").is_none(),
-        "an answer that is not the report has no report field: {after}"
+        after["report"]["built"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("first-answer-marker"),
+        "{after}"
     );
 
     // --- a backgrounded call is a job, and the progress tool sees it --------
