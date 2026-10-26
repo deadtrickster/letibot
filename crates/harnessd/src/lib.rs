@@ -131,6 +131,7 @@ pub mod store_floor;
 pub mod subagent_record;
 pub mod sudo;
 pub mod suggest;
+pub mod supervise;
 pub mod tasks;
 pub mod term;
 pub mod transcript_source;

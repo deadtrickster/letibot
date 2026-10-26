@@ -306,7 +306,15 @@ pub struct JobWatchers {
     /// which path a handle takes; a reader that called `TaskRunner::collect` instead would be taking
     /// a slot's lock from inside a hub publish, and a lock taken on the publish path is how a
     /// session wedges on a random event.
-    mine: Arc<Mutex<HashMap<String, BackgroundKind>>>,
+    ///
+    /// **And the NAME the caller gave it**, when it has one. A model may refer to a job by its id or
+    /// by its slug (`bash(slug: …)`; `job_output` takes either), and a row that says
+    /// `needs: job release-build` is a row the plan is blocked on just as much as one that says
+    /// `j65`. The delivery decision has always read the slug; the activity could not, because the
+    /// handle was all this map carried — so a session waiting on a named job read `quiet`, and
+    /// `wait` was told nothing more would happen. Recorded at `watch` from the live view, which is
+    /// the only moment it can be read.
+    mine: Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>,
     /// **The tree's ROOT** — the one session in a subagent tree that a head can be attached
     /// to, and therefore the one a permission card can be drawn by.
     ///
@@ -871,13 +879,13 @@ impl JobWatchers {
     /// A snapshot of one instant: a watcher that ends between this call and the reader's next breath
     /// leaves the entry here, and what corrects that is the settlement's own
     /// [`crate::activity`] refresh — `Delivery`, and then the turn it wakes.
-    pub fn watching_now(&self) -> Vec<(String, BackgroundKind)> {
-        let mut out: Vec<(String, BackgroundKind)> = self
+    pub fn watching_now(&self) -> Vec<(String, BackgroundKind, Option<String>)> {
+        let mut out: Vec<(String, BackgroundKind, Option<String>)> = self
             .mine
             .lock()
             .expect("job watchers")
             .iter()
-            .map(|(h, k)| (h.clone(), *k))
+            .map(|(h, (k, slug))| (h.clone(), *k, slug.clone()))
             .collect();
         // A stable order, so two readings of one set are one value: the activity is published only
         // when it CHANGES, and a `HashMap`'s iteration order is not a change.
@@ -1036,8 +1044,23 @@ impl JobWatchers {
         } else {
             BackgroundKind::Job
         };
+        // **The name, read while the job exists** — see [`JobWatchers::mine`]. A subagent's name is
+        // the runner's (`slug_of`), and a job's is the one `bash` was given.
+        let slug = if child {
+            self.tasks
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .and_then(|r| r.slug_of(&job))
+        } else {
+            host.as_ref()
+                .and_then(Weak::upgrade)
+                .and_then(|h| h.job(&JobId(job.clone())))
+                .and_then(|v| v.slug)
+        };
         if let Some(runner) = runner.filter(|_| child) {
-            mine.lock().expect("job watchers").insert(job.clone(), kind);
+            mine.lock()
+                .expect("job watchers")
+                .insert(job.clone(), (kind, slug));
             let mine = Arc::clone(&mine);
             let queue = Arc::clone(&queue);
             let _ = std::thread::Builder::new()
@@ -1052,7 +1075,9 @@ impl JobWatchers {
             watching.lock().expect("job watchers").remove(&job);
             return;
         };
-        mine.lock().expect("job watchers").insert(job.clone(), kind);
+        mine.lock()
+            .expect("job watchers")
+            .insert(job.clone(), (kind, slug));
         let _ = std::thread::Builder::new()
             .name(format!("job-watch-{}", &job[..job.len().min(20)]))
             .spawn(move || watch_one(host, hub, queue, watching, settled, mine, job));
@@ -1339,7 +1364,7 @@ fn watch_one(
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
-    mine: Arc<Mutex<HashMap<String, BackgroundKind>>>,
+    mine: Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>,
     job: String,
 ) {
     loop {
@@ -1457,7 +1482,7 @@ fn watch_task(
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
-    mine: Arc<Mutex<HashMap<String, BackgroundKind>>>,
+    mine: Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>,
     job: String,
 ) {
     loop {

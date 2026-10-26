@@ -124,10 +124,11 @@ pub fn compose(f: &Facts) -> Activity {
 /// until the turn it wakes has started.
 pub fn awaited(
     handle: &str,
+    slug: Option<&str>,
+    kind: crate::jobwatch::BackgroundKind,
     rows: &[letibot_tokencore::store::TodoItem],
     wanted: Option<letibot_tools::runtime::WantedNow>,
 ) -> bool {
-    use letibot_tokencore::store::{TodoCondition, TodoNeed, TodoStatus};
     if matches!(
         wanted,
         Some(
@@ -136,16 +137,11 @@ pub fn awaited(
     ) {
         return true;
     }
-    rows.iter()
-        .filter(|r| matches!(r.status, TodoStatus::Pending | TodoStatus::InProgress))
-        .any(|row| {
-            matches!(&row.when, Some(TodoCondition::Job { handle: h }) if h == handle)
-                || row.needs.iter().any(|n| match n {
-                    TodoNeed::Job { handle: h } => h == handle,
-                    TodoNeed::Child { id } => id == handle,
-                    _ => false,
-                })
-        })
+    // **`delivery`'s own reading of the board, not a copy of it** — see [`crate::delivery::plan_says`]
+    // for the two ways the copy drifted, one of which made `wait` say `quiet` about a job whose
+    // settlement was about to be handed over at once.
+    let (when_row, needed) = crate::delivery::plan_says(rows, handle, slug, kind);
+    when_row || needed
 }
 
 /// **The closure a hub re-derives the value with** — see [`Hub::set_activity_source`].
@@ -216,8 +212,8 @@ pub fn facts_of(
             f.delivery = true;
         }
         let rows = todos.snapshot();
-        for (handle, kind) in w.watching_now() {
-            if !awaited(&handle, &rows, w.wanted(&handle)) {
+        for (handle, kind, slug) in w.watching_now() {
+            if !awaited(&handle, slug.as_deref(), kind, &rows, w.wanted(&handle)) {
                 continue;
             }
             f.at_work.push(match kind {
@@ -289,14 +285,21 @@ mod tests {
             needs,
         };
         let nothing: Vec<TodoItem> = Vec::new();
-        assert!(!awaited("j12", &nothing, None), "nobody is waiting on it");
+        let job = crate::jobwatch::BackgroundKind::Job;
+        let child = crate::jobwatch::BackgroundKind::Subagent;
         assert!(
-            !awaited("j12", &[row(Vec::new())], None),
+            !awaited("j12", None, job, &nothing, None),
+            "nobody is waiting on it"
+        );
+        assert!(
+            !awaited("j12", None, job, &[row(Vec::new())], None),
             "a row that does not need it"
         );
         assert!(
             awaited(
                 "j12",
+                None,
+                job,
                 &[row(vec![TodoNeed::Job {
                     handle: "j12".into()
                 }])],
@@ -307,6 +310,8 @@ mod tests {
         assert!(
             awaited(
                 "s-sub-1",
+                None,
+                child,
                 &[row(vec![TodoNeed::Child {
                     id: "s-sub-1".into()
                 }])],
@@ -317,6 +322,8 @@ mod tests {
         assert!(
             awaited(
                 "j12",
+                None,
+                job,
                 &nothing,
                 Some(letibot_tools::runtime::WantedNow::Awaited)
             ),
@@ -329,6 +336,72 @@ mod tests {
                 handle: "j12".into(),
             }])
         };
-        assert!(!awaited("j12", &[done], None));
+        assert!(!awaited("j12", None, job, &[done], None));
+    }
+
+    /// **The false wake this rule was fixed for**: a model that NAMED its job and wrote the name
+    /// into the plan. `bash(slug: "release-build")` hands back `j65`, `job_output` takes either, and
+    /// a row that says `needs: job release-build` is a row the plan is blocked on.
+    ///
+    /// The delivery has always read the slug (`delivery::named`), so the settlement was handed over
+    /// at once — while the activity, whose own copy of the predicate compared the handle and nothing
+    /// else, said `quiet`. `wait` reads the activity: it returned *the turn ended* about a session
+    /// that was about to be woken by exactly that job. The two now read one predicate, and this test
+    /// asserts both sides of it, because a fix on either side alone would leave them drifting.
+    #[test]
+    fn a_job_named_by_its_slug_counts_and_the_delivery_agrees() {
+        use letibot_tokencore::store::{TodoItem, TodoNeed, TodoStatus};
+        let row = |needs: Vec<TodoNeed>| TodoItem {
+            content: "the gate-fix test batch".into(),
+            status: TodoStatus::InProgress,
+            by: letibot_tokencore::store::TodoBy::Model,
+            when: None,
+            needs,
+        };
+        let board = vec![row(vec![TodoNeed::Job {
+            handle: "release-build".into(),
+        }])];
+        let job = crate::jobwatch::BackgroundKind::Job;
+        let child = crate::jobwatch::BackgroundKind::Subagent;
+        assert!(
+            awaited("j65", Some("release-build"), job, &board, None),
+            "the plan names the job by the name the model gave it"
+        );
+        // ...and the delivery decision reaches the same reading, which is what makes the activity a
+        // prediction rather than a second opinion.
+        let completion = crate::jobwatch::JobCompletion {
+            memory: None,
+            kind: job,
+            owner: "s-1".into(),
+            job: "j65".into(),
+            command: "cargo test --offline".into(),
+            slug: Some("release-build".into()),
+            // A job that exited 0 — the routine success the rule is about. A failed one is
+            // `DependencyFailed`, which is a different arm and a truer one.
+            state: "exited 0".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: String::new(),
+            arrived: std::time::SystemTime::now(),
+        };
+        assert_eq!(
+            crate::delivery::decide(&crate::delivery::facts_of(&completion, &board, None)),
+            crate::delivery::Delivery::Immediate(crate::delivery::Why::Needed),
+            "a job the plan needs is delivered at once, not held"
+        );
+
+        // **The other half, and it must not become busy**: a `needs: child` names a SESSION. A job
+        // whose handle was written there is not a job this plan waits on, and counting it was the
+        // activity's own second divergence — a session that read `waiting on: job j9` for a result
+        // no delivery would ever hand over.
+        let wrong = vec![row(vec![TodoNeed::Child { id: "j9".into() }])];
+        assert!(
+            !awaited("j9", None, job, &wrong, None),
+            "a job is not a child, however the row is spelled"
+        );
+        assert!(
+            awaited("j9", None, child, &wrong, None),
+            "the child it names is — the row is about a session, not about a job"
+        );
     }
 }

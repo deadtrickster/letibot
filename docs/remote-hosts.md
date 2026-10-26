@@ -623,3 +623,83 @@ barely helps, because it is keyed on a pipeline's last program plus the exact in
   read-only — and they hold on a Mac with no `bwrap` at all. The kernel itself is measured where it
   always was: `tests/confine.rs` runs the real helper for a local spawn, and once, by hand, on
   `lab2x1` for this slice.
+
+## As built (RH7): the record, the probes, and the one rule the two activities shared
+
+Written 2026-10-26. **What this slice is:** the record every supervised process gets, the liveness
+check per host, deadline enforcement, teardown by ownership, restart recovery — and the fix for the
+false wake the brief opens with. **What it is not yet:** the daemon does not call it. There is no
+tick thread in `daemon.rs` and `JobRecorder` writes no `process` row, so on this tree the supervisor
+is a tested library with no caller; that wiring is the next package's, and saying so here is the
+alternative to a slice that reads as finished.
+
+* **A table of its own, and not a column on `job`** (schema 34, `store::procs`). `job` answers *what
+  became of a handle a session read a moment ago*; it is written twice per job by two callers who
+  each know half, and it has no row at all for a process a restarted daemon **adopts** rather than
+  starts. The supervisor's questions are about a process in the world: where it runs, what makes a
+  reused pid not it, which group a teardown signals, when it must be gone, and how it was last
+  looked at. Those are `process`'s columns.
+* **Six states, and the last three are not interchangeable** — `starting | running | done |
+  stopped | dead | lost`. `dead` is *gone with no exit recorded* and is deliberately not `done 0`:
+  nothing said the command succeeded. `lost` is *the host did not answer*, and the job may still be
+  running — which is why `lost` is **open**, retried on the next tick, and why a host that goes
+  quiet for a minute does not bury eight builds.
+* **The identity is the point of the pid.** Linux reads `/proc/<pid>/stat`'s field 22 (the start
+  time, after the LAST `)` — `comm` may contain spaces and parentheses, and splitting the whole line
+  shifts every field); macOS reads `ps -o lstart=`, which is the same fact at one second's
+  resolution, and a job replaced inside that second is the one case the two cannot tell apart. A
+  remote record's identity is `cmd:<the command's own words>`, checked with `ps -p … -o command=`
+  on the far side.
+* **One check per host per tick, and never one per job.** `Probe::check` is handed every open record
+  of one host and answers for all of them: locally one pass over `/proc` (no fork at all on Linux),
+  remotely ONE script over ONE connection that reports every job directory on that host. The test
+  that pins it counts probe calls, not assertions about jobs.
+* **A deadline is a wall clock, not a duration**, because the thread that armed it may not be the
+  one that enforces it — a restart is exactly this slice's case. The kill is `TERM`, a second of
+  grace, then `KILL`, and it is the **process group only when the record says the pid leads one**
+  (`pgid == pid`): `kill -TERM -<pid>` on a pid that is not a leader signals the caller's own group,
+  which is a way to end the daemon instead of the job.
+* **A job that vanished before its deadline is `dead`, never `stopped by its deadline`** — killing a
+  process that is not there is not what happened, and the record says which one it was.
+* **A kill that could not be delivered is not a kill.** The record stays `lost` and the next tick
+  tries again, so a teardown never reports work ended that it never reached.
+* **Teardown follows ownership, and the list of what does NOT tear down is the load-bearing half:** a
+  **session closing** kills every open record it owns on every host, and the daemon's stop is every
+  session closing. A **turn ending** is not a teardown (a job started to outlive its turn keeps
+  running across turns — that is what `background: true` means), and neither is an **interrupt**,
+  which ends a round and leaves the job the session's.
+* **Restart recovery is one tick over the store.** Nothing in the supervisor remembers a `Child`, a
+  thread or a connection, so `recover()` is `tick()`: the records it leaves open are the ones a
+  session has to be re-attached to, and that half is the harness's, because re-arming a watcher is.
+* **A session moved to another machine does not take its records with it.**
+  `store::transfer`'s `TABLES` list — the whole of the rule for what a migration carries — does not
+  name `process`, and deliberately: a record is a pid on ONE host, and a copy on the far side would
+  hold rows that name processes it cannot see, cannot check and must not signal. What is left behind
+  is what is true there — the processes are still running here.
+
+### The false wake, and the two spellings of one rule
+
+The bridge's `wait` woke on a session whose model had said it would be woken by its job: the
+activity said `quiet`, `jobs_open` said `["j13281"]`, and the daemon was about to hand that job's
+settlement over. The cause is that **the delivery decision and the activity each had their own copy
+of the same predicate**, and the copies had drifted in two ways:
+
+1. **The slug.** `delivery::facts_of` matched a todo row against the job's handle **or the name the
+   model gave it** (`bash(slug: "release-build")`, and a row that says `needs: job release-build`);
+   `activity::awaited` compared the handle and nothing else. A session waiting on a NAMED job was
+   therefore delivered at once (`Why::Needed`) and read `quiet` at the same time — `wait` reads the
+   activity and reported *the turn ended* about a session that was about to take a turn.
+2. **The kind.** `awaited` accepted `TodoNeed::Child { id }` for **any** handle, so a row blocked on
+   a child id that happened to be a job's read as *busy* about a result no delivery would hand over.
+
+Both copies are gone: `delivery::plan_says` is the one reading of the board, and `activity::awaited`
+calls it. The watcher set carries the job's **slug** now (`JobWatchers::mine` is
+`handle → (kind, slug)`, read from the live view at the one moment it exists), because the activity
+cannot match a name it was never given. The regression test asserts both sides — the activity says
+busy **and** `decide` says `Immediate(Needed)` — because a fix on either side alone would let them
+drift again.
+
+**What could not be reproduced, said plainly:** the operator's own case is not in this worktree and
+its store was not opened. `j13281` may have been named by its slug, or by nothing at all — the
+second would mean the model expected a wake the plan never asked for, which is a different defect
+(the delivery rule's, not the activity's) and is not fixed here.

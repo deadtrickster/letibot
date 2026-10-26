@@ -319,7 +319,7 @@ fn a_child_the_plan_waits_on_is_an_entry_and_one_it_does_not_is_not() {
     }
     assert_eq!(
         watch.watching_now(),
-        vec![("s-kid".to_string(), BackgroundKind::Subagent)],
+        vec![("s-kid".to_string(), BackgroundKind::Subagent, None)],
         "the watcher is blocked on a child, and its kind was asked once at the watch"
     );
 

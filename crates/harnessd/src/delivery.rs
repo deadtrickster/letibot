@@ -232,15 +232,55 @@ pub fn failed(c: &JobCompletion) -> bool {
     }
 }
 
-/// Whether a row's handle names this completion — by the id, or by the name the caller gave it
-/// (`TodoNeed::Job`'s handle is whatever the model wrote, and `job_output` takes either).
-fn names(handle: &str, c: &JobCompletion) -> bool {
-    handle == c.job || c.slug.as_deref() == Some(handle)
+/// The one spelling of *a row names this job*, for the two callers that ask it: the delivery
+/// decision here and the activity (`crate::activity::awaited`).
+///
+/// **It takes the slug, and that is the correction.** The activity's own copy compared the handle
+/// and nothing else, so a model that named its job — `bash(slug: "release-build")`, and a row that
+/// says `needs: job release-build` — was waiting on something the daemon handed over at once
+/// (`Why::Needed`, by slug) while the session's activity said `quiet`. `wait` reads the activity, so
+/// that is a false *done*: the bridge is told nothing more will happen while the model is about to
+/// be woken by exactly this. One predicate, two readers, no third spelling.
+pub fn named(handle: &str, job: &str, slug: Option<&str>) -> bool {
+    handle == job || slug == Some(handle)
 }
 
 /// A row the plan is still working towards: one somebody has not finished or put off.
 fn open(row: &TodoItem) -> bool {
     matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress)
+}
+
+/// **What the session's open plan says about one running thing** — the two facts the activity and
+/// the delivery decision both need, from one reading of the board.
+///
+/// `when_row` is a row whose `when: job` names it; `needed` is a row that `needs` it. Both match by
+/// handle or by the job's slug ([`named`]), and a `needs: child` names a SESSION — so it never counts
+/// a job, however its id was spelled. That last clause is the second half of the same correction:
+/// the activity's copy accepted `TodoNeed::Child` for any handle, which made a row blocked on a
+/// child id that happened to be a job's read as *busy* about a result no delivery would ever hand
+/// over.
+pub fn plan_says(
+    rows: &[TodoItem],
+    handle: &str,
+    slug: Option<&str>,
+    kind: BackgroundKind,
+) -> (bool, bool) {
+    let (mut when_row, mut needed) = (false, false);
+    for row in rows.iter().filter(|r| open(r)) {
+        if let Some(TodoCondition::Job { handle: h }) = &row.when
+            && named(h, handle, slug)
+        {
+            when_row = true;
+        }
+        if row.needs.iter().any(|n| match n {
+            TodoNeed::Job { handle: h } => named(h, handle, slug),
+            TodoNeed::Child { id } => kind == BackgroundKind::Subagent && id == handle,
+            _ => false,
+        }) {
+            needed = true;
+        }
+    }
+    (when_row, needed)
 }
 
 /// **The facts of one completion against this session's board.** `wanted` is the session's own
@@ -250,20 +290,9 @@ pub fn facts_of(c: &JobCompletion, rows: &[TodoItem], wanted: Option<WantedNow>)
     let mut f = Facts::routine(ResultKind::of(c));
     f.failed = failed(c);
     f.wanted = wanted;
-    for row in rows.iter().filter(|r| open(r)) {
-        if let Some(TodoCondition::Job { handle }) = &row.when
-            && names(handle, c)
-        {
-            f.when_row = true;
-        }
-        if row.needs.iter().any(|n| match n {
-            TodoNeed::Job { handle } => names(handle, c),
-            TodoNeed::Child { id } => c.kind == BackgroundKind::Subagent && *id == c.job,
-            _ => false,
-        }) {
-            f.needed = true;
-        }
-    }
+    let (when_row, needed) = plan_says(rows, &c.job, c.slug.as_deref(), c.kind);
+    f.when_row = when_row;
+    f.needed = needed;
     f
 }
 
