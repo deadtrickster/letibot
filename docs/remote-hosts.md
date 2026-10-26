@@ -165,6 +165,40 @@ ControlMaster is the connection pool, the remote shell is the server. The operat
 8. **Back-pressure.** A host has a bound on concurrent calls (the ControlMaster's sessions);
    calls beyond it queue with the same deadlines rather than opening unbounded connections.
 
+## The supervisor, and work across hosts
+
+The operator, 2026-10-26: *"since we introduced remote hosts we can do map reduce now — usually agents
+hand roll orchestration that span multiple hosts, say 'run this server tests here and that server
+there', either on both separately or on both together"* — and *"so the remote pid supervisor becomes
+harnessd concept"*. The Stroppy session that day hand-rolled exactly that: `ssh … nohup … &` to a
+bench box, `ps -p` polls, log tails, and a run the session lost track of when its one-shot ended.
+
+**The supervisor is harnessd's.** Every process the daemon starts — local or remote, a `bash
+background: true`, a fanout branch, a scenario role — is a **record in the store**: id, owning
+session, host, process group, role, command, deadline, readiness check, state, and the RPC record of
+its last check. The store is the truth, so a restarted daemon finds every remote process again. The
+daemon's own loop supervises them under the RPC rules above: bounded liveness checks per host,
+deadlines enforced, readiness probed, the per-host circuit breaker. **Teardown follows ownership**:
+a session's close, an interrupt, or a failed role kills the recorded process groups on every host.
+One record feeds every reader: the activity (`waiting on: job j12 on lab2x1`), the jobs pane,
+`hosts {probe}`, and the bridge.
+
+**Two tools are clients of it:**
+
+* **`fanout` — the same work on many hosts, separately (map), with the answer as the reduce.**
+  `{hosts: [..] | {host: command}, command, deadline}`: one supervised job per host in parallel;
+  the result is one row per host — exit status, duration, output tail, or why it never ran (an
+  unreachable host is a row, not a failure of the whole). A background job like any other.
+* **`scenario` — work on several hosts together.** Roles, each `{host, command, ready, after}`:
+  `ready` is a readiness check (a port that accepts, a log line, a command that exits 0) with its
+  own deadline; `after` orders the starts; a role's command may name another's facts
+  (`${server.host}`, `${server.port}`). Started in order, each waited ready; the run's own command
+  (the client, the test) runs when all are ready; on its end, on any role failing, or on an
+  interrupt, **everything is torn down on every host** and the result is per role. docker-compose
+  across machines, without containers.
+
+Both stay under the session's gate, every card naming the hosts it reaches.
+
 ## Packages
 
 | id | builds |
@@ -172,6 +206,9 @@ ControlMaster is the connection pool, the remote shell is the server. The operat
 | RH1 | hosts.toml; `SshBackend: ExecBackend` (run, read, write, list, stat, processes with remote jobs); `Placement::Remote(host)`; the git placement both ways; `task where: "host:NAME"`; `--host NAME` for a root session; the progress and seam lines; tests with a fake `ssh` (a script that runs the command locally against a temp "remote root"), never a real host |
 | RH2 | the bridge's `leticode_start { host }`; a live smoke test on lab2x1 run by the orchestrator |
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
+| RH6 | the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4 |
+| RH7 | harnessd's process supervisor: store records for every started process, the supervising loop, ownership teardown, restart recovery; `bash background` on it |
+| RH8 | `fanout` and `scenario` on the supervisor |
 | RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
 | RH5 | **done**: one ssh policy for both callers (RH1's `SshBackend` and RH4's `--migrate`), the operator's own ssh material never read, `hosts.toml` read strictly with a per-host `path` list, and `~/.ssh` a hard refusal for every tool |
 
