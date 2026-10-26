@@ -1916,3 +1916,60 @@ fn a_waiting_list_is_drawn_while_no_turn_runs() {
     a.apply(ServerFrame::Event(env(4, waiting(Vec::new()))));
     assert!(a.turn_status(120).is_empty(), "quiet draws nothing");
 }
+
+/// **The daemon's `Turn` is the PROMPT, and the row stays up across a round boundary because of
+/// it** (R55, R51 §3).
+///
+/// The window it closes: a round's last call has finished and the next round has not started, so
+/// every round-level fact says *not busy*. The daemon knows the prompt is still in flight and says
+/// so, and this head asks the activity before its own round-level state — which is what stops the
+/// row standing down and coming back in the middle of one prompt.
+#[test]
+fn a_prompt_in_flight_holds_the_row_up_between_its_rounds() {
+    use letibot_sessionlog::activity::{Activity, Waiting};
+    let mut a = app();
+    let activity = |waiting_on: Vec<Waiting>| SessionEvent::ActivityChanged {
+        activity: Activity::of(waiting_on),
+    };
+    // A round that has finished, with its call finished too: the state R51 §3 recorded as *not
+    // busy* over a turn that is plainly working.
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::proposed_on("t1", "c1", "bash", "\"sleep 1\""),
+    )));
+    a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+    a.apply(ServerFrame::Event(env(
+        4,
+        SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "d".into(),
+            inline_bytes: 1,
+            full_bytes: 1,
+            spill: None,
+            repairs: 0,
+            edit: None,
+        },
+    )));
+    assert!(
+        !a.turn_busy(),
+        "every round-level fact says the round is over"
+    );
+    // And the daemon says the prompt is not.
+    a.apply(ServerFrame::Event(env(5, activity(vec![Waiting::Turn]))));
+    assert!(
+        a.turn_busy(),
+        "the daemon says a prompt is in flight, so the row is the turn's"
+    );
+    let line = a.turn_status(120);
+    assert!(
+        !line.contains("waiting on:"),
+        "and the waiting list is not drawn over a running prompt: {line:?}"
+    );
+    // The prompt's loop returns: the row stands down, and the value says quiet.
+    a.apply(ServerFrame::Event(env(6, activity(Vec::new()))));
+    assert!(!a.turn_busy());
+    assert!(a.turn_status(120).is_empty());
+}

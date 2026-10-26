@@ -78,8 +78,8 @@ last assistant message on stdout), an ask is pending (exit 10, the ask on stdout
 `leticode_start` and `leticode_send`; its exit is the notification.
 
 **"Its turn ended" means the DAEMON says the session is quiet** — `PROTOCOL_VERSION` 52's
-`Activity`: nothing generating, no call of the last round running, no settlement owed to the model,
-no job or child whose ending will wake it, no monitor armed, no card open. Exit 10 is
+`Activity`: no prompt in flight (**the whole prompt, not one of its rounds**), no settlement owed to
+the model, no job or child whose ending will wake it, no monitor armed, no card open. Exit 10 is
 `Activity::ask()` — the one entry of that list that does not end without a person.
 
 **This used to be inferred from outside, and every inference was a timer.** The engine publishes

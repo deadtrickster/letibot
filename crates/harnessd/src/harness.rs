@@ -38,7 +38,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -2037,6 +2037,22 @@ pub struct Harness {
     /// The monotonic ms the head should count from, or `None` to keep counting from its own
     /// (a snapshot turn, where neither end measured anything).
     turn_began_ms: Option<u64>,
+    /// **Whether a PROMPT is in flight** — the span [`Harness::begin_turn_clock`] and
+    /// [`Harness::end_turn_clock`] bracket, from the prompt being taken to its loop returning
+    /// (final answer, interrupt, failure, wall-continuation, or a stop on a card).
+    ///
+    /// **The activity's `Turn` and this are the same span, deliberately** (`PROTOCOL_VERSION` 52):
+    /// the engine publishes `TurnStarted`/`TurnFinished` once per ROUND, and a round that ended
+    /// with tool calls is always followed by another round of the same prompt — so a `Turn` derived
+    /// from those events would drop to *quiet* at every round boundary, which is the false wake
+    /// the whole mechanism exists to remove (measured: the bridge's `wait` exited there, QC's
+    /// `wait` exited there, and so did R55's flicker on this head's own row).
+    ///
+    /// An `Arc<AtomicBool>` because [`crate::activity`]'s source closure reads it from whatever
+    /// thread publishes, and the harness holds it `&mut` while a prompt runs. Set and cleared in
+    /// the two clock functions and nowhere else: the clock's span IS this span, so a second writer
+    /// would be a second answer to one question.
+    prompt_in_flight: Arc<AtomicBool>,
     /// The server thread answers the head's `Settings` from the registry, so
     /// what is running is what the pane shows.
     session_registry: Arc<letibot_sessionlog::registry::Registry>,
@@ -5473,6 +5489,7 @@ impl Harness {
             deliverable: None,
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
+            prompt_in_flight: Arc::new(AtomicBool::new(false)),
             session_registry: session_registry.clone(),
             tasks: parts.tasks.clone(),
             mode_source,
@@ -5568,6 +5585,7 @@ impl Harness {
             h.monitors.clone(),
             h.monitor_cursor.clone(),
             h.todos.clone(),
+            h.prompt_in_flight.clone(),
         ));
         h.publish_activity();
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
@@ -8720,6 +8738,11 @@ impl Harness {
     pub fn begin_turn_clock(&mut self, began_ms: u64) {
         self.turn_began_ms = Some(began_ms);
         self.engine.turn_began_ms = Some(began_ms);
+        // **And a prompt is in flight from here until the loop returns** — see the field. The
+        // engine's rounds come and go inside this, which is exactly why a reader that times the
+        // round events reads a working session as idle at every boundary.
+        self.prompt_in_flight.store(true, Ordering::SeqCst);
+        self.publish_activity();
     }
 
     /// The turn is over: stop publishing a start, so a later round that belongs to a NEW prompt
@@ -8727,6 +8750,11 @@ impl Harness {
     pub fn end_turn_clock(&mut self) {
         self.turn_began_ms = None;
         self.engine.turn_began_ms = None;
+        // The prompt's loop has returned — a final answer, an interrupt, a failure, or a wall that
+        // ended it. Whatever the session is waiting on from here is said by the rest of the facts
+        // (`delivery`, a job, a monitor, a child, a card) and not by a turn.
+        self.prompt_in_flight.store(false, Ordering::SeqCst);
+        self.publish_activity();
     }
 
     /// **The plan, as a nudge — or nothing when there is no plan to nudge about.**

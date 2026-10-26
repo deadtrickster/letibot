@@ -11,11 +11,32 @@
 //!
 //! | the entry | where it comes from, here |
 //! |---|---|
-//! | [`Waiting::Turn`], [`Waiting::Calls`] | the hub's own view — [`Hub::turn_shape`], which is the round-level `TurnStarted`/`TurnFinished` read the way `Hub::turn_in_flight` reads it |
+//! | [`Waiting::Turn`] | **the PROMPT**, from the moment the harness takes it until its loop returns — `Harness::prompt_in_flight`, which [`Harness::begin_turn_clock`] sets and [`Harness::end_turn_clock`] clears (["called once per prompt, never per round"](Harness::begin_turn_clock)), falling back to the hub's round-level [`Hub::turn_shape`] for a hub with no harness (a test, a replay) |
+//! | [`Waiting::Calls`] | the finer detail inside that: the round's generation ended and the calls it proposed are still running — again [`Hub::turn_shape`] |
 //! | [`Waiting::Delivery`] | the queue that owes the model something: the watcher set's un-drained settlements and held results, a monitor that has fired since [`Harness::monitor_cursor`] moved, and the hub's own pending command or wake ([`Hub::work_pending`]) |
 //! | [`Waiting::Job`], [`Waiting::Child`] | the watcher set's live threads — [`JobWatchers::watching_now`] — filtered by whether the settlement would reach the model as a WAKE ([`awaited`], `crate::delivery`'s own rule) |
 //! | [`Waiting::Monitor`] | the monitors the session declared, live ([`Monitors::live_names`]) |
 //! | [`Waiting::Ask`] | the cards the hub's view still has open |
+//!
+//! # The two rules that are not obvious, and why
+//!
+//! **`Turn` is the PROMPT and not a round.** The engine publishes `TurnStarted`/`TurnFinished` once
+//! per round, and a round that ended with tool calls is *always* followed by another round of the
+//! same prompt — the results go back and the model reads them. A `Turn` derived from that pair would
+//! therefore read *quiet* at every round boundary (measured three times: the bridge's `wait` exited
+//! there, QC's `wait` exited there, and R55's row stood down there), and no amount of `Calls`
+//! patching closes the last window: the gap between a round's last call finishing and the next
+//! round's `TurnStarted`. The daemon does know the span — it is the one
+//! [`Harness::begin_turn_clock`] brackets, *"called once per prompt, never per round"* — so `Turn`
+//! is read from that flag and the round's own state is only the fallback for a hub with no harness.
+//! `Calls` stays as the finer detail inside it (a call of this round is still running), which is
+//! what a head wants to *draw*; nothing about the answer depends on it.
+//!
+//! **A card open on this session is shown instead of the prompt it stopped.** The turn is still in
+//! flight behind the gate — the call it is inside is blocked on the card — but *will this session
+//! act again by itself* is then **no**: a person has to move first. Listing both would hand a reader
+//! a contradiction the daemon could have resolved, and `Activity::moves_by_itself` (what `wait`'s
+//! exit 0 rests on) would be true for a session that is stopped.
 //!
 //! # Where it is published, and why so few places
 //!
@@ -28,7 +49,7 @@
 //! ([`Harness::publish_activity`]).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use letibot_sessionlog::Hub;
 use letibot_sessionlog::activity::{Activity, Waiting};
@@ -42,7 +63,8 @@ use crate::jobwatch::JobWatchers;
 /// function and the tests assert it without a session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// A round is generating.
+    /// **A PROMPT is in flight** — not a round. See the module header: the engine's round pair is
+    /// the defect, and this is the span that covers every round of one prompt.
     pub turn: bool,
     /// That round ended and its calls are still running.
     pub calls: bool,
@@ -65,10 +87,16 @@ pub struct Facts {
 /// [`Activity::Quiet`] and nothing else is.
 pub fn compose(f: &Facts) -> Activity {
     let mut waiting_on = Vec::new();
-    if f.turn {
+    // **A card open on this session is shown INSTEAD of the prompt it stopped.** The turn is still
+    // in flight behind the gate — the call it is inside is blocked on the card — but the answer to
+    // *will this session act again by itself* is no: a person has to move first. Two entries would
+    // say both, and a reader that had to reconcile them would be reading a contradiction the
+    // daemon could have resolved (`Activity::moves_by_itself` is what `wait`'s exit 0 rests on).
+    let carded = !f.asks.is_empty();
+    if f.turn && !carded {
         waiting_on.push(Waiting::Turn);
     }
-    if f.calls {
+    if f.calls && !carded {
         waiting_on.push(Waiting::Calls);
     }
     if f.delivery {
@@ -130,6 +158,7 @@ pub fn source(
     monitors: Option<Arc<Monitors>>,
     monitor_cursor: Arc<AtomicUsize>,
     todos: Arc<TodoBoard>,
+    prompt_in_flight: Arc<AtomicBool>,
 ) -> ActivitySource {
     Arc::new(move |hub: &Hub| {
         let facts = facts_of(
@@ -138,6 +167,7 @@ pub fn source(
             monitors.as_ref(),
             &monitor_cursor,
             &todos,
+            &prompt_in_flight,
         );
         compose(&facts)
     })
@@ -151,8 +181,14 @@ pub fn facts_of(
     monitors: Option<&Arc<Monitors>>,
     monitor_cursor: &AtomicUsize,
     todos: &TodoBoard,
+    prompt_in_flight: &AtomicBool,
 ) -> Facts {
-    let (turn, calls) = hub.turn_shape();
+    let (round, calls) = hub.turn_shape();
+    // **The prompt's own span wins**, and the hub's round is the fallback for a hub nobody is
+    // running turns on: `Hub::turn_shape` says *a round is generating*, which is false for the
+    // whole of a round's tool calls and for the boundary before the next round starts — the two
+    // windows a caller reads as *done*.
+    let turn = prompt_in_flight.load(Ordering::SeqCst) || round;
     let mut f = Facts {
         turn,
         calls,

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ui::render::BlockCache;
+use letibot_sessionlog::activity::Waiting;
 use letibot_sessionlog::view::{CallState, SettledDecision, TurnState};
 use rano::markdown::IncrementalMarkdown;
 
@@ -246,17 +247,32 @@ impl App {
     ///
     /// **What it is not.** It is not "a call exists" and not "a call is running": a call that has
     /// finished is history, and the calls of earlier rounds are in `calls` until the pane stands
-    /// down. It also says nothing about whether the turn as a whole is over — `TurnFinished`
-    /// carries a round's end, so for the few milliseconds between a last call finishing and the
-    /// next round's `TurnStarted` this answers *not busy* over a turn that is not finished. That
-    /// window is R51 §3's recorded limitation and it needs a daemon fact (*the prompt is over*)
-    /// that neither head has; it is not something this predicate can close.
+    /// down.
+    ///
+    /// **The window R51 §3 recorded is closed, by the daemon.** It used to say *not busy* for the
+    /// few milliseconds between a last call finishing and the next round's `TurnStarted`, and that
+    /// was a limitation of the round-level events rather than of this predicate: *the prompt is
+    /// over* is a fact only the daemon has, and `PROTOCOL_VERSION` 52 publishes it —
+    /// `Waiting::Turn` is the PROMPT's span, from the harness taking it to its loop returning. So
+    /// the activity is asked first and the round-level state below is the fallback, for a daemon
+    /// older than 52 (whose value is always quiet).
     ///
     /// **One definition, because this colour and this line have now been wrong in four
     /// directions** — see the call sites: the esc-esc gate dead exactly while a command ran, two
     /// `queued` rows for one message, the promote message saying the wrong one of two silences,
     /// and a status row that vanished during every call.
     pub(crate) fn turn_busy(&self) -> bool {
+        // **The daemon's answer first** (`PROTOCOL_VERSION` 52) — see the paragraph above: `Turn`
+        // is the prompt's span and `Calls` the round detail inside it, and together they hold this
+        // row up across every round boundary of one prompt.
+        if self
+            .activity
+            .waiting_on()
+            .iter()
+            .any(|w| matches!(w, Waiting::Turn | Waiting::Calls))
+        {
+            return true;
+        }
         let Some(t) = self.turn.as_ref() else {
             return false;
         };

@@ -31,8 +31,8 @@
 //!
 //! | waiting on | the session acts again without outside input | why |
 //! |---|---|---|
-//! | [`Waiting::Turn`] | **yes** | a round is generating |
-//! | [`Waiting::Calls`] | **yes** | the round ended and the calls it proposed are running; the next round reads their results |
+//! | [`Waiting::Turn`] | **yes** | **a PROMPT is in flight** — from the daemon taking it to its loop returning. NOT one round: the engine publishes `TurnStarted`/`TurnFinished` once per round, so a `Turn` read off that pair drops to quiet at every round boundary of one prompt, which is the false *done* this whole mechanism exists to remove |
+//! | [`Waiting::Calls`] | **yes** | the finer detail inside it: the round's generation ended and the calls it proposed are running; the next round reads their results |
 //! | [`Waiting::Delivery`] | **yes** | a settlement, a monitor firing, or a queued prompt is owed to the model: it will be said, and the turn it starts is the session's own |
 //! | [`Waiting::Job`] | **yes**, when its settlement is one the model will be told | see below |
 //! | [`Waiting::Monitor`] | **yes** | a monitor is armed, and a firing is `Delivery::Immediate` (`crate::delivery`'s table) — it always wakes the model |
@@ -67,10 +67,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "on", content = "id", rename_all = "snake_case")]
 pub enum Waiting {
-    /// A round is generating.
+    /// **A prompt is in flight** — the whole turn, however many rounds it takes, from the daemon
+    /// taking the prompt to its loop returning (a final answer, an interrupt, a failure, or a stop
+    /// on a card, which is [`Waiting::Ask`] instead). Read from the daemon's own per-prompt span
+    /// and never from the round-level `TurnStarted`/`TurnFinished`, which is the pair this exists
+    /// to stop readers timing.
     Turn,
     /// The round's generation ended and the calls it proposed are running; the next round reads
-    /// their results. The window `Hub::turn_in_flight` exists to name.
+    /// their results. The finer detail inside [`Waiting::Turn`] — a head draws it, and nothing about
+    /// *will this session act again* depends on it.
     Calls,
     /// **The model is owed something and the turn that says it has not started yet** — a
     /// settlement queued or held, a monitor that has fired, a message or a prompt waiting for the
