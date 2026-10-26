@@ -351,7 +351,15 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
          narrower command (`git diff --stat`, `git log --oneline -5`) rather than piping \
          it into `head`. And the `commands` field of `review_verdict` is a LIST and not a \
          shell line: each item in it is ONE simple command, written the way you ran it, \
-         and the list itself is the separator — nothing in it needs a `;`.",
+         and the list itself is the separator — nothing in it needs a `;`.\n\n\
+         6. **Read the references, and say which.** When the change leans on an API, a \
+         command's flags, a protocol, a file format or a spec, check the claim against the \
+         source rather than against the code or your memory of it: `man CMD` and `CMD --help` \
+         for a tool, the crate's or library's own docs and source for an API, and — when the \
+         session seats them — `web_search` and `web_fetch` for upstream docs, RFCs, release \
+         notes and the issue a change cites. You are encouraged to: a verdict that checked a \
+         flag in its man page is worth more than one that trusted the diff. Name what you read \
+         in `files` (a URL counts) and what it told you in `reasons`.",
         brief = req.brief,
         branch = req.branch,
         base = req.base_sha,

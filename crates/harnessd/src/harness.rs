@@ -21840,16 +21840,17 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // bytes in the stable prefix, so seating it unconditionally would re-prefill
     // every stored conversation on this box to add a tool that refuses. A session
     // started without `--web-search` is byte-identical to yesterday's.
-    if cfg.web_search.is_some()
-        && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper)
-    {
+    // **A reviewer reads the references** (the operator, 2026-10-26: *"reviewers should be able
+    // (and actually encouraged) to read mans, docs and so on"*), so the gatekeeper seats the two
+    // web tools under the same conditions as every other seat; `flowy` above stays off it.
+    if cfg.web_search.is_some() && !matches!(seat, Seat::Runner | Seat::NotesKeeper) {
         r.tools.push("web_search".into());
         r.max_tools += 1;
     }
     // **`web_fetch` seats on the same rule as `web_search`**: only when
     // something is behind it, so a session started without `--web-fetch` is
     // byte-identical to one from before the flag existed.
-    if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::Gatekeeper | Seat::NotesKeeper) {
+    if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::NotesKeeper) {
         r.tools.push("web_fetch".into());
         r.max_tools += 1;
     }
@@ -23332,6 +23333,43 @@ mod gatekeeper_reviews {
     /// refuses every repair, and a keeper that cannot repair only complains. What keeps it out of
     /// the code is the SEAT: no `write`, no `edit`, no `bash`, no child to delegate to. Both
     /// halves are asserted here because either one alone reads as the other having been done.
+    /// **A reviewer reads the references**: the gatekeeper seat gets `web_search` and
+    /// `web_fetch` when the session has them (the operator: reviewers should be able, and
+    /// encouraged, to read man pages and docs), and never the room.
+    #[test]
+    fn the_reviewer_seat_reads_the_web_when_the_session_has_it() {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.web_fetch = true;
+        cfg.web_search = Some("brave".into());
+        let role = role_for_seat(Seat::Gatekeeper, &cfg);
+        for wanted in ["web_fetch", "web_search"] {
+            assert!(
+                role.tools.iter().any(|t| t == wanted),
+                "a reviewer must be seated with `{wanted}`: {:?}",
+                role.tools
+            );
+        }
+        assert!(
+            !role.tools.iter().any(|t| t == "flowy"),
+            "and not with the room: {:?}",
+            role.tools
+        );
+        // Both switched off by hand: `for_this_box` reads the box's own providers file, and a
+        // web-search key there would seat the tool on a config this test means to be bare.
+        let mut bare_cfg = Config::for_this_box("/tmp");
+        bare_cfg.web_fetch = false;
+        bare_cfg.web_search = None;
+        let bare = role_for_seat(Seat::Gatekeeper, &bare_cfg);
+        assert!(
+            !bare
+                .tools
+                .iter()
+                .any(|t| t == "web_fetch" || t == "web_search"),
+            "without them on the session, nothing is seated: {:?}",
+            bare.tools
+        );
+    }
+
     #[test]
     fn the_notes_keeper_is_a_seat_that_repairs_memory_and_cannot_touch_code() {
         assert_eq!(Seat::parse("notes_keeper").unwrap(), Seat::NotesKeeper);
