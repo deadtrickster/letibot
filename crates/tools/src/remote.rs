@@ -323,10 +323,11 @@ impl Ssh {
         for (k, val) in [
             ("IdentitiesOnly", "yes".to_string()),
             ("BatchMode", "yes".to_string()),
-            (
-                "StrictHostKeyChecking",
-                std::env::var("LETIBOT_SSH_HOSTKEY").unwrap_or_else(|_| "accept-new".into()),
-            ),
+            // **An unknown host key is refused, never learned** (`docs/remote-hosts.md`): with
+            // BatchMode, `yes` makes ssh fail on a host this box has not been told about, so the
+            // first connection to a machine is the operator's own `ssh` and not a key this daemon
+            // decided to trust. `accept-new` would trust whatever answers first.
+            ("StrictHostKeyChecking", "yes".to_string()),
             ("ControlMaster", "auto".to_string()),
             ("ControlPersist", "120".to_string()),
             ("ControlPath", control),
