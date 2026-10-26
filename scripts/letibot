@@ -1275,6 +1275,55 @@ wait_gone() { # wait_gone PID [TENTHS]
   return 0
 }
 
+# **How long a stop waits for the daemon to actually go** (2026-10-26): thirty seconds, in tenths.
+# The daemon's own orderly stop is bounded but not short — the merge queues joined (a gate in
+# flight killed, its row back in line), every session's subagents told to stop and waited for
+# (`SUBAGENT_EXIT_GRACE`, 5 s), the VMs brought down — and the old five seconds was shorter than
+# the sum of them. What that measured as was `--stop` saying the daemon "is ignoring SIGTERM"
+# while the daemon was in the middle of shutting down, and a `leticode` run right after it
+# refused by the folder lock the still-exiting daemon held.
+STOP_TENTHS=60
+# A forced stop keeps FIVE seconds for its SIGTERM window: the SIGKILL is the whole of what
+# `--force` is for, and the daemon's own VM and child teardown is bounded by then (cli.rs).
+FORCE_TENTHS=10
+
+# log_at LOG -- how many bytes the log holds now, 0 when there is none. A stop reads what the
+# daemon wrote AFTER this point, so the step a PREVIOUS run last said is never read as this one's.
+log_at() {
+  [ -f "$1" ] || { echo 0; return 0; }
+  wc -c < "$1" 2>/dev/null | tr -d ' \n' || echo 0
+}
+
+# stop_step LOG FROM -- the last step of the daemon's orderly stop that it wrote since FROM.
+# The daemon prints one `  stopping: …` line per step (cli.rs's serving path), so this is the
+# daemon's own answer to "what is it waiting for" — the only true one there is.
+stop_step() {
+  [ -f "$1" ] || return 1
+  tail -c +"$(( $2 + 1 ))" "$1" 2>/dev/null | tr -d '\r' \
+    | grep -E '^  stopping: ' | tail -1
+}
+
+# stop_wait LINE PID LOG FROM [TENTHS] -- wait for the process to go, saying what IT says it is
+# waiting for. Returns 0 when it is gone, 1 when the bound is spent.
+stop_wait() {
+  local line="$1" pid="$2" log="$3" from="$4" n="${5:-$STOP_TENTHS}" i=0 said="" step
+  while [ "$i" -lt "$n" ]; do
+    pid_alive "$pid" || return 0
+    sleep 0.5
+    i=$((i + 1))
+    # Twice a second is too often to repeat a sentence, and once per two seconds says every step.
+    if [ $((i % 4)) -eq 0 ]; then
+      step="$(stop_step "$log" "$from" || true)"
+      if [ -n "$step" ] && [ "$step" != "$said" ]; then
+        said="$step"
+        echo "  $line — ${step#  }" >&2
+      fi
+    fi
+  done
+  pid_alive "$pid" && return 1
+  return 0
+}
+
 daemon_pid() {
   # The pid LISTENING on our socket, which is the daemon whatever the record says;
   # the record is a fallback for a box without `ss`.
@@ -1574,15 +1623,51 @@ SESSIONS_EOF
         echo "letibot: the interrupt did not go through: $INTR_FAILED" >&2
       fi
     }
-    # not_stopped LINE PID ADVICE -- the sentence for a daemon still there after SIGTERM.
+    # not_stopped LINE PID ADVICE LOG FROM SECONDS -- the sentence for a daemon still there after
+    # its wait, and only THEN the advice: `--force` is the last resort, not the first suggestion.
     not_stopped() {
+      local step
       if [ -n "$INTR_FAILED" ]; then
-        echo "NOT stopped: $1 (pid $2) is still running 5s after SIGTERM. Its turns were not" >&2
+        echo "NOT stopped: $1 (pid $2) is still running ${6}s after SIGTERM. Its turns were not" >&2
         echo "  interrupted ($INTR_FAILED), so it is most likely finishing one before it exits." >&2
       else
-        echo "NOT stopped: $1 (pid $2) is ignoring SIGTERM after 5s." >&2
+        echo "NOT stopped: $1 (pid $2) is still running ${6}s after SIGTERM." >&2
+      fi
+      # **What the daemon itself last said it was doing** — the difference between a stop that is
+      # waiting for its children and one that is wedged. Read from the log's tail since the
+      # signal, so it is this stop's step and not a previous run's.
+      step="$(stop_step "$4" "$5" || true)"
+      if [ -n "$step" ]; then
+        echo "  it last said: ${step#  }" >&2
       fi
       echo "  $3    sends SIGKILL; the record is kept until it is gone" >&2
+    }
+    # stop_one LINE PID LOG ADVICE -- signal one daemon and wait for it as long as this verb
+    # promises, relaying what it says it is waiting for. `--force` keeps its five seconds and
+    # then SIGKILLs; a plain stop waits STOP_TENTHS and never kills. Returns 0 when it is gone.
+    stop_one() {
+      local line="$1" pid="$2" log="$3" advice="$4" from waited
+      from="$(log_at "$log")"
+      kill "$pid" 2>/dev/null || true
+      if [ "$FORCE" = 1 ]; then
+        waited=$((FORCE_TENTHS / 2))
+        wait_gone "$pid" "$FORCE_TENTHS" || true
+        if pid_alive "$pid"; then
+          kill -9 "$pid" 2>/dev/null || true
+          wait_gone "$pid" 4 || true
+        fi
+      else
+        waited=$((STOP_TENTHS / 2))
+        stop_wait "$line" "$pid" "$log" "$from" "$STOP_TENTHS" || true
+      fi
+      pid_alive "$pid" || return 0
+      not_stopped "$line" "$pid" "$advice" "$log" "$from" "$waited"
+      return 1
+    }
+    # log_of WORKSPACE -- the log that folder's daemon writes (see LOG above).
+    log_of() {
+      if [ -n "${LETIBOT_LOG:-}" ]; then echo "$LETIBOT_LOG"; return 0; fi
+      echo "$HOME/logs/harnessd-$(printf '%s' "$1" | sha12).log"
     }
     if [ "$STOP_ALL" = 1 ]; then
       # **And the exit status agrees with the words**, as the single-target path's
@@ -1600,19 +1685,12 @@ SESSIONS_EOF
           # **Signal, then WAIT, then say it.** The exit status of `kill` says the
           # signal was delivered and nothing about whether the process took it —
           # which is the whole of the 2026-09-16 incident, one verb over.
-          kill "$pid" 2>/dev/null || true
-          wait_gone "$pid" || true
-          if pid_alive "$pid" && [ "$FORCE" = 1 ]; then
-            kill -9 "$pid" 2>/dev/null || true
-            wait_gone "$pid" 4 || true
-          fi
-          if ! pid_alive "$pid"; then
+          if stop_one "$ws (pid $pid)" "$pid" "$(log_of "$ws")" "letibot --stop --all --force"; then
             echo "stopped $ws (pid $pid)"
             rm -f "$r"
           else
             # The advice acts on ALL of them, as this run did — `--stop --force` alone is
             # this folder's daemon only.
-            not_stopped "$ws" "$pid" "letibot --stop --all --force"
             all_failed=1
           fi
         else
@@ -1641,19 +1719,19 @@ SESSIONS_EOF
       # wedged on a llama-server that had gone away swallowed SIGTERM, this
       # printed "stopped", deleted the record, and left an orphan holding the
       # store and the GPU that `--daemons` could no longer see.
+      #
+      # **And the wait is the daemon's own bound, not a guess at it** (2026-10-26): its orderly
+      # stop joins the merge queues, brings the VMs down and waits up to five seconds for subagent
+      # threads, so five seconds of patience called a daemon that was shutting down "ignoring
+      # SIGTERM" and left the next start to be refused by the folder lock it still held. Thirty
+      # seconds, with the daemon's own `stopping: …` line relayed as it comes.
       line="$(daemon_line)"
-      kill "$p" || true
-      wait_gone "$p" || true
-      if pid_alive "$p" && [ "$FORCE" = 1 ]; then
-        kill -9 "$p" 2>/dev/null || true
-        wait_gone "$p" 4 || true
-      fi
-      if pid_alive "$p"; then
-        not_stopped "$line" "$p" "letibot --stop --force${STOP_AT:+ $STOP_AT}"
+      if stop_one "$line" "$p" "$LOG" "letibot --stop --force${STOP_AT:+ $STOP_AT}"; then
+        echo "stopped $line"
+        rm -f "$RECORD"
+      else
         exit 1
       fi
-      echo "stopped $line"
-      rm -f "$RECORD"
     else
       echo "no daemon for $WORKSPACE (letibot --daemons lists the others)"
     fi
@@ -1964,14 +2042,21 @@ if ! live; then
     _going_argv="$(pid_argv "$_going")"
     if grep -qxF -- "$SOCKET" <<<"$_going_argv"; then
       echo "letibot: a harnessd for $WORKSPACE (pid $_going) is still going - waiting for it" >&2
-      if ! wait_gone "$_going" 20; then
+      # **Thirty seconds, and what IT says it is doing** (2026-10-26): a daemon on its way out is
+      # bounded but not quick (the merge queues joined, the subagent threads waited for), and the
+      # ten seconds this used to allow turned a stop that was working into a refusal to start.
+      _going_from="$(log_at "$LOG")"
+      if ! stop_wait "letibot: a harnessd for $WORKSPACE (pid $_going)" "$_going" "$LOG" \
+        "$_going_from" "$STOP_TENTHS"; then
         # **Not `refuse_detached`.** That sentence says the daemon is still LISTENING with
         # its socket file gone, and nothing was listening here — only a pid holding the
         # folder claim. Saying the other thing would be a report about a state nobody
         # measured, at the one moment a person is trying to get back into their session.
         echo "letibot: a harnessd for $WORKSPACE (pid $_going) still holds this folder and is" >&2
-        echo "         not taking heads, 10s after it was asked to stop. Nothing was started" >&2
+        echo "         not taking heads, $((STOP_TENTHS / 2))s after it was asked to stop. Nothing was started" >&2
         echo "         over it: two daemons for one folder interleave rows into one transcript." >&2
+        _step="$(stop_step "$LOG" "$_going_from" || true)"
+        if [ -n "$_step" ]; then echo "         it last said: ${_step#  }" >&2; fi
         echo "         letibot --stop            # or: kill $_going" >&2
         exit 1
       fi

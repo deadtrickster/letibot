@@ -1934,6 +1934,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
         Outcome::HandedOn => {}
     });
+    // **Every step of the orderly stop is SAID, as it starts** (2026-10-26). What follows is
+    // bounded but not short — a gate's process group killed, the VMs brought down, five seconds of
+    // subagent threads — and until this, the daemon was silent through all of it. `letibot --stop`
+    // waited five seconds, heard nothing, and reported *"is ignoring SIGTERM"* about a daemon that
+    // was working through exactly this list; the launcher now relays the last `  stopping: ` line
+    // it finds in this log, so the line has to exist. Stderr is the per-folder log
+    // (`~/logs/harnessd-<key>.log`), which is where the launcher reads.
+    eprintln!("  stopping: bringing every subagent VM down");
     // **Every subagent's VM comes down with the daemon — first.** Their backends live on threads
     // the process's exit does not unwind, so their `Drop` never ran and the VMs outlived it — two
     // of the acceptance suite's own runs, 2026-10-08. firecode's `down` delivers the work. FIRST,
@@ -1943,6 +1951,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // SIGKILL still interrupts here, the next daemon's reaper finds (`crate::vm_reap`).
     letibot_tools::firecode::down_all();
     // **The queues are told to stop.**
+    eprintln!(
+        "  stopping: the merge queues (a gate in flight is killed, its row put back in line)"
+    );
     merge_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // **Joined, and bounded**: a gate in flight is killed with its whole process group (SIGTERM,
     // five seconds, SIGKILL) and its row goes back in line, and each worker releases its lease so
@@ -1952,6 +1963,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         let _ = h.join();
     }
 
+    eprintln!("  stopping: closing every session");
     daemon.shutdown();
     // The seat after the daemon: the listener's next poll window sees the stop and
     // the waiter claim is released with it. `std::process::exit` above runs no RUST
@@ -1967,11 +1979,16 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // leaves on, and `drain_subagents` tells the running ones to stop first — a hub close does
     // not end a turn already in flight. The bound is `SUBAGENT_EXIT_GRACE`'s, and what a
     // give-up costs is the sentence printed here rather than a crash nobody can explain.
+    eprintln!(
+        "  stopping: waiting up to {}s for subagent threads to leave",
+        SUBAGENT_EXIT_GRACE.as_secs()
+    );
     if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
         eprintln!("  {said}");
     }
     // **The orderly stop, with its exact time** — what the next daemon measures its down time from.
     lifeline.stopped();
+    eprintln!("  stopping: done");
     drop(sessions);
     drop(seat);
     Ok(0)

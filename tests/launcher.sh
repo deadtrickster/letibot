@@ -437,4 +437,118 @@ else
   echo "skip the start/--new cases: no python3 to listen on a unix socket"
 fi
 
+# ---------------------------------------------------------------------------
+# **A DAEMON THAT IS SHUTTING DOWN IS NOT A DAEMON IGNORING SIGTERM** — the operator's
+# 2026-10-26 report, at the launcher's own level. `letibot --stop` waited five seconds, printed
+# *"NOT stopped: … (pid N) is ignoring SIGTERM after 5s"* about a daemon that was working through
+# its orderly stop, and left the next `leticode` refused by the folder lock the still-exiting
+# daemon held. The daemon's stop is bounded but not quick (the merge queues joined, five seconds
+# of subagent threads), it prints one `  stopping: …` line per step, and the launcher now waits
+# thirty seconds relaying those lines.
+if command -v python3 >/dev/null 2>&1; then
+  mkdir -p "$T/home/logs" "$T/run/letibot" "$T/slow" "$T/stuck"
+  # A daemon on its way out: it says what it is waiting for on its own log — the path the
+  # launcher reads (`$HOME/logs/harnessd-<key>.log`, keyed by the workspace it was told) — and
+  # it takes SEVEN seconds to go, two more than the bound that used to call it stuck. It also
+  # LISTENS, because the start case below needs a daemon that comes up.
+  cat > "$T/bin/harnessd" <<'STUB'
+#!/usr/bin/env python3
+import hashlib, os, signal, socket, sys, time
+ws = sys.argv[sys.argv.index("--workspace") + 1]
+sock = sys.argv[sys.argv.index("--socket") + 1]
+key = hashlib.sha256(ws.encode()).hexdigest()[:12]
+log = os.path.join(os.environ["HOME"], "logs", "harnessd-" + key + ".log")
+slow = "--stuck" not in sys.argv
+s = socket.socket(socket.AF_UNIX)
+try:
+    os.unlink(sock)
+except FileNotFoundError:
+    pass
+s.bind(sock)
+s.listen(4)
+def bye(_sig, _frm):
+    with open(log, "a") as f:
+        f.write("  stopping: the merge queues (a gate in flight is killed, its row put back in line)\n")
+        f.write("  stopping: waiting up to 5s for subagent threads to leave\n")
+    if slow:
+        time.sleep(7)
+        with open(log, "a") as f:
+            f.write("  stopping: done\n")
+        sys.exit(0)
+    # A daemon that never goes: it is stuck INSIDE a step, which is what `--force` is for.
+    time.sleep(600)
+signal.signal(signal.SIGTERM, bye)
+while True:
+    time.sleep(0.2)
+STUB
+  chmod +x "$T/bin/harnessd"
+  # The tui stub: `--stop` calls it for the interrupt and the start path for its probe — both
+  # answer 0 and say nothing — and any other invocation is the head, which says it ran.
+  cat > "$T/bin/letibot-tui" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in --probe|--interrupt-all) exit 0 ;; esac
+done
+echo "letibot-tui: THE HEAD RAN"
+STUB
+  chmod +x "$T/bin/letibot-tui"
+  slow_daemon() { # slow_daemon DIR [EXTRA-ARG] -- a recorded daemon for that folder
+    local dir="$1" extra="${2:-}" ws_p sock key
+    ws_p="$(cd "$dir" && pwd -P)"
+    key="$(printf '%s' "$ws_p" | key12)"
+    sock="$T/run/letibot/$key.sock"
+    env -i PATH="$RUN_PATH" HOME="$T/home" "$T/bin/harnessd" \
+      --workspace "$ws_p" --socket "$sock" $extra >/dev/null 2>&1 &
+    printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$!" "$ws_p" "$sock" \
+      > "$T/run/letibot/$key.json"
+    echo "$!"
+  }
+  slow_daemon "$T/slow" >/dev/null
+  out="$(RUN_WS="$T/slow" run "$DEFAULT_ONLY" --stop)"
+  expect "a daemon that takes seven seconds to stop is waited for, not called stuck" \
+    "$out" "^stopped "
+  expect "  ...and the launcher relays what IT says it is waiting for" "$out" \
+    "stopping: waiting up to 5s for subagent threads to leave"
+  refuse "  ...and it is never called 'ignoring SIGTERM'" "$out" "ignoring SIGTERM"
+
+  # **AND THE TIMEOUT STILL COMES, with the advice only after it.** A daemon wedged INSIDE a step
+  # is exactly the case `--force` exists for; thirty seconds of patience is the difference
+  # between a slow stop and a stuck one, so this case spends them.
+  slow_daemon "$T/stuck" --stuck >/dev/null
+  stuck_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$T/run/letibot/$(printf '%s' "$(cd "$T/stuck" && pwd -P)" | key12).json" | head -1)"
+  out="$(RUN_WS="$T/stuck" run "$DEFAULT_ONLY" --stop)"
+  expect "a daemon wedged in a step is given its whole thirty seconds" "$out" \
+    "still running 30s after SIGTERM"
+  expect "  ...its own last words are said" "$out" \
+    "it last said: stopping: waiting up to 5s for subagent threads"
+  expect "  ...and only THEN is --force offered" "$out" "sends SIGKILL"
+  kill -9 "$stuck_pid" 2>/dev/null || true
+  rm -f "$T/run/letibot/"*.json
+
+  # **A daemon that is on its way out, for TWELVE seconds** — the ten-second wait the start used to
+  # keep turned this into *"still holds this folder"* and a refusal to start. `bash -c 'sleep 12; :'`
+  # and not `bash -c 'sleep 12'`: bash EXECs a single-command string, and the argv that names the
+  # socket would be gone with it (measured here: the launcher found the pid and no socket in it).
+  mkdir -p "$T/after"
+  ws_p="$(cd "$T/after" && pwd -P)"
+  key="$(printf '%s' "$ws_p" | key12)"
+  sock="$T/run/letibot/$key.sock"
+  bash -c 'sleep 12; :' _ bash --socket "$sock" &
+  going=$!
+  printf '{"pid": %s, "workspace": "%s", "socket": "%s"}' "$going" "$ws_p" "$sock" \
+    > "$T/run/letibot/$key.json"
+  out="$(RUN_WS="$T/after" run "$DEFAULT_ONLY")"
+  expect "a daemon taking twelve seconds to go is waited for" "$out" \
+    "is still going - waiting for it"
+  refuse "  ...and the start never refuses on the old ten-second bound" "$out" "not taking heads"
+  expect "  ...and it starts once that daemon is gone" "$out" "THE HEAD RAN"
+  kill "$going" 2>/dev/null || true
+  kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$T/run/letibot/$key.json" 2>/dev/null | head -1)" 2>/dev/null || true
+  rm -f "$T/run/letibot/"*.json
+else
+  echo "skip the stop and start-wait cases: no python3"
+fi
+
 [ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }
