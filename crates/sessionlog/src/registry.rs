@@ -1667,7 +1667,9 @@ impl Registry {
     /// **The hub is closed here, not left to the caller**, because a removed hub that stayed open
     /// is the one state worse than either: a head attached to it would wait on a log nothing will
     /// ever write to, with no `Bye`. Closing wakes every head with [`crate::hub::Delivery::Closed`]
-    /// and the session's own reader with `OwnWork::Closed`.
+    /// and the session's own reader with `OwnWork::Closed`. **And it is closed FIRST** — see the
+    /// ordering that function keeps, which is what makes *the registry does not hold it* and *its
+    /// hub is closed* one answer instead of two that race.
     ///
     /// **The run ender is dropped, not called.** It ends the session's runs, which is a stop's
     /// act ([`Registry::close`]); the caller that removes a session has already decided what
@@ -1677,6 +1679,24 @@ impl Registry {
     /// Returns the hub, so a caller can still read its final state; `None` when the registry did
     /// not hold the session, which is not an error — a close that raced another close.
     pub fn remove(&self, session_id: &str) -> Option<Arc<Hub>> {
+        // **The hub is CLOSED before the session stops being visible, not after.**
+        //
+        // `take` is the instant `get` starts answering `None`, and every reader of a removed
+        // session asks two questions in a row: *does the registry hold it* and *is its hub open*.
+        // Closing afterwards leaves a window between the two answers — measured at ~40µs, and
+        // `session_lifecycle`'s `a_wake_or_a_message_to_a_closed_child_is_answered_gone` loses it
+        // about one run in three, because its poll is released by the same registry mutex `take`
+        // holds and so lands microseconds after `take` rather than at random. In that window a
+        // session the registry does not hold has an OPEN hub: a head attached to it waits on a log
+        // nothing will ever write to, with no `Bye` — the one state this function's own doc says
+        // exists to be prevented.
+        //
+        // Closing first makes it a guarantee rather than a narrowing of the race: a reader that
+        // sees `None` saw it after the close. `Hub::close` is idempotent, so a `remove` that races
+        // another (both see the entry, one takes it) closes nothing twice in a way that matters,
+        // and it takes no registry lock — the lock order `Registry::close` keeps is unchanged.
+        let hub = self.get(session_id)?;
+        hub.close();
         let entry = self.lock().take(session_id)?;
         // Each map under its own lock, never under the registry's — the ordering `close` keeps.
         let ender = self
@@ -1713,7 +1733,6 @@ impl Registry {
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
         drop((ender, prompt, notes, boundary, job_output, pane_driver));
-        entry.hub.close();
         Some(entry.hub)
     }
 
