@@ -21,6 +21,10 @@ impl App {
         let cursor = self.todos_sel.min(stops.len().saturating_sub(1));
         let marked = |want: &TodoStop| stops.get(cursor).is_some_and(|it| it == want);
         let mut mine_at = 0usize;
+        // **Which of the board's rows the pane actually draws** — the indices, because a row's
+        // place on the board is what its `/todo` number and its `waits on` link are made of, and
+        // the switch that hides the done ones must not renumber what is left.
+        let mut drawn: Vec<usize> = Vec::new();
         let pane = TodosPane {
             open,
             postponed,
@@ -39,12 +43,26 @@ impl App {
             todos: self
                 .todos
                 .iter()
-                .map(|t| {
+                .enumerate()
+                .filter_map(|(i, t)| {
                     let mine = t.by == TodoBy::Operator;
                     if mine {
+                        // **Counted over the WHOLE board, never over what is drawn.** This number
+                        // is what `/todo done N` and `/todo rm N` take, so a counter that skipped
+                        // the hidden rows would renumber the ones left the moment one was hidden
+                        // and the verb would move somebody else's row.
                         mine_at += 1;
                     }
-                    TodoLine {
+                    // **A hidden row is not DRAWN** — `d` holds the done ones back
+                    // ([`App::todo_hidden`]), and [`App::todos_stops`] leaves them out for the
+                    // same reason, so the arrows, a click and the mark cannot land on a row
+                    // nobody can see. A drawn row with no number beside it is the gap this
+                    // leaves in the operator's numbering, and it is honest: row 3 is still row 3.
+                    if self.todo_hidden(t) {
+                        return None;
+                    }
+                    drawn.push(i);
+                    Some(TodoLine {
                         mark: match t.status {
                             TodoStatus::Pending => TodoMark::Open,
                             TodoStatus::InProgress => TodoMark::Doing,
@@ -94,12 +112,17 @@ impl App {
                         } else {
                             TodoStop::Theirs(t.content.clone())
                         }),
-                    }
+                    })
                 })
                 .collect(),
             repo: self.repo_todos.as_ref().map(|rows| {
                 rows.iter()
                     .enumerate()
+                    // **The file's done items go the same way** — `[x]` is hidden by the same
+                    // switch ([`App::repo_todo_hidden`]). Its HEADINGS stay whatever it says:
+                    // they are the file's outline and they carry the file's own cookies
+                    // (`[2/7]`), which count the file and not this pane.
+                    .filter(|(_, r)| !self.repo_todo_hidden(r))
                     .map(|(i, r)| {
                         let here = r.item && marked(&TodoStop::Repo(i));
                         RepoRow {
@@ -118,13 +141,30 @@ impl App {
         // **Drawn once at full width, and cut to `w` from that** — the same cut `content(w)`
         // makes (`PaneLines::trimmed`), kept beside the uncut rows because a link's columns are
         // read off the row as rano built it, before anything was cut away.
-        let full = pane.content(usize::MAX);
+        let mut full = pane.content(usize::MAX);
+        hide_done_line(&mut full, drawn.len(), self.todos_hidden_count());
         let content = full.clone().trimmed(w);
+        let drawn_mine = drawn
+            .iter()
+            .filter(|i| self.todos[**i].by == TodoBy::Operator)
+            .count();
         // **The rows the stops landed on, taken as they went out** — what the arrows scroll by
         // and a click is tested against. The model's rows are stops now and rano does not record
         // them, so the record is completed here; see [`session_stop_rows`].
-        self.todos_stop_rows = session_stop_rows(&content, &self.todos);
-        self.todos_wait_links = self.wait_links(&full, &content, w);
+        self.todos_stop_rows = session_stop_rows(&content, drawn.len(), drawn_mine);
+        self.todos_wait_links = self.wait_links(&full, &content, w, &drawn);
+        // **The window follows the cursor on the frame that MOVED it without a row number to move
+        // it by** — the switch that hid or showed rows under it ([`App::toggle_todos_hide_done`]).
+        // Which pane row the cursor is on is what the line above just recorded, so this is the
+        // first moment the question has an answer.
+        if std::mem::take(&mut self.todos_follow) {
+            let at = self
+                .todos_sel
+                .min(self.todos_stop_rows.len().saturating_sub(1));
+            if let Some(row) = self.todos_stop_rows.get(at).copied() {
+                self.scroll_into_view(row);
+            }
+        }
         row_strings(&content.lines, self.cfg.palette())
     }
 
@@ -147,32 +187,38 @@ impl App {
     /// `trimmed(w)` cuts a wider row to `w - 1` columns and an ellipsis. The link is then only the
     /// part of its words still on the screen — the cut row's width less the `…` — and a row cut
     /// before `waits on` begins has no link at all.
+    ///
+    /// **`drawn` is the board's rows the pane actually drew, in order** — the block is shorter than
+    /// `self.todos` while `d` holds the done ones back, so the row is the add control plus the
+    /// drawn row's place in that block and not its index on the board.
     fn wait_links(
         &self,
         full: &rano::agent::pane::PaneLines,
         cut: &rano::agent::pane::PaneLines,
         w: usize,
+        drawn: &[usize],
     ) -> Vec<WaitLink> {
         let Some(add) = full.stop_rows.first() else {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for (i, t) in self.todos.iter().enumerate() {
+        for (pos, i) in drawn.iter().copied().enumerate() {
+            let t = &self.todos[i];
             if asks_operator(t) {
                 continue;
             }
             let Some(target) = wait_of(t) else {
                 continue;
             };
-            let row = add + 1 + i;
+            let row = add + 1 + pos;
             let (Some(line), Some(shown)) = (full.lines.get(row), cut.lines.get(row)) else {
                 continue;
             };
             let Some(last) = line.spans.last() else {
                 continue;
             };
-            let drawn = format!(" · waits on {}", clean_line(&self.wait_label(&target)));
-            if last.content != drawn || !line.plain().contains(&clean_line(&t.content)) {
+            let drawn_row = format!(" · waits on {}", clean_line(&self.wait_label(&target)));
+            if last.content != drawn_row || !line.plain().contains(&clean_line(&t.content)) {
                 continue;
             }
             let end = line.width();
@@ -188,7 +234,9 @@ impl App {
                     row,
                     from,
                     to,
-                    todo: i,
+                    // **Its place among the rows DRAWN**, which is what `1 + todo` of the stops
+                    // means while some are hidden — not its index on the board.
+                    todo: pos,
                     target,
                 });
             }
@@ -444,34 +492,86 @@ fn mark_words(m: Option<TodoMark>) -> &'static str {
 /// would move the cursor to a different row than the one under the pointer. That is the
 /// two-enumerations defect this pane's docstrings are a monument to, arriving from the library side.
 ///
-/// **The session's rows are one contiguous block of exactly `todos.len()` rows directly under the
+/// **The session's rows are one contiguous block of exactly `rows` rows directly under the
 /// add control**, which is what rano draws (the control, then the list, one row each, in order), so
 /// the block is placed from the control's own recorded row and the repo's recorded rows follow it
 /// untouched. **The shape is checked rather than trusted**: if the record is shorter than the
 /// layout implies, or the block would run past the rows that were drawn, rano's own record is kept
 /// — the model's rows then scroll to their neighbour's row rather than the whole list pointing
 /// somewhere wrong.
+///
+/// **Both counts are the DRAWN ones** — `rows` is how many session rows the pane drew and `mine`
+/// how many of those are the operator's — because the switch that hides the done rows takes entries
+/// out of both. Counting the board instead would place the block by a length rano never drew.
 fn session_stop_rows(
     content: &rano::agent::pane::PaneLines,
-    todos: &[letibot_sessionlog::event::TodoEntry],
+    rows: usize,
+    mine: usize,
 ) -> Vec<usize> {
-    use letibot_sessionlog::event::TodoBy;
     let recorded = &content.stop_rows;
     // The recorded stops are the control, the operator's rows in order, then the repo's items.
-    let mine = todos.iter().filter(|t| t.by == TodoBy::Operator).count();
     let repo_from = 1 + mine;
     let start = match recorded.first() {
         Some(first) if recorded.len() >= repo_from => first + 1,
         _ => return recorded.clone(),
     };
-    if start + todos.len() > content.lines.len() {
+    if start + rows > content.lines.len() {
         return recorded.clone();
     }
-    let mut out = Vec::with_capacity(recorded.len() + todos.len() - mine);
+    let mut out = Vec::with_capacity(recorded.len() + rows - mine);
     out.push(recorded[0]);
-    out.extend(start..start + todos.len());
+    out.extend(start..start + rows);
     out.extend_from_slice(&recorded[repo_from..]);
     out
+}
+
+/// **The one muted line that says the done rows are not gone** — *"so hidden is never mistaken for
+/// none"*.
+///
+/// It goes at the end of the session block, which is where the rows it speaks for would have been,
+/// so a reader who wonders where they went reads the answer in the place they miss them.
+///
+/// **rano's empty-list sentence is REPLACED, not stacked under.** With every row hidden, the list
+/// the pane was given is empty, so rano draws `none yet. The model writes them with todo_write …` —
+/// true of the argument and false of the board, and sitting directly above the line that says
+/// otherwise. The row is CHECKED before it is taken (it must be that sentence, on the row under the
+/// control, which is where the insertion goes), so a rano that drew something else there gets an
+/// insertion rather than a lost row.
+fn hide_done_line(full: &mut rano::agent::pane::PaneLines, rows: usize, hidden: usize) {
+    if hidden == 0 {
+        return;
+    }
+    let Some(add) = full.stop_rows.first().copied() else {
+        return;
+    };
+    let at = add + 1 + rows;
+    let line = pane::faint(format!("    {hidden} done hidden · d shows them"));
+    let none_yet = rows == 0
+        && full
+            .lines
+            .get(at)
+            .is_some_and(|l| l.plain().trim_start().starts_with("none yet"));
+    if none_yet {
+        full.lines[at] = line;
+    } else {
+        insert_row(full, at, line);
+    }
+}
+
+/// **A row spliced into a pane this head did not draw**, with every stop the pane recorded at or
+/// below it moved down one.
+///
+/// The drawing and the record are the same value ([`rano::agent::pane::PaneLines`]), so a row
+/// inserted between them without moving the record puts every stop below it on its neighbour's
+/// line — which is the two-enumerations defect, arriving from outside both lists.
+fn insert_row(content: &mut rano::agent::pane::PaneLines, at: usize, line: Line) {
+    let at = at.min(content.lines.len());
+    content.lines.insert(at, line);
+    for row in &mut content.stop_rows {
+        if *row >= at {
+            *row += 1;
+        }
+    }
 }
 
 /// The repo's `TODO.md` as a section map: one line per `##` section with its

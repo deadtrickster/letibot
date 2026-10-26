@@ -175,6 +175,13 @@ impl App {
                 };
                 ControlFlow::Break(Some(Action::Slash { line: line.into() }))
             }
+            // **`d` hides the rows that are done, or brings them back** — the switch is this head's
+            // ([`App::toggle_todos_hide_done`]), so nothing goes to the daemon and the pane draws
+            // the answer on the next frame.
+            Act::HideDone => {
+                self.toggle_todos_hide_done();
+                ControlFlow::Break(None)
+            }
         }
     }
 

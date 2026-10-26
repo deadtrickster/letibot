@@ -124,9 +124,9 @@ fn the_config_pane_edits_head_rows_in_place_and_persists_them() {
         screen.contains("verbosity") && screen.contains("normal"),
         "the pane does not show the rung: {screen}"
     );
-    // Down to the mode row (six head rows first: diff view, verbosity, thinking, tool
-    // output, raw tool calls, git format).
-    for _ in 0..6 {
+    // Down to the mode row (seven head rows first: diff view, verbosity, thinking, tool
+    // output, raw tool calls, todo done rows, git format).
+    for _ in 0..7 {
         a.key(Key::Down);
     }
     // The next name after `writes allowed` in the DAEMON's list — the head
@@ -1179,4 +1179,39 @@ fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
         bar.contains("pauses or resumes the plan-checks"),
         "the bar names the key: {bar}"
     );
+}
+
+/// **The todos pane's `d` is a row here too** — every switch this head keeps is on `/config`, and
+/// the row and the pane's bar read the same flag, so the two cannot disagree about which way it
+/// stands. Enter goes through the pane's own toggle, which is what writes the file.
+#[test]
+fn the_config_pane_shows_and_flips_the_todo_done_switch() {
+    let dir = std::env::temp_dir().join(format!("letibot-config-hide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut a = app();
+    a.prefs_path = Some(dir.join("head.toml"));
+    a.push_surface(Surface::Config);
+
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("todo done rows") && screen.contains("shown"),
+        "the switch is not a row of the pane: {screen}"
+    );
+
+    // The sixth of the head's rows: diff view, verbosity, thinking, tool output, raw tool calls,
+    // and then this one.
+    a.config_sel = 5;
+    a.key(Key::Enter);
+    assert!(a.todos_hide_done, "Enter did not flip the switch");
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("todo done rows") && screen.contains("hidden"),
+        "the row does not show the new state: {screen}"
+    );
+    let on_disk = std::fs::read_to_string(dir.join("head.toml")).expect("head.toml written");
+    assert!(
+        on_disk.contains("todos_hide_done = true"),
+        "the flip was not written down: {on_disk}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -55,6 +55,11 @@ pub struct HeadPrefs {
     pub tools: String,
     /// Show the model's `<function=…>` markup under each call.
     pub raw_calls: bool,
+    /// **The todos pane is hiding the rows that are done** — the operator: *"we need to be able to
+    /// hide done todo items"*. The pane's `d` flips it and this is what makes the answer outlive
+    /// the head: a board whose done rows are the noise is a board the reader wants the same way
+    /// tomorrow, and a switch that forgets is a switch they keep re-making.
+    pub todos_hide_done: bool,
     /// **Which rung of the ladder this head draws at** (R37/R38) — `conversation`, `terse`,
     /// `normal` or `loud`.
     ///
@@ -157,6 +162,9 @@ impl Default for HeadPrefs {
             thinking: "folded".into(),
             tools: "folded".into(),
             raw_calls: false,
+            // Off: a head that started with rows hidden would be a head whose pane was missing
+            // things on the first look, before anybody asked for that.
+            todos_hide_done: false,
             // The rung the head has always started at when nothing said otherwise.
             verbosity: "normal".into(),
             retired: Vec::new(),
@@ -278,6 +286,15 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 "false" | "no" | "off" => p.raw_calls = false,
                 _ => notes.push(format!("head.toml: raw_calls = {v:?} is not true or false")),
             },
+            // The todos pane's switch, in the same two words — one spelling for every boolean
+            // this file holds, so a person editing it by hand has one rule to remember.
+            "todos_hide_done" => match v.as_str() {
+                "true" | "yes" | "on" => p.todos_hide_done = true,
+                "false" | "no" | "off" => p.todos_hide_done = false,
+                _ => notes.push(format!(
+                    "head.toml: todos_hide_done = {v:?} is not true or false"
+                )),
+            },
             // **A set, read by the ONE function this head reads a set with.**
             //
             // `Visibility::parse` takes a profile name, a bare switch, or a whole `custom …` set —
@@ -360,11 +377,12 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
 /// key from a newer build — where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let ours: [(&str, String); 9] = [
+    let ours: [(&str, String); 10] = [
         ("diff", format!("\"{}\"", p.diff.as_str())),
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
         ("raw_calls", p.raw_calls.to_string()),
+        ("todos_hide_done", p.todos_hide_done.to_string()),
         ("verbosity", format!("\"{}\"", p.verbosity)),
         // Quoted like the rest, and never multi-line: no key contains a comma or a
         // space, which is what keeps a hand-edited file honest.

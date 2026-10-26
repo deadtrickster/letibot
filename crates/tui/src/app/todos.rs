@@ -883,6 +883,92 @@ impl App {
         }
     }
 
+    /// **Whether the pane is holding this session row back** — the row is DONE, and `d` is on.
+    ///
+    /// **Done, and only done.** A row set aside and a row struck off are on the board because
+    /// they are NOT finished — setting one aside is the operator saying *not yet*, and striking
+    /// one off keeps it in history rather than removing it — so a switch that swept them away
+    /// with the finished rows would hide the two states the operator put there by hand, which is
+    /// the one thing a *hide what is finished* key must not do.
+    pub(crate) fn todo_hidden(&self, t: &letibot_sessionlog::event::TodoEntry) -> bool {
+        use letibot_sessionlog::event::TodoStatus;
+        self.todos_hide_done && t.status == TodoStatus::Completed
+    }
+
+    /// **Whether the pane is holding this row of the repo's `TODO.md` back** — an ITEM the file
+    /// marks `[x]`.
+    ///
+    /// The headings stay whatever the switch says: they are the file's outline and they carry its
+    /// own cookies (`[2/7]`), which count the file and not this pane — so a heading left standing
+    /// over no items is the file's shape, and `d` is how the items under it come back.
+    pub(crate) fn repo_todo_hidden(&self, r: &TodoRow) -> bool {
+        self.todos_hide_done && r.item && r.mark == Some(TodoMark::Done)
+    }
+
+    /// **How many rows `d` is holding back right now** — both halves of the board.
+    ///
+    /// One number, because the muted line that draws it is one line speaking for the pane: a
+    /// reader who hid twelve rows and sees eleven come back reads that as a bug, and which list
+    /// the twelfth was in is answered by where the gap is.
+    pub(crate) fn todos_hidden_count(&self) -> usize {
+        if !self.todos_hide_done {
+            return 0;
+        }
+        let mine = self.todos.iter().filter(|t| self.todo_hidden(t)).count();
+        let repo = self.repo_todos.as_ref().map_or(0, |rows| {
+            rows.iter().filter(|r| self.repo_todo_hidden(r)).count()
+        });
+        mine + repo
+    }
+
+    /// The stop the cursor is on, read through the one enumeration and clamped — `None` on a
+    /// board with nothing on it.
+    fn selected_todo_stop(&self) -> Option<TodoStop> {
+        let stops = self.todos_stops();
+        stops
+            .get(self.todos_sel.min(stops.len().saturating_sub(1)))
+            .cloned()
+    }
+
+    /// **`d` on the todos pane: hide the rows that are done, or bring them back.**
+    ///
+    /// # The cursor is carried across BY IDENTITY, not by its index
+    ///
+    /// `todos_sel` is an index into [`App::todos_stops`], and hiding takes entries OUT of that
+    /// list — so an index kept across the toggle lands on whichever row slid into the hole, which
+    /// is the same two-enumerations wound the stops exist to close, arriving from the other side.
+    /// The stop is therefore read before the switch moves and found again among the stops that are
+    /// left; only a stop that is now hidden falls back to the index, clamped, which puts the
+    /// cursor on the row that followed it.
+    pub(crate) fn toggle_todos_hide_done(&mut self) {
+        let was = self.selected_todo_stop();
+        self.todos_hide_done = !self.todos_hide_done;
+        let stops = self.todos_stops();
+        self.todos_sel = match was.and_then(|s| stops.iter().position(|here| *here == s)) {
+            Some(at) => at,
+            None => self.todos_sel.min(stops.len().saturating_sub(1)),
+        };
+        self.sync_repo_from_stop(&stops);
+        // **The window follows on the next DRAW**, which is the only place that knows which pane
+        // row the cursor landed on ([`App::todos_stop_rows`]). A scroll computed here would read
+        // the record the last frame wrote, and that record describes the list as it was.
+        self.todos_follow = true;
+        self.redraw = true;
+        // **Remembered across restarts, like every other switch on `/config`** — a switch that
+        // forgets is a switch the reader keeps re-making, and the operator asked for this one
+        // about a board whose done rows are the noise.
+        let saved = self.save_prefs(RetiredWrite::Union);
+        let n = self.todos_hidden_count();
+        let line = match (self.todos_hide_done, n) {
+            // A key that changes nothing on the screen reads as a key that does nothing: said,
+            // not silently a no-op.
+            (true, 0) => "nothing is done — there is nothing to hide".to_string(),
+            (true, n) => format!("{n} done hidden — d shows them"),
+            (false, _) => "the done rows are back".to_string(),
+        };
+        self.say(&format!("{line}{saved}"));
+    }
+
     /// **EVERY ROW OF THE TODOS PANE THE CURSOR MAY LAND ON, in the order the pane draws them** —
     /// leticl's `todos-stops`, and the ONE enumeration everything about the cursor reads.
     ///
@@ -912,12 +998,21 @@ impl App {
     /// *a stop must have a key*, not *every key must have a row*. A heading is a section label
     /// rather than a row with words of its own, and a reader who wants the section has the items
     /// under it.
+    ///
+    /// **A hidden row is not a stop**, and that is the same rule again from the other side: while
+    /// `d` holds the done rows back they are not drawn ([`App::todo_hidden`],
+    /// [`App::repo_todo_hidden`]), so a cursor that could still stop on one would be a cursor on a
+    /// row nobody can see — and both readers of this list (the arrows and a click) take it from
+    /// here.
     pub(crate) fn todos_stops(&self) -> Vec<TodoStop> {
         let mut out = vec![TodoStop::Add];
         // **In the order the pane DRAWS them**, which is the daemon's own order over the whole
         // union — one walk, so the cursor's sequence and the rows on the screen cannot come from
         // two readings of the list.
         for t in &self.todos {
+            if self.todo_hidden(t) {
+                continue;
+            }
             out.push(if t.by == letibot_sessionlog::event::TodoBy::Operator {
                 TodoStop::Mine(t.content.clone())
             } else {
@@ -926,7 +1021,7 @@ impl App {
         }
         if let Some(rows) = &self.repo_todos {
             for (i, r) in rows.iter().enumerate() {
-                if r.item {
+                if r.item && !self.repo_todo_hidden(r) {
                     out.push(TodoStop::Repo(i));
                 }
             }
@@ -1011,7 +1106,8 @@ pub(crate) fn wait_of(t: &letibot_sessionlog::event::TodoEntry) -> Option<WaitOn
 
 /// **One drawn `waits on …` link**: the pane row it is on, the columns its words cover
 /// (`from..to`, the pane's own columns, only the part that was not cut off), the row it belongs
-/// to (an index into `App::todos`), and what it opens.
+/// to — **its place among the session rows the pane DREW**, which is `1 + todo` of the stops, not
+/// its index on the board — and what it opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WaitLink {
     pub(crate) row: usize,
@@ -1136,7 +1232,8 @@ impl App {
     /// so the pane and the bar say which row was acted on — and its wait opens.
     pub(crate) fn open_wait_link(&mut self, k: usize) -> Option<Action> {
         let link = self.todos_wait_links.get(k)?.clone();
-        // The stops are the add control, then every session row in the list's order.
+        // The stops are the add control, then every session row the pane DREW, in its order —
+        // which is what `WaitLink::todo` counts.
         self.todos_sel = 1 + link.todo;
         self.open_wait(&link.target)
     }

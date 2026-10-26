@@ -88,13 +88,37 @@ fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
         let bar = a.hint_bar(1000);
         let row = App::surface_help(s);
         for b in s.bindings() {
-            let Says::Text(t) = b.says else { continue };
-            assert!(bar.contains(t), "{s:?}: the bar does not say {t:?}: {bar}");
+            // **What each binding says on the bar**, by the same route the bar takes: a `Text`
+            // says itself, a `Switch` asks the head which way it stands — and a `Switch` whose
+            // act the head has no words for is a binding the bar silently drops, which is the
+            // drift this test exists to catch.
+            let says = match b.says {
+                Says::Text(t) => t.to_string(),
+                Says::Switch(help) => {
+                    // The bar says the act that would happen now; the HELP says both directions,
+                    // because it is read without a list in front of it.
+                    if let Some((_, text)) = &row {
+                        assert!(
+                            text.contains(help),
+                            "{s:?}: the help row does not say {help:?}: {text}"
+                        );
+                    }
+                    a.switch_says(b)
+                        .unwrap_or_else(|| panic!("{s:?}: no words for {b:?}"))
+                }
+                Says::Row | Says::Nothing => continue,
+            };
+            assert!(
+                bar.contains(&says),
+                "{s:?}: the bar does not say {says:?}: {bar}"
+            );
             if let Some((_, text)) = &row {
-                assert!(
-                    text.contains(t),
-                    "{s:?}: the help row does not say {t:?}: {text}"
-                );
+                if matches!(b.says, Says::Text(_)) {
+                    assert!(
+                        text.contains(says.as_str()),
+                        "{s:?}: the help row does not say {says:?}: {text}"
+                    );
+                }
                 // The help is one wrapped screen; its row is in it.
                 let first = text.split(':').next().unwrap_or(text);
                 assert!(

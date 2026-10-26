@@ -1083,6 +1083,25 @@ pub struct App {
     /// a row whose WORDS changed is a different row (the board has no ids — see [`TodoStop`]) and
     /// the overlay says so rather than showing a text that is no longer on the board.
     pub(crate) todos_open: Option<TodoStop>,
+    /// **The todos pane is hiding the rows that are done** — the operator: *"we need to be able
+    /// to hide done todo items"*. `d` on the pane flips it, the pane's muted line says how many
+    /// rows it is holding back, and the head remembers the answer in `head.toml`
+    /// (`todos_hide_done`) because a switch that forgets is a switch the reader keeps re-making.
+    ///
+    /// **What it hides is `completed`, and only that** — not the rows set aside and not the ones
+    /// struck off, which are on the board precisely because they were NOT finished — and it
+    /// hides them on both halves: the session's rows whatever their author, and the items the
+    /// repo's `TODO.md` marks `[x]`. Counts are untouched: the header counts open work
+    /// (`todo_counts`) and a done row was never part of it.
+    pub(crate) todos_hide_done: bool,
+    /// **The next draw of the todos pane scrolls the window to the cursor.**
+    ///
+    /// The panes scroll by the rows they recorded while drawing ([`App::todos_stop_rows`]), and
+    /// a change that moves the cursor without a row number to move it by — hiding and showing
+    /// the done rows takes rows out of the list under the cursor — has no record to scroll by
+    /// until the next frame writes one. So the change asks the DRAW to follow the cursor, which
+    /// is the sibling of `scroll_into_view` for the case the row is not known yet.
+    pub(crate) todos_follow: bool,
     pub(crate) repo_sel: usize,
     pub(crate) repo_open: bool,
     /// **How far the open pane is scrolled**, in rows hidden above it.
@@ -1978,6 +1997,8 @@ impl App {
             answering: Vec::new(),
             absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
+            todos_hide_done: false,
+            todos_follow: false,
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),

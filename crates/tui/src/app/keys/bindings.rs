@@ -126,6 +126,9 @@ pub(crate) enum Act {
     PluginKey,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
+    /// **The todos pane's `d`: hide the rows that are done, or bring them back** —
+    /// [`App::toggle_todos_hide_done`], and the switch it flips is remembered in `head.toml`.
+    HideDone,
 }
 
 /// **What the bar and the help say about a binding.**
@@ -136,6 +139,13 @@ pub(crate) enum Says {
     Text(&'static str),
     /// It depends on the row under the cursor; the surface says ([`App::row_says`]).
     Row,
+    /// **It depends on a SWITCH, and the two ways it stands are the two answers.** The help
+    /// writes the words for both states (the screen it is read from can be drawn at either), and
+    /// the bar asks the head which way the switch stands now and says the act that would happen —
+    /// so `d hides done` becomes `d shows done` the moment it does, and neither reading names a
+    /// key that would do nothing. *Which* switch is the binding's own `act`
+    /// ([`App::switch_says`]), so the two can never be about different settings.
+    Switch(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,9 +211,26 @@ const TODOS: &[Binding] = &[
         Act::NagToggle,
         Text("pauses or resumes the plan-checks"),
     ),
+    // **`d` — hide the rows that are done** — the operator: *"we need to be able to hide done todo
+    // items"*. A plain letter, like the pane's other two toggles (`tab`, `n`), and its words are
+    // the switch's own so the bar never offers `hide` over a list that is already hidden.
+    b(
+        &[On::Char('d')],
+        Empty,
+        Act::HideDone,
+        Says::Switch("hides the done rows, or shows them again"),
+    ),
     PAGE,
     WHEEL,
 ];
+
+/// **The words `d` carries now**: what it would DO, which is the half of the switch the bar must
+/// not get wrong — a bar that went on saying `hides done` over a list that is already hidden names
+/// a key whose press does the opposite of what it says.
+fn hide_done_says(hide: bool) -> &'static str {
+    if hide { "shows done" } else { "hides done" }
+}
+
 const TODO_ROW: &[Binding] = &[
     b(UPDOWN, Always, Act::Scroll, Text("scroll")),
     PAGE,
@@ -556,6 +583,15 @@ impl App {
         }
     }
 
+    /// **The words for a SWITCH binding**, from the head — see [`Says::Switch`]. `None` for an act
+    /// this table has no words for, and the bar then says nothing rather than guessing.
+    pub(crate) fn switch_says(&self, b: &Binding) -> Option<String> {
+        match b.act {
+            Act::HideDone => Some(hide_done_says(self.todos_hide_done).to_string()),
+            _ => None,
+        }
+    }
+
     /// **The bar's words for surface `s`, generated from its table**: each binding that says
     /// something, two bindings that say the same thing joined (`enter or tab opens the card`),
     /// the typed path the surface advertises, and what Esc does.
@@ -566,6 +602,12 @@ impl App {
                 Says::Nothing => continue,
                 Says::Text(t) => t.to_string(),
                 Says::Row => match self.row_says(s, b) {
+                    Some(t) => t,
+                    None => continue,
+                },
+                // **A switch says what its next press would do**, which is the head's answer and
+                // not the row's.
+                Says::Switch(_) => match self.switch_says(b) {
                     Some(t) => t,
                     None => continue,
                 },
@@ -625,6 +667,9 @@ impl App {
             .filter_map(|b| match b.says {
                 Says::Text(t) => Some(format!("{} {t}", keys_label(b.on))),
                 Says::Row => Some(format!("{} acts on the row", keys_label(b.on))),
+                // **Both directions on the help screen**: it is read without a list in front of
+                // it, so a reader is owed what the key does in either state of the switch.
+                Says::Switch(help) => Some(format!("{} {help}", keys_label(b.on))),
                 Says::Nothing => None,
             })
             .collect();

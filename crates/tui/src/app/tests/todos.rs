@@ -2814,3 +2814,471 @@ fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
         "the put-away card went too"
     );
 }
+
+// ─────────────────────────── `d`, the done rows ───────────────────────────
+
+/// **A head on a board of the statuses given** — `todos_head`'s sibling, for the tests about rows
+/// that are DONE, which `todos_head` never makes (it is the walk's, and the walk is over open work).
+fn status_head(
+    rows: &[(
+        &str,
+        letibot_sessionlog::event::TodoBy,
+        letibot_sessionlog::event::TodoStatus,
+    )],
+) -> App {
+    use letibot_sessionlog::event::TodoEntry;
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: rows
+                .iter()
+                .map(|(content, by, status)| TodoEntry {
+                    by: by.clone(),
+                    content: (*content).to_string(),
+                    status: *status,
+                    when: None,
+                    needs: Vec::new(),
+                })
+                .collect(),
+        },
+    )));
+    a.key(Key::CtrlT);
+    a
+}
+
+/// **`d` hides every row that is done, and a muted line says how many** — the operator: *"we need
+/// to be able to hide done todo items"*.
+///
+/// **Both authors go, and the rows that are NOT done stay** — a row set aside is *not yet* and a
+/// row struck off is history, so sweeping them away with the finished ones would hide the two
+/// states the operator put there by hand. The counts do not move: the header counts open work and
+/// a done row was never part of it.
+#[test]
+fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("the model's done row", TodoBy::Model, TodoStatus::Completed),
+        ("the model's open row", TodoBy::Model, TodoStatus::Pending),
+        ("your done row", TodoBy::Operator, TodoStatus::Completed),
+        ("your open row", TodoBy::Operator, TodoStatus::InProgress),
+        (
+            "a subagent's done row",
+            TodoBy::Parent("Parent s-sub-1".into()),
+            TodoStatus::Completed,
+        ),
+        (
+            "a row you set aside",
+            TodoBy::Operator,
+            TodoStatus::Postponed,
+        ),
+    ]);
+    let before = a.screen(110, 40).join("\n");
+    // The header's own line, so the count is compared with ITSELF rather than with a number this
+    // test would have to keep in step with the fixture.
+    let head_of = |screen: &str| {
+        screen
+            .lines()
+            .find(|l| l.trim_start().starts_with("todos — "))
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| panic!("no header: {screen}"))
+    };
+    for row in [
+        "the model's done row",
+        "your done row",
+        "a subagent's done row",
+    ] {
+        assert!(
+            before.contains(row),
+            "{row} is not drawn before the switch: {before}"
+        );
+    }
+    assert!(
+        !before.contains("done hidden"),
+        "the muted line is drawn with nothing hidden: {before}"
+    );
+
+    a.key(Key::Char('d'));
+    let after = a.screen(110, 40).join("\n");
+    for row in [
+        "the model's done row",
+        "your done row",
+        "a subagent's done row",
+    ] {
+        assert!(
+            !after.contains(row),
+            "{row} is still drawn with the switch on: {after}"
+        );
+    }
+    for row in [
+        "the model's open row",
+        "your open row",
+        "a row you set aside",
+    ] {
+        assert!(
+            after.contains(row),
+            "{row} went with the done ones: {after}"
+        );
+    }
+    assert!(
+        after.contains("3 done hidden · d shows them"),
+        "the muted line does not count them: {after}"
+    );
+    assert_eq!(
+        head_of(&before),
+        head_of(&after),
+        "the header counts what it counted before"
+    );
+
+    // **And `d` again brings them back** — the switch is not a one-way door.
+    a.key(Key::Char('d'));
+    let back = a.screen(110, 40).join("\n");
+    for row in [
+        "the model's done row",
+        "your done row",
+        "a subagent's done row",
+    ] {
+        assert!(back.contains(row), "{row} did not come back: {back}");
+    }
+    assert!(
+        !back.contains("done hidden"),
+        "the muted line outlived the switch: {back}"
+    );
+}
+
+/// **`d` says which way it stands** — a bar that went on offering `hides done` over a list that is
+/// already hidden names a key whose press does the opposite of what it says.
+#[test]
+fn the_bar_says_d_hides_done_and_then_that_it_shows_them() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("done already", TodoBy::Model, TodoStatus::Completed),
+        ("still open", TodoBy::Model, TodoStatus::Pending),
+    ]);
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("d hides done"), "{bar}");
+    assert!(!bar.contains("d shows done"), "{bar}");
+
+    a.key(Key::Char('d'));
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("d shows done"), "{bar}");
+    assert!(
+        !bar.contains("d hides done"),
+        "the bar still offers the act that already happened: {bar}"
+    );
+    // The help lists both, because it is read without a list in front of it.
+    let (_, help) = App::surface_help(Surface::Todos).expect("the todos pane is in the help");
+    assert!(
+        help.contains("d hides the done rows, or shows them again"),
+        "{help}"
+    );
+}
+
+/// **The cursor keeps its ROW, not its index, when the done rows go past it.**
+///
+/// `todos_sel` is an index into the one enumeration, and hiding takes entries out of it — an index
+/// kept across the switch lands on whichever row slid into the hole.
+#[test]
+fn the_cursor_keeps_the_row_it_was_on_when_the_done_rows_are_hidden() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        (
+            "done above the cursor",
+            TodoBy::Model,
+            TodoStatus::Completed,
+        ),
+        ("done above it too", TodoBy::Operator, TodoStatus::Completed),
+        (
+            "the row under the cursor",
+            TodoBy::Model,
+            TodoStatus::Pending,
+        ),
+        ("the last row", TodoBy::Model, TodoStatus::Pending),
+    ]);
+    // The add control, then three Downs: onto the row this test is about.
+    a.key(Key::Down);
+    a.key(Key::Down);
+    a.key(Key::Down);
+    let screen = a.screen(110, 40);
+    assert!(
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("the row under the cursor")),
+        "the cursor is not on its row before the switch: {}",
+        screen.join("\n")
+    );
+
+    a.key(Key::Char('d'));
+    let screen = a.screen(110, 40);
+    assert!(
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("the row under the cursor")),
+        "the cursor slid onto another row when the done ones went: {}",
+        screen.join("\n")
+    );
+
+    // **The selected row HIDDEN is the other half**: the cursor lands on the row that followed it
+    // rather than on an index that no longer exists.
+    a.key(Key::Char('d'));
+    a.key(Key::Down);
+    let screen = a.screen(110, 40);
+    assert!(
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("the last row")),
+        "the walk does not reach the last row: {}",
+        screen.join("\n")
+    );
+    a.key(Key::Char('d'));
+    let screen = a.screen(110, 40);
+    assert!(
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("the last row")),
+        "a hidden row under the cursor took the mark with it: {}",
+        screen.join("\n")
+    );
+}
+
+/// **Hiding a done row does not renumber the operator's rows** — the number beside each of them is
+/// what `/todo done N`, `/todo rm N` and `/todo postpone N` take, and a counter that skipped the
+/// hidden rows would move somebody else's row.
+#[test]
+fn hiding_a_done_row_does_not_renumber_the_operators_rows() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("the first", TodoBy::Operator, TodoStatus::Pending),
+        ("the second, done", TodoBy::Operator, TodoStatus::Completed),
+        ("the third", TodoBy::Operator, TodoStatus::Pending),
+    ]);
+    let before = a.screen(110, 40).join("\n");
+    assert!(before.contains("2  [x] the second, done"), "{before}");
+    assert!(before.contains("3  [ ] the third"), "{before}");
+
+    a.key(Key::Char('d'));
+    let after = a.screen(110, 40).join("\n");
+    assert!(
+        !after.contains("the second, done"),
+        "the done row is still drawn: {after}"
+    );
+    assert!(
+        after.contains("3  [ ] the third"),
+        "the third row was renumbered to: {after}"
+    );
+    assert!(
+        after.contains("1  [ ] the first"),
+        "the first row lost its number: {after}"
+    );
+}
+
+/// **The repo's done items go the same way, and its headings keep their own cookies** — a heading
+/// counts the FILE, not this pane, so `[1/2]` stays `[1/2]` while one of the two is hidden.
+#[test]
+fn the_files_done_items_are_hidden_and_its_headings_keep_their_cookies() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-todo-hide-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    std::fs::write(
+        dir.join("TODO.md"),
+        "## Phase 0 — the plan\n\n- [x] **T1** the finished item\n- [ ] **T2** the open item\n",
+    )
+    .expect("write");
+    let mut a = status_head(&[("a session row", TodoBy::Model, TodoStatus::Pending)]);
+    a.wiring.workspace = dir.display().to_string();
+    a.refresh_repo_todos();
+
+    let before = a.screen(110, 40).join("\n");
+    assert!(before.contains("T1 the finished item"), "{before}");
+    assert!(before.contains("T2 the open item"), "{before}");
+
+    a.key(Key::Char('d'));
+    let after = a.screen(110, 40).join("\n");
+    assert!(
+        !after.contains("T1 the finished item"),
+        "the file's done item is still drawn: {after}"
+    );
+    assert!(after.contains("T2 the open item"), "{after}");
+    assert!(
+        after.contains("Phase 0 — the plan  [1/2]"),
+        "the heading's cookie is the file's, and it moved: {after}"
+    );
+    assert!(
+        after.contains("1 done hidden · d shows them"),
+        "the muted line does not count the file's hidden item: {after}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **When every session row is hidden the pane does not say `none yet`** — that sentence is rano's
+/// for the empty list it was handed, and it is FALSE of a board whose rows are merely folded away.
+/// It is replaced by the muted line, not stacked under it, so the two never contradict each other
+/// two lines apart.
+#[test]
+fn a_board_whose_rows_are_all_hidden_does_not_say_none_yet() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        (
+            "the model's only row, done",
+            TodoBy::Model,
+            TodoStatus::Completed,
+        ),
+        (
+            "your only row, done",
+            TodoBy::Operator,
+            TodoStatus::Completed,
+        ),
+    ]);
+    assert!(
+        !a.screen(110, 40).join("\n").contains("none yet"),
+        "the fixture starts empty, which is not the case this test is about"
+    );
+    a.key(Key::Char('d'));
+    let after = a.screen(110, 40).join("\n");
+    assert!(
+        !after.contains("none yet"),
+        "the pane says there is nothing on a board with two rows hidden: {after}"
+    );
+    assert!(
+        after.contains("2 done hidden · d shows them"),
+        "and the muted line does not stand in its place: {after}"
+    );
+}
+
+/// **Hiding scrolls the window to the cursor** — the rows go out from ABOVE the reader, so a
+/// window left where it was can end up looking at a list that no longer holds the cursor.
+///
+/// The panes scroll by the rows the last draw recorded, and the draw that hid them is the first
+/// one that knew the new numbers: `todos_follow` is what makes THAT draw scroll rather than the
+/// keypress scroll against the record of the draw before it.
+#[test]
+fn hiding_the_rows_above_the_cursor_keeps_the_cursor_on_the_screen() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    // **Thirty rows above the cursor and thirty below it, each with words of its own**: the rows
+    // that go out are enough that a window left where it was would be looking at rows the new list
+    // no longer has, and the rows that stay are enough that the clamp cannot quietly drag it back.
+    // **Distinct words matter** — a board's identity is its text ([`TodoStop`]), so sixty rows
+    // saying the same thing would all draw the mark and prove nothing about which one it is on.
+    let contents: Vec<String> = (0..60)
+        .map(|i| {
+            if i < 30 {
+                format!("done row {i}")
+            } else {
+                format!("open row {i}")
+            }
+        })
+        .collect();
+    let rows: Vec<(&str, TodoBy, TodoStatus)> = contents
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let status = if i < 30 {
+                TodoStatus::Completed
+            } else {
+                TodoStatus::Pending
+            };
+            (text.as_str(), TodoBy::Model, status)
+        })
+        .collect();
+    let mut a = status_head(&rows);
+    // The add control, then thirty Downs onto the first open row, which is well below the fold —
+    // **drawn between presses**, because the arrows scroll by the rows the last DRAW recorded: a
+    // walk with no frames in it never moves the window, and the case this test is about is a
+    // window that HAS moved.
+    a.screen(110, 20);
+    for _ in 0..31 {
+        a.key(Key::Down);
+        a.screen(110, 20);
+    }
+    assert!(
+        a.pane_scroll > 0,
+        "the window never moved, so this proves nothing"
+    );
+
+    a.key(Key::Char('d'));
+    let screen = a.screen(110, 20);
+    let marked: Vec<&String> = screen.iter().filter(|l| l.contains('▸')).collect();
+    assert_eq!(
+        marked.len(),
+        1,
+        "one mark, or the fixture repeats itself: {marked:?}"
+    );
+    assert!(
+        marked[0].contains("open row 30"),
+        "the cursor is not on the row it had, or is not on the screen at all: {}",
+        screen.join("\n")
+    );
+}
+
+/// **`d` is the composer's while a line is typed** — the letters are the operator's to type first,
+/// and the empty-composer guard is what keeps the new key from eating one in the middle of a word.
+/// **The first letter of a word over a pane IS a key** (that is what a pane letter is, and the
+/// bindings table holds every plain letter to this guard for it), so the case pinned here is a
+/// word already under way.
+#[test]
+fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
+    a.key(Key::Char('d'));
+    assert!(a.todos_hide_done, "the first `d` is the pane's");
+    assert!(a.editor.text().is_empty(), "{}", a.editor.text());
+
+    let mut sent = Vec::new();
+    for c in "legacy deploy".chars() {
+        sent.extend(a.key(Key::Char(c)));
+    }
+    assert!(sent.is_empty(), "typing sent {sent:?}");
+    assert_eq!(a.editor.text(), "legacy deploy");
+    assert!(
+        a.todos_hide_done,
+        "a `d` inside a typed line flipped the switch"
+    );
+}
+
+/// **The switch outlives the head** — `todos_hide_done` in `head.toml`, which is where every other
+/// switch this head keeps lives. A switch that forgets is a switch the reader keeps re-making.
+#[test]
+fn the_hidden_switch_is_remembered_by_the_next_head() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let dir = std::env::temp_dir().join(format!("letibot-todo-hide-prefs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("head.toml");
+
+    let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
+    a.prefs_path = Some(path.clone());
+    a.key(Key::Char('d'));
+    assert!(a.todos_hide_done, "the key did not flip the switch");
+    let on_disk = std::fs::read_to_string(&path).expect("head.toml written");
+    assert!(
+        on_disk.contains("todos_hide_done = true"),
+        "the switch was not written down: {on_disk}"
+    );
+    assert!(
+        !a.notice.clone().unwrap_or_default().contains("not saved"),
+        "the confirmation says it was not saved: {:?}",
+        a.notice
+    );
+
+    // The next head: a fresh app, the same file, and `load_prefs` is all it runs.
+    let mut fresh = app();
+    fresh.prefs_path = Some(path.clone());
+    fresh.load_prefs();
+    assert!(
+        fresh.todos_hide_done,
+        "the switch did not come back on a restarted head"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

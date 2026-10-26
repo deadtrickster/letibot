@@ -295,6 +295,9 @@ impl App {
             }
         }
         self.raw_calls = p.raw_calls;
+        // **The todos pane's switch comes with the rest** — it was one line in the file and a
+        // reader who hid the done rows yesterday gets the same board today.
+        self.todos_hide_done = p.todos_hide_done;
         self.visibility = self.visibility.with(
             Show::RawCalls,
             if p.raw_calls {
@@ -339,6 +342,7 @@ impl App {
             thinking: fold_word(self.reasoning).into(),
             tools: fold_word(self.tools).into(),
             raw_calls: self.raw_calls,
+            todos_hide_done: self.todos_hide_done,
             verbosity: self.visibility.as_str(),
             retired: self.dismissed.clone(),
             todo_template: self.todo_template.clone(),
@@ -453,6 +457,17 @@ impl App {
             },
             ConfigEdit::Head(HeadSetting::RawCalls),
         ));
+        // **The todos pane's `d`, here because every switch this head keeps is here** — the same
+        // value the pane's bar names, so the two can never disagree about which way it stands.
+        rows.push(head(
+            "todo done rows",
+            if self.todos_hide_done {
+                "hidden".into()
+            } else {
+                "shown".into()
+            },
+            ConfigEdit::Head(HeadSetting::HideDone),
+        ));
         // **THE GIT FIELD'S FORMAT IS HERE BECAUSE THE OPERATOR LOOKED FOR IT HERE** —
         // leticl's `72a4314` finding, and the row names the template IN FORCE (so the pane
         // and the row can never disagree), with the first stop of the cycle the built-in
@@ -547,6 +562,14 @@ impl App {
                     HeadSetting::RawCalls => {
                         self.raw_calls = !self.raw_calls;
                         self.invalidate_history();
+                    }
+                    // **The pane's own switch, flipped from the pane's own key** — one toggle
+                    // behind two doors, so the file, the bar and the `/config` row cannot drift.
+                    // It saves and says its piece itself, which is why this arm returns early
+                    // rather than running the generic save below it a second time.
+                    HeadSetting::HideDone => {
+                        self.toggle_todos_hide_done();
+                        return None;
                     }
                     HeadSetting::GitFormat => {
                         // **Three stops, and the default is `None` rather than a fourth
@@ -666,6 +689,12 @@ pub(crate) enum HeadSetting {
     Thinking,
     Tools,
     RawCalls,
+    /// **The todos pane's `d`** — the done rows hidden, or shown again. A row here for the same
+    /// reason as every other field of [`crate::prefs::HeadPrefs`]: a switch this head keeps is a
+    /// switch the reader can find and change without knowing the letter. Enter goes through
+    /// [`App::toggle_todos_hide_done`], the one implementation, so the notice and the save are
+    /// the same from either door.
+    HideDone,
     /// **The git field's template** — cycles three stops: the shipped default, a spaced
     /// one, and the branch alone. leticl's own cycle (`%flip-head-setting`: *"Three stops:
     /// the shipped default, a spaced one, and the branch alone. `nil` is the default rather
