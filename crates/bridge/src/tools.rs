@@ -1,13 +1,16 @@
-//! **The nine verbs**, and the map of sessions the bridge holds.
+//! **The ten verbs**, and the map of sessions the bridge holds.
 //!
 //! `docs/claude-code-bridge.md` fixes the table: each tool's input, and what it answers.
-//! Two things in it are worth naming here because they are the design rather than a
+//! Three things in it are worth naming here because they are the design rather than a
 //! shape:
 //!
 //! * **`leticode_start` keeps the head.** It creates the session, sends the brief and
 //!   stays attached on its own socket, because a session nobody is attached to cannot ask
 //!   anybody anything — and the whole point of running leticode from Claude Code is that
 //!   the gate has somebody to ask.
+//! * **`leticode_attach` joins, and does not start.** The same head, on a session somebody
+//!   else opened — the review queue's `s-gatekeeper`, most of the time — and by default
+//!   read-only: a watcher never sends, never answers, never interrupts (B6).
 //! * **`leticode_answer` sends the protocol's `Answer`**, not a shell command and not a
 //!   prompt: the decision lands in the corpus attributed to the head that gave it, which
 //!   is what makes "who approved this" answerable afterwards.
@@ -35,7 +38,7 @@ pub const DEFAULT_MODE: &str = "writes-allowed";
 /// that produced more has produced more than a caller reads in one go.
 pub const EVENTS_LIMIT: usize = 50;
 
-/// What the bridge holds: one attached head per session it started, by session id.
+/// What the bridge holds: one attached head per session it started or joined, by session id.
 ///
 /// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time by
 /// one MCP client, and the only concurrency here is each head's own collecting thread.
@@ -119,6 +122,89 @@ impl Bridge {
         g.insert(h.session.clone(), h.clone());
     }
 
+    /// **Join a session this bridge did not start** — `leticode_attach` (B6).
+    ///
+    /// The operator cannot see who in the merge queue is doing what: the review queue's own
+    /// session lives in the operator's daemon and spawns a reviewer per row, and until now
+    /// the only way to follow it from Claude Code was to read the store and guess. This
+    /// attaches a head to it — or to any other session a folder's daemon holds — and
+    /// everything else in the table then works on it: `status`, `events`, `asks`, `list`,
+    /// `wait`, `diff`. What it does not do is the brief: a session that already exists has
+    /// already been told what to do.
+    ///
+    /// **It joins a running daemon and never starts one.** A daemon nobody asked for is the
+    /// defect Q1 fixed in the other direction — a package's own daemon taking a repository's
+    /// merge-queue lease — and here the folder is usually the operator's: `leticode_start` is
+    /// the tool that starts a daemon, and this one refuses rather than *helpfully* beginning a
+    /// second daemon over a workspace whose daemon is momentarily busy.
+    ///
+    /// `watch_only` is the default and the whole point (see [`Head::attach_watching`]): the
+    /// session keeps the head that holds it, and this one only watches — no prompt, no
+    /// answer, no interrupt — so a queue the operator is also watching is not steered by a
+    /// second hand. `watch_only: false` exists for the other job, driving a session this
+    /// bridge did not open (a resumed package, a session a person left idle).
+    pub fn attach(&self, worktree: &str, session: &str, watch_only: bool) -> Result<Value, String> {
+        let session = session_name(session)?;
+        let d = daemon::resolve(Path::new(worktree))?;
+        if !daemon::is_up(&d.socket) {
+            return Err(format!(
+                "no daemon is up for {}: nothing is accepting on {}. `leticode_attach` joins a \
+                 running daemon and never starts one — a second daemon for one folder is how \
+                 two processes come to interleave rows into one transcript. `leticode_start` \
+                 is the tool that starts a daemon",
+                d.workspace.display(),
+                d.socket.display()
+            ));
+        }
+        // **A second attach to a session this bridge already holds is refused.** The map is
+        // keyed by session id, so a second entry would silently replace the first: the socket
+        // that answers its cards would shut down, the ring would start over, and a caller
+        // holding a `since` cursor would read a stream that went backwards.
+        if let Some(held) = self.held(&session) {
+            return Err(format!(
+                "this bridge already holds `{session}` ({}); an attach would replace that head \
+                 and restart the progress ring `leticode_events` counts from. `leticode_list` \
+                 says what is held",
+                if held.watch_only {
+                    "watching it"
+                } else {
+                    "driving it"
+                }
+            ));
+        }
+        let h = Arc::new(if watch_only {
+            Head::attach_watching(&d, &session)?
+        } else {
+            Head::attach(&d, &session)?
+        });
+        let s = h.snapshot();
+        let answer = json!({
+            "session": session,
+            "worktree": d.workspace.display().to_string(),
+            "socket": d.socket.display().to_string(),
+            // `resolve` never starts anything, so this is the field's own answer and not a
+            // constant written into a reply: an attach that had started a daemon would be
+            // the bug this tool exists to not have.
+            "daemon_started": d.started,
+            "watch_only": watch_only,
+            "can_decide": !watch_only,
+            "state": s.word(),
+            "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
+            "last_message": first_line(s.last_message()),
+        });
+        self.hold(&h);
+        Ok(answer)
+    }
+
+    /// The head this bridge already holds for a session, if any.
+    fn held(&self, session: &str) -> Option<Arc<Head>> {
+        self.heads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .cloned()
+    }
+
     /// A line into a session the bridge holds. Queued behind a running turn, as a head's
     /// own prompt is — the daemon never rejects it.
     pub fn send(&self, session: &str, text: &str) -> Result<Value, String> {
@@ -142,6 +228,9 @@ impl Bridge {
         let mut out = json!({
             "session": session,
             "state": s.word(),
+            // **Whether this head may act on the session at all** (B6): a caller that cannot
+            // see the difference asks twice why `leticode_send` refused.
+            "watch_only": h.watch_only,
             "turn": turn,
             "turn_id": s.turn_id,
             "todos": serde_json::to_value(&s.todos).unwrap_or(Value::Null),
@@ -276,6 +365,7 @@ impl Bridge {
                     "session": h.session,
                     "worktree": h.worktree.display().to_string(),
                     "socket": h.socket.display().to_string(),
+                    "watch_only": h.watch_only,
                     "state": s.word(),
                     "pending_asks": s.asks.len(),
                     "last_message": first_line(s.last_message()),
@@ -311,6 +401,29 @@ impl Bridge {
     }
 }
 
+/// **The session an attach names.**
+///
+/// Most attaches name an id — `s-gatekeeper` above all — but the review queue's session is
+/// the one session in the tree whose id is a *constant*, the same string in every daemon on
+/// every box, and a name a person types has to be that constant rather than a second
+/// spelling of it. `gatekeeper` is the name; [`letibot_sessionlog::GATEKEEPER_SESSION`] is
+/// the id it resolves to, and `harnessd`'s `sessions::gatekeeper::SESSION` is the same value
+/// under the daemon's own name.
+fn session_name(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(
+            "`session` is empty: an attach has to name the session it joins — an id, or \
+                    `gatekeeper` for the review queue's"
+                .into(),
+        );
+    }
+    Ok(match raw {
+        "gatekeeper" => letibot_sessionlog::GATEKEEPER_SESSION.to_string(),
+        other => other.to_string(),
+    })
+}
+
 /// The first line of a message, for a listing row — a status line is one line, and a
 /// report of forty lines in a table is a table nobody reads.
 fn first_line(text: &str) -> String {
@@ -323,7 +436,7 @@ fn first_line(text: &str) -> String {
         .collect()
 }
 
-/// **The nine tools, exactly as the design's table names them.**
+/// **The ten tools, exactly as the design's table names them.**
 ///
 /// The schemas are JSON Schema objects because MCP requires `inputSchema` to be one, and
 /// `required` is stated rather than inferred: a client that sends `leticode_answer` without
@@ -346,6 +459,28 @@ pub fn list() -> Value {
                      "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." }
                  },
                  "required": ["worktree", "brief"]
+             })),
+        tool("leticode_attach",
+             "Join a session that is already running — the merge queue's own `s-gatekeeper`, a \
+              package a person resumed, any session a folder's daemon holds — and hold it \
+              the way `leticode_start` holds one, without a brief. It JOINS a running daemon and \
+              never starts one: with nothing listening on that folder's socket it refuses and \
+              says so, because a second daemon for one folder is how two processes come to \
+              interleave rows into one transcript. `watch_only` (the default) makes this a \
+              WATCHING head: it reads the turn, the last message, the todos, the pending asks \
+              and the progress ring, and `leticode_send`, `leticode_answer` and `leticode_stop` \
+              then refuse, because the head that holds the session is somebody else's. Its \
+              reviewers are child sessions and `leticode_events` shows each of them starting \
+              and ending; following one into its own turns needs a second `leticode_attach` on \
+              that child's id.",
+             json!({
+                 "type": "object",
+                 "properties": {
+                     "worktree": { "type": "string", "description": "Absolute path to a folder of the checkout whose daemon holds the session — the daemon is found by the workspace's hash, so a worktree of the same repository is the same daemon." },
+                     "session": { "type": "string", "description": "The session id, or the name `gatekeeper` for the review queue's session (`s-gatekeeper`, the one id every daemon spells the same)." },
+                     "watch_only": { "type": "boolean", "description": "Default true: watch and never act — no prompt, no answer, no interrupt. False drives the session as `leticode_start` would, and takes over answering its asks." }
+                 },
+                 "required": ["worktree", "session"]
              })),
         tool("leticode_send",
              "Send an operator line into a running session. Queued behind a running turn as \
@@ -377,11 +512,13 @@ pub fn list() -> Value {
         tool("leticode_events",
              "The session's progress since a cursor, folded to one line each: tool calls (name \
               and what they act on), their outcomes, background jobs starting and ending, \
-              turns, permission asks opening and being answered, warnings and failures, and \
-              the first line of each assistant message. Never the banner, the memory watcher \
-              or a payload — for those, read the transcript. Pass the `next` of one answer \
-              as the `since` of the next; a cursor the ring has outlived is answered with \
-              what remains plus `dropped`, the count it can no longer show you.",
+              turns, permission asks opening and being answered, the reviewer subagents a \
+              session spawns (their slug, the branch they were given, and how they ended — the \
+              review queue's children are how its work appears here), warnings and failures, \
+              and the first line of each assistant message. Never the banner, the memory \
+              watcher or a payload — for those, read the transcript. Pass the `next` of one \
+              answer as the `since` of the next; a cursor the ring has outlived is answered \
+              with what remains plus `dropped`, the count it can no longer show you.",
              json!({
                  "type": "object",
                  "properties": {
@@ -441,8 +578,9 @@ pub fn list() -> Value {
                  "required": ["session"]
              })),
         tool("leticode_list",
-             "The sessions this bridge is holding, with their state and pending ask count. \
-              It lists what this process holds, not what the daemon has on disk.",
+             "The sessions this bridge is holding, with their state, pending ask count and \
+              whether each is only watched (`leticode_attach`'s default) or driven. It lists \
+              what this process holds, not what the daemon has on disk.",
              json!({ "type": "object", "properties": {} })),
     ]})
 }
@@ -456,6 +594,7 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 pub fn names() -> Vec<&'static str> {
     vec![
         "leticode_start",
+        "leticode_attach",
         "leticode_send",
         "leticode_status",
         "leticode_events",
@@ -517,6 +656,12 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let mode = arg_opt_str(args, "mode")?.unwrap_or_else(|| DEFAULT_MODE.to_string());
             bridge.start(&worktree, &brief, model.as_deref(), &mode)
         }
+        "leticode_attach" => {
+            let worktree = arg_str(args, "worktree")?;
+            let session = arg_str(args, "session")?;
+            let watch_only = arg_bool(args, "watch_only", true)?;
+            bridge.attach(&worktree, &session, watch_only)
+        }
         "leticode_send" => bridge.send(&arg_str(args, "session")?, &arg_str(args, "text")?),
         "leticode_status" => bridge.status(&arg_str(args, "session")?),
         "leticode_events" => {
@@ -552,6 +697,14 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 /// **The wake-up.** Attach, wait for the first thing that needs a person, and say which it
 /// was — the exit code is the notification, and the line on stdout is the payload.
 ///
+/// **The head this verb attaches is a WATCHER** (B6). A `wait` is a process that never
+/// answers anything and is usually gone within minutes, so declaring it able to decide is the
+/// lie the caps field exists against: `Answers::ask` reads `deciding_heads` before it posts,
+/// and a session whose only head was a `wait` would post a card, be watched exit `10` with it,
+/// and then sit on that card until its deadline — a timeout reported as nobody having
+/// answered a question that nobody was ever able to answer. As a watcher it still SEES the
+/// cards (the daemon publishes to every attached head), which is all it ever did with them.
+///
 /// Codes: `0` the turn ended (the last assistant message is on stdout), `10` an ask is
 /// pending (the ask is on stdout), `20` the session failed, `30` the timeout passed.
 pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
@@ -559,7 +712,7 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
         Ok(d) => d,
         Err(e) => return (20, e),
     };
-    let h = match Head::attach(&d, session) {
+    let h = match Head::attach_watching(&d, session) {
         Ok(h) => h,
         Err(e) => return (20, e),
     };
@@ -575,15 +728,15 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Nine tools, each with a schema and a required list** — the count and the names the
-    /// design's table fixes, with `leticode_events` added by package B2. A tool added to
-    /// `tools/list` and forgotten in `call` (or the other way round) is the defect this
-    /// pairs against.
+    /// **Ten tools, each with a schema and a required list** — the count and the names the
+    /// design's table fixes, with `leticode_events` added by package B2 and `leticode_attach`
+    /// by B6. A tool added to `tools/list` and forgotten in `call` (or the other way round)
+    /// is the defect this pairs against.
     #[test]
-    fn the_nine_tools_are_listed_with_schemas() {
+    fn the_ten_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 9, "{listed}");
+        assert_eq!(tools.len(), 10, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
@@ -644,6 +797,22 @@ mod tests {
         assert!(e.contains("leticode_start"), "{e}");
         // And an empty bridge lists empty, rather than failing: a listing is a question.
         assert_eq!(b.list()["sessions"].as_array().map(|v| v.len()), Some(0));
+    }
+
+    /// **`gatekeeper` is the review queue's id, not a second spelling of it** (B6): the name
+    /// resolves to the constant every daemon spells the same, an id passes through, and an
+    /// empty one is refused rather than read as "whatever the daemon calls current" — a
+    /// watcher that landed on somebody else's session would report on the wrong conversation.
+    #[test]
+    fn the_gatekeeper_name_resolves_to_the_queues_id() {
+        assert_eq!(
+            session_name("gatekeeper").expect("a name"),
+            letibot_sessionlog::GATEKEEPER_SESSION
+        );
+        assert_eq!(session_name(" s-1789 ").expect("an id"), "s-1789");
+        let e = session_name("  ").expect_err("an attach names a session");
+        assert!(e.contains("`session` is empty"), "{e}");
+        assert!(e.contains("gatekeeper"), "{e}");
     }
 
     /// The listing row is one line: a status table with a report inside it is a table nobody

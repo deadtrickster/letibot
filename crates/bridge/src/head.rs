@@ -18,6 +18,15 @@
 //! the correct answer (`docs/claude-code-bridge.md`: *"one that is left with no head
 //! attached refuses gated calls as any session does"*).
 //!
+//! **A head that only watches says so** (B6, [`Head::attach_watching`]). The card is
+//! published to every attached head and settled by whichever answers first, so attaching a
+//! watcher steals nothing from the operator's own screen; what it could do is COUNT as
+//! somebody who will answer — `Hub::deciding_heads` is what `Answers::ask` reads before it
+//! posts, and a session whose only head is a watcher would then wait out the whole deadline
+//! and report a timeout about a question nobody was ever asked. So a watcher declares
+//! `can_decide: false`, the daemon refuses any answer from it by name, and this crate
+//! refuses to send it one in the first place.
+//!
 //! **Why a condvar and not a poll.** `wait` is a blocking verb whose whole value is that
 //! it returns the moment something happens; a loop that slept on the state would turn
 //! every wake-up into a latency the orchestrator pays for nothing. The fold notifies and
@@ -183,13 +192,13 @@ pub struct Entry {
     /// **The position in the session's progress**, monotonic for the life of the head and
     /// never reused. A caller passes the last one it saw as `since`.
     pub cursor: u64,
-    /// `tool`, `result`, `job`, `turn`, `ask`, `warning`, `failure`, `message`.
+    /// `tool`, `result`, `job`, `turn`, `ask`, `subagent`, `warning`, `failure`, `message`.
     pub kind: &'static str,
     /// The phase or outcome, in the kind's own words: `proposed`, `ok`, `started`,
     /// `ended`, `opened`, `answered`. Empty when the kind has no phase (`message`).
     pub state: &'static str,
-    /// What the entry is *about* — a tool's name, a job's handle, an ask's id. Empty when
-    /// it is about the turn itself.
+    /// What the entry is *about* — a tool's name, a job's handle, an ask's id, a child's
+    /// slug. Empty when it is about the turn itself.
     pub name: String,
     /// The event's own code, for a `warning` or a `failure`. Empty otherwise.
     pub code: String,
@@ -331,6 +340,25 @@ fn one_line(text: &str, max: usize) -> String {
     out
 }
 
+/// **The branch a child was given, when the child's task names one.**
+///
+/// A review's task carries its placement a line at a time (`- branch: agent/P1`), and that
+/// line is the only place a head learns which branch a reviewer is judging: a child's own
+/// `Subagent` event has no branch field, and the row's `branch` column is the queue's, not
+/// the wire's. Prose is read here because there is nothing else to read — one marker, and
+/// only that one: an absent marker yields nothing, and the entry then says what the child
+/// was asked instead of guessing a branch out of a sentence.
+fn branch_of(text: &str) -> Option<&str> {
+    text.lines().find_map(|line| {
+        let rest = line
+            .trim()
+            .strip_prefix("- branch:")
+            .or_else(|| line.trim().strip_prefix("branch:"))?;
+        let branch = rest.trim();
+        (!branch.is_empty()).then_some(branch)
+    })
+}
+
 /// The word a tool's ending is filed under. The three the design names (`ok`, `failed`,
 /// `not_run`) plus the four endings that are neither, each with its own word: a `denied`
 /// call that reported `failed` would be a gate's decision recorded as the tool's fault.
@@ -405,6 +433,12 @@ pub struct State {
     /// `call_id` → the tool's name, joined into an ask. Bounded: a session's calls are
     /// many and this only has to answer for cards that are still open.
     calls: std::collections::HashMap<String, String>,
+    /// **The children whose start this head has announced**, by child session id.
+    ///
+    /// The one line an entry-per-fact fold needs to stay one line: `opening` and `running`
+    /// are two events about the same child, and a resync's snapshot says a third time what
+    /// a head already knew.
+    children: std::collections::HashSet<String>,
     /// The calls proposed and not yet finished. A round's `TurnFinished` with any of these
     /// open is a turn that goes on: its calls run, and the next round reads their results.
     in_flight: std::collections::HashSet<String>,
@@ -437,6 +471,25 @@ pub struct State {
     /// The daemon's answer to the last mutating frame, when it refused one. A refusal is a
     /// real answer (`already stopped`, a stale option) and is worth saying back.
     pub rejection: Option<String>,
+}
+
+/// **One child of this session, as one place or the other reports it** — the `Subagent`
+/// event, or the same child in a snapshot's `subagents`.
+///
+/// Borrowed fields rather than clones because the fold is a projection of an event it is
+/// handed: the event owns the strings, and a head that copied every one of them would be
+/// paying for a transcript it deliberately does not keep.
+struct Child<'a> {
+    id: &'a str,
+    slug: &'a str,
+    /// `opening`, `running`, `done` or `failed` — the daemon's own four words.
+    state: &'a str,
+    /// The subtask, whole, on every state.
+    task: &'a str,
+    /// The subtask's first line on the opening states, the answer's first line on a finish.
+    prompt: &'a str,
+    /// The child's answer's first line, on a normal finish and nowhere else.
+    answer: Option<&'a str>,
 }
 
 impl State {
@@ -589,6 +642,100 @@ impl State {
         }
         self.asks = snap.open_decisions.iter().map(Ask::from_open).collect();
         self.asks.retain(|a| !a.req_id.is_empty());
+        // **The children, as the parent's own view last reported them.** A head that attaches
+        // in the middle of a review has seen no `Subagent` event yet, and the snapshot is the
+        // only place that says a reviewer is running — the flow of a review-queue session is
+        // exactly *attach while children are in flight*, which is what B6 is for. A child the
+        // snapshot still has running is announced as started; a child this head was already
+        // watching and that the snapshot now calls finished gets its ending, which is the hole
+        // a demotion (`Resync`) would otherwise leave in the ring. A child that had already
+        // finished before this head existed is not progress, and is not announced: history is
+        // the transcript's, not the ring's.
+        for child in &snap.subagents {
+            self.child(
+                Child {
+                    id: &child.session_id,
+                    slug: &child.slug,
+                    state: &child.state,
+                    task: &child.task,
+                    prompt: &child.prompt,
+                    answer: child.answer.as_deref(),
+                },
+                true,
+            );
+        }
+    }
+
+    /// **One line about a child of this session** — the reviewer, the branch it was given, and
+    /// how it ended — from the `Subagent` event, or from the same child in a snapshot.
+    ///
+    /// `docs/claude-code-bridge.md` (B6) asks for `leticode_events` on the review queue to show
+    /// its reviewers' starts and ends: a review is a child session, its own turns are on its own
+    /// hub, and the **only** thing a head attached to the parent is told about it is this event
+    /// — so following a reviewer's turn needs a second attach ([`Head::attach_watching`] on the
+    /// child's id), and what lands here is one line per child per phase.
+    ///
+    /// A child announced as running keeps its start from being repeated: `opening` and `running`
+    /// are two events about one child, and a resync says it a third time. `from_snapshot` is
+    /// what keeps a head from announcing, as news, a child that finished before it attached:
+    /// the snapshot carries every child the parent's view holds, and only the ones that were
+    /// still running (or that this head was already watching) belong in a progress ring.
+    fn child(&mut self, child: Child<'_>, from_snapshot: bool) {
+        let name = if child.slug.is_empty() {
+            child.id
+        } else {
+            child.slug
+        };
+        let branch = branch_of(child.task).or_else(|| {
+            // An older daemon's `task` is empty and its `prompt` still carries the words; on a
+            // finish that field is the answer's first line, where no placement line exists.
+            branch_of(child.prompt)
+        });
+        match child.state {
+            "opening" | "running" => {
+                if !self.children.insert(child.id.to_string()) {
+                    return;
+                }
+                let said = match branch {
+                    Some(branch) => branch.to_string(),
+                    None => one_line(child.task, LINE),
+                };
+                self.events.push(
+                    Entry::of("subagent", "started")
+                        .named(name)
+                        .saying(one_line(&said, LINE)),
+                );
+            }
+            "done" | "failed" => {
+                let known = self.children.remove(child.id);
+                if from_snapshot && !known {
+                    return;
+                }
+                // The verdict is the child's own last words: its answer's first line on a
+                // normal finish, and — a child that FAILED carries no answer — what it was
+                // asked, because the ending has to say which child died.
+                let said = child.answer.unwrap_or_default().trim();
+                let said = if said.is_empty() { child.prompt } else { said };
+                let line = match branch {
+                    Some(branch) if !said.trim().is_empty() => format!("{branch} — {said}"),
+                    Some(branch) => branch.to_string(),
+                    None => said.to_string(),
+                };
+                let word = if child.state == "done" {
+                    "ended"
+                } else {
+                    "failed"
+                };
+                self.events.push(
+                    Entry::of("subagent", word)
+                        .named(name)
+                        .saying(one_line(&line, LINE)),
+                );
+            }
+            // A state this build has no word for is not an ending and not a start; the
+            // snapshot's own list is what a caller reads for the full picture.
+            _ => {}
+        }
     }
 
     fn event(&mut self, env: Envelope) {
@@ -836,6 +983,29 @@ impl State {
                 self.asks.retain(|a| a.req_id != req_id);
             }
             SessionEvent::TodosUpdated { todos } => self.todos = todos,
+            // **A reviewer's start and end, on the parent's own hub** — the one thing a head
+            // attached to a session that spawns children is told about them, and the reason
+            // `leticode_events` on the review queue can say *who is reviewing what* at all.
+            SessionEvent::Subagent {
+                subagent_id,
+                state,
+                prompt,
+                role: _,
+                task,
+                model: _,
+                answer,
+                slug,
+            } => self.child(
+                Child {
+                    id: &subagent_id,
+                    slug: &slug,
+                    state: &state,
+                    task: &task,
+                    prompt: &prompt,
+                    answer: answer.as_deref(),
+                },
+                false,
+            ),
             _ => {}
         }
     }
@@ -880,6 +1050,11 @@ pub struct Head {
     pub session: String,
     pub worktree: PathBuf,
     pub socket: PathBuf,
+    /// **This head is watching and will not touch the session** (B6): it never sends a
+    /// prompt, never answers a card and never interrupts. Declared to the daemon as
+    /// `Caps::can_decide = false` and enforced here, because a head is not a person and the
+    /// one thing it must not do to somebody else's session is act on it.
+    pub watch_only: bool,
     shared: Arc<Shared>,
     /// Shared with the collecting thread because an `Ack` is a client frame: a head that
     /// acked from a second borrow of the socket would be two writers on one stream.
@@ -893,8 +1068,33 @@ impl Head {
     /// started needs: the asks already open, the turn already running and the last answer
     /// it missed are all in it.
     pub fn attach(d: &Daemon, session: &str) -> Result<Head, String> {
+        Head::attach_with(d, session, false)
+    }
+
+    /// **Attach to a session somebody else is driving, and only watch it** (B6).
+    ///
+    /// The session keeps its own head — the operator's TUI, usually — and this one asks for
+    /// nothing: everything [`Head::attach`] gives a caller (the turn, the last message, the
+    /// cards, the todos, the ring of progress, [`Head::wait`]) and none of the three verbs
+    /// that would act on it. A card the daemon posts is still folded into `asks` and still
+    /// reaches `wait`, so a watcher can say *this session is stopped on a decision* without
+    /// being the one who settles it.
+    ///
+    /// **Why the caps matter and not just the refusal.** The daemon publishes a card to
+    /// every head and settles it with whoever answers first, so a watcher steals nothing by
+    /// attaching; what it would do with `can_decide: true` is count as somebody who *can* —
+    /// `Hub::deciding_heads` is read by `Answers::ask` before anything is posted, and a
+    /// session whose only head is a watcher would then wait out the whole deadline and be
+    /// told nobody answered. That is the *"real answer given for a fake reason"* the field's
+    /// own doc names, so a watcher says `false`, and the daemon then refuses any `Answer`
+    /// from it with `this head declared can_decide: false`.
+    pub fn attach_watching(d: &Daemon, session: &str) -> Result<Head, String> {
+        Head::attach_with(d, session, true)
+    }
+
+    fn attach_with(d: &Daemon, session: &str, watch_only: bool) -> Result<Head, String> {
         let caps = Caps {
-            can_decide: true,
+            can_decide: !watch_only,
             ..Caps::default()
         };
         let (client, hello, reader) =
@@ -926,6 +1126,7 @@ impl Head {
             session: session.to_string(),
             worktree: d.workspace.clone(),
             socket: d.socket.clone(),
+            watch_only,
             shared,
             client,
         };
@@ -1013,6 +1214,7 @@ impl Head {
             rounds: g.rounds,
             last_report: g.last_report.clone(),
             calls: g.calls.clone(),
+            children: g.children.clone(),
             in_flight: g.in_flight.clone(),
             idle_since: g.idle_since,
             round_done: g.round_done,
@@ -1053,6 +1255,7 @@ impl Head {
     /// A line to the running session: queued behind a running turn, as a head's own
     /// prompt is (the protocol's `Prompt` is a follow-up item, never a rejection).
     pub fn prompt(&self, text: &str) -> Result<String, String> {
+        self.may_write()?;
         let mut c = self.said_client()?;
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
@@ -1068,6 +1271,10 @@ impl Head {
     /// with the list; an option the ask had and the daemon no longer wants is the daemon's
     /// word, and arrives as a `Rejected` frame.
     pub fn answer(&self, ask: &str, option: &str, note: Option<&str>) -> Result<(), String> {
+        // **Before the ask is looked for.** A caller that tried to answer a watched session's
+        // card must be told the bridge is not holding it, not that the card is gone — the
+        // card is very likely still open, and somebody else is going to settle it.
+        self.may_write()?;
         let (kind, offered): (String, Vec<String>) = {
             let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(found) = g.asks.iter().find(|a| a.req_id == ask) else {
@@ -1110,6 +1317,7 @@ impl Head {
 
     /// Interrupt whatever is running and leave; the session stays on disk for any head.
     pub fn stop(&self) -> Result<(), String> {
+        self.may_write()?;
         let mut c = self.said_client()?;
         c.interrupt(0, "the bridge was asked to stop this session")
             .map_err(|e| e.to_string())?;
@@ -1126,10 +1334,33 @@ impl Head {
     /// can ask for the point and the daemon answers with the question, which is the honest
     /// answer to a machine.
     pub fn set_mode(&self, mode: &str) -> Result<(), String> {
+        self.may_write()?;
         let mut c = self.said_client()?;
         c.set_mode(0, mode, false)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// The sentence a watching head answers every verb with, and `Ok` for a head that holds
+    /// its session.
+    ///
+    /// `docs/claude-code-bridge.md` (B6): *"a watching head never answers the session's asks
+    /// and never sends prompts"* — a refusal that said only `refused` would leave the caller
+    /// wondering whether the daemon was down or the argument wrong, so it names both facts:
+    /// this head attached read-only, and the head that does hold the session is somebody
+    /// else's.
+    fn may_write(&self) -> Result<(), String> {
+        if !self.watch_only {
+            return Ok(());
+        }
+        Err(format!(
+            "`{}` is watched, not held: this bridge attached to it with `watch_only` (the \
+             default), so it sends no prompt, answers no card, changes no approval point and \
+             interrupts nothing — the head that holds the session is somebody else's, and a \
+             second one acting on it would be the bridge deciding for the operator. Attach \
+             with `watch_only: false` if you mean to drive it",
+            self.session
+        ))
     }
 
     /// The client, or the reason a frame cannot be sent: a connection the daemon closed
@@ -1811,6 +2042,151 @@ mod tests {
         assert_eq!(page.entries[2].code, "turn_failed");
         assert_eq!(page.entries[2].text, "the provider refused round 3");
         assert!(state.turned, "a failed turn is a turn that ran");
+    }
+
+    /// **A reviewer's start and end are two lines, and they name the branch** (B6).
+    ///
+    /// The review queue's reviewers are child sessions: their turns are on their own hubs,
+    /// and the only thing a head attached to the parent is told about them is
+    /// `SessionEvent::Subagent`. So this is what `leticode_events` on `s-gatekeeper` can say —
+    /// the reviewer's slug, the branch its task named, and on the finish, its verdict in its
+    /// own first line.
+    #[test]
+    fn a_reviewers_start_and_end_are_one_line_each() {
+        let task = "You are the gatekeeper. A subagent has finished work on a branch.\n\n\
+                    The ask, verbatim:\n\nkeep the last record\n\nThe placement:\n\
+                    - branch: agent/P1\n- head:   abc123\n- base:   def456\n";
+        let mut state = State::default();
+        let mut seq = 0;
+        let mut child = |state: &mut State, child_state: &str, said: &str, answer: Option<&str>| {
+            seq += 1;
+            state.fold(ServerFrame::Event(env(
+                seq,
+                SessionEvent::Subagent {
+                    subagent_id: "s-sub-1".into(),
+                    state: child_state.into(),
+                    prompt: said.into(),
+                    role: "gatekeeper".into(),
+                    task: task.into(),
+                    model: String::new(),
+                    answer: answer.map(str::to_string),
+                    slug: "keep-the-last-record".into(),
+                },
+            )));
+        };
+        child(&mut state, "opening", "You are the gatekeeper.", None);
+        // The second state of the same child is not a second start: `opening` then `running`
+        // is one reviewer beginning, and two entries would say it began twice.
+        child(&mut state, "running", "You are the gatekeeper.", None);
+        child(
+            &mut state,
+            "done",
+            "accepted: the reader keeps the last record",
+            Some("accepted: the reader keeps the last record"),
+        );
+        let page = state.events.page(0, 50);
+        let said: Vec<(&str, &str, &str, &str)> = page
+            .entries
+            .iter()
+            .map(|e| (e.kind, e.state, e.name.as_str(), e.text.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                ("subagent", "started", "keep-the-last-record", "agent/P1"),
+                (
+                    "subagent",
+                    "ended",
+                    "keep-the-last-record",
+                    "agent/P1 — accepted: the reader keeps the last record",
+                ),
+            ],
+            "one line per reviewer per phase: {said:?}"
+        );
+
+        // A child that FAILED carries no answer, so the line falls back to what it was asked
+        // — an ending that named no branch and said nothing would be a row nobody can act on.
+        seq += 1;
+        state.fold(ServerFrame::Event(env(
+            seq,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-2".into(),
+                state: "failed".into(),
+                prompt: "You are the gatekeeper.".into(),
+                role: "gatekeeper".into(),
+                task: task.into(),
+                model: String::new(),
+                answer: None,
+                slug: String::new(),
+            },
+        )));
+        let last = state.events.page(0, 50).entries.pop().expect("an ending");
+        assert_eq!(last.kind, "subagent");
+        assert_eq!(last.state, "failed");
+        assert_eq!(
+            last.name, "s-sub-2",
+            "a child with no slug is named by its id"
+        );
+        assert_eq!(last.text, "agent/P1 — You are the gatekeeper.");
+    }
+
+    /// **A reviewer that is already running when the head attaches is announced from the
+    /// snapshot, and a resync completes the ones that ended while it was demoted.**
+    ///
+    /// Attaching in the middle of a review is the whole of B6 — the orchestrator does not
+    /// schedule the queue's children — and the snapshot's `subagents` is the only place the
+    /// running ones exist before their next event.
+    #[test]
+    fn a_child_already_running_is_read_from_the_snapshot() {
+        let hub = letibot_sessionlog::hub::Hub::new("s-gatekeeper");
+        let published = |id: &str, state: &str, answer: Option<&str>| SessionEvent::Subagent {
+            subagent_id: id.into(),
+            state: state.into(),
+            prompt: "You are the gatekeeper.".into(),
+            role: "gatekeeper".into(),
+            task: "The placement:\n- branch: agent/B6\n".into(),
+            model: String::new(),
+            answer: answer.map(str::to_string),
+            slug: id.into(),
+        };
+        // One reviewer in flight and one that finished before this head existed.
+        hub.publish(published("sub-running", "running", None));
+        hub.publish(published("sub-old", "done", Some("accepted")));
+        let snap = hub
+            .attach("remote", "probe", Caps::default(), 0)
+            .snapshot
+            .expect("a snapshot");
+
+        let mut state = State::default();
+        state.seed(&snap);
+        let said: Vec<(String, String)> = state
+            .events
+            .page(0, 50)
+            .entries
+            .iter()
+            .map(|e| (e.name.clone(), e.text.clone()))
+            .collect();
+        assert_eq!(
+            said,
+            vec![("sub-running".to_string(), "agent/B6".to_string())],
+            "the child still running is news; the one that ended before the attach is history"
+        );
+
+        // The reviewer finishes while this head is demoted (a `Resync` carries a fresh
+        // snapshot): the ending must not be lost just because the event was never delivered.
+        hub.publish(published("sub-running", "done", Some("rejected: no test")));
+        let again = hub
+            .attach("remote", "probe", Caps::default(), 0)
+            .snapshot
+            .expect("a snapshot");
+        state.seed(&again);
+        let entries = state.events.page(0, 50).entries;
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(entries[1].state, "ended");
+        assert_eq!(entries[1].text, "agent/B6 — rejected: no test");
+        // And nothing is announced twice: the child is off the running list now.
+        state.seed(&again);
+        assert_eq!(state.events.page(0, 50).entries.len(), 2);
     }
 
     /// **A line is clamped, counted in characters**, and the ellipsis is inside the budget:

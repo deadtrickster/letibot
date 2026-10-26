@@ -14,7 +14,7 @@
 //!   the three facts it owns are spelled again here and asserted against its own values.
 //! * [`head`] — the head protocol, discharged by a program: attach, ack, collect the turn,
 //!   the last answer, the cards still open, the todos and the meter.
-//! * [`tools`] — the nine verbs from the design's table, and the `wait` verb whose exit code
+//! * [`tools`] — the ten verbs from the design's table, and the `wait` verb whose exit code
 //!   is the wake-up.
 //! * [`report`] — the brief's closing report, parsed into the fields a reviewer reads.
 //!
@@ -23,6 +23,11 @@
 //!
 //! **Nothing here runs a model or links one.** A leticode turn is the daemon's, on the other
 //! side of the socket; what the bridge does with a turn is watch it and answer for it.
+//!
+//! **And a session the bridge did not start is a session it can watch** (B6):
+//! `leticode_attach` joins a folder's running daemon as a read-only head — the review queue's
+//! own `s-gatekeeper`, most of the time — so the orchestrator sees which reviewer is on which
+//! branch without reading the store.
 
 pub mod daemon;
 pub mod diff;

@@ -58,14 +58,15 @@ holds one head connection per leticode session it started or attached to, so ask
 | tool | input | answers |
 |---|---|---|
 | `leticode_start` | `worktree` (absolute path), `brief`, `model` (e.g. `deepseek`), `mode` (default `writes-allowed`) | `{session}` — starts the folder's daemon if needed (as the `letibot` launcher does), opens a session, sends the brief as the first prompt, stays attached |
+| `leticode_attach` | `worktree` (a folder whose daemon holds the session), `session` (an id, or `gatekeeper`), `watch_only` (default `true`) | as `leticode_start` minus the brief — **joins** a running daemon (never starts one), attaches a head, answers `{session, daemon_started: false, watch_only, can_decide, state, pending_asks, last_message}` |
 | `leticode_send` | `session`, `text` | `{queued: true}` — an operator line into the running session (queued behind a running turn, as the head's own) |
 | `leticode_status` | `session` | `{state: running\|idle\|asking\|failed, turn, todos, last_message, report?, cost_usd, tokens, pending_asks}` |
-| `leticode_events` | `session`, `since` (cursor) | the compact progress since the cursor: tool calls (name + one line), job starts and ends, failures, asks — never banner or memwatch lines — and the next cursor |
+| `leticode_events` | `session`, `since` (cursor) | the compact progress since the cursor: tool calls (name + one line), job starts and ends, failures, asks, the **subagents a session spawns** (slug, the branch their task named, how they ended) — never banner or memwatch lines — and the next cursor |
 | `leticode_asks` | `session` | the pending permission asks: id, the call (tool, arguments), the options the gate offers |
 | `leticode_answer` | `session`, `ask`, `option` (one the ask offered), `note` | `{answered: true}` — sent as the protocol's `Answer`, so it lands in the decision corpus like the operator's own |
 | `leticode_diff` | `session` | the worktree's branch against its merge base: `git log --oneline` and `git diff --stat`, plus the full diff when asked |
 | `leticode_stop` | `session` | interrupts a running turn and detaches; the session stays on disk |
-| `leticode_list` | — | the sessions this bridge holds, with state |
+| `leticode_list` | — | the sessions this bridge holds, with state and whether each is watched or driven |
 
 ### `letibot-mcp wait`: the wake-up
 
@@ -137,6 +138,54 @@ and fragile"*. B5 makes the queue the landing path for every package, so it wait
 pass over the queue itself; until then landing stays manual and the merge queue's own home (which
 daemon serves it) stays undecided.
 
+### Watching a session the bridge did not start (B6)
+
+Written 2026-10-26. The operator: *"the operator cannot see who in the merge queue is doing
+what"*. The review queue's own session, `s-gatekeeper`, lives in the operator's daemon and starts a
+reviewer subagent per claimed row (`s-gatekeeper-sub-*`). Until B6 the only way to follow it from
+Claude Code was to read the store and guess.
+
+`leticode_attach` is the same head `leticode_start` keeps, on a session somebody else opened:
+
+* **It joins a running daemon and never starts one.** Nothing listening on that folder's socket is
+  a refusal naming the socket, not a start — the defect Q1 fixed in the other direction, and worst
+  in the folder an attach is usually pointed at, which is the operator's own.
+* **`watch_only` (the default) is a real cap, not a promise.** A watching head never sends a
+  prompt, never answers a card and never interrupts; `leticode_send`, `leticode_answer` and
+  `leticode_stop` refuse on it, saying it is watched and not held. `leticode_start`'s own session,
+  and an attach with `watch_only: false`, are heads that hold their session and act on it.
+* **`session: "gatekeeper"`** is the review queue's id. It is a constant — the same string in every
+  daemon, because the queue is *started once* and attachable by name tomorrow — and it lives in
+  `letibot_sessionlog::GATEKEEPER_SESSION`, with `harnessd`'s `sessions::gatekeeper::SESSION` being
+  the daemon's name for the same value. A head must be able to say which session it means without
+  linking the daemon.
+
+**What a watcher must NOT do is count as somebody who can answer.** Attaching a second head steals
+nothing from the operator's screen: the daemon publishes a card to every head attached to the
+session (`pose` → `Hub::publish`) and settles it with whichever answers first, so the operator's
+TUI still shows it and still wins the race. What a head *can* do is be counted: `Answers::ask` and
+`ask_question` read `Hub::deciding_heads` **before** posting anything and answer `gate:no-head` in
+microseconds when it is empty, because posting to a head that will never answer and sitting out the
+five-minute deadline is *"a real answer given for a fake reason"*. So a watching head declares
+`Caps { can_decide: false }`, and the daemon then refuses any `Answer` from it with *"this head
+declared can_decide: false"* — the second belt. Measured in `crates/bridge/tests/end_to_end.rs`:
+two heads attached to one session, one of them a watcher, and `deciding_heads()` still holds exactly
+the one that holds it; the review queue's session, whose only head is the watcher, has none.
+
+**The `wait` verb attaches a watcher too**, and that is a fix rather than a detail: a `wait` is a
+process that never answers anything, and declaring it able meant a session whose only head was a
+`wait` would post a card, be watched exit `10` with it, and then sit on it until the deadline.
+
+**The reviewers are child sessions, and one line each is what the parent's hub carries.**
+`SessionEvent::Subagent` (`opening`/`running` → *started*, `done`/`failed` → *ended*/*failed*) is
+folded into `leticode_events` as a `subagent` entry: the reviewer's slug, the branch its task named
+(*"- branch: agent/P1"* — the task is the only place a child's branch appears on the wire), and on
+the finish its own first line as the verdict. A head that attaches in the middle of a review reads
+the ones still running from the snapshot's `subagents`, so the flow *attach while the queue is
+busy* works; a child that finished before the attach is history and is not announced as news.
+**Following one reviewer's own turns needs a second `leticode_attach` on that child's session id** —
+a child's turns are on its own hub, and the parent is told only that it started and ended.
+
 ## Packages
 
 | id | builds | depends on |
@@ -147,3 +196,4 @@ daemon serves it) stays undecided.
 | B4 | `escalate` | B1, a protocol addition |
 | Q1 | a bridge-started daemon runs `--no-queue`: no lease, no model-facing queue notices | B1 |
 | B5 | `leticode_queue`, `leticode_submit`, `leticode_queue_verb`, the `wait-queue` verb | Q1, a stable queue |
+| B6 | `leticode_attach`: a head that JOINS a running daemon on a session it did not start, `watch_only` by default (no prompt, no answer, no interrupt, `can_decide: false` so a watcher is never counted as somebody who answers); the subagents a session spawns folded into `leticode_events` one line each | B1, B2 |

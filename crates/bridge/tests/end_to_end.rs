@@ -27,6 +27,10 @@
 //! | `wait` exits 10 on a pending ask and 0 on a turn end | the verb, in this process |
 //! | `diff` reads the branch against its merge base | a real git repository |
 //! | `stop` interrupts and detaches | the daemon's registry no longer lists a head |
+//! | **`attach` watches a session another head started** (B6) | a second `Bridge` on the same daemon, and the daemon's own head count |
+//! | **a watching head is attached but is not a decider** | `Hub::attached_heads` against `Hub::deciding_heads` |
+//! | **`send`, `answer` and `stop` refuse on a watched session** | the three tools, watched and not held |
+//! | **`attach` refuses a folder with no daemon, and starts none** | the refusal, and the socket that was never created |
 //!
 //! # What it deliberately does not cover
 //!
@@ -80,6 +84,9 @@ const SECOND_ANSWER: &str = "second-answer-marker: after the denial";
 /// What the model says once the backgrounded call has come back with a handle.
 const JOB_ANSWER: &str = "job-answer-marker: the slow one is running in the background";
 const THIRD_ANSWER: &str = "third-answer-marker: one more turn";
+/// What the fake says to the line the FIRST bridge sends once a SECOND bridge is watching:
+/// the point is that the watcher sees a turn it did not start, so the words say so.
+const WATCHED_ANSWER: &str = "watched-answer-marker: a second head saw this turn";
 /// The backgrounded command. Two halves and both for a reason: `git push` is what makes the
 /// gate ask at `writes-allowed` (a bare `sleep` is a command the classifier admits without
 /// asking), and `sleep 30` keeps the job running past the end of the test — a job that
@@ -365,7 +372,8 @@ impl World {
 
         // **One entry per model round, in the order the turns take them.** The deny turn
         // spends two (the call, then the answer past it), the job turn two more (the call
-        // it is asked about, then its answer), and the last two are one turn each.
+        // it is asked about, then its answer), and the rest are one turn each — the last of
+        // them the line sent while a SECOND bridge is watching (B6).
         let fake = Fake::serve(vec![
             Answer::Say(REPORT),
             Answer::AskBash,
@@ -374,6 +382,7 @@ impl World {
             Answer::Say(JOB_ANSWER),
             Answer::Say(THIRD_ANSWER),
             Answer::Refuse,
+            Answer::Say(WATCHED_ANSWER),
         ]);
         std::fs::write(
             root.join("config/letibot/providers.toml"),
@@ -1006,6 +1015,162 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         "{full}"
     );
 
+    // --- attach: a session another head started, watched read-only (B6) -----
+    // **The operator's question**: who in the merge queue is doing what. The review queue's
+    // session — the one that spawns a reviewer per row — is a session this bridge did not
+    // start and must not steer, so it is attached and watched with the tools the table
+    // already has. Everything below is one of those tools against a session whose head is
+    // the FIRST bridge's.
+    let watcher = Bridge::new();
+    let watched = watcher
+        .attach(&world.worktree.display().to_string(), &session, true)
+        .expect("a session another bridge holds is a session this one can watch");
+    assert_eq!(watched["session"], session.as_str(), "{watched}");
+    assert_eq!(watched["watch_only"], json!(true), "{watched}");
+    assert_eq!(
+        watched["daemon_started"],
+        json!(false),
+        "an attach joins a daemon and never starts one: {watched}"
+    );
+    // **The head count is the daemon's, and it is the fact the caps are for.** Two heads are
+    // attached to this session and exactly one of them will answer a card: a watcher that
+    // declared itself able would make `Answers::ask` post a card to a head that never
+    // answers, and the operator's `s-gatekeeper` would then wait out five minutes and report
+    // a decision nobody made.
+    let hub = world
+        .registry
+        .get(&session)
+        .unwrap_or_else(|| panic!("the daemon holds `{session}`"));
+    assert_eq!(
+        hub.attached_heads(),
+        2,
+        "the operator's head and the watcher"
+    );
+    assert_eq!(
+        hub.deciding_heads(),
+        vec![letibot_bridge::daemon::IDENTITY.to_string()],
+        "a watching head is attached but is not somebody who can answer"
+    );
+
+    // **A turn it did not start, in its own ring.** The first bridge sends the line; the
+    // watcher — a second head, attached after the fact — sees the turn begin and the answer
+    // land, which is the whole of `leticode_events` on a session it only watches.
+    bridge
+        .send(&session, "one more, and a second head should see it")
+        .expect("the first bridge still holds the session");
+    until_entry(&watcher, &session, "the turn the other head started", |e| {
+        e["kind"] == "turn" && e["state"] == "started"
+    });
+    let seen = until(&watcher, &session, "the watched turn to end", |v| {
+        state_is(v, "idle")
+            && v["last_message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(WATCHED_ANSWER)
+    });
+    assert_eq!(seen["session"], session.as_str(), "{seen}");
+    until_entry(&watcher, &session, "the answer the watch saw", |e| {
+        e["kind"] == "message"
+            && e["text"]
+                .as_str()
+                .is_some_and(|t| t.contains(WATCHED_ANSWER))
+    });
+
+    // **A watcher acts on nothing.** The three verbs refuse with the same sentence, and it
+    // says which of the two facts stopped them: this head is watching, and the head that
+    // holds the session is somebody else's.
+    let refused = watcher
+        .send(&session, "and this must not reach it")
+        .expect_err("a watched session takes no prompt from this bridge");
+    assert!(refused.contains("watched, not held"), "{refused}");
+    assert!(refused.contains(&session), "{refused}");
+    let refused = watcher
+        .answer(&session, "adj-whatever", "allow_once", None)
+        .expect_err("a watched session's cards are somebody else's to answer");
+    assert!(
+        refused.contains("watched, not held"),
+        "the watch is refused BEFORE whether the card exists, because the card is probably \
+         still open and somebody else is about to settle it: {refused}"
+    );
+    let refused = watcher
+        .stop(&session)
+        .expect_err("a watcher does not interrupt a session it does not hold");
+    assert!(refused.contains("watched, not held"), "{refused}");
+    // …and none of that left the session: it is still the daemon's, still held, and the
+    // watching bridge still has it — a refused verb is not a detach.
+    assert_eq!(hub.attached_heads(), 2, "nothing was detached by a refusal");
+    let rows = watcher.list()["sessions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(rows.len(), 1, "the watcher still holds it");
+    assert_eq!(rows[0]["watch_only"], json!(true), "{rows:?}");
+    assert_eq!(
+        watcher.diff(&session, false).expect("diff")["branch"],
+        "bridge",
+        "a watcher reads the worktree like any head"
+    );
+
+    // **Attaching twice on one bridge is refused**, because the map is keyed by session id
+    // and the second entry would shut the first head's socket down under a caller holding
+    // its event cursor.
+    let twice = watcher
+        .attach(&world.worktree.display().to_string(), &session, true)
+        .expect_err("a session this bridge already holds is not attached again");
+    assert!(twice.contains("already holds"), "{twice}");
+
+    // **The name `gatekeeper` is the review queue's session** — `s-gatekeeper`, the one id
+    // every daemon spells the same, because the queue is *started once* and attachable by
+    // name tomorrow. This daemon opens it at startup (`Sessions::ensure_gatekeeper`), which is
+    // what makes the name testable at all: an attach by the name seats a head on the id the
+    // crate's constant holds, and not on a string this file invented.
+    let queue = watcher
+        .attach(&world.worktree.display().to_string(), "gatekeeper", true)
+        .expect("the review queue's session is one this daemon holds");
+    assert_eq!(
+        queue["session"],
+        letibot_sessionlog::GATEKEEPER_SESSION,
+        "the name resolves to the one id every daemon spells the same: {queue}"
+    );
+    assert_eq!(queue["watch_only"], json!(true), "{queue}");
+    // …and the rest of the table works on it exactly as on a session this bridge started:
+    // `status`, `events`, `list` and `wait` never needed the head to be a decider.
+    let queue_status = watcher
+        .status(letibot_sessionlog::GATEKEEPER_SESSION)
+        .expect("status on a watched session");
+    assert_eq!(
+        queue_status["session"],
+        letibot_sessionlog::GATEKEEPER_SESSION,
+        "{queue_status}"
+    );
+    assert_eq!(queue_status["watch_only"], json!(true), "{queue_status}");
+    watcher
+        .events(letibot_sessionlog::GATEKEEPER_SESSION, None, None)
+        .expect("events on a watched session");
+    // **This is the case the caps exist for, on the session B6 is about.** The review queue's
+    // session is opened by the daemon with nobody attached, and the watcher is now its only
+    // head: attached, and nobody who can answer. `Answers::ask` reads exactly these two facts
+    // before it posts, so a reviewer's card would be refused at once (`gate:no-head`) instead
+    // of being posted to a head that never answers and reported five minutes later as a
+    // decision nobody made — the *"real answer given for a fake reason"* `Caps::can_decide`
+    // is written against. A watcher that declared itself able would have produced the second.
+    let queue_hub = world
+        .registry
+        .get(letibot_sessionlog::GATEKEEPER_SESSION)
+        .unwrap_or_else(|| panic!("the daemon holds the review queue's session"));
+    assert_eq!(
+        queue_hub.attached_heads(),
+        1,
+        "the review queue's session has one head, and it is the watcher"
+    );
+    assert!(
+        queue_hub.deciding_heads().is_empty(),
+        "and nobody on it can answer a card: {:?}",
+        queue_hub.deciding_heads()
+    );
+    // And the same attach on a bridge that is pointed at a daemon which is not there is
+    // refused rather than started — see below.
+
     // --- list, and stop ----------------------------------------------------
     let listed = bridge.list();
     let rows = listed["sessions"].as_array().expect("rows");
@@ -1026,4 +1191,28 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
             .any(|b| b.session_id == session && b.status.items > 0),
         "the session and its rows outlive the bridge: {briefs:?}"
     );
+
+    // --- attach to a folder with no daemon: refused, and nothing is started ---
+    // **The one thing an attach must never do.** A daemon nobody asked for is the defect Q1
+    // fixed in the other direction, and it is worst in the folder an attach is usually
+    // pointed at — the operator's own. Nothing listening means the answer is a refusal naming
+    // the socket, and no socket file appears where `leticode_start` would have made one.
+    let gone = world.dir.path().join("no-daemon-here.sock");
+    // SAFETY: this test binary runs one test, and no other thread reads the override between
+    // these two lines: every head it could reach already holds an open socket.
+    unsafe { std::env::set_var("LETIBOT_SOCKET", &gone) };
+    let refused = bridge
+        .attach(&world.worktree.display().to_string(), &session, true)
+        .expect_err("a folder with no daemon is not one this can attach to");
+    assert!(
+        refused.contains("never starts one"),
+        "the refusal says which tool starts a daemon: {refused}"
+    );
+    assert!(refused.contains("no-daemon-here.sock"), "{refused}");
+    assert!(
+        !gone.exists(),
+        "a refused attach started nothing: {} exists",
+        gone.display()
+    );
+    unsafe { std::env::set_var("LETIBOT_SOCKET", &world.socket) };
 }
