@@ -1276,6 +1276,10 @@ fn the_hosts_tool_probes_two_hosts_in_parallel() {
         !said.contains("TIMED OUT") && !said.contains("NOT REACHED"),
         "{said}"
     );
+    // **Rule 7's view is on the row**: the last calls this process made to the host, by name.
+    assert!(said.contains("calls:    last "), "{said}");
+    assert!(said.contains("a probe of h1"), "{said}");
+    assert!(said.contains("slowest"), "{said}");
 
     // **The overlap**: both spans intersect, which one-after-another cannot produce.
     let spans = std::fs::read_to_string(fake.path("SPAN")).expect("the probe spans");
@@ -1354,6 +1358,11 @@ fn an_unreachable_host_is_reported_and_does_not_hold_the_others() {
     assert!(
         said.contains("lost the connection") && said.contains("u1.invalid"),
         "the unreachable host is reported with what ssh said: {said}"
+    );
+    assert!(
+        said.contains("calls:    last "),
+        "and with the record of what its calls have been doing — which is the host whose history \
+         a reader most needs: {said}"
     );
     assert!(
         said.contains("`u2`") && said.contains("cores:"),
