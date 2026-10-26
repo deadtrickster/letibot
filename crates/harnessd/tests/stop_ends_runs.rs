@@ -156,21 +156,6 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // **A reading of `/proc`, and Darwin has none.** The state this test waits for — the daemon
-    // saying it *cannot look at* a run whose process belongs to another user — is
-    // `crates/tools/src/exec/ask.rs`'s `/proc/<pid>/fd/0` coming back `EACCES`, and that path does
-    // not exist on macOS at all: the sentence never comes, so there is no state to measure and the
-    // test sat out its 90 s and then said so. Under the gate's `LETIBOT_REQUIRE_APPARATUS=1` that
-    // made step 3 red on the operator's Mac for a reason in no diff (MEASURED 2026-10-26, `main`
-    // at `6d2a1c7e`) — the class `AGENTS.md` says to report as NOT APPLICABLE rather than to
-    // refuse. What this test concludes about is the STOP, and `crates/tui/tests/stop_daemon.rs`
-    // asserts that on every platform.
-    let Some(_) = letibot_tokencore::apparatus::applies(
-        "reading that a run is blocked on another user's process (/proc/<pid>/fd/0)",
-        cfg!(target_os = "linux"),
-    ) else {
-        return;
-    };
     if !Path::new("/usr/bin/su").exists() {
         eprintln!("no /usr/bin/su on this box — nothing to measure");
         return;
