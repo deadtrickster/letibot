@@ -725,41 +725,62 @@ fn the_never_write_list_is_refused_before_any_adjudicator_sees_it() {
     assert_eq!(h.read_file(".ssh/config"), "Host x\n");
 }
 
-/// **Why the notes directory is not a row on that list, measured rather than
-/// argued.**
+/// **A note's body is prose, and the never-write list does not read prose** — the ruling of
+/// 2026-10-26 (package RH6), and the other half of the measurement in
+/// `crates/tools/src/adjudicate.rs`'s [`CONTENT_ARGUMENTS`](letibot_tools::adjudicate).
 ///
-/// `never_hit` scans *every string argument of every gated call* for a segment,
-/// and a note's `text` is one of them — so a row naming `.letibot/notes` would
-/// refuse the `notes` tool's own `add` whenever a note happened to mention its
-/// own directory. A rule that breaks the tool is worse than the hole it closes,
-/// which is why the refusal that keeps `write` and `edit` out of that directory
-/// lives in the tools themselves
-/// (`letibot_tools::builtins::notes::refuse_a_path_into_the_notes_dir`).
-///
-/// The path is assembled here rather than written whole so that a search for the
-/// literal does not match this file: what is under test is that the list reads
-/// prose, and a note about a key is exactly the prose that does it.
+/// The list used to be applied to *every* string argument, so a note **about** the operator's ssh
+/// directory or about `.git` could not be written at all — and the note that explains the rake is
+/// exactly the note that has to be writable. Its `text` and `abstract` are content; its `name` is
+/// not, and the next test is that half.
 #[test]
-fn the_never_write_list_reads_a_notes_text_so_it_cannot_hold_the_notes_dir() {
+fn a_notes_body_is_prose_so_the_list_does_not_refuse_it() {
     let mut h = writable_harness();
+    // Split, so a search for the literal does not match this file either.
     let store = format!("/home/op/.{}sh/id_ed25519", "s");
     let r = h.call(
         "notes",
         &format!(
-            r#"{{"action":"add","name":"a-note-about-keys","text":"the operator's key is {store} and it is never rotated"}}"#
+            r#"{{"action":"add","name":"a-note-about-keys","abstract":"never read {store}","text":"the operator's key is {store} and it is never rotated; `.git` is off limits too"}}"#
         ),
     );
     assert!(
+        !matches!(r.outcome, ToolOutcome::Denied { .. }),
+        "a note's text is content, not a path: {:?} — {}",
+        r.outcome,
+        r.render()
+    );
+    let (ws, _) = h.notes_dirs();
+    let landed = ws.join(".letibot/notes/a-note-about-keys.md");
+    assert!(landed.exists(), "and the note landed: {}", r.render());
+    let said = std::fs::read_to_string(&landed).expect("the note");
+    assert!(said.contains(&store), "with its prose intact: {said}");
+}
+
+/// **A note's `name` is still a path-like argument**, and the list keeps reading it.
+///
+/// The exemption above is about *content*. A name becomes a file under the notes directory, so it
+/// is a spelling that could be aimed somewhere — and the same rule that refuses `.ssh` as a
+/// `path` refuses it as a `name`. The two tests are the whole ruling: prose is free, a name is not.
+#[test]
+fn a_notes_name_is_still_a_path_like_argument() {
+    let mut h = writable_harness();
+    let name = format!(".{}sh", "s");
+    let r = h.call(
+        "notes",
+        &format!(r#"{{"action":"add","name":"{name}","text":"harmless prose"}}"#),
+    );
+    assert!(
         matches!(r.outcome, ToolOutcome::Denied { .. }),
-        "the list matched the note's prose, not a path argument: {:?} — {}",
+        "a note named for the operator's ssh directory is refused: {:?} — {}",
         r.outcome,
         r.render()
     );
     assert!(r.render().contains("never-write list"), "{}", r.render());
     let (ws, _) = h.notes_dirs();
     assert!(
-        !ws.join(".letibot/notes/a-note-about-keys.md").exists(),
-        "and the note did not land"
+        !ws.join(format!(".letibot/notes/{name}.md")).exists(),
+        "and nothing landed"
     );
 }
 

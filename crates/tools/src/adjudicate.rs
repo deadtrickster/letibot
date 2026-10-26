@@ -4055,7 +4055,21 @@ pub fn shape_of(b: &crate::intent::Baseline) -> Option<String> {
 /// literal. So: a replacement's text, a file's new body, and a search pattern are not paths and
 /// are not scanned. **A path argument still is**, and so is `bash`'s `command` — that is how a
 /// command names a path, and it is the one place where a string is the only evidence there is.
-const CONTENT_ARGUMENTS: &[&str] = &["content", "old_string", "new_string", "pattern"];
+///
+/// **`text`, `abstract` and `query` are the `notes` tool's body, its index line and its search**,
+/// and they were the same defect one package later: a note *about* `.git` or `.ssh` could not be
+/// written, which is how a note explaining the rake above becomes impossible to record. A note's
+/// `name` is not here on purpose — it is a path-like argument (a file stem, which becomes a path
+/// in the notes directory), and the check stays on it.
+const CONTENT_ARGUMENTS: &[&str] = &[
+    "content",
+    "old_string",
+    "new_string",
+    "pattern",
+    "text",
+    "abstract",
+    "query",
+];
 
 /// The arguments that name a path, for [`ssh_resolution_hit`]. The file tools all spell it
 /// `path`; the rest are here because a tool that takes a path does not always call it that, and a
