@@ -443,7 +443,10 @@ timeouts, which is the cost the breaker exists to remove.
   name, never a payload** — *reading a path*, *this command ran*, *a probe of lab2x1* — because a
   record is read by a head and printed to a log. `hosts {probe: true}` shows the last four calls
   and the three slowest per host, including for a host that could not be reached; and
-  `$LETIBOT_RPC_DEBUG=1` prints one line per call to stderr, which is the daemon's log.
+  `$LETIBOT_RPC_DEBUG=1` prints one line per call to stderr, which is the daemon's log. **The one
+  exception is a heartbeat**: a job's status poll is one call every 120 ms, so 256 of them are
+  half a minute's worth and would evict every call a reader could act on — a poll is recorded
+  only when it fails, which is the only time it says anything a reader needs.
 * **Rule 8 — eight ssh invocations per host at once.** `MaxSessions` defaults to 10 per
   connection (a ControlMaster is one connection); the two this leaves are the master's own channel
   and one `-O check`. Ten exactly would have the *server* refuse the eleventh with
