@@ -2050,6 +2050,39 @@ mod tests {
         assert!(x.binaries().contains(&"dirname"));
         assert!(x.binaries().contains(&"readlink"));
     }
+
+    /// **A run of operands is one hole, and flags are kept** — `shape`'s own contract.
+    ///
+    /// Measured 2026-10-26 from one package session: `cargo test --offline -p <crate>`
+    /// asked again when a second filter was added, because each operand was its own
+    /// hole. The arity of an operand list is not part of what kind of command this is.
+    /// A flag IS — `sed -n` prints and `sed -i` rewrites — so flags and their order stay
+    /// in the key, and an unreadable word stays its own token rather than joining a run.
+    #[test]
+    fn a_run_of_operands_is_one_hole_and_flags_are_kept() {
+        let one = shape(&n("cargo test --offline -p letibot-tools"));
+        assert_eq!(one, "cargo <args> --offline -p <args>");
+        assert_eq!(
+            one,
+            shape(&n("cargo test --offline -p letibot-tools another-filter")),
+            "an extra filter made a new shape"
+        );
+        // The brief's own example: `--lib -- <arg> <arg>` and `--lib -- <arg> <arg>
+        // <arg>` were two shapes, so re-running tests with one more filter asked again.
+        assert_eq!(
+            shape(&n("cargo test --offline --lib -- a b")),
+            shape(&n("cargo test --offline --lib -- a b c")),
+            "one more filter after `--` made a new shape"
+        );
+        // The keeper, and the reason it is the keeper: a flag changes the kind of call.
+        assert_ne!(shape(&n("sed -n 1p f")), shape(&n("sed -i 1p f")));
+        assert_ne!(shape(&n("grep -A 3 x f")), shape(&n("grep x -A 3 f")));
+        // An unreadable word is never pooled with an approved spelling, and never
+        // swallows the operands on either side of it.
+        assert_eq!(shape(&n("cat a $X b")), "cat <args> <?> <args>");
+        // A count flag stays a count, as it did before the run was collapsed.
+        assert_eq!(shape(&n("head -26 f")), "head -<n> <args>");
+    }
 }
 
 /// **The stable shape of a command**, with its literals replaced by holes.
@@ -2071,18 +2104,37 @@ mod tests {
 /// because a read of the same name was approved once, which is the drift this is
 /// supposed to prevent rather than cause.
 ///
-/// Everything else becomes a hole. Operands are `<arg>`, and a flag's VALUE is
-/// `<v>` — `-A 22` and `-A 3` are the same shape, `-A` and `-B` are not.
-/// Redirection operators are kept and their targets are holes, so `> <file>` and
+/// Everything else becomes a hole. **A RUN of operands is one hole**, `<args>`, and a
+/// flag's VALUE is `<v>` — `-A 22` and `-A 3` are the same shape, `-A` and `-B` are
+/// not. Redirection operators are kept and their targets are holes, so `> <file>` and
 /// `>> <file>` stay apart.
 ///
-/// # What it is not
+/// # Why a run is one hole and not one hole per operand
 ///
-/// Not a security decision on its own and not a cache key yet: it is the label
-/// under which the same question gets asked repeatedly, so the asking can be
-/// counted before anything is built on it. An unresolved word is `<?>` and a shape
-/// containing one is not the same shape as the resolved spelling, because the
-/// thing that could not be read is exactly where a difference would hide.
+/// MEASURED 2026-10-26, from one package session's 178 gate decisions: the same
+/// `cargo test --offline -p <crate>` asked again whenever a second filter was added,
+/// because `--lib -- <arg> <arg>` and `--lib -- <arg> <arg> <arg>` were two shapes. A
+/// shape is asking *what KIND of command is this*, and the arity of an operand list is
+/// not part of the kind — a person who approved `cargo test` over one filter has
+/// answered the same question about two. What the arity was hiding is already carried
+/// elsewhere: a DESTRUCTIVE call is never settled by a shape at all
+/// (`AdjudicatedGate::admit`, where the rule is that judgement is by scope and a shape
+/// throws scope away), so `rm -rf a b` and `rm -rf a` are not pooled where it matters.
+///
+/// Flags and their ORDER are kept, so this is not a general folding: `sed -n` and
+/// `sed -i` differ, `grep -A 3 x` and `grep x -A 3` differ, and `<args>` between two
+/// flags says nothing about what the flags were. A word whose value nobody could read
+/// is `<?>` and does NOT join a run: it is its own token, because the thing that could
+/// not be read is exactly where a difference would hide.
+///
+/// # The one thing this costs, said out loud
+///
+/// A shape is recorded as text (`sessionlog`'s `shape` column and the seeded approval
+/// table) and old rows spell their runs `<arg> <arg>`. They still READ — nothing parses
+/// a shape — and they no longer MATCH, so each shape approved before this change is
+/// asked about once more and re-recorded in the new spelling. There is no version
+/// column to migrate between the two and inventing one for a cache would be worse than
+/// one question.
 fn is_count_flag(t: &str) -> bool {
     t.len() > 1 && t.starts_with('-') && t[1..].chars().all(|c| c.is_ascii_digit())
 }
@@ -2094,29 +2146,48 @@ pub fn shape(n: &Normalised) -> String {
             out.push_str(if st.pipe_in { " | " } else { " ; " });
         }
         out.push_str(st.program.text().unwrap_or("<?>"));
+        // Whether the previous word was an operand, so a RUN of them becomes one hole.
+        let mut in_a_run = false;
         for w in &st.argv {
-            out.push(' ');
-            match w.text() {
-                // **A COUNT is not a flag.** `head -26`, `tail -5`, `head -30`:
-                // the dash is punctuation and the number is an operand wearing it.
-                // Keeping them apart would make every `head -N` its own shape,
-                // which is most of what recurs.
-                Some(t) if is_count_flag(t) => out.push_str("-<n>"),
+            // **A COUNT is not a flag.** `head -26`, `tail -5`, `head -30`: the dash
+            // is punctuation and the number is an operand wearing it. Keeping them
+            // apart would make every `head -N` its own shape, which is most of what
+            // recurs.
+            let flag = match w.text() {
+                Some(t) if is_count_flag(t) => Some("-<n>".to_string()),
                 // A flag is part of the shape, because a flag is where a command
                 // changes kind: `sed -n` prints and `sed -i` rewrites. `--opt=value`
                 // keeps the option and holes the value — one token, two halves.
-                Some(t) if t.starts_with('-') && t.len() > 1 => match t.split_once('=') {
-                    Some((opt, _)) => out.push_str(&format!("{opt}=<v>")),
-                    None => out.push_str(t),
-                },
-                // Everything else is a hole, flag value or operand alike. Telling
-                // those two apart needs a per-program table of which flags take a
-                // value, and buys nothing: `-A 22` and `-A 3` collapse either way,
-                // and the arity of the stage keeps genuinely different calls apart.
-                Some(_) => out.push_str("<arg>"),
-                // Unresolved stays visible: a shape that hid it would pool "we could
-                // not read this" with a spelling somebody has approved.
-                None => out.push_str("<?>"),
+                Some(t) if t.starts_with('-') && t.len() > 1 => Some(match t.split_once('=') {
+                    Some((opt, _)) => format!("{opt}=<v>"),
+                    None => t.to_string(),
+                }),
+                // An operand, or a word nobody could read — both are holes, and the
+                // caller below decides whether this one joins the run.
+                _ => None,
+            };
+            match flag {
+                Some(t) => {
+                    out.push(' ');
+                    out.push_str(&t);
+                    in_a_run = false;
+                }
+                // Unresolved stays visible, and stays OUT of a run: a shape that hid it
+                // would pool "we could not read this" with a spelling somebody has
+                // approved.
+                None if w.text().is_none() => {
+                    out.push_str(" <?>");
+                    in_a_run = false;
+                }
+                // Telling an operand from a flag's VALUE needs a per-program table of
+                // which flags take a value, and buys nothing: `-A 22` and `-A 3` collapse
+                // either way, and both are in the run after them.
+                None => {
+                    if !in_a_run {
+                        out.push_str(" <args>");
+                        in_a_run = true;
+                    }
+                }
             }
         }
         for r in &st.redirects {
