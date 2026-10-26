@@ -3271,6 +3271,28 @@ impl Harness {
         };
         let mut notes: Vec<String> = Vec::new();
         if let Some(st) = &stored {
+            // **A COPY THAT LIVES SOMEWHERE ELSE IS NOT OPENED HERE.**
+            //
+            // `letibot --migrate` moves a session's whole daemon between this box and a host
+            // (`docs/remote-hosts.md` RH4) and marks the copy it leaves behind with the endpoint
+            // that holds the live one. Opening the marked copy is the one thing the marker
+            // exists to prevent: it is not being appended to, so a turn in it would be work
+            // written into a conversation nobody else will ever see — and the operator would be
+            // told nothing, because the store cannot tell a stale copy from a live one by
+            // looking at the rows.
+            //
+            // A refusal rather than a note, for `--role`'s reason: a session opened with a
+            // warning is one the model is prompted into, and the person who has to notice the
+            // warning is reading the transcript the model is answering in.
+            if let Some(on) = st.lives_on.as_ref().filter(|s| !s.is_empty()) {
+                return Err(HarnessError::Setup(format!(
+                    "session {} lives on `{on}`, not here — it was moved there and the copy in \
+                     this store is not being appended to. Nothing was opened. `letibot --session \
+                     {}` attaches to where it is (re-establishing the forwarded socket if it \
+                     dropped), and `letibot --migrate {} --to local` brings it back here.",
+                    cfg.session_id, cfg.session_id, cfg.session_id
+                )));
+            }
             if !st.workspace_root.is_empty()
                 && std::path::Path::new(&st.workspace_root) != cfg.workspace
             {

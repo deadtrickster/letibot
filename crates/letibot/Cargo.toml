@@ -40,6 +40,14 @@ sha2 = "0.10"
 # The record beside a socket is flat JSON, written by whichever launcher started
 # the daemon; reading it must survive a stale or half-written file.
 serde_json.workspace = true
+# **The store, for `letibot migrate`** (`docs/remote-hosts.md` RH4): a session is carried to
+# another store as a file, and the transfer (`export_session`/`import_session`) lives there
+# because the store's schema is the store's business.
+letibot-tokencore.workspace = true
+# `hosts.toml` has `[host.NAME]` sections, which is not the flat `key = "value"` subset the
+# other config files hand-parse — a table header is a grammar, and this is the parser the tree
+# already ships for the one file (`prompts.toml`) that needs one.
+toml.workspace = true
 # Stopping a daemon is `kill(2)`; shelling out to `kill` is a builtin on several
 # systems and a fork on the rest, and this is one syscall.
 libc = "0.2"

@@ -20,6 +20,9 @@
 #                               one the plain start opened IS this fresh session)
 #   letibot --rename ID TITLE   name a stored session
 #   letibot --delete ID         remove a stored session that has no rows
+#   letibot --migrate ID --to HOST   move this session's whole daemon to a host, or back
+#                               with `--to local` (docs/remote-hosts.md RH4). The session's
+#                               socket is forwarded back here, so --session attaches to it
 #   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
 #   letibot --glm               GLM's dialect+vocab; providers.toml names the address
 #   letibot --stop              stop the daemon
@@ -358,6 +361,12 @@ already up, then attaches the TUI head to it.
                               one the plain start opens IS this fresh session)
   letibot --rename ID TITLE   name a stored session
   letibot --delete ID         remove a stored session that has no rows
+  letibot --migrate ID --to HOST   move this session's WHOLE DAEMON to a host — its rows, its
+                              checkout and a harnessd there — leaving a marked copy here.
+                              `--to local` brings it back; `--to OTHER` moves it on from
+                              wherever it lives now. --copy-keys sends providers.toml too
+                              (mode 600, never printed). docs/remote-hosts.md RH4
+  letibot --reattach ID       re-establish a moved session's daemon and forwarded socket
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
   letibot --glm               GLM's dialect+vocab; providers.toml names the address
   letibot --stop              stop the daemon
@@ -1540,6 +1549,20 @@ case "${1:-}" in
   --delete)
     [ $# -ge 2 ] || die "--delete ID"
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2" ;;
+  --migrate)
+    # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a
+    # role: it is one act, it needs the store and the rundir this script already knows, and
+    # nothing invokes it by a program name.
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the migration verb lives there)"
+    shift
+    exec "$BIN/letibot" migrate "$@" --store "$STORE" ;;
+  --reattach)
+    # What this script runs itself when a moved session's forward has dropped; here so an
+    # operator can ask for it by hand when a head refuses to connect.
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+    shift
+    [ $# -ge 1 ] || die "--reattach ID"
+    exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE" ;;
   --ls|--list-all)
     # **The byobu view: every folder's daemon, and what is live inside it.**
     #
@@ -1900,6 +1923,33 @@ case "${1:-}" in
     WANT_NEW=1
     NEW_TITLE="${1:-}"; [ $# -gt 0 ] && shift || true ;;
 esac
+
+# **A SESSION THAT LIVES ON A HOST IS ATTACHED THROUGH ITS FORWARD.**
+#
+# `letibot --migrate SESSION --to lab2x1` moves the session's daemon there and records the
+# forwarded socket beside this folder's daemon records (`docs/remote-hosts.md` RH4). A head
+# that kept looking at THIS folder's daemon would open the copy left behind — which the
+# daemon now refuses by name, because a marked copy is not the conversation. So the record
+# is read here, the forward is re-established when it has dropped, and the head goes there.
+#
+# A dropped forward leaves its socket FILE behind and nothing answering on it, so the
+# question is asked of the socket (`--probe`) and not of the file.
+if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
+  MIGRATED_RECORD="$RUNDIR/migrated-$SESSION.json"
+  if [ -f "$MIGRATED_RECORD" ]; then
+    MIGRATED_SOCKET="$(json_str socket "$MIGRATED_RECORD")"
+    MIGRATED_HOST="$(json_str host "$MIGRATED_RECORD")"
+    [ -n "$MIGRATED_SOCKET" ] || die "$MIGRATED_RECORD names no socket — it was written by something else. Remove it, or re-run the migration."
+    if ! { [ -S "$MIGRATED_SOCKET" ] &&
+           "$BIN/letibot-tui" --socket "$MIGRATED_SOCKET" --probe </dev/null >/dev/null 2>&1; }; then
+      echo "letibot: $SESSION lives on $MIGRATED_HOST — re-establishing the forward" >&2
+      "$BIN/letibot" migrate --reattach "$SESSION" --store "$STORE" >&2 ||
+        die "$SESSION lives on $MIGRATED_HOST and its daemon could not be reached.
+         Nothing was opened. `$ME --migrate $SESSION --to local` brings it back here."
+    fi
+    exec "$HEAD" --socket "$MIGRATED_SOCKET" --identity "${USER:-operator}" --resume "$SESSION"
+  fi
+fi
 
 [ -x "$BIN/harnessd" ] || die "no harnessd at $BIN
   This launcher looks beside itself and in ../../target/release, unless LETIBOT_BIN

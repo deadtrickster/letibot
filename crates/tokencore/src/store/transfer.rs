@@ -154,6 +154,12 @@ pub struct ImportReport {
     pub monitors: usize,
     pub decisions: usize,
     pub citations: usize,
+    /// **This store already held the session** and the file CAME IT HOME — the rows before the
+    /// file's were already here, and what this import did was carry the rest. A round trip is
+    /// two of those, because a move back to a laptop lands in the store the session was last
+    /// in: the copy left behind is the prefix of the file, and nothing appended to it while it
+    /// was marked.
+    pub caught_up: bool,
 }
 
 /// Where an import puts the session — the two things a transfer cannot know about the
@@ -302,12 +308,25 @@ impl Store {
                  Nothing was imported."
             )));
         }
-        if self.session(id)?.is_some() {
-            return Err(StoreError::Refused(format!(
-                "{id} is already in this store. Nothing was imported — two copies of one \
-                 conversation that each go on being appended to is the state a migration \
-                 exists to prevent. Migrate it back, or delete the copy here first."
-            )));
+        if let Some(existing) = self.session(id)? {
+            // **Two copies are only allowed to be two copies when one of them is marked.**
+            // The copy here is the one a PREVIOUS move left behind: its rows are a prefix of the
+            // file's (nothing could append to it — the marker refuses to open it), so the file
+            // catches it up. A copy here that is NOT marked is the state a migration exists to
+            // prevent — two live transcripts of one conversation, each going on being appended
+            // to — and no reading of the file can tell which of them a person means.
+            if existing.lives_on.is_none() {
+                return Err(StoreError::Refused(format!(
+                    "{id} is already in this store, and it is not marked as living anywhere \
+                     else. Nothing was imported: two copies of one conversation that each go on \
+                     being appended to is the state a migration exists to prevent. Delete the \
+                     copy here first, or migrate this one instead."
+                )));
+            }
+            verify_chains(transfer)?;
+            let mut report = self.write_tx(|tx| catch_up(tx, transfer, into))?;
+            report.caught_up = true;
+            return Ok(report);
         }
         // **The chain, before anything is written.** The same rebuild a resume does: the
         // prefix's tokens, the rows in `seq` order, every link re-hashed.
@@ -358,44 +377,7 @@ impl Store {
                     st.execute(rusqlite::params_from_iter(cells.iter()))?;
                 }
             }
-            // **The workspace is the destination's, and the marker is the destination's.**
-            // Both are facts about WHERE this copy is, which the file was written before
-            // anybody knew: a session that arrived carrying the source's workspace would
-            // open onto a folder that is not here, and one carrying the source's marker
-            // would say it lives somewhere else than where it now does.
-            tx.execute(
-                "UPDATE session SET workspace_root = ?2 WHERE id = ?1",
-                rusqlite::params![id, into.workspace],
-            )?;
-            tx.execute(
-                "UPDATE session SET lives_on = NULL, moved_ms = NULL WHERE id = ?1",
-                rusqlite::params![id],
-            )?;
-            // **And the chain again, over what this store now holds** — still inside the
-            // transaction, so a store that cannot rebuild the conversation rolls back to
-            // the state it was in rather than keeping rows nothing can open.
-            let mut transcripts = 0usize;
-            let mut items = 0usize;
-            for (tid, prefix_id) in transcripts_of(tx, id)? {
-                let loaded = read_transcript(tx, &tid, &prefix_id)?;
-                loaded.verify(&format!(
-                    "{id}: after the rows were written, this store's copy of transcript \
-                     {tid} does not rebuild the chain the file describes. The import was \
-                     rolled back — nothing of this session is in this store."
-                ))?;
-                transcripts += 1;
-                items += loaded.rows.len();
-            }
-            Ok(ImportReport {
-                session_id: id.to_string(),
-                transcripts,
-                items,
-                todos: count(tx, "todo", id)?,
-                jobs: count(tx, "job", id)?,
-                monitors: count(tx, "session_monitor", id)?,
-                decisions: count(tx, "adjudication", id)?,
-                citations: count(tx, "citation", id)?,
-            })
+            settle(tx, transfer, into)
         })?;
         Ok(report)
     }
@@ -444,6 +426,217 @@ impl Store {
         }
         Ok(out)
     }
+}
+
+/// **The workspace is the destination's, and the marker is the destination's** — then the chain
+/// is rebuilt again over what this store now holds, and the report is counted.
+///
+/// The two destination facts cannot come from the file: it was written before anybody knew where
+/// the copy would land. A session that arrived carrying the source's workspace would open onto a
+/// folder that is not here, and one carrying the source's marker would say it lives somewhere
+/// other than where it now does.
+///
+/// **The second chain check is inside the transaction**, so a store that cannot rebuild the
+/// conversation rolls back to the state it was in rather than keeping rows nothing can open. It
+/// is the same check a resume makes, and it is the one that answers the question the migration
+/// is actually asking: *will the daemon here be able to open this?*
+fn settle(
+    tx: &rusqlite::Transaction<'_>,
+    transfer: &SessionTransfer,
+    into: &ImportInto,
+) -> Result<ImportReport> {
+    let id = transfer.session_id.as_str();
+    tx.execute(
+        "UPDATE session SET workspace_root = ?2, lives_on = NULL, moved_ms = NULL WHERE id = ?1",
+        rusqlite::params![id, into.workspace],
+    )?;
+    let mut transcripts = 0usize;
+    let mut items = 0usize;
+    for (tid, prefix_id) in transcripts_of(tx, id)? {
+        let loaded = read_transcript(tx, &tid, &prefix_id)?;
+        loaded.verify(&format!(
+            "{id}: after the rows were written, this store's copy of transcript {tid} does not \
+             rebuild the chain the file describes. The import was rolled back — nothing of this \
+             session is in this store."
+        ))?;
+        transcripts += 1;
+        items += loaded.rows.len();
+    }
+    Ok(ImportReport {
+        session_id: id.to_string(),
+        transcripts,
+        items,
+        todos: count(tx, "todo", id)?,
+        jobs: count(tx, "job", id)?,
+        monitors: count(tx, "session_monitor", id)?,
+        decisions: count(tx, "adjudication", id)?,
+        citations: count(tx, "citation", id)?,
+        caught_up: false,
+    })
+}
+
+/// **A copy this store already has, brought up to what the file says.**
+///
+/// The case a round trip lands in: the rows left behind here are the PREFIX of the file's, because
+/// the marker refused to open them and nothing appended to them. So the missing rows are appended
+/// (the store's own trigger would refuse anything else), the metadata tables are replaced, and the
+/// overlap is CHECKED rather than assumed: the last row of the copy here must be the same row, by
+/// its chain link, as the file's row at that index. If it is not, the two copies diverged — which
+/// means something appended here while the marker said not to — and that is refused by name.
+fn catch_up(
+    tx: &rusqlite::Transaction<'_>,
+    transfer: &SessionTransfer,
+    into: &ImportInto,
+) -> Result<ImportReport> {
+    let id = transfer.session_id.as_str();
+    let (session, row) = transfer.session_row()?;
+    let known = table_columns(tx, "session")?;
+    // Every column the file carries, except the two that name the row itself.
+    let mut sets: Vec<String> = Vec::new();
+    let mut values: Vec<SqlValue> = Vec::new();
+    for (i, column) in session.columns.iter().enumerate() {
+        if column == "id" || !known.iter().any(|k| k == column) {
+            continue;
+        }
+        let cell = row
+            .get(i)
+            .ok_or_else(|| StoreError::Corrupt(format!("session row is short of `{column}`")))?;
+        values.push(cell_in(cell)?);
+        sets.push(format!("{column} = ?{}", values.len()));
+    }
+    values.push(SqlValue::Text(id.to_string()));
+    tx.execute(
+        &format!(
+            "UPDATE session SET {} WHERE id = ?{}",
+            sets.join(", "),
+            values.len()
+        ),
+        rusqlite::params_from_iter(values.iter()),
+    )?;
+
+    // A prefix is content-addressed and may already be here.
+    for table in transfer
+        .tables
+        .iter()
+        .filter(|t| t.table == "stable_prefix")
+    {
+        insert_rows(tx, table, "INSERT OR IGNORE")?;
+    }
+    // A transcript the copy here does not have (a fork made on the other machine) arrives whole;
+    // one it does have keeps its row, which is the same row.
+    for table in transfer.tables.iter().filter(|t| t.table == "transcript") {
+        insert_rows(tx, table, "INSERT OR IGNORE")?;
+    }
+    if let Some(items) = transfer.table("transcript_item") {
+        // **A copy with rows the file does not have is a divergence, not a superset.** The whole
+        // claim this function rests on is that nothing appended here while the copy was marked;
+        // a row here that the live copy never saw says that claim is false, and appending the
+        // file's rows on top of it would build one conversation out of two.
+        for (tid, _) in transcripts_of(tx, id)? {
+            let have: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1",
+                rusqlite::params![tid],
+                |r| r.get(0),
+            )?;
+            let said = items
+                .rows
+                .iter()
+                .filter(|r| items.cell(r, "transcript_id") == Some(&Value::String(tid.clone())))
+                .count();
+            if have as usize > said {
+                return Err(StoreError::Refused(format!(
+                    "{id}: this store's copy of transcript {tid} holds {have} row(s) and the \
+                     file holds {said} — the copy here was APPENDED TO while it was marked as \
+                     living elsewhere. Nothing was imported: two transcripts of one conversation \
+                     cannot be told apart from one transcript that was worked on twice."
+                )));
+            }
+        }
+        for row in &items.rows {
+            let tid = string_cell(items, row, "transcript_id")?;
+            let seq = number_cell(items, row, "seq")?;
+            let have: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1",
+                rusqlite::params![tid],
+                |r| r.get(0),
+            )?;
+            if seq < have {
+                // Inside the overlap: it must be the SAME row the file describes, by its link.
+                let said = hash_cell(items, row, "h_k")?;
+                let mine: Vec<u8> = tx.query_row(
+                    "SELECT h_k FROM transcript_item WHERE transcript_id = ?1 AND seq = ?2",
+                    rusqlite::params![tid, seq],
+                    |r| r.get(0),
+                )?;
+                if mine != said {
+                    return Err(StoreError::Refused(format!(
+                        "{id}: transcript {tid} has {have} row(s) in this store and the file's \
+                         row {seq} is not the same row — the two copies have DIVERGED, which \
+                         means something appended here while this copy was marked as living \
+                         elsewhere. Nothing was imported: a merge of two conversations cannot \
+                         be told apart from a repair of one."
+                    )));
+                }
+                continue;
+            }
+            insert_rows(
+                tx,
+                &TableExport {
+                    table: "transcript_item".into(),
+                    columns: items.columns.clone(),
+                    rows: vec![row.clone()],
+                },
+                "INSERT",
+            )?;
+        }
+    }
+    // **The mutable and keyed tables are the file's**, not this copy's: the live copy is the
+    // authority for a todo list, a job's state, a monitor, a mode, a ruling and a citation.
+    for table in transfer.tables.iter().filter(|t| {
+        !matches!(
+            t.table.as_str(),
+            "session" | "stable_prefix" | "transcript" | "transcript_item"
+        )
+    }) {
+        insert_rows(tx, table, "INSERT OR REPLACE")?;
+    }
+    settle(tx, transfer, into)
+}
+
+fn insert_rows(tx: &rusqlite::Transaction<'_>, table: &TableExport, verb: &str) -> Result<()> {
+    if table.rows.is_empty() {
+        return Ok(());
+    }
+    let known = table_columns(tx, &table.table)?;
+    for column in &table.columns {
+        if !known.iter().any(|k| k == column) {
+            return Err(StoreError::Refused(format!(
+                "this store's `{}` table has no `{column}` column, and the file carries one. \
+                 Nothing was imported: the destination build is not the build that wrote the \
+                 file, and a session missing a column behaves differently from the one that was \
+                 left behind.",
+                table.table
+            )));
+        }
+    }
+    let sql = format!(
+        "{verb} INTO {} ({}) VALUES ({})",
+        table.table,
+        table.columns.join(", "),
+        (1..=table.columns.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut st = tx.prepare(&sql)?;
+    for row in &table.rows {
+        let mut cells: Vec<SqlValue> = Vec::with_capacity(row.len());
+        for value in row {
+            cells.push(cell_in(value)?);
+        }
+        st.execute(rusqlite::params_from_iter(cells.iter()))?;
+    }
+    Ok(())
 }
 
 /// One cell out of the store, as JSON. **A blob is the only thing that is an object**, so
@@ -1065,6 +1258,125 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(why.contains("already in this store"), "{why}");
+    }
+
+    /// **The round trip: a copy that was left behind is brought up to what the live one says.**
+    ///
+    /// A move back lands in the store the session was last in, so the second import finds a
+    /// copy already there. The rows that copy holds are the PREFIX of the file's — the marker
+    /// refused to open it, so nothing appended — and what the import does is append the rest.
+    /// The overlap is checked by its chain link, and the marker is cleared.
+    #[test]
+    fn a_marked_copy_is_caught_up_rather_than_refused() {
+        let here = Store::open_in_memory().unwrap();
+        seeded(&here);
+        // The session leaves: the copy here is marked, and the live one is on a host.
+        here.set_lives_on("sess-1", Some("lab2x1")).unwrap();
+        let gone = here.export_session("sess-1").unwrap();
+        let there = Store::open_in_memory().unwrap();
+        assert!(there.import_session(&gone, &into()).unwrap().transcripts == 1);
+
+        // Work happens on the host: two more rows, the chain continuing.
+        let loaded = there.load_transcript("tr-1").unwrap();
+        let mut ledger = TokenLedger::restore(
+            "tr-1",
+            &loaded.prefix_tokens,
+            loaded.h_init,
+            &loaded.ledger_input(),
+        )
+        .unwrap();
+        for (seq, text) in [(3u32, "host"), (4, "work")] {
+            let toks = vec![100 + seq];
+            let row = ledger.append(&format!("it-{seq}"), &toks).unwrap().clone();
+            there
+                .append_item(
+                    "tr-1",
+                    seq,
+                    &TranscriptItem::User {
+                        speaker: Default::default(),
+                        parts: vec![letibot_transcript::UserPart::Text {
+                            text: text.to_string(),
+                        }],
+                    },
+                    &row,
+                    &toks,
+                )
+                .unwrap();
+        }
+        let back = there.export_session("sess-1").unwrap();
+
+        let report = here.import_session(&back, &into()).unwrap();
+        assert!(
+            report.caught_up,
+            "the copy here was marked, so this import carries the rest rather than refusing"
+        );
+        assert_eq!(
+            here.session("sess-1").unwrap().unwrap().items,
+            5,
+            "the two rows written on the host came home"
+        );
+        assert_eq!(
+            here.lives_on("sess-1").unwrap(),
+            None,
+            "and the copy here is the live one again"
+        );
+        let loaded = here.load_transcript("tr-1").unwrap();
+        let ledger = TokenLedger::restore(
+            "tr-1",
+            &loaded.prefix_tokens,
+            loaded.h_init,
+            &loaded.ledger_input(),
+        )
+        .unwrap();
+        ledger.verify_chain().unwrap();
+    }
+
+    /// **A copy that appended while it was marked is refused, not merged.** Two conversations
+    /// under one id is not something an import can be asked to reconcile.
+    #[test]
+    fn a_copy_that_diverged_is_refused() {
+        let here = Store::open_in_memory().unwrap();
+        let prefix_id = seeded(&here);
+        here.set_lives_on("sess-1", Some("lab2x1")).unwrap();
+        let gone = here.export_session("sess-1").unwrap();
+        let there = Store::open_in_memory().unwrap();
+        there.import_session(&gone, &into()).unwrap();
+
+        // The stale copy gets a row of its own — the thing the marker exists to prevent, done on
+        // purpose here to prove it is caught.
+        let loaded = here.load_transcript("tr-1").unwrap();
+        let mut ledger = TokenLedger::restore(
+            "tr-1",
+            &loaded.prefix_tokens,
+            loaded.h_init,
+            &loaded.ledger_input(),
+        )
+        .unwrap();
+        let toks = vec![7u32, 8];
+        let row = ledger.append("it-3", &toks).unwrap().clone();
+        here.append_item(
+            "tr-1",
+            3,
+            &TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "stale".into(),
+                }],
+            },
+            &row,
+            &toks,
+        )
+        .unwrap();
+        let _ = prefix_id;
+
+        let why = here
+            .import_session(&there.export_session("sess-1").unwrap(), &into())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            why.contains("APPENDED TO"),
+            "a stale copy that was appended to must be refused by name: {why}"
+        );
     }
 
     /// **The marker is one column and it round trips** — `--sessions` reads it, and a

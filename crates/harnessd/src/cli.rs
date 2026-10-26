@@ -2501,11 +2501,20 @@ fn run_query(
             );
             for s in &rows {
                 println!(
-                    "{:<wid$}  {:>5}  {:>7}  {}",
+                    "{:<wid$}  {:>5}  {:>7}  {}{}",
                     s.id,
                     s.items,
                     age(now - s.last_activity_ms),
                     s.title.clone().unwrap_or_else(|| "(unnamed)".into()),
+                    // **Where it LIVES, when that is not here.** A row whose live copy is on a
+                    // host is not a session this box is appending to, and a listing that offered
+                    // it unmarked would be offering a conversation that stopped the day it moved
+                    // (`docs/remote-hosts.md` RH4). It stays in the list — the rows are here, and
+                    // `--migrate SESSION --to local` brings it back — but it says so.
+                    match &s.lives_on {
+                        Some(on) => format!("  [lives on {on}]"),
+                        None => String::new(),
+                    },
                 );
                 // The same prefix width as the row above it — `wid + 2 + 5 + 2 + 7 + 2`
                 // — so the workspace lines up under the title rather than three

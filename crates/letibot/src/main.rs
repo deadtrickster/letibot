@@ -60,6 +60,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 pub mod launcher;
+pub mod migrate;
 mod roles;
 mod stats;
 
@@ -295,6 +296,12 @@ fn main() -> ExitCode {
                     stats::run_stats(&tail())
                 } else if word == "fb" {
                     stats::run_fb(&tail())
+                } else if word == "migrate" {
+                    migrate::run(&tail())
+                } else if word == "--migrate" {
+                    // **The spelling the operator and the brief use**, so the launcher can pass
+                    // its own line through unchanged: `letibot --migrate SESSION --to NAME`.
+                    migrate::run(&tail())
                 } else if word == "--help" || word == "-h" || word == "help" {
                     print_usage();
                     ExitCode::SUCCESS
