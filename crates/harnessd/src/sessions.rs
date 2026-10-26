@@ -2749,6 +2749,19 @@ impl<'a> Sessions<'a> {
         self.plugins.values().filter_map(|h| h.next_at()).min()
     }
 
+    /// **Close every held session's backend, and say what each one delivered** — the
+    /// one-shot's last act. A session's placement hands its work back only when its backend
+    /// closes: a remote host's branch is fetched home, a firecode VM is brought down and its copy
+    /// delivered. The one-shot exited without this, so the first live run on lab2x1 committed
+    /// there and nothing came back (2026-10-26). Only the sessions this daemon holds directly;
+    /// a court's harness closes on its own thread when that session closes.
+    pub fn close_backends(&self) -> Vec<String> {
+        self.open
+            .values()
+            .filter_map(|h| h.close_backend())
+            .collect()
+    }
+
     /// **Stop every session's subagents and wait for their threads to leave** — the daemon's
     /// exit path, and the door the process's own exit needs before it runs `_dl_fini`.
     ///

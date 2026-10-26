@@ -1962,6 +1962,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
             eprintln!("  {said}");
         }
+        // **And hand the placement's work back** before the process ends: a remote host's
+        // branch, a VM's copy. See `Sessions::close_backends`.
+        for landed in sessions.close_backends() {
+            eprintln!("  {landed}");
+        }
         lifeline.stopped();
         if let Some(seat) = &seat {
             seat.stop();
