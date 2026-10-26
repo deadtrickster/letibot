@@ -87,10 +87,16 @@ impl Rig {
         git(&repo, &["commit", "-q", "-m", "the first commit"]);
 
         // **The operator's file**, which is the only place a host may come from.
+        //
+        // **`mise = false`, because this "host" is a directory on the box running the test.** The
+        // default is to probe the far side for a mise (`$HOME/.local/bin/mise`, then `PATH`) and
+        // wrap every remote command in `mise exec` — and the fake ssh above inherits this process's
+        // `PATH`, so on a box that has mise the placement would be tested through it. A fixture
+        // says what it means; `remote_hosts.rs` has the tests that DO have a mise.
         let hosts = dir.join("hosts.toml");
         std::fs::write(
             &hosts,
-            "[host.fake]\nhostname = \"fake.invalid\"\nuser = \"tester\"\nroot = \"~/letibot-remote\"\n",
+            "[host.fake]\nhostname = \"fake.invalid\"\nuser = \"tester\"\nroot = \"~/letibot-remote\"\nmise = false\n",
         )
         .expect("a hosts file");
         // **letibot's own ssh material**, under this rig's home: the dedicated key the host

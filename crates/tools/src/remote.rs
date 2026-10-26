@@ -1028,10 +1028,16 @@ impl Ssh {
     }
 
     /// The directory a wrapped command is run in — `-C`'s argument.
+    ///
+    /// **`one_entry`, not `quote`.** This is a path on the *remote*, so a `~` in it must be
+    /// expanded **there**, exactly as `path`'s entries are: `quote` would hand mise a literal
+    /// `~`, which mise resolves against the directory it happens to be in, not against that
+    /// machine's home. Measured on a host with a real mise (2026-10-26): the wrapper is the one
+    /// thing between a session and *every* remote command, so a misspelling here is a shape that
+    /// fails on all four of the operator's machines and on none of this box's tests.
     fn dir_arg(&self) -> String {
         match &self.dir {
-            Some(d) => quote(d),
-            // `"$HOME"`, unquoted as a path: quoting it would name a directory called `$HOME`.
+            Some(d) => one_entry(d),
             None => "\"$HOME\"".to_string(),
         }
     }
@@ -2204,11 +2210,14 @@ impl SshBackend {
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
 
-        // **The connection now knows which tree the work is in.** It is `mise exec -C`'s
-        // argument, and it is why the toolchain wrapper is right: a project pins its versions in
-        // a `mise.toml` in ITS tree, so a wrapper that ran in `$HOME` would find the global ones
-        // and quietly build with the wrong compiler.
-        ssh = ssh.with_dir(worktree.clone());
+        // **`mise exec -C` needs a directory that EXISTS**, and the checkout below does not exist
+        // until `git worktree add` has run — so the wrapper is pointed at the root until then. It
+        // is not a detail: mise refuses a missing `-C` (measured, 2026-10-26 —
+        // `mise ERROR Directory specified with --cd does not exist: …`, exit 1), which on every
+        // machine whose toolchain comes from mise failed the placement at `making the mirror`.
+        // mise prints the path it was given with `$HOME` abbreviated to `~`, which is what made
+        // the refusal read like a quoting bug.
+        ssh = ssh.with_dir(root.clone());
 
         // **A bare mirror, once.** Reused by every later session onto the same repository,
         // so a second child on the same host sends only its own commits.
@@ -2300,6 +2309,12 @@ impl SshBackend {
             )
             .map_err(place)?;
         }
+
+        // **Now the checkout exists, so the wrapper can be pointed at it.** A project pins its
+        // versions in a `mise.toml` in ITS tree, so `-C` has to be the tree the work is in and not
+        // the root; but it can only be named once `git worktree add` (or a resumed session's own
+        // checkout) has made it.
+        ssh = ssh.with_dir(worktree.clone());
 
         // **The session's own job directory is not part of the tree.** `.letibot-remote/` holds a
         // background job's launcher, output, pid and exit file, so it appears the moment the
@@ -3789,6 +3804,49 @@ user     = "root"
         assert_eq!(quote("plain/path.ext"), "plain/path.ext");
         assert_eq!(quote("it's"), r#"'it'\''s'"#);
         assert_eq!(quote(""), "''");
+    }
+
+    /// **A `~` in the wrapped directory is expanded on the REMOTE, and never left quoted.**
+    ///
+    /// `mise exec -C` resolves a literal `~` against the directory it happens to be in, so a
+    /// quoted tilde is a `-C` that names the wrong tree — or none. The same rule `path`'s entries
+    /// already follow ([`one_entry`]), asked of `-C`; measured 2026-10-26 after a gate run on a
+    /// host with a real mise.
+    #[test]
+    fn a_tilde_directory_is_expanded_on_the_remote() {
+        let h = Hosts::parse(FILE).expect("it parses");
+        let host = h.get("lab2x1").expect("lab2x1").clone();
+        let (dir, paths) = paths_for("tilde-dir", &host.name, &host.hostname);
+        let host = Host {
+            key: Some(paths.default_key("lab2x1")),
+            mise: Some(Mise::At("/opt/mise".into())),
+            ..host
+        };
+        let ssh = Ssh::connect(host, Some(PathBuf::from("/bin/false")), paths)
+            .expect("the connection opens");
+
+        let absolute = ssh
+            .clone()
+            .with_dir("/home/dead/letibot-remote/repo/01abcdef");
+        let said = absolute.remote_command("true");
+        assert!(
+            said.starts_with(
+                "/opt/mise exec -C /home/dead/letibot-remote/repo/01abcdef -- bash -lc "
+            ),
+            "an absolute directory is handed over as it is: {said}"
+        );
+
+        let tilde = ssh.with_dir("~/letibot-remote/repo/01abcdef");
+        let said = tilde.remote_command("true");
+        assert!(
+            said.contains("exec -C \"$HOME/letibot-remote/repo/01abcdef\" --"),
+            "a `~` is the REMOTE's home, expressed so its shell expands it: {said}"
+        );
+        assert!(
+            !said.contains("'~") && !said.contains(" -C ~"),
+            "and never handed over as a literal tilde: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The ssh argv is the policy's, and nothing in it names the operator's ssh material.**

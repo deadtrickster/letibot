@@ -1649,17 +1649,13 @@ fn a_jobs_polling_does_not_fill_the_record_ring() {
         "a successful poll is a heartbeat and is not written down"
     );
     // …and the count is what a launch plus a wait really was — under a hundred — rather than the
-    // hundreds a recorded heartbeat would have added. (Not *which* records: the ring is shared by
-    // every test in this process, so a placement's early lines may legitimately have been evicted
-    // by another host's traffic.)
+    // hundreds a recorded heartbeat would have added. Only the count is asserted: the ring is
+    // shared by every test in this binary, so *which* records survive is another host's traffic's
+    // business, and a presence assertion here would be a flake dressed as a measurement.
     assert!(
         mine.len() < 100,
         "the polls did not put a single extra entry in: {}",
         mine.len()
-    );
-    assert!(
-        mine.iter().any(|r| r.step == "the job was starting"),
-        "and the job's own start is recorded: {mine:#?}"
     );
     let _ = std::fs::remove_dir_all(&fake.dir);
 }
@@ -1673,6 +1669,93 @@ fn pidfile_is_stale(b: &letibot_tools::remote::SshBackend) -> bool {
                 .any(|e| e.path().extension().is_some_and(|x| x == "pgid"))
         })
         .unwrap_or(false)
+}
+
+/// **A host whose mise insists on a directory that exists** — which is what a real mise does, and
+/// what the placement did not do: the wrapper was pointed at the checkout before `git worktree add`
+/// had made it, so on every machine whose toolchain comes from mise the placement died at `making
+/// the mirror` with `mise ERROR Directory specified with --cd does not exist: …` (measured on the
+/// orchestrator's gate, 2026-10-26 — and mise prints the path with `$HOME` abbreviated to `~`,
+/// which makes it read like a quoting bug and is not one).
+///
+/// The stub here is the real behaviour in eight lines: refuse a `-C` that is not a directory, record
+/// every `-C` it was given, then run the command. It is `$HOME/.local/bin/mise` in the fake remote's
+/// own home, so the **default** probe finds it — no `mise` line in `hosts.toml` — and every step of a
+/// placement goes through it.
+#[test]
+fn a_placement_through_a_mise_that_insists_its_directory_exists() {
+    let host = format!("mise-real-{}", std::process::id());
+    let fake = Fake::new("misereal", "exec bash -lc \"$last\"");
+    let mise = fake.dir.join("home/.local/bin/mise");
+    std::fs::create_dir_all(mise.parent().expect("a bin")).expect("the mise directory");
+    let seen = fake.path("cds");
+    write_executable(
+        &mise,
+        &format!(
+            "#!/bin/bash\n\
+             # exec -C <dir> -- <cmd...>\n\
+             if [ \"$1\" != exec ] || [ \"$2\" != -C ]; then echo 'mise: unexpected argv' >&2; exit 2; fi\n\
+             d=\"$3\"\n\
+             printf '%s\\n' \"$d\" >> '{seen}'\n\
+             if [ ! -d \"$d\" ]; then\n\
+               echo \"mise ERROR Directory specified with --cd does not exist: $d\" >&2\n\
+               exit 1\n\
+             fi\n\
+             shift 4\n\
+             exec \"$@\"\n",
+            seen = seen.display()
+        ),
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    // **No `mise` line**: the default is what a real `hosts.toml` gets, and the probe finds this
+    // stub at `$HOME/.local/bin/mise` — the operator's own layout.
+    let b = SshBackend::place(&place_spec_for_test(
+        &fake.program,
+        &repo,
+        &paths,
+        Host {
+            mise: None,
+            ..host_named(&host)
+        },
+    ))
+    .expect("the placement is arranged through a mise that checks its directory");
+
+    let worktree = b.worktree_path();
+    let cds = std::fs::read_to_string(&seen).expect("the stub recorded every -C");
+    let dirs: Vec<&str> = cds.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(
+        !dirs.is_empty(),
+        "every step of the placement went through mise: {cds}"
+    );
+    // **Every `-C` was a path that exists on the remote** — which the stub itself enforced, and
+    // which is asserted here so a future change that stops using the stub still fails this test.
+    for d in &dirs {
+        assert!(
+            d.starts_with('/') && Path::new(d).is_dir(),
+            "`-C {d}` is an absolute directory that exists: {dirs:?}"
+        );
+    }
+    // The wrapper is pointed at the ROOT until the checkout exists, and at the checkout after.
+    assert!(
+        dirs.iter()
+            .all(|d| !d.ends_with("01abcdef") || Path::new(d).is_dir()),
+        "the checkout is only named once it is there: {dirs:?}"
+    );
+    assert!(
+        dirs.contains(&worktree),
+        "and the work that follows the checkout runs IN it: {dirs:?}"
+    );
+
+    // It is not only the placement: a tool call goes through the same wrapper too, and it runs in a
+    // directory that exists.
+    let _ = b.read("README").expect("the read lands");
+    b.write("docs/kept.txt", b"bytes").expect("the write lands");
+    let cds = std::fs::read_to_string(&seen).expect("the stub recorded every -C");
+    assert!(
+        cds.lines().all(|d| Path::new(d).is_dir()),
+        "every `-C` after the placement exists too: {cds}"
+    );
+    let _ = std::fs::remove_dir_all(&fake.dir);
 }
 
 /// **Rule 7: every call is recorded, and the report says what it did.**
