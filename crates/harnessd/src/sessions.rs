@@ -1539,9 +1539,12 @@ impl<'a> Sessions<'a> {
                 };
                 // **The act itself is the harness's** — `Harness::apply_model_choice`,
                 // which is now the ONE implementation of this verb. It has a second
-                // caller as of 2026-10-12: the retry loop, which applies a `/models`
-                // typed during a retrying turn on the spot rather than after it — see
-                // `Harness::apply_queued_model`. Two copies of a switch would be two
+                // caller as of 2026-10-12: the retry loop, which takes a `/models` typed
+                // during a turn out of the queue and answers it on the spot rather than after it
+                // — see `Harness::apply_queued_model`. Since 2026-10-26 that answer is
+                // *"turns go to X when this turn ends"*: the switch is recorded there and
+                // applied at the turn's end, because a model's first request has to follow a
+                // user message. Two copies of a switch would be two
                 // places for the screen, the session row and the thing that actually
                 // answers to disagree.
                 h.apply_model_choice(choice, lines)

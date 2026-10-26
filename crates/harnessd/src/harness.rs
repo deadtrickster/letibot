@@ -2356,6 +2356,47 @@ pub struct Harness {
     /// the session had been on and type it back — and the daemon knew both the name and
     /// the command. See [`Harness::switch_back_notice`].
     switch_back: Option<SwitchBack>,
+    /// **A model switch that arrived while a prompt was in flight**, waiting for that prompt
+    /// to end — see [`Harness::set_provider`] and [`Harness::apply_pending_switch`].
+    ///
+    /// It is a field and not a queue of the hub because it is not a command anybody replays: the
+    /// request is answered the moment it is taken (`"turns go to X when this turn ends"`), and
+    /// what is left to do is one act, at one moment the harness already has
+    /// ([`Harness::end_turn_clock`]). A queue would let two switches stack and make *which one
+    /// wins* a question about the order a worker happened to drain them in.
+    pending_switch: Option<PendingSwitch>,
+}
+
+/// **A switch waiting for the turn in flight to end** — recorded, said, and applied where the
+/// prompt span closes.
+///
+/// MEASURED 2026-10-26, the operator's session: `/models deepseek/deepseek-flash` typed while a
+/// round on `glm-coding/glm-5.3` was failing was applied INSIDE the retry loop, so the round was
+/// re-issued on deepseek carrying the rest of GLM's turn — a run of assistant tool-call rounds
+/// with no `reasoning_content`, which deepseek's thinking mode refuses (`http 400: The
+/// `reasoning_content` in the thinking mode must be passed back to the API`). The operator's
+/// sentence for the rule: *"we can switch after turn ends"*.
+struct PendingSwitch {
+    /// The argument [`Harness::set_provider`] will be given when the turn ends: `Some` is a
+    /// metered provider, `None` the daemon's own server.
+    choice: Option<crate::config::ProviderConfig>,
+    /// The model it lands on, in `/models`' spelling (`deepseek/deepseek-flash`, `local`), read
+    /// when it was recorded — so the sentence that says what will happen does not have to build
+    /// the provider to name it.
+    model: String,
+}
+
+/// **The model a `set_provider` argument would land on**, in [`Harness::model_name`]'s spelling
+/// (`deepseek/deepseek-flash`, `local`) — so a switch that is still pending can be named, and
+/// compared with what answers now, without building a provider for it.
+fn model_name_of(choice: &Option<crate::config::ProviderConfig>) -> String {
+    match choice {
+        None => "local".to_string(),
+        Some(pc) => match &pc.model {
+            Some(m) => format!("{}/{m}", pc.name),
+            None => pc.name.clone(),
+        },
+    }
 }
 
 /// **The sentence a failed switch earns** — apart from [`Harness::switch_back_notice`] so
@@ -5588,6 +5629,8 @@ impl Harness {
             own_server,
             // Nothing to go back to until a switch has been made.
             switch_back: None,
+            // Nothing waiting: a switch asked for between turns takes effect at once.
+            pending_switch: None,
         };
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
@@ -7327,7 +7370,13 @@ impl Harness {
         // discard is not rebuilt first.
         match switch {
             LocalSwitch::SameWeights => {
-                self.set_provider(None)?;
+                // **The UNGATED door, and the one place that matters.** This is a waypoint on the
+                // road to a fleet model, not a switch the operator asked for: the gated door would
+                // see a prompt in flight and record `local` as a pending switch, and the endpoint
+                // would then move under it — half a switch, which is worse than either. A fleet
+                // switch cannot arrive inside a turn anyway (`slash::mid_turn_switch_ok` refuses
+                // it), and this keeps the two facts from disagreeing if that ever changes.
+                self.set_provider_now(None)?;
                 self.move_local_endpoint(&want, m)
             }
             LocalSwitch::OtherWeights {
@@ -7764,7 +7813,79 @@ impl Harness {
     /// untouched: the next turn simply goes elsewhere. Returns a line saying what
     /// answers now; a provider whose key cannot be found is refused and nothing
     /// changes.
+    ///
+    /// # A switch never lands inside a turn
+    ///
+    /// **While a prompt is in flight the request is PENDING**, and this returns the
+    /// sentence that says when it will take: it is recorded ([`Harness::pending_switch`]),
+    /// said on the hub (`model_switch_pending`), and applied where the prompt span closes
+    /// ([`Harness::apply_pending_switch`], from [`Harness::end_turn_clock`]).
+    ///
+    /// The measurement is the whole of the rule. MEASURED 2026-10-26, the operator's
+    /// session: a `/models deepseek/deepseek-flash` typed while a round on `glm-coding` was
+    /// failing was applied inside the retry loop, so the round was re-issued on deepseek
+    /// carrying the rest of GLM's turn — a run of assistant tool-call rounds with no
+    /// `reasoning_content`, which deepseek's thinking mode refuses
+    /// (`http 400: The reasoning_content in the thinking mode must be passed back to the
+    /// API`). A model's first request must follow a USER message, so the turn that was
+    /// running on the old model has to end before the new one speaks. Their words for the
+    /// rule: *"we can switch after turn ends"*.
+    ///
+    /// **Two things are not a switch and are not deferred.** A provider built for the
+    /// model the session is ALREADY on is a rebuild (`Harness::obtain_key` renews a
+    /// refused key through this very door, and a deferred rebuild would retry the round
+    /// with the key the provider just refused), so the target name is compared against
+    /// [`Harness::model_name`] first and an unchanged name goes straight through.
     pub fn set_provider(
+        &mut self,
+        choice: Option<crate::config::ProviderConfig>,
+    ) -> Result<String, HarnessError> {
+        if self.prompt_in_flight.load(Ordering::SeqCst) {
+            let target = model_name_of(&choice);
+            if target != self.model_name() {
+                return Ok(self.pend_switch(choice, target));
+            }
+        }
+        self.set_provider_now(choice)
+    }
+
+    /// **Record a switch for the end of this turn, and say so** — the pending half of
+    /// [`Harness::set_provider`].
+    ///
+    /// The sentence is the return value (so the verb's reply carries it) *and* a
+    /// `model_switch_pending` warning (so a head that is not the one that typed it — and the
+    /// one that is, once the reply has scrolled — has it on the status line rather than only in
+    /// the scrollback).
+    ///
+    /// **It does not build the provider.** A switch that would be refused — a key that does not
+    /// resolve — is refused when it is applied, and `model_switch_not_applied` is what says so
+    /// then. Building it here would either refuse a request the turn cannot act on yet or build
+    /// one twice.
+    fn pend_switch(
+        &mut self,
+        choice: Option<crate::config::ProviderConfig>,
+        target: String,
+    ) -> String {
+        let now = self.model_name();
+        let said = format!("turns go to {target} when this turn ends; this one finishes on {now}");
+        self.pending_switch = Some(PendingSwitch {
+            choice,
+            model: target,
+        });
+        self.hub.publish(SessionEvent::Warning {
+            code: "model_switch_pending".into(),
+            detail: said.clone(),
+            compaction: None,
+        });
+        said
+    }
+
+    /// **The switch itself**, with no question about the turn span — [`Harness::set_provider`]
+    /// is the door everything asks through, and this is what it calls once nothing is in flight.
+    ///
+    /// `end_turn_clock` is the one caller that must not go through the gate (the span has just
+    /// closed, and it is applying what the gate recorded).
+    fn set_provider_now(
         &mut self,
         choice: Option<crate::config::ProviderConfig>,
     ) -> Result<String, HarnessError> {
@@ -7913,12 +8034,17 @@ impl Harness {
 
     /// **The whole of `/models NAME`, in one place, for both callers.**
     ///
-    /// There are two, and the second is new: the worker's arm (`Sessions::slash`,
-    /// between turns, which is where the verb has always been answered) and the retry
-    /// loop ([`Harness::apply_queued_model`], mid-turn, which is what this exists for).
-    /// Two copies of a switch would be two places for the screen, the session row and
-    /// the thing that actually answers to disagree — which is the defect
-    /// [`Harness::persist_provider_choice`] was written for, one door along.
+    /// There are two: the worker's arm (`Sessions::slash`, between turns, which is where the
+    /// verb has always been answered) and the retry loop's poll of the queue
+    /// ([`Harness::take_queued_model`], which is the operator's own line answered DURING the turn
+    /// they typed it in rather than after it). Two copies of a switch would be two places for the
+    /// screen, the session row and the thing that actually answers to disagree — which is the
+    /// defect [`Harness::persist_provider_choice`] was written for, one door along.
+    ///
+    /// **A switch asked for while a prompt is in flight is recorded and NOT applied** — see
+    /// [`Harness::set_provider`]. The reply still comes back `ok`, and it says when the switch
+    /// takes (*"turns go to X when this turn ends"*), which is the honest answer: it was accepted,
+    /// and it is not in force yet.
     ///
     /// **The choice is resolved by the caller, not here.** `models_choice` needs no
     /// harness, and the worker's path must still carry the resolver's own notes when
@@ -7929,6 +8055,10 @@ impl Harness {
         choice: crate::slash::ModelChoice,
         mut lines: Vec<String>,
     ) -> crate::slash::SlashReply {
+        // **What answers before, so the row is written only when it moved.** A pending switch
+        // leaves this name alone, and a session row written with the OTHER model's name would
+        // make a restart resume on a model this daemon never ran.
+        let was = self.model_name();
         let applied = match choice {
             crate::slash::ModelChoice::OwnServer => self.set_provider(None),
             crate::slash::ModelChoice::Metered(pc) => self.set_provider(Some(pc)),
@@ -7941,8 +8071,11 @@ impl Harness {
                 // **The choice goes to the session row in the same breath** —
                 // `persist_provider_choice`'s own doc is why. A switch that reached
                 // the screen but not the row was a choice that expired with the
-                // process, which is the defect this whole change is.
-                if let Err(why) = self.persist_provider_choice() {
+                // process, which is the defect this whole change is. A pending one is written
+                // where it is applied instead ([`Harness::apply_pending_switch`]).
+                if self.model_name() != was
+                    && let Err(why) = self.persist_provider_choice()
+                {
                     lines.push(why);
                 }
                 lines.push(line);
@@ -8811,6 +8944,13 @@ impl Harness {
 
     /// The turn is over: stop publishing a start, so a later round that belongs to a NEW prompt
     /// cannot inherit this one's clock.
+    ///
+    /// **And this is where a switch the operator made during the turn takes effect** — see
+    /// [`Harness::set_provider`], and [`Harness::apply_pending_switch`], which runs after the
+    /// span is marked closed and before anything else reads what answers. Every way out of a
+    /// turn comes through here (`turn_tail::run_turn`: a final answer, an interrupt, a failure,
+    /// a wall, and the door that said nothing at all), which is exactly why the pending switch
+    /// is applied HERE and not on a success path.
     pub fn end_turn_clock(&mut self) {
         self.turn_began_ms = None;
         self.engine.turn_began_ms = None;
@@ -8821,7 +8961,56 @@ impl Harness {
         // ended it. Whatever the session is waiting on from here is said by the rest of the facts
         // (`delivery`, a job, a monitor, a child, a card) and not by a turn.
         self.prompt_in_flight.store(false, Ordering::SeqCst);
+        // **After the flag, deliberately**: the switch is applied through the same door a
+        // between-turns switch takes, and a gate that saw the span still open would pend it again
+        // for ever.
+        self.apply_pending_switch();
         self.publish_activity();
+    }
+
+    /// **The switch that was waiting for the turn to end, taken** — the other half of
+    /// [`Harness::set_provider`]'s gate.
+    ///
+    /// `None` is the ordinary case and costs nothing. A failure — a key that no longer resolves,
+    /// a provider that will not build — leaves the session on the model it is on, which is a
+    /// working session, and says so under its own code: a request the operator made that did not
+    /// take is theirs to correct, not a fault of the session's.
+    fn apply_pending_switch(&mut self) {
+        let Some(pending) = self.pending_switch.take() else {
+            return;
+        };
+        match self.set_provider_now(pending.choice) {
+            Ok(line) => {
+                // **The session row follows it**, the same as a switch made between turns
+                // (`Harness::apply_model_choice`): the row is what a restart resumes on, and a
+                // deferred switch that only reached this process would expire with it.
+                if let Err(why) = self.persist_provider_choice() {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_switch_applied".into(),
+                        detail: format!("{line}. {why}"),
+                        compaction: None,
+                    });
+                    return;
+                }
+                self.hub.publish(SessionEvent::Warning {
+                    code: "model_switch_applied".into(),
+                    detail: format!("the turn has ended, so the switch stands: {line}"),
+                    compaction: None,
+                });
+            }
+            Err(e) => {
+                self.hub.publish(SessionEvent::Warning {
+                    code: "model_switch_not_applied".into(),
+                    detail: format!(
+                        "the switch to `{}` was waiting for this turn to end and could not be \
+                         made: {e}. This session stays on `{}`.",
+                        pending.model,
+                        self.model_name()
+                    ),
+                    compaction: None,
+                });
+            }
+        }
     }
 
     /// **The plan, as a nudge — or nothing when there is no plan to nudge about.**
@@ -12713,76 +12902,38 @@ impl Harness {
             // ending a turn early because a server was restarting would be the
             // budget measuring the wrong thing. See `http_retry_after`.
             //
-            // # And the second question: is this round even being sent to the model
-            // # the session is on?
+            // # And the second question: is the operator's `/models` being heard?
             //
-            // MEASURED 2026-10-12, the operator's GLM coding plan, quota exhausted.
-            // Their screen, in their words: *"while those backoffs were cycling - the
-            // model change didnt take"* and *"when it finally applied the turn didnt
-            // continue"*. The notices read
+            // It is, and it is answered HERE — but it is not APPLIED here, and that
+            // distinction is the whole of this loop's model rule.
             //
-            //     · model_endpoint_retry — the model endpoint at api.z.ai did not
-            //       answer: http 429: Weekly/Monthly Limit Exhausted … Taking this
-            //       round again in 1s (attempt 1 of 6). Nothing was recorded, so the
-            //       retry sends exactly the bytes this one did.
+            // MEASURED 2026-10-12, the operator's GLM coding plan, quota exhausted:
+            // `/models` sat in the hub's queue for a whole 63-second ladder and was
+            // answered after the turn, by which time the turn was FAILED — *"while
+            // those backoffs were cycling - the model change didnt take"*. So the turn
+            // polls the queue itself and answers (`apply_queued_model`).
             //
-            // six times, doubling to 32 s, and then
+            // MEASURED 2026-10-26, the other half: applying it here is what broke the
+            // next session. The round was re-issued on deepseek carrying the rest of
+            // GLM's turn — assistant tool-call rounds with no `reasoning_content` — and
+            // deepseek's thinking mode refuses exactly that (`http 400: The
+            // `reasoning_content` in the thinking mode must be passed back to the API`).
+            // The operator's sentence for the rule: *"we can switch after turn ends"*.
             //
-            //     · slash — /models deepseek/deepseek-flash
-            //       turns go to deepseek/deepseek-flash from the next one on — METERED
-            //     ── FAILED — http 429: Weekly/Monthly Limit Exhausted …
-            //
-            // The switch was accepted and bought nothing, because the command sat in
-            // the hub's queue until the worker came back — which is after the turn,
-            // and the turn was already FAILED. Three things follow from that, and all
-            // three are here:
-            //
-            //   * **the switch is taken DURING the turn** (`apply_queued_model`,
-            //     below), on the thread that owns this harness, exactly as `/mode`
-            //     is — `Hub::try_command_for_running_turn`'s doc carries the
-            //     measurement;
-            //   * **a model that moved is not weather.** The wait below exists for a
-            //     server that is coming back; a deliberate change is the opposite, so
-            //     the round is taken again NOW, there, and nothing is waited for;
-            //   * **the ladder running out is not the end either**, when the model
-            //     itself is what refused: `[fallback] models` in the operator's
-            //     `providers.toml` says where else this box may go, and the round
-            //     goes there rather than the turn ending.
-            //
-            // `sent_to` is the model the attempt that is running (or about to run)
-            // was handed to — `provider_line`, the same spelling `/models` shows, so
-            // there is no second identity for "what is answering" to drift from.
-            // Every branch that moves the session updates it, and the one that
-            // notifies does so exactly when it moves: a switch that landed on the
-            // model already in force is a no-op and says nothing.
-            let mut sent_to = self.provider_line();
+            // So: the switch is recorded and said (*"turns go to X when this turn
+            // ends"*), every attempt of this turn is sent to the model the turn STARTED
+            // on, and `end_turn_clock` applies it. `[fallback]` is the same rule for the
+            // daemon's own switch — see `fall_back_from`.
             let mut tried_fallbacks: Vec<String> = Vec::new();
             // **One steering per round, outside the retry loop (R91.1).** A failed attempt
             // hands what it took back to this value, and the retried attempt's greedy poll
             // must find it there; one built per pass dropped it on the floor.
             let mut steering = self.steering();
             let outcome = loop {
-                // **A model switch the operator made while this turn was running.**
-                // Applied before the attempt that will be sent under it — and before
-                // anything is waited for, which is the half the operator could not
-                // see: the ladder used to go on cycling against the model they had
-                // just left.
-                if let Some(now_on) = self.apply_queued_model()
-                    && now_on != sent_to
-                {
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "model_endpoint_retry".into(),
-                        detail: model_changed_notice(&sent_to, &now_on),
-
-                        compaction: None,
-                    });
-                    sent_to = now_on;
-                    // **The ladder is patience with ONE endpoint.** A round taken on
-                    // a different model is a new one and gets the same patience — the
-                    // same `cfg.http_retries`, the same `http_retry_after`, no second
-                    // policy: only the counter it is measured against starts over.
-                    attempt = 0;
-                }
+                // **The operator's own line, answered before the attempt rather than after
+                // it** — the window they type in. What comes back says when the switch
+                // takes; nothing about this attempt moves.
+                self.apply_queued_model();
                 // **Start watching BEFORE the round, so the wait itself is covered.**
                 // The host is `Some` only on the metered route — a local prefill's
                 // silence is progress, not a hang; see `SilenceWatch`.
@@ -12822,29 +12973,14 @@ impl Harness {
                     self.switch_back = None;
                     break attempted;
                 };
-                // **A model that moved under this round is not weather, and this is the
-                // window the operator watched.** The wait below exists for an endpoint
-                // that is coming back — a 5xx, a timeout; a switch they made is the
-                // opposite of that, so the round is taken again NOW, on the model this
-                // session is on, and nothing is waited for. Their words for what
-                // happened instead: *"while those backoffs were cycling - the model
-                // change didnt take"*.
-                //
-                // Before the key arm deliberately: a 401 from the model they just left
-                // is not a reason to ask for a key to it.
-                if let Some(now_on) = self.apply_queued_model()
-                    && now_on != sent_to
-                {
-                    self.hub.publish(SessionEvent::Warning {
-                        code: "model_endpoint_retry".into(),
-                        detail: model_changed_notice(&sent_to, &now_on),
-
-                        compaction: None,
-                    });
-                    sent_to = now_on;
-                    attempt = 0;
-                    continue;
-                }
+                // **A switch the operator made during this attempt is answered here, and
+                // nothing else changes.** The wait below exists for an endpoint that is
+                // coming back — a 5xx, a timeout — and a deliberate switch is not weather
+                // either way: it is not this round's to apply, so the ladder goes on against
+                // the model the turn started on and the switch takes when the turn ends.
+                // Answered BEFORE the key arm deliberately: a 401 from the model they are
+                // leaving is not a reason to ask them for a key to it.
+                self.apply_queued_model();
                 // **A refused key is asked for again**, on the same card, and the round is
                 // taken again — nothing was recorded, so the retry sends the same bytes.
                 // Only a key this session can replace: one from `$PROVIDER_API_KEY` or
@@ -12866,32 +13002,30 @@ impl Harness {
                     continue;
                 }
                 let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
-                    // **The ladder has nothing left to wait for, and the turn does not
-                    // have to end.** Two ways out, and both are the same principle as
-                    // the switch above — re-issue the round somewhere that can answer
-                    // it:
+                    // **The ladder has nothing left to wait for, and the session may still
+                    // have somewhere to go — but not this round.**
                     //
-                    //   * the session's model moved and this round was sent to the old
-                    //     one — checked at the top of this arm, so it cannot reach here;
-                    //   * the MODEL itself is what refused (a 429 or a 5xx, not a wire
-                    //     failure) and this box has a `[fallback] models` list —
-                    //     `fall_back_from` moves the session to the first name that
-                    //     answers and says which one.
+                    // The MODEL itself is what refused (a 429 or a 5xx, not a wire failure)
+                    // and this box has a `[fallback] models` list, so `fall_back_from` names
+                    // the first model that can answer and records it as the switch waiting
+                    // for this turn to end. **The round is not re-issued there**, and that is
+                    // the same rule as the operator's own `/models` above: a model's first
+                    // request has to follow a user message, and the rest of this turn belongs
+                    // to the model that refused it. So this turn ends here with the provider's
+                    // own refusal, and the next one starts on the model the list names.
                     //
-                    // A transport failure gets neither: the model may be perfectly
-                    // well and it is the route to it that is down, so moving the
-                    // session would abandon the box the operator chose for a reason
-                    // that is not about the model.
-                    if let Some(now_on) = self.fall_back_from(&e, &mut tried_fallbacks) {
+                    // A transport failure gets not even that: the model may be perfectly
+                    // well and it is the route to it that is down, so moving the session
+                    // would abandon the box the operator chose for a reason that is not
+                    // about the model.
+                    if let Some(next) = self.fall_back_from(&e, &mut tried_fallbacks) {
+                        let was = self.provider_line();
                         self.hub.publish(SessionEvent::Warning {
                             code: "model_endpoint_retry".into(),
-                            detail: fallback_notice(&sent_to, &now_on, &e),
+                            detail: fallback_notice(&was, &next, &e),
 
                             compaction: None,
                         });
-                        sent_to = now_on;
-                        attempt = 0;
-                        continue;
                     }
                     break Err(TurnFailure::Http(e));
                 };
@@ -13671,20 +13805,24 @@ impl Harness {
         }
     }
 
-    /// **A `/models` the operator typed while this turn was running**, taken and
-    /// applied here, on the thread that owns this harness.
+    /// **A `/models` the operator typed while this turn was running** — taken and answered here,
+    /// on the thread that owns this harness, and **recorded rather than applied**.
     ///
-    /// Returns the model line it landed on, when one landed — `None` when the queue
-    /// held no switch this turn could carry out. The caller compares it against what
-    /// the round was sent to, because *a switch that landed on the model already in
-    /// force* is not a change and must not be announced as one.
-    ///
-    /// # Why this is a door at all
+    /// # Why the turn takes it at all
     ///
     /// `Hub::try_command_for_running_turn` carries the measurement (2026-10-12: the
     /// operator's `/models` sat in the queue for a whole 63-second ladder and was
-    /// applied after the turn, by which time the turn was FAILED). The short version:
-    /// `/mode` has had this door since R29 and `/models` did not.
+    /// answered after the turn). `/mode` has had this door since R29 and `/models` did not, and
+    /// the reply arriving while they are looking matters just as much now that the switch no
+    /// longer takes effect mid-turn: the sentence they get back is *what will happen and when*,
+    /// which is only useful inside the turn it is about.
+    ///
+    /// # Why it no longer takes effect here
+    ///
+    /// Because it must not, and the measurement is [`Harness::set_provider`]'s: a round re-issued
+    /// on another model in the middle of a turn carries the rest of the old model's turn, and a
+    /// thinking-mode provider refuses exactly that. So the switch goes through the ordinary door,
+    /// which records it as pending, and [`Harness::end_turn_clock`] applies it.
     ///
     /// # What it will NOT take
     ///
@@ -13695,8 +13833,7 @@ impl Harness {
     /// and rows still to reconcile. Those lines stay in the queue, in order, and the
     /// worker takes them when the turn ends, exactly as every `/models` did before
     /// this existed: the switch still lands, one turn later than it would have.
-    fn apply_queued_model(&mut self) -> Option<String> {
-        let mut landed = None;
+    fn apply_queued_model(&mut self) {
         while let Some(cmd) = self.take_queued_model() {
             let letibot_sessionlog::hub::CommandKind::Slash { line } = &cmd.kind else {
                 continue;
@@ -13740,11 +13877,7 @@ impl Harness {
 
                 compaction: None,
             });
-            if reply.ok {
-                landed = Some(self.provider_line());
-            }
         }
-        landed
     }
 
     /// The picker half of [`Harness::apply_queued_model`]: **the next queued command
@@ -13762,12 +13895,19 @@ impl Harness {
     /// **The model is out, and this box has somewhere else to go** — `[fallback]
     /// models` in `providers.toml`, tried in the operator's order, once each.
     ///
-    /// # Why the turn does not end here
+    /// # It records the move; it does not make it
     ///
-    /// The operator's ruling: *"it is a standard thing to do - limits, 5xx, etc. we
-    /// must be able to change models like for the main session"*. A 429 that says
-    /// `Weekly/Monthly Limit Exhausted` is not weather — no wait lifts it — and the
-    /// shape before this spent 63 s of ladder on it and then recorded the turn FAILED.
+    /// The operator's ruling stands — *"it is a standard thing to do - limits, 5xx, etc. we
+    /// must be able to change models like for the main session"* — and what changed is WHEN. A
+    /// 429 that says `Weekly/Monthly Limit Exhausted` is not weather and no wait lifts it, so the
+    /// session moves at the end of the turn instead of inside it; the turn that met the refusal
+    /// ends with it.
+    ///
+    /// **Why the round cannot go on elsewhere** (MEASURED 2026-10-26, [`Harness::set_provider`]
+    /// has the whole of it): a re-issued round carries the rest of the old model's turn — its
+    /// assistant tool-call rounds — and a thinking-mode provider refuses exactly that, by name.
+    /// A model's first request must follow a user message, and the only user message available is
+    /// the next turn's.
     ///
     /// # The two guards, and why each is here
     ///
@@ -13781,14 +13921,14 @@ impl Harness {
     ///
     /// # What it will and will not switch to
     ///
-    /// A **metered** name only, and this is narrower than `/models` on purpose. The
-    /// operator's own switch may take the cheap `local` arm; the DAEMON's automatic one
-    /// may not, because the other two choices can re-seat the conversation into a fork
-    /// and that is not something a retry loop should be doing unbidden under a turn that
-    /// is in flight. A name it will not take is SAID and skipped — a fallback nobody can
-    /// reach, silently, is the defect the key's own reader is written against.
+    /// A **metered** name only, and this is narrower than `/models` on purpose. A fleet model or
+    /// the daemon's own server can re-render the conversation into a fork, and that is not
+    /// something a retry loop should do unbidden — not even at a turn boundary, where the fork
+    /// would land between the rows the turn has written and the ones it has not. A name it will
+    /// not take is SAID and skipped — a fallback nobody can reach, silently, is the defect the
+    /// key's own reader is written against.
     ///
-    /// Returns the line it landed on, or `None` when the list is empty, spent, or has
+    /// Returns the model it recorded, or `None` when the list is empty, spent, or has
     /// nothing this turn can use.
     fn fall_back_from(
         &mut self,
@@ -13813,7 +13953,10 @@ impl Harness {
             }
             tried.push(name.clone());
             let (provider, model) = crate::slash::split_model_name(&name);
-            let (choice, lines) =
+            // **The resolver's own notes are dropped on the success arm**, deliberately: a
+            // fallback is a switch nobody typed, so the sentence that has to be right is
+            // `fallback_notice`'s, said by the caller with the provider's refusal in it.
+            let (choice, _notes) =
                 match crate::slash::models_choice(&provider, model.as_deref(), None, None) {
                     Ok(x) => x,
                     Err(lines) => {
@@ -13821,22 +13964,22 @@ impl Harness {
                         continue;
                     }
                 };
-            if !matches!(choice, crate::slash::ModelChoice::Metered(_)) {
+            let crate::slash::ModelChoice::Metered(pc) = choice else {
                 self.fallback_skip(
                     &name,
-                    "a running turn can only move to a metered model, and this one is the \
-                     daemon's own server or a fleet model — either can re-render the \
-                     conversation into a fork, which is not something a retry should do \
-                     unbidden",
+                    "a metered model is the only thing an automatic switch may land on, and this \
+                     one is the daemon's own server or a fleet model — either can re-render the \
+                     conversation into a fork, which is not something the daemon's own switch \
+                     should do unbidden",
                 );
                 continue;
-            }
-            let reply = self.apply_model_choice(choice, lines);
-            if !reply.ok {
-                self.fallback_skip(&name, &reply.lines.join(" "));
-                continue;
-            }
-            return Some(self.provider_line());
+            };
+            // **The note the `models_choice` resolver came back with is not carried**: a
+            // fallback is a switch nobody typed, so the sentence that matters is
+            // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
+            let target = model_name_of(&Some(pc.clone()));
+            self.pend_switch(Some(pc), target.clone());
+            return Some(target);
         }
         None
     }
@@ -16013,33 +16156,21 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
     matches!(e, letibot_turn::HttpError::Status { code, .. } if *code == 429 || *code >= 500)
 }
 
-/// **The retry notice for a round taken again on a DIFFERENT model.**
+/// **The retry notice for a session that moves because the model is OUT.**
 ///
-/// The sentence is the whole point of the notice, and the reason is the operator's own
-/// report: the notice they were reading said *"the retry sends exactly the bytes this one
-/// did"*, which was true and made a switch that HAD been accepted look like one that had
-/// not. So this one says the opposite thing in the same breath — what changed, that the
-/// bytes are unchanged, and that the difference is which model answers them.
-fn model_changed_notice(was: &str, now: &str) -> String {
-    format!(
-        "the model changed to {now} while this round was failing at {was}: taking this round \
-         again NOW, there, rather than waiting out a backoff for a model this session has \
-         left. A change somebody made is not weather. Nothing was recorded, so the round is \
-         sent again unchanged — the difference is which model answers it."
-    )
-}
-
-/// **The retry notice for a round that moved because the model is OUT.**
-///
-/// Names what refused, what it said, where the session went, and how to come back — four
-/// facts, because this one is a model change the operator did not type and every one of
-/// them is a question they will have.
+/// Names what refused, what it said, where the session goes and WHEN, and how to come back —
+/// five facts, because this is a model change the operator did not type and every one of them is
+/// a question they will have. The WHEN is the one that changed on 2026-10-26: the switch takes at
+/// the end of this turn, never inside it (see [`Harness::set_provider`]), so the notice must not
+/// promise the round continues — it does not.
 fn fallback_notice(was: &str, now: &str, e: &letibot_turn::HttpError) -> String {
     format!(
         "the model at {was} is out — {e} — and the retry ladder has nothing left to wait \
-         for, so this session moved to {now}, the first name in `[fallback]` that answers, \
-         and the round is being taken again there. Nothing was recorded. `/models` moves it \
-         back, and the list is in `[fallback] models` in providers.toml."
+         for, so this turn ends here and the session moves to {now}, the first name in \
+         `[fallback]` that answers. The switch takes when the turn ends and not inside it: a \
+         new model's first request has to follow a user message, so the next prompt is the one \
+         that goes there. Nothing was recorded. `/models` moves it back, and the list is in \
+         `[fallback] models` in providers.toml."
     )
 }
 
@@ -22057,8 +22188,7 @@ mod endpoint_retry {
     //! codes except unauthenticated"*.
     use super::{
         ContextLengthRefusal, MAX_HTTP_RETRIES, SilenceWatch, context_length_refusal,
-        fallback_notice, http_retry_after, model_changed_notice, model_refused, retry_host,
-        silence_host, silence_notice,
+        fallback_notice, http_retry_after, model_refused, retry_host, silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
 
@@ -22218,33 +22348,17 @@ mod endpoint_retry {
         );
     }
 
-    /// **The two retry sentences, in the words the operator needed to read.**
+    /// **The fallback sentence, in the words the operator needed to read.**
     ///
-    /// The notice they were getting said *"the retry sends exactly the bytes this one
-    /// did"* — true, and the reason an accepted switch looked like one that had not taken.
-    /// So the changed-model one must say which model, that the round goes there now, and
-    /// that the bytes are unchanged; and the fallback one must name what refused, where the
-    /// session went, and how to come back.
+    /// It must name what refused, where the session goes, WHEN it goes there, and how to come
+    /// back — and it must not promise the round continues, which is what it said until
+    /// 2026-10-26: a model's first request has to follow a user message, so the round that met
+    /// the refusal ends with it (see `Harness::set_provider`).
     #[test]
-    fn a_model_change_is_announced_as_a_change_and_a_fallback_names_the_way_back() {
-        let changed = model_changed_notice(
-            "glm-coding/glm-5.3 (metered)",
-            "deepseek/deepseek-flash (metered)",
-        );
-        assert!(changed.contains("deepseek/deepseek-flash"), "{changed}");
-        assert!(
-            changed.contains("glm-coding/glm-5.3"),
-            "the model it left: {changed}"
-        );
-        assert!(changed.contains("NOW"), "nothing is waited for: {changed}");
-        assert!(
-            !changed.contains("sends exactly the bytes this one did"),
-            "the sentence that made the switch look like it had not taken: {changed}"
-        );
-
+    fn a_fallback_names_the_way_back_and_says_when_the_switch_takes() {
         let moved = fallback_notice(
             "glm-coding/glm-5.3 (metered)",
-            "deepseek/deepseek-flash (metered)",
+            "deepseek/deepseek-flash",
             &HttpError::Status {
                 code: 429,
                 body: "Weekly/Monthly Limit Exhausted".into(),
@@ -22258,6 +22372,14 @@ mod endpoint_retry {
         assert!(
             moved.contains("[fallback]"),
             "where the choice came from: {moved}"
+        );
+        assert!(
+            moved.contains("when the turn ends"),
+            "and when it takes, which is the whole of the change: {moved}"
+        );
+        assert!(
+            !moved.contains("the round is being taken again"),
+            "a round is not re-issued on the new model any more: {moved}"
         );
         assert!(
             moved.contains("/models"),

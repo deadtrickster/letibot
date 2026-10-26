@@ -873,21 +873,26 @@ pub fn fleet_model_named(provider: &str, file: Option<&std::path::Path>) -> bool
         .any(|m| m.name == provider)
 }
 
-/// **Can a RUNNING TURN carry this `/models` line out itself?**
+/// **Can a RUNNING TURN take this `/models` line up at all?**
 ///
 /// The one question the retry loop's picker asks of a queued line, answered where the
 /// verb's grammar is. Two of the three choices are yes and one is no:
 ///
-///   * a **metered** switch is a `MessagesBackend` built and put in place — nothing
-///     about the conversation, the ledger or the engine moves, so a round that failed
-///     a moment ago can be taken again on it;
+///   * a **metered** switch is a `MessagesBackend` built and put in place, and nothing about
+///     the conversation, the engine or the ledger moves — so the turn may take the line and
+///     answer it;
 ///   * **`local`** is yes only when this session is NOT on another model's weights
-///     (`on_foreign_weights`): the return to the daemon's own server is then an
-///     address move, and otherwise it re-seats — which is the no;
-///   * a **fleet** model (`/models dense78`) is always the no, because the switch
-///     decides with a `/props` probe whether it has to re-render the conversation into
-///     a fork, and forking under a turn that is in flight is not something a retry loop
-///     should be doing.
+///     (`on_foreign_weights`): the return to the daemon's own server is then an address move,
+///     and otherwise it re-seats — which is the no;
+///   * a **fleet** model (`/models dense78`) is always the no, because the switch decides with a
+///     `/props` probe whether it has to re-render the conversation into a fork, and forking under
+///     a turn that is in flight is not something a retry loop should be doing.
+///
+/// **A "yes" is not "apply it now".** Since 2026-10-26 the switch is RECORDED by the turn that
+/// takes it and applied when the turn ends (`Harness::set_provider`, `Harness::end_turn_clock`):
+/// a model's first request has to follow a user message, so the model cannot change under a turn
+/// that is still running. What this predicate decides is who ANSWERS the operator's line during
+/// the turn, and whether they hear back inside it.
 ///
 /// **What "no" means is that nothing happens here.** The line stays in the queue, in
 /// order, and the worker takes it when the turn ends — which is what every `/models`

@@ -608,6 +608,21 @@ pub const TABLE: &[(&str, Class)] = &[
     // The first round on a newly chosen model was refused by its provider: the turn failed,
     // and the notice names the model before it and the command back.
     ("model_switch_refused", Class::Failure),
+    // **A `/models` the operator typed while a turn was running, waiting for that turn to
+    // end.** Routine by the rule at the top of the table: the request was ACCEPTED and the
+    // sentence says when it takes, so deleting it loses only the notice — and the head draws it
+    // on the status line until the switch lands. MEASURED 2026-10-26: a switch applied inside a
+    // turn is what made the next model refuse the turn it inherited.
+    ("model_switch_pending", Class::Routine),
+    // **The switch that was waiting for the turn, applied**: the sentence names the model and
+    // says it stands now. The other verdict of the same channel, one line up, and Routine for the
+    // same reason `slash` is.
+    ("model_switch_applied", Class::Routine),
+    // **The operator asked for a model and did not get it** — the pending switch was applied where
+    // the turn ended and could not be made (a key that no longer resolves, a provider that will
+    // not build). The reader's own line answered, with the session left on a model that works:
+    // `mode_set_refused`'s register, beside the pending note it belongs to.
+    ("model_switch_not_applied", Class::Refused),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript store cannot be written, the decision corpus cannot be consulted, the
     // title cannot be recorded, the session the operator asked for does not resume, and
@@ -967,6 +982,9 @@ mod the_register_census {
         // `!term` with no pane, which is `job_output_refused`'s shape too: the act is well
         // formed, the thing it names is not there, and the fix is the reader's next line.
         "nothing_to_send_to",
+        // **A `/models` whose deferred switch could not be made** at the turn's end — the same
+        // shape as `mode_set_refused`: their line, well formed, and the session cannot carry it.
+        "model_switch_not_applied",
         // **The key card closed with no key** — the reader's own answer to the daemon's
         // question, and the turn's sentence says what to do (send again, or set the
         // variable). The same shape as `slash_refused`: the act was theirs, not a fault.
@@ -1181,9 +1199,13 @@ mod the_register_census {
         //     handled), and `model_switch_refused` (Failure, the new model's first round refused).
         //   · **152, not 151**: `attachment_refused` (Failure) — a file chipped into a prompt was
         //     gone when the message was sent, so the model answered about a file it never got.
-        assert_eq!(TABLE.len(), 152, "the table's size");
-        assert_eq!(count(Class::Routine), 57);
-        assert_eq!(count(Class::Refused), 11, "the eleven in READER_INPUT");
+        //   · **155, not 152**: the deferred model switch's three verdicts — `model_switch_pending`
+        //     and `model_switch_applied` (Routine: the request taken, and the same request landing)
+        //     and `model_switch_not_applied` (Refused: their line, answered by a session that stays
+        //     on a model that works). See the rows for why a switch waits for the turn to end.
+        assert_eq!(TABLE.len(), 155, "the table's size");
+        assert_eq!(count(Class::Routine), 59);
+        assert_eq!(count(Class::Refused), 12, "the twelve in READER_INPUT");
         assert_eq!(count(Class::Failure), 84);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);

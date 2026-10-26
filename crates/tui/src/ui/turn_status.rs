@@ -70,9 +70,21 @@ impl App {
             slow: self.turn_slow(),
         };
         let mut line = status.line(w);
+        // **What this turn is holding, and a switch waiting for it to end** — the two facts
+        // about NOW that are neither the phase nor the progress. Joined into ONE faint span so
+        // a narrow row cuts the last word rather than losing a whole segment's separator.
+        let mut extra: Vec<String> = Vec::new();
         if let Some(held) = self.held_label() {
-            line.spans
-                .push(rano::render::Span::role(format!(" · {held}"), Role::Faint));
+            extra.push(held);
+        }
+        if let Some(pending) = self.model_pending.clone() {
+            extra.push(pending);
+        }
+        if !extra.is_empty() {
+            line.spans.push(rano::render::Span::role(
+                format!(" · {}", extra.join(" · ")),
+                Role::Faint,
+            ));
             line = rano::render::text::truncate_owned(line, w);
         }
         line
@@ -93,7 +105,18 @@ impl App {
     /// **Empty for a quiet session**, and empty for a daemon older than 52 — which is what makes
     /// this invisible to a head talking to one.
     fn activity_line(&self, w: usize) -> Line {
-        let text = self.activity.line();
+        let mut text = self.activity.line();
+        // **A switch waiting for a turn reads here too**, for the one case where it is true of an
+        // idle session: a head that attached mid-turn folds the daemon's `model_switch_pending`
+        // out of the replayed log, and for that moment the switch is both pending and nothing is
+        // generating. Same state, same words, whichever line has the room.
+        if let Some(pending) = self.model_pending.clone() {
+            if text.is_empty() {
+                text = pending;
+            } else {
+                text = format!("{text} · {pending}");
+            }
+        }
         if text.is_empty() {
             return Line::default();
         }

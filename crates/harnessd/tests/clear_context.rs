@@ -655,7 +655,7 @@ impl Drop for Stub {
 }
 
 /// Drain one request — headers plus the body `Content-Length` names — so the client's write
-/// side is finished before the answer arrives. `model_change_mid_retry.rs`'s reader, and it
+/// side is finished before the answer arrives. `model_switch_at_turn_end.rs`'s reader, and it
 /// hands back the request line as well so the caller can tell a `/props` probe from a turn.
 fn read_request(mut s: TcpStream) -> (String, String) {
     let mut acc: Vec<u8> = Vec::new();

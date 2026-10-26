@@ -416,7 +416,7 @@ fn wait_for(hub: &Hub, mut what: impl FnMut(&Hub) -> Option<String>) -> String {
 /// for its window (`HarnessTaskRunner::start`'s `served_ctx`), and counting that as a turn
 /// would shift every script by one. (`message_between_turns.rs`'s `Stub` is the same fixture
 /// with the recording this file's third caller needs; the reader is copied, as
-/// `model_change_mid_retry.rs`'s is.)
+/// `model_switch_at_turn_end.rs`'s is.)
 struct Stub {
     endpoint: Endpoint,
     shared: Arc<Gate>,

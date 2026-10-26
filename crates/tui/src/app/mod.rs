@@ -1752,6 +1752,18 @@ pub struct App {
     /// any fresh board clears the list, because the board is the truth once it arrives (a
     /// refused answer comes back still waiting, and is asked again).
     pub(crate) todo_answered: Vec<(String, String)>,
+    /// **A model switch the daemon has taken and not yet applied** — the daemon's own sentence,
+    /// `turns go to deepseek/deepseek-flash when this turn ends`, or `None`.
+    ///
+    /// A STATE and drawn as one ([`App::switch_line`]) for `nags_paused`'s reason: the operator
+    /// typed `/models` during a turn and what they need to know, until the switch lands, is that
+    /// it did not land YET. A note in the scrollback would scroll away inside the very turn it is
+    /// about, and the header would go on naming the old model — which is the truth, and half of it.
+    ///
+    /// Fed by the daemon's two verdicts: `model_switch_pending` sets it, and
+    /// `model_switch_applied`/`model_switch_not_applied` clear it — the switch has had its answer
+    /// either way, and the header's model row is the record when it worked.
+    pub(crate) model_pending: Option<String>,
 }
 
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
@@ -2057,6 +2069,7 @@ impl App {
             answering: Vec::new(),
             absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
+            model_pending: None,
             todos_hide_done: false,
             todos_follow: false,
             bye: None,

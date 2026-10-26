@@ -624,3 +624,74 @@ fn a_notice_over_a_progress_takes_its_numbers_not_its_label() {
     let after = a.screen(W, H);
     assert!(after[at].contains("1000/2000 rows"), "{}", after[at]);
 }
+
+/// **A model switch the daemon has taken and not yet applied is the status row's, and it comes
+/// down the moment the switch lands.**
+///
+/// MEASURED 2026-10-26, the operator's own session: `/models deepseek/deepseek-flash` typed during
+/// a turn is recorded and applied when the turn ends — so the honest answer to *did that take?* is
+/// *not yet*, and it has to stay on the screen until it does. The `slash` reply that says so
+/// scrolls away inside the very turn it is about, and the header goes on naming the old model,
+/// which is the truth and half of it.
+///
+/// **The needle is the sentence's own middle**, because the row is trimmed to the frame: on the
+/// turn's line it follows `Responding · 12.3s`, and a longer needle would be asserting the width.
+#[test]
+fn a_switch_waiting_for_the_turn_rides_the_status_row_until_it_lands() {
+    const SAID: &str = "turns go to glm/glm-4.6 when this turn ends";
+    for busy in [false, true] {
+        let (mut a, _hub) = conversation(busy);
+        let seq = a.seq;
+        let before = a.screen(W, H);
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            boot(
+                "model_switch_pending",
+                &format!("{SAID}; this one finishes on deepseek/deepseek-chat"),
+            ),
+        )));
+        let during = a.screen(W, H);
+        // Nothing above the status row moved: a state the daemon holds is not a row.
+        let at = body_still(&[("before", &before), ("pending", &during)]);
+        assert!(
+            !before[at].contains(SAID),
+            "the switch was on the row before the daemon said so: {}",
+            before[at]
+        );
+        assert!(
+            during[at].contains(SAID),
+            "the pending switch is not on the status row: {}",
+            during[at]
+        );
+        if busy {
+            // **After the turn's own clock**, which is how every other segment on this row is
+            // ordered: what the turn is doing, then what else is true of the session.
+            let (turn, switch) = (
+                during[at].find("Responding").expect("the turn's words"),
+                during[at].find(SAID).unwrap(),
+            );
+            assert!(
+                turn < switch,
+                "the turn's clock comes first: {}",
+                during[at]
+            );
+        }
+
+        // **And it goes when the switch lands** — the applied sentence replaces it in the record,
+        // and the row stops claiming something is waiting.
+        a.apply(ServerFrame::Event(env(
+            seq + 2,
+            boot(
+                "model_switch_applied",
+                "the turn has ended, so the switch stands: turns go to glm/glm-4.6 from the next \
+                 one on — METERED",
+            ),
+        )));
+        let after = a.screen(W, H);
+        assert!(
+            !after.iter().any(|r| r.contains(SAID)),
+            "the pending switch outlived the switch that landed:\n{}",
+            after.join("\n")
+        );
+    }
+}

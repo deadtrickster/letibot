@@ -126,6 +126,24 @@ impl App {
                 if code == "nags_resumed" {
                     self.nags_paused = None;
                 }
+                // **A model switch waiting for a turn to end**, and its two answers — the same
+                // shape as the nag pause above, and a state for the same reason: until it lands,
+                // *did my `/models` take?* is the question the screen owes an answer to, and the
+                // `slash` reply that answers it scrolls away inside the turn it is about. The
+                // daemon's own sentence is kept verbatim: it is the one that says WHEN.
+                if code == "model_switch_pending" {
+                    self.model_pending = Some(detail.clone());
+                    // **And not filed in the conversation**: this head draws it on the status
+                    // row instead, and a pending switch is a thing about to happen rather than an
+                    // event in the history — the applied/not-applied row that follows is the
+                    // record.
+                    self.redraw = true;
+                    return Disposition::Filtered;
+                }
+                if code == "model_switch_applied" || code == "model_switch_not_applied" {
+                    self.model_pending = None;
+                    self.queued.push(Action::Settings);
+                }
                 // A slash LISTING opens the pane; a slash sentence stays a note.
                 // The daemon sends both under one code — `detail` is the command
                 // it echoes back, then the reply — so the head splits them by the
