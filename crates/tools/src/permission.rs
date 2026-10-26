@@ -356,6 +356,47 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
     }
 }
 
+/// **Programs that change the shell instead of doing the work**, and the two different
+/// reasons a gate has to know one of them is there.
+///
+/// `cd`, `pushd` and `popd` **move** the shell: nothing they do reaches a file or an
+/// argument, and every later command is judged on its own — [`moves_only`], which is why
+/// a segment that only moves needs no rule and a durable rule written for it saves
+/// nothing.
+///
+/// The rest **set state a later segment reads**, which is the opposite fact and the more
+/// dangerous one. `export` carries no authority at all, which is why it must never be the
+/// name of a grant or of a rule (`intent`'s grant naming, and
+/// [`the_rule_that_admits`]); and a prefix rule over it is not a rule about `export`, it
+/// is a rule about every environment variable a later program trusts. MEASURED
+/// 2026-10-26: the rule `always_pattern_for_command` derives for the segment
+/// `export CARGO_TARGET_DIR=/w/target` is `export*`, and
+/// `wildcard_match("export LD_PRELOAD=/tmp/x.so", "export*")` is **true** — so a durable
+/// rule taken off that offer admits `export LD_PRELOAD=… ; git status` whole, because
+/// `bash_segments` splits it into two segments and both are then allowed, and the second
+/// program then loads and runs the first one's bytes. **`source`, `.`, `eval` and `exec`
+/// are deliberately not on this list**: they run code, so a rule about one is a rule about
+/// code, which is a thing an operator may legitimately mean.
+pub const SHELL_STATE: &[&str] = &[
+    "cd", "pushd", "popd", "export", "unset", "declare", "typeset", "readonly", "local", "set",
+    "umask", "ulimit", "alias", "unalias",
+];
+
+/// Whether this program changes the shell rather than doing the work — [`SHELL_STATE`].
+///
+/// Asked by `intent`'s grant naming (*would a person name this command by this program?*
+/// — no) and by this module's rule derivation (*should a durable rule be written for it?*
+/// — no, twice over).
+pub fn sets_shell_state(program: &str) -> bool {
+    SHELL_STATE.contains(&program)
+}
+
+/// Whether this program changes what a LATER segment means, which is the half a durable
+/// rule must never be written for. See [`SHELL_STATE`] for the measurement.
+pub fn sets_state_for_later(program: &str) -> bool {
+    sets_shell_state(program) && !matches!(program, "cd" | "pushd" | "popd")
+}
+
 /// **A segment that only moves the shell**: `cd`, `pushd` or `popd`. It changes nothing a rule
 /// guards — every command after it is judged on its own — so it needs no rule of its own,
 /// and a rule that DENIES it still wins (`evaluate_bash` checks for one first).
@@ -377,6 +418,12 @@ fn moves_only(seg: &str) -> bool {
 /// honour, so it is not offered. A denied segment is `None` too: an allow written for the
 /// rest would change nothing.
 ///
+/// **And a segment that sets state for a later one is `None`.** It will keep asking
+/// whatever is written — nothing legitimately blanket-allows `export` — and the only rule
+/// that WOULD silence it admits every environment variable, which is a rule about every
+/// program a later segment runs. Measured 2026-10-26 (see [`SHELL_STATE`]): the offer over
+/// the measured command shape was `Always allow \`export*\``.
+///
 /// It used to be the LAST stage's program, whatever the rules said, so `cd x && grep … |
 /// head` offered `head*` — already allowed — and asked again the next time.
 pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<String> {
@@ -387,6 +434,14 @@ pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<Stri
             Action::Allow => {}
             Action::Deny => return None,
             Action::Ask if moves_only(seg) => {}
+            Action::Ask
+                if seg
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(sets_state_for_later) =>
+            {
+                return None;
+            }
             Action::Ask => {
                 let p = always_pattern_for_command(seg);
                 if !missing.contains(&p) {
@@ -829,5 +884,53 @@ mod tests {
         append_to_file(&p2, &Rule::new("bash", "cargo run*", Action::Deny)).unwrap();
         let back = load_file(&p2).unwrap();
         assert_eq!(evaluate_bash("cargo run --bin x", &[&back]), Action::Deny);
+    }
+
+    /// **`export*` is not a rule about `export` — it is a rule about every variable.**
+    ///
+    /// This is the measurement behind [`SHELL_STATE`], and it is the answer to the finding
+    /// that `Always allow \`export*\`` was offered over the operator's own command shape.
+    /// The rule the derivation WOULD have written:
+    #[test]
+    fn a_rule_over_export_would_admit_every_variable() {
+        assert_eq!(
+            always_pattern_for_command("export CARGO_TARGET_DIR=/w/target"),
+            "export*",
+            "the premise: this is what the derivation spelled"
+        );
+        // What that pattern matches, through opencode's own matcher: any variable at all,
+        // including the ones a later program obeys.
+        assert!(wildcard_match("export LD_PRELOAD=/tmp/evil.so", "export*"));
+        assert!(wildcard_match("export BASH_ENV=/tmp/evil.sh", "export*"));
+        assert!(wildcard_match("export PATH=/tmp/evil:$PATH", "export*"));
+        // **And the whole command would then be allowed**, because `bash_segments` splits
+        // a compound command and every segment being allowed is `Allow`. So a durable rule
+        // taken off one *Always allow* answer would admit this, unasked, for ever:
+        let taken = vec![Rule::new("bash", "export*", Action::Allow)];
+        assert_eq!(
+            evaluate_bash(
+                "export LD_PRELOAD=/tmp/evil.so; git status",
+                &[&taken, &seed()]
+            ),
+            Action::Allow,
+            "an env change plus an already-allowed program runs unasked under `export*`"
+        );
+
+        // The derivation refuses to offer it, and the refusal is the shell-state rule — not
+        // "nothing is missing", which is why the second assertion is the control.
+        assert_eq!(
+            the_rule_that_admits(
+                "export CARGO_TARGET_DIR=/w/target && cargo test --offline -p x",
+                &[&seed()]
+            ),
+            None,
+            "a rule was derived for a segment that no rule should blanket-allow"
+        );
+        // A `cd` is still skipped rather than blocking the rule, which is what the
+        // 2026-09-20 fix is for: it moves the shell and changes nothing a later segment reads.
+        assert_eq!(
+            the_rule_that_admits("cd /w && frobnicate build", &[&seed()]),
+            Some("frobnicate*".to_string())
+        );
     }
 }
