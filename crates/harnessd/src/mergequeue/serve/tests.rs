@@ -2880,3 +2880,215 @@ fn a_queue_holds_its_daemon_up_only_while_it_has_work_in_line() {
         "a blocked row waits on a person, not on this daemon"
     );
 }
+
+// ===== What the daemon's log says, in one line =====
+//
+// The daemon started in the foreground writes its log to the operator's terminal, so these lines
+// are read interleaved with the banner. MEASURED 2026-10-26 in `~/Projects/stroppy-io`: fifteen
+// *"… is not a queue target"* lines, twice each, around a banner that also said *"queues: serving
+// nothing"* about a daemon that was examining all fifteen. The functions below are the whole of
+// what the log says about each of those, so they can be asserted without a terminal.
+
+/// **The not-a-target line is the folder's, not the repository's, and it is said once.**
+///
+/// `not_targets_to_say` is the state machine (`eprintln!` is the only thing left out of this): the
+/// first pass answers a line, the same set answers `None`, and a repository gaining its gate
+/// answers a different one.
+#[test]
+fn the_not_a_target_line_is_one_line_per_pass_and_only_when_the_set_changes() {
+    let dir = TempDir::new("not-target-line");
+    let one = dir.0.join("one");
+    let two = dir.0.join("two");
+    let pairs = vec![
+        (one.display().to_string(), "main".to_string()),
+        (two.display().to_string(), "main".to_string()),
+    ];
+
+    let (said, line) =
+        not_targets_to_say(&[], &dir.0, &pairs).expect("the first pass has something to say");
+    assert_eq!(
+        line,
+        format!(
+            "  queues: 2 repositories under {} declare no `Merge gate` — none of them is queued \
+             (one, two). The section in a repository's AGENTS.md is the whole of what opts it in",
+            dir.0.display()
+        ),
+        "one sentence for the folder, naming both — never one line per repository"
+    );
+    assert_eq!(
+        said,
+        vec![
+            dir.0.join("one").display().to_string(),
+            dir.0.join("two").display().to_string()
+        ],
+        "the set is remembered in a stable order"
+    );
+    assert!(
+        not_targets_to_say(&said, &dir.0, &pairs).is_none(),
+        "the same set, said once: the next pass says NOTHING"
+    );
+    assert!(
+        not_targets_to_say(
+            &said,
+            &dir.0,
+            &pairs.clone().into_iter().rev().collect::<Vec<_>>()
+        )
+        .is_none(),
+        "and the order the pass happened to walk them in is not a change"
+    );
+
+    // A repository committed its gate: the set changed, so the line changes with it.
+    let (said, line) = not_targets_to_say(&said, &dir.0, &pairs[..1])
+        .expect("a set that shrank is news — it is how a reader knows to look again");
+    assert_eq!(
+        line,
+        format!(
+            "  queues: 1 repository under {} declares no `Merge gate` — one is not queued (the \
+             section in its AGENTS.md is the whole of what opts a repository in; its target \
+             branch is `main`)",
+            dir.0.display()
+        )
+    );
+
+    // And all of them did: the line says so rather than leaving the last one standing for ever.
+    let (_, line) =
+        not_targets_to_say(&said, &dir.0, &[]).expect("an empty set after a full one is a change");
+    assert!(
+        line.contains("every repository under") && line.contains("declares a `Merge gate` now"),
+        "{line}"
+    );
+}
+
+/// **The stale-lease sweep is one line for the set** — the operator's next daemon after a dead
+/// one-shot logged six `gave up the lease of …` lines for six repositories of one folder.
+#[test]
+fn the_leases_a_pass_gave_up_are_said_in_one_line() {
+    let holder = "pid 28089 is not running on this box (its heartbeat was 90 s old)".to_string();
+    let stale = vec![
+        ("/projects/stroppy".to_string(), holder.clone()),
+        ("/projects/stroppy-conformity".to_string(), holder.clone()),
+        ("/projects/stroppy-rust".to_string(), holder.clone()),
+    ];
+    assert_eq!(
+        stale_leases_line(&stale),
+        "  queues: gave up 3 stale leases (stroppy, stroppy-conformity, stroppy-rust): pid 28089 \
+         is not running on this box (its heartbeat was 90 s old)"
+    );
+    assert_eq!(
+        stale_leases_line(&stale[..1]),
+        "  queues: gave up the lease of stroppy: pid 28089 is not running on this box (its \
+         heartbeat was 90 s old)"
+    );
+    // Two holders is the case where the sentence cannot name one of them.
+    let mut mixed = stale.clone();
+    mixed[2].1 = "its holder on elsewhere stopped heartbeating 1200 s ago".to_string();
+    let line = stale_leases_line(&mixed);
+    assert!(
+        line.contains("2 holders, all gone — the first was"),
+        "{line}"
+    );
+}
+
+/// **The startup line is the supervisor's own list** — the contradiction the operator read on
+/// 2026-10-26: *"queues: serving nothing — … is a session of no repository"*, and then fifteen
+/// repositories examined under it, whose leases that same daemon had held that morning.
+///
+/// The rule kept is the one `serve`'s module doc states and `serves` implements: **a daemon serves
+/// a repository when its workspace is a session of that repository** — the checkout, a
+/// one-project folder of checkouts (two or more children sharing one `origin` owner), or a
+/// worktree of either. A folder that merely CONTAINS unrelated checkouts is still nobody's
+/// session, which is the 2026-10-12 guard both forms keep. And the line is
+/// `repositories_of_workspace`, which is what the supervisor's pass reads, so the two cannot
+/// disagree again.
+#[test]
+fn the_serving_line_names_what_the_supervisor_will_actually_examine() {
+    // **One project of several** — the operator's `~/Projects/stroppy-io`, in miniature.
+    let dir = TempDir::new("serving-line");
+    let _a = repo_with_agents(&dir.0, "stroppy", Some(GATE_MD));
+    let _b = repo_with_agents(&dir.0, "stroppy-contrib", Some(GATE_MD));
+    assert_eq!(
+        crate::mergequeue::repositories_of_workspace(&dir.0).len(),
+        2,
+        "the folder IS a session of both of them"
+    );
+    let line = crate::mergequeue::serving_line(&dir.0);
+    assert_eq!(
+        line,
+        format!(
+            "  queues: serving the 2 repositories {} is a session of, when this daemon can take \
+             each one's lease: stroppy, stroppy-contrib",
+            dir.0.display()
+        ),
+        "the line counts and names them — 'serving nothing' was a lie about fifteen"
+    );
+    assert!(
+        line.contains("stroppy, stroppy-contrib") && !line.contains("serving nothing"),
+        "the line names them, and never says `nothing` about a folder it serves: {line}"
+    );
+
+    // **One checkout** — the singular form, unchanged for the case it was written for.
+    let single = TempDir::new("serving-line-one");
+    let repo = repo(&single.0);
+    assert_eq!(
+        crate::mergequeue::serving_line(&repo),
+        format!(
+            "  queues: serving the repository {} when this daemon can take its lease",
+            repo.display()
+        )
+    );
+
+    // **A folder of unrelated checkouts is nobody's session** — two repositories, no `origin`
+    // between them, which is the guard of 2026-10-12 and not a queue.
+    let loose = TempDir::new("serving-line-loose");
+    for name in ["x", "y"] {
+        let r = loose.0.join(name);
+        std::fs::create_dir_all(&r).unwrap();
+        sh(&r, &["init", "-q", "-b", "main"]);
+    }
+    let line = crate::mergequeue::serving_line(&loose.0);
+    assert!(
+        line.starts_with(&format!(
+            "  queues: serving nothing — {} is a session of no repository",
+            loose.0.display()
+        )),
+        "{line}"
+    );
+    assert_eq!(
+        crate::mergequeue::repositories_of_workspace(&loose.0).len(),
+        0,
+        "and that is the same answer the supervisor's own list gives"
+    );
+}
+
+/// **A one-shot serves no queue** — it claimed six leases for one prompt on 2026-10-26 and the
+/// operator's next daemon had to give them all up. The flag is `cfg.serve_queues`, and the
+/// daemon's log says which of the two causes took it away.
+#[test]
+fn a_one_shot_takes_no_lease() {
+    let dir = TempDir::new("oneshot-no-queue");
+    let repo = repo(&dir.0);
+    let db = dir.0.join("sessions.db");
+    let mut cfg = crate::config::Config::for_this_box(&dir.0);
+    cfg.store = Some(db.clone());
+    cfg.workspace = repo.clone();
+    // The daemon's own rule, from `cli::run`: a run of steps is a one-shot and serves no queue.
+    cfg.one_shot = true;
+    cfg.serve_queues = false;
+    let stop = Arc::new(AtomicBool::new(false));
+    let handle = crate::mergequeue::spawn_for(
+        &cfg,
+        stop.clone(),
+        letibot_sessionlog::registry::Registry::new(),
+    );
+    assert!(
+        handle.is_none(),
+        "no supervisor thread at all, so no lease can be claimed"
+    );
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let store = Store::open(&db).unwrap();
+    assert!(
+        store.queue_leases().unwrap().is_empty(),
+        "and nothing in the store's lease table: {:?}",
+        store.queue_leases().unwrap()
+    );
+}

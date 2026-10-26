@@ -492,7 +492,33 @@ enum Step {
 /// than a row the next daemon recovers.
 const SUBAGENT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// **The daemon's memory caps, said once, by the daemon** — R64/R65.
+///
+/// This sentence used to be printed by the `harnessd` binary's `main`, so every short-lived
+/// invocation of that binary said it: `--continue` asks the same binary for the newest session id
+/// (`--latest-session`), and the operator's terminal got *"harnessd: memory caps OFF — …"* from
+/// the ask and then the same line from the daemon that actually started, twice around a banner
+/// that was already being drowned by other lines (measured 2026-10-26).
+///
+/// So the delegation happens in [`run`], before anything can start a child, and the WORDS are
+/// said here — past every verb that answers and exits, at the top of the daemon's own log.
+fn say_memory_caps() {
+    match letibot_tools::exec::delegate_memory() {
+        Ok(scope) => eprintln!(
+            "harnessd: memory caps on — the tool calls' cgroups live in {}",
+            scope.display()
+        ),
+        Err(why) => eprintln!("harnessd: memory caps OFF — {why}"),
+    }
+}
+
 pub fn run(args: &[String]) -> Result<i32, String> {
+    // **Step into the daemon's own cgroup leaf before anything here can start a child** (R64/R65)
+    // — `delegate_memory` refuses when the cgroup already holds another pid, so a `git` the
+    // startup ran first would turn every tool call of this daemon's life uncapped. Said by
+    // [`say_memory_caps`], on the daemon's path only: see that function for why the sentence
+    // moved out of the `harnessd` binary's `main`.
+    let _ = letibot_tools::exec::delegate_memory();
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     // **`for_the_daemon`, and not `for_this_box`.** The daemon is the one caller that is a live
     // operator's box running the review queue, so this is where the reviewer VM is armed — every
@@ -1029,7 +1055,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // rather than left to whoever built the command line — a second flag meaning *one-shot*
     // could disagree with them, and this is the fact the tools act on (`InvokeCtx::one_shot`:
     // `bash` refuses `background: true`, because nothing will ever read that job's result).
+    //
+    // **And a one-shot serves NO queue.** It has no idle life to oversee one: it claims the
+    // leases of every repository it sits above, runs one prompt and exits, and what it leaves
+    // behind is a lease whose holder is dead — on 2026-10-26 a one-shot for one prompt held the
+    // leases of six repositories under `~/Projects/stroppy-io`, and the operator's next daemon
+    // had to give all six up (its log: *"gave up the lease of …/stroppy, … its heartbeat was
+    // 90 s old and pid 28089 is not running"*). The same two things `--no-queue` takes away
+    // (`crate::mergequeue::spawn_for`): no lease is claimed, no gate runs, no landing happens
+    // here, and no model-facing queue notice is composed.
     cfg.one_shot = !steps.is_empty();
+    if cfg.one_shot {
+        cfg.serve_queues = false;
+    }
 
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
@@ -1086,6 +1124,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // error rather than a failure on somebody's first prompt.
     // **The metrics writer** (TODO R81), before the registry: a session the registry creates
     // tells the writer its parent, and an emit before the writer is installed is a no-op.
+    //
+    // And the memory caps, said here rather than by the binary: this is the first line of the
+    // DAEMON's own log, past every verb that answers and exits.
+    say_memory_caps();
     crate::instruments::start_writer(&cfg);
     let registry = Registry::new();
     // **The daemon watches its own memory** — `memwatch`. One line a minute in this log, a
@@ -1184,7 +1226,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // another daemon owns it, and finding that out after loading a vocabulary
     // wastes the load.
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
-    daemon.catch_signals().map_err(|e| e.to_string())?;
+    daemon
+        .catch_signals(cfg.one_shot)
+        .map_err(|e| e.to_string())?;
     let boot = Boot::new(&registry, &cfg.session_id);
     boot.step("the socket is bound; starting the queues");
 
@@ -1199,7 +1243,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();
-    let endpoint = cfg.endpoint.authority();
     let workspace = cfg.workspace.display().to_string();
     let stored = stored_sessions(&cfg);
     let session_id = cfg.session_id.clone();
@@ -1582,8 +1625,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `main_model` would otherwise be disclosed by the daemon's own launch line.
     // The source goes with it, because `cfg` is handed to `Sessions` a few lines
     // down and the banner is printed after that.
-    let model = cfg.model.clone();
-    let model_from = cfg.model_source.describe();
+    let banner_model = BannerModel::of(&cfg);
 
     // **The operator's `prompts.toml`, read once, here.** The per-model system-prompt
     // overrides, beside `providers.toml` in the same config dir.
@@ -1723,7 +1765,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // go and read, and a banner that says `model deepseek` without saying *which
     // level* is the same defect one line shorter. So the level is on this line, and
     // the `session model` disclosure under it carries the whole sentence.
-    eprintln!("  model    {model} via {endpoint} (/completion, token array) — from {model_from}");
+    //
+    // **And it names the model that ANSWERS the turns** (2026-10-26). It printed
+    // `cfg.model` — the local vocabulary BINDING, which the launcher passes on every
+    // start — so a session whose turns went to `glm-coding/glm-5.3` was headed `model
+    // qwen-3.8-flash-next via 127.0.0.1:8080`, while its own disclosures two lines
+    // down said `main glm-coding/glm-5.3` and `turns go to glm-coding (glm-5.3)`.
+    // See [`BannerModel`]: the local binding is shown when it is a different thing,
+    // and it is labelled as the binding rather than as the model.
+    for line in banner_model.lines() {
+        eprintln!("{line}");
+    }
     eprintln!("  dialect  {dialect}");
     eprintln!("  workspace {workspace}");
     eprintln!("  socket   {socket}");
@@ -1870,6 +1922,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 }
             }
         }
+        // **The steps are over, so the one-shot's signal grace no longer applies.** A turn that
+        // was interrupted properly and then spends its orderly tail (up to five seconds of
+        // subagent threads, a flowy seat stopping) must not be killed by its own watchdog with a
+        // line saying the turn never came back. See `daemon::one_shot_steps_done`.
+        crate::daemon::one_shot_steps_done();
         daemon.shutdown();
         // **The same wait the serving path makes, for the same reason.** The process ends at
         // the `Ok` below — `bin/harnessd.rs` turns it into `std::process::exit` — and a
@@ -2635,6 +2692,62 @@ fn banner(ds: &[Disclosure], cols: usize) -> Vec<String> {
     out
 }
 
+/// **The banner's two model facts, kept apart** — what answers this session's turns and, when the
+/// daemon also holds a LOCAL binding that is a different thing, the vocabulary its token ids are
+/// cut from.
+///
+/// Read before `cfg` is handed to `Sessions` and printed after the session is open, because the
+/// banner is printed once the session exists.
+///
+/// 2026-10-26: the header said `model qwen-3.8-flash-next via 127.0.0.1:8080` on a session whose
+/// own disclosures, two lines below, said `main glm-coding/glm-5.3` and `turns go to glm-coding
+/// (glm-5.3)`. The line was `cfg.model`, which is the local VOCABULARY BINDING the launcher passes
+/// on every start and which answers nothing when a provider does. The operator reads that line to
+/// find out who they are talking to, so the answering model goes there, and the binding is said
+/// beside it under the name the launcher already uses for it (`vocab`, a record written before
+/// `answers` existed).
+struct BannerModel {
+    /// The model that answers: `provider/model` for a metered session, the local alias else.
+    answers: String,
+    /// Where that name came from — a file level, a flag, the built-in default.
+    from: String,
+    /// The endpoint an answer's token ids are submitted to.
+    endpoint: String,
+    /// The daemon's local binding, when a provider answers instead: the vocabulary this session's
+    /// turns are not tokenised with, on an endpoint they never reach.
+    binding: Option<String>,
+}
+
+impl BannerModel {
+    fn of(cfg: &crate::config::Config) -> BannerModel {
+        BannerModel {
+            answers: cfg.prompt_model_name(),
+            from: cfg.model_source.describe(),
+            endpoint: cfg.endpoint.authority(),
+            binding: cfg.provider.is_some().then(|| cfg.model.clone()),
+        }
+    }
+
+    /// The lines, in the order the operator reads them — the answering model first, always.
+    fn lines(&self) -> Vec<String> {
+        let Some(binding) = &self.binding else {
+            // A local session: one line, and it is both facts at once.
+            return vec![format!(
+                "  model    {} via {} (/completion, token array) — from {}",
+                self.answers, self.endpoint, self.from
+            )];
+        };
+        vec![
+            format!("  model    {} — from {}", self.answers, self.from),
+            format!(
+                "  vocab    {binding} via {} (/completion, token array) — the daemon's local \
+                 binding, NOT what answers this session's turns",
+                self.endpoint
+            ),
+        ]
+    }
+}
+
 /// **The banner's `context` line** — the window as given and, beside it, the reserve in
 /// the SAME units.
 ///
@@ -2717,6 +2830,52 @@ fn term_cols() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The header names the model that ANSWERS the turns**, and says the local binding is the
+    /// binding — 2026-10-26: a session whose disclosures, two lines below, said `main
+    /// glm-coding/glm-5.3` and `turns go to glm-coding (glm-5.3)` was headed `model
+    /// qwen-3.8-flash-next via 127.0.0.1:8080`, because the line was `cfg.model`, the local
+    /// VOCABULARY binding the launcher passes on every start. The operator reads that line to find
+    /// out who they are talking to.
+    #[test]
+    fn the_header_names_the_model_that_answers_and_labels_the_binding() {
+        // A metered session: the provider answers, the local alias is only the vocabulary.
+        let mut c = crate::config::Config::for_this_box("/tmp");
+        c.model = "qwen-3.8-flash-next".into();
+        c.endpoint = letibot_turn::Endpoint::new("127.0.0.1", 8080);
+        c.provider = Some(crate::config::ProviderConfig {
+            name: "glm-coding".into(),
+            model: Some("glm-5.3".into()),
+            api_key: None,
+            thinking: false,
+        });
+        let lines = BannerModel::of(&c).lines();
+        assert_eq!(lines.len(), 2, "two facts, two lines: {lines:?}");
+        assert!(
+            lines[0].starts_with("  model    glm-coding/glm-5.3 "),
+            "the first line is what answers: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with("  vocab    qwen-3.8-flash-next via 127.0.0.1:8080")
+                && lines[1].contains("NOT what answers this session's turns"),
+            "and the binding is named as one: {:?}",
+            lines[1]
+        );
+
+        // A local session: one line, and it is both facts at once.
+        let mut c = crate::config::Config::for_this_box("/tmp");
+        c.model = "qwen-3.8-flash-next".into();
+        c.endpoint = letibot_turn::Endpoint::new("127.0.0.1", 8080);
+        let lines = BannerModel::of(&c).lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("  model    qwen-3.8-flash-next via 127.0.0.1:8080")
+                && !lines[0].contains("vocab"),
+            "{:?}",
+            lines[0]
+        );
+    }
 
     /// R72 follow-up, defect C: after a restart the banner printed the reserve in the
     /// planning window's ledger units (2905) beside a 40000 provider window whose

@@ -456,7 +456,7 @@ impl Mode {
             Prereq::Oracle,
         ],
         summary: "a model answers, within the scope it has earned. The always-ask list \
-                  still reaches you and nothing promotes an blocked action.",
+                  still reaches you — and no mode promotes an action the boundary blocks.",
     };
 
     /// **Writes go through and a model answers for the rest.** Claude Code's own

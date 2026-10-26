@@ -2311,39 +2311,35 @@ impl Registry {
             .ended_runs
             .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            let enders: Vec<RunEnder> = self
-                .runs
-                .lock()
-                .expect("run enders")
-                .drain()
-                .map(|(_, f)| f)
-                .collect();
-            let said: Vec<String> = enders.iter().flat_map(|f| f()).collect();
-            // To every hub this registry holds — the ones collected above, not `list()`, which
-            // read every stored session from the source to find the live ones (R68.8).
-            if !said.is_empty() {
-                for hub in &hubs {
-                    for sentence in &said {
-                        hub.publish(crate::event::SessionEvent::Warning {
-                            code: "daemon_stopping_runs".into(),
-                            detail: sentence.clone(),
-                            compaction: None,
-                        });
-                    }
-                }
-            }
-            // **And the turns, once, before the hubs close.** `submit` is the only door that
-            // reaches a turn in flight, and it is taken at the next token by the steering poll
-            // (`Harness::HubSteering`), which is what *interrupt* means here: the partial output
-            // is kept and the round is recorded as aborted, exactly as an Esc-Esc is.
+            // **THE TURNS FIRST, THE RUNS SECOND** (2026-10-26). A stop queued AFTER the run
+            // enders was measured to arrive too late to matter: the enders kill the command the
+            // turn is inside, the engine takes the killed result and asks the model for the
+            // next round in the same microsecond, and the interrupt was queued behind that —
+            // so the round ran, a real model answered it, and Ctrl-C left a one-shot working
+            // through more `ssh` calls with only its current command killed. Queuing the
+            // interrupt BEFORE the kill puts it in the queue the steering poll reads at the
+            // next round boundary (`Harness::HubSteering::try_next`), so the round that the
+            // killed command hands back to is the round that ends the turn.
             //
             // **Inside the once-guard with the run enders, and not outside it.** `close` is
             // called three times on the way out — by the `Stop` frame, by `catch_signals` and
             // again by `ServerHandle::shutdown` — and a resubmission would be a second
             // `CommandIssued` for one decision, which is exactly what `ended_runs` exists to
             // stop for the runs.
+            //
+            // **`submit` is the only door that reaches a turn in flight**, and the steering poll
+            // takes it at the next token, which is what *interrupt* means here: the partial
+            // output is kept and the round is recorded as aborted, exactly as an Esc-Esc is.
+            // **`turn_in_flight`, NOT `status().running`** (2026-10-26). The round-level `running`
+            // flag is published once per ROUND, so it is `false` for the whole of a round's tool
+            // calls — which is where a turn spends most of its wall clock, and exactly where a
+            // person presses Ctrl-C: measured, a one-shot's `sleep` was killed by the run enders
+            // and no interrupt was ever queued, so the turn went on to its next round and a real
+            // model kept working. `Hub::turn_in_flight` is the same question asked of the same
+            // instant with the calls taken into account, and it says in its own doc that every
+            // reader meaning *is a turn in flight* by `running` is wrong for that window.
             for h in &hubs {
-                if h.status().running {
+                if h.turn_in_flight() {
                     h.submit(
                         DAEMON_SUBMITTER,
                         "daemon-stopping",
@@ -2354,6 +2350,28 @@ impl Registry {
                             reason: STOPPING_TURN_REASON.to_string(),
                         },
                     );
+                }
+            }
+            let enders: Vec<RunEnder> = self
+                .runs
+                .lock()
+                .expect("run enders")
+                .drain()
+                .map(|(_, f)| f)
+                .collect();
+            let said: Vec<String> = enders.iter().flat_map(|f| f()).collect();
+            // To every hub this registry holds — the ones collected above, not `list()`, which
+            // read every stored session from the source to find the live ones (R68.8). Still
+            // before the hubs close, so each sentence reaches the heads that are watching.
+            if !said.is_empty() {
+                for hub in &hubs {
+                    for sentence in &said {
+                        hub.publish(crate::event::SessionEvent::Warning {
+                            code: "daemon_stopping_runs".into(),
+                            detail: sentence.clone(),
+                            compaction: None,
+                        });
+                    }
                 }
             }
         }

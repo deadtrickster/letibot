@@ -2157,10 +2157,11 @@ pub struct QueueService {
     store_path: PathBuf,
     workspace: PathBuf,
     env: Arc<QueueEnv>,
-    /// **The repositories already said not to be queue targets** (2026-10-26) — one line per
-    /// repository per daemon, not one every two seconds: a folder whose repositories never asked
-    /// for a queue is the ordinary case, not news.
-    not_target_said: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// **The repositories last said not to be queue targets** (2026-10-26) — the SET, sorted, and
+    /// not one entry per repository as each was met: the line the log carries is one sentence
+    /// about the folder, and it is written again only when this set has changed since it was
+    /// written ([`not_targets_to_say`]).
+    not_target_said: std::sync::Mutex<Vec<String>>,
 }
 
 impl QueueService {
@@ -2235,6 +2236,7 @@ impl QueueService {
         // takeover, which needs a claimant, never reached them.
         self.sweep_leases(store)?;
         self.resolve_carried(store)?;
+        let mut not_targets: Vec<(String, String)> = Vec::new();
         for repo in self.repositories(store)? {
             let key = repo.display().to_string();
             if workers.contains_key(&key) {
@@ -2243,9 +2245,10 @@ impl QueueService {
             // **A repository whose target declares no `Merge gate` is not a queue target**
             // (2026-10-26): it takes no lease and gets no health row, so no head counts it
             // unjudged and no hub is warned about it. It is asked every pass, so the repository
-            // that gains the section starts being served on the next one.
+            // that gains the section starts being served on the next one. What is said about
+            // them is ONE line, at the end of the pass — see [`Self::say_not_a_targets`].
             if let Some(target) = self.refusal(&repo) {
-                self.say_not_a_target(&key, &target);
+                not_targets.push((key, target));
                 continue;
             }
             match store.acquire_queue_lease(&key, &self.env.me, gate::now_ms(), LEASE_TTL_MS)? {
@@ -2317,6 +2320,7 @@ impl QueueService {
                 }
             }
         }
+        self.say_not_a_targets(&not_targets);
         Ok(())
     }
 
@@ -2326,10 +2330,16 @@ impl QueueService {
     ///
     /// Every pass, over the whole store rather than over this daemon's repositories: a lease the
     /// supervisor would never pass on is exactly the one that stays stale for ever.
+    ///
+    /// The HISTORY keeps each lease's own reason — that is the row the queue pane draws, one per
+    /// repository, where a repository each is what a reader wants. The terminal gets ONE line for
+    /// the set ([`stale_leases_line`]): on 2026-10-26 a one-shot that had died holding six
+    /// repositories under one project folder left six *"gave up the lease of …"* lines in the
+    /// operator's next daemon, which is the same per-repository noise as the not-a-target sweep.
     fn sweep_leases(&self, store: &Store) -> Result<usize, StoreError> {
         let now = gate::now_ms();
         let expired_before = now.saturating_sub(LEASE_TTL_MS);
-        let mut released = 0;
+        let mut released: Vec<(String, String)> = Vec::new();
         for lease in store.queue_leases()? {
             let Some(why) = super::lease::gone(&lease, &self.env.me, now) else {
                 continue;
@@ -2342,14 +2352,27 @@ impl QueueService {
                 expired_before,
                 now,
             )? {
-                eprintln!(
-                    "  merge queue: gave up the lease of {}: {why}",
-                    lease.repository
-                );
-                released += 1;
+                let age = now.saturating_sub(lease.heartbeat_ms) / 1000;
+                released.push((
+                    lease.repository.clone(),
+                    if lease.host == self.env.me.host {
+                        format!(
+                            "pid {} is not running on this box (its heartbeat was {age} s old)",
+                            lease.pid
+                        )
+                    } else {
+                        format!(
+                            "its holder on {} stopped heartbeating {age} s ago",
+                            lease.host
+                        )
+                    },
+                ));
             }
         }
-        Ok(released)
+        if !released.is_empty() {
+            eprintln!("{}", stale_leases_line(&released));
+        }
+        Ok(released.len())
     }
 
     /// **Why `repo` is not a queue target, if it is not one** — the target branch it lands on,
@@ -2372,26 +2395,36 @@ impl QueueService {
         }
     }
 
-    /// Say once — in the daemon's own log, never on a hub — that a repository is not served.
-    fn say_not_a_target(&self, key: &str, target: &str) {
+    /// **One line — in the daemon's own log, never on a hub — for the repositories this pass found
+    /// not to be queue targets**, and nothing at all when the set is the one already said.
+    ///
+    /// The daemon started in the foreground writes its log to the operator's terminal, so a line
+    /// per repository arrived interleaved with the banner: fifteen of them, twice, around the
+    /// `harnessd: session` header (2026-10-26). A folder whose repositories never asked for a
+    /// queue is the ordinary case of one project folder, not fifteen pieces of news, and the
+    /// question a person asks it is *why is nothing landing here* — so the line accounts for the
+    /// folder and is repeated only when the set changes.
+    fn say_not_a_targets(&self, not_targets: &[(String, String)]) {
         let mut said = self
             .not_target_said
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if said.insert(key.to_string()) {
-            eprintln!(
-                "  merge queue: {key} is not a queue target: `{target}` has no `Merge gate` \
-                 section in AGENTS.md, so it never asked for a queue (nothing is claimed, gated \
-                 or counted for it; the section is the whole of what opts a repository in)"
-            );
-        }
+        let Some((now, line)) = not_targets_to_say(&said, &self.workspace, not_targets) else {
+            return;
+        };
+        *said = now;
+        eprintln!("{line}");
     }
 
-    /// **The one repository this daemon serves** — the one its workspace is a session of, when it
-    /// is one. A repository with open rows and no session daemon of its own is NOT taken by a
-    /// daemon that happens to sit above it: its queue waits, rows and all, for a daemon seated in
-    /// it, and the first one that starts there takes the lease and re-gates what was judged
-    /// (`regate_at_start`).
+    /// **The repositories this daemon may serve** — every one its workspace is a session of
+    /// ([`super::repositories_of_workspace`]): the checkout it is in, or each repository of a
+    /// one-project folder of them. A repository with open rows and no session daemon of its own is
+    /// NOT taken by a daemon that happens to sit above it: its queue waits, rows and all, for a
+    /// daemon seated in it, and the first one that starts there takes the lease and re-gates what
+    /// was judged (`regate_at_start`).
+    ///
+    /// The singular form of this rule is what the startup line used to read while this pass read
+    /// the plural one — see [`super::serving_line`], which is now the same call.
     fn repositories(&self, _store: &Store) -> Result<Vec<PathBuf>, StoreError> {
         // **Every repository of the workspace** — one, or each of a one-org project folder's.
         Ok(super::repositories_of_workspace(&self.workspace)
@@ -2447,6 +2480,97 @@ impl QueueService {
         }
         Ok(())
     }
+}
+
+/// **What the daemon's log owes the operator about the repositories it will not serve** — either
+/// the one line and the set to remember, or `None` when this set is the one already said.
+///
+/// The state transition is its own function so the *said once* half is a test rather than a claim
+/// about `eprintln!`: the daemon started in the foreground writes into the operator's terminal.
+pub(crate) fn not_targets_to_say(
+    said: &[String],
+    workspace: &Path,
+    not_targets: &[(String, String)],
+) -> Option<(Vec<String>, String)> {
+    let mut pairs: Vec<&(String, String)> = not_targets.iter().collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+    if said == keys.as_slice() {
+        return None;
+    }
+    Some((keys, not_a_target_line(workspace, not_targets)))
+}
+
+/// **The one line** — the folder, how many of its repositories never asked for a queue, and which
+/// ones, because the question it answers is *why is nothing landing here* and the answer is a set.
+///
+/// One line for the whole folder and not one per repository (2026-10-26): fifteen of these, said
+/// twice each around the `harnessd: session` header, buried the banner they were interleaved with.
+/// A *nobody asked* line per repository is the ordinary case of a project folder, not news.
+pub(crate) fn not_a_target_line(workspace: &Path, not_targets: &[(String, String)]) -> String {
+    let mut pairs: Vec<&(String, String)> = not_targets.iter().collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let names: Vec<String> = pairs.iter().map(|(k, _)| repo_name(k)).collect();
+    match pairs.as_slice() {
+        // Nothing is refused any more: the section is the whole of the opt-in, so this is what a
+        // folder looks like after the repositories that wanted a queue committed one, and it is
+        // worth the one line because the previous line is still in the log above it.
+        [] => format!(
+            "  queues: every repository under {} declares a `Merge gate` now — each of them is \
+             served when this daemon can take its lease",
+            workspace.display()
+        ),
+        [_] => format!(
+            "  queues: 1 repository under {} declares no `Merge gate` — {} is not queued (the \
+             section in its AGENTS.md is the whole of what opts a repository in; its target \
+             branch is `{}`)",
+            workspace.display(),
+            names[0],
+            pairs[0].1
+        ),
+        many => format!(
+            "  queues: {} repositories under {} declare no `Merge gate` — none of them is queued \
+             ({}). The section in a repository's AGENTS.md is the whole of what opts it in",
+            many.len(),
+            workspace.display(),
+            names.join(", ")
+        ),
+    }
+}
+
+/// **One line for the leases a pass gave up** — the same fold as [`not_a_target_line`] and for the
+/// same reason: the terminal is the daemon's log when it is started in the foreground, and a
+/// project folder's repositories come in sets. The rows keep each lease's own reason.
+pub(crate) fn stale_leases_line(stale: &[(String, String)]) -> String {
+    let names: Vec<String> = stale.iter().map(|(repo, _)| repo_name(repo)).collect();
+    let mut holders: Vec<&str> = stale.iter().map(|(_, h)| h.as_str()).collect();
+    holders.sort_unstable();
+    holders.dedup();
+    let whose = match holders.as_slice() {
+        [one] => (*one).to_string(),
+        many => format!(
+            "{} holders, all gone — the first was {}",
+            many.len(),
+            many[0]
+        ),
+    };
+    match names.as_slice() {
+        [one] => format!("  queues: gave up the lease of {one}: {whose}"),
+        many => format!(
+            "  queues: gave up {} stale leases ({}): {whose}",
+            many.len(),
+            many.join(", ")
+        ),
+    }
+}
+
+/// A repository key as the log names it: the last path component, because the line already names
+/// the folder it lives in.
+fn repo_name(key: &str) -> String {
+    Path::new(key)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| key.to_string())
 }
 
 /// **One repository's worker** — passes until the lease is lost or the daemon stops; a store

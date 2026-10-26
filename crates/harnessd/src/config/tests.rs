@@ -1281,6 +1281,77 @@ fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
     assert!(d.to_string().contains(&c.stall_rounds.to_string()));
 }
 
+/// **The mode line's second sentence must agree with the mode's own summary** — 2026-10-26, at
+/// `allow-all (this box, consented)`, whose summary says *"write, exec and network all go through
+/// without asking, the always-ask list included"* and which was then told, in the same paragraph,
+/// *"the always-ask list reaches you at every one of them"*. The other defect in that sentence was
+/// the word for a refused tier: *"an blocked"*.
+///
+/// All three boundaries are asserted, because the fix is a match over them and the two names for
+/// *the list does not ask* are exactly what must not collapse: a confined VM and a box the operator
+/// consented about produce the same absent list for two different reasons.
+#[test]
+fn the_mode_line_says_what_the_mode_itself_says() {
+    use letibot_tools::mode::Mode;
+    let detail = |m: Mode| {
+        let mut c = Config::for_this_box("/tmp");
+        c.mode = m;
+        c.disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "mode")
+            .expect("the mode is always disclosed")
+            .detail
+    };
+
+    let consented = detail(Mode::ALLOW_ALL_HERE);
+    assert!(
+        consented.contains("the always-ask list")
+            && consented.contains("does not ask here either")
+            && consented.contains("you consented to that"),
+        "a consented allow-all admits the list, and says who let it: {consented}"
+    );
+    assert!(
+        !consented.contains("reaches you at every"),
+        "and does not then claim the opposite: {consented}"
+    );
+
+    let structural = detail(Mode::ALLOW_ALL);
+    assert!(
+        structural.contains("structural") && structural.contains("does not ask here"),
+        "a confined allow-all's reason is the boundary, not a person's answer: {structural}"
+    );
+
+    let asking = detail(Mode::ALWAYS_ASK);
+    assert!(
+        asking.contains("still reaches you at every action on it"),
+        "every other point asks: {asking}"
+    );
+
+    let reading = detail(Mode::READ_ONLY);
+    assert!(
+        reading.contains("nothing to ask about"),
+        "read-only has no action for the list to reach, and saying it does would describe a \
+         capability this point does not have: {reading}"
+    );
+
+    for m in [
+        Mode::READ_ONLY,
+        Mode::ALWAYS_ASK,
+        Mode::WRITES_ALLOWED,
+        Mode::AUTO,
+        Mode::AUTO_EDITS,
+        Mode::ALLOW_ALL,
+        Mode::ALLOW_ALL_HERE,
+    ] {
+        let d = detail(m);
+        assert!(
+            !d.contains("an blocked"),
+            "`{}` still says the word for a refused tier as `an blocked`: {d}",
+            m.name
+        );
+    }
+}
+
 /// **Both guards off is its own state, and says so.**
 ///
 /// The round backstop is unbounded by default now, so the progress check is

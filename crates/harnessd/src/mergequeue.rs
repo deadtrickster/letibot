@@ -451,6 +451,50 @@ impl RegistryDoor {
     }
 }
 
+/// **What the daemon's log says its queues will serve** — read from the SAME list the supervisor's
+/// pass reads ([`repositories_of_workspace`]), so the line and the work cannot disagree.
+///
+/// They did, and that is the whole of this function (2026-10-26): a daemon seated in
+/// `~/Projects/stroppy-io` — a folder of fifteen repositories of one org — printed *"serving
+/// nothing — … is a session of no repository (it may contain some; their queues are served by
+/// daemons seated in them)"* and then walked all fifteen, and had held all fifteen leases earlier
+/// that day. The line read the SINGULAR rule ([`repository_of_workspace`]: one checkout, or its
+/// own child) while the supervisor read the plural one; the plural one is the rule `serve`'s
+/// module doc states and [`serves`] implements — *a daemon serves a repository when its workspace
+/// is a session of that repository* — and a folder that merely CONTAINS unrelated checkouts is
+/// still nobody's session, which is the guard of 2026-10-12 that both forms keep.
+pub fn serving_line(workspace: &Path) -> String {
+    let repos = repositories_of_workspace(workspace);
+    let names = |rs: &[String]| {
+        rs.iter()
+            .map(|r| {
+                Path::new(r)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| r.clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    match repos.as_slice() {
+        [] => format!(
+            "  queues: serving nothing — {} is a session of no repository (a folder of unrelated \
+             checkouts is nobody's session; one project's folder of them is), so no lease is \
+             claimed here",
+            workspace.display()
+        ),
+        [one] => {
+            format!("  queues: serving the repository {one} when this daemon can take its lease")
+        }
+        many => format!(
+            "  queues: serving the {} repositories {} is a session of, when this daemon can take \
+             each one's lease: {}",
+            many.len(),
+            workspace.display(),
+            names(many).join(", ")
+        ),
+    }
+}
+
 /// **Start the queues for a daemon** — `None` with no `--store` (the queues live in the store),
 /// and `None` under `--no-queue` ([`crate::config::Config::serve_queues`]).
 ///
@@ -491,7 +535,17 @@ pub fn spawn_for(
     }
     if !cfg.serve_queues {
         // The line the daemon's log carries, which is where an operator asks why nothing lands
-        // from this daemon: the flag, why it exists, and what still works here.
+        // from this daemon: the cause, why it exists, and what still works here. **Two causes**
+        // (2026-10-26): the flag, and a one-shot, which implies it.
+        if cfg.one_shot {
+            eprintln!(
+                "  queues: this daemon serves NO queue (a one-shot run) — it runs its steps and \
+                 exits, so a lease it claimed here would outlive it as a lease whose holder is \
+                 already dead; nothing is claimed, gated or landed, and other daemons' moves are \
+                 still relayed to its heads"
+            );
+            return None;
+        }
         eprintln!(
             "  queues: this daemon serves NO queue (--no-queue) — it neither claims a merge-queue \
              lease nor gates a target nor lands a branch, so a package worker cannot be set to \
@@ -503,16 +557,9 @@ pub fn spawn_for(
     let service = serve::QueueService::new(store_path, &cfg.workspace, env);
     match service.spawn(stop) {
         Ok(h) => {
-            eprintln!(
-                "  queues: serving {} when this daemon can take its lease",
-                repository_of_workspace(&cfg.workspace)
-                    .map(|r| format!("the repository {r}"))
-                    .unwrap_or_else(|| format!(
-                        "nothing — {} is a session of no repository (it may contain some; their \
-                         queues are served by daemons seated in them)",
-                        cfg.workspace.display()
-                    ))
-            );
+            // The line is [`serving_line`]'s, which is the supervisor's own list: the claim and
+            // the work are one reading of one rule.
+            eprintln!("{}", serving_line(&cfg.workspace));
             Some(h)
         }
         Err(e) => {

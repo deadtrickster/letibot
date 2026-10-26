@@ -30,6 +30,11 @@
 //! handler writes one byte, a thread blocked in `read` wakes and closes the hub —
 //! rather than on a flag some loop polls. Three blocking reads and no clock.
 //!
+//! **One `poll`, and only after a signal** (2026-10-26): [`stop_on_signal`] waits on the same
+//! pipe for a SECOND signal — a person pressing Ctrl-C twice means it — and a one-shot's grace
+//! (`ONE_SHOT_EXIT_GRACE`) is a bound on the wait, so that thread does poll in slices. It is not
+//! a delivery loop: nothing is delivered through it, and it exists only once a stop has begun.
+//!
 //! That also settles what a signal handler is allowed to do here. `Hub::close`
 //! takes a mutex and notifies a condvar; neither is async-signal-safe, so calling
 //! it from the handler is a deadlock waiting for a busy Tuesday. `write(2)` on a
@@ -53,15 +58,124 @@ use crate::sessions::{Outcome, Sessions};
 /// that is what a handler may touch; `-1` means no handler is installed.
 static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
 
-extern "C" fn on_signal(_sig: libc::c_int) {
+extern "C" fn on_signal(sig: libc::c_int) {
     let fd = SIGNAL_FD.load(Ordering::Relaxed);
     if fd >= 0 {
-        let byte = [1u8];
+        // **The number, not a bare byte** (2026-10-26): the thread below says which signal it
+        // was, and Ctrl-C and a `--stop` are two different things to a person reading the log.
+        let byte = [sig as u8];
         // Async-signal-safe, and the return value is deliberately ignored: there is
         // nothing a handler could do about a full pipe except make things worse,
         // and a full pipe already means a shutdown is pending.
         unsafe {
             libc::write(fd, byte.as_ptr() as *const libc::c_void, 1);
+        }
+    }
+}
+
+/// **How long a one-shot may take to come back from its interrupted turn** before it goes anyway.
+///
+/// Long enough for the interrupt to reach a round boundary, the killed command's result to be
+/// recorded and the turn's rows to be written; short enough that a person who pressed Ctrl-C is
+/// not left wondering. Only a one-shot gets it — see [`stop_on_signal`].
+pub const ONE_SHOT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// **Whether a one-shot's last step has returned** — set by `cli` the moment its run of steps is
+/// over, because the grace in [`stop_on_signal`] is for a turn that has NOT come back.
+///
+/// Without this a one-shot whose turn was interrupted properly and then spent its own orderly
+/// tail (five seconds of subagent threads, a flowy seat stopping) would be killed by its own
+/// watchdog on the way out, with a line saying the turn never came back. That is a false report at
+/// the one moment the operator is reading carefully.
+static ONE_SHOT_STEPS_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Say that a one-shot's run of steps is over, so its grace no longer applies.
+pub fn one_shot_steps_done() {
+    ONE_SHOT_STEPS_DONE.store(true, Ordering::SeqCst);
+}
+
+/// **What one signal does, and what a second one does** — the whole of the signal path, on its own
+/// thread because `Hub::close` takes a mutex and a handler may not.
+///
+/// 2026-10-26, the operator at a terminal in `~/Projects/stroppy-io`: a one-shot had a turn in
+/// flight, they pressed Ctrl-C, nothing visible happened, the model went on running `ssh`
+/// commands, and the process took minutes to go. Two defects, and the first is the one that ate
+/// the minutes:
+///
+/// 1. **Nothing said anything.** The daemon's first word about a signal was its last, so a stop
+///    that was working and a stop that was ignored looked exactly alike.
+/// 2. **A second Ctrl-C did nothing either.** The old contract was *"a second signal is not
+///    special-cased: the first one already started an orderly stop, and a 'force' path is a way to
+///    lose the last turn's rows"* — which is right about the rows and wrong about the person: they
+///    press it because the first one did not appear to work, and having no second gear at all is
+///    what makes them wait minutes for a process they could have ended.
+///
+/// So: one line naming the signal and the stop; then `close`, which interrupts the turn BEFORE it
+/// kills the runs it is holding (`Registry::close`); then a SECOND signal exits at once, since by
+/// then the run enders have settled every row they own and sqlite's WAL is consistent.
+///
+/// **And a one-shot gets a bound.** A serving daemon's orderly stop is bounded by its own steps and
+/// cutting it short throws away work it is finishing; a one-shot has nothing to finish — the step
+/// in flight is exactly what the person is asking to be rid of — so if the turn has not come back
+/// within [`ONE_SHOT_EXIT_GRACE`] it goes anyway, and says why.
+fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: bool) {
+    let mut buf = [0u8; 1];
+    // Blocks. No timer, no poll: the byte arrives or it does not.
+    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+    if n <= 0 {
+        return;
+    }
+    let what = match libc::c_int::from(buf[0]) {
+        libc::SIGINT => "SIGINT (Ctrl-C)",
+        libc::SIGTERM => "SIGTERM",
+        _ => "a signal",
+    };
+    eprintln!("harnessd: {what} — interrupting the turn and stopping; a second one exits now");
+    registry.close();
+
+    let started = std::time::Instant::now();
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // A one-shot polls in slices so its grace expires; a serving daemon waits for ever, and
+        // its thread dies with the process it belongs to.
+        let wait_ms = if one_shot {
+            let left = ONE_SHOT_EXIT_GRACE.saturating_sub(started.elapsed());
+            (left.as_millis().min(200) as i32).max(1)
+        } else {
+            -1
+        };
+        let ready = unsafe { libc::poll(&mut pfd, 1, wait_ms) };
+        if ready > 0 {
+            let mut again = [0u8; 1];
+            let n = unsafe { libc::read(fd, again.as_mut_ptr() as *mut libc::c_void, 1) };
+            if n > 0 {
+                eprintln!(
+                    "harnessd: a second {} — exiting now (every row the run enders settled is \
+                     written; the turn's own rows are not)",
+                    if again[0] == libc::SIGTERM as u8 {
+                        "SIGTERM"
+                    } else {
+                        "Ctrl-C"
+                    }
+                );
+                std::process::exit(130);
+            }
+        }
+        if one_shot
+            && !ONE_SHOT_STEPS_DONE.load(Ordering::SeqCst)
+            && started.elapsed() >= ONE_SHOT_EXIT_GRACE
+        {
+            eprintln!(
+                "harnessd: the turn did not come back within {}s of {what} — exiting anyway; the \
+                 store is consistent to the last settled row",
+                ONE_SHOT_EXIT_GRACE.as_secs()
+            );
+            std::process::exit(130);
         }
     }
 }
@@ -105,10 +219,12 @@ impl Daemon {
     ///
     /// Closing the registry is what ends everything else: every hub closes, the
     /// bell closes, `next_command` returns `None`, every attached head wakes with
-    /// `Closed`, and the worker loop falls out. A second signal is not
-    /// special-cased — the first one already started an orderly stop, and a "force"
-    /// path is a way to lose the last turn's rows.
-    pub fn catch_signals(&mut self) -> io::Result<()> {
+    /// `Closed`, and the worker loop falls out. What each signal says, and what a SECOND one does,
+    /// is [`stop_on_signal`]'s — this only installs it.
+    ///
+    /// `one_shot` is the one thing that differs between the two ways a daemon is run: a run of
+    /// steps has no orderly stop worth waiting for, so it is given a bound.
+    pub fn catch_signals(&mut self, one_shot: bool) -> io::Result<()> {
         let mut fds = [0 as libc::c_int; 2];
         // SAFETY: `pipe` writes two fds into a two-element array.
         if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
@@ -129,14 +245,7 @@ impl Daemon {
         let rfd = read.as_raw_fd();
         std::thread::Builder::new()
             .name("harnessd-signal".into())
-            .spawn(move || {
-                let mut buf = [0u8; 1];
-                // Blocks. No timer, no poll: the byte arrives or it does not.
-                let n = unsafe { libc::read(rfd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-                if n > 0 {
-                    registry.close();
-                }
-            })?;
+            .spawn(move || stop_on_signal(registry, rfd, one_shot))?;
         self._pipe = Some((read, write));
         Ok(())
     }

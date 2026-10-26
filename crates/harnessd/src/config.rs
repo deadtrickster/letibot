@@ -1656,6 +1656,49 @@ pub enum WallBasis<'a> {
     Unmeasured,
 }
 
+/// **What still stops at `mode`, said after the mode's own words** — the always-ask list and layer
+/// A's `Blocked` tier are not the mode's to move, and this sentence must agree with the summary it
+/// follows rather than contradict it.
+///
+/// 2026-10-26: `allow-all (this box, consented)` was described, in the mode's own summary, as
+/// *"write, exec and network all go through without asking, the always-ask list included"* and
+/// then, in the same paragraph, as *"the always-ask list reaches you at every one of them"*. The
+/// other defect in that sentence was the word for a refused tier: *"an blocked"*.
+fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
+    use letibot_tools::mode::{Boundary, Disposition};
+    match mode.boundary {
+        // `allow-all` in a confined VM: the list does not ask, because nothing behind it is the
+        // operator's box.
+        Boundary::Structural => {
+            "The always-ask list does not ask here: the boundary is structural and nothing inside \
+             it reaches this box. A secret leaving the boundary is still refused."
+        }
+        // The same absent list on a box with no boundary at all, and the reason it is absent is a
+        // person's answer rather than a confinement — which is exactly the difference the two
+        // coordinates exist to keep visible.
+        Boundary::OperatorConsented => {
+            "The always-ask list does not ask here either — you consented to that, once, in \
+             advance, for this box — and nothing confines the session. What still stops is a \
+             secret leaving it: that is refused before any mode is consulted."
+        }
+        // `read-only`: there is nothing for the list to ask about, because the tools are ABSENT
+        // rather than refused — so saying it *reaches you at every one of them* would describe
+        // actions this point cannot take.
+        _ if mode.write == Disposition::Absent
+            && mode.exec == Disposition::Absent
+            && mode.network == Disposition::Absent =>
+        {
+            "No write, no command and nothing that leaves the box is seated here, so the \
+             always-ask list has nothing to ask about — and nothing at this mode promotes a \
+             blocked action."
+        }
+        Boundary::Operator => {
+            "The always-ask list still reaches you at every action on it, whatever this mode \
+             admits elsewhere — and nothing at this mode promotes an action the boundary blocks."
+        }
+    }
+}
+
 impl Config {
     /// How much of the window must stay free for a turn to be safe to start.
     ///
@@ -2982,20 +3025,11 @@ impl Config {
         out.push(Disclosure {
             subject: "mode".into(),
             state: String::new(),
-            detail: if self.mode.boundary == letibot_tools::mode::Boundary::Structural {
-                format!(
-                    "{}. The always-ask list does not ask here: the boundary is \
-                     structural and nothing inside it reaches this box. A secret \
-                     leaving the boundary is still refused.",
-                    self.mode.describe()
-                )
-            } else {
-                format!(
-                    "{}. Nothing at this mode reaches an blocked action, and the \
-                     always-ask list reaches you at every one of them.",
-                    self.mode.describe()
-                )
-            },
+            detail: format!(
+                "{}. {}",
+                self.mode.describe(),
+                mode_beyond_the_mode(&self.mode)
+            ),
             active: true,
         });
         // **The preapproved list.** What never asks, by count and by source, and
