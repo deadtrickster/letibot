@@ -75,13 +75,18 @@ impl Rig {
                 home.display()
             ),
         );
-        // **A `setsid` for Darwin**, so a job on the fake remote leads its own process
-        // group exactly as it does on a Linux host — `kill -TERM -<pid>` is only safe when
-        // it does, and `RemoteProcesses::kill` checks that before it signals.
-        write_executable(
-            &bin.join("setsid"),
-            "#!/usr/bin/perl\nuse POSIX ();\nPOSIX::setsid();\nexec { $ARGV[0] } @ARGV;\n",
-        );
+        // **A `setsid` for the boxes that have none** — Linux does, Darwin does not — so a
+        // job on the fake remote leads its own process group exactly as it does on a Linux
+        // host: `kill -TERM -<pid>` is only safe when it does, and `RemoteProcesses::kill`
+        // asks before it signals. Where the box has `setsid`, its own is what runs (the
+        // shim directory is first on the fake remote's PATH, so the shim would win) — hence
+        // this is written only when there is nothing to shim.
+        if !on_path("setsid") {
+            write_executable(
+                &bin.join("setsid"),
+                "#!/usr/bin/env perl\nuse POSIX ();\nPOSIX::setsid();\nexec { $ARGV[0] } @ARGV;\n",
+            );
+        }
 
         let repo = dir.join("the-repo");
         std::fs::create_dir_all(&repo).expect("repo");
@@ -158,6 +163,15 @@ fn write_executable(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, text).expect("writing a fake program");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// Is this program on the box's own `PATH`? Used to decide whether the fake remote needs a
+/// shim for it — a shim that shadowed a real `setsid` would be a weaker thing tested than
+/// the one production runs.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
+        .unwrap_or(false)
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
