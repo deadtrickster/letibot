@@ -67,6 +67,10 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
                     let _ = sessions.open(&id);
                 }
                 letibot_sessionlog::registry::Work::Woken(_) => {}
+                // A session a head or a migration closed (`PROTOCOL_VERSION` 53): the worker's
+                // half is letting the harness go, and this fixture drives verbs rather than
+                // teardown.
+                letibot_sessionlog::registry::Work::Close(_) => {}
                 letibot_sessionlog::registry::Work::Command(id, cmd) => {
                     let _ = sessions.dispatch(&id, &cmd);
                     break;

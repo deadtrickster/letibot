@@ -385,6 +385,12 @@ fn drive_worker(
                 let out = sessions.wake(&id);
                 took.push((id, out));
             }
+            // **A session something closed** (`PROTOCOL_VERSION` 53): the worker's half is
+            // letting the harness go. This driver is about turns, and a close is the daemon's
+            // own teardown — served here so the fixture drains the bell the way the daemon does.
+            WorkOrIdle::Work(Work::Close(id)) => {
+                sessions.close(&id);
+            }
         }
     }
     took

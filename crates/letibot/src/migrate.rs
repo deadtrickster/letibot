@@ -1920,7 +1920,7 @@ mod tests {
     /// **The branch suffix is the id's tail**, and a short id is still itself.
     #[test]
     fn the_short_id_is_the_tail_of_the_session_id() {
-        assert_eq!(short_id("s-1789919514688401228"), "68401228");
+        assert_eq!(short_id("s-1789919514688401228"), "88401228");
         assert_eq!(short_id("s-1"), "s-1");
         assert_eq!(short_id(""), "session");
     }
