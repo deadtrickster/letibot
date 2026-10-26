@@ -119,6 +119,39 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// **The daemon this test spawned, dead whatever happens to the test.**
+///
+/// Every failure in this file is a PANIC, and the path to one of them (the assertion that
+/// the run never reached the state being measured) is reached *before* the daemon is any
+/// use to anybody — so a plain `Child` left it running, on the box's temp space, with its
+/// socket bound, for as long as the operator's session lived. A `Drop` is what makes
+/// *whatever happens* true: the panic unwinds through it.
+///
+/// Killing is all this does, and `gone` still asks `try_wait` through `Deref` — the test
+/// has to be able to see the daemon EXIT BY ITSELF (that is what it measures), so nothing
+/// here may wait for it except `Drop` and [`stop`].
+struct Daemon(Child);
+
+impl std::ops::Deref for Daemon {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Daemon {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn attach(
     socket: &Path,
     session: &str,
@@ -156,21 +189,39 @@ fn a_stop_ends_the_run_that_holds_the_worker() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    if !Path::new("/usr/bin/su").exists() {
-        eprintln!("no /usr/bin/su on this box — nothing to measure");
-        return;
-    }
     let dir = scratch("stop");
     let log = dir.join("harnessd.stderr");
     let socket = dir.join("harnessd.sock");
     let store = dir.join("sessions.db");
     let session = "stop-ends-runs";
-    let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
+    let mut daemon = Daemon(start_daemon(&dir, &log, &socket, &store, session));
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
-    // ---- The run. The operator's own shape: a **root** process blocked on the pipe this
-    // daemon holds, with its whole tree `EACCES` for this uid. It will not end on its own.
-    head.operator_shell(0, "! /usr/bin/su -c true")
+    // ---- The run. The operator's own shape: a process **blocked on the stdin this daemon
+    // holds**, whose own process the daemon **cannot look at**. It will not end on its own.
+    //
+    // **Those are four words on Linux and they are a DIFFERENT PROGRAM on a Mac.**
+    // `! /usr/bin/su -c true` is util-linux's `su`; Darwin ships BSD's, whose usage is
+    // `su [-] [-flm] [login [args]]`, and MEASURED 2026-10-26 it answers
+    // `/usr/bin/su: illegal option -- c` and exits 1 — so on a Mac the run was over before
+    // it began, nothing was ever in flight, no sentence was ever published, and this test
+    // failed with *"the run never reached the state this test is about"*.
+    //
+    // What the state IS does not change between boxes, and neither does the assertion:
+    // *unreadable* is `/proc`'s answer, and Darwin has none — `letibot_tools::exec::ask`
+    // says `Waiting::Unreadable` for every run there on purpose (a thread's run state
+    // says *waiting* without saying on what, and a guess would card every quiet `sleep`).
+    // So on a Mac any run that BLOCKS is the operator's shape, and `cat` reading the pty
+    // the daemon holds until a line is sent is the plainest one.
+    let command = if cfg!(target_os = "macos") {
+        "/bin/cat"
+    } else if Path::new("/usr/bin/su").exists() {
+        "/usr/bin/su -c true"
+    } else {
+        eprintln!("no /usr/bin/su on this box — nothing to measure");
+        return;
+    };
+    head.operator_shell(0, &format!("! {command}"))
         .expect("the line is submitted");
 
     // **The run is in flight when the daemon says it cannot look at it** — that sentence is
