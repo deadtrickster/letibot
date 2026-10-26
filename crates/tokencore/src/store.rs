@@ -397,7 +397,17 @@ pub struct ShapelessAdmit {
 /// *after* the first writer's were in, and the conversation it left behind does not restore.
 /// A row naming the process that holds a session is what lets the second open be REFUSED
 /// instead of half-written.
-pub const SCHEMA_VERSION: i64 = 32;
+///
+/// **33** since a session records **who it is for** — `session.origin`, additive, described at
+/// its migration arm and at [`StoredSession::origin`]. A picker that lists everything a daemon
+/// has ever held draws the operator's own conversations and the harness's own work in one
+/// undifferentiated column, and the harness's work is most of the rows: the operator's words
+/// are *"in session view the automatic sessions must be grouped somehow, so my vs auto.
+/// otherwise im lost in subagents"*. The parent edge already says *subagent* and the id
+/// convention says *review queue*; what no column could say is *a package started this* or
+/// *this is a one-shot's*, and those are the two the daemon knows at creation and nowhere
+/// afterwards.
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -482,6 +492,13 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- NULL = not paused; 0 = until they resume it; any other
                                      -- value = unix ms the pause ends at. See
                                      -- `StoredSession::nags_paused_until`.
+    origin         TEXT,             -- v33; WHO the session is for — `operator`, `package`,
+                                     -- `queue`, `one_shot`. NULL = written before the column
+                                     -- existed, which is read as the operator's own unless the
+                                     -- parent edge or the queue's id convention says otherwise.
+                                     -- Written once, at creation; see
+                                     -- `Store::set_session_origin` and
+                                     -- `letibot_sessionlog::SessionOrigin`.
     lives_on       TEXT,             -- v31; the endpoint holding the LIVE copy of this
                                      -- session, when it is not in this store's own box —
                                      -- `local` or a host from `hosts.toml`. NULL = the copy
@@ -895,6 +912,17 @@ pub struct StoredSession {
     /// session.
     pub parent_session_id: Option<String>,
     pub created_ms: i64,
+    /// **Who this session is for** — the daemon's word for it, written once at creation: the
+    /// operator's own conversation, a package's, the review queue's, or a one-shot's. `None`
+    /// for a row written before the column existed, which is not *any of those* — a reader
+    /// falls back to the facts that were always there (the parent edge, the queue's id
+    /// convention) and calls what is left the operator's, because before v33 that is what
+    /// every row was.
+    ///
+    /// Stored rather than derived because two of the four cannot be derived at all: nothing
+    /// else on a row says a program started it, and nothing says a `--prompt` run did. See
+    /// `letibot_sessionlog::SessionOrigin`, which is the vocabulary, and `SCHEMA_VERSION` 33.
+    pub origin: Option<String>,
     /// The newest transcript for this session, or `None` if it has none at all.
     pub transcript_id: Option<String>,
     /// Rows in the session's current (newest) transcript. Not every transcript's
@@ -2586,6 +2614,27 @@ impl Store {
             // walk a current store backwards, and this arm must be safe to run on one).
             self.conn.execute_batch(writers::WRITERS_SQL)?;
         }
+        if from < 33 {
+            // v33: **who a session is for**, on the session's own row — see
+            // [`StoredSession::origin`]. `NULL` in every existing row, and that is the honest
+            // value: it means "written before anybody could say", and a reader falls back to
+            // the facts the row already carries (the parent edge, the review queue's id
+            // convention) before calling it the operator's.
+            //
+            // `pragma_table_info`-guarded like v6-v8, because a migration is not always run on
+            // a file that has never seen this column: the fixtures build a CURRENT store,
+            // reverse a step by hand and set the version back, so a plain `ALTER` here would
+            // fail with "duplicate column name".
+            let has: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'origin'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN origin TEXT")?;
+            }
+        }
         Ok(())
     }
 
@@ -3276,7 +3325,8 @@ impl Store {
                     s.prefix_fingerprint,
                     s.nags_paused_until,
                     s.lives_on,
-                    s.moved_ms
+                    s.moved_ms,
+                    s.origin
                FROM session s{filter}",
         ))?;
         let mut out: Vec<StoredSession> = stmt
@@ -3329,6 +3379,12 @@ impl Store {
                     // for the reason every index above was: the list is read BY POSITION.
                     lives_on: r.get(22)?,
                     moved_ms: r.get(23)?,
+                    // **Index 24**, the newest column on the row — appended for the reason
+                    // 22 and 23 were, and read as a string because the vocabulary is
+                    // `letibot_sessionlog::SessionOrigin`'s and this crate does not depend on
+                    // it. A value this build does not know reads as `None`, which is the same
+                    // answer as a row written before the column: *nobody has said*.
+                    origin: r.get(24)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -3418,6 +3474,41 @@ impl Store {
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
         }
+        Ok(())
+    }
+
+    /// **Write down who this session is for** — see [`StoredSession::origin`].
+    ///
+    /// # Set once, and the `AND origin IS NULL` is the guarantee
+    ///
+    /// How a session came to exist does not change: a conversation a package started is the
+    /// operator's conversation from the moment it opens, and a picker that re-grouped it the
+    /// first time they typed in it would be the row-renames-itself defect in a new column. So
+    /// a second write is a no-op rather than an overwrite.
+    ///
+    /// # Why it is an UPDATE and not a column on `put_session`
+    ///
+    /// The daemon knows a session's origin when it is CREATED and the row is written when it is
+    /// OPENED — `Work::Open` is the worker's, behind whatever turn it is running — so the fact
+    /// arrives before there is a row to put it on. An UPDATE after the open is the shape that
+    /// needs no second ordering: zero rows affected means *no row yet*, and the caller says the
+    /// same thing again when the worker gets there. A column on the insert would have needed
+    /// every `SessionRecord` in the tree to carry a field that most of them cannot know.
+    ///
+    /// `NotFound` when the id is not a session at all, because a caller that named the wrong
+    /// id should hear it; zero rows on a session that ALREADY has one is not an error.
+    pub fn set_session_origin(&self, id: &str, origin: &str) -> Result<()> {
+        let there: bool = self
+            .conn
+            .prepare("SELECT 1 FROM session WHERE id = ?1")
+            .and_then(|mut st| st.exists(params![id]))?;
+        if !there {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        self.exec(
+            "UPDATE session SET origin = ?2 WHERE id = ?1 AND origin IS NULL",
+            params![id, origin],
+        )?;
         Ok(())
     }
 
@@ -4448,6 +4539,96 @@ mod corpus_tests {
             .find(|r| r.request_id == "adj-r12-3")
             .unwrap();
         assert_eq!(row.oracle_reading, None);
+    }
+
+    /// **Who a session is for is written once, and a row from before the column says
+    /// `NULL`** — which is not "the operator's": it is *nobody has said*, and the reader is
+    /// the one that falls back to the marks the row does carry (the parent edge, the review
+    /// queue's id convention). See `letibot_sessionlog::origin`.
+    #[test]
+    fn a_sessions_origin_is_written_once_and_read_back() {
+        let s = store();
+        let id = a_session(&s);
+        let row = |s: &Store| s.session(&id).unwrap().expect("the row");
+        assert_eq!(row(&s).origin, None, "a row nobody has classified yet");
+
+        s.set_session_origin(&id, "package").expect("the write");
+        assert_eq!(row(&s).origin.as_deref(), Some("package"));
+        assert_eq!(
+            s.list_sessions().unwrap()[0].origin.as_deref(),
+            Some("package"),
+            "and the list a picker is drawn from carries it"
+        );
+
+        // **Set once.** How a session came to exist does not change, and a second write
+        // overwriting the first would be a picker that re-groups a conversation under the person
+        // using it — the row-renames-itself defect in a new column.
+        s.set_session_origin(&id, "one_shot").expect("a no-op");
+        assert_eq!(row(&s).origin.as_deref(), Some("package"));
+
+        // An id this store does not hold is refused by name rather than silently written.
+        assert!(s.set_session_origin("s-nobody", "operator").is_err());
+    }
+
+    /// **A store from the version before gains the column**, and its rows read `NULL` — the
+    /// migration's half of the test above, and the reason the arm is `pragma_table_info`-guarded
+    /// like v6–v8: the fixtures walk a CURRENT store backwards, so the `ALTER` must be safe on a
+    /// file that already has the column.
+    #[test]
+    fn an_older_store_gains_the_origin_column_and_its_rows_say_nobody_has_said() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-store-v32-{}-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        let id;
+        {
+            let s = Store::open(&path).unwrap();
+            id = a_session(&s);
+        }
+        {
+            // Back to a store that predates the column, the way one on disk from an older
+            // daemon is.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN origin", [])
+                .unwrap();
+            c.execute("UPDATE schema_version SET version = 32", [])
+                .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+
+        let row = s.session(&id).unwrap().expect("the old row survived");
+        assert_eq!(
+            row.origin, None,
+            "a row written before the column is not the operator's by fiat — it is unclassified"
+        );
+        // And it can be classified now, in the same store.
+        s.set_session_origin(&id, "queue").expect("the write");
+        assert_eq!(
+            s.session(&id).unwrap().unwrap().origin.as_deref(),
+            Some("queue")
+        );
     }
 
     /// **A store written before R12 gains the column and says so.**

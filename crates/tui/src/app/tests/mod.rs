@@ -698,6 +698,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
         nags_paused: None,
         waits_on_operator: 0,
         slug: String::new(),
+        origin: letibot_sessionlog::SessionOrigin::Operator,
     }
 }
 
@@ -1417,6 +1418,7 @@ mod detected;
 mod editor;
 mod feedback;
 mod ghlinks;
+mod groups;
 mod hits;
 mod jobcard;
 mod jobs;

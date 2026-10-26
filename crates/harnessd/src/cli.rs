@@ -463,7 +463,10 @@ fn usage() -> String {
      \x20                           and names a model this box cannot reach\n\
      \n\
      store queries (no socket, no model):\n\
-     \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
+     \x20 --list-sessions [--tsv]   what is on disk, GROUPED: mine first, then the\n\
+     \x20                           harness's own work (subagents, the review queue,\n\
+     \x20                           packages, one-shots) with a count each. `--tsv` is\n\
+     \x20                           the plain five-column data form, unchanged\n\
      \x20 --latest-session          the id of the newest one, scoped by --workspace\n\
      \x20 --rename ID TITLE         name a session, or clear it with an empty title\n\
      \x20 --delete ID               remove a session that has no rows"
@@ -2483,21 +2486,35 @@ fn run_query(
             }
         }
         Query::List => {
-            // **The same predicate the resolution reads**, and that is the point of it: the
-            // listing and `--latest-session` are two questions about one store, and when they
-            // disagreed the operator was handed a reviewer by `--continue` that this list would
-            // never have offered him. Subagents are children of a session, not sessions a picker
-            // lists — they live in the subagent tree, not the flat list — and the queue's
-            // reviewer is not a conversation wherever it sits.
-            let rows: Vec<_> = scoped(&store, scope)?
-                .into_iter()
-                .filter(is_conversation)
-                .collect();
+            // **The listing is GROUPED, and it lists everything** — the operator, 2026-10-26:
+            // *"in session view the automatic sessions must be grouped somehow, so my vs auto.
+            // otherwise im lost in subagents"*, said about the head's picker and true of this
+            // listing for the same reason: one daemon's store holds their conversations and a
+            // pile of the harness's own work, and a flat list ordered by recency puts a reviewer
+            // above the thing they are doing.
+            //
+            // **What changed and what deliberately did not.** `--continue`'s resolution still
+            // reads [`is_conversation`] and nothing here touches it — a reviewer must never be
+            // what `--continue` reopens. What changes is the LISTING: it used to drop every row
+            // that is not a conversation, which made *the queue's session exists* a fact a person
+            // could not see from this command even though `--session ID` would open it. A group
+            // line with a count says the same thing and says it once.
+            //
+            // **The groups come from `letibot_sessionlog::origin`, the same rule the head's
+            // picker draws** — one rule, two renderers, so the two cannot tell a person that a
+            // session is in different places.
+            let all = scoped(&store, scope)?;
+            let groups = grouped(&all);
             if tsv {
-                // id, title, workspace, rows, last-activity-ms. Tab-separated and
-                // unpadded: this is what `~/bin/letibot` reads, and a column layout
-                // that a terminal width can change is not a data format.
-                for s in &rows {
+                // **TSV is a data format and it does not change.** Five fields,
+                // tab-separated, one conversation per line: that is what a script cuts, and a
+                // sixth column or a group header line in the middle would break every reader
+                // for a fact a reader can compute. Whoever wants the groups reads the human
+                // listing.
+                //
+                // The filter is the old one on purpose: this is the format of *the
+                // conversations under this scope*, and it is what it always was.
+                for s in all.iter().filter(|s| is_conversation(s)) {
                     println!(
                         "{}\t{}\t{}\t{}\t{}",
                         s.id,
@@ -2509,7 +2526,7 @@ fn run_query(
                 }
                 return Ok(0);
             }
-            if rows.is_empty() {
+            if all.is_empty() {
                 println!(
                     "no sessions{}",
                     scope
@@ -2522,14 +2539,12 @@ fn run_query(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            let wid = rows.iter().map(|s| s.id.len()).max().unwrap_or(8);
-            println!(
-                "{:<wid$}  {:>5}  {:>7}  TITLE / WORKSPACE",
-                "ID", "ROWS", "AGE"
-            );
-            for s in &rows {
+            let wid = all.iter().map(|s| s.id.len()).max().unwrap_or(8);
+            // **The one row per session the listing draws**, as a closure so the two groups that
+            // are not plain rows (a child under its parent, everything else) share it.
+            let row = |s: &letibot_tokencore::store::StoredSession, indent: &str| {
                 println!(
-                    "{:<wid$}  {:>5}  {:>7}  {}{}",
+                    "{:<wid$}  {:>5}  {:>7}  {indent}{}{}",
                     s.id,
                     s.items,
                     age(now - s.last_activity_ms),
@@ -2544,10 +2559,64 @@ fn run_query(
                         None => String::new(),
                     },
                 );
-                // The same prefix width as the row above it — `wid + 2 + 5 + 2 + 7 + 2`
-                // — so the workspace lines up under the title rather than three
-                // columns past it.
-                println!("{:<wid$}  {:>16}{}", "", "", s.workspace_root);
+                // The same prefix width as the row above it, so the workspace lines up under the
+                // title rather than three columns past it.
+                println!("{:<wid$}  {:>16}  {indent}{}", "", "", s.workspace_root);
+            };
+            // **The same rows `grouped()` built**, for the one question the printing asks that the
+            // grouping does not: is this child's parent on this same group's list? (The indent.)
+            // Built from the same fields, because a second opinion about what a row is would be a
+            // second grouping.
+            let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all
+                .iter()
+                .map(|s| letibot_sessionlog::GroupRow {
+                    id: &s.id,
+                    parent: s.parent_session_id.as_deref(),
+                    origin: s
+                        .origin
+                        .as_deref()
+                        .and_then(letibot_sessionlog::SessionOrigin::parse)
+                        .unwrap_or_default(),
+                    role: s.role.as_deref(),
+                    title: s.title.as_deref().unwrap_or(""),
+                })
+                .collect();
+            println!(
+                "{:<wid$}  {:>5}  {:>7}  TITLE / WORKSPACE",
+                "ID", "ROWS", "AGE"
+            );
+            for (group, members) in &groups {
+                // **No empty group line**, for the reason the picker draws none: a header saying
+                // `(0)` teaches a reader to skip headers.
+                if members.is_empty() {
+                    continue;
+                }
+                // **A group's line, and the count that is the whole reason for it.** It is a
+                // header rather than a column: a reader scanning for their own conversation
+                // stops at `mine`, and the four lines under it answer *what else is here* in four
+                // numbers instead of forty rows.
+                println!();
+                println!(
+                    "{:<wid$}  {} ({}) — {}",
+                    "",
+                    group.title(),
+                    members.len(),
+                    group.legend()
+                );
+                for s in members {
+                    // Inside a group a child is indented under a parent that is on the same
+                    // list, which is the same nesting the picker draws.
+                    let indent = if s.parent_session_id.as_deref().is_some_and(|p| {
+                        all.iter().any(|o| {
+                            o.id == p && letibot_sessionlog::group_of(&rows, &o.id) == *group
+                        })
+                    }) {
+                        "  "
+                    } else {
+                        ""
+                    };
+                    row(s, indent);
+                }
             }
             Ok(0)
         }
@@ -2618,6 +2687,51 @@ fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
             .title
             .as_deref()
             .is_some_and(|t| t.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX))
+}
+
+/// **The stored sessions, in the groups a person reads them in** — `mine` first, then one entry
+/// per automatic kind, each with its members in the store's own order (newest activity first).
+///
+/// Separate from the printing so the decision is assertable without a terminal, and because two
+/// things read it: the human listing and the `--tsv` header line the launcher prints. The rule
+/// itself is `letibot_sessionlog::group_of`'s — the same one the head's picker draws — so this
+/// function is a grouping and not a second opinion about what a session is.
+///
+/// Every group is returned, empty ones included: `SessionGroup::ALL`'s order is the order a
+/// person reads, and a caller that wants to skip an empty group (`(0)` headers teach a reader to
+/// skip headers) does so where it prints.
+fn grouped(
+    all: &[letibot_tokencore::store::StoredSession],
+) -> Vec<(
+    letibot_sessionlog::SessionGroup,
+    Vec<&letibot_tokencore::store::StoredSession>,
+)> {
+    let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all
+        .iter()
+        .map(|s| letibot_sessionlog::GroupRow {
+            id: &s.id,
+            parent: s.parent_session_id.as_deref(),
+            origin: s
+                .origin
+                .as_deref()
+                .and_then(letibot_sessionlog::SessionOrigin::parse)
+                .unwrap_or_default(),
+            // **The store's row has both marks**, so a reviewer parented on the operator's own
+            // conversation — the layout before the queue had a session of its own — is the queue's
+            // work and not one of their subagents.
+            role: s.role.as_deref(),
+            title: s.title.as_deref().unwrap_or(""),
+        })
+        .collect();
+    let mine =
+        |s: &letibot_tokencore::store::StoredSession| letibot_sessionlog::group_of(&rows, &s.id);
+    let mut out = Vec::new();
+    for group in letibot_sessionlog::SessionGroup::ALL {
+        let members: Vec<&letibot_tokencore::store::StoredSession> =
+            all.iter().filter(|s| mine(s) == group).collect();
+        out.push((group, members));
+    }
+    out
 }
 
 /// What `--latest-session` resolved to, and what it walked past on the way.
@@ -3369,6 +3483,75 @@ mod tests {
             .expect("scoping")
             .is_empty()
         );
+    }
+
+    /// **The listing groups the store the way the head's picker does** — mine first, then one
+    /// entry per automatic kind, each carrying its own members.
+    ///
+    /// The operator's ask is one sentence and it is about both places a session is listed:
+    /// *"in session view the automatic sessions must be grouped somehow, so my vs auto. otherwise
+    /// im lost in subagents."* The RULE is `letibot_sessionlog::group_of`'s and is tested there;
+    /// what is asserted here is that `--list-sessions` feeds it the store's own facts — the parent
+    /// edge, the queue's id, and the `origin` column a daemon writes — and not a second opinion.
+    #[test]
+    fn the_listing_puts_mine_first_and_the_harnesss_own_work_in_its_groups() {
+        let (store, _d) = store_with(&[("s-mine", "/ws"), ("s-sub", "/ws")]);
+        // A grandchild of the operator's conversation, the queue and one of its reviewers, a
+        // package's conversation, and a one-shot.
+        store
+            .set_session_origin("s-mine", "operator")
+            .expect("the origin");
+        session_row(&store, "s-gk-sub", "/ws", None, None, Some("s-sub"));
+        store
+            .set_session_origin("s-sub", "operator")
+            .expect("the origin");
+        let queue = "s-gatekeeper-0123456789ab";
+        session_row(&store, queue, "/ws", None, None, None);
+        session_row(&store, "s-gk", "/ws", None, None, Some(queue));
+        store
+            .set_session_origin(queue, "queue")
+            .expect("the origin");
+        session_row(&store, "s-pkg", "/ws", None, None, None);
+        store
+            .set_session_origin("s-pkg", "package")
+            .expect("the origin");
+        session_row(&store, "s-shot", "/ws", None, None, None);
+        store
+            .set_session_origin("s-shot", "one_shot")
+            .expect("the origin");
+
+        let rows = store.list_sessions().expect("listing");
+        let grouped = grouped(&rows);
+        let ids = |g: letibot_sessionlog::SessionGroup| -> Vec<String> {
+            let mut v: Vec<String> = grouped
+                .iter()
+                .find(|(k, _)| *k == g)
+                .map(|(_, m)| m.iter().map(|s| s.id.clone()).collect())
+                .unwrap_or_default();
+            // The store's order is recency's and this test is about membership, so the two are
+            // sorted apart on purpose.
+            v.sort();
+            v
+        };
+        assert_eq!(
+            ids(letibot_sessionlog::SessionGroup::Mine),
+            ["s-mine", "s-sub"]
+        );
+        assert_eq!(
+            ids(letibot_sessionlog::SessionGroup::Subagents),
+            ["s-gk-sub"],
+            "a task child is a subagent however deep"
+        );
+        assert_eq!(
+            ids(letibot_sessionlog::SessionGroup::ReviewQueue),
+            ["s-gatekeeper-0123456789ab", "s-gk"],
+            "the queue's session and its reviewers are one group"
+        );
+        assert_eq!(ids(letibot_sessionlog::SessionGroup::Packages), ["s-pkg"]);
+        assert_eq!(ids(letibot_sessionlog::SessionGroup::OneShot), ["s-shot"]);
+        // **Mine is first**, which is the whole of *mine vs auto*: the order is
+        // `SessionGroup::ALL`'s and the printer follows it.
+        assert_eq!(grouped[0].0, letibot_sessionlog::SessionGroup::Mine);
     }
 
     /// **The operator's report, as a test.** Ten reviewers spawned into one workspace by the

@@ -309,7 +309,10 @@ impl App {
                 self.picker_sel = self
                     .session_rows()
                     .iter()
-                    .position(|r| self.sessions[r.idx].session_id == self.session_id)
+                    .position(|r| {
+                        r.idx
+                            .is_some_and(|i| self.sessions[i].session_id == self.session_id)
+                    })
                     .unwrap_or(0);
                 Some(Action::ListSessions)
             }

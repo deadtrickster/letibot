@@ -1842,18 +1842,25 @@ fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
     // And nothing was expanded to make that true — the rule is the view's, not the
     // operator's act.
     assert!(a.expanded.is_empty());
-    // A conversation at the top of the tree keeps the ordinary rule: not expanded is `▸`.
+    // **A conversation whose children are in ANOTHER group carries no fold at all.** Since
+    // 2026-10-26 the whole-daemon list is grouped (`session_rows`), so a `mine` conversation's
+    // subagents are under `subagents (N)` and not under it — and a `+`/`-` glyph on its row would
+    // promise rows this list does not hold. What the operator gets instead is the group's count.
     let mut a = app();
     a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
     a.key(Key::CtrlS);
     let screen = a.screen(100, 30).join("\n");
     let parent = screen
         .lines()
-        .find(|l| l.contains("parent") && (l.contains("+ ") || l.contains("- ")))
+        .find(|l| l.contains("parent"))
         .unwrap_or_else(|| panic!("the parent's row is on the list:\n{screen}"));
     assert!(
-        parent.contains('+'),
-        "a collapsed conversation is not drawn open — its fold is `+`, not `-`: {parent}"
+        !parent.contains("+ ") && !parent.contains("- "),
+        "a conversation whose children are in another group draws no fold over them: {parent}"
+    );
+    assert!(
+        screen.contains("subagents ("),
+        "and the group line is what says they exist:\n{screen}"
     );
     assert!(!screen.contains("audit the store"), "{screen}");
 }

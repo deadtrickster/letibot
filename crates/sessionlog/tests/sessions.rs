@@ -365,6 +365,168 @@ fn a_head_can_make_a_session_and_the_daemon_mints_the_id() {
 }
 
 #[test]
+fn one_head_resuming_another_session_leaves_the_head_that_was_there() {
+    // **The operator's report**, 2026-10-26: two conversations on one daemon (A: the habr
+    // article in stroppy-io, B: a rust rewrite), a head attached to A, and `leticode
+    // --session B` from a second terminal — after which, they said, *"the habr head switched
+    // to the rust session wtf"*.
+    //
+    // The second invocation is exactly what this test drives, frame for frame: a head that
+    // attaches to whatever the daemon calls current (`""`), asks for a session it is not in
+    // (`ResumeSession`), and goes there when the daemon names it (`Switch`). The seat is the
+    // CONNECTION's on this side of the socket — `seat_in` is per connection, and a `Switch`
+    // answer goes down one writer — so what is asserted here is that the daemon cannot move a
+    // head that did not ask, however the other connection's frames arrive.
+    //
+    // **The default session DOES move**, and that is why this test is worth having rather than
+    // obvious: `Switch` calls `registry.set_default`, which is what a bare `Attach` lands on.
+    // A head that re-attached with an empty id would be seated wherever the last switch left
+    // the default — that is the defect `crates/tui`'s `Link` had, and the reason it now names
+    // the session it is in (see `crates/tui/tests/reconnect.rs`).
+    let (reg, server) = start("twoheads");
+    let a = reg.get("a").unwrap();
+    let b = reg.get("b").unwrap();
+    a.publish(turn_started("t-a"));
+    a.publish(delta("t-a", "this is A"));
+
+    // The head the operator is looking at, in A.
+    let (mut first, hello, reader) =
+        HeadClient::attach(server.path(), "a", 0, "tui", "dead", Caps::default()).unwrap();
+    let ServerFrame::Hello { session_id, .. } = hello else {
+        panic!("the first frame must be Hello")
+    };
+    assert_eq!(session_id, "a");
+    let (tx1, rx1) = std::sync::mpsc::channel();
+    let pumping1 = std::thread::spawn(move || pump(reader, tx1));
+
+    // The second invocation: a bare attach (the launcher's head sends no session id), the
+    // resume, and the switch to what the daemon named.
+    let (mut second, hello2, reader2) =
+        HeadClient::attach(server.path(), "", 0, "tui", "dead", Caps::default()).unwrap();
+    let ServerFrame::Hello { session_id, .. } = hello2 else {
+        panic!("the first frame must be Hello")
+    };
+    assert_eq!(
+        session_id, "a",
+        "a bare attach lands on the daemon's current session"
+    );
+    let (tx2, rx2) = std::sync::mpsc::channel();
+    let pumping2 = std::thread::spawn(move || pump(reader2, tx2));
+
+    second.resume_session("b").unwrap();
+    let frames = until(&rx2, |f| matches!(f, ServerFrame::Sessions { .. }));
+    let ServerFrame::Sessions {
+        created, current, ..
+    } = frames.last().unwrap().clone()
+    else {
+        unreachable!()
+    };
+    assert_eq!(created.as_deref(), Some("b"));
+    assert_eq!(
+        current, "a",
+        "the resume alone does not move the head that asked"
+    );
+    second.switch("b", 0).unwrap();
+    until(&rx2, |f| matches!(f, ServerFrame::Hello { .. }));
+
+    // **What the second head did to the daemon**: the default moved to B, and B has one head.
+    assert_eq!(
+        reg.default_id(),
+        "b",
+        "the last switch is what a bare attach lands on"
+    );
+    assert_eq!(a.attached_heads(), 1, "A kept the head it had");
+    assert_eq!(b.attached_heads(), 1, "and B has the one that asked for it");
+
+    // **And the first head is where it was**: no `Hello` was written down its socket, so it was
+    // not reseated. (It does hear the second head's arrival in A — a `HeadAttached` on A's own
+    // log, which is the log it is watching — and that is a different fact from being moved.)
+    a.publish(delta("t-a", " — and still mine"));
+    let frames = until(
+        &rx1,
+        |f| matches!(f, ServerFrame::Event(e) if matches!(&e.event, SessionEvent::Delta { text, .. } if text.ends_with("still mine"))),
+    );
+    for f in &frames {
+        if let ServerFrame::Event(e) = f {
+            assert_eq!(e.session_id, "a", "an envelope from the wrong session");
+        }
+        assert!(
+            !matches!(f, ServerFrame::Hello { .. }),
+            "a second Hello is a head being reseated"
+        );
+    }
+
+    let _ = first.detach();
+    let _ = second.detach();
+    server.shutdown();
+    let _ = pumping1.join();
+    let _ = pumping2.join();
+}
+
+#[test]
+fn a_session_a_head_made_is_recorded_as_the_operator_s_or_a_package_s_by_who_asked() {
+    // **The one fact a session's row cannot otherwise say**: a conversation a person's terminal
+    // opened and one a package opened are the same shape of row, and the picker groups them apart
+    // by this (`letibot_sessionlog::origin`). The two facts that decide it are already on the
+    // connection — the `kind` and `identity` its `ATTACH` carried — so the daemon records them
+    // and no frame had to grow a field for it.
+    let (reg, server) = start("origins");
+
+    // A package's head.
+    let (mut mcp, _hello, reader) = HeadClient::attach(
+        server.path(),
+        "a",
+        0,
+        "remote",
+        "letibot-mcp",
+        Caps::default(),
+    )
+    .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pumping = std::thread::spawn(move || pump(reader, tx));
+    mcp.new_session("a landing page", "/w").unwrap();
+    let frames = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
+    let ServerFrame::Sessions { created, .. } = frames.last().unwrap().clone() else {
+        unreachable!()
+    };
+    let package = created.expect("the id it minted");
+    assert_eq!(
+        reg.origin_of(&package),
+        letibot_sessionlog::SessionOrigin::Package,
+        "a session `letim` started is a package's, and its row is what a picker tomorrow reads"
+    );
+    let row = reg
+        .list()
+        .into_iter()
+        .find(|b| b.session_id == package)
+        .expect("the row in the list");
+    assert_eq!(row.origin, letibot_sessionlog::SessionOrigin::Package);
+
+    // The operator's own, from the same daemon a moment later.
+    let (mut tui, _hello, reader) =
+        HeadClient::attach(server.path(), "a", 0, "tui", "dead", Caps::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pumping2 = std::thread::spawn(move || pump(reader, tx));
+    tui.new_session("a question", "/w").unwrap();
+    let frames = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
+    let ServerFrame::Sessions { created, .. } = frames.last().unwrap().clone() else {
+        unreachable!()
+    };
+    let mine = created.expect("the id it minted");
+    assert_eq!(
+        reg.origin_of(&mine),
+        letibot_sessionlog::SessionOrigin::Operator,
+        "and a terminal's is the operator's — the default, and what every row was before this"
+    );
+
+    let _ = mcp.detach();
+    let _ = tui.detach();
+    server.shutdown();
+    let _ = pumping.join();
+    let _ = pumping2.join();
+}
+
+#[test]
 fn switching_into_a_session_whose_turn_is_running_loses_no_byte_and_repeats_none() {
     // §13.2b's mid-turn attach, now per session and reached by a switch rather than
     // by a connect. The snapshot carries the accumulated text **once**, and the very

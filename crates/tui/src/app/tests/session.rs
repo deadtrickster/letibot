@@ -219,23 +219,25 @@ fn a_bare_term_line_after_a_detach_attaches_back_to_the_same_run() {
     );
 }
 
-/// **A sub-session is listed under the conversation that spawned it, and it switches like any
-/// other** — the operator's correction of 2026-10-03, and the half of it that is letibot's.
+/// **A sub-session is listed, reachable and switchable — under the `subagents` group since
+/// 2026-10-26.**
 ///
 /// *"yes subagents are not even scratch session they are session, just sub sessions"*, and
 /// *"why readonly? subagent session is more like you driving others via tmux"*. Two sites used to
 /// drop every row with a parent — `Hello` and `Sessions` — so a session a head can post to, and
 /// get an answer from, was thrown away on the way in. What that filter was protecting against was
-/// noise, and the answer to noise is nesting rather than silence.
+/// noise, and the answer to noise is a fold with a count on it (the operator, later: *"otherwise
+/// im lost in subagents"*).
 ///
 /// Four properties, and the third is the one a two-enumerations regression would break:
 ///
 /// * **Kept**: both rows are in `sessions` after a `Hello`.
-/// * **Collapsed by default**: one row drawn, so this screen looks exactly as it did before
-///   sub-sessions were listed at all.
-/// * **The listing and the keys agree**: the child is indented under its parent, and the cursor
-///   that reaches it by `↓` is the row `Enter` switches to — both read from [`App::session_rows`].
-/// * **`←` folds it back**, on whichever of the two rows the cursor is on.
+/// * **One line by default**: `mine (1)` and the conversation, then `subagents (1)` folded — a
+///   daemon with thirty children costs one row here.
+/// * **The listing and the keys agree**: opening the group with `→` on its line puts the child on
+///   the screen *and* under the cursor's enumeration, so `enter` switches to the row that was
+///   drawn — both read from [`App::session_rows`].
+/// * **`←` folds the group back**, on its line.
 #[test]
 fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     let mut child = brief("s-child", "the child", false);
@@ -254,17 +256,35 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     );
     a.push_surface(Surface::Picker);
 
-    // **Collapsed by default**, which is the whole reason the default is not noisy.
-    assert_eq!(a.session_rows().len(), 1, "the child is shown unexpanded");
+    // **One line per group and the child folded away**, which is the whole reason the default is
+    // not noisy: `mine (1)` with the conversation under it, then `subagents (1)` on its own.
+    let folded: Vec<String> = a
+        .session_rows()
+        .iter()
+        .map(|r| match r.idx {
+            Some(i) => a.sessions[i].title.clone(),
+            None => format!("[{}]", r.group.title()),
+        })
+        .collect();
+    assert_eq!(folded, vec!["[mine]", "root", "[subagents]"], "{folded:?}");
     let closed = a.screen(100, 30).join("\n");
     assert!(
         !closed.contains("the child"),
-        "a collapsed child was drawn anyway:\n{closed}"
+        "a folded group's child was drawn anyway:\n{closed}"
+    );
+    assert!(
+        closed.contains("subagents (1)"),
+        "the group line carries its count, which is what replaces the rows:\n{closed}"
     );
 
-    // **The fold, on the row the cursor is on** — it starts on the session this head is in.
+    // **The fold, on the group's line** — the cursor starts on the session this head is in, so
+    // set it on the group and open it. Expanding is a fold, not a daemon action.
+    a.picker_sel = a
+        .session_rows()
+        .iter()
+        .position(|r| r.idx.is_none() && r.group == letibot_sessionlog::SessionGroup::Subagents)
+        .expect("the subagents line");
     assert_eq!(a.key(Key::Right), None, "expanding is not a daemon action");
-    assert_eq!(a.session_rows().len(), 2, "expanding shows the child");
     let open = a.screen(100, 30).join("\n");
     assert!(
         open.contains("the child"),
@@ -283,7 +303,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     };
     assert!(
         mark_at("the child") > mark_at("root"),
-        "the child is not indented under its parent:\n{picked}"
+        "the child is not indented under its group's tree:\n{picked}"
     );
     assert_eq!(
         a.key(Key::Enter),
@@ -291,10 +311,15 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         "Enter on a sub-session must be an ordinary attach"
     );
 
-    // **`←` folds it back** — and a child row closes its PARENT, so the key means *back up the
-    // tree* on the row you just arrived at rather than nothing at all.
+    // **`←` on the child row closes the TREE EDGE it sits on** — the group stays open, and the
+    // child's own count is the group line's numbers, which is the half a fold must not lose.
+    assert_eq!(a.session_rows().len(), 4, "the group and its tree are open");
     a.key(Key::Left);
-    assert_eq!(a.session_rows().len(), 1, "left did not fold the tree");
+    assert_eq!(
+        a.session_rows().len(),
+        3,
+        "left did not fold the child back into its parent inside the group"
+    );
 }
 
 /// **The version the daemon is TOLD to be is checked at the handshake, and a skew is

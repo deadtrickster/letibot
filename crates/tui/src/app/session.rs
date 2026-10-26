@@ -316,13 +316,35 @@ impl App {
     ///
     /// # The shape
     ///
-    /// A conversation is depth 0 and keeps the daemon's own order. A sub-session sits directly
-    /// under the session that spawned it, **when that session is expanded** — `parent_session_id`
-    /// is already on every row, so nothing had to be added to the wire for this.
+    /// **Two questions, two lists.** A head standing in a CONVERSATION draws the whole daemon,
+    /// in groups (§ below); a head standing in a subagent draws its family (the last section).
     ///
-    /// **The chain down to the session you are IN is always shown**, whatever the collapse state:
-    /// a picker that hides where you are is a picker that cannot answer *where am I*, which is the
-    /// one question the header above it exists to answer.
+    /// # The whole daemon, in groups
+    ///
+    /// The operator, 2026-10-26: *"in session view the automatic sessions must be grouped
+    /// somehow, so my vs auto. otherwise im lost in subagents."* A daemon holds one conversation
+    /// of theirs and thirty rows of work it did for that conversation, and one list ordered by
+    /// *when something last happened* put a reviewer above the thing they were doing.
+    ///
+    /// So the list is **`mine` first, then one line per automatic kind** — `subagents (14)`,
+    /// `review queue (3)`, `packages (6)`, `one-shots (2)` — each folded until it is opened, and
+    /// each row drawn under exactly one of them. [`SessionGroup`] and
+    /// `letibot_sessionlog::group_of` are the rule; this function is where it becomes rows.
+    ///
+    /// **`mine` is never folded**: the operator's own conversations are what the list is for.
+    /// An automatic group opens itself when this head is standing in one of its rows, because a
+    /// picker that hides where you are cannot answer *where am I*.
+    ///
+    /// **A group with no rows draws no line.** A list whose every fold says `(0)` teaches a
+    /// reader to skip folds, which is the opposite of what the counts are for.
+    ///
+    /// # Inside a group the tree still nests
+    ///
+    /// A child sits under the session that spawned it **when that session is in the same group
+    /// and is expanded** — `parent_session_id` is already on every row, so nothing had to be
+    /// added to the wire for this. A child whose parent is in ANOTHER group (a `task` child of
+    /// the operator's own conversation) is a root of its group's tree, because its parent is not
+    /// on that list — and the count on the group's line is what accounts for it.
     ///
     /// # What the filter this replaces was protecting against
     ///
@@ -359,22 +381,152 @@ impl App {
             cur = p;
         }
         let mut out: Vec<SessionRow> = Vec::new();
-        // **This head is in a subagent**: the parent and its children, and nothing else.
+        // **This head is in a subagent**: the parent and its children, and nothing else. The
+        // family view stays ungrouped on purpose — it is already a list of two or three rows
+        // around the one the operator is standing in, and folds over it would be a second way to
+        // hide the answer to *where am I* (see this function's docstring).
         if let Some(parent) = self.parent_session() {
             if let Some(i) = self.sessions.iter().position(|s| s.session_id == parent) {
-                out.push(SessionRow { idx: i, depth: 0 });
-                self.push_children(&mut out, &parent, 1, &path, self.family_open(&parent, 0));
+                out.push(SessionRow {
+                    idx: Some(i),
+                    depth: 0,
+                    group: SessionGroup::Mine,
+                });
+                self.push_children(
+                    &mut out,
+                    &parent,
+                    1,
+                    &path,
+                    self.family_open(&parent, 0),
+                    InGroup {
+                        group: None,
+                        of: &[],
+                    },
+                );
             }
             return out;
         }
-        for (i, s) in self.sessions.iter().enumerate() {
-            if s.parent_session_id.is_some() {
+        // **The whole daemon, in groups** — see [`crate::app::session_rows`]'s docstring for the
+        // rule and `letibot_sessionlog::origin` for what each group is.
+        let of = self.session_groups();
+        // **A group line exists to SEPARATE, so one group draws none.** A daemon whose every
+        // session is the operator's own — a fresh folder, which is most of them — would otherwise
+        // open on a `mine` header over the only rows there are: chrome with nothing to tell apart,
+        // and one keystroke of scrolling bought with nothing.
+        let kinds = SessionGroup::ALL.iter().filter(|g| of.contains(g)).count();
+        for group in SessionGroup::ALL {
+            let members: Vec<usize> = (0..self.sessions.len())
+                .filter(|&i| of[i] == group)
+                .collect();
+            // **No empty fold.** A group the daemon has nothing for is a line saying zero, and a
+            // list whose every fold says `(0)` is a list that teaches a reader to skip them.
+            if members.is_empty() {
                 continue;
             }
-            out.push(SessionRow { idx: i, depth: 0 });
-            self.push_children(&mut out, &s.session_id, 1, &path, false);
+            // **With no header there is no fold to open**, so the one group's rows are simply
+            // the list — a lone closed group would draw nothing at all.
+            let open = kinds == 1 || self.group_open(group, &of);
+            if kinds > 1 {
+                out.push(SessionRow {
+                    idx: None,
+                    depth: 0,
+                    group,
+                });
+            }
+            if !open {
+                continue;
+            }
+            // With no header the rows are the whole list, so they sit at depth 0.
+            let depth = usize::from(kinds > 1);
+            for &i in &members {
+                // **A session is drawn ONCE**, under the group it is in. Inside a group its own
+                // tree still nests — a child of a child sits under its parent — but a child whose
+                // parent is in ANOTHER group (a `task` child of the operator's conversation) is a
+                // root of this group's tree, because its parent is not on this list.
+                let under = self.sessions[i]
+                    .parent_session_id
+                    .as_deref()
+                    .and_then(|p| self.sessions.iter().position(|s| s.session_id == p))
+                    .filter(|&p| of[p] == group);
+                if under.is_some() {
+                    continue;
+                }
+                out.push(SessionRow {
+                    idx: Some(i),
+                    depth,
+                    group,
+                });
+                self.push_children(
+                    &mut out,
+                    &self.sessions[i].session_id,
+                    depth + 1,
+                    &path,
+                    false,
+                    InGroup {
+                        group: Some(group),
+                        of: &of,
+                    },
+                );
+            }
         }
         out
+    }
+
+    /// **Which group each session in the daemon's list is in** — one answer per draw, from the
+    /// one rule (`letibot_sessionlog::group_of`), so the folds, the counts, the rows and the keys
+    /// cannot disagree about a session.
+    ///
+    /// A `Vec` parallel to `self.sessions` rather than a map: every reader indexes the other one
+    /// anyway, and a map keyed by id would be a second way to spell *which session is this row*.
+    pub(crate) fn session_groups(&self) -> Vec<SessionGroup> {
+        let rows: Vec<GroupRow<'_>> = self
+            .sessions
+            .iter()
+            .map(|s| GroupRow {
+                id: &s.session_id,
+                parent: s.parent_session_id.as_deref(),
+                origin: s.origin,
+                // **A brief carries no seat**, so a reviewer is known here by the brief its title
+                // was cut from — the same gap `App::fold_subagents` fills the same way.
+                role: None,
+                title: &s.title,
+            })
+            .collect();
+        self.sessions
+            .iter()
+            .map(|s| letibot_sessionlog::group_of(&rows, &s.session_id))
+            .collect()
+    }
+
+    /// **Whether a group's rows are on the list** — `mine` always, the four automatic kinds only
+    /// when the operator opened them or when this head is standing in one.
+    ///
+    /// The second half is the rule that outranks the fold: a picker that hides where you are is a
+    /// picker that cannot answer *where am I*, which is the one question the header above it
+    /// exists to answer — and it is why a group this head is in opens itself.
+    pub(crate) fn group_open(&self, group: SessionGroup, of: &[SessionGroup]) -> bool {
+        if group.is_mine() || self.open_groups.contains(&group) {
+            return true;
+        }
+        of.iter()
+            .enumerate()
+            .any(|(i, g)| *g == group && self.sessions[i].session_id == self.session_id)
+    }
+
+    /// **Open or close an automatic group**, and answer whether anything moved — so a key on a
+    /// `mine` line (which is never folded) says so rather than redrawing nothing.
+    pub(crate) fn toggle_group(&mut self, group: SessionGroup) -> bool {
+        if group.is_mine() {
+            return false;
+        }
+        match self.open_groups.iter().position(|g| *g == group) {
+            Some(at) => {
+                self.open_groups.remove(at);
+            }
+            None => self.open_groups.push(group),
+        }
+        self.redraw = true;
+        true
     }
 
     /// **Whether a row's children are on the list because this head is standing among them.**
@@ -406,17 +558,29 @@ impl App {
         depth: usize,
         path: &[String],
         force: bool,
+        in_group: InGroup<'_>,
     ) {
         let open = force || self.expanded.iter().any(|e| e == parent);
         for (i, s) in self.sessions.iter().enumerate() {
             if s.parent_session_id.as_deref() != Some(parent) {
                 continue;
             }
+            // **A row belongs to exactly one group**, so a child of another group's session is
+            // not drawn under it — it is a root where it is drawn (see `session_rows`).
+            if let Some(group) = in_group.group
+                && in_group.of.get(i) != Some(&group)
+            {
+                continue;
+            }
             if !open && !path.iter().any(|p| *p == s.session_id) {
                 continue;
             }
-            out.push(SessionRow { idx: i, depth });
-            self.push_children(out, &s.session_id, depth + 1, path, false);
+            out.push(SessionRow {
+                idx: Some(i),
+                depth,
+                group: in_group.group.unwrap_or(SessionGroup::Mine),
+            });
+            self.push_children(out, &s.session_id, depth + 1, path, false, in_group);
         }
     }
 
@@ -1357,18 +1521,35 @@ pub(crate) struct DaemonSeat {
     pub(crate) protocol: u32,
 }
 
+/// **The group a tree is being drawn in** — `group: None` in the family view, which groups nothing.
+///
+/// One argument rather than two, and one type rather than a pair: `of` answers *which group is
+/// each session in* for the list being drawn, and it is only meaningful together with the group
+/// whose tree is being walked — passing the wrong slice with the wrong group is a mistake a caller
+/// cannot make when they travel as one value.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InGroup<'a> {
+    pub(crate) group: Option<SessionGroup>,
+    pub(crate) of: &'a [SessionGroup],
+}
+
 /// **One row of the session picker** — see [`App::session_rows`], which is the only thing that
 /// builds one.
 ///
-/// A pair of facts rather than a bare `usize`, because the list is NESTED: which session it is, and
-/// how deep it sits. Deriving the depth at the drawing site instead is exactly how the drawing and
-/// the keys become two enumerations again — the defect `todos_stops` exists to record.
+/// Three facts rather than a bare `usize`, because the list is NESTED **and GROUPED**: which
+/// session it is (or that it is a group's own line), how deep it sits, and which group it was
+/// drawn in. Deriving any of them at the drawing site instead is exactly how the drawing and the
+/// keys become two enumerations again — the defect `todos_stops` exists to record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionRow {
-    /// Index into `App::sessions`.
-    pub(crate) idx: usize,
-    /// 0 for a conversation; 1 for a sub-session under it; deeper for a tree.
+    /// Index into `App::sessions`, or **`None` for a group's own line** — a stop with an act of
+    /// its own (`enter` folds it) and no session to switch to.
+    pub(crate) idx: Option<usize>,
+    /// 0 for a group's line and for the top of a tree; deeper inside a tree.
     pub(crate) depth: usize,
+    /// The group this row was drawn under — for a session row, the group it is IN; for a group's
+    /// line, the group it heads.
+    pub(crate) group: SessionGroup,
 }
 
 /// **The live panes, as a person reads them**: `1 `!term mc`, 2 `!term nano``.

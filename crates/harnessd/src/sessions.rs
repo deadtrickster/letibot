@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, Owner, QueuedCommand};
+use letibot_sessionlog::origin::SessionOrigin;
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
 use letibot_tokencore::store::{Store, TodoBy, TodoItem, TodoStatus};
 // **The plan's own text, and the queue it is served from** — the one renderer, so the idle check
@@ -1370,6 +1371,20 @@ impl<'a> Sessions<'a> {
         let cfg = sessions.with_fabric(cfg, cond.is_some());
         let mut harness =
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
+        // **And who this daemon's own first session is for**, written now that its row exists
+        // (`Harness::open` writes the row and this is the first moment there is one to write
+        // on). Two answers and no others: a plain start is the OPERATOR's conversation —
+        // whether it is new or a `--continue` — and `--prompt`/`--slash` is a one-shot's
+        // (`cfg.one_shot`, set from the steps themselves). The row is the only place a picker
+        // tomorrow can read it. See `letibot_sessionlog::SessionOrigin`.
+        registry.record_origin(
+            &id,
+            if sessions.base.one_shot {
+                SessionOrigin::OneShot
+            } else {
+                registry.origin_of(&id)
+            },
+        );
         sessions.fabric_opened(&id, &harness);
         // **A `--continue` resumes the session on the model it was switched to.** The
         // first session is the common resume: without this call the row this change
@@ -2417,6 +2432,10 @@ impl<'a> Sessions<'a> {
             return Ok(false);
         }
         let hub = self.registry.get(session_id);
+        // **The daemon's own session, held as a fact and not as a value**: `own` is the seat, the
+        // title and the prompt for a session the daemon starts for itself, and it is consumed by
+        // the open below while the origin it implies is still needed afterwards.
+        let own_session = own.is_some();
         match self.harness_as(session_id, own) {
             Ok(h) => {
                 if let Some(r) = h.resumed() {
@@ -2443,6 +2462,25 @@ impl<'a> Sessions<'a> {
                     }
                 }
                 self.publish_title(session_id);
+                // **And who this session is for** — written now that its row exists. Three
+                // answers: the review queue's own session (`own`, which is the only caller of
+                // this door), a one-shot's, and otherwise whatever the door that created it
+                // recorded — a head's `NewSession` (the operator's, or a package's) or a
+                // resumed session's own row.
+                //
+                // The row is what a picker tomorrow reads, and a session is opened LAZILY, so
+                // this is the moment the two facts are both in hand. See
+                // `letibot_sessionlog::SessionOrigin`.
+                self.registry.record_origin(
+                    session_id,
+                    if own_session {
+                        SessionOrigin::Queue
+                    } else if self.base.one_shot {
+                        SessionOrigin::OneShot
+                    } else {
+                        self.registry.origin_of(session_id)
+                    },
+                );
                 // **A RESUMED SESSION ARMS ITS OWN CLOCK, because nothing else will.**
                 //
                 // `nag_due` is in-memory and the only other arming point used to be the end of a
@@ -5729,6 +5767,23 @@ impl SessionSource for StoreSessions {
         g.set_title(session_id, title).map_err(|e| e.to_string())
     }
 
+    /// **Make it durable who this session is for** — see
+    /// `letibot_sessionlog::SessionOrigin`.
+    ///
+    /// Called twice for a session a head created: once when the daemon knows who asked (there
+    /// is no row yet, so the store writes nothing) and once from `Sessions::open`, when the row
+    /// exists. `Store::set_session_origin` refuses to overwrite a value it already has, so the
+    /// second call is the one that lands and a third would change nothing.
+    ///
+    /// A failure is swallowed, deliberately: this is a picker's grouping and nothing else reads
+    /// it, so a busy store must not turn *make me a session* into a refusal over a word the
+    /// person never typed. The `origin` column stays `NULL`, which is the honest state — *nobody
+    /// has said* — and the grouping rule falls back to the marks the row does carry.
+    fn set_origin(&self, session_id: &str, origin: letibot_sessionlog::SessionOrigin) {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = g.set_session_origin(session_id, origin.as_str());
+    }
+
     fn todos(&self, session_id: &str) -> Vec<letibot_sessionlog::event::TodoEntry> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         g.todos(session_id)
@@ -5796,6 +5851,13 @@ impl SessionSource for StoreSessions {
             .map(|s| StoredBrief {
                 waits_on_operator: waiting.get(&s.id).copied().unwrap_or(0),
                 slug: slugs.get(&s.id).cloned().unwrap_or_default(),
+                // **Who it is for, off its own row** — `None` is a row written before the
+                // column existed, and every row was the operator's then.
+                origin: s
+                    .origin
+                    .as_deref()
+                    .and_then(letibot_sessionlog::SessionOrigin::parse)
+                    .unwrap_or_default(),
                 session_id: s.id,
                 title: s.title.unwrap_or_default(),
                 items: s.items,

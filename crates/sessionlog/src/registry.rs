@@ -55,6 +55,7 @@ use std::time::Instant;
 
 use crate::hub::{CommandKind, DAEMON_SUBMITTER, Hub, QueuedCommand, SessionStatus};
 use crate::log::LogBounds;
+use crate::origin::SessionOrigin;
 use crate::view::ViewBounds;
 
 /// A wake shared by every session in a registry.
@@ -392,7 +393,6 @@ pub struct SessionBrief {
     pub waits_on_operator: usize,
     /// **A subagent's name — its slug** (`fix-login`), or empty for a session nobody named: every
     /// root, and a child spawned by a daemon from before children had names.
-    ///
     /// The operator: *"lets do slugs for subagents too"*. A child was drawn by its session id or
     /// by its 256-character brief, and a job by the name the agent gave it; this is the child's
     /// name, the same one `task_start` cut its worktree's branch `agent/<slug>` from, so a head
@@ -401,6 +401,23 @@ pub struct SessionBrief {
     /// know the name has to say, so it is added without a protocol bump.
     #[serde(default)]
     pub slug: String,
+    /// **Who this session is for** — the operator's own conversation, or one of the kinds of
+    /// session a harness makes for itself. See [`crate::origin`], which is the vocabulary, the
+    /// grouping rule, and the operator's own words for why it exists.
+    ///
+    /// Read off the session's own row for a session on disk — the row is the durable record,
+    /// written when the session is created — and off the registry's entry for one whose row is
+    /// not there yet (a session a head has just asked for, which the worker has not opened).
+    ///
+    /// **The store wins when both have an answer**, the same rule `title` above follows, because
+    /// the row is what survives the daemon that wrote it.
+    ///
+    /// Defaulted for `slug`'s reason — a daemon too old to send it leaves the head with
+    /// `Operator`, which is what every session was before the field existed — and it is a word
+    /// rather than five booleans so that a head and a daemon split by this change still draw
+    /// eight rows correctly instead of eight rows wrongly.
+    #[serde(default)]
+    pub origin: SessionOrigin,
 }
 
 /// **How long the operator has paused a session's idle plan-check** (`/nag pause`).
@@ -546,6 +563,9 @@ pub struct StoredBrief {
     /// A subagent's name, from its record — see [`SessionBrief::slug`]. Empty for a session
     /// nobody named.
     pub slug: String,
+    /// **Who this session is for**, off its own row — see [`SessionBrief::origin`]. `Operator`
+    /// for a row written before the column existed, which is what every row was then.
+    pub origin: SessionOrigin,
 }
 
 /// Where a registry can find sessions it is not already holding.
@@ -572,6 +592,21 @@ pub trait SessionSource: Send + Sync {
     fn set_title(&self, _session_id: &str, _title: &str) -> Result<(), String> {
         Err("this daemon has no store, so a name would not survive it".into())
     }
+    /// **Make it durable who this session is for** — see [`crate::SessionOrigin`] and
+    /// [`Registry::record_origin`].
+    ///
+    /// A no-op rather than a refusal, which is the one place this trait's defaults disagree with
+    /// [`SessionSource::set_title`] — and the difference is what each fact is FOR. A name the
+    /// operator typed is theirs and must not be quietly lost, so a source that cannot keep it
+    /// says so; how a session came to exist is not something anybody typed, and a source with
+    /// nowhere to keep it is a daemon with no store, which outlives nothing anyway. Refusing here
+    /// would make every `NewSession` on such a daemon report a failure for a fact that is simply
+    /// not durable.
+    ///
+    /// **A store writes it only where its row says nothing yet** (`Store::set_session_origin`),
+    /// so the call at creation — when the row does not exist — and the one at open are safe in
+    /// either order and in both.
+    fn set_origin(&self, _session_id: &str, _origin: SessionOrigin) {}
     /// One session's todo list, for a head's bootstrap read.
     ///
     /// The default is empty rather than an error, and that is the honest answer
@@ -634,6 +669,11 @@ struct Entry {
     /// A mailbox rather than a live read, for `settings`' own reason: this is answered on
     /// a head's connection thread and the harness belongs to the worker.
     stale_prefix: Option<String>,
+    /// **Who this session is for** — see [`crate::SessionOrigin`]. Set by the door that knows
+    /// (a head's `NewSession`, the daemon's own queue and one-shot sessions), never by a session
+    /// opening, and it survives nothing: the durable copy is `session.origin`, which this is
+    /// written to when the row exists and read from when it does not.
+    origin: SessionOrigin,
 }
 
 struct Inner {
@@ -1323,6 +1363,7 @@ impl Registry {
                     parent_session_id: None,
                     settings: Vec::new(),
                     stale_prefix: None,
+                    origin: SessionOrigin::Operator,
                 },
             );
         }
@@ -1386,6 +1427,7 @@ impl Registry {
                 parent_session_id: parent,
                 settings: Vec::new(),
                 stale_prefix: None,
+                origin: SessionOrigin::Operator,
             },
         );
         drop(g);
@@ -1446,6 +1488,7 @@ impl Registry {
                 parent_session_id: parent,
                 settings: Vec::new(),
                 stale_prefix: None,
+                origin: SessionOrigin::Operator,
             },
         );
         Ok(())
@@ -1722,6 +1765,42 @@ impl Registry {
     /// `None`, for a caller that must tell *top-level* from *not here*.
     pub fn holds(&self, session_id: &str) -> bool {
         self.lock().has(session_id)
+    }
+
+    /// **Who this session is for, as this registry knows it** — the entry's own answer, and
+    /// [`crate::SessionOrigin::Operator`] for a session it does not hold.
+    ///
+    /// Read by the daemon when it opens a session, so that the fact a head's `NewSession`
+    /// wrote down at creation reaches the row the open writes. See [`Registry::record_origin`].
+    pub fn origin_of(&self, session_id: &str) -> SessionOrigin {
+        self.lock()
+            .entry(session_id)
+            .map(|e| e.origin)
+            .unwrap_or_default()
+    }
+
+    /// **Write down who this session is for** — the one door for the fact, in memory and on disk.
+    ///
+    /// Two places and not one, because the two questions are asked at different times: a head's
+    /// picker draws the registry's entries, and a picker `--sessions` a week later draws the
+    /// store. A daemon with no store has only the first, which is honest — nothing of it outlives
+    /// it anyway, so there is nowhere else for the fact to be wrong.
+    ///
+    /// **Called twice for a session a head created, and the store's copy is what makes that
+    /// safe**: the first call is at creation, when there is no row to write it on (the worker
+    /// writes the row at `Work::Open`), and the second is from the open. The store's writer
+    /// (`Store::set_session_origin`) refuses to overwrite a value it already has, so the second
+    /// call is the one that lands and a third would change nothing.
+    pub fn record_origin(&self, session_id: &str, origin: SessionOrigin) {
+        {
+            let mut g = self.lock();
+            if let Some(e) = g.entry_mut(session_id) {
+                e.origin = origin;
+            }
+        }
+        if let Some(src) = self.source() {
+            src.set_origin(session_id, origin);
+        }
     }
 
     /// **The session's title as this registry holds it** — the name it was created or adopted
@@ -2147,7 +2226,19 @@ impl Registry {
     }
 
     pub fn list(&self) -> Vec<SessionBrief> {
-        let rows: Vec<(String, String, u64, Arc<Hub>, SessionWiring, Option<String>)> = {
+        // **A live entry as the row below needs it**, cloned out under one lock. A named type
+        // rather than a seven-tuple spelled twice: the tuple grew a member when `origin` landed and
+        // a reader that miscounted would have taken a title for a session id.
+        type LiveRow = (
+            String,
+            String,
+            u64,
+            Arc<Hub>,
+            SessionWiring,
+            Option<String>,
+            SessionOrigin,
+        );
+        let rows: Vec<LiveRow> = {
             let g = self.lock();
             g.entries
                 .iter()
@@ -2159,6 +2250,7 @@ impl Registry {
                         e.hub.clone(),
                         e.wiring.clone(),
                         e.parent_session_id.clone(),
+                        e.origin,
                     )
                 })
                 .collect()
@@ -2166,47 +2258,54 @@ impl Registry {
         let stored: Vec<StoredBrief> = self.source().map(|s| s.list()).unwrap_or_default();
         let mut out: Vec<SessionBrief> = rows
             .into_iter()
-            .map(|(session_id, title, created_ms, hub, wiring, parent)| {
-                let on_disk = stored.iter().find(|d| d.session_id == session_id);
-                SessionBrief {
-                    // A daemon started with `--title` and a store that already names
-                    // the session must not disagree with itself. The store wins for a
-                    // session it knows, because that is the name the operator set and
-                    // the one every other list shows.
-                    title: on_disk
-                        .map(|d| d.title.clone())
-                        .filter(|t| !t.is_empty())
-                        .unwrap_or(title),
-                    stored_items: on_disk.map(|d| d.items).unwrap_or(0),
-                    created_ms,
-                    status: hub.status(),
-                    wiring,
-                    live: true,
-                    // The registry's own record wins over the store's for a live
-                    // session; the store's is what remains after a restart.
-                    parent_session_id: parent
-                        .or_else(|| on_disk.and_then(|d| d.parent_session_id.clone())),
-                    // The store's row is the only place the number survives a
-                    // restart, so it is the source for a live session too: the
-                    // hub's view has the same number in its turn state while the
-                    // daemon holds it, and a head that reads the brief gets the
-                    // same fact either way.
-                    context_tokens: on_disk.and_then(|d| d.context_tokens),
-                    context_cached: on_disk.and_then(|d| d.context_cached),
-                    stored_end: on_disk.and_then(|d| d.stored_end.clone()),
-                    // The row is the pause's one home, live or not — the harness writes it the
-                    // moment the verb lands, so the store is never behind the session here.
-                    nags_paused: on_disk.and_then(|d| d.nags_paused),
-                    waits_on_operator: on_disk.map(|d| d.waits_on_operator).unwrap_or(0),
-                    // The runner's own record for a child it is running, then the store's for
-                    // one a restart brought back.
-                    slug: self
-                        .slug(&session_id)
-                        .or_else(|| on_disk.map(|d| d.slug.clone()))
-                        .unwrap_or_default(),
-                    session_id,
-                }
-            })
+            .map(
+                |(session_id, title, created_ms, hub, wiring, parent, origin)| {
+                    let on_disk = stored.iter().find(|d| d.session_id == session_id);
+                    SessionBrief {
+                        // A daemon started with `--title` and a store that already names
+                        // the session must not disagree with itself. The store wins for a
+                        // session it knows, because that is the name the operator set and
+                        // the one every other list shows.
+                        title: on_disk
+                            .map(|d| d.title.clone())
+                            .filter(|t| !t.is_empty())
+                            .unwrap_or(title),
+                        stored_items: on_disk.map(|d| d.items).unwrap_or(0),
+                        created_ms,
+                        status: hub.status(),
+                        wiring,
+                        live: true,
+                        // The registry's own record wins over the store's for a live
+                        // session; the store's is what remains after a restart.
+                        parent_session_id: parent
+                            .or_else(|| on_disk.and_then(|d| d.parent_session_id.clone())),
+                        // The store's row is the only place the number survives a
+                        // restart, so it is the source for a live session too: the
+                        // hub's view has the same number in its turn state while the
+                        // daemon holds it, and a head that reads the brief gets the
+                        // same fact either way.
+                        context_tokens: on_disk.and_then(|d| d.context_tokens),
+                        context_cached: on_disk.and_then(|d| d.context_cached),
+                        stored_end: on_disk.and_then(|d| d.stored_end.clone()),
+                        // The row is the pause's one home, live or not — the harness writes it the
+                        // moment the verb lands, so the store is never behind the session here.
+                        nags_paused: on_disk.and_then(|d| d.nags_paused),
+                        waits_on_operator: on_disk.map(|d| d.waits_on_operator).unwrap_or(0),
+                        // The runner's own record for a child it is running, then the store's for
+                        // one a restart brought back.
+                        slug: self
+                            .slug(&session_id)
+                            .or_else(|| on_disk.map(|d| d.slug.clone()))
+                            .unwrap_or_default(),
+                        // **The store wins when both have an answer**, the rule `title` above
+                        // follows and for the same reason: a session's own row is what survives the
+                        // daemon that wrote it, and this entry may have been built by a resume that
+                        // knew only what the row said.
+                        origin: on_disk.map(|d| d.origin).unwrap_or(origin),
+                        session_id,
+                    }
+                },
+            )
             .collect();
         // Then everything on disk this daemon is not holding. Appended rather than
         // interleaved by time: the live ones are the ones a switch reaches in one
@@ -2232,6 +2331,7 @@ impl Registry {
                 nags_paused: d.nags_paused,
                 waits_on_operator: d.waits_on_operator,
                 slug: d.slug,
+                origin: d.origin,
             });
         }
         out
@@ -3331,6 +3431,7 @@ mod stored_end_wire {
             nags_paused: None,
             waits_on_operator: 0,
             slug: String::new(),
+            origin: crate::SessionOrigin::Operator,
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

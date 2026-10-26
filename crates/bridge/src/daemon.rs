@@ -30,7 +30,13 @@ use letibot_tools::builtins::task::Placement;
 /// The name a head attaches under — a fact of the daemon's log, so it is the bridge's own
 /// and not a guess: `HeadAttached`/`HeadDetached` name it, and the decision corpus records
 /// the answers given from it.
-pub const IDENTITY: &str = "letibot-mcp";
+///
+/// **And it is the mark the session list groups by**: the daemon records who opened a session
+/// (`letibot_sessionlog::SessionOrigin::of_opener`, from this identity), so a conversation a
+/// package started is drawn under `packages` instead of among the operator's own. One string
+/// and one definition, because the two halves have to agree or the grouping silently stops
+/// recognising `letim`'s sessions.
+pub const IDENTITY: &str = letibot_sessionlog::MCP_IDENTITY;
 
 /// The handshake kind this head sends. The protocol's vocabulary is `tui`, `remote`,
 /// `flowy`, `acp`; a program holding a session is `remote`, which is what its own doc

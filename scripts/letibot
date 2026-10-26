@@ -15,7 +15,9 @@
 #                               that reopens anything without being asked which. Takes no argument;
 #                               a session id after it is read as --session ID (and said).
 #   letibot --session ID        reopen a particular one
-#   letibot --sessions          what is on disk: id, title, workspace, age, rows
+#   letibot --sessions          what is on disk, grouped: your conversations first, then the
+#                               harness's own work (subagents, the review queue, packages,
+#                               one-shots) one line each with a count
 #   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
 #                               one the plain start opened IS this fresh session)
 #   letibot --rename ID TITLE   name a stored session
@@ -356,7 +358,9 @@ already up, then attaches the TUI head to it.
                               reopens anything without being asked which. It takes NO argument;
                               `--continue s-…` is read as `--session s-…` and says so
   letibot --session ID        reopen a particular one
-  letibot --sessions          what is on disk: id, title, workspace, age, rows
+  letibot --sessions          what is on disk, grouped: your conversations first, then the
+                              harness's own work (subagents, the review queue, packages,
+                              one-shots) one line each with a count
   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
                               one the plain start opens IS this fresh session)
   letibot --rename ID TITLE   name a stored session

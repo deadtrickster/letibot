@@ -191,6 +191,40 @@ fn listing(store: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// **The rows a listing puts in one group** — the ids under that group's header, in the order they
+/// were drawn.
+///
+/// The listing is grouped since 2026-10-26 (`cli.rs`'s `Query::List`): a header line per group,
+/// `mine (1) — …`, then its rows, each an id at the left margin with its workspace under it. Read
+/// the header's TITLE and the ids between it and the next header.
+fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
+    const GROUPS: [&str; 5] = ["mine", "subagents", "review queue", "packages", "one-shots"];
+    let header = |l: &str| {
+        GROUPS
+            .iter()
+            .find(|g| l.trim_start().starts_with(&format!("{g} (")))
+            .copied()
+    };
+    let mut out = Vec::new();
+    let mut current: Option<&str> = None;
+    for line in listed.lines() {
+        if let Some(g) = header(line) {
+            current = Some(g);
+            continue;
+        }
+        if current != Some(group) {
+            continue;
+        }
+        // A session's line starts with its id at the left margin; the workspace line under it
+        // starts with padding, and the header lines are caught above.
+        let id = line.split_whitespace().next().unwrap_or("");
+        if line.starts_with("s-") {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
 /// **The line the launcher reads is the conversation's id**, with ten reviewers in the store
 /// ahead of it — the operator's report, end to end.
 #[test]
@@ -233,22 +267,36 @@ fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
     );
 
     // **And the listing agrees with the resolution, which is what it did not do before.** The
-    // operator's own measurement is the shape asserted here: `--sessions` shows the
-    // conversations and no child, so the row `--continue` picks has to be one of them. Two
-    // queries, one store, one answer.
+    // operator's own measurement is the shape asserted here: `--sessions` offers the conversation
+    // and no reviewer, so the row `--continue` picks is one of them. Two queries, one store, one
+    // answer.
+    //
+    // **Grouped since 2026-10-26**, and the group a reviewer lands in is the point: these ten are
+    // parented straight on the conversation, seated `gatekeeper`, titled from the review brief —
+    // the layout before the queue had a session of its own. They are the REVIEW QUEUE's work, not
+    // the operator's subagents, and a listing that offered them under `subagents` would be the
+    // same defect with a header on it.
     let listed = listing(&path);
-    assert!(
-        !listed.contains("s-gk"),
-        "no reviewer is offered by the listing: {listed}"
-    );
-    let offered = listed.lines().filter(|l| l.starts_with("s-")).count();
     assert_eq!(
-        offered, 1,
-        "one conversation is on it — its row, and the workspace line under it: {listed}"
+        group_of_rows(&listed, "mine"),
+        ["s-mine"],
+        "mine offers exactly the conversation `--continue` picked: {listed}"
     );
     assert!(
-        listed.contains("s-mine"),
-        "and it is the one `--continue` picked: {listed}"
+        group_of_rows(&listed, "subagents").is_empty(),
+        "a reviewer is not one of the operator's subagents: {listed}"
+    );
+    assert_eq!(
+        group_of_rows(&listed, "review queue").len(),
+        10,
+        "and all ten reviewers are the queue's: {listed}"
+    );
+    assert!(
+        !group_of_rows(&listed, "mine")
+            .iter()
+            .chain(group_of_rows(&listed, "subagents").iter())
+            .any(|id| id.starts_with("s-gk")),
+        "no reviewer is offered as a conversation anywhere: {listed}"
     );
 }
 

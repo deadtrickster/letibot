@@ -473,7 +473,10 @@ fn ctrl_s_inside_a_subagent_lists_the_parent_and_its_siblings() {
     let rows = a.session_rows();
     let shown: Vec<(&str, usize)> = rows
         .iter()
-        .map(|r| (a.sessions[r.idx].session_id.as_str(), r.depth))
+        .map(|r| {
+            let i = r.idx.expect("a family view has no group lines");
+            (a.sessions[i].session_id.as_str(), r.depth)
+        })
         .collect();
     assert_eq!(
         shown,

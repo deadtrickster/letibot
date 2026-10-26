@@ -102,6 +102,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             nags_paused: None,
             waits_on_operator: 0,
             slug: String::new(),
+            origin: letibot_sessionlog::SessionOrigin::Operator,
         },
         StoredBrief {
             session_id: "s-old".into(),
@@ -116,6 +117,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             nags_paused: None,
             waits_on_operator: 0,
             slug: String::new(),
+            origin: letibot_sessionlog::SessionOrigin::Operator,
         },
     ]))));
     let h = serve_registry(r.clone(), socket_path(tag)).expect("bind");
@@ -462,6 +464,54 @@ fn a_queue_that_cannot_be_read_is_said_rather_than_drawn_empty() {
     assert!(bare.queues().unreadable.is_some());
 }
 
+/// **A resumed session arrives knowing who it is for** — the same rule the parent edge follows
+/// (R68.6): the row is the record, and the registry's entry is this daemon's memory of it. Without
+/// this a package's conversation would be drawn under `mine` for as long as the daemon that
+/// resumed it lived, and under `packages` after the next restart — one session telling a person
+/// two different things about where it belongs.
+#[test]
+fn a_resumed_session_carries_its_origin_from_its_row_onto_the_entry() {
+    let r = Registry::new();
+    r.create("live", "", wiring("/home/dead")).unwrap();
+    r.set_source(Arc::new(Disk(Mutex::new(vec![StoredBrief {
+        session_id: "s-old-package".into(),
+        title: "a landing page".into(),
+        items: 4,
+        last_activity_ms: 1_788_987_703_152,
+        wiring: wiring("/home/dead"),
+        parent_session_id: None,
+        context_tokens: None,
+        context_cached: None,
+        stored_end: None,
+        nags_paused: None,
+        waits_on_operator: 0,
+        slug: String::new(),
+        origin: letibot_sessionlog::SessionOrigin::Package,
+    }]))));
+    let server = serve_registry(r.clone(), socket_path("origin")).expect("bind");
+    let (mut client, _hello, reader) =
+        HeadClient::attach(server.path(), "live", 0, "tui", "dead", Caps::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pumping = std::thread::spawn(move || pump(reader, tx));
+
+    client.resume_session("s-old-package").unwrap();
+    let f = until(&rx, |f| matches!(f, ServerFrame::Sessions { .. }));
+    let ServerFrame::Sessions { created, .. } = f else {
+        unreachable!()
+    };
+    assert_eq!(created.as_deref(), Some("s-old-package"));
+    assert_eq!(
+        r.origin_of("s-old-package"),
+        letibot_sessionlog::SessionOrigin::Package,
+        "the registry's entry has to carry what the row said, or this daemon's own picker \
+         re-groups it as `mine` for as long as it holds it"
+    );
+
+    let _ = client.detach();
+    server.shutdown();
+    let _ = pumping.join();
+}
+
 /// **A resumed subagent arrives knowing whose it is** (R68.6) — the parent rides in from the
 /// stored row onto the registry's own entry, which is where a worker now asks
 /// (`Registry::parent_of`) instead of re-reading every stored session on each open. Before, a
@@ -483,6 +533,7 @@ fn a_resumed_subagent_carries_its_parent_on_the_entry() {
         nags_paused: None,
         waits_on_operator: 0,
         slug: String::new(),
+        origin: letibot_sessionlog::SessionOrigin::Operator,
     }]))));
     let server = serve_registry(r.clone(), socket_path("resume-child")).expect("bind");
     let (mut client, _hello, reader) =

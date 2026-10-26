@@ -134,6 +134,9 @@ fn brief(session_id: &str, title: &str, items: u32) -> StoredBrief {
         nags_paused: None,
         waits_on_operator: 0,
         slug: String::new(),
+        // **The operator's own**, which is what every fixture in this file is: a grouping
+        // fixture that is not about the groups says nothing about them.
+        origin: letibot_sessionlog::SessionOrigin::Operator,
     }
 }
 

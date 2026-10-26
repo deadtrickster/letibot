@@ -285,10 +285,28 @@ impl App {
             // half-typed id's Enter still means the id, and `submit` takes it.
             Surface::Picker => {
                 let rows = self.session_rows();
-                let Some(row) = rows.get(self.picker_sel.min(rows.len().saturating_sub(1))) else {
+                let Some(row) = rows
+                    .get(self.picker_sel.min(rows.len().saturating_sub(1)))
+                    .copied()
+                else {
                     return ControlFlow::Continue(());
                 };
-                let id = self.sessions[row.idx].session_id.clone();
+                // **A group's line opens and closes its group** — the same act `→` has, and the
+                // only act a row with no session behind it could have. Saying *mine is always
+                // open* rather than redrawing nothing is the same rule `switch_to`'s *already
+                // here* follows: a key that does nothing and says nothing is indistinguishable
+                // from a broken one.
+                let Some(i) = row.idx else {
+                    if !self.toggle_group(row.group) {
+                        self.say(&format!(
+                            "{} is always open — the conversations you opened are what this list \
+                             is for",
+                            row.group.title()
+                        ));
+                    }
+                    return ControlFlow::Break(None);
+                };
+                let id = self.sessions[i].session_id.clone();
                 ControlFlow::Break(self.switch_to(id))
             }
             // Changes the row under the cursor when it is one that can change now, and says why
@@ -331,17 +349,57 @@ impl App {
     /// two gestures a tree uses everywhere — and the reason a collapsed default can afford to be
     /// collapsed. **A child's ← closes its PARENT**, so `←` means *back up the tree* rather than
     /// nothing at all on the row you just arrived at.
+    ///
+    /// # What ← means on a row that has no parent on this list
+    ///
+    /// Since the list is grouped (`App::session_rows`), a `task` child of the operator's own
+    /// conversation is drawn as a ROOT of the `subagents` tree: its parent is in `mine` and is not
+    /// on this group's list. The edge it sits on is the GROUP, so that is what ← closes — *back out
+    /// of the tree you are in*, which is the gesture, one level up. A `mine` conversation is its
+    /// own tree's top and closes itself, exactly as it always did.
     fn picker_fold(&mut self, open: bool) -> ControlFlow<Option<Action>> {
         let rows = self.session_rows();
         let Some(&row) = rows.get(self.picker_sel.min(rows.len().saturating_sub(1))) else {
             return ControlFlow::Continue(());
         };
+        // **→ and ← on a group's line are the group's fold**, which is what `enter` does there
+        // too — one gesture, two keys, because a tree's arrows are where a reader reaches first.
+        let Some(i) = row.idx else {
+            if row.group.is_mine() {
+                self.say(
+                    "mine is always open — the conversations you opened are what this list is \
+                     for",
+                );
+            } else if open != self.open_groups.contains(&row.group) {
+                self.toggle_group(row.group);
+            }
+            return ControlFlow::Break(None);
+        };
+        // **The edge this row sits on**: its parent when the parent is drawn on this same list,
+        // which is the rule `push_children` drew the row by — parent on the list AND in this
+        // row's group. (The family view groups nothing, so every row there claims `mine` and the
+        // second half is true by construction.)
+        let of = self.session_groups();
+        let family = self.parent_session().is_some();
+        let under_here = self.sessions[i]
+            .parent_session_id
+            .as_deref()
+            .and_then(|p| self.sessions.iter().position(|s| s.session_id == p))
+            .filter(|&k| family || of.get(k) == Some(&row.group));
         let want = if open {
-            Some(self.sessions[row.idx].session_id.clone())
+            Some(self.sessions[i].session_id.clone())
         } else {
-            match row.depth {
-                0 => Some(self.sessions[row.idx].session_id.clone()),
-                _ => self.sessions[row.idx].parent_session_id.clone(),
+            match under_here {
+                Some(k) => Some(self.sessions[k].session_id.clone()),
+                None => {
+                    if !row.group.is_mine() {
+                        if self.open_groups.contains(&row.group) {
+                            self.toggle_group(row.group);
+                        }
+                        return ControlFlow::Break(None);
+                    }
+                    Some(self.sessions[i].session_id.clone())
+                }
             }
         };
         if let Some(want) = want {

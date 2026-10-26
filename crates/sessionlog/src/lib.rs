@@ -51,6 +51,8 @@ pub mod event;
 pub mod hub;
 pub mod log;
 pub mod metrics_tap;
+/// **Who a session is for** — the rule every list of sessions is grouped by. See [`origin`].
+pub mod origin;
 // **The pane contract's document** (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
 pub mod pane;
 // **Where a daemon's tools run, written beside its socket** (`docs/remote-hosts.md`): one process
@@ -85,6 +87,7 @@ pub use event::{
 };
 pub use hub::{Attached, CommandKind, Delivery, Hub, QueuedCommand, Reply, SessionStatus};
 pub use log::{LogBounds, SessionLog};
+pub use origin::{GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of};
 pub use protocol::{
     Ack, Attachment, AttachmentKind, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,
     HEAD_RUN_KIND_URL, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING,
@@ -127,6 +130,15 @@ pub use lift_tools::{ToolLogSink, from_tool_event};
 /// gatekeeper is the queue's, not a child the operator started. The role is the better mark and
 /// a live `Subagent` event carries it; a row rebuilt from the session list has only the title.
 pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
+
+/// **The seat a review is recorded under** — `Seat::Gatekeeper`'s store spelling, written on the
+/// reviewer's own row by `Harness::open` (`session.role`).
+///
+/// Here rather than in `harnessd` because a crate BELOW the daemon groups sessions too, and the
+/// mark that says *this row is a review* has to be one string: `harnessd`'s
+/// `Seat::Gatekeeper.as_str()` is this constant, `is_conversation` reads it to keep a renamed
+/// reviewer out of `--continue`, and `crate::origin` reads it to keep one out of `subagents`.
+pub const GATEKEEPER_SEAT: &str = "gatekeeper";
 
 /// **How every daemon's review-queue session id begins** — one workspace's daemon per key
 /// ([`gatekeeper_session`]), and nothing else in the tree starts with this.

@@ -127,7 +127,7 @@ impl Seat {
             Seat::Coder => "coder",
             Seat::Runner => "runner",
             Seat::Leticode => "leticode",
-            Seat::Gatekeeper => "gatekeeper",
+            Seat::Gatekeeper => letibot_sessionlog::GATEKEEPER_SEAT,
             Seat::NotesKeeper => "notes_keeper",
         }
     }
@@ -143,7 +143,7 @@ impl Seat {
             "coder" => Ok(Seat::Coder),
             "runner" => Ok(Seat::Runner),
             "leticode" | "opencode" => Ok(Seat::Leticode),
-            "gatekeeper" => Ok(Seat::Gatekeeper),
+            letibot_sessionlog::GATEKEEPER_SEAT => Ok(Seat::Gatekeeper),
             "notes_keeper" | "keeper" => Ok(Seat::NotesKeeper),
             other => Err(format!(
                 "unknown role `{other}`; this build has orchestrator, planner, \

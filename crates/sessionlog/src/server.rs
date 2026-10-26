@@ -37,6 +37,7 @@ use std::thread::JoinHandle;
 
 use crate::SessionEvent;
 use crate::hub::{CommandKind, Delivery, Hub, Reply};
+use crate::origin::SessionOrigin;
 use crate::protocol::{
     ClientFrame, HEAD_RUN_TOOLS, PROTOCOL_VERSION, PeekShape, REJECT_NOT_IN_STORE,
     REJECT_UNKNOWN_SESSION, ServerFrame,
@@ -962,11 +963,26 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     wiring.workspace = workspace;
                 }
                 let f = match registry.create(&id, title, wiring) {
-                    Ok(_) => ServerFrame::Sessions {
-                        sessions: registry.list(),
-                        current: seat.hub.session_id(),
-                        created: Some(id),
-                    },
+                    Ok(_) => {
+                        // **WHO ASKED, which is the one thing a session's row cannot otherwise
+                        // say.** A conversation a person's terminal opened and one a package
+                        // opened are the same shape of row, and a picker that draws them in one
+                        // column puts six of `letim`'s among the two the operator is working in
+                        // (`crate::origin`, and their words: *"so my vs auto"*). The two facts
+                        // that say which it was are already on this connection — the `kind` and
+                        // `identity` its `ATTACH` carried — so this takes no new frame and a
+                        // head built before it keeps working, recorded as the operator's.
+                        //
+                        // The row itself is written by the worker when it opens the session, so
+                        // this is the memory half; `Sessions::open` writes the other (see
+                        // `Registry::record_origin`).
+                        registry.record_origin(&id, SessionOrigin::of_opener(&kind, &identity));
+                        ServerFrame::Sessions {
+                            sessions: registry.list(),
+                            current: seat.hub.session_id(),
+                            created: Some(id),
+                        }
+                    }
                     Err(e) => ServerFrame::Rejected {
                         client_request_id,
                         reason: e.to_string(),
@@ -1036,6 +1052,13 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                                 brief.parent_session_id,
                             ) {
                                 Ok(hub) => {
+                                    // **Who it is for, from its own row** — a session resumed
+                                    // after a restart comes back knowing whether a package or a
+                                    // one-shot made it, and the running daemon's entry has to
+                                    // carry that or its picker would re-group it as *mine* for
+                                    // as long as it holds it. The row is the record; the entry
+                                    // is this daemon's memory of it.
+                                    registry.record_origin(&session_id, brief.origin);
                                     // **THE RESTORE IS ANNOUNCED HERE, BEFORE IT CAN START.**
                                     //
                                     // A session is registered the moment a head asks for it and

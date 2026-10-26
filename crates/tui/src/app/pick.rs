@@ -25,7 +25,17 @@ impl App {
             && n >= 1
             && n <= rows.len()
         {
-            let id = self.sessions[rows[n - 1].idx].session_id.clone();
+            // **A group's line is a number on the screen and not a session**, so the number that
+            // names it has to say so rather than switch to the row below or above it.
+            let Some(i) = rows[n - 1].idx else {
+                self.say(&format!(
+                    "{n} is the {} group's line, not a session — enter on it opens or closes the \
+                     group",
+                    rows[n - 1].group.title()
+                ));
+                return None;
+            };
+            let id = self.sessions[i].session_id.clone();
             return self.switch_to(id);
         }
         let hits: Vec<&SessionBrief> = self

@@ -50,6 +50,12 @@ impl App {
     /// decided it.
     pub(crate) fn session_picker(&self) -> SessionPicker {
         let rows = self.session_rows();
+        let groups = self.session_groups();
+        // **The family view is one group by construction** — a head standing in a child draws the
+        // parent and its siblings, and none of them is grouped (`session_rows`). So the fold glyph
+        // there answers *has this row children* and the group filter below would answer *none*: a
+        // `+` over three rows that are on the screen.
+        let family = self.parent_session().is_some();
         let kids_of = |id: &str| {
             self.sessions
                 .iter()
@@ -60,8 +66,43 @@ impl App {
             rows: rows
                 .iter()
                 .map(|row| {
-                    let s = &self.sessions[row.idx];
-                    let children = (kids_of(&s.session_id) > 0).then(|| {
+                    // **A group's own line** — `subagents (14)`, its fold, and one line saying
+                    // what the group is. It is a stop like every other row (so the cursor, the key
+                    // and the drawing are one enumeration), and it has no session: `enter` on it
+                    // opens or closes the group, which is why it carries `None` for the id.
+                    let Some(i) = row.idx else {
+                        let count = groups.iter().filter(|g| **g == row.group).count();
+                        return PickRow {
+                            depth: row.depth,
+                            // **The count is the group's own**, and it is the whole reason the line
+                            // exists: *fourteen subagents* is one number to read instead of fourteen
+                            // rows to scroll past.
+                            name: format!("{} ({count})", row.group.title()),
+                            session_id: String::new(),
+                            here: false,
+                            // `mine` is never folded — its rows are why the list is open.
+                            children: (!row.group.is_mine())
+                                .then(|| self.open_groups.contains(&row.group)),
+                            generating: false,
+                            live: true,
+                            rows: 0,
+                            heads: 0,
+                            model: String::new(),
+                            workspace: row.group.legend().to_string(),
+                        };
+                    };
+                    let s = &self.sessions[i];
+                    // **The fold glyph is about the tree inside a group**, and only for a session
+                    // whose children are in the group it was drawn in: a child of another group's
+                    // conversation is drawn as a root here, and a `-` over it would promise rows
+                    // this list does not hold.
+                    let children = (kids_of(&s.session_id) > 0
+                        && (family
+                            || self.sessions.iter().enumerate().any(|(k, c)| {
+                                c.parent_session_id.as_deref() == Some(s.session_id.as_str())
+                                    && groups.get(k) == Some(&row.group)
+                            })))
+                    .then(|| {
                         self.family_open(&s.session_id, row.depth)
                             || self.expanded.iter().any(|e| *e == s.session_id)
                     });

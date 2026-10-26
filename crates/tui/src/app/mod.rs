@@ -27,6 +27,7 @@
 //! decorative: there is a key that changes it, so the number moves.
 
 use letibot_sessionlog::event::{Timings, Usage};
+use letibot_sessionlog::origin::{GroupRow, SessionGroup};
 use letibot_sessionlog::registry::{SessionBrief, SessionWiring};
 use letibot_sessionlog::view::{OpenDecision, SnapshotItem};
 
@@ -1263,6 +1264,17 @@ pub struct App {
     /// so nothing is hidden that was not hidden, and nothing the daemon told us is thrown away.
     /// See [`App::session_rows`].
     pub(crate) expanded: Vec<String>,
+    /// **Which AUTOMATIC groups the picker has opened** — see [`App::session_rows`].
+    ///
+    /// Empty is the default and it means *everything but mine is folded*, which is the
+    /// operator's ask in their own words: *"in session view the automatic sessions must be
+    /// grouped somehow, so my vs auto. otherwise im lost in subagents."* The four automatic
+    /// groups each draw as one line with a count until this holds them — so a daemon with
+    /// thirty subagents costs one row, and nothing the daemon told us is thrown away.
+    ///
+    /// **`mine` is never in here**: the operator's own conversations are why the list is open,
+    /// and a fold over them would be a list that can hide the thing it is for.
+    pub(crate) open_groups: Vec<SessionGroup>,
     /// Wall clock, fed in by the driver, and when this head last had anything from
     /// the daemon.
     ///
@@ -2025,6 +2037,7 @@ impl App {
             hold_size: (0, 0),
             hold_rows: 0,
             expanded: Vec::new(),
+            open_groups: Vec::new(),
             now_ms: 0,
             last_event_at: 0,
             git: None,
