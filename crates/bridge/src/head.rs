@@ -417,6 +417,11 @@ pub struct State {
     /// orchestrator a package with an hour of work left. Joined from the `Backgrounded`
     /// handle and the `JobSettled` that names it.
     pub jobs_open: std::collections::BTreeSet<String>,
+    /// **A job the work waited on has settled, and its wake has not started yet.** The
+    /// daemon delivers a settlement in its own time (`delivery.rs` batches), so the turn
+    /// it starts can come later than [`SETTLE`]: QC's `wait` exited in exactly that gap,
+    /// between `j8032` settling and the turn it woke. Cleared by the next `TurnStarted`.
+    pub wake_due: bool,
     /// Whether the round in view has finished generating: calls that finish while it is
     /// still writing are not the turn's last.
     round_done: bool,
@@ -450,11 +455,16 @@ impl State {
     /// its work waits on, which is what the board's `needs` edge is (QA's row read
     /// `needs: job j7262` while its turn had ended).
     pub fn waiting_on_jobs(&self) -> bool {
+        self.wake_due || self.jobs_open.iter().any(|j| self.needed(j))
+    }
+
+    /// Whether an unfinished todo row needs this job.
+    fn needed(&self, job: &str) -> bool {
         self.todos.iter().any(|t| {
             t.status != TodoStatus::Completed
-                && t.needs.iter().any(
-                    |n| matches!(n, TodoNeed::Job { handle } if self.jobs_open.contains(handle)),
-                )
+                && t.needs
+                    .iter()
+                    .any(|n| matches!(n, TodoNeed::Job { handle } if handle == job))
         })
     }
 
@@ -587,6 +597,7 @@ impl State {
                 self.turn = Turn::Running;
                 self.idle_since = None;
                 self.round_done = false;
+                self.wake_due = false;
                 self.turned = true;
                 self.turn_id = turn_id;
                 self.streaming.clear();
@@ -733,6 +744,9 @@ impl State {
                 elapsed_ms,
                 ..
             } => {
+                if self.needed(&job) {
+                    self.wake_due = true;
+                }
                 self.jobs_open.remove(&job);
                 self.events.push(
                     Entry::of("job", "ended")
@@ -1003,6 +1017,7 @@ impl Head {
             idle_since: g.idle_since,
             round_done: g.round_done,
             jobs_open: g.jobs_open.clone(),
+            wake_due: g.wake_due,
             turned: g.turned,
             events: g.events.clone(),
             closed: g.closed.clone(),
@@ -1557,7 +1572,12 @@ mod tests {
         );
         feed(&mut state, settled("j9", "exited 0", 60_000));
         assert!(state.jobs_open.is_empty(), "its settlement closes it");
-        assert!(!state.waiting_on_jobs());
+        assert!(
+            state.waiting_on_jobs(),
+            "but the turn it wakes has not started: the daemon delivers it in its own time"
+        );
+        feed(&mut state, testing::turn_started("t1"));
+        assert!(!state.waiting_on_jobs(), "the wake started");
     }
 
     /// **The report outlives the chatter after it, and the spend is the package's.** P1
