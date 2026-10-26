@@ -1624,11 +1624,13 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 /// It was a second copy until the image channel needed the same encoder, and a base64 alphabet is
 /// exactly the kind of fact that gets spelled right in one place and subtly wrong in another. The
 /// decoder below stays here: its only caller is the far side of a `firecode` read.
-fn encode_base64(bytes: &[u8]) -> String {
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
     letibot_transcript::media::encode_base64(bytes)
 }
 
-fn decode_base64(text: &[u8]) -> Result<Vec<u8>, String> {
+/// Shared with [`crate::remote`], whose reads and writes are the same problem over a
+/// different wire: a second decoder would be the same fact written twice.
+pub(crate) fn decode_base64(text: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(text.len() / 4 * 3);
     let mut buf = 0u32;
     let mut bits = 0u32;

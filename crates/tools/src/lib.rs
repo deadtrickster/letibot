@@ -108,6 +108,7 @@ pub mod mode;
 pub mod notes_keeper;
 pub mod permission;
 pub mod references;
+pub mod remote;
 pub mod result;
 pub mod runtime;
 pub mod schema;

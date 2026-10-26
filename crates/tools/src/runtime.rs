@@ -2141,6 +2141,13 @@ impl ToolRuntime {
                 .workspace_path()
                 .or_else(|| self.backend.root_path())
                 .unwrap_or_else(|| self.backend.describe());
+            // **And on which machine**, when it is not this one. A remote session's
+            // workspace is a path on another box; a card that named only the path would
+            // be asking the operator to decide about a machine it never mentioned.
+            let workspace = match self.backend.host_label() {
+                Some(host) => format!("{workspace} (on {host})"),
+                None => workspace,
+            };
             let target_exists = args
                 .get("path")
                 .and_then(|v| v.as_str())

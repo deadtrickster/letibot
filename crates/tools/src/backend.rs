@@ -206,6 +206,19 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// **Which machine the tools run on**, when it is not this one. `None` for every
+    /// backend whose files are here, which is every backend but one.
+    ///
+    /// [`Self::workspace_path`] answers *which directory*; over ssh a directory alone is
+    /// the least useful half of the answer, because `/home/dead/letibot-remote/x` names a
+    /// path the operator cannot open and a machine the card never mentions. The one
+    /// caller is the gate's own sentence (`crate::runtime`), which is the surface where a
+    /// person decides — and a person deciding a `bash` call needs to know it lands on
+    /// another machine.
+    fn host_label(&self) -> Option<String> {
+        None
+    }
+
     /// The session's scratch directory, where tools put working artifacts that are
     /// too big for the transcript — a fetched page, a generated script. Per-session
     /// and set by whoever opened the session, so every tool in it sees the same
