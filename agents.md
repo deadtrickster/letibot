@@ -97,9 +97,21 @@ returns is a test that PASSED, as far as the step's status is concerned. MEASURE
 reports **`10 passed`** for ten tests that never ran, and the same command with
 `LETIBOT_REQUIRE_APPARATUS=1` reports **`10 failed`**. So without the prefix the gate can report
 review coverage it never had — the same class of defect as a gate that proves a binary it never
-installs. The default vocabulary path does resolve on this box (`$HOME/models/qwen3.8-flash-next/`),
-so the prefix changes nothing here today and is what makes a box that lacks it go RED rather than
-green.
+installs. The default vocabulary path does resolve on the box this was written on
+(`$HOME/models/qwen3.8-flash-next/`), so the prefix changes nothing there and is what makes a box
+that lacks it go RED rather than green.
+
+**Two things can be absent, and the prefix is only about one of them.** A vocabulary GGUF, a
+delegated cgroup v2 subtree or a store fixture is NOT PROVISIONED — real on this platform, absent
+on this box, and somebody can go and get it — which is what `LETIBOT_REQUIRE_APPARATUS=1` refuses,
+because a skip nobody can refuse is a suite that quietly stops testing. A test whose apparatus the
+PLATFORM can never have — `bwrap` and unprivileged user namespaces, cgroup v2, `systemd-run`,
+`ss` over `/proc/net/unix` — goes through `letibot_tokencore::apparatus::applies` instead, which
+says `NOT APPLICABLE on <os>` and is deliberately not refusable, or carries
+`#[cfg(target_os = "linux")]` where the test itself only means anything there. **A test that
+cannot apply on this OS is not missing apparatus.** The queue's daemon runs on the operator's Mac,
+so collapsing the two made THIS step red there on four targets for a reason that was in no diff,
+and a gate whose red is ignored has stopped carrying information.
 
 **The gate judges CODE, and this box's own data is not code — which is why one class of test opted
 out of it.** `crates/turn/tests/restore.rs`'s real-store tests read

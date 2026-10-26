@@ -55,6 +55,17 @@
 //! the box's DATA rather than a prerequisite of the code under review: a red on somebody's
 //! corrupted transcript says nothing about a diff. [`check_real_store`] is the opt-in
 //! (`LETIBOT_CHECK_REAL_STORE`) that keeps that canary available to whoever runs it on purpose.
+//!
+//! # Two kinds of absence, and only one of them is the prefix's business
+//!
+//! [`present`] answers *"is this on the machine?"*, which presumes the machine could have it.
+//! [`applies`] answers the question in front of that one — *"could this platform have it at
+//! all?"* — and it exists because the two got collapsed and the merge gate went red on a Mac
+//! for a reason no change to the tree could fix. `LETIBOT_REQUIRE_APPARATUS=1` is for a box that
+//! has NOT BEEN PROVISIONED: it is a demand somebody can satisfy by installing the thing.
+//! `bwrap`, unprivileged user namespaces, cgroup v2, `systemd-run` and `ss` are not that on
+//! macOS — they cannot be installed there, so demanding them made *"run the tests where the
+//! apparatus is"* mean *"run them on another computer"*.
 
 use std::path::PathBuf;
 
@@ -137,6 +148,10 @@ pub fn required() -> bool {
 ///   *"cgroups"*. It goes into the skip line, which is the only place a reader
 ///   learns why nothing ran.
 /// * `here` is the caller's own probe. This function never guesses: it is told.
+///
+/// **A thing this platform cannot have at all is [`applies`], not a missing apparatus**: the
+/// skip here is one `LETIBOT_REQUIRE_APPARATUS=1` refuses, which is right for a box that has
+/// not been provisioned and wrong for a facility macOS can never be given.
 pub fn present(what: &str, here: bool) -> Option<()> {
     present_given(what, here, required())
 }
@@ -158,6 +173,46 @@ fn present_given(what: &str, here: bool, required: bool) -> Option<()> {
         "SKIPPED: {what} is not on this machine, so nothing was run and THIS IS NOT A PASS.\n\
          \x20 Run this on the box that has it, or set LETIBOT_REQUIRE_APPARATUS=1 to make\n\
          \x20 its absence a failure rather than a skip."
+    );
+    None
+}
+
+/// **`Some(())` when what this test needs could exist on this platform at all; `None` after
+/// saying that it cannot.**
+///
+/// [`present`]'s sibling for the other absence. Two things make a test's apparatus missing and
+/// they are not the same finding:
+///
+///   * **not provisioned** — a vocabulary GGUF, a delegated cgroup v2 subtree, a store
+///     fixture. Real on this platform, absent on this box, and **somebody can go and get
+///     it**, which is exactly what `LETIBOT_REQUIRE_APPARATUS=1` says. [`present`] is for
+///     that one.
+///   * **not applicable on this platform** — `bwrap` and unprivileged user namespaces, cgroup
+///     v2, `systemd-run`, `ss`. macOS can never have any of them, however it is provisioned,
+///     so a demand for one is a demand that cannot be met by provisioning. This is for that
+///     one, and it is deliberately **not refusable**: there is nothing for a run to go and
+///     install.
+///
+/// The collapse of the two is what made it matter. MEASURED 2026-10-26: the merge queue's
+/// daemon runs on the operator's Mac, so `LETIBOT_REQUIRE_APPARATUS=1` — the gate's own test
+/// step — turned four targets red there (`confine`, `toolchain_grant`, `memory_cap`, and the
+/// launcher's `ss` cross-check) for a reason that was in no diff, on a gate whose red was
+/// therefore ignored. A test that cannot apply on this OS is not missing apparatus.
+///
+/// `on_this_platform` is the caller's own claim, and the honest way to make it is
+/// `cfg!(target_os = "linux")` — a compile-time fact, not a probe that can go stale. **Where
+/// the test itself only means anything on one platform, prefer `#[cfg(target_os = …)]` on it
+/// and do not call this at all.** This is for the test whose OTHER half is measured
+/// everywhere — a boundary that cannot exist still has a refusal to assert — where dropping
+/// the test would throw that half away.
+pub fn applies(what: &str, on_this_platform: bool) -> Option<()> {
+    if on_this_platform {
+        return Some(());
+    }
+    eprintln!(
+        "NOT APPLICABLE on {}: {what} — this test has nothing to test here, so nothing was \
+         run and THIS IS NOT A PASS.",
+        std::env::consts::OS
     );
     None
 }
@@ -259,6 +314,28 @@ mod tests {
         assert!(
             blew,
             "with LETIBOT_REQUIRE_APPARATUS set, a missing fixture must fail"
+        );
+    }
+
+    /// **`applies` is not refusable, and that is the whole difference from `present`.**
+    ///
+    /// There is no variable to read and no seam to hand one in, which is the point: a skip
+    /// this returns cannot be turned into a failure by `LETIBOT_REQUIRE_APPARATUS` — the
+    /// absence it reports is a platform's, not a box's, and no run can go and provision it.
+    /// This test therefore reads no environment at all and passes under the gate's own
+    /// `LETIBOT_REQUIRE_APPARATUS=1` run, where `present_given(…, false, true)` panics.
+    #[test]
+    fn applies_skips_without_being_refusable_and_present_still_is() {
+        assert_eq!(applies("a test fixture", true), Some(()));
+        assert_eq!(
+            applies("a test fixture", false),
+            None,
+            "a thing this platform cannot have has nothing to test here"
+        );
+        // The distinction, side by side: the same absence through `present` is a demand.
+        assert!(
+            std::panic::catch_unwind(|| present_given("a test fixture", false, true)).is_err(),
+            "`present` must stay refusable — only `applies` stops being one"
         );
     }
 
