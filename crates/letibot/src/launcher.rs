@@ -674,16 +674,30 @@ mod liveness_tests {
         );
     }
 
-    /// **The Rust agrees with `ss` about the daemons running RIGHT NOW.**
+    /// **The Rust agrees with the box's own socket table about the daemons running RIGHT
+    /// NOW.**
     ///
     /// This is the cross-check the whole port rests on and it cannot be a unit test: it
-    /// compares this module's answer against the tool the shell uses, for every record
-    /// on the box, and reports the stale ones by name. It SKIPS when nothing is running
-    /// — a runner has no daemons — and says so, rather than passing vacuously.
+    /// compares this module's answer against a tool that is NOT one of this module's own
+    /// paths, for every record on the box, and reports the stale ones by name. It SKIPS
+    /// when nothing is running — a runner has no daemons — and says so, rather than
+    /// passing vacuously.
+    ///
+    /// **Which tool depends on the platform, and the first version of this test only knew
+    /// the Linux one.** `ss -lxpH` names the socket path and the pid holding it, so on
+    /// Linux the agreement is about the PID. macOS has no `ss` — and `lsof` cannot stand in
+    /// for it, because `is_listening`/`daemon_pid` there FALL BACK TO `lsof` when a connect
+    /// fails, so agreement with it would be the module agreeing with itself. `netstat
+    /// -anv -f unix` is the independent witness: the kernel's local-domain socket table,
+    /// with the `-v` columns that carry `process:pid`, so the same PID question is asked and
+    /// nothing is weakened. Without that second half the test could only ever fail on
+    /// macOS — `present("the ss command")` is a skip `LETIBOT_REQUIRE_APPARATUS=1` refuses,
+    /// about a command the platform does not have and never will (MEASURED: the merge
+    /// queue's daemon runs on this Mac, and this was the one red target in `-p letibot`).
     ///
     /// MEASURED when written: 10 records, 6 live, and the pid agreed in every case.
     #[test]
-    fn every_live_daemon_agrees_with_ss() {
+    fn every_live_daemon_agrees_with_the_boxs_socket_table() {
         use letibot_tokencore::apparatus;
         use std::process::Command;
 
@@ -711,17 +725,30 @@ mod liveness_tests {
             return;
         };
 
-        // `ss` is what the shell uses to answer the same question. Without it there is
-        // nothing to compare against — and this is the box the `/proc` read was written
-        // for, so it is absent apparatus rather than a failure.
-        let ss_out = Command::new("ss").arg("-lxpH").output().ok();
+        // The tool each platform answers the question with. Linux's `ss` is what the shell
+        // uses; macOS's `netstat -anv` is the kernel's table (`tools/src/exec/host.rs` asks
+        // it the same way for a TCP port). Without the one this platform has there is
+        // nothing to compare against, so it is absent apparatus rather than a failure —
+        // `iproute2` on one, the base system on the other.
+        #[cfg(target_os = "macos")]
+        let (tool, listing) = (
+            "netstat -anv -f unix",
+            Command::new("/usr/sbin/netstat")
+                .args(["-anv", "-f", "unix"])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .ok(),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (tool, listing) = ("ss -lxpH", Command::new("ss").arg("-lxpH").output().ok());
         let Some(_) = apparatus::present(
-            "the `ss` command, to compare this module's answer against",
-            ss_out.is_some(),
+            &format!("the `{tool}` command, to compare this module's answer against"),
+            listing.is_some(),
         ) else {
             return;
         };
-        let ss = String::from_utf8_lossy(&ss_out.expect("present checked it").stdout).into_owned();
+        let listing =
+            String::from_utf8_lossy(&listing.expect("present checked it").stdout).into_owned();
 
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return;
@@ -744,19 +771,17 @@ mod liveness_tests {
                 continue;
             }
             n_live += 1;
-            // What `ss` says: the pid on the line naming this socket.
-            let ss_pid = ss
-                .lines()
-                .find(|l| l.contains(rec.socket.as_str()))
-                .and_then(|l| l.split("pid=").nth(1))
-                .and_then(|r| r.split(',').next())
-                .and_then(|p| p.parse::<u32>().ok());
+            // What the box says: the pid on the line naming this socket.
+            #[cfg(target_os = "macos")]
+            let theirs = netstat_listener_pid(&listing, &w.socket);
+            #[cfg(not(target_os = "macos"))]
+            let theirs = ss_listener_pid(&listing, &rec.socket);
             let mine = daemon_pid(&w);
-            if ss_pid.is_some() && mine == ss_pid {
+            if theirs.is_some() && mine == theirs {
                 agreed += 1;
             } else {
                 eprintln!(
-                    "  {} ss says pid={ss_pid:?}, this module says pid={mine:?}",
+                    "  {} {tool} says pid={theirs:?}, this module says pid={mine:?}",
                     rec.socket
                 );
             }
@@ -773,9 +798,84 @@ mod liveness_tests {
         };
         assert_eq!(
             agreed, n_live,
-            "every live daemon must be found at the pid `ss` reports; {stale} record(s) were stale"
+            "every live daemon must be found at the pid `{tool}` reports; \
+             {stale} record(s) were stale"
         );
-        eprintln!("agreed with ss on {agreed} live daemon(s); {stale} stale record(s) skipped");
+        eprintln!("agreed with {tool} on {agreed} live daemon(s); {stale} stale record(s) skipped");
+    }
+
+    /// The pid `ss -lxpH` names on the line carrying this socket — `users:(("harnessd",pid=123,fd=9))`.
+    ///
+    /// The substring match is the shell's and is kept: `ss` escapes a socket path, so the
+    /// line is found by the path it shares with the record rather than by a parse of the
+    /// whole line.
+    #[cfg(not(target_os = "macos"))]
+    fn ss_listener_pid(listing: &str, socket: &str) -> Option<u32> {
+        listing
+            .lines()
+            .find(|l| l.contains(socket))
+            .and_then(|l| l.split("pid=").nth(1))
+            .and_then(|r| r.split(',').next())
+            .and_then(|p| p.parse::<u32>().ok())
+    }
+
+    /// The pid `netstat -anv -f unix` names on the row whose `Addr` column is this socket.
+    ///
+    /// Two facts about the table, both read off it rather than assumed. The path is the LAST
+    /// column, which is why the row is found from the end: netstat pads the `Address` column
+    /// with a leading space, so counting columns from the front is what breaks. The pid is in
+    /// the column the `-v` HEADER calls `process:pid` (MEASURED: index 12 today), so the
+    /// header is where its position is read from — a table that grows a column does not
+    /// silently move the answer.
+    ///
+    /// `test` as well as macOS in the `cfg`, so the parser is exercised on the box that
+    /// builds it: this module's macOS half is otherwise only ever compiled on a Mac, and a
+    /// parser that has never been run is the example-plugin rakes over again.
+    #[cfg(any(target_os = "macos", test))]
+    fn netstat_listener_pid(listing: &str, socket: &Path) -> Option<u32> {
+        let want = socket.to_string_lossy();
+        let header = listing.lines().find(|l| l.contains("process:pid"))?;
+        let at = header
+            .split_ascii_whitespace()
+            .position(|c| c == "process:pid")?;
+        listing
+            .lines()
+            .filter(|l| l.split_ascii_whitespace().next_back() == Some(want.as_ref()))
+            .find_map(|l| {
+                l.split_ascii_whitespace()
+                    .nth(at)
+                    .and_then(|c| c.rsplit_once(':'))
+                    .and_then(|(_, pid)| pid.parse::<u32>().ok())
+            })
+    }
+
+    /// **The listing is a snapshot, so only the live direction is asserted.** A daemon that
+    /// dies between the `netstat` above and the connect below is legitimately absent from
+    /// the module's answer — it counts as stale — and asserting the other direction would
+    /// fail on a box that is merely busy. A daemon the module DID reach, on the other hand,
+    /// was listening when the table was read, so `netstat_listener_pid` must find it.
+    #[test]
+    fn the_macos_pid_is_read_from_the_columns_the_header_names() {
+        let listing = "\
+Address          Type   Recv-Q Send-Q            Inode             Conn             Refs          Nextref      rxbytes      txbytes  rhiwat  shiwat          process:pid    state  options           gencnt    flags   flags1 usecnt rtncnt fltrs Addr
+7f9584cf92f1dc49 stream      0      0                0 5e74e0224b20b148                0                0          158        10056    8192    8192 late_head-5df8d7:82224  00002 00000000 0000000002c52978 00048001 01000000      3      0 000000 /tmp/x/daemon.sock
+ ccbb96ded6ba748 stream      0      0 8f48240d5f521c86                0                0                0            0            0    8192    8192         harnessd:94819  00100 00000002 0000000002c52976 00008001 00000000      1      0 000000 /var/tmp/letibot/ab.sock
+";
+        assert_eq!(
+            netstat_listener_pid(listing, Path::new("/var/tmp/letibot/ab.sock")),
+            Some(94819),
+            "the `process:pid` column of the row whose Addr is this path"
+        );
+        assert_eq!(
+            netstat_listener_pid(listing, Path::new("/tmp/x/daemon.sock")),
+            Some(82224),
+            "and another socket's row does not answer for it"
+        );
+        assert_eq!(
+            netstat_listener_pid(listing, Path::new("/tmp/not-bound.sock")),
+            None,
+            "a path the table does not list has no pid"
+        );
     }
 }
 
