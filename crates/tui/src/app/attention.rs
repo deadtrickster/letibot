@@ -173,8 +173,8 @@ impl App {
             self.images_box = box_cols;
             for (id, (w, h)) in &self.images_sent {
                 let (cols, rows) = rano::term::graphics::image_cells(*w, *h, box_cols);
-                self.image_uploads
-                    .push(rano::term::graphics::image_place(*id, cols, rows));
+                let place = rano::term::graphics::image_place(*id, cols, rows);
+                self.image_uploads.push(self.proto.wrap(&place));
             }
         }
         if self.images_scanned > self.items.len() {
@@ -267,10 +267,14 @@ impl App {
         for (id, w, h, b64) in found {
             if self.images_sent.insert(id, (w, h)).is_none() {
                 let (cols, rows) = rano::term::graphics::image_cells(w, h, box_cols);
-                self.image_uploads
-                    .push(rano::term::graphics::image_upload(id, &b64));
-                self.image_uploads
-                    .push(rano::term::graphics::image_place(id, cols, rows));
+                // **Wrapped for the multiplexer**, in the one place every picture this head uploads
+                // passes through: inside tmux a kitty sequence crosses only as a DCS payload with
+                // its escapes doubled (`rano::term::Proto::wrap`), and an unwrapped one is
+                // swallowed with nothing said.
+                let upload = rano::term::graphics::image_upload(id, &b64);
+                self.image_uploads.push(self.proto.wrap(&upload));
+                let place = rano::term::graphics::image_place(id, cols, rows);
+                self.image_uploads.push(self.proto.wrap(&place));
             }
         }
     }

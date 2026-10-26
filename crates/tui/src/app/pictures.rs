@@ -113,7 +113,7 @@ impl App {
                             part: k,
                             id,
                             px,
-                            bytes: bytes_of(&p),
+                            bytes: bytes_of(p),
                         },
                     ));
                     break;
@@ -136,7 +136,7 @@ impl App {
                 TranscriptItem::User { parts, .. } => parts.get(r.part),
                 _ => None,
             })
-            .map(|p| p.clone());
+            .cloned();
         let Some(UserPart::Image {
             media_type,
             data_ref,

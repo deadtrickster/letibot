@@ -235,3 +235,27 @@ fn the_operators_words_are_not_the_picture() {
         "a click on the operator's words opened the picture"
     );
 }
+
+/// **A picture behind tmux crosses as the wrapped form** — a kitty sequence inside a multiplexer
+/// goes as a DCS payload with its escapes doubled, and an unwrapped one is swallowed with nothing
+/// said. The one place that decides is `Proto::wrap`, and every upload this head makes passes
+/// through it.
+#[test]
+fn behind_tmux_a_picture_is_uploaded_as_the_wrapped_form() {
+    let mut a = a_prompt_with_a_picture();
+    a.set_proto(rano::term::Proto::KittyPassthrough);
+    let screen = a.screen(100, 30);
+    assert!(
+        !picture_rows_on(&screen).is_empty(),
+        "the placeholders are ordinary text and cross tmux as they are"
+    );
+    let uploads = a.take_image_uploads();
+    assert_eq!(uploads.len(), 2);
+    for cmd in &uploads {
+        assert!(
+            cmd.starts_with(b"\x1bPtmux;") && cmd.ends_with(b"\x1b\\"),
+            "not the wrapped form: {:?}",
+            String::from_utf8_lossy(cmd)
+        );
+    }
+}
