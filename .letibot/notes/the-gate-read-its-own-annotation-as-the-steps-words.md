@@ -105,3 +105,17 @@ and `ls ~/models/qwen3.8-flash-next/` shows **shard 1 of 6 only** (`…-00001-of
 a vocabulary from a partial split, `Parts::load` fails, and the two GGUF-dependent integration
 targets fail. So `main`'s step 3 is not code — it is the box's apparatus, which is exactly what
 `LETIBOT_REQUIRE_APPARATUS=1` is supposed to turn into a failure.
+
+## UPDATE 2026-10-27 (3) — both model directories hold shard 1 of 6, and existence is not loadability
+
+`ls ~/models/*/` on this box: `qwen3.8-flash-next/` has `…-00001-of-00006.gguf` (10.9 MB) and a
+`split-shard-1.gguf.orig`; `glm-5.3-flash/` has `GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf`
+(9.4 MB). Shard 1 of 6 in both, nothing else — no complete model to point `LETIBOT_VOCAB_GGUF` at,
+so there is no local workaround for the gate's step 3, and every `regate` fails identically.
+
+**And the apparatus check cannot see it**: `apparatus::present_gguf` (`tokencore/src/apparatus.rs:
+175-179`) asks only `p.is_file()`. A 10 MB first shard of a six-shard model passes the check, so the
+run does not skip (it would be allowed to — `absent()` is what skips) — it proceeds, `Parts::load`
+fails inside `parts_for`, and the box's absent apparatus arrives as a *test failure*. A predicate
+that asked libllama to open it, or that compared the shard count against the `of-0000N` in the name,
+would have said "absent" and skipped with a sentence instead.
