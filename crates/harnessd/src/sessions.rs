@@ -2700,6 +2700,13 @@ impl<'a> Sessions<'a> {
         host.announce(&hub);
         let driver: Arc<dyn letibot_sessionlog::registry::PaneDriver> = host.clone();
         self.registry.set_pane_driver(session_id, driver);
+        // **And the `plugin` tool asks the same host.** It was seated when the harness opened,
+        // before this — a hub and a pane driver exist only here — so it holds a cell and this is
+        // the only place that fills one. Without it, `plugin load` would build a SECOND stack and
+        // a pane loaded through the tool would not be the pane the head draws.
+        if let Some(h) = self.open.get(session_id) {
+            *h.plugin_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(host.clone());
+        }
         self.plugins.insert(session_id.to_string(), host);
     }
 

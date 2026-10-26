@@ -48,15 +48,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use letibot_plugins::{Builder, Capability, CargoBuilder, Failure, Loader, Recorder, Stack};
+use letibot_plugins::{Builder, Capability, CargoBuilder, Failure, Loader, Recorder, Scope, Stack};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::pane::{Block, Line, LookSpec, Panel, Role, Unavailable, View};
 use letibot_sessionlog::registry::PaneDriver;
 use serde_json::{Value, json};
 
+pub mod contract;
+pub mod desk;
 pub mod look;
 pub mod rano;
+pub mod scaffold;
 
 /// **How often the hot-reload tick looks** — `docs/plugins-plan.md` §2.3 makes a change take
 /// effect on the next hook call, and this is the longest a person waits after saving one. Two
@@ -76,6 +79,11 @@ const PANE_V: u32 = 1;
 pub struct PluginHost {
     session: String,
     workspace: PathBuf,
+    /// **The session's own plugin directory** — where `plugin scaffold` writes and where a
+    /// session-scope layer is discovered from (C2's session scope). Kept beside the stack
+    /// because the stack only knows the layers it FOUND, and a scaffold's job is the directory a
+    /// layer will be written into before any discovery can see it.
+    session_dir: Option<PathBuf>,
     inner: Mutex<Inner>,
     /// How the gate's step 1 is performed. `CargoBuilder` in the daemon; a table of answers in a
     /// test, because a test that ran cargo would need the wasm target and a real crate to build.
@@ -175,6 +183,7 @@ impl PluginHost {
         PluginHost {
             session: session.into(),
             workspace,
+            session_dir,
             inner: Mutex::new(Inner {
                 stack,
                 rec: Recorder::new(),
@@ -201,8 +210,7 @@ impl PluginHost {
         loader: Arc<dyn Loader>,
         builder: Arc<dyn Builder>,
     ) -> PluginHost {
-        let session_dir = crate::mergequeue::git::letibot_data_dir()
-            .map(|dir| dir.join("sessions").join(session).join("plugins"));
+        let session_dir = session_plugins_dir(session);
         PluginHost::discover(
             session,
             workspace,
@@ -345,7 +353,7 @@ impl PluginHost {
                 Some(why) => self.refused(hub, &id, &why),
                 None => {
                     applied += 1;
-                    self.after_apply(hub);
+                    self.refresh_panes(hub);
                 }
             }
         }
@@ -375,8 +383,18 @@ impl PluginHost {
         });
     }
 
-    /// **A candidate passed: re-render what is on a screen, and say which panes are gone.**
-    fn after_apply(&self, hub: &Arc<Hub>) {
+    /// **The stack changed: bring every screen into line with it.**
+    ///
+    /// Three things, and they are three because a pane list can change in three ways at once: a
+    /// pane that was open and is still there is asked AGAIN WITH ITS LOOK (a reload is a new
+    /// version of the answer, not a reason to redraw the frame that asks for the file); a pane
+    /// that is gone is published as `PluginPaneGone`; and a pane that is new is announced, which
+    /// is how a head learns a title for a pane it has never heard of (C4).
+    ///
+    /// Called from the hot-reload gate, from `plugin load` and from `plugin disable`/`enable` —
+    /// one function, because three answers to *what is on a screen now* is how they start to
+    /// disagree.
+    fn refresh_panes(&self, hub: &Arc<Hub>) {
         let panes = self.panes();
         let (stale, open): (Vec<String>, Vec<String>) = {
             let inner = self.lock();
@@ -395,7 +413,15 @@ impl PluginHost {
         for pane in &stale {
             hub.publish(SessionEvent::PluginPaneGone { pane: pane.clone() });
         }
+        let fresh: Vec<String> = panes
+            .iter()
+            .filter(|p| !open.contains(p))
+            .cloned()
+            .collect();
         for pane in open {
+            self.render(hub, &pane, Req::fresh());
+        }
+        for pane in fresh {
             self.render(hub, &pane, Req::announced());
         }
     }
@@ -589,6 +615,674 @@ impl PluginHost {
     }
 }
 
+// -------------------------------------------------------------------------------------------
+// The `plugin` tool's half of this module: scaffold, build, load, stack, disable/enable, test.
+//
+// Every one of these asks the LIVE stack — the one `PaneDriver` draws panes from — because a
+// second stack would be a second answer to *what is in force*, which is the one question a
+// layered design cannot afford two of (`docs/plugins-plan.md` §2.3).
+// -------------------------------------------------------------------------------------------
+
+/// **A refusal the `plugin` tool hands a model**: the sentence saying what did not happen, and the
+/// detail it is fixed from — a compiler's own words, the gate's report, the layers there are.
+///
+/// Two fields rather than one string, because a failed build is exactly the case: the reason is
+/// *"cargo build failed"* and the detail is forty lines of `error[E0425]`, which is the part a
+/// model edits. The tool's own [`letibot_tools::builtins::plugin::Refusal`] is the same shape
+/// because it crosses a crate boundary; [`desk`] is the one place the two are converted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub why: String,
+    pub detail: String,
+}
+
+impl Refused {
+    fn new(why: impl Into<String>, detail: impl Into<String>) -> Refused {
+        Refused {
+            why: why.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+impl PluginHost {
+    /// The layer directory for a plugin `name`, or the refusal that names what IS there.
+    pub fn layer_dir(&self, name: &str) -> Result<PathBuf, Refused> {
+        let Some(root) = self.session_dir.as_deref() else {
+            return Err(Refused::new(
+                "this session has no plugin directory",
+                "a session layer lives under the letibot data dir \
+                 (<data>/sessions/<id>/plugins), and this daemon could not resolve that directory",
+            ));
+        };
+        let dir = root.join(name);
+        if dir.join(letibot_plugins::MANIFEST).is_file() {
+            return Ok(dir);
+        }
+        let mut there: Vec<String> = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().join(letibot_plugins::MANIFEST).is_file())
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .collect();
+        there.sort();
+        let detail = if there.is_empty() {
+            format!(
+                "this session has no plugins of its own yet ({}); `plugin scaffold` writes the \
+                 first one there",
+                root.display()
+            )
+        } else {
+            format!("this session's plugins are: {}", there.join(", "))
+        };
+        Err(Refused::new(
+            format!("there is no plugin `{name}` in this session"),
+            detail,
+        ))
+    }
+
+    /// **`plugin build`** — the plugin's source compiled for `wasm32-unknown-unknown`, and the
+    /// artifact installed as its `plugin.wasm`.
+    ///
+    /// It is the gate's own step 1 through the gate's own [`Builder`], so the two can never
+    /// disagree about what a build is: `--offline`, `--release`, the wasm target, and the
+    /// artifact copied from wherever cargo put it. The compiler's own words come back as the
+    /// detail of a refusal, verbatim — a summary of an `E0425` is a model editing the wrong line.
+    pub fn build(&self, name: &str) -> Result<String, Refused> {
+        let dir = self.layer_dir(name)?;
+        match self.builder.build(&dir) {
+            Ok(log) => {
+                let wasm = dir.join(letibot_plugins::WASM);
+                let bytes = std::fs::metadata(&wasm).map(|m| m.len()).unwrap_or(0);
+                let mut said = format!("built `{name}` → {} ({bytes} bytes)", wasm.display());
+                let log = log.trim();
+                if !log.is_empty() {
+                    said.push_str("\n\n");
+                    said.push_str(log);
+                }
+                said.push_str(
+                    "\n\nnext: `plugin test` to see the view it answers, then `plugin load`.",
+                );
+                Ok(said)
+            }
+            Err(e) => {
+                // The compiler's output is the report. When cargo could not even start there is
+                // no output, and then the reason IS the detail rather than an empty payload.
+                let detail = if e.log.trim().is_empty() {
+                    e.why.clone()
+                } else {
+                    e.log
+                };
+                Err(Refused::new(
+                    format!("the build of `{name}` failed"),
+                    detail,
+                ))
+            }
+        }
+    }
+
+    /// **`plugin load`** — the shadow gate (§2.4), then a synthetic call of every pane the
+    /// candidate exports, then the swap, hot.
+    ///
+    /// The gate's own five steps are `letibot_plugins::gate`'s and are not repeated here. What
+    /// this adds is the step a NEW layer needs and a modified one does not: the gate replays the
+    /// inputs a hook has already been asked, and a layer nobody has ever called has none — so
+    /// without a synthetic call a first-time pane would be applied having never run once. That is
+    /// exactly the measured rake of this slice (a committed `.wasm` that had never been executed
+    /// and trapped on every call), so the call is made on the SHADOW, before anything on a screen
+    /// changes, and a trap or a view the host would refuse keeps the live stack untouched.
+    pub fn load(&self, hub: &Arc<Hub>, name: &str) -> Result<String, Refused> {
+        let dir = self.layer_dir(name)?;
+        let (stack, rec) = {
+            let inner = self.lock();
+            (inner.stack.clone(), inner.rec.clone())
+        };
+        let cand = stack.candidate(&dir, Scope::Session).map_err(|why| {
+            Refused::new(
+                format!("`{name}` cannot be a layer yet"),
+                format!("{why} — `plugin build {name}` produces the module a layer loads"),
+            )
+        })?;
+        let report = letibot_plugins::gate(&stack, &rec, &cand, self.builder.as_ref());
+        if !report.passed {
+            let why = report
+                .failure
+                .clone()
+                .unwrap_or_else(|| "the gate passed no reason".to_string());
+            let mut detail = why.clone();
+            let log = report.build_log.trim();
+            if !log.is_empty() && !detail.contains(log) {
+                detail.push_str("\n\n");
+                detail.push_str(log);
+            }
+            return Err(Refused::new(
+                format!("the shadow gate refused `{name}`"),
+                detail,
+            ));
+        }
+
+        // **The shadow runs it, and the live stack does not.** A clone, the candidate applied to
+        // the clone, every recorded input of every pane hook the candidate exports plus one
+        // synthetic first frame — and each answer parsed and validated as the view the host's keys
+        // must be able to drive.
+        let mut shadow = stack.clone();
+        shadow
+            .apply(cand.clone())
+            .map_err(|why| Refused::new(format!("`{name}` could not be shadowed"), why))?;
+        let hooks: Vec<String> = cand
+            .manifest
+            .hooks
+            .iter()
+            .filter(|h| h.starts_with("pane_"))
+            .cloned()
+            .collect();
+        if hooks.is_empty() {
+            return Err(Refused::new(
+                format!("`{name}` answers no pane"),
+                format!(
+                    "its plugin.toml declares {:?}, and a pane hook is one named `pane_<something>` \
+                     (docs/plugins-slice1.md C3)",
+                    cand.manifest.hooks
+                ),
+            ));
+        }
+        let mut said = Vec::new();
+        for hook in &hooks {
+            let mut inputs = rec.inputs(hook).to_vec();
+            inputs.push(synthetic_pane_input());
+            for input in inputs {
+                let resolved = shadow.call(hook, &input);
+                let wrong: Vec<String> = resolved
+                    .failures
+                    .iter()
+                    .filter(|f| f.layer.is_empty() || shadow.layer(&f.layer).is_some())
+                    .map(|f| f.to_string())
+                    .collect();
+                if !wrong.is_empty() {
+                    return Err(Refused::new(
+                        format!("`{name}` fails when it is called, and nothing was applied"),
+                        format!(
+                            "`{hook}` was asked {} and did not answer: {}\n\nthe version that was \
+                             answering before is still answering.",
+                            describe_input(&input),
+                            wrong.join("; ")
+                        ),
+                    ));
+                }
+                let Some(answer) = resolved.answer else {
+                    said.push(format!(
+                        "`{hook}` answers nothing for {} — it passes, and no layer below it \
+                         answers, so the pane would draw nothing",
+                        describe_input(&input)
+                    ));
+                    continue;
+                };
+                let by = resolved.by.clone().unwrap_or_else(|| name.to_string());
+                let fuel = shadow.fuel(&by).unwrap_or(0);
+                match validated(&answer, name, &by) {
+                    Ok(view) => said.push(format!(
+                        "`{hook}` answers a view the host can drive for {}{} — \"{}\"",
+                        describe_input(&input),
+                        fuel_note(fuel),
+                        view.title
+                    )),
+                    Err(why) => {
+                        return Err(Refused::new(
+                            format!(
+                                "`{name}` answers something the host refuses, so nothing was applied"
+                            ),
+                            format!(
+                                "`{hook}` on {}: {why}\n\nthe answer was: {}",
+                                describe_input(&input),
+                                answer
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // A pass: the live stack gets the candidate, and every screen is brought into line.
+        self.lock().stack.apply(cand).map_err(|why| {
+            Refused::new(
+                format!("`{name}` passed the gate but could not be applied"),
+                why,
+            )
+        })?;
+        let id = {
+            let inner = self.lock();
+            inner
+                .stack
+                .layers()
+                .iter()
+                .find(|l| l.dir == dir)
+                .map(|l| l.id.clone())
+                .unwrap_or_default()
+        };
+        self.refresh_panes(hub);
+        let panes = pane_names(&self.lock().stack);
+        let mine: Vec<String> = panes
+            .into_iter()
+            .filter(|p| p.starts_with(&format!("{name}/")))
+            .collect();
+        Ok(format!(
+            "loaded `{name}` as layer `{id}` — the shadow gate passed and it is answering now, with \
+             no restart.\n\n{}\n\npanes it draws: {}",
+            said.join("\n"),
+            if mine.is_empty() {
+                "none (a layer that answers no pane hook)".to_string()
+            } else {
+                mine.join(", ")
+            }
+        ))
+    }
+
+    /// **`plugin stack`** — what is in force, newest first.
+    ///
+    /// The answering layer per hook is the topmost ENABLED layer that exports it, which is what
+    /// the order means; whether that layer then passes or masks is a question only a call answers,
+    /// so it is `plugin test`'s and the wording here says so rather than pretending to have
+    /// measured it.
+    pub fn stack_doc(&self) -> String {
+        let inner = self.lock();
+        let stack = &inner.stack;
+        let mut out = String::from(
+            "the stack, newest first — session, then project, then user, then built-in.\n\n",
+        );
+        if stack.layers().is_empty() {
+            out.push_str(
+                "  no layers at all: nothing is patching anything. `plugin scaffold` writes the \
+                 first one, and `plugin load` puts it in force.\n",
+            );
+        }
+        for layer in stack.layers() {
+            out.push_str(&format!(
+                "  {:<10} {:<10} {:<26} {:<28} {:<12} {}{}\n",
+                layer.id,
+                layer.scope.to_string(),
+                truncate(&layer.manifest.name, 26),
+                truncate(&layer.manifest.hooks.join(","), 28),
+                format!(
+                    "[{}]",
+                    layer
+                        .manifest
+                        .capabilities
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                if layer.sha256.is_empty() {
+                    "sha —".to_string()
+                } else {
+                    format!("sha {}", &layer.sha256[..layer.sha256.len().min(12)])
+                },
+                if layer.disabled { "  DISABLED" } else { "" }
+            ));
+        }
+        let mut hooks: Vec<String> = Vec::new();
+        for layer in stack.layers() {
+            for hook in &layer.manifest.hooks {
+                if !hooks.contains(hook) {
+                    hooks.push(hook.clone());
+                }
+            }
+        }
+        if !hooks.is_empty() {
+            out.push_str(
+                "\nhooks, and the topmost layer that exports each (whether it then passes or \
+                 masks is what `plugin test` measures):\n",
+            );
+            for hook in hooks {
+                let exporters: Vec<&letibot_plugins::Layer> = stack
+                    .layers()
+                    .iter()
+                    .filter(|l| l.manifest.hooks.contains(&hook))
+                    .collect();
+                let answering = exporters.iter().find(|l| !l.disabled);
+                let by = match answering {
+                    Some(layer) => {
+                        let also = exporters.len().saturating_sub(1);
+                        format!(
+                            "{} ({}){}",
+                            layer.id,
+                            layer.scope,
+                            if also == 0 {
+                                String::new()
+                            } else {
+                                format!(", {also} below")
+                            }
+                        )
+                    }
+                    None => format!(
+                        "nobody — {} layer(s) export it and every one is disabled",
+                        exporters.len()
+                    ),
+                };
+                out.push_str(&format!(
+                    "  {:<28} <- {:<38} {} recorded input(s)\n",
+                    hook,
+                    by,
+                    inner.rec.len(&hook)
+                ));
+            }
+        }
+        let failures = stack.failures();
+        out.push_str("\nfailures: ");
+        if failures.is_empty() {
+            out.push_str("none — every layer that is on disk loaded.\n");
+        } else {
+            out.push('\n');
+            for f in failures {
+                out.push_str(&format!("  {f}\n"));
+            }
+        }
+        out.push_str(
+            "\n`plugin test <name>` calls a hook and says which layer answered; `plugin disable \
+             <layer>` takes one out without deleting it.\n",
+        );
+        out
+    }
+
+    /// **`plugin disable` / `plugin enable`** — the bisect for *"which of my fixes broke this"*.
+    ///
+    /// `what` is a layer id (`s2`), a plugin's name (`plan-dashboard`) or a pane id
+    /// (`plan-dashboard/dashboard`); a name that matches more than one layer is refused with the
+    /// ids, never guessed at.
+    pub fn set_enabled(
+        &self,
+        hub: &Arc<Hub>,
+        what: &str,
+        enabled: bool,
+    ) -> Result<String, Refused> {
+        let (id, name) = {
+            let inner = self.lock();
+            let layer = one_layer(&inner.stack, what)?;
+            (layer.id.clone(), layer.manifest.name.clone())
+        };
+        {
+            let mut inner = self.lock();
+            inner
+                .stack
+                .set_disabled(&id, !enabled)
+                .map_err(|why| Refused::new(format!("`{id}` could not be moved"), why))?;
+        }
+        self.refresh_panes(hub);
+        let undo = if enabled {
+            format!("disable {id}")
+        } else {
+            format!("enable {id}")
+        };
+        Ok(format!(
+            "layer `{id}` (`{name}`) is {}. The stack re-resolved as if it were not there; nothing \
+             was deleted, so `plugin {undo}` puts it back.",
+            if enabled { "on" } else { "off" }
+        ))
+    }
+
+    /// **`plugin test`** — one hook called with one input, and the whole answer reported: the view,
+    /// the layer that answered, the fuel, and any trap.
+    ///
+    /// A PANE ID is asked through the whole stack, because that is the question a head asks. A
+    /// LAYER id is asked with every other disk layer disabled, because that is the question a bisect
+    /// asks — *what does MY layer say* — and the answer says which of the two was asked.
+    pub fn test(&self, what: Option<&str>, input: Option<&Value>) -> Result<String, Refused> {
+        let input = input.cloned().unwrap_or_else(synthetic_pane_input);
+        let (hook, only, label) = {
+            let inner = self.lock();
+            self.resolve_hook(&inner.stack, what)?
+        };
+        let (stack, rec) = {
+            let inner = self.lock();
+            (inner.stack.clone(), inner.rec.clone())
+        };
+        let asked = match &only {
+            None => stack,
+            Some(id) => {
+                // Every other DISK layer off: a built-in is the floor and stays, because a layer
+                // that asks below would otherwise be told the stack is empty.
+                let mut alone = stack.clone();
+                for layer in stack.layers() {
+                    if layer.scope != Scope::BuiltIn && &layer.id != id {
+                        let _ = alone.set_disabled(&layer.id, true);
+                    }
+                }
+                alone
+            }
+        };
+        let resolved = asked.call(&hook, &input);
+        let mut out = format!("`{hook}` asked with {} — {label}\n", describe_input(&input));
+        for f in &resolved.failures {
+            out.push_str(&format!("\nTRAP: {f}\n"));
+        }
+        let recorded = rec.len(&hook);
+        match &resolved.answer {
+            None => {
+                out.push_str(
+                    "\nNothing answered: every layer that exports this hook passed (or masked it), \
+                     and there is nothing below.\n",
+                );
+            }
+            Some(answer) => {
+                let by = resolved.by.clone().unwrap_or_default();
+                let fuel = asked.fuel(&by);
+                let scope = asked
+                    .layer(&by)
+                    .map(|l| l.scope.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                out.push_str(&format!(
+                    "\nanswered by `{by}` ({scope}){}\n",
+                    match fuel {
+                        Some(n) => format!(" · {n} fuel units"),
+                        None => String::new(),
+                    }
+                ));
+                match validated(answer, &hook, &by) {
+                    Ok(view) => {
+                        out.push_str("\nthe view it answered (a C3 view this host can drive):\n");
+                        out.push_str(
+                            &serde_json::to_string_pretty(answer)
+                                .unwrap_or_else(|_| answer.to_string()),
+                        );
+                        out.push('\n');
+                        if let Some(spec) = &view.look {
+                            out.push_str(&format!(
+                                "\nit asks the host for a look: {} — a head runs it and calls the \
+                                 pane again with the result, so this frame is the one that asks.\n",
+                                serde_json::to_string(spec).unwrap_or_default()
+                            ));
+                        }
+                    }
+                    Err(why) => {
+                        out.push_str(&format!(
+                            "\n**The host would REFUSE this answer**, so a head would draw the \
+                             refusal instead: {why}\n\nthe answer was:\n{}\n",
+                            serde_json::to_string_pretty(answer)
+                                .unwrap_or_else(|_| answer.to_string())
+                        ));
+                    }
+                }
+            }
+        }
+        out.push_str(&format!(
+            "\n{recorded} input(s) of this hook recorded for the shadow gate's replay.\n"
+        ));
+        Ok(out)
+    }
+
+    /// **Which hook `test` asks, and whether it is asked alone.**
+    ///
+    /// A pane id is the whole stack's question; a layer id (or a plugin name, or a pane id, which
+    /// [`one_layer`] resolves the same way) is that layer's own.
+    fn resolve_hook(
+        &self,
+        stack: &Stack,
+        what: Option<&str>,
+    ) -> Result<(String, Option<String>, String), Refused> {
+        let panes = pane_names(stack);
+        match what.map(str::trim).filter(|w| !w.is_empty()) {
+            // A pane id is `<plugin>/<hook name without its kind>` (C4).
+            Some(pane) if pane.contains('/') => {
+                let (_, name) = pane.split_once('/').unwrap_or((pane, ""));
+                if name.is_empty() {
+                    return Err(Refused::new(
+                        format!("`{pane}` is not a pane id"),
+                        pane_list(&panes),
+                    ));
+                }
+                Ok((
+                    format!("pane_{name}"),
+                    None,
+                    format!("through the whole stack, as a head asks it (`{pane}`)"),
+                ))
+            }
+            Some(other) => {
+                let layer = one_layer(stack, other)?;
+                let hook = layer
+                    .manifest
+                    .hooks
+                    .iter()
+                    .find(|h| h.starts_with("pane_"))
+                    .cloned()
+                    .ok_or_else(|| {
+                        Refused::new(
+                            format!("layer `{}` answers no pane hook", layer.id),
+                            format!("its plugin.toml declares {:?}", layer.manifest.hooks),
+                        )
+                    })?;
+                Ok((
+                    hook,
+                    Some(layer.id.clone()),
+                    format!(
+                        "with every other layer of this session switched off (layer `{}` alone)",
+                        layer.id
+                    ),
+                ))
+            }
+            None => match panes.len() {
+                1 => {
+                    let (_, name) = panes[0].split_once('/').unwrap_or(("", ""));
+                    Ok((
+                        format!("pane_{name}"),
+                        None,
+                        format!("through the whole stack (`{}` is the only pane)", panes[0]),
+                    ))
+                }
+                0 => Err(Refused::new(
+                    "this session has no pane to test",
+                    "`plugin scaffold` writes one, `plugin build` compiles it, and `plugin load` \
+                     puts it in force; or name a layer by id",
+                )),
+                _ => Err(Refused::new("name the pane to test", pane_list(&panes))),
+            },
+        }
+    }
+}
+
+/// C3's input, once, for a caller that has none of its own: the first frame of any pane — nothing
+/// looked at, nothing pressed, no state.
+fn synthetic_pane_input() -> Value {
+    input_value(&None, &Req::fresh(), (SIZE_W, SIZE_H))
+}
+
+/// **One layer, by id, by manifest name, or by pane id** — and never a guess between two.
+///
+/// A name that matches two layers (a session fix and the project layer it was promoted from) is
+/// refused with the ids, because *disable the plugin called x* has two answers there and a host
+/// that picked one would be moving a layer nobody named.
+fn one_layer<'a>(stack: &'a Stack, what: &str) -> Result<&'a letibot_plugins::Layer, Refused> {
+    let what = what.trim();
+    if let Some(layer) = stack.layer(what) {
+        return Ok(layer);
+    }
+    // A pane id names its plugin before the slash.
+    let by_name = what.split('/').next().unwrap_or(what);
+    let matches: Vec<&letibot_plugins::Layer> = stack
+        .layers()
+        .iter()
+        .filter(|l| l.manifest.name == by_name)
+        .collect();
+    match matches.len() {
+        1 => Ok(matches[0]),
+        0 => {
+            let ids: Vec<String> = stack
+                .layers()
+                .iter()
+                .map(|l| format!("{} ({})", l.id, l.manifest.name))
+                .collect();
+            Err(Refused::new(
+                format!("`{what}` is not a layer of this session"),
+                if ids.is_empty() {
+                    "the stack is empty: nothing is patching anything yet".to_string()
+                } else {
+                    format!("the layers are: {}", ids.join(", "))
+                },
+            ))
+        }
+        _ => Err(Refused::new(
+            format!("`{what}` names {} layers", matches.len()),
+            format!(
+                "there is more than one layer called `{by_name}`; name it by id: {}",
+                matches
+                    .iter()
+                    .map(|l| format!("{} ({})", l.id, l.scope))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+/// How an input reads in a sentence: which frame it is, said the way a person would say it.
+fn describe_input(input: &Value) -> String {
+    let mut parts = Vec::new();
+    if input["look"].is_null() {
+        parts.push("no look".to_string());
+    } else {
+        parts.push(format!("a look's result (exit {})", input["look"]["exit"]));
+    }
+    if !input["event"].is_null() {
+        parts.push(format!(
+            "the `{}` action on `{}`",
+            input["event"]["action"].as_str().unwrap_or("?"),
+            input["event"]["item"].as_str().unwrap_or("?")
+        ));
+    }
+    if !input["state"].is_null() {
+        parts.push("the state it returned last time".to_string());
+    }
+    format!("[{}]", parts.join(", "))
+}
+
+fn fuel_note(fuel: u64) -> String {
+    if fuel == 0 {
+        // Nothing measured is not *it cost nothing*: a module that has not been asked burns no
+        // fuel, and saying `0` would report a free hook that never ran.
+        String::new()
+    } else {
+        format!(", {fuel} fuel units")
+    }
+}
+
+fn pane_list(panes: &[String]) -> String {
+    if panes.is_empty() {
+        "this session has no panes: nothing is patching anything yet".to_string()
+    } else {
+        format!("the panes of this session are: {}", panes.join(", "))
+    }
+}
+
+/// A field in the stack view: long enough to recognise, short enough to line up.
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        text.to_string()
+    } else {
+        let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+        format!("{kept}…")
+    }
+}
+
 impl PaneDriver for PluginHost {
     fn attach(&self, _session_id: &str, hub: &Arc<Hub>) {
         self.announce(hub);
@@ -737,6 +1431,18 @@ fn say_failures(hub: &Arc<Hub>, inner: &mut Inner, failures: &[Failure]) {
             compaction: None,
         });
     }
+}
+
+/// **Where a session's own layers live**: `<data dir>/sessions/<id>/plugins` — C2's session
+/// scope, and the directory `plugin scaffold` writes into.
+///
+/// One function, because three callers have to agree about it and a disagreement is a plugin the
+/// scaffold writes where nothing discovers it: [`PluginHost::for_session`] discovers this scope,
+/// `plugin scaffold` writes into it, and the daemon's `Sessions::open_plugins` builds the host
+/// over it. `None` only when the data dir itself cannot be resolved (no `$HOME`, no `XDG_DATA_HOME`).
+pub fn session_plugins_dir(session: &str) -> Option<PathBuf> {
+    crate::mergequeue::git::letibot_data_dir()
+        .map(|dir| dir.join("sessions").join(session).join("plugins"))
 }
 
 /// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` — where the user scope's layers are.

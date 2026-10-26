@@ -2395,6 +2395,16 @@ pub struct Harness {
     /// [`Harness::fall_back_from`] moves the session to the next name without arming a second
     /// continuation. See `fallback_continuation` for why the bound exists.
     continuation_of_fallback: bool,
+    /// **The session's plugin host, once the daemon has one** — the same live `Arc` the `plugin`
+    /// tool asks through (`crate::plugins::desk::SessionPlugins`), handed over here because the
+    /// two halves are built at different moments: the tool is seated when the harness opens, and
+    /// the host when the DAEMON opens the session (`Sessions::open_plugins`, which is the one
+    /// place a hub and a pane driver exist).
+    ///
+    /// `None` in a session the daemon did not open — a subagent, whose harness its parent's runner
+    /// builds — and `plugin scaffold`/`build` work there, because they are file and cargo
+    /// operations on the session's own plugin directory.
+    plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
 }
 
 /// **A switch waiting for the turn in flight to end** — recorded, said, and applied where the
@@ -4094,6 +4104,35 @@ impl Harness {
                 queue_desk,
             )))
             .map_err(|e| HarnessError::Setup(format!("registering the queue tool: {e}")))?;
+        // **The plugin loop** (P2): a pane written, built, tested and loaded in the session, at
+        // run time. Registered here with the desk bound to THIS session's plugin host — the same
+        // shape `queue` uses one line up, and for the same reason: the tool crosses a crate
+        // boundary, and what is behind it is the daemon's.
+        //
+        // The host itself does not exist yet — `Sessions::open_plugins` builds it when the daemon
+        // opens a session, which is later than this and is the only place a hub and a pane driver
+        // exist — so the desk holds a SLOT and the daemon fills it (`Parts::tree_watch`'s shape).
+        // `plugin scaffold` and `plugin build` need no host at all: they are file and cargo
+        // operations on the session's own plugin directory.
+        let plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>> =
+            Default::default();
+        let plugin_desk: Arc<dyn letibot_tools::builtins::plugin::PluginDesk> =
+            Arc::new(crate::plugins::desk::SessionPlugins::new(
+                cfg.session_id.clone(),
+                crate::plugins::session_plugins_dir(&cfg.session_id),
+                plugin_slot.clone(),
+                hub.clone(),
+            ));
+        registry
+            .register(Box::new(letibot_tools::builtins::plugin::PluginTool::new(
+                plugin_desk.clone(),
+            )))
+            .and_then(|_| {
+                registry.register(Box::new(
+                    letibot_tools::builtins::plugin::PluginHooksTool::new(plugin_desk),
+                ))
+            })
+            .map_err(|e| HarnessError::Setup(format!("registering the plugin tools: {e}")))?;
         // **`task_resume`** — the operator, 2026-10-12: *"we should bring subagents back"*, and past
         // the restore threshold *"remind the model … this is what you wre running and how to
         // restart that"*. The reminder names this one call. Registered here rather than in
@@ -5771,6 +5810,9 @@ impl Harness {
             // And no turn owed: only a fallback ever arms one.
             fallback_continuation: None,
             continuation_of_fallback: false,
+            // Filled by `Sessions::open_plugins` for a session the daemon serves; `None` reads
+            // `plugin scaffold`/`build` only, and says so by name (see the field).
+            plugin_slot: plugin_slot.clone(),
         };
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
@@ -6642,6 +6684,24 @@ impl Harness {
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    /// **The cell the daemon fills with this session's plugin host** — see the field.
+    ///
+    /// `Sessions::open_plugins` is the only caller: it builds the host (the one place a hub and a
+    /// pane driver exist) and fills this in, so the `plugin` tool seated when this harness opened
+    /// asks the very stack the head's panes are drawn from. Two hosts would be two answers to
+    /// *what is in force*.
+    pub fn plugin_slot(&self) -> Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>> {
+        self.plugin_slot.clone()
+    }
+
+    /// This session's plugin host, when the daemon has opened it.
+    pub fn plugin_host(&self) -> Option<Arc<crate::plugins::PluginHost>> {
+        self.plugin_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The project root this session's tools are confined to — the session's own,
