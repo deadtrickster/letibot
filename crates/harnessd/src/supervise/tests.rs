@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use letibot_tokencore::store::{ProcState, ProcessRecord, Store};
+use letibot_tools::exec::{ProcessHost as _, Waited};
 
 use super::*;
 
@@ -136,7 +137,7 @@ fn a_live_pid_is_not_the_job_when_the_identity_differs() {
         "the process that is here, is here"
     );
     assert_eq!(
-        alive_with_identity(me, "starttime:0"),
+        alive_with_identity(me, "start:0"),
         Some(false),
         "the same pid with another start time is another process"
     );
@@ -152,7 +153,7 @@ fn a_live_pid_is_not_the_job_when_the_identity_differs() {
     let reused = Want {
         handle: "j2".into(),
         pid: me,
-        identity: "starttime:0".into(),
+        identity: "start:0".into(),
         exit_path: None,
     };
     let checked = probe.check(None, &[live, reused]);
@@ -609,5 +610,226 @@ fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
 
     let _ = child.kill();
     let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **A host over a temp root — or `None` when this box cannot delegate a cgroup v2 subtree.**
+///
+/// The same gate the crate's other host-spawning tests take: the absence is SAID and
+/// `LETIBOT_REQUIRE_APPARATUS=1` refuses the run, because a `#[ignore]` here would be a green
+/// suite that measured nothing.
+fn a_host(name: &str) -> Option<(std::path::PathBuf, Arc<letibot_tools::exec::HostProcesses>)> {
+    letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    )?;
+    let root = std::env::temp_dir().join(format!(
+        "letibot-supervise-host-{name}-{pid}",
+        pid = std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch");
+    let host = letibot_tools::exec::HostProcesses::new(&root)
+        .expect("the tree probed writable above, so this root builds one");
+    Some((root, Arc::new(host)))
+}
+
+/// **END TO END: a real job, the real recorder, a real store — `running`, then `done(0)`.**
+///
+/// This is the wiring RH7 exists for, walked the way a daemon walks it: the job is spawned, its
+/// live [`letibot_tools::exec::JobView`] is handed to `JobRecorder::process` (which is what
+/// `JobWatchSink` does the moment a call is backgrounded), the job ends, and the settlement the
+/// watcher builds is handed to `JobRecorder::record`.
+///
+/// **Nothing here is invented in the record**: the pid, the identity and the scope are read off the
+/// live view, and the assertion on the identity is the one that matters after a restart —
+/// `start:<n>` names *which* process had that pid.
+#[test]
+fn a_real_job_reads_running_and_then_done_in_the_record() {
+    use letibot_tokencore::store::{ProcState, SessionRecord, Store};
+    let Some((root, host)) = a_host("end-to-end") else {
+        return;
+    };
+    let dir = root.join("store");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sessions.db");
+    let store = Store::open(&path).unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: "s-e2e".into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: root.display().to_string(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+
+    let id = host
+        .spawn(&letibot_tools::exec::SpawnRequest {
+            command: "sleep 3; exit 0".into(),
+            slug: Some("end-to-end".into()),
+            cwd: "/".into(),
+            scope: letibot_tools::exec::ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: vec![],
+            tty: false,
+            memory: None,
+        })
+        .expect("spawn");
+    let view = host.job(&id).expect("the job is in the table");
+
+    let recorder =
+        crate::jobwatch::JobRecorder::new(path.clone(), "s-e2e".into(), std::sync::Weak::new());
+    recorder.process(&view);
+    let got = store.process("s-e2e", &view.id.0).unwrap().expect("a row");
+    assert_eq!(
+        got.state,
+        ProcState::Running,
+        "written as running at the start"
+    );
+    assert_eq!(got.pid, view.pid);
+    assert_eq!(
+        got.identity,
+        identity_of(view.pid).expect("this box can identify a pid"),
+        "the record names WHICH process has that pid"
+    );
+    assert!(got.host.is_none(), "a job on this box names no host");
+    assert_eq!(got.scope, view.owner.to_string());
+
+    // **The job ends, and the settlement the watcher would build is the record's ending too.**
+    let waited = host.wait_job(&id, Duration::from_secs(60));
+    let state = match waited {
+        Ok(Waited::Happened { state: Some(s), .. }) => s,
+        other => panic!("the job did not settle: {other:?}"),
+    };
+    let view = host.job(&id).expect("the view survives the settle");
+    recorder.record(&crate::jobwatch::JobCompletion {
+        memory: None,
+        kind: crate::jobwatch::BackgroundKind::Job,
+        owner: "s-e2e".into(),
+        job: view.id.0.clone(),
+        command: view.command.clone(),
+        slug: view.slug.clone(),
+        state: state.word(),
+        produced: view.produced,
+        elapsed_ms: view.ran_for.map(|d| d.as_millis() as u64).unwrap_or(0),
+        detail: String::new(),
+        arrived: std::time::SystemTime::now(),
+    });
+    let got = store.process("s-e2e", &id.0).unwrap().expect("a row");
+    assert_eq!(
+        (got.state, got.exit),
+        (ProcState::Done, Some(0)),
+        "the ending the row carries is the exit the command gave"
+    );
+    assert!(
+        store.open_processes().unwrap().is_empty(),
+        "nothing left for the supervisor to look after"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **A RESTART, end to end: a fresh host adopts the record and the job is running again.**
+///
+/// The daemon that started this job is `host`; the one that finds it is `restarted`, which shares
+/// no memory with it — the store is the whole of what it has. What it must get back is a job the
+/// layers above can list, wait on and kill, and what it must NOT do is invent an exit: a process
+/// that has gone settles as [`letibot_tools::exec::JobState::Dead`].
+#[test]
+fn a_restarted_host_adopts_a_live_job_from_its_record() {
+    use letibot_tokencore::store::Store;
+    let Some((root, host)) = a_host("adopt") else {
+        return;
+    };
+    let path = root.join("sessions.db");
+    let store = Store::open(&path).unwrap();
+    let id = host
+        .spawn(&letibot_tools::exec::SpawnRequest {
+            command: "sleep 30".into(),
+            slug: Some("adopted".into()),
+            cwd: "/".into(),
+            scope: letibot_tools::exec::ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: vec![],
+            tty: false,
+            memory: None,
+        })
+        .expect("spawn");
+    let view = host.job(&id).expect("the job is in the table");
+    let recorder =
+        crate::jobwatch::JobRecorder::new(path.clone(), "s-e2e".into(), std::sync::Weak::new());
+    recorder.process(&view);
+
+    // **The other daemon.** Its own tree, its own table, and the record — nothing else.
+    let restarted = letibot_tools::exec::HostProcesses::new(&root).expect("a second host");
+    let rec = store.process("s-e2e", &id.0).unwrap().expect("the record");
+    let adopted = restarted
+        .adopt(&letibot_tools::exec::Adopted {
+            handle: rec.handle.clone(),
+            command: rec.command.clone(),
+            slug: None,
+            cwd: rec.cwd.clone(),
+            pid: rec.pid,
+            identity: rec.identity.clone(),
+            scope: rec.scope.clone(),
+        })
+        .expect("adopted");
+    assert_eq!(adopted, id);
+    let seen = restarted.job(&adopted).expect("the adopted job is listed");
+    assert!(
+        seen.state.is_running(),
+        "a live process is a job the new daemon runs: {seen:?}"
+    );
+    assert_eq!(seen.pid, rec.pid);
+    assert_eq!(seen.command, rec.command);
+
+    // **And when it is ended, it ends — killed through its own cgroup, as `job_kill` would.**
+    restarted.kill_job(&adopted).expect("the kill reached it");
+    let waited = restarted.wait_job(&adopted, Duration::from_secs(30));
+    match waited {
+        Ok(Waited::Happened { state: Some(s), .. }) => {
+            assert!(!s.is_running(), "an ended job is not running: {s:?}");
+        }
+        other => panic!("the adopted job did not settle: {other:?}"),
+    }
+
+    // **A record whose process is gone is `Dead`, never `exited 0`** — the half a supervisor
+    // exists to get right, and the one an adoption thread settles.
+    let mut vanished = rec.clone();
+    vanished.handle = "j-vanished".into();
+    vanished.pid = 0x7FFF_FFF0;
+    vanished.identity = "start:1".into();
+    store.put_process(&vanished).unwrap();
+    let ghost = restarted
+        .adopt(&letibot_tools::exec::Adopted {
+            handle: vanished.handle.clone(),
+            command: vanished.command.clone(),
+            slug: None,
+            cwd: vanished.cwd.clone(),
+            pid: vanished.pid,
+            identity: vanished.identity.clone(),
+            scope: vanished.scope.clone(),
+        })
+        .expect("adopted");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = restarted.job(&ghost).expect("still listed").state;
+        if !state.is_running() {
+            assert_eq!(
+                state,
+                letibot_tools::exec::JobState::Dead,
+                "gone, with no exit"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "the adopted ghost never settled");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let _ = std::fs::remove_dir_all(&root);
 }

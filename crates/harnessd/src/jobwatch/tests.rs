@@ -1025,3 +1025,148 @@ fn wait_for(w: &JobWatchers, drain: fn(&JobWatchers) -> Vec<JobCompletion>) -> J
         std::thread::sleep(Duration::from_millis(25));
     }
 }
+
+/// **A background job's PROCESS is written down, and its ending moves it** — the two halves of
+/// RH7's wiring that a box without a delegated cgroup can still prove, because neither needs a
+/// process this daemon started: the record comes from the live view at the start and from the
+/// settlement at the end, and the store is the whole of what a restarted daemon reads.
+///
+/// The identity is this process's own — `start:<n>` from `/proc` — so the assertion is the real
+/// one: a pid plus *which* process had it, which is what makes a reused number not this job.
+#[test]
+fn a_jobs_process_record_reads_running_then_done() {
+    let dir = std::env::temp_dir().join(format!("letibot-recorder-proc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sessions.db");
+    {
+        let s = Store::open(&path).unwrap();
+        s.put_session(&letibot_tokencore::store::SessionRecord {
+            id: "s-jobs".into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+    }
+
+    let hub = Hub::new("s-jobs");
+    let rec = JobRecorder::new(path.clone(), "s-jobs".into(), Arc::downgrade(&hub));
+    let scope = letibot_tools::exec::ScopeId {
+        kind: ScopeKind::Session,
+        name: "s-jobs".into(),
+        path: std::path::PathBuf::from("/sys/fs/cgroup/letibot/session.s-jobs"),
+    };
+    let view = letibot_tools::exec::JobView {
+        memory_cap: letibot_tools::exec::MemoryCap::NotAsked,
+        memory: None,
+        id: letibot_tools::exec::JobId("j42".into()),
+        command: "cargo test --offline --workspace".into(),
+        slug: Some("workspace-tests".into()),
+        scope: scope.clone(),
+        owner: scope,
+        cwd: "/w".into(),
+        pid: std::process::id(),
+        background: None,
+        state: letibot_tools::exec::JobState::Running,
+        elapsed: std::time::Duration::from_secs(1),
+        ran_for: None,
+        produced: 0,
+        since_last_output: None,
+        output_file: None,
+    };
+
+    rec.process(&view);
+    // **A record that did not land is SAID**, not silent — the hub is where `not_recorded` puts it,
+    // and a test that read the store without asking would report a missing row as a missing
+    // feature.
+    let refused: Vec<String> = hub
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning { detail, .. } => Some(detail.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(refused.is_empty(), "the record was refused: {refused:?}");
+    let s = Store::open(&path).unwrap();
+    let got = s.process("s-jobs", "j42").unwrap().expect("the record");
+    assert_eq!(got.state, letibot_tokencore::store::ProcState::Running);
+    assert_eq!(got.pid, std::process::id());
+    assert_eq!(got.command, "cargo test --offline --workspace");
+    assert_eq!(got.cwd, "/w");
+    assert_eq!(
+        got.identity,
+        crate::supervise::identity_of(std::process::id()).expect("this process has an identity"),
+        "the identity is which process has the pid, not the pid"
+    );
+    assert!(
+        got.host.is_none(),
+        "a job on this box names no host: {got:?}"
+    );
+    assert_eq!(
+        s.open_processes().unwrap().len(),
+        1,
+        "an open record, which is what a restart finds"
+    );
+
+    // **The ending.** `exited 3` is `done` with the code, because the code is the command's own
+    // answer; a signal or a kill is `stopped`, which is a different thing to have happened.
+    let done = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        kind: BackgroundKind::Job,
+        owner: "s-jobs".into(),
+        job: "j42".into(),
+        command: "cargo test --offline --workspace".into(),
+        slug: Some("workspace-tests".into()),
+        state: "exited 3".into(),
+        produced: 1_024,
+        elapsed_ms: 9_000,
+        detail: String::new(),
+        memory: None,
+    };
+    rec.record(&done);
+    let got = s.process("s-jobs", "j42").unwrap().expect("the record");
+    assert_eq!(
+        (got.state, got.exit),
+        (letibot_tokencore::store::ProcState::Done, Some(3)),
+        "the settlement is the record's ending too"
+    );
+    assert_eq!(got.check_how.as_deref(), Some("settle"));
+    assert!(
+        s.open_processes().unwrap().is_empty(),
+        "a done record is not one the supervisor still looks after"
+    );
+
+    // **And a kill is NOT an exit status**: `stopped`, with no code to report — and this half is
+    // the HOST's, so the same function's other arm is exercised too: a job on another machine
+    // carries its host in the row and is identified by its command line, because a pid there
+    // cannot be read from here.
+    let remote =
+        JobRecorder::new(path.clone(), "s-jobs".into(), Weak::new()).on(Some("lab2x1".into()));
+    let mut elsewhere = view.clone();
+    elsewhere.id = letibot_tools::exec::JobId("j43".into());
+    elsewhere.pid = 424_242;
+    remote.process(&elsewhere);
+    let got = s.process("s-jobs", "j43").unwrap().expect("the record");
+    assert_eq!(got.host.as_deref(), Some("lab2x1"));
+    assert_eq!(
+        got.identity, "cmd:cargo test --offline --workspace",
+        "a host's job is identified by the command line the far side greps for"
+    );
+    let mut killed = done.clone();
+    killed.job = "j43".into();
+    killed.state = "killed by job_kill".into();
+    remote.record(&killed);
+    let got = s.process("s-jobs", "j43").unwrap().expect("the record");
+    assert_eq!(
+        (got.state, got.exit),
+        (letibot_tokencore::store::ProcState::Stopped, None)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

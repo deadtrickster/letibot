@@ -315,7 +315,11 @@ impl Store {
     /// and the check that says it ended is the same record as the spawn that said it started. The
     /// append-only history of what a job did is the session's log, which is a different question.
     pub fn put_process(&self, p: &ProcessRecord) -> Result<()> {
-        let _ = self.exec(
+        // **`?`, and not a swallowed `let _ =`.** A record that did not land is a process nobody
+        // will check, so the failure travels to the caller — which says it on the session's log
+        // (`JobRecorder::not_recorded`) rather than leaving a supervisor with nothing to look at
+        // and no reason why.
+        self.exec(
             "INSERT INTO process (session_id, handle, host, pid, pgid, identity, command, cwd,
                                   scope, started_ms, deadline_ms, state, exit, log_path, log_read,
                                   check_ms, check_took_ms, check_how)
@@ -348,7 +352,7 @@ impl Store {
                 p.check_took_ms.map(|v| v as i64),
                 p.check_how,
             ],
-        );
+        )?;
         Ok(())
     }
 
@@ -403,7 +407,7 @@ impl Store {
     /// A handle with no row writes nothing: a process this store does not know is not one a check
     /// can have an opinion about.
     pub fn check_process(&self, session_id: &str, handle: &str, c: &Check) -> Result<()> {
-        let _ = self.exec(
+        self.exec(
             "UPDATE process SET state = ?3, exit = COALESCE(?4, exit), check_ms = ?5,
                                 check_took_ms = ?6, check_how = ?7
                WHERE session_id = ?1 AND handle = ?2",
@@ -416,17 +420,17 @@ impl Store {
                 c.took_ms as i64,
                 c.how
             ],
-        );
+        )?;
         Ok(())
     }
 
     /// **How much of its log has been read back**, so a reader that comes back after a restart
     /// resumes rather than re-reading a file from the top.
     pub fn set_process_log_read(&self, session_id: &str, handle: &str, bytes: u64) -> Result<()> {
-        let _ = self.exec(
+        self.exec(
             "UPDATE process SET log_read = ?3 WHERE session_id = ?1 AND handle = ?2",
             params![session_id, handle, bytes as i64],
-        );
+        )?;
         Ok(())
     }
 }

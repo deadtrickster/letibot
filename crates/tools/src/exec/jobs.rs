@@ -158,6 +158,17 @@ pub enum JobState {
     /// The wrapper could not put the process in its cgroup, so the command was
     /// never run. See [`super::scope::join_script`].
     NotScoped,
+    /// **The process is gone and nothing recorded an exit.** The state of a job a DAEMON that
+    /// died had started: it was adopted from its record on the next start, the record's identity
+    /// said which process it was, and that process is no longer there — and the `Child` that could
+    /// have reported a status died with the daemon that held it.
+    ///
+    /// **Deliberately not `Exited { code: 0 }` and not `Killed`.** A zero would be a success the
+    /// command never reported, and `Killed` would name a killer there was none of; the operator's
+    /// rule is that *it vanished* and *it was ended* are different facts, and this is the word for
+    /// the first. It is what a supervisor's own `dead` means (`store::ProcState::Dead`), in the
+    /// vocabulary this side speaks.
+    Dead,
 }
 
 impl JobState {
@@ -175,6 +186,7 @@ impl JobState {
             JobState::Signalled { signal } => format!("signalled {signal}"),
             JobState::Killed { by } => format!("killed by {by}"),
             JobState::NotScoped => "not run (could not join its scope)".into(),
+            JobState::Dead => "gone (no exit was recorded)".into(),
         }
     }
 

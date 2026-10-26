@@ -373,6 +373,21 @@ pub trait ProcessHost: Send + Sync {
     /// caller's decision reported as the command's own.
     fn kill_job_as(&self, job: &JobId, by: &str) -> Result<Reaping, ExecError>;
 
+    /// **Take a job this backend did not start, and make it one of its own.**
+    ///
+    /// The caller is a restarted daemon: the record is what outlived the process that started the
+    /// job (`store::ProcessRecord`), and everything above this layer — `jobs`, `job_output`,
+    /// `job_kill`, `job_wait`, the settlement that wakes the model — is written against the
+    /// backend's own job table. [`HostProcesses::adopt`] is the local one; a remote host's is the
+    /// next slice's, whose answer must be *I cannot* rather than a job object that settles nothing.
+    fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
+        Err(ExecError::Spawn(format!(
+            "this backend cannot adopt `{}`: the record outlived the process that started the \
+             job, and only a host that can identify a pid can take one back",
+            a.handle
+        )))
+    }
+
     /// **End every run this host still has, and say why.**
     ///
     /// The daemon's shutdown is the caller: a stop that arrives while a run holds the
@@ -887,6 +902,35 @@ pub const DEFAULT_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 /// ([`super::jobs::Capture::release`]), keeping the row and its counts. A running job's
 /// capture is never touched: it is the only copy of output nobody has read yet.
 pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// **A job this host did not start** — a restarted daemon's record of one, as this layer needs it.
+/// See [`HostProcesses::adopt`].
+pub struct Adopted {
+    pub handle: String,
+    pub command: String,
+    pub slug: Option<String>,
+    pub cwd: String,
+    pub pid: u32,
+    /// **What makes a reused pid not this process** — `start:<n>` on this box, which is what
+    /// `letibot_tokencore::store::ProcessRecord::identity` holds and [`super::procs`] answers.
+    pub identity: String,
+    /// The owner scope as the record spells it — `session.<name>`, `turn.<name>`, `explicit.<name>`.
+    pub scope: String,
+}
+
+/// **A record's scope spelling back into the two things a cgroup needs** — with the conservative
+/// answer for a word this build does not know: the session, which is where a background job lives
+/// (`SpawnRequest::scope`'s own default). A guess that widened a job's lifetime would keep it alive
+/// past the scope that should have reaped it.
+fn scope_kind_of(scope: &str) -> (super::scope::ScopeKind, String) {
+    use super::scope::ScopeKind;
+    match scope.split_once('.') {
+        Some(("turn", n)) => (ScopeKind::Turn, n.to_string()),
+        Some(("explicit", n)) => (ScopeKind::Explicit, n.to_string()),
+        Some(("session", n)) => (ScopeKind::Session, n.to_string()),
+        _ => (ScopeKind::Session, scope.to_string()),
+    }
+}
 
 impl HostProcesses {
     /// **Hold settled output to `budget` bytes, releasing the oldest first** — see
@@ -1789,6 +1833,78 @@ impl ProcessHost for HostProcesses {
             .insert(job.id.clone(), Arc::clone(&job));
         self.jobs.lock().expect("jobs").push(job);
         self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
+        Ok(id)
+    }
+
+    /// **Take a job the daemon did not start, and make it one of this host's.**
+    ///
+    /// This is what a RESTART is made of: the old daemon wrote the job's record down
+    /// ([`letibot_tokencore::store::ProcessRecord`]), a new one finds it still running, and
+    /// everything above this layer — `jobs`, `job_output`, `job_kill`, `job_wait`, the pane, the
+    /// settlement that wakes the model — is written against the host's own job table. So the
+    /// record is turned back into a [`Job`] here, rather than a second read path being taught to
+    /// every one of those readers.
+    ///
+    /// **The cgroup name is derivable, and that is what makes this exact rather than
+    /// approximate.** A spawn opens its job's cgroup as `<owner>/job-<handle>`
+    /// ([`HostProcesses::spawn`]), so re-opening that same name re-opens the SAME directory — and
+    /// the process the old daemon put there is still a member of it. `job_kill` on an adopted job
+    /// is therefore the same operation it always was, not a signal to a pid nobody checked.
+    ///
+    /// **Nothing here invents an exit.** The thread this spawns settles the job the only way a
+    /// process that vanished can be settled: [`JobState::Dead`], which is *gone, and no exit was
+    /// recorded* — never `Exited { 0 }`, which would be a success nobody reported.
+    fn adopt(&self, a: &Adopted) -> Result<JobId, ExecError> {
+        let id = JobId(a.handle.clone());
+        if self.find(&id).is_some() {
+            return Ok(id);
+        }
+        let (kind, name) = scope_kind_of(&a.scope);
+        let owner = self.scope_for(kind, Some(&name))?;
+        let scope = self
+            .tree
+            .open(kind, &format!("job-{}", a.handle), Some(&owner))?;
+        let job = Arc::new(Job::new(
+            id.clone(),
+            a.command.clone(),
+            a.slug.clone(),
+            Lifetime {
+                scope,
+                owner,
+                background: Some(letibot_transcript::Backgrounding::Asked),
+            },
+            a.cwd.clone(),
+            a.pid,
+            0,
+            super::jobs::Stdin::none(),
+        ));
+        self.by_id
+            .lock()
+            .expect("jobs by id")
+            .insert(id.clone(), Arc::clone(&job));
+        self.jobs.lock().expect("jobs").push(Arc::clone(&job));
+        // **The record's identity is the whole of the evidence that this is the same process.**
+        // A pid alone would settle a stranger's job — or keep one running for ever — on a box that
+        // had reused the number.
+        let identity = a.identity.clone();
+        let pid = a.pid;
+        let watched = Arc::clone(&job);
+        let _ = std::thread::Builder::new()
+            .name(format!("adopted-{}", &a.handle[..a.handle.len().min(20)]))
+            .spawn(move || {
+                while watched.state.lock().expect("job state").is_running() {
+                    match super::procs::read(pid) {
+                        Some(p) if identity == format!("start:{}", p.start) && p.state != 'Z' => {}
+                        // Gone, or the number belongs to somebody else now: either way this job's
+                        // process is not there.
+                        _ => {
+                            watched.settle(JobState::Dead);
+                            break;
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            });
         Ok(id)
     }
 

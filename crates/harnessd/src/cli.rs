@@ -1798,6 +1798,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // is gone, is brought down rather than left holding a slot every review then waits on
     // (`crate::vm_reap`). Its own thread and its own connection: a reap can take minutes.
     crate::vm_reap::spawn(cfg.store.clone(), registry.clone());
+    // **The process supervisor, from the start** — RH7. Its own thread and its own connection, and
+    // its FIRST tick is the recovery: it reads every record the last daemon left open, checks each
+    // host once, and writes down which processes are still the ones recorded. Started here rather
+    // than with the first session because a job is not a session's: one whose session has not been
+    // reopened yet still has to be checked, and a host that has gone quiet is `lost` either way.
+    crate::supervise::spawn(cfg.store.clone(), registry.clone());
     boot.step(match resume_rows(&cfg) {
         Some(n) if n > 0 => format!("resuming the session ({n} rows)"),
         _ => "opening the session".to_string(),

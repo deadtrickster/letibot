@@ -628,10 +628,10 @@ barely helps, because it is keyed on a pipeline's last program plus the exact in
 
 Written 2026-10-26. **What this slice is:** the record every supervised process gets, the liveness
 check per host, deadline enforcement, teardown by ownership, restart recovery — and the fix for the
-false wake the brief opens with. **What it is not yet:** the daemon does not call it. There is no
-tick thread in `daemon.rs` and `JobRecorder` writes no `process` row, so on this tree the supervisor
-is a tested library with no caller; that wiring is the next package's, and saying so here is the
-alternative to a slice that reads as finished.
+false wake the brief opens with. **It is wired**: `JobRecorder` writes a job's `process` row from the
+live view and its ending from the settlement, `crate::supervise::spawn` is started beside
+`vm_reap::spawn` (its first tick is the recovery), `Harness::open` adopts this session's open
+records, and `Sessions::close`/`close_backends` are the two teardowns.
 
 * **A table of its own, and not a column on `job`** (schema 34, `store::procs`). `job` answers *what
   became of a handle a session read a moment ago*; it is written twice per job by two callers who
@@ -644,12 +644,22 @@ alternative to a slice that reads as finished.
   nothing said the command succeeded. `lost` is *the host did not answer*, and the job may still be
   running — which is why `lost` is **open**, retried on the next tick, and why a host that goes
   quiet for a minute does not bury eight builds.
-* **The identity is the point of the pid.** Linux reads `/proc/<pid>/stat`'s field 22 (the start
-  time, after the LAST `)` — `comm` may contain spaces and parentheses, and splitting the whole line
-  shifts every field); macOS reads `ps -o lstart=`, which is the same fact at one second's
-  resolution, and a job replaced inside that second is the one case the two cannot tell apart. A
-  remote record's identity is `cmd:<the command's own words>`, checked with `ps -p … -o command=`
-  on the far side.
+* **The probes are the box's own, and one of them was already written.** `identity_of` is
+  `letibot_tools::exec::procs::read`'s `start` field spelled `start:<n>` — `/proc` on Linux, `libproc`
+  on macOS, with the zombie rule a hand-rolled read gets wrong — and the remote arm is the ONE script
+  `SshProbe` builds over the tree's one ssh policy (`Ssh::sh_once`, now public for it). A pid is
+  never compared alone, and a job a daemon did not start is settled [`JobState::Dead`] — *gone, and
+  no exit was recorded* — never `exited 0`.
+* **Adoption is how the tools read the record, and no tool changed.** `ProcessHost::adopt` turns a
+  `process` row back into a `Job` (its cgroup name `<owner>/job-<handle>` is derivable, so re-opening
+  it is the same directory), and `Harness::open` adopts this session's open records and arms the
+  watcher. `jobs`, `job_output`, `job_kill` and `job_wait` therefore work unchanged after a restart,
+  and a backend that cannot identify a pid refuses by name instead of pretending.
+* **The supervisor is one thread per process, and a `static` for the teardown's sake.**
+  `supervise::spawn` opens its own connection and ticks once a second, logging only when something
+  happened; the tick is `Supervisor::tick` and the first one IS the recovery. `OnceLock<Arc<Supervisor>>`
+  is what `Sessions::close` and `close_backends` reach — `rpc`'s breaker precedent, and one supervisor
+  per process by construction.
 * **One check per host per tick, and never one per job.** `Probe::check` is handed every open record
   of one host and answers for all of them: locally one pass over `/proc` (no fork at all on Linux),
   remotely ONE script over ONE connection that reports every job directory on that host. The test

@@ -4822,7 +4822,8 @@ impl Harness {
         // hands work to a child with no way to be told the child finished — the same
         // defect surviving in the sessions least able to notice it.
         let bell = Some(Arc::clone(session_registry.bell()));
-        let job_watch = match backend.processes_arc() {
+        let processes = backend.processes_arc();
+        let job_watch = match &processes {
             Some(h) => JobWatchers::new(&h, &hub, bell),
             None => JobWatchers::watching_tasks(&hub, bell),
         };
@@ -4880,7 +4881,50 @@ impl Harness {
                     path.to_path_buf(),
                     cfg.session_id.clone(),
                     session_registry.instance(),
+                    // **Where this session's jobs run**, which is what the supervisor's record
+                    // says in its `host` column — `None` for this box, a `hosts.toml` name
+                    // otherwise. It is also what decides how a job's identity is spelled: a
+                    // pid on this box, a command marker on another machine.
+                    match &cfg.placement {
+                        letibot_tools::builtins::task::Placement::Remote(name) => {
+                            Some(name.clone())
+                        }
+                        _ => None,
+                    },
                 );
+            }
+        }
+        // **And the jobs a daemon that died was still running** — RH7's supervisor, schema 34.
+        //
+        // The record is what outlived that daemon. Adopting it puts the job back in this host's
+        // own table, and then every reader above this layer — `jobs`, `job_output`, `job_kill`,
+        // `job_wait`, the pane, the settlement that wakes this session — works exactly as it did
+        // before the restart, which is the whole reason the record exists. A job whose process is
+        // already gone settles as [`letibot_tools::exec::JobState::Dead`] — *gone, and no exit was
+        // recorded* — never as an exit of zero.
+        //
+        // A record this backend cannot adopt (a remote host's, in this slice) is left alone: it
+        // stays open for [`crate::supervise`] to check, rather than being dropped or, worse,
+        // settled as ended by a daemon that cannot see the process.
+        if let (Some(procs), Some(store)) = (processes.as_ref(), store.as_ref()) {
+            for rec in store.processes_of(&cfg.session_id).unwrap_or_default() {
+                if !rec.state.is_open() {
+                    continue;
+                }
+                let adopted = letibot_tools::exec::Adopted {
+                    handle: rec.handle.clone(),
+                    command: rec.command.clone(),
+                    slug: None,
+                    cwd: rec.cwd.clone(),
+                    pid: rec.pid,
+                    identity: rec.identity.clone(),
+                    scope: rec.scope.clone(),
+                };
+                if let Ok(id) = procs.adopt(&adopted)
+                    && let Some(w) = &job_watch
+                {
+                    w.watch(id.0.clone());
+                }
             }
         }
         let tool_sink = JobWatchSink::new(

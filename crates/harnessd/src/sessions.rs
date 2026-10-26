@@ -2801,6 +2801,12 @@ impl<'a> Sessions<'a> {
     /// there and nothing came back (2026-10-26). Only the sessions this daemon holds directly;
     /// a court's harness closes on its own thread when that session closes.
     pub fn close_backends(&self) -> Vec<String> {
+        // **The daemon is going, so everything it supervises goes too** — the same rule a session's
+        // own close keeps, applied to every session this daemon holds. `--stop` reaches here; a
+        // crash does not, which is why the supervisor's restart path is what cleans up after one.
+        for id in self.open.keys() {
+            crate::supervise::teardown_session(id, "the daemon stopping");
+        }
         self.open
             .values()
             .filter_map(|h| h.close_backend())
@@ -3595,6 +3601,14 @@ impl<'a> Sessions<'a> {
     /// `false` when the worker did not hold the session; the registry entry is removed either way,
     /// so a hub whose open failed is closed through the same door.
     pub fn close(&mut self, session_id: &str) -> bool {
+        // **What this session started goes with it** (RH7's supervisor): every process it owns,
+        // on every host, ended and recorded — the session's cgroup is what would reap a local job
+        // anyway, and a job on another machine has nothing else. A TURN ending does not come near
+        // this: a job started to outlive its turn is what `background: true` means.
+        let ended = crate::supervise::teardown_session(session_id, "the session closing");
+        if ended > 0 {
+            eprintln!("  {session_id} · closed; {ended} supervised process(es) ended with it");
+        }
         // **A session on its own thread is closed THERE**: the harness, its backend and its
         // children are on that thread, and closing them from here would be the second writer this
         // whole change exists to remove.

@@ -395,9 +395,18 @@ impl JobWatchers {
     /// value is read when a queue is BUILT — per watch, well after this — so a recorder set a
     /// line after `new` reaches every queue that follows it. Nothing can be watched in between:
     /// a watch is armed by a tool result, and no tool has run at that point in a session's life.
-    pub fn record_jobs_into(&self, path: std::path::PathBuf, session_id: String, instance: &str) {
-        *self.recorder.lock().expect("job recorder") =
-            Some(JobRecorder::new(path, session_id, self.hub.clone()).owned_by(instance));
+    pub fn record_jobs_into(
+        &self,
+        path: std::path::PathBuf,
+        session_id: String,
+        instance: &str,
+        placement: Option<String>,
+    ) {
+        *self.recorder.lock().expect("job recorder") = Some(
+            JobRecorder::new(path, session_id, self.hub.clone())
+                .owned_by(instance)
+                .on(placement),
+        );
     }
 
     /// **A job is a row from the moment it exists, not from the moment it ends.**
@@ -434,6 +443,9 @@ impl JobWatchers {
                 .and_then(|h| h.jobs().into_iter().find(|j| j.id.0 == handle));
             if let Some(view) = view {
                 rec.context(handle, &view.command, view.slug.clone(), &view.cwd);
+                // **And the process itself**, which is what a restart has to find. See
+                // [`JobRecorder::process`].
+                rec.process(&view);
             }
         }
     }
@@ -1185,6 +1197,9 @@ pub struct JobRecorder {
     store: Arc<Mutex<Option<Store>>>,
     /// The daemon instance that owns these jobs — see [`JobRecorder::owned_by`].
     instance: String,
+    /// **Where these processes run** — `None` for this box, a `hosts.toml` name otherwise. See
+    /// [`JobRecorder::on`].
+    placement: Option<String>,
 }
 
 impl JobRecorder {
@@ -1195,7 +1210,16 @@ impl JobRecorder {
             hub,
             store: Arc::new(Mutex::new(None)),
             instance: String::new(),
+            placement: None,
         }
+    }
+
+    /// **Where this session's processes run** — `None` for this box, a `hosts.toml` name otherwise.
+    /// It is what the `process` row's `host` column says, and what decides how the job's identity
+    /// is spelled.
+    pub fn on(mut self, placement: Option<String>) -> Self {
+        self.placement = placement;
+        self
     }
 
     /// The daemon instance (`Registry::instance`) its job contexts are stamped with.
@@ -1304,6 +1328,55 @@ impl JobRecorder {
         });
     }
 
+    /// **And this job's PROCESS, which outlives the record above** — the supervisor's row
+    /// (`store::ProcessRecord`, schema 34). Written here because this is where the live view still
+    /// exists: the command, the name, the directory, the pid, the scope it lives in. The identity
+    /// is what a restarted daemon will compare against — `start:<n>` for a job on this box,
+    /// `cmd:<the command>` for one on a host, which is the marker [`crate::supervise::SshProbe`]
+    /// greps for on the far side.
+    pub(crate) fn process(&self, view: &letibot_tools::exec::JobView) {
+        let identity = match &self.placement {
+            Some(_) => format!("cmd:{}", view.command),
+            None => match crate::supervise::identity_of(view.pid) {
+                Some(id) => id,
+                // **A process that cannot be identified is not written down at all**, rather than
+                // written without an identity: a row whose identity is empty cannot be told from
+                // a stranger's pid, and the supervisor would signal the wrong process with it.
+                //
+                // **And it is SAID**, which is the half this used to be silent about: a job with
+                // no record is a job no restart can adopt, and a silence here would make that a
+                // mystery rather than a sentence.
+                None => {
+                    self.not_recorded(
+                        &view.id.0,
+                        "its process record",
+                        &format!(
+                            "pid {} cannot be identified on this box, so the record would name a \
+                             number rather than a process",
+                            view.pid
+                        ),
+                    );
+                    return;
+                }
+            },
+        };
+        let mut rec = letibot_tokencore::store::ProcessRecord::starting(
+            &self.session_id,
+            &view.id.0,
+            self.placement.clone(),
+            view.pid,
+        );
+        rec.state = letibot_tokencore::store::ProcState::Running;
+        rec.identity = identity;
+        rec.command = view.command.clone();
+        rec.cwd = view.cwd.clone();
+        rec.scope = view.owner.to_string();
+        rec.pgid = Some(view.pid);
+        self.with_store(&view.id.0, "its process record", |store| {
+            store.put_process(&rec).map_err(|e| e.to_string())
+        });
+    }
+
     /// **The start: a `running` row, with what this side knows.** See
     /// [`JobWatchers::record_start`] for why a job is a row before it ends.
     fn start(&self, handle: &str, how: &str, ran_for_ms: u64) {
@@ -1338,7 +1411,7 @@ impl JobRecorder {
     /// **`redirect` IS computed here**, out of the command this side is the last to see — R41's
     /// path, which a reader needs precisely when the window is empty by construction. Until this
     /// line both writers wrote `None` and the field could never be anything else.
-    fn record(&self, c: &JobCompletion) {
+    pub(crate) fn record(&self, c: &JobCompletion) {
         // **A subagent settles through this same queue and is not a job.** `task`'s handle is a
         // session id, `job_list` has never heard of it, and a row here would put a child in the
         // jobs pane — the same confusion R58 removed from the notice.
@@ -1346,6 +1419,23 @@ impl JobRecorder {
             return;
         }
         let redirect = letibot_tools::builtins::output_redirect_path(&c.command);
+        // **And the process's own ending**, so the record the supervisor reads says the same
+        // thing the row does — and stops being one of the records it still has to look after.
+        let (state, exit) = fate_of(&c.state);
+        let mut check = letibot_tokencore::store::Check::new(
+            state,
+            letibot_sessionlog::registry::now_ms() as i64,
+            0,
+            "settle",
+        );
+        if let Some(code) = exit {
+            check = check.with_exit(code);
+        }
+        self.with_store(&c.job, "its process record", |store| {
+            store
+                .check_process(&self.session_id, &c.job, &check)
+                .map_err(|e| e.to_string())
+        });
         self.with_store(&c.job, "its settlement", |store| {
             store
                 .put_job(
@@ -1363,6 +1453,24 @@ impl JobRecorder {
                 .map_err(|e| e.to_string())
         });
     }
+}
+
+/// **A settlement's word back into the process states** — one place, because the word is the
+/// `JobState` vocabulary and the record's is another, and two spellings of that translation would
+/// make a `done` in one reader and a `stopped` in the other.
+///
+/// `exited N` is `done` with N. A signal, a kill and its deadline are all `stopped`: something
+/// ended it on purpose. **`dead` is for a word that says nothing ended it** — a job that was gone
+/// when it was looked for — which is `JobState::Dead` and `NotScoped`'s *never ran*.
+fn fate_of(word: &str) -> (letibot_tokencore::store::ProcState, Option<i32>) {
+    use letibot_tokencore::store::ProcState;
+    if let Some(code) = word.strip_prefix("exited ") {
+        return (ProcState::Done, code.trim().parse().ok());
+    }
+    if word.starts_with("gone") || word.starts_with("not run") {
+        return (ProcState::Dead, None);
+    }
+    (ProcState::Stopped, None)
 }
 
 fn watch_one(

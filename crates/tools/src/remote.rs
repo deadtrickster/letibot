@@ -1367,7 +1367,11 @@ impl Ssh {
     /// **One step, exactly once, and silence is a refusal** — for the steps that must not be asked
     /// twice even though they are not commands: a write's chunk (a retry would append it again),
     /// and a job's start (a retry would start a second one).
-    fn sh_once(&self, step: &str, script: &str) -> Result<(String, Vec<u8>, i32), BackendError> {
+    pub fn sh_once(
+        &self,
+        step: &str,
+        script: &str,
+    ) -> Result<(String, Vec<u8>, i32), BackendError> {
         self.sh_once_within(step, script, self.bound)
     }
 

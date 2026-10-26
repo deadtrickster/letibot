@@ -409,45 +409,24 @@ fn now_ms() -> i64 {
 
 /// **Which process has this pid, and is it the one we recorded?**
 ///
-/// Two implementations and one rule: the answer is about the PROCESS, not about the number. On Linux
-/// that is `/proc/<pid>/stat`'s field 22 — the start time in clock ticks since boot, which no
-/// reuse of the pid can reproduce. On macOS it is `ps -o lstart=`, which is the same fact at a lower
-/// resolution (seconds), and a job started and replaced inside one second on a Mac is the one case
-/// the two cannot tell apart — said here rather than discovered.
+/// **There is one implementation of this answer and it is not this file's.**
+/// `letibot_tools::exec::procs` reads a process from `/proc` on Linux and from `libproc` on macOS,
+/// and its `start` field is *the* half of a pid's identity that survives reuse — measured, portable
+/// and already carrying a `Z` (zombie) rule that a hand-rolled read gets wrong. So the supervisor's
+/// notion of identity is that number, spelled `start:<n>`, and this function is the spelling.
 pub fn identity_of(pid: u32) -> Option<String> {
-    if pid == 0 {
-        return None;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        // **`comm` is in parentheses and may contain anything, including spaces and `)`.** So the
-        // fields are read from after the LAST `)`, never by splitting the whole line — a command
-        // named `(sh)` would otherwise shift every field by one and match a stranger's identity.
-        let after = &stat[stat.rfind(')')? + 1..];
-        let fields: Vec<&str> = after.split_whitespace().collect();
-        // field 3 is `fields[0]` (state), so field 22 is `fields[19]`.
-        let start = fields.get(19)?;
-        Some(format!("starttime:{start}"))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let out = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "lstart="])
-            .output()
-            .ok()?;
-        let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!said.is_empty()).then(|| format!("lstart:{said}"))
-    }
+    let p = letibot_tools::exec::procs::read(pid)?;
+    Some(format!("start:{}", p.start))
 }
 
 /// **Is `pid` still the process whose identity is `identity`?**
 ///
-/// `None` when the pid cannot be asked about at all — a pid nobody can introspect is not evidence
-/// either way, and the caller turns that into `lost`.
+/// `None` when the question cannot be asked of this identity at all — a remote record's
+/// `cmd:<marker>` is answered on the far side by [`SshProbe`], never here, and a pid nobody can
+/// read is not evidence either way.
 pub fn alive_with_identity(pid: u32, identity: &str) -> Option<bool> {
-    let now = identity_of(pid)?;
-    Some(now == identity)
+    let start: u64 = identity.strip_prefix("start:")?.parse().ok()?;
+    Some(letibot_tools::exec::procs::alive(pid, start))
 }
 
 /// **A pid is a number, and this is the box that can tell you which process has it** — the local
@@ -481,9 +460,9 @@ impl Probe for LocalProbe {
         }
         let mut answers = Vec::with_capacity(wants.len());
         for w in wants {
-            let state = match identity_of(w.pid) {
+            let state = match alive_with_identity(w.pid, &w.identity) {
                 // **The same process.** Not "a process with this pid".
-                Some(seen) if seen == w.identity => Answer::Alive,
+                Some(true) => Answer::Alive,
                 // The pid is somebody else's now, or nothing is there. Either way the job this
                 // record is about is no longer running, and this box has no exit status to give:
                 // the child that could have reported one died with the daemon.
@@ -516,14 +495,14 @@ impl Probe for LocalProbe {
         signal(rec, "-TERM")?;
         let until = Instant::now() + Duration::from_secs(1);
         while Instant::now() < until {
-            if identity_of(rec.pid).as_deref() != Some(rec.identity.as_str()) {
+            if alive_with_identity(rec.pid, &rec.identity) != Some(true) {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         signal(rec, "-KILL")?;
         std::thread::sleep(Duration::from_millis(50));
-        if identity_of(rec.pid).as_deref() == Some(rec.identity.as_str()) {
+        if alive_with_identity(rec.pid, &rec.identity) == Some(true) {
             return Err(format!(
                 "pid {} is still there after TERM and KILL",
                 rec.pid
@@ -715,6 +694,30 @@ fn marker_of(identity: &str) -> String {
         .to_string()
 }
 
+static SUPERVISOR: std::sync::OnceLock<Arc<Supervisor>> = std::sync::OnceLock::new();
+
+/// **End every process a session owns, on every host** — what a session's close and the daemon's
+/// own stop do, in one place, and `0` when this process has no supervisor (a one-shot run with no
+/// store, a test).
+///
+/// A free function over a `static` rather than a field on `Sessions`: the audiences are far apart —
+/// the tick thread sets it, a session's close and the registry's stop read it — and threading an
+/// `Arc` through `Sessions`, `Harness` and `Config` would touch every constructor in every test to
+/// carry one value that a single producer sets. `rpc`'s breakers are the tree's own precedent for
+/// the shape, and a `OnceLock` says the thing that matters: **one supervisor per process**, so a
+/// second `spawn` cannot become a second tick over the same records.
+pub fn teardown_session(session: &str, by: &str) -> usize {
+    match SUPERVISOR.get() {
+        Some(sup) => sup.teardown_session(session, by).len(),
+        None => 0,
+    }
+}
+
+/// The supervisor this process has, if it has one — read by a test and by nothing in production.
+pub fn running() -> Option<Arc<Supervisor>> {
+    SUPERVISOR.get().cloned()
+}
+
 /// One shell word, single-quoted, with the `'\''` escape — a command is arbitrary text and half of
 /// what it contains is quotes.
 fn shell_word(s: &str) -> String {
@@ -729,6 +732,146 @@ fn shell_word(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+/// **The probe a daemon runs: this box's processes here, a host's over the one ssh policy the tree
+/// has.**
+///
+/// The dispatcher exists because [`Probe::check`] is asked once per HOST and the answer decides
+/// which of two entirely different mechanisms is used — a pass over `/proc` here, one script over
+/// one connection there. A caller that had to choose would be a caller that knows how a host is
+/// reached, which is `letibot_tools::remote`'s business and not the supervisor's.
+pub struct HostProbe {
+    local: LocalProbe,
+    /// One connection per host, opened on first use and cached: `Ssh::connect` is where the identity
+    /// file and the accepted host key are REFUSED, and paying that per tick would be paying a
+    /// refusal that has not changed.
+    ssh: std::sync::Mutex<std::collections::HashMap<String, Arc<SshProbe>>>,
+}
+
+impl HostProbe {
+    pub fn new() -> HostProbe {
+        HostProbe {
+            local: LocalProbe,
+            ssh: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// The ssh probe for one host, or the refusal that says why this machine cannot be reached —
+    /// which the tick turns into `lost` for every job of it, rather than into eight dead ones.
+    fn for_host(&self, host: &str) -> Result<Arc<SshProbe>, String> {
+        if let Some(p) = self.ssh.lock().expect("ssh probes").get(host) {
+            return Ok(Arc::clone(p));
+        }
+        let hosts = letibot_tools::remote::Hosts::load();
+        let named = hosts
+            .get(host)
+            .ok_or_else(|| hosts.refusal(host))
+            .cloned()?;
+        let ssh = letibot_tools::remote::Ssh::connect(
+            named,
+            None,
+            letibot_tools::remote::Paths::from_env(),
+        )?;
+        let probe = Arc::new(SshProbe::new(Arc::new(
+            move |_host: &str, script: &str| match ssh.sh_once("checking a job", script) {
+                Ok((said, _, code)) => Ok((said, code)),
+                Err(e) => Err(e.to_string()),
+            },
+        )));
+        self.ssh
+            .lock()
+            .expect("ssh probes")
+            .insert(host.to_string(), Arc::clone(&probe));
+        Ok(probe)
+    }
+}
+
+impl Default for HostProbe {
+    fn default() -> HostProbe {
+        HostProbe::new()
+    }
+}
+
+impl Probe for HostProbe {
+    fn check(&self, host: Option<&str>, wants: &[Want]) -> Checked {
+        match host {
+            None => self.local.check(None, wants),
+            Some(h) => match self.for_host(h) {
+                Ok(probe) => probe.check(Some(h), wants),
+                Err(why) => Checked::failed("ssh", Duration::ZERO, why),
+            },
+        }
+    }
+
+    fn kill(&self, host: Option<&str>, rec: &ProcessRecord, by: &str) -> Result<(), String> {
+        match host {
+            None => self.local.kill(None, rec, by),
+            Some(h) => self.for_host(h)?.kill(Some(h), rec, by),
+        }
+    }
+}
+
+/// **Start the supervisor as the daemon's own thread** — after [`crate::vm_reap::spawn`] and for
+/// its reason: its own connection, its own clock, and no session's work waiting on it.
+///
+/// **The first tick IS the recovery.** A daemon that starts reads every open record the previous
+/// one left (`Store::open_processes`), checks the hosts once, and writes down what it found — so a
+/// job still running is `running` again, one that vanished while the daemon was down is `dead`,
+/// and a host that cannot be reached is `lost` and tried again a second later. Nothing here
+/// remembers a `Child` or a thread, which is exactly why it works after a restart.
+///
+/// The thread stops when the registry does: a closed registry is a daemon that has been told to
+/// go, and a check that outlived it would be a check whose result nobody would read.
+pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessionlog::Registry>) {
+    let Some(path) = store_path else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("supervisor".into())
+        .spawn(move || {
+            let Ok(store) = Store::open(&path) else {
+                eprintln!("  supervisor: the store did not open; no process is supervised");
+                return;
+            };
+            let sup = Arc::new(Supervisor::new(
+                Arc::new(std::sync::Mutex::new(store)),
+                Arc::new(HostProbe::new()),
+            ));
+            let _ = SUPERVISOR.set(Arc::clone(&sup));
+            loop {
+                let tick = sup.tick();
+                // **Said only when something happened**: a tick that found eight jobs still running
+                // is silence, and a log that said so every second would bury the one line that
+                // matters.
+                if !tick.ended.is_empty()
+                    || !tick.expired.is_empty()
+                    || !tick.lost.is_empty()
+                    || !tick.errors.is_empty()
+                {
+                    eprintln!(
+                        "  supervisor: {} host(s), {} running, ended {:?}, expired {:?}, lost {:?}{}",
+                        tick.hosts,
+                        tick.running,
+                        tick.ended,
+                        tick.expired,
+                        tick.lost,
+                        if tick.errors.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", errors {:?}", tick.errors)
+                        }
+                    );
+                }
+                let until = Instant::now() + TICK;
+                while Instant::now() < until {
+                    if registry.is_stopping() || registry.is_closed() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
 }
 
 #[cfg(test)]
