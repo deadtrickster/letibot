@@ -2055,6 +2055,16 @@ pub struct Harness {
     /// the two clock functions and nowhere else: the clock's span IS this span, so a second writer
     /// would be a second answer to one question.
     prompt_in_flight: Arc<AtomicBool>,
+    /// **Whether the shared tail is running a turn on this harness right now** — the gate on
+    /// [`Harness::begin_turn_clock`], and the reason it is not a clock in its own right.
+    ///
+    /// A turn's clock belongs to a TURN, and a turn is [`crate::turn_tail::run_turn`]'s: it is the
+    /// one place that knows a turn will be ended ([`Harness::end_turn_clock`]) and that a door may
+    /// end up saying nothing at all. The prompt is not the only caller of `run_rounds` —
+    /// `Harness::system_update` (a compaction's fabric block, `/compact`, the `m1` script) appends
+    /// an item and runs its rounds outside any turn, and a clock started there would never be
+    /// cleared: the session would read `waiting on: turn` for the life of the daemon.
+    turn_open: bool,
     /// The server thread answers the head's `Settings` from the registry, so
     /// what is running is what the pane shows.
     session_registry: Arc<letibot_sessionlog::registry::Registry>,
@@ -5508,6 +5518,7 @@ impl Harness {
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
             prompt_in_flight: Arc::new(AtomicBool::new(false)),
+            turn_open: false,
             session_registry: session_registry.clone(),
             tasks: parts.tasks.clone(),
             mode_source,
@@ -8747,13 +8758,48 @@ impl Harness {
         self.wiring.monitor_wake = true;
     }
 
+    /// **The shared tail has taken a turn on this harness** — `turn_tail::run_turn`, once per door,
+    /// before the door's own act.
+    ///
+    /// It says only that there is a turn to end, not that one has started speaking: what starts the
+    /// clock is the turn's first words ([`Harness::begin_turn_clock`]), and [`Harness::end_turn_clock`]
+    /// clears this again. A turn taken and never ended would be exactly the state
+    /// `Harness::system_update`'s own rounds would leave behind, which is why it is the tail's act
+    /// rather than every caller's.
+    pub(crate) fn turn_taken(&mut self) {
+        self.turn_open = true;
+    }
+
     /// **A prompt has arrived: this is where the whole turn's clock starts.**
     ///
     /// Called once per prompt, never per round — the engine's `turn_began_ms` is then carried on
     /// every `TurnStarted` that prompt produces, which is what stops a head restarting its clock
     /// at each round. The engine field is private to this module and this is the only writer, so
     /// the two cannot drift out of step.
+    ///
+    /// **Idempotent within one prompt**, and that is load-bearing now that the two callers are the
+    /// places a turn actually speaks: [`Harness::submit_items_then`] (which a wall-continuation
+    /// re-enters, one prompt later, with this still running) and [`Harness::run_rounds`] (which the
+    /// operator's `!` line reaches with its rows already in). A second call leaves the start where
+    /// the first put it, so the promise above holds without either caller having to know.
+    ///
+    /// **And it is NOT called by the door.** `turn_tail::run_turn` used to start it before the
+    /// door's own act, which meant a door that found nothing to say — `Harness::wake` with no notice
+    /// behind it, `Ok(None)` — published `waiting on: turn` for a turn that never ran; a `wait`
+    /// blocked on that session armed on it and answered `0 — the turn ended` about a session that
+    /// had run nothing at all. MEASURED 2026-10-26 as the bridge's end-to-end flake, one run in
+    /// four: the empty wake was the daemon's own startup ring
+    /// (`Sessions::put_a_restored_session_to_work`) draining on the worker's first pass, on the
+    /// session that had never turned.
     pub fn begin_turn_clock(&mut self, began_ms: u64) {
+        // **Only a turn the shared tail is running can start a clock** — see the field. A
+        // `run_rounds` reached outside one (`Harness::system_update`'s, from a compaction or the
+        // `m1` script) has no `end_turn_clock` behind it, and a clock nobody clears is a session
+        // that reads `waiting on: turn` for the life of the daemon. And a door that has not spoken
+        // yet has not started a turn either: the clock waits for the first words.
+        if !self.turn_open || self.prompt_in_flight.load(Ordering::SeqCst) {
+            return;
+        }
         self.turn_began_ms = Some(began_ms);
         self.engine.turn_began_ms = Some(began_ms);
         // **And a prompt is in flight from here until the loop returns** — see the field. The
@@ -8768,6 +8814,9 @@ impl Harness {
     pub fn end_turn_clock(&mut self) {
         self.turn_began_ms = None;
         self.engine.turn_began_ms = None;
+        // The turn the tail took is over — see the field. Cleared here rather than in `run_turn`
+        // because this is the call every path out of the tail goes through, the empty one included.
+        self.turn_open = false;
         // The prompt's loop has returned — a final answer, an interrupt, a failure, or a wall that
         // ended it. Whatever the session is waiting on from here is said by the rest of the facts
         // (`delivery`, a job, a monitor, a child, a card) and not by a turn.
@@ -12245,6 +12294,12 @@ impl Harness {
         items: Vec<TranscriptItem>,
         opened: impl FnOnce(&mut Self),
     ) -> Result<Reply, HarnessError> {
+        // **The prompt's clock starts before the rows go in** — from the moment a turn has words
+        // to give the model it is in flight, and the append below publishes, so a head that was
+        // waiting on this session reads `turn` and not a quiet moment between the queue and the
+        // model. Idempotent: a wall-continuation comes back through here with the clock already
+        // running. See [`Harness::begin_turn_clock`] for why the door does not start it.
+        self.begin_turn_clock(letibot_sessionlog::event::now_ms());
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session.append_items(&self.engine, &items, &mut sink)?;
         self.reconcile(&mut sink, &items);
@@ -12384,6 +12439,12 @@ impl Harness {
     ///   a parent's correction, an answer the board already took, results already marked
     ///   delivered. A failed turn read none of it, and the operator is told so.
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
+        // **The clock starts here for a door that appends no rows of its own** — the operator's
+        // `!` line is already two rows on the log when `run_after_operator_shell` asks for its
+        // turn, so this is the first point that turn exists. A no-op when `submit_items_then` has
+        // already started it, which is every other door. See [`Harness::begin_turn_clock`] for
+        // why a door that finds nothing to say must not have started it at all.
+        self.begin_turn_clock(letibot_sessionlog::event::now_ms());
         let out = self.rounds();
         let left = {
             let mut held = self.handed_back.lock().unwrap_or_else(|e| e.into_inner());

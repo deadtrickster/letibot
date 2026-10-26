@@ -131,6 +131,15 @@ impl TurnOwner for Bare {
 /// sequence. `turn` is the door's own act; `Ok(None)` is a door that found nothing to say (a wake
 /// whose settlement was already delivered, a nag whose plan moved) — no turn ran, nothing is
 /// tidied after it, and the answer is `None`.
+///
+/// **The prompt's clock is NOT started here**, and it used to be. A door that finds nothing to say
+/// runs no turn, but a clock started on the way in had already published `waiting on: turn` — and
+/// a `wait` blocked on that session armed on it and answered `0 — the turn ended` about a session
+/// that had run nothing. MEASURED 2026-10-26: the daemon's own first session, woken by the startup
+/// ring (`Sessions::put_a_restored_session_to_work`) with nothing to say, read as a turn in flight
+/// for as long as `Harness::wake` took to answer `Ok(None)`. The clock starts where a turn actually
+/// speaks instead — [`Harness::submit_items_then`], and [`Harness::run_rounds`] for a door whose
+/// rows are already in. See [`Harness::begin_turn_clock`].
 pub fn run_turn(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
@@ -138,6 +147,11 @@ pub fn run_turn(
     turn: impl FnOnce(&mut Harness) -> Result<Option<Reply>, HarnessError>,
 ) -> Option<Result<Reply, HarnessError>> {
     owner.arm_sweep();
+    // **A turn is taken before the door's own act and the clock starts only once the door has
+    // something to say** — see [`Harness::begin_turn_clock`]. What this buys is the door that
+    // answers `Ok(None)`: no clock was started, so nothing is walked back and no reader is told
+    // a turn was in flight.
+    h.turn_taken();
     if door.is_spoken_to() {
         owner.spoken_to(h);
     }
@@ -147,9 +161,9 @@ pub fn run_turn(
     if h.compact_if_at_the_wall() {
         owner.compacted(h);
     }
-    // **A turn is one prompt however many rounds it takes, so the clock starts here** and is
-    // carried through every round and continuation of it.
-    h.begin_turn_clock(letibot_sessionlog::event::now_ms());
+    // **A turn is one prompt however many rounds it takes, so the clock starts once** — inside the
+    // door's own act, where a turn that never speaks never starts it (see this function's doc),
+    // and where every round and continuation of one prompt leaves it where it was.
     crate::instruments::turn_begins(h, door.word());
     let out = match turn(h) {
         Ok(Some(reply)) => Ok(reply),
