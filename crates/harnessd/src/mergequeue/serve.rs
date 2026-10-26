@@ -75,7 +75,9 @@ pub trait QueueDoor: Send + Sync {
         ))
     }
     /// **Whether `session_id` is live in this daemon now** — a branch's tree is not removed from
-    /// under a session still working in it (R92.24).
+    /// under a session still working in it (R92.24), and a reviewed row is not re-seated under a
+    /// reviewer that is still going. **A session this daemon has spawned and not yet opened
+    /// counts**: its handle exists, so it is not gone — see `Registry::announce_spawn`.
     fn session_live(&self, session_id: &str) -> bool {
         let _ = session_id;
         false
@@ -736,9 +738,12 @@ impl RepoQueue {
                     // with reviewer children that no longer existed until their deadline"*.
                     // Liveness is the session registry's (`QueueDoor::session_live`: a subagent
                     // is a real registered session, so a handle the registry does not hold is a
-                    // child that finished, died, or never came back through a restart). The
-                    // reviewers' host collects a child that ends while the daemon is up; this is
-                    // the door for one whose host will never look again.
+                    // child that finished, died, or never came back through a restart — **or one
+                    // that is still OPENING**, which is why that door counts a spawn this daemon
+                    // has announced as alive; a reviewer is placed in a VM and its open is a
+                    // clone and a boot). The reviewers' host collects a child that ends while
+                    // the daemon is up; this is the door for one whose host will never look
+                    // again.
                     let gone = self.env.door.sees_sessions()
                         && r.reviewer
                             .as_deref()

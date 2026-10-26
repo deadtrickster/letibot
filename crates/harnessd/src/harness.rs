@@ -17448,6 +17448,24 @@ impl Drop for ChildSessionGuard<'_> {
     }
 }
 
+/// **A spawned session, announced before it exists** — see [`Registry::announce_spawn`].
+///
+/// Held by the child's own thread, so the announcement ends where the spawn does: an open that
+/// succeeded spent it already (the registry's `adopt` is what puts an entry there), and one that
+/// failed, or a thread that panicked, withdraws it here. That shape rather than a call after
+/// `run_to_completion` because the exits are the same `?`s and early returns
+/// [`ChildSessionGuard`] exists for.
+struct SpawnAnnounced {
+    registry: Arc<letibot_sessionlog::registry::Registry>,
+    id: String,
+}
+
+impl Drop for SpawnAnnounced {
+    fn drop(&mut self) {
+        self.registry.spawn_settled(&self.id);
+    }
+}
+
 /// **Why a child's serving loop ended** — the three exits of [`serve_child_under`], told apart
 /// because one of them is not an end: a PARKED child is in the store and comes back on the next
 /// prompt (`Config::child_park_after`), while a stopped or closed one is over.
@@ -18495,7 +18513,10 @@ fn mint_sub_id_at(
 ) -> String {
     let mut id = format!("{parent}-sub-{ns}");
     let mut n = 1u32;
-    while registry.get(&id).is_some() || handed_out(&id) {
+    // **Announced as well as held**: a spawn that has been handed its handle and has not opened
+    // yet owns this id, and minting it again would give two children one name
+    // ([`Registry::announce_spawn`]).
+    while registry.get(&id).is_some() || registry.opening(&id) || handed_out(&id) {
         n += 1;
         id = format!("{parent}-sub-{ns}-{n}");
     }
@@ -18657,6 +18678,22 @@ impl HarnessTaskRunner {
 
         let me = self.clone();
         let prompt = prompt.to_string();
+        // **The child EXISTS from the moment its handle does, and the registry has to say so.**
+        // The handle is minted and returned before the child's own thread opens its session
+        // (`Registry::adopt`, inside `run_to_completion`), so a reader between the two — the
+        // merge queue asking whether a row's reviewer is still alive — was answered *no session
+        // by that id* about a child that had just been started and was still booting its VM.
+        // MEASURED on the operator's box, 2026-10-26: 2.0 s after the start, the reviewer was
+        // *not alive in this daemon any more* and its row re-seated, three passes running.
+        //
+        // Announced BEFORE the thread is made, so there is no instant in which the handle is
+        // out and the registry does not know it; withdrawn by the guard when this thread ends
+        // (a successful open has spent it by then — see `Registry::announce_spawn`).
+        self.registry.announce_spawn(&sub_id);
+        let announced = SpawnAnnounced {
+            registry: self.registry.clone(),
+            id: sub_id.clone(),
+        };
         // The whole spec, carried through verbatim — the worktree `task_start` arranged (the
         // child's workspace is the worktree, not the parent's tree), and the tree a VM placement
         // copies, which is the caller's word about where the work is and must not be invented
@@ -18669,6 +18706,8 @@ impl HarnessTaskRunner {
                 letibot_sessionlog::registry::short_id(&sub_id)
             ))
             .spawn(move || {
+                // Held for this thread's whole life; see the type's doc.
+                let _announced = announced;
                 let slot2 = slot.clone();
                 // **The settlement is the function's own now** (see `AnswerOnce`): it happens as
                 // the turn ends, because what follows — a host child serving its own queue until
@@ -18698,7 +18737,9 @@ impl HarnessTaskRunner {
             });
         if let Err(e) = spawned {
             // Nothing is running; say so rather than handing back a handle for a
-            // child that was never started.
+            // child that was never started. The announcement went with the failed spawn — the
+            // closure `spawn` dropped held it, and a session nothing will ever open is not one
+            // that is opening.
             self.slots
                 .lock()
                 .expect("task slots")

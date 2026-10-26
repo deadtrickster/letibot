@@ -417,7 +417,13 @@ impl serve::QueueDoor for RegistryDoor {
     }
 
     fn session_live(&self, session_id: &str) -> bool {
-        self.registry.get(session_id).is_some()
+        // **Alive is two answers, not one.** A spawned child is handed its handle before its own
+        // thread has opened its session, and the open of a reviewer placed in a firecode VM is a
+        // clone and a boot — so `get` alone called a child that had just been started *gone*, and
+        // `RepoQueue::review_upkeep` re-seated its row within seconds (three times: `blocked` at
+        // *attempt 3 of 3*). `Registry::opening` is the other half: an id this daemon has spawned
+        // and not yet adopted, which is nobody's session to attach to and very much a live one.
+        self.registry.get(session_id).is_some() || self.registry.opening(session_id)
     }
 
     fn sees_sessions(&self) -> bool {

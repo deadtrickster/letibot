@@ -49,7 +49,7 @@
 //! prompting two different sessions are served in the order they pressed enter —
 //! which is the same promise §13.2 already makes for two heads on one session.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -653,6 +653,11 @@ struct Inner {
     default_id: String,
     log_bounds: LogBounds,
     view_bounds: ViewBounds,
+    /// **Sessions this daemon has SPAWNED and is still opening** — see
+    /// [`Registry::announce_spawn`]. Not entries: a spawning session has no hub (its own
+    /// thread builds one), so nothing can attach to it and no command can reach it, and
+    /// the only question it answers is *is this one alive or has it gone*.
+    spawning: HashSet<String>,
 }
 
 /// Every session this daemon is serving.
@@ -1187,6 +1192,9 @@ impl Inner {
     fn push(&mut self, id: String, entry: Entry) {
         // The writer fills a row's tree root from this (TODO R81): one message per session.
         letibot_metrics::session_parent(&id, entry.parent_session_id.as_deref());
+        // **The announcement is spent here** — a session that now has an entry is one the
+        // registry can answer `get` for, which is all [`Registry::opening`] ever stood in for.
+        self.spawning.remove(&id);
         self.index.insert(id.clone(), self.entries.len());
         self.entries.push((id, entry));
     }
@@ -1229,6 +1237,7 @@ impl Registry {
                 default_id: String::new(),
                 log_bounds,
                 view_bounds,
+                spawning: HashSet::new(),
             }),
             bell: Bell::new(),
             runs: Mutex::new(std::collections::HashMap::new()),
@@ -1583,9 +1592,12 @@ impl Registry {
     ///
     /// `None` for a session that **is** live, deliberately: the caller asking this is
     /// asking "do I need to bring it in", and a live session is the one case where
-    /// the answer is no.
+    /// the answer is no. **A spawn this daemon is still opening is live too**
+    /// ([`Registry::announce_spawn`]) — a caller that resumed it would `create` an entry under
+    /// an id the child's own `adopt` is about to take, and the child would die of a collision
+    /// that is nobody's minting bug.
     pub fn resumable(&self, session_id: &str) -> Option<StoredBrief> {
-        if self.get(session_id).is_some() {
+        if self.get(session_id).is_some() || self.opening(session_id) {
             return None;
         }
         self.source()?.lookup(session_id)
@@ -1602,6 +1614,39 @@ impl Registry {
 
     pub fn get(&self, session_id: &str) -> Option<Arc<Hub>> {
         self.lock().entry(session_id).map(|e| e.hub.clone())
+    }
+
+    /// **Say that this daemon has just SPAWNED `session_id`, whose session does not exist
+    /// yet.** Withdraw it with [`Registry::spawn_settled`], or let [`Registry::adopt`] spend it.
+    ///
+    /// A child is handed its handle before it exists: `HarnessTaskRunner::start` mints the id
+    /// and returns it, and the hub is adopted only once the child's own open has finished —
+    /// which for a reviewer placed in a firecode VM is a clone and a boot, tens of seconds.
+    /// Until then `get` answers `None` for a session that is very much alive, and the readers
+    /// that ask *is this one gone* got the wrong answer: MEASURED on the operator's box,
+    /// 2026-10-26, in `~/.local/share/letibot/sessions.db`'s queue history — a reviewer started
+    /// at `…095383` was re-seated as *not alive in this daemon any more* at `…097403`, 2.0 s
+    /// later, three times over, and the review was blocked at *attempt 3 of 3*.
+    ///
+    /// **Not an entry, deliberately.** A spawning session has no hub, so nothing can attach to
+    /// it and no command can reach it; the one question it answers is the one that was being
+    /// answered wrongly.
+    pub fn announce_spawn(&self, session_id: &str) {
+        self.lock().spawning.insert(session_id.to_string());
+    }
+
+    /// **The spawn is over and left no session** — the child failed to open, or its thread
+    /// ended. Idempotent, and a no-op for one [`Registry::adopt`] has already spent: an
+    /// announcement that outlived its spawn would keep a session that does not exist looking
+    /// alive for ever, which is the other half of the same mistake.
+    pub fn spawn_settled(&self, session_id: &str) {
+        self.lock().spawning.remove(session_id);
+    }
+
+    /// **Whether `session_id` is a session this daemon is still opening** — see
+    /// [`Registry::announce_spawn`]. `false` for one it holds: ask [`Registry::get`] for that.
+    pub fn opening(&self, session_id: &str) -> bool {
+        self.lock().spawning.contains(session_id)
     }
 
     /// Resolve what a head asked to attach to.
@@ -1731,7 +1776,13 @@ impl Registry {
         // and it takes no registry lock — the lock order `Registry::close` keeps is unchanged.
         let hub = self.get(session_id)?;
         hub.close();
-        let entry = self.lock().take(session_id)?;
+        let entry = {
+            let mut g = self.lock();
+            // A session removed before its open finished is not *still opening*: the spawn that
+            // announced it is over, whatever the reason.
+            g.spawning.remove(session_id);
+            g.take(session_id)?
+        };
         // Each map under its own lock, never under the registry's — the ordering `close` keeps.
         let ender = self
             .runs
@@ -2504,6 +2555,54 @@ mod tests {
         assert!(
             r.next_work().is_none(),
             "adopting rang the worker to open it again"
+        );
+    }
+
+    /// **A spawned session is alive BEFORE it is open, and only while it is.**
+    ///
+    /// MEASURED on the operator's box, 2026-10-26, in the queue history: a reviewer started at
+    /// `…095383` was re-seated as *not alive in this daemon any more* at `…097403`. The child's
+    /// handle exists and is returned by `HarnessTaskRunner::start` before its own thread adopts
+    /// the hub, so a reader between the two was told *no session by that id* about a child that
+    /// had just been started — and the merge queue's re-seat rule believed it.
+    #[test]
+    fn a_spawn_is_alive_before_its_session_exists_and_not_after_the_spawn_ends() {
+        let r = reg();
+        r.create("s-parent", "", SessionWiring::default()).unwrap();
+        r.announce_spawn("s-parent-sub-1");
+        assert!(
+            r.get("s-parent-sub-1").is_none(),
+            "no hub yet: nobody may attach to it"
+        );
+        assert!(r.opening("s-parent-sub-1"), "but it has not gone either");
+
+        // The open spends the announcement, and the entry is what answers from then on.
+        let hub = r.new_hub("s-parent-sub-1");
+        r.adopt(
+            hub.clone(),
+            "find the bug",
+            SessionWiring::default(),
+            Some("s-parent".into()),
+        )
+        .unwrap();
+        assert!(!r.opening("s-parent-sub-1"), "an open one is not opening");
+        assert!(Arc::ptr_eq(&r.get("s-parent-sub-1").unwrap(), &hub));
+
+        // A spawn that ends without a session is not alive — withdrawing twice is not an error,
+        // because `adopt` has usually done it already (the child thread's guard runs after).
+        r.announce_spawn("s-parent-sub-2");
+        r.spawn_settled("s-parent-sub-2");
+        r.spawn_settled("s-parent-sub-2");
+        assert!(!r.opening("s-parent-sub-2") && r.get("s-parent-sub-2").is_none());
+        // And an ordinary session was never announced as anything.
+        assert!(!r.opening("s-parent"));
+        // Removing a session does not leave its announcement behind either.
+        r.announce_spawn("s-parent-sub-3");
+        r.remove("s-parent-sub-1").expect("the child is held");
+        assert!(!r.opening("s-parent-sub-1"));
+        assert!(
+            r.opening("s-parent-sub-3"),
+            "a live announcement survives another's removal"
         );
     }
 

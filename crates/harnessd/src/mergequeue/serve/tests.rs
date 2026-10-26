@@ -1703,6 +1703,294 @@ fn a_reviewing_row_whose_reviewer_is_not_alive_is_re_seated_on_the_next_pass() {
     );
 }
 
+// ===== The reviewer is alive while it is OPENING =====
+
+/// **A model endpoint that says how big its window is, when the test says it may.**
+///
+/// The one thing a spawn does before its child's session exists is ask the PARENT's endpoint for
+/// the child's window (`HarnessTaskRunner::start`'s `served_ctx`), so an endpoint that HOLDS that
+/// answer holds the child inside its own open. That is the window the operator's daemon re-seated
+/// a live reviewer in; holding it is what makes this test measure a state rather than race one.
+struct HeldProps {
+    url: String,
+    state: Arc<(Mutex<PropsState>, std::sync::Condvar)>,
+}
+
+#[derive(Default)]
+struct PropsState {
+    /// How many asks have arrived — the proof that a child is inside its open.
+    asked: usize,
+    /// Set by [`HeldProps::release`]: this ask, and every later one, is answered.
+    released: bool,
+}
+
+impl HeldProps {
+    fn hold() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let url = format!(
+            "127.0.0.1:{}",
+            listener.local_addr().expect("a bound port").port()
+        );
+        let state: Arc<(Mutex<PropsState>, std::sync::Condvar)> = Default::default();
+        let shared = state.clone();
+        std::thread::Builder::new()
+            .name("held-props".into())
+            .spawn(move || {
+                for conn in listener.incoming() {
+                    let Ok(mut stream) = conn else { return };
+                    // Read the request head so the client's write completes. What it says does not
+                    // matter: every ask wants the same one number.
+                    let mut buf = [0u8; 2048];
+                    let _ = std::io::Read::read(&mut stream, &mut buf);
+                    let (lock, cv) = &*shared;
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    g.asked += 1;
+                    cv.notify_all();
+                    while !g.released {
+                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    drop(g);
+                    const BODY: &str = "{\"default_generation_settings\":{\"n_ctx\":4096}}";
+                    let _ = std::io::Write::write_all(
+                        &mut stream,
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+                            BODY.len()
+                        )
+                        .as_bytes(),
+                    );
+                    let _ = std::io::Write::flush(&mut stream);
+                }
+            })
+            .expect("the props thread");
+        Self { url, state }
+    }
+
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Block until a spawn has asked, or give up: *a child is opening, and it is in there now*.
+    fn wait_for_ask(&self, timeout: Duration) -> bool {
+        let (lock, cv) = &*self.state;
+        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let deadline = std::time::Instant::now() + timeout;
+        while g.asked == 0 {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            let (next, _) = cv.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner());
+            g = next;
+        }
+        true
+    }
+
+    fn release(&self) {
+        let (lock, cv) = &*self.state;
+        lock.lock().unwrap_or_else(|e| e.into_inner()).released = true;
+        cv.notify_all();
+    }
+}
+
+impl Drop for HeldProps {
+    fn drop(&mut self) {
+        // A held connection would otherwise sit in `served_ctx`'s 180 s read timeout.
+        self.release();
+    }
+}
+
+/// **A reviewer that is still OPENING is alive; one that ends without a verdict still is not.**
+///
+/// The operator's report, 2026-10-26: every review on their daemon was re-seated seconds after it
+/// started and BLOCKED at *attempt 3 of 3*, with a sentence naming a reviewer that was *"not alive
+/// in this daemon any more"*. The store's own history is the measurement: a reviewer started at
+/// `…095383` was re-seated at `…097403` — 2.0 s, one queue pass.
+///
+/// The cause is not the re-seat rule but the answer it was given. A child's HANDLE exists before
+/// its SESSION does: `HarnessTaskRunner::start` mints the id and returns it, and the hub is adopted
+/// only once the child's own open has finished — which for a reviewer placed in a firecode VM is a
+/// clone and a boot — so the registry answered *nothing by that id* about a child that had just
+/// been started, and `Reviewing`'s upkeep believed it.
+///
+/// The child here is a real one, started by the review queue's own session through
+/// `HarnessTaskRunner`, and the window is made a state the test stands in rather than a race it
+/// hopes to lose: the child's open asks its parent's endpoint for a window, and the endpoint holds
+/// that answer until the assertions below are done. It then ends — its turn needs a model this
+/// fixture does not have — and the row is re-seated, which is the half the rule exists for.
+#[test]
+fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
+    let dir = TempDir::new("reviewer-opening");
+    let repo = repo(&dir.0);
+    let (wt, base, head) = branch(&repo, "opening", "opening.txt");
+    let db = dir.0.join("sessions.db");
+    let props = HeldProps::hold();
+
+    let mut cfg = crate::config::Config::for_this_box(&repo);
+    // **The byte vocabulary, so this test needs no GGUF**: a reviewer's liveness has nothing to do
+    // with a model file. It is also why the child's first turn is refused the moment it opens (no
+    // model is chosen), which is what makes *the child ended without a verdict* an event rather
+    // than a wait.
+    cfg.vocab_gguf = None;
+    cfg.store = Some(db.clone());
+    cfg.session_id = "s-reviewer-opening".into();
+    // A loopback endpoint of ours: never the box's model server.
+    cfg.endpoint = letibot_turn::Endpoint::parse(props.url()).expect("a loopback endpoint");
+    cfg.http_retries = 0;
+    cfg.context_window = Some(4096);
+    cfg.permission = Vec::new();
+    cfg.web_search = None;
+    // **A fixture must open on a box with no namespaces** — the reviewer child is seated
+    // `gatekeeper`, which wants a confined backend where there is one, and nothing here asserts a
+    // boundary.
+    cfg.unconfined = true;
+
+    let registry = letibot_sessionlog::registry::Registry::new();
+    registry
+        .create(&cfg.session_id, "", crate::sessions::Sessions::wiring(&cfg))
+        .expect("the daemon's own session registers");
+    let parts = crate::harness::Parts::load(&cfg).expect("the byte vocabulary needs no file");
+    *parts.mode_store.write().expect("the mode store") = crate::modes::ModeStore::default();
+    let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg.clone(), registry.clone())
+        .expect("the daemon's own session opens");
+    sessions
+        .ensure_gatekeeper()
+        .expect("the review queue's session opens");
+
+    // The row, and the lease that lets this daemon claim it.
+    let me = crate::mergequeue::lease::this_daemon().clone();
+    let key = repo.display().to_string();
+    let s = Store::open(&db).expect("the store opens");
+    assert!(matches!(
+        s.acquire_queue_lease(&key, &me, gate::now_ms(), LEASE_TTL_MS)
+            .expect("the lease"),
+        LeaseOutcome::Held { .. }
+    ));
+    s.enqueue_review(
+        &NewReview {
+            id: "opening".into(),
+            repository: key.clone(),
+            target: "main".into(),
+            kind: ReviewKind::Branch,
+            session_id: "s-opening".into(),
+            branch: "agent/opening".into(),
+            worktree: Some(wt.display().to_string()),
+            base_sha: base,
+            head_sha: head,
+            brief: "read this branch".into(),
+            priority: MergePriority::Subagent,
+            fixes: None,
+            evidence: "enqueued".into(),
+        },
+        "test",
+        gate::now_ms(),
+    )
+    .expect("the review row");
+
+    let env = Arc::new(QueueEnv {
+        me: me.clone(),
+        gate: Arc::new(GreenGate),
+        // **The daemon's own door, not a test double** — the question this test is about is the
+        // registry the spawn announces into, and a door that answers from a list would answer it
+        // whichever way it was written.
+        door: Arc::new(crate::mergequeue::RegistryDoor {
+            registry: registry.clone(),
+            store_path: db.clone(),
+        }),
+        settings: Arc::new(|_| Ok(QueueSettings::default())),
+        landing_root: test_landing_root(),
+        gate_deadline: Duration::from_secs(60),
+        review_deadline_ms: REVIEW_DEADLINE_MS,
+        reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
+        idle: Duration::from_millis(50),
+    });
+    let q = RepoQueue::new(
+        Store::open(&db).expect("the queue's own connection"),
+        repo.clone(),
+        env,
+    );
+
+    // Claimed by the queue's pass, which rings the review queue's session.
+    run(&q, 1);
+    let claimed = s.review_row("opening").expect("the row").expect("a row");
+    assert_eq!(claimed.state, ReviewState::Reviewing, "{claimed:?}");
+    assert!(claimed.reviewer.is_none(), "{claimed:?}");
+
+    // The reviewer itself, started by that session through the real runner.
+    assert_eq!(sessions.serve_reviews(), 1, "one reviewer is started");
+    let row = s.review_row("opening").expect("the row").expect("a row");
+    let reviewer = row.reviewer.clone().expect("the row names its reviewer");
+    assert!(
+        reviewer.starts_with(&format!("{}-sub-", sessions.review_session())),
+        "the reviewer is a child of this daemon's review session: {reviewer}"
+    );
+    assert_eq!(row.attempts, 0, "{row:?}");
+
+    // **Provably inside its open**: it has asked for its window and has not been answered. The
+    // handle exists, and the session it names does not.
+    assert!(
+        props.wait_for_ask(Duration::from_secs(30)),
+        "the reviewer never asked its endpoint for a window, so it never started opening"
+    );
+    assert!(
+        registry.get(&reviewer).is_none(),
+        "the session does not exist yet — this is the window"
+    );
+
+    // Supervisor passes while it is opening: the operator's three attempts were exactly this, a
+    // pass every couple of seconds against a child that had not finished opening.
+    run(&q, 3);
+    let still = s.review_row("opening").expect("the row").expect("a row");
+    assert_eq!(
+        still.state,
+        ReviewState::Reviewing,
+        "a reviewer that is opening is still a reviewer: {still:?}"
+    );
+    assert_eq!(
+        still.reviewer.as_deref(),
+        Some(reviewer.as_str()),
+        "the same reviewer, not a second one: {still:?}"
+    );
+    assert_eq!(
+        still.attempts, 0,
+        "a reviewer that is opening spends no attempt: {still:?}"
+    );
+
+    // Let it finish opening. It has no model to turn to, so its first turn is refused and the child
+    // ENDS — without a verdict, which is the one case this rule must still re-seat.
+    props.release();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let mut after = None;
+    while std::time::Instant::now() < deadline {
+        sessions.serve_reviews();
+        let now = s.review_row("opening").expect("the row").expect("a row");
+        if now.state == ReviewState::Waiting {
+            after = Some(now);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let after = after.expect("a reviewer that ended without a verdict is re-seated");
+    assert_eq!(after.attempts, 1, "the attempt is counted: {after:?}");
+    assert!(after.reviewer.is_none(), "{after:?}");
+    let why = s
+        .transitions("review", "opening")
+        .expect("the history")
+        .into_iter()
+        .rfind(|t| t.to_state == "waiting")
+        .expect("the re-seat is in the history")
+        .why;
+    assert!(
+        why.contains(&reviewer),
+        "the transition names the reviewer that ended: {why}"
+    );
+    assert!(
+        !registry.opening(&reviewer) && registry.get(&reviewer).is_none(),
+        "and the ended child is no longer alive: {reviewer}"
+    );
+}
+
 /// **A fix branch opened for a tip the target has moved past is withdrawn, and its empty tree and
 /// branch go with it** — the queue opened four of these in one morning, each with a worktree and a
 /// fixer child, and every one ended empty.
