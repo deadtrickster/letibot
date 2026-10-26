@@ -31,9 +31,6 @@ use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
 
-const GLM_GGUF: &str =
-    "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
-
 fn config(store: &std::path::Path, session_id: &str) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Glm;
@@ -41,7 +38,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.vocab_gguf = Some(
         std::env::var("LETIBOT_VOCAB_GGUF")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| GLM_GGUF.into()),
+            .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path()),
     );
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
@@ -107,7 +104,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     // test still cannot run.
     let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| GLM_GGUF.into());
+        .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path());
     let Some(_) = letibot_tokencore::apparatus::present(
         &format!("a GLM vocabulary GGUF ({})", gguf.display()),
         gguf.is_file(),

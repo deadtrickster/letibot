@@ -13,11 +13,10 @@ use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::registry::Registry;
 
-const VOCAB: &str = "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
-
 #[test]
 fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
-    if letibot_harnessd::vocab_file(std::path::Path::new(VOCAB)).is_none() {
+    let vocab = letibot_tokencore::apparatus::glm_gguf_path();
+    if letibot_harnessd::vocab_file(&vocab).is_none() {
         return;
     }
     // The operator's providers.toml must not be touched: point the config home
@@ -40,7 +39,7 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
     let mut cfg = Config::for_this_box(&ws);
     cfg.dialect = Dialect::Glm;
     cfg.model = "glm-5.3-flash".into();
-    cfg.vocab_gguf = Some(VOCAB.into());
+    cfg.vocab_gguf = Some(vocab.clone());
     cfg.socket = scratch.join("d.sock");
     cfg.session_id = "slash-test".into();
     let session = cfg.session_id.clone();

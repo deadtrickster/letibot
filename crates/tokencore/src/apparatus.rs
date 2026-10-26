@@ -99,6 +99,21 @@ use std::path::PathBuf;
 ///      was written on, and the RIGHT answer on any other;
 ///   2. the literal path, so a box with neither still gets a concrete name in the
 ///      message rather than an empty string.
+/// **The GLM vocabulary, found the way [`gguf_path`] finds the default one**: under `$HOME`
+/// first, then the Linux box's literal path. Four tests carried that literal as a constant,
+/// so on any other box they could only ever skip — or, under `LETIBOT_REQUIRE_APPARATUS`,
+/// fail with a GLM vocabulary sitting at `~/models/glm-5.3-flash/` (MEASURED on the Mac,
+/// 2026-10-26).
+pub fn glm_gguf_path() -> PathBuf {
+    const UNDER_HOME: &str = "models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
+    const LITERAL: &str =
+        "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(UNDER_HOME))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(LITERAL))
+}
+
 pub fn gguf_path() -> PathBuf {
     gguf_path_from(
         std::env::var_os("LETIBOT_VOCAB_GGUF"),

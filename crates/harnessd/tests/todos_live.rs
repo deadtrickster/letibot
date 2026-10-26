@@ -31,9 +31,6 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::Caps;
 use letibot_tokencore::store::{Store, TodoStatus};
 
-const GLM_GGUF: &str =
-    "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
-
 #[test]
 fn a_live_todo_write_reaches_the_store_and_the_log() {
     let dir = TempDir::new("harnessd-todos-live");
@@ -45,7 +42,7 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     cfg.vocab_gguf = Some(
         std::env::var("LETIBOT_VOCAB_GGUF")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| GLM_GGUF.into()),
+            .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path()),
     );
     cfg.store = Some(path.clone());
     cfg.session_id = session_id.into();
@@ -89,7 +86,7 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     // it is there to prevent. MEASURED, and `compact_live.rs` had it too.
     let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| GLM_GGUF.into());
+        .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path());
     let Some(_) = letibot_tokencore::apparatus::present(
         &format!("a GLM vocabulary GGUF ({})", gguf.display()),
         gguf.is_file(),
