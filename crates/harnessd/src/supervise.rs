@@ -173,14 +173,18 @@ fn group(open: Vec<ProcessRecord>) -> BTreeMap<Option<String>, Vec<ProcessRecord
 /// a restart, a deadline and a teardown assertable without a sleep. The daemon's own tick is
 /// `daemon.rs`.
 pub struct Supervisor {
-    store: Arc<Store>,
+    /// **Behind a `Mutex`, and not a bare `Store`.** A `rusqlite::Connection` is `Send` and not
+    /// `Sync`, so `Arc<Store>` is not `Send` either — and a daemon component that cannot be moved onto
+    /// the thread that ticks it is a component the daemon cannot run. `Arc<Mutex<Store>>` is both, and
+    /// the lock is uncontended: one supervisor, one tick, one thread.
+    store: Arc<std::sync::Mutex<Store>>,
     probe: Arc<dyn Probe>,
     /// The clock, injected so a deadline is tested by moving the clock rather than by waiting.
     now_ms: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
 impl Supervisor {
-    pub fn new(store: Arc<Store>, probe: Arc<dyn Probe>) -> Supervisor {
+    pub fn new(store: Arc<std::sync::Mutex<Store>>, probe: Arc<dyn Probe>) -> Supervisor {
         Supervisor {
             store,
             probe,
@@ -190,7 +194,7 @@ impl Supervisor {
 
     /// A supervisor whose clock the test moves.
     pub fn with_clock(
-        store: Arc<Store>,
+        store: Arc<std::sync::Mutex<Store>>,
         probe: Arc<dyn Probe>,
         now_ms: Box<dyn Fn() -> i64 + Send + Sync>,
     ) -> Supervisor {
@@ -210,7 +214,12 @@ impl Supervisor {
     /// its own.
     pub fn tick(&self) -> Tick {
         let mut report = Tick::default();
-        let open = match self.store.open_processes() {
+        let open = match self
+            .store
+            .lock()
+            .expect("the supervisor's store")
+            .open_processes()
+        {
             Ok(v) => v,
             Err(e) => {
                 report.errors.push(format!("reading the open records: {e}"));
@@ -315,7 +324,12 @@ impl Supervisor {
     /// record the next tick checks again, which is the safe half — but a write that fails on every
     /// tick is a supervisor that is doing nothing and a log that would not say so.
     fn write(&self, report: &mut Tick, rec: &ProcessRecord, check: Check, why: Option<&str>) {
-        if let Err(e) = self.store.check_process(&rec.session, &rec.handle, &check) {
+        if let Err(e) = self
+            .store
+            .lock()
+            .expect("the supervisor's store")
+            .check_process(&rec.session, &rec.handle, &check)
+        {
             let said = match why {
                 Some(w) => format!("{} ({}): {w}", rec.handle, e),
                 None => format!("{}: {e}", rec.handle),
@@ -336,6 +350,8 @@ impl Supervisor {
     pub fn teardown_session(&self, session: &str, by: &str) -> Vec<ProcessRecord> {
         let open: Vec<ProcessRecord> = self
             .store
+            .lock()
+            .expect("the supervisor's store")
             .processes_of(session)
             .unwrap_or_default()
             .into_iter()
@@ -343,22 +359,15 @@ impl Supervisor {
             .collect();
         let at = (self.now_ms)();
         for rec in &open {
-            match self.probe.kill(rec.host.as_deref(), rec, by) {
-                Ok(()) => {
-                    let _ = self.store.check_process(
-                        session,
-                        &rec.handle,
-                        &Check::new(ProcState::Stopped, at, 0, "teardown"),
-                    );
-                }
-                Err(_) => {
-                    let _ = self.store.check_process(
-                        session,
-                        &rec.handle,
-                        &Check::new(ProcState::Lost, at, 0, "teardown"),
-                    );
-                }
-            }
+            let written = match self.probe.kill(rec.host.as_deref(), rec, by) {
+                Ok(()) => Check::new(ProcState::Stopped, at, 0, "teardown"),
+                Err(_) => Check::new(ProcState::Lost, at, 0, "teardown"),
+            };
+            let _ = self
+                .store
+                .lock()
+                .expect("the supervisor's store")
+                .check_process(session, &rec.handle, &written);
         }
         open
     }
@@ -557,13 +566,15 @@ fn signal(rec: &ProcessRecord, sig: &str) -> Result<(), String> {
 /// directory answers *is it still running* and *what did it exit with*, and the thing a fake ssh in
 /// a test runs for real against a temporary "remote root".
 pub struct SshProbe {
-    run: Arc<dyn Fn(&str, &str) -> Result<(String, i32), String> + Send + Sync>,
+    run: Run,
 }
 
+/// **How one host is reached** — `(host, script) -> (what it said, its exit status)`, or why it could
+/// not be reached at all. A named alias so the field, the constructor and the doc say one thing.
+pub type Run = Arc<dyn Fn(&str, &str) -> Result<(String, i32), String> + Send + Sync>;
+
 impl SshProbe {
-    pub fn new(
-        run: Arc<dyn Fn(&str, &str) -> Result<(String, i32), String> + Send + Sync>,
-    ) -> SshProbe {
+    pub fn new(run: Run) -> SshProbe {
         SshProbe { run }
     }
 

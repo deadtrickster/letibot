@@ -110,10 +110,10 @@ fn rec(session: &str, handle: &str, host: Option<&str>, pid: u32) -> ProcessReco
     r
 }
 
-fn store_with(records: &[ProcessRecord]) -> Arc<Store> {
-    let s = Arc::new(Store::open_in_memory().unwrap());
+fn store_with(records: &[ProcessRecord]) -> Arc<Mutex<Store>> {
+    let s = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
     for r in records {
-        s.put_process(r).unwrap();
+        s.lock().unwrap().put_process(r).unwrap();
     }
     s
 }
@@ -206,7 +206,7 @@ fn one_check_covers_every_job_of_its_host() {
         "one call for the local job, one for the host — never one per job"
     );
     assert_eq!(tick.running, 5);
-    let open = s.open_processes().unwrap();
+    let open = s.lock().unwrap().open_processes().unwrap();
     assert!(
         open.iter().all(|r| r.state == ProcState::Running),
         "every record reads running: {:?}",
@@ -249,7 +249,7 @@ fn a_passed_deadline_kills_the_group_and_the_record_says_stopped() {
         vec![(None, 4242)],
         "the GROUP, which for a leader is its own pid"
     );
-    let got = s.process("s-a", "j1").unwrap().unwrap();
+    let got = s.lock().unwrap().process("s-a", "j1").unwrap().unwrap();
     assert_eq!(got.state, ProcState::Stopped);
     assert_eq!(
         got.exit, None,
@@ -261,7 +261,7 @@ fn a_passed_deadline_kills_the_group_and_the_record_says_stopped() {
     // process that is not there is not what happened.
     let mut r2 = rec("s-a", "j2", None, 4343);
     r2.deadline_ms = Some(1_000);
-    s.put_process(&r2).unwrap();
+    s.lock().unwrap().put_process(&r2).unwrap();
     let probe2 = Fake::new(vec![Say::One(
         "j2".to_string(),
         Answer::Ended {
@@ -273,7 +273,12 @@ fn a_passed_deadline_kills_the_group_and_the_record_says_stopped() {
     sup.tick();
     assert!(probe2.kills().is_empty(), "nothing was killed");
     assert_eq!(
-        s.process("s-a", "j2").unwrap().unwrap().state,
+        s.lock()
+            .unwrap()
+            .process("s-a", "j2")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Dead
     );
 }
@@ -289,11 +294,11 @@ fn an_unreachable_host_leaves_the_job_lost_and_the_next_tick_retries() {
 
     let first = sup.tick();
     assert_eq!(first.lost, vec!["j1".to_string()]);
-    let got = s.process("s-a", "j1").unwrap().unwrap();
+    let got = s.lock().unwrap().process("s-a", "j1").unwrap().unwrap();
     assert_eq!(got.state, ProcState::Lost);
     assert_eq!(got.check_how.as_deref(), Some("ssh"));
     assert_eq!(
-        s.open_processes().unwrap().len(),
+        s.lock().unwrap().open_processes().unwrap().len(),
         1,
         "lost is still looked after — it may be running"
     );
@@ -301,7 +306,12 @@ fn an_unreachable_host_leaves_the_job_lost_and_the_next_tick_retries() {
     let second = sup.tick();
     assert_eq!(second.running, 1);
     assert_eq!(
-        s.process("s-a", "j1").unwrap().unwrap().state,
+        s.lock()
+            .unwrap()
+            .process("s-a", "j1")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Running
     );
     assert_eq!(probe.calls().len(), 2, "retried");
@@ -341,20 +351,40 @@ fn a_teardown_ends_what_the_session_owns_and_leaves_other_sessions_alone() {
         "every host the session owns work on"
     );
     assert_eq!(
-        s.process("s-a", "j1").unwrap().unwrap().state,
+        s.lock()
+            .unwrap()
+            .process("s-a", "j1")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Stopped
     );
     assert_eq!(
-        s.process("s-a", "j2").unwrap().unwrap().state,
+        s.lock()
+            .unwrap()
+            .process("s-a", "j2")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Stopped
     );
     assert_eq!(
-        s.process("s-b", "j3").unwrap().unwrap().state,
+        s.lock()
+            .unwrap()
+            .process("s-b", "j3")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Starting,
         "another session's job is another session's"
     );
     assert_eq!(
-        s.process("s-a", "j0").unwrap().unwrap().exit,
+        s.lock()
+            .unwrap()
+            .process("s-a", "j0")
+            .unwrap()
+            .unwrap()
+            .exit,
         Some(0),
         "a job that had already ended keeps its exit"
     );
@@ -365,7 +395,12 @@ fn a_teardown_ends_what_the_session_owns_and_leaves_other_sessions_alone() {
     let sup = Supervisor::new(s2.clone(), probe);
     sup.teardown_session("s-c", "the daemon stopping");
     assert_eq!(
-        s2.process("s-c", "j4").unwrap().unwrap().state,
+        s2.lock()
+            .unwrap()
+            .process("s-c", "j4")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Lost,
         "a teardown that never reached the host says so"
     );
@@ -395,7 +430,7 @@ fn a_restart_adopts_the_live_jobs_and_buries_the_vanished_ones() {
     // The first daemon: one tick, so every record carries a check of its own.
     let first = Fake::new(vec![Say::Alive, Say::Alive]);
     Supervisor::new(s.clone(), first).tick();
-    assert_eq!(s.open_processes().unwrap().len(), 3);
+    assert_eq!(s.lock().unwrap().open_processes().unwrap().len(), 3);
 
     // ...and it stops. A crash: nothing was torn down, and the records are as they were.
     let probe = Fake::new(vec![
@@ -421,23 +456,28 @@ fn a_restart_adopts_the_live_jobs_and_buries_the_vanished_ones() {
 
     assert_eq!(tick.hosts, 2);
     assert_eq!(
-        s.process("s-a", "j1").unwrap().unwrap().state,
+        s.lock()
+            .unwrap()
+            .process("s-a", "j1")
+            .unwrap()
+            .unwrap()
+            .state,
         ProcState::Running
     );
-    let j2 = s.process("s-a", "j2").unwrap().unwrap();
+    let j2 = s.lock().unwrap().process("s-a", "j2").unwrap().unwrap();
     assert_eq!(
         (j2.state, j2.exit),
         (ProcState::Dead, None),
         "gone with no exit recorded is dead, which is not an exit of zero"
     );
-    let j3 = s.process("s-a", "j3").unwrap().unwrap();
+    let j3 = s.lock().unwrap().process("s-a", "j3").unwrap().unwrap();
     assert_eq!(
         (j3.state, j3.exit),
         (ProcState::Done, Some(3)),
         "the host's own job directory says how it ended"
     );
     assert_eq!(
-        s.open_processes().unwrap().len(),
+        s.lock().unwrap().open_processes().unwrap().len(),
         1,
         "the one the caller has to re-attach a session to"
     );
@@ -449,9 +489,16 @@ fn a_restart_adopts_the_live_jobs_and_buries_the_vanished_ones() {
 #[test]
 fn a_tick_that_cannot_read_its_records_is_reported_rather_than_looking_quiet() {
     // A store whose `process` table has been removed underneath it: there is nothing to read.
-    let s = Arc::new(Store::open_in_memory().unwrap());
-    s.put_process(&rec("s-a", "j1", None, 5)).unwrap();
-    s.connection().execute_batch("DROP TABLE process;").unwrap();
+    let s = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    s.lock()
+        .unwrap()
+        .put_process(&rec("s-a", "j1", None, 5))
+        .unwrap();
+    s.lock()
+        .unwrap()
+        .connection()
+        .execute_batch("DROP TABLE process;")
+        .unwrap();
     let probe = Fake::new(vec![Say::Alive]);
     let tick = Supervisor::new(s, probe.clone()).tick();
     assert_eq!(tick.hosts, 0, "no host was checked");

@@ -206,6 +206,13 @@ pub struct JobCompletion {
     pub arrived: SystemTime,
 }
 
+/// **What one set is waiting on** — handle → (which kind, the name the caller gave it).
+///
+/// A named alias because it is spelled in three signatures: the field, and the two watcher threads
+/// that carry a clone of it. Three spellings of a `HashMap<String, (BackgroundKind, Option<String>)>`
+/// is a reader re-parsing a type to see it is the same one.
+type Mine = Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>;
+
 /// The per-session set of watched background jobs and subagents.
 ///
 /// Held by the harness, fed by [`JobWatchSink`] as backgrounded results pass
@@ -314,7 +321,7 @@ pub struct JobWatchers {
     /// handle was all this map carried — so a session waiting on a named job read `quiet`, and
     /// `wait` was told nothing more would happen. Recorded at `watch` from the live view, which is
     /// the only moment it can be read.
-    mine: Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>,
+    mine: Mine,
     /// **The tree's ROOT** — the one session in a subagent tree that a head can be attached
     /// to, and therefore the one a permission card can be drawn by.
     ///
@@ -1364,7 +1371,7 @@ fn watch_one(
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
-    mine: Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>,
+    mine: Mine,
     job: String,
 ) {
     loop {
@@ -1482,7 +1489,7 @@ fn watch_task(
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
-    mine: Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>,
+    mine: Mine,
     job: String,
 ) {
     loop {
