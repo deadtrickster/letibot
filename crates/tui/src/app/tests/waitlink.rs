@@ -331,3 +331,82 @@ fn a_cut_row_links_only_its_visible_part() {
     a.todos_lines(link.from - 2);
     assert!(a.todos_wait_links.iter().all(|l| l.todo != 0));
 }
+
+/// **A wait link on a DONE row lands on the row the words are drawn on** — the done rows are
+/// gathered under the `done (N)` line now (`board_drawn`), so a row's pane row is no longer the add
+/// control plus its place on the board. `placed_rows` is the one arithmetic for that, and this is
+/// the measurement of it: the link's row must be the row whose words hold `waits on`.
+///
+/// **A moved link would be silent** — `wait_links` checks the row it took against the words it
+/// handed rano and records nothing when they disagree, so a wrong row costs the link rather than
+/// putting it on the wrong words. That is the right failure, and it is also why this has to be
+/// asserted rather than eyeballed.
+#[test]
+fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Jobs {
+        monitors: Vec::new(),
+        session_id: "s1".into(),
+        jobs: vec![job("j97", "pg-timing"), job("j96", "bench")],
+    });
+    let mut done = row("the finished rewrite", Some("j96"), Vec::new());
+    done.status = TodoStatus::Completed;
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: vec![
+            row(
+                "build the index",
+                None,
+                vec![TodoNeed::Job {
+                    handle: "j97".into(),
+                }],
+            ),
+            done,
+        ],
+    });
+    a.key(Key::CtrlT);
+    let frame = a.screen(160, 40);
+    // The frame is the proof: the words are drawn on a row below the group's line, and a click on
+    // them opens the job the row waits on.
+    let (x, y) = at(&frame, "the finished rewrite", "waits on");
+    assert!(
+        y > at_row(&frame, "done (1)"),
+        "the done row is not drawn under the group's line: {frame:#?}"
+    );
+    assert_eq!(
+        a.key(Key::Click { x, y }),
+        Some(Action::ReadJobOutput {
+            job: "j96".into(),
+            offset: 0
+        }),
+        "the link did not land on the done row it is drawn on: {frame:#?}"
+    );
+    // **And the frame rows the click map holds are the drawn ones**: a link recorded a row out
+    // would open nothing here, or open on a click a row above it.
+    let link = a
+        .todos_wait_links
+        .iter()
+        .find(|l| l.target == WaitOn::Job("j96".into()))
+        .expect("the done row's link is recorded at all");
+    assert_eq!(
+        link.row,
+        placed_row_of(&frame, "the finished rewrite"),
+        "the link's pane row is not the row it was drawn on"
+    );
+}
+
+/// The screen row `needle` was drawn on.
+fn at_row(frame: &[String], needle: &str) -> u16 {
+    frame
+        .iter()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("{needle:?} is drawn: {frame:#?}")) as u16
+}
+
+/// The PANE row (content row, not screen row) `needle` was drawn on — the frame's first pane row
+/// is the pane's title.
+fn placed_row_of(frame: &[String], needle: &str) -> usize {
+    let title = at_row(frame, "todos — ") as usize;
+    at_row(frame, needle) as usize - title
+}

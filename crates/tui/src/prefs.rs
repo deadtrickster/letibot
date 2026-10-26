@@ -55,11 +55,18 @@ pub struct HeadPrefs {
     pub tools: String,
     /// Show the model's `<function=…>` markup under each call.
     pub raw_calls: bool,
-    /// **The todos pane is hiding the rows that are done** — the operator: *"we need to be able to
-    /// hide done todo items"*. The pane's `d` flips it and this is what makes the answer outlive
-    /// the head: a board whose done rows are the noise is a board the reader wants the same way
-    /// tomorrow, and a switch that forgets is a switch they keep re-making.
-    pub todos_hide_done: bool,
+    /// **The todos pane has the done group FOLDED** — the operator: *"we need to be able to hide
+    /// done todo items"*, and then, once the done rows had a group of their own: *"`d` folds and
+    /// unfolds it"*. The pane's `d` flips it and this is what makes the answer outlive the head: a
+    /// board whose done rows are the noise is a board the reader wants the same way tomorrow, and a
+    /// switch that forgets is a switch they keep re-making.
+    ///
+    /// **The KEY on disk is `todos_hide_done`, and it stays that name.** It is the spelling every
+    /// `head.toml` on the box already carries from the days when the switch hid the rows in place,
+    /// and a rename would be a setting silently reset for every head that had ever been asked;
+    /// the fold is what the old name was always reaching for, so the file keeps it and the code
+    /// says what it does.
+    pub todos_fold_done: bool,
     /// **Which rung of the ladder this head draws at** (R37/R38) — `conversation`, `terse`,
     /// `normal` or `loud`.
     ///
@@ -162,9 +169,9 @@ impl Default for HeadPrefs {
             thinking: "folded".into(),
             tools: "folded".into(),
             raw_calls: false,
-            // Off: a head that started with rows hidden would be a head whose pane was missing
-            // things on the first look, before anybody asked for that.
-            todos_hide_done: false,
+            // Off: a head that started with the done group folded would be a head whose pane was
+            // missing things on the first look, before anybody asked for that.
+            todos_fold_done: false,
             // The rung the head has always started at when nothing said otherwise.
             verbosity: "normal".into(),
             retired: Vec::new(),
@@ -286,11 +293,12 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 "false" | "no" | "off" => p.raw_calls = false,
                 _ => notes.push(format!("head.toml: raw_calls = {v:?} is not true or false")),
             },
-            // The todos pane's switch, in the same two words — one spelling for every boolean
-            // this file holds, so a person editing it by hand has one rule to remember.
+            // The todos pane's fold, in the same two words — one spelling for every boolean this
+            // file holds, so a person editing it by hand has one rule to remember. **The key is
+            // the historical one** (`HeadPrefs::todos_fold_done` says why).
             "todos_hide_done" => match v.as_str() {
-                "true" | "yes" | "on" => p.todos_hide_done = true,
-                "false" | "no" | "off" => p.todos_hide_done = false,
+                "true" | "yes" | "on" => p.todos_fold_done = true,
+                "false" | "no" | "off" => p.todos_fold_done = false,
                 _ => notes.push(format!(
                     "head.toml: todos_hide_done = {v:?} is not true or false"
                 )),
@@ -382,7 +390,7 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
         ("raw_calls", p.raw_calls.to_string()),
-        ("todos_hide_done", p.todos_hide_done.to_string()),
+        ("todos_hide_done", p.todos_fold_done.to_string()),
         ("verbosity", format!("\"{}\"", p.verbosity)),
         // Quoted like the rest, and never multi-line: no key contains a comma or a
         // space, which is what keeps a hand-edited file honest.

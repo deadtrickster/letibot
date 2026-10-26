@@ -1128,22 +1128,26 @@ pub struct App {
     /// a row whose WORDS changed is a different row (the board has no ids — see [`TodoStop`]) and
     /// the overlay says so rather than showing a text that is no longer on the board.
     pub(crate) todos_open: Option<TodoStop>,
-    /// **The todos pane is hiding the rows that are done** — the operator: *"we need to be able
-    /// to hide done todo items"*. `d` on the pane flips it, the pane's muted line says how many
-    /// rows it is holding back, and the head remembers the answer in `head.toml`
-    /// (`todos_hide_done`) because a switch that forgets is a switch the reader keeps re-making.
+    /// **The todos pane has the done group folded away** — the operator: *"we need to be able to
+    /// hide done todo items"*, and after the done rows got a group of their own: *"done todos
+    /// still not in their own group"*. `d` on the pane flips it, the group's own line says how
+    /// many rows it holds and that `d` shows them, and the head remembers the answer in `head.toml`
+    /// (`todos_hide_done` — the key's historical spelling, `crate::prefs::HeadPrefs` says why)
+    /// because a switch that forgets is a switch the reader keeps re-making.
     ///
-    /// **What it hides is `completed`, and only that** — not the rows set aside and not the ones
-    /// struck off, which are on the board precisely because they were NOT finished — and it
-    /// hides them on both halves: the session's rows whatever their author, and the items the
-    /// repo's `TODO.md` marks `[x]`. Counts are untouched: the header counts open work
-    /// (`todo_counts`) and a done row was never part of it.
-    pub(crate) todos_hide_done: bool,
+    /// **What it folds is `completed`, and only that** — not the rows set aside and not the ones
+    /// struck off, which are on the board precisely because they were NOT finished — and it folds
+    /// them on both halves: the session's rows whatever their author, and the items the repo's
+    /// `TODO.md` marks `[x]`. Counts are untouched: the header counts open work (`todo_counts`)
+    /// and a done row was never part of it, and the group's own `done (N)` counts the same rows
+    /// whichever way the fold stands.
+    pub(crate) todos_fold_done: bool,
     /// **The next draw of the todos pane scrolls the window to the cursor.**
     ///
     /// The panes scroll by the rows they recorded while drawing ([`App::todos_stop_rows`]), and
-    /// a change that moves the cursor without a row number to move it by — hiding and showing
-    /// the done rows takes rows out of the list under the cursor — has no record to scroll by
+    /// a change that moves the cursor without a row number to move it by — folding the done group
+    /// takes rows OUT of the list under the cursor, and opening it puts them back below it — has no
+    /// record to scroll by
     /// until the next frame writes one. So the change asks the DRAW to follow the cursor, which
     /// is the sibling of `scroll_into_view` for the case the row is not known yet.
     pub(crate) todos_follow: bool,
@@ -2102,7 +2106,7 @@ impl App {
             absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
             model_pending: None,
-            todos_hide_done: false,
+            todos_fold_done: false,
             todos_follow: false,
             bye: None,
             daemon_pid: None,

@@ -1946,7 +1946,10 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
     let body = concat!(
         "## Phase 0\n",
         "\n",
-        "- [x] **T1** vendor the deps, pinned in\n",
+        // **Both items are OPEN, and that is the fixture's business**: a `[x]` item is drawn
+        // under its section's `done (N)` line now (`repo_drawn`), and this test is about the
+        // continuation lines under an item rather than about where the item's row sits.
+        "- [ ] **T1** vendor the deps, pinned in\n",
         "  `scripts/bootstrap.sh` (yason `0c84b29`).\n",
         "  Deps: none.\n",
         "- [ ] **T2** no body at all\n",

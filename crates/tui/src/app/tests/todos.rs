@@ -2814,8 +2814,7 @@ fn a_question_the_model_takes_back_takes_its_card_and_its_line_down() {
         "the put-away card went too"
     );
 }
-
-// ─────────────────────────── `d`, the done rows ───────────────────────────
+// ───────────────────── the done rows, in a group of their own ─────────────────────
 
 /// **A head on a board of the statuses given** — `todos_head`'s sibling, for the tests about rows
 /// that are DONE, which `todos_head` never makes (it is the walk's, and the walk is over open work).
@@ -2852,15 +2851,178 @@ fn status_head(
     a
 }
 
-/// **`d` hides every row that is done, and a muted line says how many** — the operator: *"we need
-/// to be able to hide done todo items"*.
+/// **The screen row a piece of a row's words was drawn on**, in the frame the caller just drew.
 ///
-/// **Both authors go, and the rows that are NOT done stay** — a row set aside is *not yet* and a
-/// row struck off is history, so sweeping them away with the finished ones would hide the two
-/// states the operator put there by hand. The counts do not move: the header counts open work and
-/// a done row was never part of it.
+/// By WORDS and never by arithmetic: the pane's own layout is what is under test, so a test that
+/// computed where a row must be would be asserting its own arithmetic back at itself.
+fn at(screen: &[String], needle: &str) -> usize {
+    screen
+        .iter()
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("`{needle}` is not on the screen:\n{}", screen.join("\n")))
+}
+
+/// **The done rows are gathered under a line of their own, below the rows still owed** — the
+/// operator: *"done todos still not in their own group"*.
+///
+/// The order is the board's, not the statuses': the rows still owed keep their relative order, and
+/// so do the done ones — which is all *newest last* can be here, because the wire carries no
+/// completion time (`board_drawn` says so). **A row set aside is not done and stays in the first
+/// half**: setting one aside is the operator saying *not yet*, and a group that swept it in with
+/// the finished rows would bury the state they put there by hand.
 #[test]
-fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
+fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("done first", TodoBy::Model, TodoStatus::Completed),
+        ("still owed", TodoBy::Model, TodoStatus::Pending),
+        ("done second", TodoBy::Operator, TodoStatus::Completed),
+        ("set aside", TodoBy::Operator, TodoStatus::Postponed),
+        ("in progress", TodoBy::Model, TodoStatus::InProgress),
+        (
+            "done third",
+            TodoBy::Parent("Parent s-sub-1".into()),
+            TodoStatus::Completed,
+        ),
+    ]);
+    let screen = a.screen(110, 40);
+    let group = at(&screen, "done (3)");
+    let owed = ["still owed", "set aside", "in progress"].map(|r| at(&screen, r));
+    let done = ["done first", "done second", "done third"].map(|r| at(&screen, r));
+
+    assert!(
+        owed.iter().all(|r| *r < group),
+        "a row still owed is drawn under the group line: {}",
+        screen.join("\n")
+    );
+    // **The rows owed keep the board's own order between themselves** — the grouping is a split
+    // into two halves, not a sort.
+    assert!(
+        owed[0] < owed[1] && owed[1] < owed[2],
+        "the rows owed were reordered: {owed:?}\n{}",
+        screen.join("\n")
+    );
+    assert!(
+        done.iter().all(|r| *r > group),
+        "a done row is drawn above the group line: {}",
+        screen.join("\n")
+    );
+    assert!(
+        done[0] < done[1] && done[1] < done[2],
+        "the done rows were reordered among themselves: {done:?}\n{}",
+        screen.join("\n")
+    );
+    // **The line names the count and nothing else while the group is open** — the key that folds
+    // it is the bar's to name (`d folds done`), and the folded line is where the reminder belongs.
+    let line = screen[group].trim();
+    assert_eq!(line, "done (3)", "the group line reads: {line:?}");
+}
+
+/// **A row's number is its place on the WHOLE board, so a row moving into the done group keeps
+/// it** — `/todo done N`, `/todo rm N` and `/todo postpone N` take that number, and a counter that
+/// walked the drawn order would renumber every row the moment a done one moved down.
+///
+/// Both halves are measured: what the pane DRAWS beside the rows, and what the verb does with the
+/// number afterwards. A test that only checked the drawing would be satisfied by a number that is
+/// no longer the one the verb takes.
+#[test]
+fn the_numbers_are_the_boards_and_a_row_moving_into_the_group_keeps_its_own() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("the first", TodoBy::Operator, TodoStatus::Pending),
+        ("the second, done", TodoBy::Operator, TodoStatus::Completed),
+        ("the third", TodoBy::Operator, TodoStatus::Pending),
+    ]);
+    let screen = a.screen(110, 40);
+    assert!(
+        screen.iter().any(|l| l.contains("1  [ ] the first")),
+        "the first row lost its number: {}",
+        screen.join("\n")
+    );
+    assert!(
+        screen.iter().any(|l| l.contains("3  [ ] the third")),
+        "the third row's number followed it into the drawn order: {}",
+        screen.join("\n")
+    );
+    let done = at(&screen, "2  [x] the second, done");
+    assert!(
+        done > at(&screen, "done (1)"),
+        "the done row is in the group and still says 2: {}",
+        screen.join("\n")
+    );
+
+    // **And the verb takes that number.** Row 3 is drawn SECOND of the operator's rows — it is the
+    // third row of the BOARD — and `/todo done 3` must move the third and not the one above it.
+    match a.command("todo done 3") {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items[2].content, "the third", "{items:?}");
+            assert_eq!(items[2].status, TodoStatus::Completed, "{items:?}");
+            assert_eq!(
+                items[1].content, "the second, done",
+                "the verb moved another row: {items:?}"
+            );
+        }
+        other => panic!("expected the write of the operator's half, got {other:?}"),
+    }
+    let screen = a.screen(110, 40);
+    assert!(
+        screen.iter().any(|l| l.contains("3  [x] the third")),
+        "the row that moved into the group kept its number: {}",
+        screen.join("\n")
+    );
+}
+
+/// **Tab on one of the operator's rows keeps the cursor on that row when the toggle moves it into
+/// the done group.**
+///
+/// Marking a row done is a change of the row's STATE, and the grouping draws a done row somewhere
+/// else — so the index the cursor had is a place rather than a row from that frame on. The key
+/// carries it by identity, the same way `d` does, or the reader who marked a row watches the mark
+/// hop to its neighbour and has no way to tell whether the row was marked at all.
+#[test]
+fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("the first", TodoBy::Operator, TodoStatus::Pending),
+        (
+            "the one being marked",
+            TodoBy::Operator,
+            TodoStatus::Pending,
+        ),
+        ("the last", TodoBy::Operator, TodoStatus::Pending),
+    ]);
+    a.screen(110, 40);
+    a.key(Key::Down);
+    a.key(Key::Down);
+    assert!(
+        matches!(a.key(Key::Tab), Some(Action::SetOperatorTodos { .. })),
+        "the toggle is the operator's row's own act"
+    );
+    let screen = a.screen(110, 40);
+    let marked = screen
+        .iter()
+        .find(|l| l.contains('▸'))
+        .unwrap_or_else(|| panic!("no mark at all: {}", screen.join("\n")));
+    assert!(
+        marked.contains("the one being marked"),
+        "the cursor stayed on an index while the row moved into the group: {}",
+        screen.join("\n")
+    );
+    assert!(
+        at(&screen, "the one being marked") > at(&screen, "done (1)"),
+        "the row was not marked done, so this proves nothing: {}",
+        screen.join("\n")
+    );
+}
+
+/// **`d` folds the done group to the one line that names it, and `d` again opens it** — the
+/// operator: *"done todos still not in their own group"*, and the fold is `d`'s own switch.
+///
+/// The folded line says how many rows it holds and which key shows them; the open one says the
+/// count alone. **The number is the same either way**, so opening the group cannot read as a
+/// different set of rows.
+#[test]
+fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[
         ("the model's done row", TodoBy::Model, TodoStatus::Completed),
@@ -2878,7 +3040,6 @@ fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
             TodoStatus::Postponed,
         ),
     ]);
-    let before = a.screen(110, 40).join("\n");
     // The header's own line, so the count is compared with ITSELF rather than with a number this
     // test would have to keep in step with the fixture.
     let head_of = |screen: &str| {
@@ -2888,19 +3049,11 @@ fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
             .map(|l| l.trim().to_string())
             .unwrap_or_else(|| panic!("no header: {screen}"))
     };
-    for row in [
-        "the model's done row",
-        "your done row",
-        "a subagent's done row",
-    ] {
-        assert!(
-            before.contains(row),
-            "{row} is not drawn before the switch: {before}"
-        );
-    }
+    let before = a.screen(110, 40).join("\n");
+    assert!(before.contains("done (3)"), "{before}");
     assert!(
-        !before.contains("done hidden"),
-        "the muted line is drawn with nothing hidden: {before}"
+        !before.contains("d shows them"),
+        "the reminder is on the folded line, not on the open one: {before}"
     );
 
     a.key(Key::Char('d'));
@@ -2912,7 +3065,7 @@ fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
     ] {
         assert!(
             !after.contains(row),
-            "{row} is still drawn with the switch on: {after}"
+            "{row} is still drawn with the group folded: {after}"
         );
     }
     for row in [
@@ -2926,16 +3079,25 @@ fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
         );
     }
     assert!(
-        after.contains("3 done hidden · d shows them"),
-        "the muted line does not count them: {after}"
+        after.contains("done (3) · d shows them"),
+        "the folded line does not name the count and the key: {after}"
     );
     assert_eq!(
         head_of(&before),
         head_of(&after),
         "the header counts what it counted before"
     );
+    assert!(
+        a.notice
+            .clone()
+            .unwrap_or_default()
+            .contains("3 done folded away"),
+        "the key says what it did: {:?}",
+        a.notice
+    );
 
-    // **And `d` again brings them back** — the switch is not a one-way door.
+    // **And `d` again opens it** — the fold is not a one-way door, and the rows come back under
+    // the same line and the same count.
     a.key(Key::Char('d'));
     let back = a.screen(110, 40).join("\n");
     for row in [
@@ -2946,45 +3108,22 @@ fn d_hides_the_done_rows_behind_a_muted_line_that_counts_them() {
         assert!(back.contains(row), "{row} did not come back: {back}");
     }
     assert!(
-        !back.contains("done hidden"),
-        "the muted line outlived the switch: {back}"
+        back.contains("done (3)") && !back.contains("d shows them"),
+        "the group is open but its line still reads folded: {back}"
+    );
+    assert!(
+        a.notice.clone().unwrap_or_default().contains("are back"),
+        "the second press says the rows are back: {:?}",
+        a.notice
     );
 }
 
-/// **`d` says which way it stands** — a bar that went on offering `hides done` over a list that is
-/// already hidden names a key whose press does the opposite of what it says.
-#[test]
-fn the_bar_says_d_hides_done_and_then_that_it_shows_them() {
-    use letibot_sessionlog::event::{TodoBy, TodoStatus};
-    let mut a = status_head(&[
-        ("done already", TodoBy::Model, TodoStatus::Completed),
-        ("still open", TodoBy::Model, TodoStatus::Pending),
-    ]);
-    let bar = a.hint_bar(200);
-    assert!(bar.contains("d hides done"), "{bar}");
-    assert!(!bar.contains("d shows done"), "{bar}");
-
-    a.key(Key::Char('d'));
-    let bar = a.hint_bar(200);
-    assert!(bar.contains("d shows done"), "{bar}");
-    assert!(
-        !bar.contains("d hides done"),
-        "the bar still offers the act that already happened: {bar}"
-    );
-    // The help lists both, because it is read without a list in front of it.
-    let (_, help) = App::surface_help(Surface::Todos).expect("the todos pane is in the help");
-    assert!(
-        help.contains("d hides the done rows, or shows them again"),
-        "{help}"
-    );
-}
-
-/// **The cursor keeps its ROW, not its index, when the done rows go past it.**
+/// **The cursor keeps its ROW, not its index, when the group folds under it.**
 ///
-/// `todos_sel` is an index into the one enumeration, and hiding takes entries out of it — an index
+/// `todos_sel` is an index into the one enumeration, and folding takes entries out of it — an index
 /// kept across the switch lands on whichever row slid into the hole.
 #[test]
-fn the_cursor_keeps_the_row_it_was_on_when_the_done_rows_are_hidden() {
+fn the_cursor_keeps_the_row_it_was_on_when_the_group_folds() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[
         (
@@ -3000,9 +3139,7 @@ fn the_cursor_keeps_the_row_it_was_on_when_the_done_rows_are_hidden() {
         ),
         ("the last row", TodoBy::Model, TodoStatus::Pending),
     ]);
-    // The add control, then three Downs: onto the row this test is about.
-    a.key(Key::Down);
-    a.key(Key::Down);
+    // The add control, then the FIRST row still owed: onto the row this test is about.
     a.key(Key::Down);
     let screen = a.screen(110, 40);
     assert!(
@@ -3021,114 +3158,157 @@ fn the_cursor_keeps_the_row_it_was_on_when_the_done_rows_are_hidden() {
             .iter()
             .find(|l| l.contains('▸'))
             .is_some_and(|l| l.contains("the row under the cursor")),
-        "the cursor slid onto another row when the done ones went: {}",
+        "the cursor slid onto another row when the group folded: {}",
         screen.join("\n")
     );
 
-    // **The selected row HIDDEN is the other half**: the cursor lands on the row that followed it
-    // rather than on an index that no longer exists.
+    // **And a cursor INSIDE the group is the other half**: folding takes the row out from under it,
+    // and the index it had is then a place rather than a row.
     a.key(Key::Char('d'));
+    // The add control, the two owed rows, then the group's two: the second of them is the last stop
+    // of the list — three Downs from the row the cursor is on.
+    a.key(Key::Down);
+    a.key(Key::Down);
     a.key(Key::Down);
     let screen = a.screen(110, 40);
     assert!(
         screen
             .iter()
             .find(|l| l.contains('▸'))
-            .is_some_and(|l| l.contains("the last row")),
-        "the walk does not reach the last row: {}",
+            .is_some_and(|l| l.contains("done above it too")),
+        "the walk does not reach the done rows: {}",
         screen.join("\n")
     );
     a.key(Key::Char('d'));
     let screen = a.screen(110, 40);
+    assert_eq!(
+        screen.iter().filter(|l| l.contains('▸')).count(),
+        1,
+        "one mark, or the fixture repeats itself: {}",
+        screen.join("\n")
+    );
     assert!(
         screen
             .iter()
             .find(|l| l.contains('▸'))
             .is_some_and(|l| l.contains("the last row")),
-        "a hidden row under the cursor took the mark with it: {}",
+        "a folded row under the cursor did not fall back to a row that is drawn: {}",
         screen.join("\n")
     );
 }
 
-/// **Hiding a done row does not renumber the operator's rows** — the number beside each of them is
-/// what `/todo done N`, `/todo rm N` and `/todo postpone N` take, and a counter that skipped the
-/// hidden rows would move somebody else's row.
+/// **The done group's line is not a row and not a stop** — nothing is drawn where a cursor can rest
+/// that has no act: `d` is the pane's key and the bar names it, so a stop on the line would be a
+/// second door to a key nobody is told about.
+///
+/// The other half of the same rule: **the stops follow the DRAWN order**, so an arrow that walks
+/// past the last owed row walks INTO the group rather than off the end of the list.
 #[test]
-fn hiding_a_done_row_does_not_renumber_the_operators_rows() {
+fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[
-        ("the first", TodoBy::Operator, TodoStatus::Pending),
-        ("the second, done", TodoBy::Operator, TodoStatus::Completed),
-        ("the third", TodoBy::Operator, TodoStatus::Pending),
+        ("done below", TodoBy::Model, TodoStatus::Completed),
+        ("owed first", TodoBy::Model, TodoStatus::Pending),
+        ("owed second", TodoBy::Model, TodoStatus::InProgress),
+        ("done above", TodoBy::Model, TodoStatus::Completed),
     ]);
-    let before = a.screen(110, 40).join("\n");
-    assert!(before.contains("2  [x] the second, done"), "{before}");
-    assert!(before.contains("3  [ ] the third"), "{before}");
+    let _ = a.screen(110, 40);
+    // The add control, then the two rows owed, then — past the group line — the two done ones.
+    assert_eq!(
+        a.todos_stops(),
+        vec![
+            TodoStop::Add,
+            TodoStop::Theirs("owed first".into()),
+            TodoStop::Theirs("owed second".into()),
+            TodoStop::Theirs("done below".into()),
+            TodoStop::Theirs("done above".into()),
+        ],
+        "the stops are not the drawn order"
+    );
 
-    a.key(Key::Char('d'));
-    let after = a.screen(110, 40).join("\n");
+    // **A click on a done row lands on that row**, one row below the group's line: the row's
+    // PANE place is what a click reads, and the grouping has moved it away from its place on the
+    // board — which is the whole defect a click could have kept while the drawing was fixed.
+    let screen = a.screen(110, 40);
+    let row = at(&screen, "done above");
+    a.key(Key::Click {
+        x: 10,
+        y: row as u16,
+    });
+    let drawn = a.screen(110, 40);
     assert!(
-        !after.contains("the second, done"),
-        "the done row is still drawn: {after}"
+        drawn
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("done above")),
+        "a click on a done row landed somewhere else: {}",
+        drawn.join("\n")
     );
+    // And on the one above it, which is the pair that would swap places under arithmetic over the
+    // board's order.
+    let row = at(&screen, "done below");
+    a.key(Key::Click {
+        x: 10,
+        y: row as u16,
+    });
+    let drawn = a.screen(110, 40);
     assert!(
-        after.contains("3  [ ] the third"),
-        "the third row was renumbered to: {after}"
+        drawn
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("done below")),
+        "a click on the other done row landed somewhere else: {}",
+        drawn.join("\n")
     );
+
+    // **And the arrows walk the same order**: four Downs from the control reach the second done
+    // row, which is the fourth stop — not the second row of the board.
+    let mut a = status_head(&[
+        ("done below", TodoBy::Model, TodoStatus::Completed),
+        ("owed first", TodoBy::Model, TodoStatus::Pending),
+        ("owed second", TodoBy::Model, TodoStatus::InProgress),
+        ("done above", TodoBy::Model, TodoStatus::Completed),
+    ]);
+    for _ in 0..4 {
+        a.key(Key::Down);
+    }
+    let screen = a.screen(110, 40);
     assert!(
-        after.contains("1  [ ] the first"),
-        "the first row lost its number: {after}"
+        screen
+            .iter()
+            .find(|l| l.contains('▸'))
+            .is_some_and(|l| l.contains("done above")),
+        "the arrows did not walk into the done group: {}",
+        screen.join("\n")
     );
 }
 
-/// **The repo's done items go the same way, and its headings keep their own cookies** — a heading
-/// counts the FILE, not this pane, so `[1/2]` stays `[1/2]` while one of the two is hidden.
+/// **A board with nothing done draws no group line at all** — `done (0)` is furniture about
+/// nothing, and the ordinary board is the one with work left.
 #[test]
-fn the_files_done_items_are_hidden_and_its_headings_keep_their_cookies() {
+fn a_board_with_nothing_done_draws_no_group_line() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
-    let dir = std::env::temp_dir().join(format!(
-        "letibot-todo-hide-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch");
-    std::fs::write(
-        dir.join("TODO.md"),
-        "## Phase 0 — the plan\n\n- [x] **T1** the finished item\n- [ ] **T2** the open item\n",
-    )
-    .expect("write");
-    let mut a = status_head(&[("a session row", TodoBy::Model, TodoStatus::Pending)]);
-    a.wiring.workspace = dir.display().to_string();
-    a.refresh_repo_todos();
-
-    let before = a.screen(110, 40).join("\n");
-    assert!(before.contains("T1 the finished item"), "{before}");
-    assert!(before.contains("T2 the open item"), "{before}");
-
-    a.key(Key::Char('d'));
-    let after = a.screen(110, 40).join("\n");
+    let mut a = status_head(&[
+        ("still owed", TodoBy::Model, TodoStatus::Pending),
+        ("set aside", TodoBy::Operator, TodoStatus::Postponed),
+    ]);
+    let screen = a.screen(110, 40).join("\n");
     assert!(
-        !after.contains("T1 the finished item"),
-        "the file's done item is still drawn: {after}"
+        !screen.contains("done ("),
+        "a group line is drawn over no group: {screen}"
     );
-    assert!(after.contains("T2 the open item"), "{after}");
-    assert!(
-        after.contains("Phase 0 — the plan  [1/2]"),
-        "the heading's cookie is the file's, and it moved: {after}"
+    assert_eq!(
+        a.todos_stops().len(),
+        3,
+        "the stops are the control and the two rows"
     );
-    assert!(
-        after.contains("1 done hidden · d shows them"),
-        "the muted line does not count the file's hidden item: {after}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **When every session row is hidden the pane does not say `none yet`** — that sentence is rano's
-/// for the empty list it was handed, and it is FALSE of a board whose rows are merely folded away.
-/// It is replaced by the muted line, not stacked under it, so the two never contradict each other
-/// two lines apart.
+/// **A board whose rows are ALL done** — the group is the whole list, and rano's `none yet` must
+/// not stand over it: that sentence is true of the argument it was handed (an empty list) and
+/// false of the board.
 #[test]
-fn a_board_whose_rows_are_all_hidden_does_not_say_none_yet() {
+fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[
         (
@@ -3142,42 +3322,108 @@ fn a_board_whose_rows_are_all_hidden_does_not_say_none_yet() {
             TodoStatus::Completed,
         ),
     ]);
+    let screen = a.screen(110, 40).join("\n");
+    let line = screen
+        .lines()
+        .find(|l| l.contains("done (2)"))
+        .unwrap_or_else(|| panic!("no group line: {screen}"));
+    assert_eq!(line.trim(), "done (2)", "the open group's line: {line:?}");
     assert!(
-        !a.screen(110, 40).join("\n").contains("none yet"),
-        "the fixture starts empty, which is not the case this test is about"
+        screen.contains("the model's only row, done") && screen.contains("your only row, done"),
+        "the group is open and holds both rows: {screen}"
     );
+
     a.key(Key::Char('d'));
-    let after = a.screen(110, 40).join("\n");
+    let folded = a.screen(110, 40).join("\n");
     assert!(
-        !after.contains("none yet"),
-        "the pane says there is nothing on a board with two rows hidden: {after}"
+        !folded.contains("none yet"),
+        "the pane says there is nothing on a board with two rows folded away: {folded}"
     );
     assert!(
-        after.contains("2 done hidden · d shows them"),
-        "and the muted line does not stand in its place: {after}"
+        folded.contains("done (2) · d shows them"),
+        "the folded line does not stand in its place: {folded}"
     );
 }
 
-/// **Hiding scrolls the window to the cursor** — the rows go out from ABOVE the reader, so a
-/// window left where it was can end up looking at a list that no longer holds the cursor.
-///
-/// The panes scroll by the rows the last draw recorded, and the draw that hid them is the first
-/// one that knew the new numbers: `todos_follow` is what makes THAT draw scroll rather than the
-/// keypress scroll against the record of the draw before it.
+/// **The repo's `[x]` items are gathered the same way, one section at a time** — a `TODO.md` is
+/// sections, and an item belongs to the heading over it, so the grouping stops at the heading and
+/// the heading keeps the file's own cookie (`[1/2]`), which counts the file and not this pane.
 #[test]
-fn hiding_the_rows_above_the_cursor_keeps_the_cursor_on_the_screen() {
+fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
-    // **Thirty rows above the cursor and thirty below it, each with words of its own**: the rows
-    // that go out are enough that a window left where it was would be looking at rows the new list
-    // no longer has, and the rows that stay are enough that the clamp cannot quietly drag it back.
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-todo-group-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    std::fs::write(
+        dir.join("TODO.md"),
+        "## Phase 0 — the plan\n\n- [x] **T1** the finished item\n- [ ] **T2** the open item\n\
+         \n## Phase 1 — after it\n\n- [ ] **T3** another open one\n",
+    )
+    .expect("write");
+    let mut a = status_head(&[("a session row", TodoBy::Model, TodoStatus::Pending)]);
+    a.wiring.workspace = dir.display().to_string();
+    a.refresh_repo_todos();
+
+    let screen = a.screen(110, 40);
+    let heading = at(&screen, "Phase 0 — the plan  [1/2]");
+    let open = at(&screen, "T2 the open item");
+    let group = at(&screen, "done (1)");
+    let done = at(&screen, "T1 the finished item");
+    assert!(
+        heading < open && open < group && group < done,
+        "the section is not heading, owed, group, done: {}",
+        screen.join("\n")
+    );
+    // **The next section is untouched** — a section with nothing done gets no line of its own.
+    let next = at(&screen, "another open one");
+    assert!(next > done, "{}", screen.join("\n"));
+    assert_eq!(
+        screen.iter().filter(|l| l.contains("done (1)")).count(),
+        1,
+        "one group line per section that has one: {}",
+        screen.join("\n")
+    );
+
+    // **And the fold takes the file's item away with the session's**, under its own section's line.
+    a.key(Key::Char('d'));
+    let folded = a.screen(110, 40).join("\n");
+    assert!(
+        !folded.contains("T1 the finished item"),
+        "the file's done item is still drawn: {folded}"
+    );
+    assert!(folded.contains("T2 the open item"), "{folded}");
+    assert!(
+        folded.contains("Phase 0 — the plan  [1/2]"),
+        "the heading's cookie is the file's, and it moved: {folded}"
+    );
+    assert!(
+        folded.contains("done (1) · d shows them"),
+        "the section's folded line does not name the count: {folded}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **Folding the group under the cursor scrolls the window to where the cursor landed.**
+///
+/// The panes scroll by the rows the last draw recorded, and the draw that folded them is the first
+/// one that knew the new numbers: `todos_follow` is what makes THAT draw scroll rather than the
+/// keypress scroll against the record of the draw before it. Without it the cursor is on a row
+/// nobody is looking at — which is the same defect as a cursor that moved to a row it is not on,
+/// one reading further out.
+#[test]
+fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
     // **Distinct words matter** — a board's identity is its text ([`TodoStop`]), so sixty rows
     // saying the same thing would all draw the mark and prove nothing about which one it is on.
     let contents: Vec<String> = (0..60)
         .map(|i| {
             if i < 30 {
-                format!("done row {i}")
-            } else {
                 format!("open row {i}")
+            } else {
+                format!("done row {i}")
             }
         })
         .collect();
@@ -3186,20 +3432,20 @@ fn hiding_the_rows_above_the_cursor_keeps_the_cursor_on_the_screen() {
         .enumerate()
         .map(|(i, text)| {
             let status = if i < 30 {
-                TodoStatus::Completed
-            } else {
                 TodoStatus::Pending
+            } else {
+                TodoStatus::Completed
             };
             (text.as_str(), TodoBy::Model, status)
         })
         .collect();
     let mut a = status_head(&rows);
-    // The add control, then thirty Downs onto the first open row, which is well below the fold —
-    // **drawn between presses**, because the arrows scroll by the rows the last DRAW recorded: a
+    // **Drawn between presses**, because the arrows scroll by the rows the last DRAW recorded: a
     // walk with no frames in it never moves the window, and the case this test is about is a
     // window that HAS moved.
     a.screen(110, 20);
-    for _ in 0..31 {
+    // The add control, then the thirty rows owed, then five rows into the group.
+    for _ in 0..(1 + 30 + 5) {
         a.key(Key::Down);
         a.screen(110, 20);
     }
@@ -3217,9 +3463,37 @@ fn hiding_the_rows_above_the_cursor_keeps_the_cursor_on_the_screen() {
         "one mark, or the fixture repeats itself: {marked:?}"
     );
     assert!(
-        marked[0].contains("open row 30"),
-        "the cursor is not on the row it had, or is not on the screen at all: {}",
+        marked[0].contains("open row 29"),
+        "the cursor is not on the row it fell back to, or is not on the screen at all: {}",
         screen.join("\n")
+    );
+}
+
+/// **`d` says which way it stands** — a bar that went on offering `folds done` over a group that is
+/// already shut names a key whose press does the opposite of what it says.
+#[test]
+fn the_bar_says_d_folds_the_group_and_then_that_it_shows_it() {
+    use letibot_sessionlog::event::{TodoBy, TodoStatus};
+    let mut a = status_head(&[
+        ("done already", TodoBy::Model, TodoStatus::Completed),
+        ("still open", TodoBy::Model, TodoStatus::Pending),
+    ]);
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("d folds done"), "{bar}");
+    assert!(!bar.contains("d shows done"), "{bar}");
+
+    a.key(Key::Char('d'));
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("d shows done"), "{bar}");
+    assert!(
+        !bar.contains("d folds done"),
+        "the bar still offers the act that already happened: {bar}"
+    );
+    // The help lists both, because it is read without a list in front of it.
+    let (_, help) = App::surface_help(Surface::Todos).expect("the todos pane is in the help");
+    assert!(
+        help.contains("folds the done group, or shows it again"),
+        "{help}"
     );
 }
 
@@ -3233,7 +3507,7 @@ fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
     a.key(Key::Char('d'));
-    assert!(a.todos_hide_done, "the first `d` is the pane's");
+    assert!(a.todos_fold_done, "the first `d` is the pane's");
     assert!(a.editor.text().is_empty(), "{}", a.editor.text());
 
     let mut sent = Vec::new();
@@ -3243,28 +3517,33 @@ fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     assert!(sent.is_empty(), "typing sent {sent:?}");
     assert_eq!(a.editor.text(), "legacy deploy");
     assert!(
-        a.todos_hide_done,
+        a.todos_fold_done,
         "a `d` inside a typed line flipped the switch"
     );
 }
 
-/// **The switch outlives the head** — `todos_hide_done` in `head.toml`, which is where every other
+/// **The fold outlives the head** — `todos_hide_done` in `head.toml`, which is where every other
 /// switch this head keeps lives. A switch that forgets is a switch the reader keeps re-making.
+///
+/// **The KEY is the old spelling and that is deliberate**: every `head.toml` on the box already
+/// carries it from the days when the switch hid the rows in place, and the fold is what it was
+/// always reaching for — so the code says `fold` and the file keeps its word, and nobody's setting
+/// is silently reset by a rename.
 #[test]
-fn the_hidden_switch_is_remembered_by_the_next_head() {
+fn the_fold_is_remembered_by_the_next_head() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
-    let dir = std::env::temp_dir().join(format!("letibot-todo-hide-prefs-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("letibot-todo-fold-prefs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("head.toml");
 
     let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
     a.prefs_path = Some(path.clone());
     a.key(Key::Char('d'));
-    assert!(a.todos_hide_done, "the key did not flip the switch");
+    assert!(a.todos_fold_done, "the key did not flip the switch");
     let on_disk = std::fs::read_to_string(&path).expect("head.toml written");
     assert!(
         on_disk.contains("todos_hide_done = true"),
-        "the switch was not written down: {on_disk}"
+        "the switch was not written down under the key every head already has: {on_disk}"
     );
     assert!(
         !a.notice.clone().unwrap_or_default().contains("not saved"),
@@ -3277,7 +3556,7 @@ fn the_hidden_switch_is_remembered_by_the_next_head() {
     fresh.prefs_path = Some(path.clone());
     fresh.load_prefs();
     assert!(
-        fresh.todos_hide_done,
+        fresh.todos_fold_done,
         "the switch did not come back on a restarted head"
     );
     let _ = std::fs::remove_dir_all(&dir);

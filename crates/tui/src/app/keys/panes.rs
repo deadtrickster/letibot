@@ -183,11 +183,11 @@ impl App {
                 };
                 ControlFlow::Break(Some(Action::Slash { line: line.into() }))
             }
-            // **`d` hides the rows that are done, or brings them back** — the switch is this head's
-            // ([`App::toggle_todos_hide_done`]), so nothing goes to the daemon and the pane draws
+            // **`d` folds the done group away, or opens it** — the switch is this head's
+            // ([`App::toggle_todos_fold_done`]), so nothing goes to the daemon and the pane draws
             // the answer on the next frame.
-            Act::HideDone => {
-                self.toggle_todos_hide_done();
+            Act::FoldDone => {
+                self.toggle_todos_fold_done();
                 ControlFlow::Break(None)
             }
         }
@@ -519,6 +519,9 @@ impl App {
         else {
             return ControlFlow::Continue(());
         };
+        // The stop the cursor is on, kept so a row that MOVES under the key is followed rather
+        // than left behind — see the `Mine` arm below.
+        let was = stop.clone();
         match stop {
             TodoStop::Add => {
                 self.open_todo_card();
@@ -540,6 +543,18 @@ impl App {
                 }
                 self.say("toggled");
                 self.echo_operator_todos(mine.clone());
+                // **The cursor follows the ROW, not the index it had.** Marking a row done moves it
+                // down into the done group, and an index kept across that lands on whichever row
+                // slid into the hole — the defect [`App::toggle_todos_fold_done`] already carries a
+                // fix for, arriving through the other key. Found by identity among the stops the
+                // board now makes, and the next DRAW scrolls to where that row landed, because
+                // this key has no row number to scroll by.
+                let stops = self.todos_stops();
+                if let Some(at) = stops.iter().position(|here| *here == was) {
+                    self.todos_sel = at;
+                }
+                self.todos_follow = true;
+                self.redraw = true;
                 ControlFlow::Break(Some(Action::SetOperatorTodos {
                     items: mine,
                     moved: Vec::new(),

@@ -126,9 +126,9 @@ pub(crate) enum Act {
     PluginKey,
     /// Take the key and do nothing — it is not the composer's while this surface is up.
     Swallow,
-    /// **The todos pane's `d`: hide the rows that are done, or bring them back** —
-    /// [`App::toggle_todos_hide_done`], and the switch it flips is remembered in `head.toml`.
-    HideDone,
+    /// **The todos pane's `d`: fold the done group away, or open it** —
+    /// [`App::toggle_todos_fold_done`], and the switch it flips is remembered in `head.toml`.
+    FoldDone,
 }
 
 /// **What the bar and the help say about a binding.**
@@ -142,7 +142,7 @@ pub(crate) enum Says {
     /// **It depends on a SWITCH, and the two ways it stands are the two answers.** The help
     /// writes the words for both states (the screen it is read from can be drawn at either), and
     /// the bar asks the head which way the switch stands now and says the act that would happen —
-    /// so `d hides done` becomes `d shows done` the moment it does, and neither reading names a
+    /// so `d folds done` becomes `d shows done` the moment it does, and neither reading names a
     /// key that would do nothing. *Which* switch is the binding's own `act`
     /// ([`App::switch_says`]), so the two can never be about different settings.
     Switch(&'static str),
@@ -211,24 +211,25 @@ const TODOS: &[Binding] = &[
         Act::NagToggle,
         Text("pauses or resumes the plan-checks"),
     ),
-    // **`d` — hide the rows that are done** — the operator: *"we need to be able to hide done todo
-    // items"*. A plain letter, like the pane's other two toggles (`tab`, `n`), and its words are
-    // the switch's own so the bar never offers `hide` over a list that is already hidden.
+    // **`d` — fold the done group away** — the operator: *"we need to be able to hide done todo
+    // items"*, and then, once the done rows had a group of their own, *"done todos still not in
+    // their own group"*. A plain letter, like the pane's other two toggles (`tab`, `n`), and its
+    // words are the switch's own so the bar never offers `fold` over a group that is already shut.
     b(
         &[On::Char('d')],
         Empty,
-        Act::HideDone,
-        Says::Switch("hides the done rows, or shows them again"),
+        Act::FoldDone,
+        Says::Switch("folds the done group, or shows it again"),
     ),
     PAGE,
     WHEEL,
 ];
 
 /// **The words `d` carries now**: what it would DO, which is the half of the switch the bar must
-/// not get wrong — a bar that went on saying `hides done` over a list that is already hidden names
+/// not get wrong — a bar that went on saying `folds done` over a group that is already shut names
 /// a key whose press does the opposite of what it says.
-fn hide_done_says(hide: bool) -> &'static str {
-    if hide { "shows done" } else { "hides done" }
+fn fold_done_says(folded: bool) -> &'static str {
+    if folded { "shows done" } else { "folds done" }
 }
 
 const TODO_ROW: &[Binding] = &[
@@ -587,7 +588,7 @@ impl App {
     /// this table has no words for, and the bar then says nothing rather than guessing.
     pub(crate) fn switch_says(&self, b: &Binding) -> Option<String> {
         match b.act {
-            Act::HideDone => Some(hide_done_says(self.todos_hide_done).to_string()),
+            Act::FoldDone => Some(fold_done_says(self.todos_fold_done).to_string()),
             _ => None,
         }
     }

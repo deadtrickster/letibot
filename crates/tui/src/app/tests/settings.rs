@@ -1202,10 +1202,10 @@ fn the_config_pane_shows_and_flips_the_todo_done_switch() {
     // and then this one.
     a.config_sel = 5;
     a.key(Key::Enter);
-    assert!(a.todos_hide_done, "Enter did not flip the switch");
+    assert!(a.todos_fold_done, "Enter did not flip the switch");
     let screen = a.screen(120, 30).join("\n");
     assert!(
-        screen.contains("todo done rows") && screen.contains("hidden"),
+        screen.contains("todo done rows") && screen.contains("folded"),
         "the row does not show the new state: {screen}"
     );
     let on_disk = std::fs::read_to_string(dir.join("head.toml")).expect("head.toml written");

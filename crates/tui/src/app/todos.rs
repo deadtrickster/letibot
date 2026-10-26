@@ -883,40 +883,25 @@ impl App {
         }
     }
 
-    /// **Whether the pane is holding this session row back** — the row is DONE, and `d` is on.
+    /// **How many rows the done group holds right now** — both halves of the board, whichever way
+    /// the group is folded.
     ///
-    /// **Done, and only done.** A row set aside and a row struck off are on the board because
-    /// they are NOT finished — setting one aside is the operator saying *not yet*, and striking
-    /// one off keeps it in history rather than removing it — so a switch that swept them away
-    /// with the finished rows would hide the two states the operator put there by hand, which is
-    /// the one thing a *hide what is finished* key must not do.
-    pub(crate) fn todo_hidden(&self, t: &letibot_sessionlog::event::TodoEntry) -> bool {
+    /// **One number, and it does not move with the fold.** The line that draws it is one line
+    /// speaking for the pane, and it says the same thing open or shut (`done (3)` / `done (3) · d
+    /// shows them`): a reader who opens the group and sees a different number reads that as a bug.
+    /// The toggle's notice is the other reader, and it needs the count with the group open too —
+    /// *"the 3 done rows are back"* is a sentence about a number that already exists.
+    pub(crate) fn todos_done_count(&self) -> usize {
         use letibot_sessionlog::event::TodoStatus;
-        self.todos_hide_done && t.status == TodoStatus::Completed
-    }
-
-    /// **Whether the pane is holding this row of the repo's `TODO.md` back** — an ITEM the file
-    /// marks `[x]`.
-    ///
-    /// The headings stay whatever the switch says: they are the file's outline and they carry its
-    /// own cookies (`[2/7]`), which count the file and not this pane — so a heading left standing
-    /// over no items is the file's shape, and `d` is how the items under it come back.
-    pub(crate) fn repo_todo_hidden(&self, r: &TodoRow) -> bool {
-        self.todos_hide_done && r.item && r.mark == Some(TodoMark::Done)
-    }
-
-    /// **How many rows `d` is holding back right now** — both halves of the board.
-    ///
-    /// One number, because the muted line that draws it is one line speaking for the pane: a
-    /// reader who hid twelve rows and sees eleven come back reads that as a bug, and which list
-    /// the twelfth was in is answered by where the gap is.
-    pub(crate) fn todos_hidden_count(&self) -> usize {
-        if !self.todos_hide_done {
-            return 0;
-        }
-        let mine = self.todos.iter().filter(|t| self.todo_hidden(t)).count();
+        let mine = self
+            .todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Completed)
+            .count();
         let repo = self.repo_todos.as_ref().map_or(0, |rows| {
-            rows.iter().filter(|r| self.repo_todo_hidden(r)).count()
+            rows.iter()
+                .filter(|r| r.item && r.mark == Some(TodoMark::Done))
+                .count()
         });
         mine + repo
     }
@@ -930,19 +915,23 @@ impl App {
             .cloned()
     }
 
-    /// **`d` on the todos pane: hide the rows that are done, or bring them back.**
+    /// **`d` on the todos pane: fold the done group away, or open it.**
     ///
     /// # The cursor is carried across BY IDENTITY, not by its index
     ///
-    /// `todos_sel` is an index into [`App::todos_stops`], and hiding takes entries OUT of that
+    /// `todos_sel` is an index into [`App::todos_stops`], and folding takes entries OUT of that
     /// list — so an index kept across the toggle lands on whichever row slid into the hole, which
     /// is the same two-enumerations wound the stops exist to close, arriving from the other side.
     /// The stop is therefore read before the switch moves and found again among the stops that are
-    /// left; only a stop that is now hidden falls back to the index, clamped, which puts the
+    /// left; only a stop that is now folded away falls back to the index, clamped, which puts the
     /// cursor on the row that followed it.
-    pub(crate) fn toggle_todos_hide_done(&mut self) {
+    ///
+    /// **Opening the group puts its rows back at the END of the list** ([`board_drawn`]), so a
+    /// cursor found by identity is the cursor that stays on the row the reader was looking at, and
+    /// not one that slid by however many rows the group holds.
+    pub(crate) fn toggle_todos_fold_done(&mut self) {
         let was = self.selected_todo_stop();
-        self.todos_hide_done = !self.todos_hide_done;
+        self.todos_fold_done = !self.todos_fold_done;
         let stops = self.todos_stops();
         self.todos_sel = match was.and_then(|s| stops.iter().position(|here| *here == s)) {
             Some(at) => at,
@@ -958,13 +947,18 @@ impl App {
         // forgets is a switch the reader keeps re-making, and the operator asked for this one
         // about a board whose done rows are the noise.
         let saved = self.save_prefs(RetiredWrite::Union);
-        let n = self.todos_hidden_count();
-        let line = match (self.todos_hide_done, n) {
+        let n = self.todos_done_count();
+        let line = if n == 0 {
             // A key that changes nothing on the screen reads as a key that does nothing: said,
             // not silently a no-op.
-            (true, 0) => "nothing is done — there is nothing to hide".to_string(),
-            (true, n) => format!("{n} done hidden — d shows them"),
-            (false, _) => "the done rows are back".to_string(),
+            "nothing is done — there is nothing to fold".to_string()
+        } else if self.todos_fold_done {
+            format!("{n} done folded away — d shows them")
+        } else {
+            format!(
+                "the {n} done row{} back",
+                if n == 1 { " is" } else { "s are" }
+            )
         };
         self.say(&format!("{line}{saved}"));
     }
@@ -999,20 +993,20 @@ impl App {
     /// rather than a row with words of its own, and a reader who wants the section has the items
     /// under it.
     ///
-    /// **A hidden row is not a stop**, and that is the same rule again from the other side: while
-    /// `d` holds the done rows back they are not drawn ([`App::todo_hidden`],
-    /// [`App::repo_todo_hidden`]), so a cursor that could still stop on one would be a cursor on a
-    /// row nobody can see — and both readers of this list (the arrows and a click) take it from
-    /// here.
+    /// **A folded row is not a stop**, and that is the same rule again from the other side: while
+    /// `d` has the done group shut, its rows are not drawn ([`board_drawn`],
+    /// [`repo_drawn`]), so a cursor that could still stop on one would be a cursor on a row nobody
+    /// can see — and both readers of this list (the arrows and a click) take it from here.
+    ///
+    /// **The ORDER is [`board_drawn`]'s and [`repo_drawn`]'s too**, and that is the half a
+    /// docstring cannot hold on its own: the done rows are no longer where the board has them but
+    /// gathered at the end, so a walk over the board's own order would be a second enumeration of
+    /// the order as well as of the rows — the same defect one layer down.
     pub(crate) fn todos_stops(&self) -> Vec<TodoStop> {
         let mut out = vec![TodoStop::Add];
-        // **In the order the pane DRAWS them**, which is the daemon's own order over the whole
-        // union — one walk, so the cursor's sequence and the rows on the screen cannot come from
-        // two readings of the list.
-        for t in &self.todos {
-            if self.todo_hidden(t) {
-                continue;
-            }
+        for line in board_drawn(&self.todos, self.todos_fold_done) {
+            let BoardLine::Row(i) = line else { continue };
+            let t = &self.todos[i];
             out.push(if t.by == letibot_sessionlog::event::TodoBy::Operator {
                 TodoStop::Mine(t.content.clone())
             } else {
@@ -1020,8 +1014,8 @@ impl App {
             });
         }
         if let Some(rows) = &self.repo_todos {
-            for (i, r) in rows.iter().enumerate() {
-                if r.item && !self.repo_todo_hidden(r) {
+            for line in repo_drawn(rows, self.todos_fold_done) {
+                if let RepoLine::Item(i) = line {
                     out.push(TodoStop::Repo(i));
                 }
             }
@@ -1315,6 +1309,137 @@ pub(crate) enum TodoStop {
     /// A row of the workspace's `TODO.md`, by index into `repo_todos` — the file's own order IS
     /// its identity, because the pane re-reads the file.
     Repo(usize),
+}
+
+/// **One line of the session's list, in the order the pane draws it** — a board row, or the
+/// `done (N)` line the finished rows are gathered under.
+///
+/// # Why the order is a value
+///
+/// The operator: *"done todos still not in their own group"*. The rows still owed have to come
+/// first and the done ones after them, and **that reordering is exactly where a second enumeration
+/// is born**: the pane drawing the board's order while the stops walk it, one line apart, is the
+/// defect [`App::todos_stops`] carries a monument to — *"arrows dont go here"* — and it would
+/// arrive here from the other side, the ORDER instead of the rows. So the order is computed once
+/// ([`board_drawn`], [`repo_drawn`]) and both readers walk it.
+///
+/// # And why the cursor is not a stop on the group line
+///
+/// The line speaks for rows and acts on none: `d` is the key that folds it, and it is the pane's
+/// key rather than a row's, so a cursor that could land here would be a stop where no key of the
+/// ROW acts. rano's sibling panes make their `finished (N)` line a stop with Enter bound to the
+/// fold; this pane's fold is `d` — the operator's own key, and the one the bar names — and a second
+/// door onto it from the cursor would be a key the bar does not mention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoardLine {
+    /// A board row, by its index in [`App::todos`].
+    Row(usize),
+    /// **The group line**, and how many done rows it stands for. It is drawn after the rows still
+    /// owed and before the done ones — or, with the group folded, as all that is left of them.
+    DoneGroup { done: usize },
+}
+
+/// **The board as the pane draws it**: every row still owed in board order, the `done (N)` line,
+/// then the done rows — or, folded, nothing of them but the line.
+///
+/// **Done is `completed` and only `completed`.** A row set aside and a row struck off are on the
+/// board because they are NOT finished — setting one aside is the operator saying *not yet*, and
+/// striking one off keeps it in history rather than removing it — so a group that swept them in
+/// with the finished rows would bury the two states the operator put there by hand. They stay in
+/// the first half, where they were.
+///
+/// **The done rows keep BOARD order, not completion order.** The wire carries no completion time —
+/// `TodoEntry` is words, status, author, a `when` and its `needs` — so *newest last* is not a fact
+/// this head has. Board order is one it does have, and it is the one a reader can check against
+/// the board the daemon served.
+///
+/// **The rows' NUMBERS are not this function's business**, and that is deliberate: a number is the
+/// row's place on the whole board (`/todo done N` takes it), and it is counted over the board —
+/// [`crate::ui::panes::todos`], which draws them — precisely so that a row moving in here does not
+/// renumber the ones left.
+pub(crate) fn board_drawn(
+    todos: &[letibot_sessionlog::event::TodoEntry],
+    folded: bool,
+) -> Vec<BoardLine> {
+    use letibot_sessionlog::event::TodoStatus;
+    let mut out = Vec::with_capacity(todos.len() + 1);
+    for (i, t) in todos.iter().enumerate() {
+        if t.status != TodoStatus::Completed {
+            out.push(BoardLine::Row(i));
+        }
+    }
+    let done: Vec<usize> = (0..todos.len())
+        .filter(|i| todos[*i].status == TodoStatus::Completed)
+        .collect();
+    if done.is_empty() {
+        // **No done rows, no group line** — a line saying `done (0)` would be furniture about
+        // nothing, and the board with nothing finished is the ordinary board.
+        return out;
+    }
+    out.push(BoardLine::DoneGroup { done: done.len() });
+    if !folded {
+        out.extend(done.into_iter().map(BoardLine::Row));
+    }
+    out
+}
+
+/// **One line of the repository's list, in the order the pane draws it.**
+///
+/// The file's half is grouped the same way and one step less far: a `TODO.md` is sections, and a
+/// section's items belong to the heading over them — so the grouping is per SECTION, and each
+/// heading stays where the file has it, with its own cookie (`[2/7]`) counting the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepoLine {
+    /// A `##` heading — the file's outline, drawn where the file has it, and never a stop.
+    Heading(usize),
+    /// One of the section's items, by its index in [`App::repo_todos`].
+    Item(usize),
+    /// The `done (N)` line of one section: as far as the grouping goes on this half, because the
+    /// file's outline is not this pane's to rewrite. It carries the section's item INDENT so the
+    /// line is drawn in the column its items are, whatever the file (or a fixture) chose.
+    DoneGroup { done: usize, indent: usize },
+}
+
+/// **The repository's `TODO.md` as the pane draws it** — each section's heading, its items still
+/// owed in file order, its `done (N)` line, and the items the file marks `[x]`.
+///
+/// A heading is not a group of its own: it is the file's own label and it is drawn in place, with
+/// the file's cookie. Empty sections stay empty (the parser gives them a heading and no items, and
+/// org does not mark an empty one done either).
+pub(crate) fn repo_drawn(rows: &[TodoRow], folded: bool) -> Vec<RepoLine> {
+    let mut out = Vec::with_capacity(rows.len() + 1);
+    let mut i = 0;
+    while i < rows.len() {
+        if !rows[i].item {
+            out.push(RepoLine::Heading(i));
+            i += 1;
+        }
+        // One section's items, up to the next heading.
+        let from = i;
+        while i < rows.len() && rows[i].item {
+            i += 1;
+        }
+        let done = |k: usize| rows[k].mark == Some(TodoMark::Done);
+        for k in from..i {
+            if !done(k) {
+                out.push(RepoLine::Item(k));
+            }
+        }
+        let finished: Vec<usize> = (from..i).filter(|k| done(*k)).collect();
+        if finished.is_empty() {
+            continue;
+        }
+        out.push(RepoLine::DoneGroup {
+            done: finished.len(),
+            // A section with a done item has items, so the first one's indent is the column the
+            // group line belongs in.
+            indent: rows[from].indent,
+        });
+        if !folded {
+            out.extend(finished.into_iter().map(RepoLine::Item));
+        }
+    }
+    out
 }
 
 /// **A todo being filed from the card** — its fields, and which one owns the composer.

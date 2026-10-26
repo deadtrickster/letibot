@@ -295,9 +295,9 @@ impl App {
             }
         }
         self.raw_calls = p.raw_calls;
-        // **The todos pane's switch comes with the rest** — it was one line in the file and a
-        // reader who hid the done rows yesterday gets the same board today.
-        self.todos_hide_done = p.todos_hide_done;
+        // **The todos pane's fold comes with the rest** — it is one line in the file and a reader
+        // who left the done group shut yesterday gets the same board today.
+        self.todos_fold_done = p.todos_fold_done;
         self.visibility = self.visibility.with(
             Show::RawCalls,
             if p.raw_calls {
@@ -342,7 +342,7 @@ impl App {
             thinking: fold_word(self.reasoning).into(),
             tools: fold_word(self.tools).into(),
             raw_calls: self.raw_calls,
-            todos_hide_done: self.todos_hide_done,
+            todos_fold_done: self.todos_fold_done,
             verbosity: self.visibility.as_str(),
             retired: self.dismissed.clone(),
             todo_template: self.todo_template.clone(),
@@ -459,14 +459,16 @@ impl App {
         ));
         // **The todos pane's `d`, here because every switch this head keeps is here** — the same
         // value the pane's bar names, so the two can never disagree about which way it stands.
+        // **`folded` is the word, not `hidden`**: the rows are in the pane either way, and the
+        // switch is which way their group stands.
         rows.push(head(
             "todo done rows",
-            if self.todos_hide_done {
-                "hidden".into()
+            if self.todos_fold_done {
+                "folded".into()
             } else {
                 "shown".into()
             },
-            ConfigEdit::Head(HeadSetting::HideDone),
+            ConfigEdit::Head(HeadSetting::FoldDone),
         ));
         // **THE GIT FIELD'S FORMAT IS HERE BECAUSE THE OPERATOR LOOKED FOR IT HERE** —
         // leticl's `72a4314` finding, and the row names the template IN FORCE (so the pane
@@ -567,8 +569,8 @@ impl App {
                     // behind two doors, so the file, the bar and the `/config` row cannot drift.
                     // It saves and says its piece itself, which is why this arm returns early
                     // rather than running the generic save below it a second time.
-                    HeadSetting::HideDone => {
-                        self.toggle_todos_hide_done();
+                    HeadSetting::FoldDone => {
+                        self.toggle_todos_fold_done();
                         return None;
                     }
                     HeadSetting::GitFormat => {
@@ -689,12 +691,12 @@ pub(crate) enum HeadSetting {
     Thinking,
     Tools,
     RawCalls,
-    /// **The todos pane's `d`** — the done rows hidden, or shown again. A row here for the same
-    /// reason as every other field of [`crate::prefs::HeadPrefs`]: a switch this head keeps is a
-    /// switch the reader can find and change without knowing the letter. Enter goes through
-    /// [`App::toggle_todos_hide_done`], the one implementation, so the notice and the save are
+    /// **The todos pane's `d`** — the done group folded away, or shown again. A row here for the
+    /// same reason as every other field of [`crate::prefs::HeadPrefs`]: a switch this head keeps is
+    /// a switch the reader can find and change without knowing the letter. Enter goes through
+    /// [`App::toggle_todos_fold_done`], the one implementation, so the notice and the save are
     /// the same from either door.
-    HideDone,
+    FoldDone,
     /// **The git field's template** — cycles three stops: the shipped default, a spaced
     /// one, and the branch alone. leticl's own cycle (`%flip-head-setting`: *"Three stops:
     /// the shipped default, a spaced one, and the branch alone. `nil` is the default rather
