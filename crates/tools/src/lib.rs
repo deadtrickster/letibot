@@ -101,6 +101,7 @@ pub mod firecode;
 pub mod gatekeeper;
 pub mod grant;
 pub mod head_run;
+pub mod heredoc;
 pub mod intent;
 pub mod media;
 pub mod mode;

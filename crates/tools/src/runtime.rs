@@ -1783,6 +1783,22 @@ pub struct ToolRuntime {
     pub one_shot: bool,
 }
 
+/// **A call the model proposed and this layer reproposed as a different tool.**
+///
+/// One shape produces one of these today — a `bash` heredoc that is a file write
+/// (see [`crate::heredoc`]) — and it is a struct rather than a tuple because a
+/// second shape would otherwise be a second four-tuple nobody could read.
+struct Rewritten {
+    /// The call as it now stands: the same `id`, so the model's result and the
+    /// transcript row still answer the call it made, and the *other* tool's name.
+    call: ToolCall,
+    args: Value,
+    schema: ToolSchema,
+    /// The one line the model is told, because a row that says `write` about a
+    /// `bash` call is otherwise a difference it cannot account for.
+    note: String,
+}
+
 impl ToolRuntime {
     pub fn new(registry: Registry, backend: Box<dyn ExecBackend>) -> Self {
         ToolRuntime {
@@ -1855,6 +1871,47 @@ impl ToolRuntime {
     pub fn with_gate(mut self, gate: Box<dyn Gate>) -> Self {
         self.gate = std::sync::Mutex::new(gate);
         self
+    }
+
+    /// **The `write` call a `bash` heredoc stands for**, when the command is exactly
+    /// that one shape and this seat can write at all.
+    ///
+    /// Two of the facts this needs are not in the command text, which is why
+    /// [`crate::heredoc::recognise`] is a pure function and this is not: **where the
+    /// session sits** — the call's own `cwd`, the workspace unless it named another —
+    /// and **what an append would extend**, read through the backend so a confined
+    /// session extends its own copy rather than the host's.
+    ///
+    /// `None` for every command that is not that shape, and for a seat with no
+    /// `write` tool. The second is not tidiness: the gatekeeper's seat holds `bash`
+    /// and no writing tool, and a rewrite into a tool the seat does not have would
+    /// turn a working command into *"no tool called `write` is available here"*.
+    fn heredoc_rewrite(&self, call: &ToolCall, args: &Value) -> Option<Rewritten> {
+        let schema = self.registry.get("write")?.schema();
+        let command = args.get("command").and_then(|v| v.as_str())?;
+        let recognised = crate::heredoc::recognise(command)?;
+        let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let write =
+            crate::heredoc::as_a_write(&recognised, cwd, |path| match self.backend.read(path) {
+                Ok(bytes) => crate::heredoc::Existing::Bytes(bytes),
+                Err(crate::backend::BackendError::NotFound(_)) => crate::heredoc::Existing::Absent,
+                Err(_) => crate::heredoc::Existing::Unknown,
+            })?;
+        let note = format!(
+            "recorded as a write to `{}` (heredoc through bash is converted; use `write` directly)",
+            write.path
+        );
+        let args = serde_json::json!({"path": write.path, "content": write.content});
+        Some(Rewritten {
+            call: ToolCall {
+                id: call.id.clone(),
+                name: schema.name.clone(),
+                arguments: serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
+            },
+            args,
+            schema,
+            note,
+        })
     }
 
     /// The scripts a `bash` call's command will run, read for the adjudicator.
@@ -2025,6 +2082,32 @@ impl ToolRuntime {
             }
         };
 
+        // **A heredoc through `bash` is proposed as the write it is**, and this is
+        // before the gate because that is the whole point of it.
+        //
+        // The operator's report is the argument: a model wrote
+        // `cd ~/… && cat > crates/workloads/src/banking.rs <<'RUST' … RUST` instead of
+        // calling `write`, and the file landed with no diff row, no editor jump, no
+        // path for the never-write list or the workspace boundary to be asked about,
+        // and no entry in the file ledger — the gate judged an exec that happened to
+        // contain a path. After this the call is a `write`: adjudicated as one,
+        // recorded as one, drawn as one. See [`crate::heredoc`] for the one shape
+        // recognised and for why every near form is deliberately left alone.
+        //
+        // **On the gated path only.** The ungated one is the operator's own run and
+        // the head-run door: `! cat > f <<EOF` is a person's own act, already
+        // adjudicated at the door, and rewriting what they typed would be this layer
+        // deciding their command was not the command they meant.
+        let rewritten = if gated {
+            self.heredoc_rewrite(call, &args)
+        } else {
+            None
+        };
+        let (call, args, schema) = match &rewritten {
+            Some(r) => (&r.call, r.args.clone(), r.schema.clone()),
+            None => (call, args, schema),
+        };
+
         // Clause 4. The gate is consulted **only** when the declared access is not
         // read: a read-only tool has no code path to a question.
         // What this particular call amounts to, which for a tool with verbs of
@@ -2168,6 +2251,25 @@ impl ToolRuntime {
         // is not retried, because its output is already written and re-running a
         // command on the model's behalf is a decision nobody made.
         let mut invocation = invocation;
+        // **One line, on the result, saying what the row is.** The model called
+        // `bash` and the transcript says `write`; a difference it cannot account for
+        // is one it reads as a harness bug and works around.
+        if let Some(r) = &rewritten {
+            invocation = invocation.with_note(r.note.clone());
+        } else if gated && schema.name == "bash" && self.registry.get("write").is_some() {
+            // **The near miss**, which is the common case: still a file's contents
+            // written through a heredoc, and still no diff and no record, so the row
+            // carries the one line naming the tools that would have produced both.
+            // Only for a seat that has them — advice to call a tool the seat does not
+            // hold is advice that cannot be taken.
+            if let Some(nudge) = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .and_then(crate::heredoc::nudge)
+            {
+                invocation = invocation.with_note(nudge);
+            }
+        }
         if !invocation.needs_in_view.is_empty() {
             let asked: Vec<std::path::PathBuf> = std::mem::take(&mut invocation.needs_in_view);
             for path in asked {
@@ -3046,5 +3148,250 @@ mod tests {
         assert!(crate::runtime::scripts_for("python3 -c 'print(1)'", None, read).is_empty());
         let read = |_: &str| -> Result<Vec<u8>, String> { panic!("opened a file") };
         assert!(crate::runtime::scripts_for("ls -la", None, read).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // A heredoc through `bash` is a write (see `crate::heredoc`)
+    // -----------------------------------------------------------------------
+
+    /// A `bash` stand-in. It records that it ran, so a test can tell a converted
+    /// call — which must never reach the shell — from one left alone.
+    struct FakeBash {
+        ran: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Tool for FakeBash {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "bash",
+                "Run a shell command in the session's workspace and return its output.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "cwd": {"type": "string"}
+                    },
+                    "required": ["command"]
+                }),
+                Access::Exec,
+            )
+        }
+        fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+            self.ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Invocation::ok(format!("ran {}", args["command"]))
+        }
+    }
+
+    /// **What the gate was shown**, which is the half of the rewrite that is not
+    /// the file on disk: a `write` to a path, adjudicated as one.
+    #[derive(Clone, Default)]
+    struct Seen(std::sync::Arc<std::sync::Mutex<Vec<(String, Access, Value)>>>);
+
+    impl Seen {
+        fn calls(&self) -> Vec<(String, Access, Value)> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl Gate for Seen {
+        fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
+            self.0
+                .lock()
+                .unwrap()
+                .push((call.name.to_string(), call.access, call.args.clone()));
+            GateDecision::Admit
+        }
+    }
+
+    /// A writable temp tree with a fake `bash`, the real `write`, and a gate that says
+    /// what it was asked about. Returns the directory too, so a test can read what
+    /// landed.
+    fn heredoc_runtime(
+        with_write: bool,
+    ) -> (
+        ToolRuntime,
+        Seen,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        crate::backend::tempdir::TempDir,
+    ) {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = Registry::new();
+        reg.register(Box::new(FakeBash { ran: ran.clone() }))
+            .unwrap();
+        if with_write {
+            reg.register(Box::new(crate::builtins::write::Write))
+                .unwrap();
+        }
+        let d = crate::backend::tempdir::TempDir::new();
+        let backend = crate::backend::HostBackend::writable(d.path()).unwrap();
+        let seen = Seen::default();
+        let rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(seen.clone()));
+        (rt, seen, ran, d)
+    }
+
+    fn bash_call(command: &str) -> ToolCall {
+        call("bash", &serde_json::json!({"command": command}).to_string())
+    }
+
+    /// **The operator's own command, through the runtime.** It is a `write` by the
+    /// time the gate sees it: the path is a path argument, the access is `Write`, the
+    /// file lands with the heredoc's body as its contents, the result carries the
+    /// diff a write draws, and the model is told once what happened to its call.
+    #[test]
+    fn a_heredoc_bash_call_is_adjudicated_recorded_and_drawn_as_a_write() {
+        let (rt, seen, ran, d) = heredoc_runtime(true);
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke(
+            "t1",
+            &bash_call(
+                "cd crates && cat > workloads/src/banking.rs <<'RUST'\n\
+                 pub fn balance() -> i64 { 0 }\nRUST",
+            ),
+            &mut sink,
+        );
+
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the heredoc reached the shell instead of being recorded as a write: {r:?}"
+        );
+        let landed = std::fs::read_to_string(d.path().join("crates/workloads/src/banking.rs"))
+            .expect("the file the heredoc wrote");
+        assert_eq!(landed, "pub fn balance() -> i64 { 0 }\n");
+
+        let seen = seen.calls();
+        assert_eq!(seen.len(), 1, "the gate was asked {seen:?}");
+        assert_eq!(seen[0].0, "write", "the gate judged an exec, not a write");
+        assert_eq!(seen[0].1, Access::Write);
+        assert_eq!(
+            seen[0].2["path"], "crates/workloads/src/banking.rs",
+            "the gate was given the command rather than the path: {:?}",
+            seen[0].2
+        );
+
+        assert_eq!(r.name, "write", "the transcript row still says bash");
+        let edit = r.edit.as_ref().expect("a write draws a diff");
+        assert_eq!(edit.path, "crates/workloads/src/banking.rs");
+        assert!(edit.created);
+        assert_eq!(edit.after, "pub fn balance() -> i64 { 0 }\n");
+
+        let rendered = r.render();
+        assert!(
+            rendered.contains(
+                "recorded as a write to `crates/workloads/src/banking.rs` \
+                 (heredoc through bash is converted; use `write` directly)"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("call `write` with the contents"),
+            "a converted call also got the near-miss nudge: {rendered}"
+        );
+    }
+
+    /// The `cwd` argument is where the shell would have been, so a relative path is
+    /// resolved against it.
+    #[test]
+    fn a_cwd_argument_is_where_the_heredoc_writes() {
+        let (rt, seen, _, d) = heredoc_runtime(true);
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                "bash",
+                &serde_json::json!({
+                    "command": "cat > f.rs <<'EOF'\nfn a() {}\nEOF",
+                    "cwd": "crates/tools",
+                })
+                .to_string(),
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.name, "write");
+        assert_eq!(seen.calls()[0].2["path"], "crates/tools/f.rs");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("crates/tools/f.rs")).unwrap(),
+            "fn a() {}\n"
+        );
+    }
+
+    /// **An append is the file that is there plus the body** — `write` replaces
+    /// whole contents, and a `>>` that replaced would be a deletion.
+    #[test]
+    fn an_appending_heredoc_keeps_what_the_file_already_held() {
+        let (rt, seen, _, d) = heredoc_runtime(true);
+        std::fs::create_dir_all(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("src/lib.rs"), "// the head\n").unwrap();
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke(
+            "t1",
+            &bash_call("cat >> src/lib.rs <<'EOF'\npub fn a() {}\nEOF"),
+            &mut sink,
+        );
+        assert_eq!(r.name, "write");
+        assert_eq!(seen.calls()[0].2["path"], "src/lib.rs");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("src/lib.rs")).unwrap(),
+            "// the head\npub fn a() {}\n"
+        );
+        let edit = r.edit.as_ref().expect("a diff");
+        assert!(!edit.created);
+        assert_eq!(edit.before, "// the head\n");
+    }
+
+    /// **A near miss is left to the shell and told what it cost.** `mkdir -p … &&`
+    /// is a second command, so this is not the one shape — the call still runs, and
+    /// the result carries the one line naming the tools that would have recorded it.
+    #[test]
+    fn an_unconverted_heredoc_write_carries_the_nudge() {
+        let (rt, seen, ran, _d) = heredoc_runtime(true);
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke(
+            "t1",
+            &bash_call("mkdir -p d && cat > d/f <<'EOF'\nx\nEOF"),
+            &mut sink,
+        );
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "a command that is not this shape was taken away from the shell"
+        );
+        assert_eq!(r.name, "bash");
+        assert_eq!(seen.calls()[0].0, "bash");
+        assert!(r.edit.is_none());
+        assert!(
+            r.render().contains("call `write` with the contents"),
+            "{}",
+            r.render()
+        );
+    }
+
+    /// **A seat with no `write` keeps its shell.** The gatekeeper holds `bash` and no
+    /// writing tool, and a rewrite there would turn a working command into "no tool
+    /// called `write` is available here".
+    #[test]
+    fn a_seat_without_write_is_not_rewritten_and_not_nudged() {
+        let (rt, seen, ran, d) = heredoc_runtime(false);
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &bash_call("cat > f <<'EOF'\nx\nEOF"), &mut sink);
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(seen.calls()[0].0, "bash");
+        assert_eq!(r.name, "bash");
+        assert!(
+            !r.render().contains("`write`"),
+            "a seat that cannot write was told to write: {}",
+            r.render()
+        );
+        assert!(!d.path().join("f").exists());
+    }
+
+    /// **The operator's own line is not rewritten.** `invoke_operator` is the `!`
+    /// line and the head-run door: what a person typed is what runs.
+    #[test]
+    fn the_operators_own_heredoc_is_left_as_they_typed_it() {
+        let (rt, seen, ran, _d) = heredoc_runtime(true);
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke_operator("t1", &bash_call("cat > f <<'EOF'\nx\nEOF"), &mut sink);
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(r.name, "bash");
+        assert!(seen.calls().is_empty(), "the ungated path asked the gate");
     }
 }
