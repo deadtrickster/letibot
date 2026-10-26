@@ -117,6 +117,11 @@ impl SkillRegistry {
     /// A directory that cannot be read is skipped, not fatal: a skill is a
     /// convenience, and a daemon that refused to start over one unreadable file
     /// would be the convenience turned into an outage.
+    ///
+    /// **A skill compiled into this build is loaded first** ([`Self::built_in`]), so a box that
+    /// installs nothing still has the ones this tree ships — and a name on disk REPLACES the
+    /// built-in of the same name, so an operator who wants a different `plugin-pane` writes one
+    /// and theirs wins.
     pub fn load_default() -> Self {
         let mut dirs: Vec<std::path::PathBuf> = Vec::new();
         if let Ok(home) = std::env::var("HOME") {
@@ -126,13 +131,43 @@ impl SkillRegistry {
         if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
             dirs.push(std::path::PathBuf::from(xdg).join("letibot/skills"));
         }
-        Self::load_from_dirs(&dirs)
+        Self::load_onto(Self::built_in(), &dirs)
+    }
+
+    /// **The skills this build carries**, compiled in from this repository's `skills/`.
+    ///
+    /// The one that matters is `plugin-pane` (`docs/plugins-plan.md` §5): the walk-through of
+    /// writing a pane in a session, from the operator's request to the pane on their screen. It is
+    /// compiled in rather than looked for beside the binary because a skill that is *nearly*
+    /// always there is worse than one that is always there — a model that finds `skill list`
+    /// empty concludes the loop is not available in this build.
+    pub fn built_in() -> Vec<Skill> {
+        [(
+            "plugin-pane",
+            include_str!("../../../../skills/plugin-pane/SKILL.md"),
+        )]
+        .into_iter()
+        .filter_map(|(what, text)| {
+            let skill = from_text(text);
+            if skill.is_none() {
+                // A compiled-in skill with no frontmatter is a defect in this crate, and it
+                // is said in the one place a person would look rather than swallowed.
+                eprintln!("letibot: the built-in skill `{what}` has no frontmatter");
+            }
+            skill
+        })
+        .collect()
     }
 
     /// Load skills from each directory; a later directory's skill of the same name
     /// wins, so `letibot/skills` can override a `.claude` skill.
     pub fn load_from_dirs(dirs: &[std::path::PathBuf]) -> Self {
-        let mut skills: Vec<Skill> = Vec::new();
+        Self::load_onto(Vec::new(), dirs)
+    }
+
+    /// [`Self::load_from_dirs`] with skills seeded first, so a name on disk replaces a built-in of
+    /// the same name and nothing is held twice.
+    pub fn load_onto(mut skills: Vec<Skill>, dirs: &[std::path::PathBuf]) -> Self {
         for dir in dirs {
             let Ok(entries) = std::fs::read_dir(dir) else {
                 continue;
@@ -203,9 +238,13 @@ impl SkillRegistry {
     fn list(&self) -> String {
         let mut out = String::new();
         if self.skills.is_empty() {
-            out.push_str("no skills on disk.\n");
+            out.push_str("no skills are loaded — none on disk and none in this build.\n");
         } else {
-            out.push_str(&format!("{} skill(s) on disk:\n", self.skills.len()));
+            out.push_str(&format!(
+                "{} skill(s) loaded — this build's own, then yours (a name on disk replaces its \
+                 built-in):\n",
+                self.skills.len()
+            ));
             for s in &self.skills {
                 out.push_str(&format!("- {}: {}\n", s.name, s.description));
             }
@@ -243,7 +282,12 @@ impl SkillRegistry {
 /// body. `None` when the file is absent or the frontmatter cannot be read — a
 /// malformed skill is skipped, not loaded half-way.
 fn load_one(dir: &std::path::Path) -> Option<Skill> {
-    let text = std::fs::read_to_string(dir.join("SKILL.md")).ok()?;
+    from_text(&std::fs::read_to_string(dir.join("SKILL.md")).ok()?)
+}
+
+/// **One `SKILL.md`, parsed** — the one reader both sources go through, so a skill compiled into
+/// this build and a skill on the operator's disk cannot mean different things by the same file.
+fn from_text(text: &str) -> Option<Skill> {
     let body = text.strip_prefix("---")?;
     let (front, rest) = body.split_once("---")?;
     let mut name = None;
@@ -344,6 +388,61 @@ mod tests {
             "write a conventional commit",
             "Commit messages follow conventional-commits: type(scope): summary.",
         )])
+    }
+
+    /// **The plugin loop is compiled into this build**, so a box that installs nothing still has
+    /// the walk-through — and a name on disk replaces it rather than being held twice.
+    #[test]
+    fn the_plugin_loop_is_a_skill_this_build_carries() {
+        let built = SkillRegistry::built_in();
+        let pane = built
+            .iter()
+            .find(|s| s.name == "plugin-pane")
+            .unwrap_or_else(|| panic!("no plugin-pane skill: {:?}", built.len()));
+        assert!(!pane.description.is_empty(), "a listing needs its one line");
+        // The body is the loop, not a table of contents: every step is named in it.
+        for step in [
+            "scaffold",
+            "edit",
+            "build",
+            "test",
+            "load",
+            "disable",
+            "plugin_hooks",
+        ] {
+            assert!(pane.body.contains(step), "the skill never names `{step}`");
+        }
+        // And the frontmatter is not in the body: a skill whose instructions open with `---`
+        // teaches a model to paste YAML into a pane.
+        assert!(!pane.body.trim_start().starts_with("---"));
+
+        // A skill on disk of the same name wins, and there is still only one of it.
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-skills-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mine = dir.join("plugin-pane");
+        std::fs::create_dir_all(&mine).expect("a skill dir");
+        std::fs::write(
+            mine.join("SKILL.md"),
+            "---\nname: plugin-pane\ndescription: mine\n---\n\nmy own loop\n",
+        )
+        .expect("a skill");
+        let loaded =
+            SkillRegistry::load_onto(SkillRegistry::built_in(), std::slice::from_ref(&dir));
+        let named: Vec<&Skill> = loaded
+            .skills
+            .iter()
+            .filter(|s| s.name == "plugin-pane")
+            .collect();
+        assert_eq!(named.len(), 1, "the built-in is replaced, not duplicated");
+        assert_eq!(named[0].description, "mine");
+        assert!(loaded.load("plugin-pane").unwrap().contains("my own loop"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -235,10 +235,20 @@ pub fn with_session_tools(
     // placement arranged first: a `task_start` that used a second runner would hand out
     // handles its sibling's `task_result` cannot collect.
     reg.register(Box::new(builtins::task::TaskStartTool::new(task_runner)))?;
-    // **The merge gate, read** — what a repository's queue runs before landing, and what its
+    // **The merge queue, read** — what a repository's queue runs before landing, and what its
     // files suggest. Read-only: the agent writes the `AGENTS.md` section with `edit`, which is
     // where the operator's approval is. See `builtins::merge_gate`.
     reg.register(Box::new(builtins::merge_gate::MergeGate))?;
+    // **The plugin loop** (P2): a session's model writes a pane, builds it, tests it and loads it
+    // hot. Seated with the daemon's own desk by `Harness::open`; here so a role that names the
+    // pair resolves against any registry this function builds, and says by name that it has no
+    // plugin host behind it rather than being absent (the rule `queue` follows one arm down).
+    if reg.get(builtins::plugin::TOOL).is_none() {
+        let desk: std::sync::Arc<dyn builtins::plugin::PluginDesk> =
+            std::sync::Arc::new(builtins::plugin::NoPlugins);
+        reg.register(Box::new(builtins::plugin::PluginTool::new(desk.clone())))?;
+        reg.register(Box::new(builtins::plugin::PluginHooksTool::new(desk)))?;
+    }
     // **The merge queue, from the model's side** (R76 item 2). The daemon registers the real one
     // first, bound to its session and store; anywhere else the seat that names it still resolves,
     // and the tool says there is no queue behind it rather than being absent.

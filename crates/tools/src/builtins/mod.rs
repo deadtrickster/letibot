@@ -51,6 +51,7 @@ pub mod notes;
 pub mod outline;
 pub mod pattern;
 pub mod pkill;
+pub mod plugin;
 pub mod ps;
 pub mod queue;
 pub mod read;

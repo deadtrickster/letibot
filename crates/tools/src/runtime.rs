@@ -1075,6 +1075,14 @@ pub mod roles {
                 // earlier" and go and check, rather than asking its parent to
                 // paste it. Read-only, so it costs the seat nothing else.
                 "transcript",
+                // **The plugin loop, wherever a session writes code** — the operator's ask:
+                // *"you building panes at runtime — i want the same in letibot"*. `plugin`
+                // writes, builds, tests and loads a pane plugin in the session, and
+                // `plugin_hooks` is the contract it is written against; a seat that can write
+                // Rust but not run it here has the half of the loop that cannot show anybody
+                // anything.
+                "plugin",
+                "plugin_hooks",
             ],
         )
     }
@@ -1158,6 +1166,18 @@ pub mod roles {
                 // the project's agent never heard of: *"it should be able to get out of it
                 // itself obviously"*.
                 "queue",
+                // **`plugin` and `plugin_hooks`: a pane, written and loaded in the session.**
+                //
+                // The operator: *"remember our unfinished wasm plan — this is exactly the case —
+                // you building panes at runtime — i want the same in letibot"*. The pane language
+                // landed in slice 1 (`docs/plugins-slice1.md` C3) with no way for a model to
+                // write one; these two are that way, and they are the point of the whole plan
+                // (§2: a fix in the middle of a session, built and answering within the turn).
+                // `plugin_hooks` is seated beside `plugin` for the reason `transcript` is seated
+                // beside `digest`: the tool that reports a refusal names the contract, and a seat
+                // that is told and cannot read it writes the same wrong view twice.
+                "plugin",
+                "plugin_hooks",
                 // **`ask_user_question`: the seat can ask the person, not only tell them.**
                 //
                 // The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask
@@ -1219,7 +1239,12 @@ pub mod roles {
         // has only the refusal to go on, and trading a seat away from a working verb for a
         // read-only listing would be the wrong half of the choice. Declared here, where somebody
         // deciding can read it.
-        r.max_tools = 31;
+        // **Thirty-three since `plugin` and `plugin_hooks`** (P2), and they move the declared
+        // ceiling by two, to 33: a session that can write a Rust file, compile it and load it as a
+        // pane is the whole of what a polymorphic harness is for, and trading two working verbs
+        // away for it would be the wrong half of the choice — the same argument `hosts` made one
+        // entry above. Declared here, where somebody deciding can read it.
+        r.max_tools = 33;
         r
     }
 
@@ -3013,8 +3038,10 @@ mod tests {
         // `queue` (R76 item 2), which took its own seat the same way.
         // Twenty-nine since `task_resume`; thirty since `hosts`, which asked for no seat to be
         // given up — a seat that can place a child on another machine and cannot list the
-        // machines is a seat that guesses.
-        assert_eq!(seat.tools.len(), 30, "{:?}", seat.tools);
+        // machines is a seat that guesses. **Thirty-two since `plugin` and `plugin_hooks`**
+        // (P2): a pane written and loaded in the session, which is the point of the plugin plan
+        // and is nothing a seat without them can do.
+        assert_eq!(seat.tools.len(), 32, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",
