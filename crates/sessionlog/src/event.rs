@@ -385,6 +385,12 @@ pub struct QueueSnapshot {
     /// The target branches' health — a `red` one is the emergency the pane leads with.
     #[serde(default)]
     pub targets: Vec<TargetHealthView>,
+    /// **The repositories that are no queue target at all** — their target's `AGENTS.md` declares
+    /// no `Merge gate`, so the queue was never theirs and nothing about them is counted or
+    /// alarmed on (2026-10-26). The pane draws them in one muted line and nothing more. An added,
+    /// defaulted field on an existing struct: no `PROTOCOL_VERSION` bump.
+    #[serde(default)]
+    pub not_queued: Vec<String>,
     /// The last moves across both queues, oldest first.
     #[serde(default)]
     pub recent: Vec<QueueMove>,

@@ -327,6 +327,23 @@ impl App {
                 w,
             ));
         }
+        // ---- The repositories that are no queue target at all (2026-10-26): the queue is the
+        // repositories that asked for it, and asking is a `Merge gate` section. One muted line,
+        // never a count and never an alarm.
+        if !self.queues.not_queued.is_empty() {
+            out.push(pane::faint(trim_to(
+                &format!(
+                    "    not queued: no `Merge gate` section in AGENTS.md — {}",
+                    self.queues
+                        .not_queued
+                        .iter()
+                        .map(|r| repo_name(r))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                w,
+            )));
+        }
         out.blank();
 
         // ---- The strip.
@@ -856,6 +873,12 @@ pub(crate) fn scoped(q: &QueueSnapshot, f: &Filter) -> QueueSnapshot {
             .targets
             .iter()
             .filter(|t| f.keeps(&t.repository))
+            .cloned()
+            .collect(),
+        not_queued: q
+            .not_queued
+            .iter()
+            .filter(|r| f.keeps(r))
             .cloned()
             .collect(),
         recent: q

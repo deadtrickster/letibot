@@ -22,7 +22,7 @@
 //! unjudged target*); what changes is the word, the severity, and who is asked: the project's
 //! session and the operator, not a reviewer of the code.
 
-use letibot_tokencore::store::{MergeGateOutcome, MergeGateStep};
+use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
 
 /// **The clause a target's evidence leads with when its gate's own setup failed** — read off the
 /// row by the project's session notice and by `/queue regate`'s answer.
@@ -34,6 +34,20 @@ pub const GATE_SETUP_FAILED: &str = "the gate's own setup failed";
 /// is `blocked`, nothing lands on it, and the project hears *cannot judge*, never *red*.
 pub fn unjudged(evidence: &str) -> bool {
     evidence.starts_with(GATE_SETUP_FAILED) || evidence.starts_with(super::gate::GATE_KILLED)
+}
+
+/// **Whether this health row is a repository that never asked for a queue** — its target declares
+/// no `Merge gate` section, so the row is about a branch nobody could judge and nothing else
+/// (2026-10-26).
+///
+/// The operator's supervisor held a lease on every repository of one project folder and fourteen
+/// of the fifteen were this row: repositories that had never opted in, each counted as *unjudged*
+/// in every head's summary and warned about, beside the one target the queue actually served. A
+/// repository is a queue target because it asked to be one — and the way it asks is the section.
+/// So this row is not an alarm and is not a count; it is the pane's one muted line (*not queued:
+/// no `Merge gate`*), and the store keeps it because nothing is deleted here.
+pub fn not_a_queue_target(h: &TargetHealth) -> bool {
+    h.state == HealthState::Blocked && h.evidence.starts_with(super::WAITING_FOR_GATE)
 }
 
 /// How many of the failing output's last lines are searched for the words that name a missing

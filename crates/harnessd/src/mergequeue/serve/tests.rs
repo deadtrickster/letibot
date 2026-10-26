@@ -1590,6 +1590,7 @@ fn the_service_serves_the_queues_and_stops() {
         store_path: w.db.clone(),
         workspace: w.repo.clone(),
         env: e,
+        not_target_said: Default::default(),
     };
     let stop = Arc::new(AtomicBool::new(false));
     let h = std::thread::spawn({
@@ -1790,6 +1791,7 @@ fn a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red() {
             store_path: w.db.clone(),
             workspace,
             env: e,
+            not_target_said: Default::default(),
         };
         let stop = Arc::new(AtomicBool::new(false));
         let h = std::thread::spawn({
@@ -1956,6 +1958,170 @@ fn a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_sessi
         "the home session hears nothing of letibot's main"
     );
     assert!(heard(1) && heard(2) && heard(3));
+}
+
+// ===== The queue is the repositories that asked for it (2026-10-26) =====
+
+/// **A repository named `name` under `under`, with `agents` as its `AGENTS.md`** — and an origin on
+/// `github.com/stroppy-io/…`, so a folder holding two of them is ONE project
+/// ([`crate::mergequeue::git::repos_of_workspace`] keeps the children only when every remote names
+/// the same owner).
+fn repo_with_agents(under: &Path, name: &str, agents: Option<&str>) -> PathBuf {
+    let repo = under.join(name);
+    std::fs::create_dir_all(&repo).unwrap();
+    sh(&repo, &["init", "-q", "-b", "main"]);
+    sh(&repo, &["config", "user.email", "q@test"]);
+    sh(&repo, &["config", "user.name", "queue test"]);
+    sh(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &format!("git@github.com:stroppy-io/{name}.git"),
+        ],
+    );
+    if let Some(text) = agents {
+        std::fs::write(repo.join("AGENTS.md"), text).unwrap();
+    }
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    sh(&repo, &["add", "."]);
+    sh(&repo, &["commit", "-q", "-m", "base"]);
+    std::fs::canonicalize(repo).unwrap()
+}
+
+/// **Run a supervisor until `until` says so of the store** — the ancestor test's own loop, for the
+/// tests that are about what a passing supervisor does rather than about a landing.
+fn serve_until(
+    workspace: &Path,
+    gate: Arc<dyn GateRunner>,
+    door: Arc<Door>,
+    db: &Path,
+    who: &str,
+    until: &dyn Fn(&Store) -> bool,
+) -> Store {
+    let service = QueueService {
+        store_path: db.to_path_buf(),
+        workspace: workspace.to_path_buf(),
+        env: env(gate, door, who),
+        not_target_said: Default::default(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let h = std::thread::spawn({
+        let stop = stop.clone();
+        move || service.run(&stop)
+    });
+    let s = Store::open(db).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !until(&s) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    h.join().unwrap();
+    s
+}
+
+/// **Serve `workspace` for a few passes, and record every lease held at any observation** — a
+/// lease is given up when the service stops, so the question *was it ever claimed* is answered by
+/// what was seen while it ran.
+fn leases_seen_over(
+    workspace: &Path,
+    db: &Path,
+    door: Arc<Door>,
+    who: &str,
+    for_ms: u64,
+) -> (Store, Vec<String>) {
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let started = std::time::Instant::now();
+    let watch = {
+        let seen = seen.clone();
+        move |s: &Store| {
+            for l in s.queue_leases().unwrap() {
+                let mut said = seen.lock().unwrap();
+                if !said.contains(&l.repository) {
+                    said.push(l.repository.clone());
+                }
+            }
+            started.elapsed() > Duration::from_millis(for_ms)
+        }
+    };
+    let store = serve_until(workspace, Arc::new(GreenGate), door, db, who, &watch);
+    let out = seen.lock().unwrap().clone();
+    (store, out)
+}
+
+/// **A repository whose target declares no `Merge gate` is not a queue target** — the operator,
+/// 2026-10-26: *"red most of the time everywhere, no real visibility … something happens somewhere
+/// and result is ignored"*. Their supervisor held a lease on all fifteen repositories of one
+/// project folder and fourteen of them were `blocked: no Merge gate section in AGENTS.md`: rows for
+/// repositories that had never asked for a queue, each counted *unjudged* in every head's summary
+/// and warned about. So a repository asks by declaring a gate: until it does, it takes no lease, no
+/// health row is written for it, and nothing about it reaches a hub — and the pass after it
+/// commits one, it is served like the rest.
+#[test]
+fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
+    let dir = TempDir::new("opt-in");
+    let queued = repo_with_agents(&dir.0, "one", Some(GATE_MD));
+    let never = repo_with_agents(
+        &dir.0,
+        "two",
+        Some("# agents\n\nNothing about a gate here.\n"),
+    );
+    assert_eq!(
+        crate::mergequeue::repositories_of_workspace(&dir.0).len(),
+        2,
+        "one project of two repositories: both are found, and only one asked"
+    );
+    let queued_key = queued.display().to_string();
+    let never_key = never.display().to_string();
+    let db = dir.0.join("sessions.db");
+    let door = Arc::new(Door::default());
+    // **Two passes' worth of time**: the supervisor claims every repository it serves in ONE pass,
+    // so a lease it would ever take would have been seen by the second.
+    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500);
+    assert_eq!(
+        leases,
+        vec![queued_key.clone()],
+        "only the repository that asked is served"
+    );
+    assert!(
+        store.target_health(&never_key, "main").unwrap().is_none(),
+        "and no health row was written for the other: nothing is `blocked` about it"
+    );
+    assert!(
+        store.target_health(&queued_key, "main").unwrap().is_some(),
+        "the one that asked was gated"
+    );
+    assert!(
+        !door.events.lock().unwrap().iter().any(|e| {
+            matches!(e, SessionEvent::Warning { detail, .. } if detail.contains(&never_key))
+        }),
+        "nothing about it is said on any hub"
+    );
+    assert!(
+        store
+            .recent_transitions(crate::mergequeue::RECENT_MOVES)
+            .unwrap()
+            .iter()
+            .all(|t| t.repository != never_key),
+        "and nothing moves for it"
+    );
+
+    // **The section is the whole of the opt-in**, so committing one is the whole of what it takes
+    // to be served: the next pass asks again and claims the lease.
+    commit(&never, "AGENTS.md", GATE_MD, "declare a merge gate");
+    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500);
+    let mut leases = leases;
+    leases.sort();
+    assert_eq!(
+        leases,
+        vec![queued_key, never_key.clone()],
+        "a repository that gains the section is served on the next pass"
+    );
+    assert!(
+        store.target_health(&never_key, "main").unwrap().is_some(),
+        "and gated, as any queue target is"
+    );
 }
 
 // ===== A gate does not stop the review queue (R92 item 8) =====

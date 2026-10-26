@@ -114,6 +114,30 @@ fn the_pane_says_who_serves_each_repository_and_a_stale_heartbeat() {
     assert!(screen.contains("nothing is serving the queues"), "{screen}");
 }
 
+/// **A repository that never asked for a queue is one muted line, and nothing is counted for it**
+/// (2026-10-26) — the operator's supervisor held fourteen such rows, each drawn as a blocked
+/// target and counted *unjudged* on every edge, beside the one repository the queue served. The
+/// daemon keeps them out of `targets` (`mergequeue::snapshot`) and names them here.
+#[test]
+fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut snap = queues(Vec::new(), Vec::new());
+    snap.not_queued = vec![LETIBOT.into()];
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(160, 40).join("\n");
+    assert!(
+        screen.contains("not queued: no `Merge gate` section in AGENTS.md — letibot"),
+        "{screen}"
+    );
+    assert!(
+        !screen.contains("unjudged") && !screen.contains("blocked"),
+        "nothing is counted or alarmed for it: {screen}"
+    );
+}
+
 /// **A red target is an emergency, first on the pane and on the edge** — and its review is the
 /// first row of the review queue.
 #[test]

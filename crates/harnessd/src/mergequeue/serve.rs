@@ -2029,6 +2029,10 @@ pub struct QueueService {
     store_path: PathBuf,
     workspace: PathBuf,
     env: Arc<QueueEnv>,
+    /// **The repositories already said not to be queue targets** (2026-10-26) — one line per
+    /// repository per daemon, not one every two seconds: a folder whose repositories never asked
+    /// for a queue is the ordinary case, not news.
+    not_target_said: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl QueueService {
@@ -2037,6 +2041,7 @@ impl QueueService {
             store_path,
             workspace: std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf()),
             env: Arc::new(env),
+            not_target_said: Default::default(),
         }
     }
 
@@ -2100,6 +2105,14 @@ impl QueueService {
         for repo in self.repositories(store)? {
             let key = repo.display().to_string();
             if workers.contains_key(&key) {
+                continue;
+            }
+            // **A repository whose target declares no `Merge gate` is not a queue target**
+            // (2026-10-26): it takes no lease and gets no health row, so no head counts it
+            // unjudged and no hub is warned about it. It is asked every pass, so the repository
+            // that gains the section starts being served on the next one.
+            if let Some(target) = self.refusal(&repo) {
+                self.say_not_a_target(&key, &target);
                 continue;
             }
             match store.acquire_queue_lease(&key, &self.env.me, gate::now_ms(), LEASE_TTL_MS)? {
@@ -2172,6 +2185,41 @@ impl QueueService {
             }
         }
         Ok(())
+    }
+
+    /// **Why `repo` is not a queue target, if it is not one** — the target branch it lands on,
+    /// when that branch's `AGENTS.md` has no `Merge gate` section (2026-10-26: *the queue is the
+    /// repositories that asked for it*). `None` means *serve it* — either the gate is there, or it
+    /// could not be read (a git that failed is the queue's own trouble, and the health row says so
+    /// at `unjudged`, where it belongs).
+    ///
+    /// The question is asked of the target's TIP, exactly as [`RepoQueue::health`] asks it, so the
+    /// repository that commits a gate is served without anything else being said twice.
+    fn refusal(&self, repo: &Path) -> Option<String> {
+        // A `[queue]` that does not parse falls back to the defaults here as it does in the
+        // worker, which raises `queue_settings_unreadable` itself once it serves the repository.
+        let settings = (self.env.settings)(repo).unwrap_or_default();
+        let target = settings::target_for(repo, &settings)?;
+        let tip = git::branch_head(repo, &target)?;
+        match gate::declared_gate(repo, &tip) {
+            Ok(None) => Some(target),
+            Ok(Some(_)) | Err(_) => None,
+        }
+    }
+
+    /// Say once — in the daemon's own log, never on a hub — that a repository is not served.
+    fn say_not_a_target(&self, key: &str, target: &str) {
+        let mut said = self
+            .not_target_said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if said.insert(key.to_string()) {
+            eprintln!(
+                "  merge queue: {key} is not a queue target: `{target}` has no `Merge gate` \
+                 section in AGENTS.md, so it never asked for a queue (nothing is claimed, gated \
+                 or counted for it; the section is the whole of what opts a repository in)"
+            );
+        }
     }
 
     /// **The one repository this daemon serves** — the one its workspace is a session of, when it

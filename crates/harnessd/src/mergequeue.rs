@@ -270,9 +270,19 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     }
     match store.target_healths() {
         Ok(hs) => {
-            out.targets = hs
-                .into_iter()
-                .map(|h| w::TargetHealthView {
+            // **A repository that declares no `Merge gate` is not a queue target** (2026-10-26),
+            // so its row is neither a count nor an alarm: it is read out of `targets` here and
+            // named once in `not_queued`, where the pane draws one muted line. The store keeps
+            // every row — nothing here deletes one.
+            let mut not_queued: Vec<String> = Vec::new();
+            for h in hs {
+                if setup::not_a_queue_target(&h) {
+                    if !not_queued.contains(&h.repository) {
+                        not_queued.push(h.repository.clone());
+                    }
+                    continue;
+                }
+                out.targets.push(w::TargetHealthView {
                     repository: h.repository,
                     target: h.target,
                     sha: h.sha,
@@ -280,8 +290,10 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     checked_ms: h.checked_ms,
                     evidence: h.evidence,
                     gate_steps: h.gate_steps.iter().map(wire_gate_step).collect(),
-                })
-                .collect()
+                });
+            }
+            not_queued.sort();
+            out.not_queued = not_queued;
         }
         Err(e) => unread.push(format!("the targets' health: {e}")),
     }
