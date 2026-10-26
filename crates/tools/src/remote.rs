@@ -1414,7 +1414,11 @@ impl Ssh {
                     began.elapsed(),
                     rpc::Outcome::Unknown,
                 );
-                Err(BackendError::Io(format!("{} for {}", why, self.host.name)))
+                Err(BackendError::Io(format!(
+                    "{why} — the ssh for {} could not be started at all, so nothing was sent \
+                     and nothing on that machine changed",
+                    self.host.name
+                )))
             }
             rpc::Ended::TimedOut => {
                 // **The master may be the thing that stopped answering**, and a socket that is
