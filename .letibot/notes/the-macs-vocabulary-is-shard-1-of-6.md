@@ -64,3 +64,33 @@ state this test is about"*, which reads like a platform gap and is this file. Re
 `/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf` with no
 `$HOME`/`LETIBOT_GLM_GGUF` fallback (unlike `model_switch.rs`), so on any box that is not the
 Linux one it can only ever go red. `~/models/glm-5.3-flash/` does not exist on the Mac.
+
+## The resolution (MEASURED 09:46–09:50): `build-glm` is llama.cpp 0.4.0 and it knows `qwen4exp`
+
+`~/Projects/llama.cpp` has THREE builds, and they are not the same llama.cpp:
+
+```
+build      libllama.0.3.0.dylib   Oct  7 14:31   strings | grep -c '^qwen4exp$'  ->  0
+build-cpu  libllama.0.3.0.dylib   Oct  7 15:46                                  ->  0
+build-glm  libllama.0.4.0.dylib   Oct 26 09:46                                  ->  1
+```
+
+`crates/llama/build-support.rs` searches `LETIBOT_LLAMA_DIR` → `$HOME/Projects/llama.cpp` → the
+box path, then **`build-glm/bin` before `build/bin`**, first hit wins — so a build with NO
+`LETIBOT_LLAMA_*` set (which is exactly the merge queue's daemon, and AGENTS.md's standing note)
+links 0.4.0 and can load the vocabulary. The brief for package QC pins
+`LETIBOT_LLAMA_LIB=…/build/bin`, i.e. 0.3.0, which cannot.
+
+And the split stub loads under 0.4.0 once its `split.no`/`split.tensors.count`/`split.count` keys
+are gone. A 60-line python rewrite (`desplit.py`, scratch only — `~/models` untouched) dropped the
+three keys and kept 64 of 67 KV, producing a 10 946 560-byte file; **byte-for-byte the same size
+as the `vocab-only.gguf.pending` another session was writing**, so that was the same surgery.
+
+```
+LETIBOT_LLAMA_LIB=~/Projects/llama.cpp/build-glm/bin LETIBOT_VOCAB_GGUF=<de-split copy> \
+  cargo test --offline -p letibot-llama --test gguf   ->  20 passed; 0 failed
+```
+
+with 0.3.0 the same call is `Load { path }` / `libllama could not load a vocabulary`. So the
+Mac's fix is two lines of box state, not code: link `build-glm/bin`, and put a
+vocabulary-only (unsplit) GGUF at `~/models/qwen3.8-flash-next/…-00001-of-00006.gguf`.
