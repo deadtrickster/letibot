@@ -113,6 +113,16 @@ cannot apply on this OS is not missing apparatus.** The queue's daemon runs on t
 so collapsing the two made THIS step red there on four targets for a reason that was in no diff,
 and a gate whose red is ignored has stopped carrying information.
 
+**And step 3 links whichever llama.cpp the FIRST build of a worktree found.** Each of the five
+`build.rs` scripts searches for it (`build-glm/bin` before `build/bin`, `LETIBOT_LLAMA_*` first)
+and bakes the answer into an rpath — an input `cargo` cannot see, because `rerun-if-env-changed`
+only fires when the VARIABLE changes, not when the search finds something else. MEASURED
+2026-10-26: the landing worktree's `harnessd` carried `LC_RPATH …/llama.cpp/build/bin`
+(llama.cpp 0.3.0, which does not know this model's architecture) on a box that had a working
+0.4.0 in `build-glm/bin`, so 42 vocabulary targets stayed red where the same tests passed by
+hand. Name both `LETIBOT_LLAMA_DIR` and `LETIBOT_LLAMA_LIB` on the steps that build, or remove
+that worktree's `target/` once.
+
 **The gate judges CODE, and this box's own data is not code — which is why one class of test opted
 out of it.** `crates/turn/tests/restore.rs`'s real-store tests read
 `~/.local/share/letibot/sessions.db`, the operator's history, and so they run only when
