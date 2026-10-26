@@ -284,14 +284,19 @@ fn is_provider(name: &str) -> bool {
     matches!(name, "deepseek" | "glm" | "grok")
 }
 
-/// Start the daemon detached, in its own session, writing to its own log.
+/// Start the daemon detached, in its own session, writing to its own log, and hand back the
+/// child so that whoever started it can wait for it.
 ///
 /// `setsid` rather than a plain spawn: a daemon that died with the MCP process would take
 /// every session it holds with it, which is the one property the two-process split exists
 /// to deny. The launcher gets the same effect from `setsid(1)` on Linux and perl's
 /// `POSIX::setsid` on a Mac; the syscall is the same thing without a fork of either.
-fn spawn(d: &Daemon, model: Option<&str>, mode: &str) -> Result<u32, String> {
-    let binary = daemon_binary()?;
+fn start(
+    binary: &Path,
+    d: &Daemon,
+    model: Option<&str>,
+    mode: &str,
+) -> Result<std::process::Child, String> {
     if let Some(dir) = d.log.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
@@ -306,7 +311,7 @@ fn spawn(d: &Daemon, model: Option<&str>, mode: &str) -> Result<u32, String> {
     let log2 = log
         .try_clone()
         .map_err(|e| format!("{}: {e}", d.log.display()))?;
-    let mut cmd = Command::new(&binary);
+    let mut cmd = Command::new(binary);
     cmd.args(daemon_args(d, model, mode))
         // The daemon links libllama for its TOKENIZER, and ggml registers every backend at
         // load — 1.1 GB of a card for ops it never runs. `scripts/letibot` blindfolds it
@@ -326,10 +331,66 @@ fn spawn(d: &Daemon, model: Option<&str>, mode: &str) -> Result<u32, String> {
             Ok(())
         });
     }
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
-    Ok(child.id())
+    cmd.spawn()
+        .map_err(|e| format!("starting {}: {e}", binary.display()))
+}
+
+/// **Every child this process starts is waited for** — the bridge's half of the rule this whole
+/// tree is held to: *any process letibot starts is supervised, no exceptions*.
+///
+/// MEASURED 2026-10-26: a `Child` is not waited for on drop, and the bridge dropped it the
+/// moment it had the pid — so every daemon that exited stayed `<defunct>` under `letibot-mcp`
+/// for as long as that bridge lived. One bridge held twelve (aged 1.5 to 9.5 hours, package
+/// daemons stopped cleanly with `letibot --stop`) and another seven. A zombie holds a process
+/// table entry and, worse, counts as a running daemon in `ps`: the person asking *is this
+/// folder's daemon still up* cannot tell a dead one from a live one.
+///
+/// **A thread per child, and not a `SIGCHLD` handler.** A handler is process-wide and
+/// `wait(2)`-shaped: it would take the exit of *any* child this program ever has — including
+/// ones the bridge did not start and cannot account for — and it would have to be installed
+/// once and coexist with anything else that wants that signal. A bridge starts one daemon per
+/// folder and lives for hours, so a thread per daemon is one stack each, waiting on exactly the
+/// child it was handed.
+///
+/// **And it does not tie the daemon's lifetime to the bridge's.** The child is `setsid`'d
+/// ([`start`]), so it is in a session of its own: no signal aimed at this process's group
+/// reaches it, and when the bridge exits the waiting thread simply goes with it and the kernel
+/// hands the running daemon to init. Waiting is not owning — what is reaped here is a corpse,
+/// never a live child.
+fn reap(mut child: std::process::Child) {
+    let pid = child.id();
+    let spawned = std::thread::Builder::new()
+        .name(format!("reap-{pid}"))
+        .spawn(move || {
+            // The status is not this thread's business: *did the daemon come up* is answered by
+            // the socket, with the log's tail behind it (`ensure`), and a daemon that came up
+            // and later exits is the operator's act or the idle exit's. What is owed here is the
+            // wait itself, and an error from it (a child somebody else already waited for) is
+            // the same fact as success.
+            let _ = child.wait();
+        });
+    if let Err(e) = spawned {
+        // **Said rather than silent, and the daemon is not harmed by it**: the only thing lost
+        // is this process's tidiness, which is exactly the defect this function exists for — so
+        // a bridge that cannot afford a thread says so on its stderr instead of leaking quietly.
+        eprintln!(
+            "  harnessd pid {pid} will not be waited for: the reaping thread could not be \
+             started ({e}). It becomes a zombie of this process when it exits; the daemon itself \
+             is unaffected and outlives this bridge."
+        );
+    }
+}
+
+/// **This folder's daemon started, detached, and reaped when it exits** — the pid the answer
+/// names and nothing else about the child.
+///
+/// The binary is the caller's so that the start path a test can drive is the one a daemon
+/// start really takes; resolving it ([`daemon_binary`]) is `ensure`'s business.
+fn spawn(binary: &Path, d: &Daemon, model: Option<&str>, mode: &str) -> Result<u32, String> {
+    let child = start(binary, d, model, mode)?;
+    let pid = child.id();
+    reap(child);
+    Ok(pid)
 }
 
 /// **This folder's daemon, started if nothing is listening.**
@@ -348,7 +409,7 @@ pub fn ensure(worktree: &Path, model: Option<&str>, mode: &str) -> Result<Daemon
     // daemon by name. So the start is attempted, and a refusal reaches the caller as the
     // log tail rather than being pre-empted by a guess about a lock this box may not let
     // a head read.
-    let pid = spawn(&d, model, mode)?;
+    let pid = spawn(&daemon_binary()?, &d, model, mode)?;
     for _ in 0..60 {
         if is_up(&d.socket) {
             d.started = true;
@@ -438,6 +499,89 @@ mod tests {
     fn a_folder_that_is_not_there_is_refused() {
         let e = resolve(Path::new("/definitely/not/a/checkout")).expect_err("refused");
         assert!(e.contains("definitely/not/a/checkout"), "{e}");
+    }
+
+    /// **A daemon the bridge started is waited for, and is still nobody's child to kill.**
+    ///
+    /// The two halves are one property each and both are the reason the reaper is a waiting
+    /// thread and not a `SIGCHLD` handler:
+    ///
+    /// * the child is started in a session of its own, so the bridge going away leaves it
+    ///   running — asserted while it is alive, before anything waits for it;
+    /// * when it exits it is REAPED — `kill(pid, 0)` answers `ESRCH` rather than `0`, which is
+    ///   the difference between *gone from the process table* and *a zombie that `ps` still
+    ///   counts as a running daemon*. MEASURED 2026-10-26: without the reaper this assertion
+    ///   hangs at its deadline for ever, which is exactly what one bridge's twelve `<defunct>`
+    ///   harnessds were.
+    ///
+    /// The binary is a shell script rather than `harnessd`, so the test needs no GGUF, no
+    /// socket and no daemon of the operator's — what it drives is the start path `ensure`
+    /// drives, not what the daemon does once it is up.
+    #[test]
+    fn a_daemon_the_bridge_started_is_reaped_when_it_exits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = letibot_sessionlog::testing::scratch_root()
+            .join(format!("letibot-reap-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let script = dir.join("harnessd");
+        // Two seconds: long enough to be seen alive and in its own session, short enough not to
+        // hold the suite.
+        std::fs::write(&script, "#!/bin/sh\nsleep 2\n").expect("write the script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make the script executable");
+
+        let d = Daemon {
+            workspace: dir.clone(),
+            key: "reap00000000".into(),
+            socket: dir.join("daemon.sock"),
+            log: dir.join("daemon.log"),
+            store: dir.join("sessions.db"),
+            started: false,
+        };
+        let pid = spawn(&script, &d, None, "writes-allowed").expect("the script starts");
+        let pid = pid as libc::pid_t;
+
+        // **Its own session**, so nothing the bridge's process group is sent reaches it: a bridge
+        // that exited would leave this daemon running, which is the property `setsid` is for.
+        // SAFETY: `getsid` reads a kernel table and cannot fail for a live pid of ours.
+        let sid = unsafe { libc::getsid(pid) };
+        assert_eq!(
+            sid, pid,
+            "a daemon the bridge started must be in a session of its own (got {sid}), or the \
+             reaper would be killing what it is only supposed to wait for"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // SAFETY: `kill` with signal 0 only asks whether the process exists.
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the reaper must not shorten the daemon's life: it waits, it does not own"
+        );
+
+        // **And it is reaped when it goes.** A zombie answers `kill(pid, 0)` with 0 — it is still
+        // in the process table — so this is the assertion the defect fails, and it fails by
+        // running out of deadline rather than by passing a zombie off as a process.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            // SAFETY: as above.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid {pid} is still in this process's table ten seconds after it exited: that \
+                 is a `<defunct>` harnessd, which is what every daemon the bridge stopped used to \
+                 leave behind. The wait belongs in `reap`."
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **A package's daemon serves no queue.** The flag is not a nicety: without it the daemon
