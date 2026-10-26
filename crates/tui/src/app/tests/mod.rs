@@ -1431,6 +1431,7 @@ mod oneliners;
 mod pane;
 mod paste;
 mod pictures;
+mod toolspanel;
 mod plugin_pane;
 mod queue;
 mod reach;

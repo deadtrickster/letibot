@@ -219,8 +219,14 @@ impl App {
     pub(crate) fn open_marker(&mut self, m: MarkerHit) {
         // **The turn still running** — its rows are in the pane, not the history: lift that kind
         // there, or put it back when the same clause is clicked again.
+        //
+        // **`payload_sel` names the live run too**, by [`LIVE_RUN`], and it did not use to: the
+        // lift lived in `live_open` alone, which is not what [`App::run_is_open`] reads — so the
+        // panel a click opened could not be closed by Esc, named no keys in the hint bar and
+        // scrolled as the conversation rather than as a view. One field for one act.
         if m.run == LIVE_RUN {
-            self.live_open = if self.live_open == m.show && m.show.is_some() {
+            let closing = self.live_open == m.show && m.show.is_some();
+            self.live_open = if closing {
                 None
             } else {
                 m.show.or(Some(Show::Tools))
@@ -228,16 +234,58 @@ impl App {
             if self.live_open.is_none() {
                 self.payload_sel = None;
                 self.run_show = None;
-                self.invalidate_history();
+            } else {
+                self.payload_sel = Some(LIVE_RUN.to_string());
+                self.run_show = self.live_open;
+                self.payload_page = 0;
+                self.payload_max.set(usize::MAX);
             }
+            self.invalidate_history();
             self.redraw = true;
             return;
         }
+        // **A run that has rows, and the calls it counts may still be running.** A round's result
+        // rows land only after every call in it has returned, so the marker on a run of REASONING
+        // rows counts calls that are not rows yet — and a click on the calls clause of it lifted
+        // the run, whose reasoning the clause skips and whose calls were nowhere. That is the
+        // operator's *"clicked on the tools counter — empty panel"*: a view of nothing, on the one
+        // line that was supposed to open the work. So the lift is carried to the live pane for the
+        // run the work in flight belongs to, and the panel shows the calls as they run.
+        let carries_live = self.run_carries_live_now(&m.run);
+        self.live_open = if carries_live { m.show } else { None };
         self.payload_sel = Some(m.run);
         self.payload_page = 0;
         self.payload_max.set(usize::MAX);
         self.run_show = m.show;
         self.invalidate_history();
         self.redraw = true;
+    }
+
+    /// **Is `head` the run the work in flight belongs to** — [`run_carries_live`] asked of the head
+    /// rather than of the frame being drawn, so a click and the draw cannot disagree about which
+    /// run's counts the marker carried.
+    fn run_carries_live_now(&self, head: &str) -> bool {
+        let live = self.live_work_now();
+        if live.work() == 0 {
+            return false;
+        }
+        let Some(start) = self.items.iter().position(|it| it.item_id == head) else {
+            return false;
+        };
+        let turn_rows: std::collections::HashSet<String> = self
+            .turn
+            .as_ref()
+            .map(|t| t.turn_rows.iter().cloned().collect())
+            .unwrap_or_default();
+        crate::ui::transcript::markers::unseen_run_at(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            live,
+            start,
+        )
+        .is_some_and(|(s0, e0)| {
+            s0 == start && crate::ui::run_carries_live(&self.items, &turn_rows, s0, e0)
+        })
     }
 }

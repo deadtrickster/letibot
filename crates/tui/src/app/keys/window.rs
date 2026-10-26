@@ -30,6 +30,11 @@ impl App {
                     self.payload_sel = None;
                     self.payload_page = 0;
                     self.run_show = None;
+                    // **The live pane's lift is part of the same act** — a click on a run of rows
+                    // and a click on the turn's own marker both lift a kind, and Esc is the one
+                    // way back for either. Without this a lift the pane carried had no undo: the
+                    // panel stayed open, its marker closed and its keys unnamed.
+                    self.live_open = None;
                     // An open run's rows are in the history cache, so it is rebuilt — as
                     // ctrl-t's close does.
                     self.invalidate_history();
