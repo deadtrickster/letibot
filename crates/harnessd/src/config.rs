@@ -2777,12 +2777,7 @@ impl Config {
             "--grant-ro",
             "",
         ));
-        out.push(row(
-            "placement",
-            format!("{:?}", self.placement).to_lowercase(),
-            "",
-            "",
-        ));
+        out.push(row("placement", self.placement.as_str(), "", ""));
         if !self.vm_args.is_empty() {
             out.push(row("vm.args", self.vm_args.join(" "), "", ""));
         }
@@ -3377,6 +3372,25 @@ impl Config {
                     "a firecode VM holding a copy of {}: the VM is the boundary, the mode inside \
                      is allow-all, and what this session writes lands in a sibling directory when \
                      it ends",
+                    self.vm_copy_source().display()
+                ),
+            ));
+        }
+        // **The banner half of a remote placement** (`docs/remote-hosts.md`). `ON` and not
+        // `off`: the capability is there and it changes where every command lands, so it
+        // says so in the line the operator reads before the first card — and it says the
+        // second half too, that this is NOT a boundary, because a disclosure that lists
+        // only what is guaranteed reads as a claim about the rest.
+        if let Some(host) = self.placement.host() {
+            out.push(Disclosure::on(
+                "placement",
+                format!(
+                    "an ssh host, `{host}`: this session's TOOLS run there — bash, read, write, \
+                     edit, jobs — while its model, store and gate stay here. NOT a boundary: \
+                     `{host}` is the operator's machine with the operator's files, so the gate \
+                     is this box's own gate and every card names the host. The tree is a \
+                     checkout of {}, and its commits come back as the branch \
+                     `remote/{host}/<short id>` when the session ends",
                     self.vm_copy_source().display()
                 ),
             ));

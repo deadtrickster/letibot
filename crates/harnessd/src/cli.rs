@@ -428,6 +428,13 @@ fn usage() -> String {
      \x20 --vm-arg ARG              passed to `firecode up` verbatim, repeatable:\n\
      \x20                           --vm-arg --mem --vm-arg 8192 --vm-arg --add-dir\n\
      \x20                           --vm-arg ~/.rustup (a toolchain the guest lacks)\n\
+     \x20 --host NAME               where this session's TOOLS run: on the ssh host\n\
+     \x20                           NAME, declared by the operator under [host.NAME]\n\
+     \x20                           in ~/.config/letibot/hosts.toml. The model, the\n\
+     \x20                           store and the gate stay here; bash, read, write,\n\
+     \x20                           jobs and the rest run there, and the repository's\n\
+     \x20                           HEAD goes over as a checkout (branch remote/<id>)\n\
+     \x20                           whose commits come back as remote/NAME/<id>\n\
      \x20 --web-search brave        attach a provider behind `web_search`. Without\n\
      \x20                           it the tool refuses and says so\n\
      \x20 --brave-key KEY           for this run; else $BRAVE_API_KEY, else\n\
@@ -903,11 +910,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // the workspace, the VM is the boundary and the mode inside is
             // allow-all — the same placement a subagent gets from `where`.
             "--where" => {
-                cfg.placement = match next()?.as_str() {
-                    "host" => letibot_tools::builtins::task::Placement::Host,
-                    "firecode" | "vm" => letibot_tools::builtins::task::Placement::Firecode,
-                    other => return Err(format!("--where {other}: host or firecode")),
-                };
+                let w = next()?;
+                cfg.placement = letibot_tools::builtins::task::Placement::parse(&w)
+                    .map_err(|e| format!("--where: {e}"))?;
+                // `--where host:NAME` is `--host NAME` under another name, and the name
+                // is checked the same way: one rule, whichever flag spelled it.
+                if let Some(name) = cfg.placement.host() {
+                    let hosts = letibot_tools::remote::Hosts::load();
+                    if hosts.get(name).is_none() {
+                        return Err(hosts.refusal(name));
+                    }
+                }
                 // The session's VM works in the workspace itself, mounted (a Mac).
                 cfg.vm_mount =
                     !vm_copy && cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
@@ -915,6 +928,22 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // A copy of one repository instead of the workspace mounted - the old placement.
             "--vm-copy" => {
                 vm_copy = true;
+                cfg.vm_mount = false;
+            }
+            // **Where this session's TOOLS run, on another machine**
+            // (`docs/remote-hosts.md`): `--host lab2x1`, the same shape as `--vm`. The
+            // name must be one the operator declared, so it is resolved here — before a
+            // daemon starts — and a name that is not in the file is refused by this
+            // line rather than by a session that fails its first `bash`.
+            "--host" => {
+                let name = next()?;
+                let hosts = letibot_tools::remote::Hosts::load();
+                if hosts.get(&name).is_none() {
+                    return Err(hosts.refusal(&name));
+                }
+                cfg.placement = letibot_tools::builtins::task::Placement::Remote(name);
+                // A remote session is not in a VM: nothing is mounted and nothing is
+                // copied — the tree goes over as a git bundle (`SshBackend::place`).
                 cfg.vm_mount = false;
             }
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.

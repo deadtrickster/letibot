@@ -1015,6 +1015,10 @@ impl HubSteering {
 /// The warning code for a session whose workspace no longer exists (R92.24).
 const WORKSPACE_GONE: &str = "workspace_gone";
 
+/// The warning code for a session whose tools run on another machine — where its tree is,
+/// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
+const REMOTE_PLACEMENT: &str = "remote_placement";
+
 /// **"workspace gone", in one sentence** — said when a session opens or wakes on a workspace that
 /// no longer exists (R92.24).
 fn workspace_gone(workspace: &std::path::Path) -> String {
@@ -3504,6 +3508,23 @@ impl Harness {
         if in_vm {
             cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
         }
+        // **Where these tools run when it is another machine** (`docs/remote-hosts.md`).
+        // Not a boundary and so not an allow-all: the contract's words are *"a remote host
+        // is not a boundary the way a VM is"*, so a remote session keeps the host's gate and
+        // the mode it was started in. The name is resolved against the operator's file here
+        // — the same refusal `--host` gives, one layer down, so a session reopened from the
+        // store after the file changed fails with the sentence rather than with a bare
+        // "command not found".
+        let remote = match cfg.placement.host() {
+            Some(name) => {
+                let hosts = letibot_tools::remote::Hosts::load();
+                let Some(host) = hosts.get(name).cloned() else {
+                    return Err(HarnessError::Setup(hosts.refusal(name)));
+                };
+                Some(host)
+            }
+            None => None,
+        };
         // **R92.24: a session opening on a workspace that is gone says so, by that name.** A
         // retired worktree, a moved checkout: every backend below roots itself at the workspace
         // and failed with a bare ENOENT (or, for a confined seat, a paragraph blaming the cgroup
@@ -3518,9 +3539,9 @@ impl Harness {
             });
             return Err(HarnessError::Setup(said));
         }
-        let (backend, backend_confined): (HostBackend, bool) = if in_vm {
-            // A placeholder the VM arm below replaces; the host tree is not touched
-            // by a session placed in a VM, and this read-only view is never used.
+        let (backend, backend_confined): (HostBackend, bool) = if in_vm || remote.is_some() {
+            // A placeholder the VM and ssh arms below replace; the host tree is not touched
+            // by a session whose tools run elsewhere, and this read-only view is never used.
             (
                 HostBackend::new(&cfg.workspace).map_err(|e| {
                     HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace))
@@ -3675,6 +3696,43 @@ impl Harness {
             let writable = fc.is_writable();
             let monitors = fc.host_processes().and_then(|h| h.monitors().cloned());
             (Box::new(fc), described, writable, monitors)
+        } else if let Some(host) = &remote {
+            // **The ssh placement**: the repository's `HEAD` goes over as a bundle, the
+            // session works in a checkout on that machine, and its commits come back as
+            // `remote/<host>/<short id>` when the session ends (`SshBackend::close`).
+            // No allow-all, no boundary — the contract: *"the remote host is not a boundary
+            // the way a VM is: it is the operator's machine with the operator's files, so a
+            // remote session gets the same gate as a host session"*.
+            let spec = letibot_tools::remote::SshSpec {
+                host: host.clone(),
+                name: cfg.session_id.clone(),
+                // The repository this session is about, by the one resolution the tree
+                // placement already uses (`Config::vm_copy_source`): what the caller named,
+                // else the repository the workspace is in, else the workspace itself — which
+                // `SshBackend::place` refuses by name, because a remote session works on a
+                // checkout and a folder that is not a repository has none.
+                source: cfg.vm_copy_source(),
+                writable: may_write,
+                exec: may_exec && (cfg.allow_bash || cfg.seat.needs_exec_backend()),
+                ssh: None,
+            };
+            let sb = letibot_tools::remote::SshBackend::place(&spec)
+                .map_err(|e| HarnessError::Setup(e.to_string()))?;
+            // **Where the session is, and what was left behind.** Published rather than
+            // logged: a tree the operator is not looking at has to say so on the surface
+            // they read, including the local edits that were NOT carried.
+            for note in sb.placement_notes() {
+                hub.publish(SessionEvent::Warning {
+                    code: REMOTE_PLACEMENT.into(),
+                    detail: note.clone(),
+                    compaction: None,
+                });
+            }
+            let described = sb.describe();
+            let writable = sb.is_writable();
+            // No monitor mechanism on this host: a `monitor` call refuses by name rather
+            // than watching something nothing reaps.
+            (Box::new(sb), described, writable, None)
         } else {
             let described = backend.describe();
             let writable = backend.is_writable();
@@ -20056,7 +20114,15 @@ impl HarnessTaskRunner {
         // Placement: a VM is booted on a copy of this session's workspace by the
         // child's own `open` (see `firecode.rs`); a boot that fails is a spawn that
         // fails, named — never a subagent run on the host and called a VM.
-        let placement = spec.placement;
+        //
+        // **A child of a remote session runs on the same host** unless it asks for another
+        // placement — the contract's rule, spelled the way a VM's children already follow it
+        // (*"children live in the same vm"*). `host` in a remote session's mouth is *"my own
+        // boundary"*, which for that parent is that machine.
+        let placement = match (spec.placement.clone(), self.base.placement.host()) {
+            (Placement::Host, Some(parent_host)) => Placement::Remote(parent_host.to_string()),
+            (asked, _) => asked,
+        };
         let _ = Placement::Host;
         // **A VM holds one repository** — the operator: *"VMs are per repo anyway — at least must
         // be"*. A plain `task` placed in a VM copies the session's workspace, and a session above
@@ -20343,7 +20409,7 @@ impl HarnessTaskRunner {
             // reached, so a config at the cap never gets a child to increment for.
             depth: self.base.depth + 1,
             downgrade,
-            placement,
+            placement: placement.clone(),
             // **The child's own model, when it has one.** `provider` is the whole switch:
             // `None` is the daemon's own server, exactly as `/models local` means, and a
             // `ProviderConfig` is a cloud preset whose key `models_choice` already checked.
@@ -20408,6 +20474,9 @@ impl HarnessTaskRunner {
         sub_cfg.vm_attach = match placement {
             Placement::Host => parent_vm,
             Placement::Firecode => None,
+            // A remote child is not inside the parent's VM, and its own checkout is
+            // arranged by its `open` (`SshBackend::place`) rather than attached.
+            Placement::Remote(_) => None,
         };
         // A child given a VM of its own copies (or mounts its worktree), as before - only the
         // session `--vm` placed works in the folder itself, and its attached children with it.
@@ -20478,6 +20547,12 @@ impl HarnessTaskRunner {
             ),
             Placement::Firecode => format!(
                 "opening subagent {} in a firecode VM: copying {}, booting{on_window}",
+                letibot_sessionlog::registry::short_id(&sub_id),
+                sub_cfg.vm_copy_source().display()
+            ),
+            Placement::Remote(ref host) => format!(
+                "opening subagent {} on {host}: sending {} over as a checkout, on branch \
+                 remote/<its short id>{on_window}",
                 letibot_sessionlog::registry::short_id(&sub_id),
                 sub_cfg.vm_copy_source().display()
             ),
