@@ -4211,6 +4211,42 @@ impl<'a> Sessions<'a> {
         total
     }
 
+    /// **Put a command back on the queue of the thread that owns the session — unless this IS
+    /// that thread.** The two arms that use it are the two the worker may not answer itself: an
+    /// `Interrupt` and a `Message` for a session served on its own thread.
+    ///
+    /// Both readers take from ONE queue (`Hub::take_own_work` for the thread that runs the
+    /// session, `Hub::try_command` for the worker), so the worker of a daemon that has armed
+    /// [`Sessions::serve_each_on_its_own_thread`] can lose a race it should not answer: the
+    /// interrupt a parent aimed at its child, and the message a peer sent it. So it is handed
+    /// back, and the thread that holds the harness takes it.
+    ///
+    /// **And that thread must not hand anything back to itself.** It is the same hub, the same
+    /// queue and the same `Owner::OwnThread`, so a court that reached this would put the command
+    /// it just took back where it took it from, ring its own condvar, and take it again — a
+    /// resume that never runs anything, one core per session, for ever. MEASURED 2026-10-26 on
+    /// the operator's box: seven daemons at a full core each after the bridge's `leticode_stop`
+    /// queued an `Interrupt` on a session that had a thread of its own, with the CPU equal to
+    /// their age. `crates/bridge/tests/no_spin.rs` is the measurement.
+    ///
+    /// The test for *is this reader the one that owns the session* is `open`, which is the same
+    /// fact [`wake_route`] decides a wake with: a court holds its session's harness exactly as
+    /// the worker holds the ones it serves, so *held here* IS *served here*.
+    fn hand_back_to_the_owner(
+        &self,
+        session_id: &str,
+        hub: &Option<Arc<letibot_sessionlog::hub::Hub>>,
+        cmd: &QueuedCommand,
+    ) -> bool {
+        let Some(hub) = hub else {
+            return false;
+        };
+        if hub.owner() != Owner::OwnThread || self.open.contains_key(session_id) {
+            return false;
+        }
+        hub.give_back_to_its_own_reader(cmd.clone())
+    }
+
     /// Run one command against its session.
     pub fn dispatch(&mut self, session_id: &str, cmd: &QueuedCommand) -> Outcome {
         // **A session served on its own thread runs its own commands.** The daemon's worker never
@@ -4494,11 +4530,10 @@ impl<'a> Sessions<'a> {
                 // thread is false. This is not about `Prompt`, which the daemon CAN serve by
                 // opening the session lazily: an interrupt has nothing to act on unless the turn
                 // already running is reached, and the daemon cannot reach one it does not hold.
-                // So it is put back for that thread, which is the same door a relayed wake takes.
-                if let Some(hub) = &hub
-                    && hub.owner() == Owner::OwnThread
-                    && hub.give_back_to_its_own_reader(cmd.clone())
-                {
+                // So it is put back for that thread, which is the same door a relayed wake takes —
+                // and NOT when this reader is that thread, which is the spin
+                // [`Sessions::hand_back_to_the_owner`] exists for.
+                if self.hand_back_to_the_owner(session_id, &hub, cmd) {
                     return Outcome::HandedOn;
                 }
                 // **AND THE SUBTREE GOES FIRST, whichever session this is.** A stop is a stop
@@ -4940,10 +4975,7 @@ impl<'a> Sessions<'a> {
             // (*"that session is gone, so nothing will deliver it"*) and was dropped — in exactly
             // the case the design needs, a session sending another session something.
             CommandKind::Message { from, text } => {
-                if let Some(hub) = &hub
-                    && hub.owner() == Owner::OwnThread
-                    && hub.give_back_to_its_own_reader(cmd.clone())
-                {
+                if self.hand_back_to_the_owner(session_id, &hub, cmd) {
                     return Outcome::HandedOn;
                 }
                 // **The session the WORKER owns: a row the agent reads, and the turn it makes.**
