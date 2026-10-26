@@ -89,6 +89,39 @@ A leticode session escalating a design question it should not decide alone: an `
 that posts to the bridge, surfacing in `leticode_status` as `asking`, answered with
 `leticode_send`.
 
+### The queue, from the orchestrator's side (B5)
+
+Written 2026-10-26. The operator: *"[workers] shouldnt bother [with the queue] — i dont think they
+should communicate with queue at all, unless you want to add queue support to mcp. that would be
+cool"*.
+
+Two rules, one per side:
+
+* **A package's worker never touches the queue.** A daemon the bridge starts runs `--no-queue`
+  (Q1): it takes no lease, and its sessions get no model-facing queue notice. A worker's job ends at
+  a commit on its branch; whether that branch lands is not its question.
+* **The orchestrator drives the queue through the bridge.** Today Claude Code lands a package by
+  hand — rebase, the whole workspace's tests, a fast-forward push — which re-runs on the
+  orchestrator's box the gate the queue already owns, and bypasses the queue's history. With B5 the
+  bridge holds a head on the repository's queue and Claude does what the operator does with
+  `/queue`, recorded under the bridge's name (`bridge:<identity>`), so the history says who:
+
+| tool | input | answers |
+|---|---|---|
+| `leticode_queue` | `repository` (a checkout or worktree path) | both queues as `ServerFrame::Queues` has them — rows, states, verdicts, the target's health — folded to one line a row |
+| `leticode_submit` | `worktree`, `branch` (default: the worktree's) | puts the branch on the review queue as the operator would; `{row}` |
+| `leticode_queue_verb` | `row`, `verb` (`approve`, `restart`, `veto`, `rm`, `regate`), `note` | the verbs `mergequeue::verbs` already has, as the operator's — approve still runs the gate (decision 5) |
+
+and a CLI verb for the wake-up, like `wait`: `letibot-mcp wait-queue <repository> <row> [--timeout]`
+exits when the row lands (0), is rejected or vetoed (10, the reviewers' words on stdout), its gate
+fails (20), or the timeout passes (30).
+
+**Not before the queue is stable.** The operator, same day: *"if things are stable enough i would
+even let it run unattended and autostart. totally depends on the stability. right now it is flaky
+and fragile"*. B5 makes the queue the landing path for every package, so it waits on a stability
+pass over the queue itself; until then landing stays manual and the merge queue's own home (which
+daemon serves it) stays undecided.
+
 ## Packages
 
 | id | builds | depends on |
@@ -97,3 +130,5 @@ that posts to the bridge, surfacing in `leticode_status` as `asking`, answered w
 | B2 | `leticode_events` with the compact progress and the cursor; the report parsed into fields in `status` | B1 |
 | B3 | the `/delegate` skill, and registering the server with Claude Code (`claude mcp add`, the operator's to run) | B1 |
 | B4 | `escalate` | B1, a protocol addition |
+| Q1 | a bridge-started daemon runs `--no-queue`: no lease, no model-facing queue notices | B1 |
+| B5 | `leticode_queue`, `leticode_submit`, `leticode_queue_verb`, the `wait-queue` verb | Q1, a stable queue |
