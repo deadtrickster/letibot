@@ -201,6 +201,50 @@ One record feeds every reader: the activity (`waiting on: job j12 on lab2x1`), t
 
 Both stay under the session's gate, every card naming the hosts it reaches.
 
+## What an agent hand-rolled without builtins (the Stroppy session, measured 2026-10-26)
+
+The operator: *"look at the stroppy conformity session, look at the orchestration patterns it came up
+with. we need to give it builtins"*. A read-only survey of that Claude Code session (1,038 Bash calls in
+the main transcript, ~20,500 across ~140 subagents; counts approximate) found it had built a job
+system of its own in `stroppy-conformity-local/bin/` — `remote.sh` (laptop side, 290 lines),
+`remote-job.sh` (host side, 339), `fleet.sh` (sharding, 641), rewritten several times — and taught its
+agents to use it. Those scripts are the spec. What it needed, ranked by the hand-written code each
+would remove:
+
+1. **Named remote jobs** (`remote.sh -x` ×1,197, `wait` ×230): launch detached (`systemd-run --user`,
+   else `setsid nohup`), state in a per-job dir (`cmd, pid, log, exit, DONE, STOP, started`), liveness
+   by `/proc/<pid>/cmdline` so a reused pid is not the job, log read from an offset, stop = group kill
+   plus the job's resources, states `none | starting | running | done N | stopped N | dead | lost`,
+   and an unreachable host retried with backoff (`ServerAliveInterval`, exit 75 = unreachable, the job
+   may still run). → **RH7's supervisor records are exactly this**, local and remote.
+2. **A wait/watch primitive** (~400 `until`/`sleep` loops, 95 Monitor calls re-armed on timeout,
+   `letibot-mcp wait` in the background): wake the agent on a job's end, a pid, a file or log regex
+   (local or remote), or a worker's attention, with a deadline and no re-arming. → RH7.
+3. **Workers that outlive a turn**: worktree from origin/main, held across turns, wake on done / ask /
+   failure, liveness by last activity, broadcast to N, a diff against the merge base; and a worker must
+   not end its turn while its own jobs run (it did: *"You ended your turn again while jobs were in
+   flight"*). → the bridge and D1 inside letibot: `task_start` gains these.
+4. **Tree sync and cross-build to a host** (rsync ×119, scp ×107): incremental sync to a per-job dir
+   including untracked files, a local cross-compile (`GOOS=linux`), and a per-host environment
+   preamble (`mise activate bash --shims` ×56). → RH6's mise wrapper plus an rsync mode beside the git
+   placement.
+5. **A matrix / fleet runner** (`fleet.sh` ×235, `for h in …` ×137): hosts × configs × repetitions,
+   placement by live capacity (cores − load − reserve, free memory) and longest-first by measured cost,
+   interleaved arms (each with its own database), per-cell outcome, **a check that every planned cell
+   ran** (its own audit found none), merged results, resume from a plan file. → RH8's `fanout` grows
+   into this.
+6. **Resource leases and teardown on shared hosts** (`docker ps` ×430): per-job compose project,
+   a block of ports outside the ephemeral range (checked against `ss -ltn`), a subnet, all under a host
+   lock; teardown of exactly what the job created; and a per-host **never-touch list** of the owner's
+   own workloads (pgfuzz on lubuntu1, flowy-dogfood-pg on lubuntu3, the etcd fuzz on lab2x1).
+   Failures it hit: ephemeral-port collisions, loopback exhaustion, "address already in use" ×18,
+   "too many open files" ×34, a container left 19 h. → new: RH9.
+7. **Host registry with capacity** (cores, reserve, flags such as `heavy`/`tmpfs`, the never-touch
+   list) plus live load. → `hosts.toml` gains `reserve`, `flags`, `never_touch`; `hosts {probe}` reads
+   live capacity (HT).
+8. **A service fixture**: start, wait ready (`pg_isready`, a port, a log line), run clients, always tear
+   down — mostly on one host, inside one job. → RH8's `scenario`.
+
 ## Packages
 
 | id | builds |
@@ -210,7 +254,8 @@ Both stay under the session's gate, every card naming the hosts it reaches.
 | RH3 | later: per-host trust, bwrap on Linux remotes, a remote's GPU/model as the session's provider |
 | RH6 | the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4 |
 | RH7 | harnessd's process supervisor: store records for every started process, the supervising loop, ownership teardown, restart recovery; `bash background` on it |
-| RH8 | `fanout` and `scenario` on the supervisor |
+| RH8 | `fanout` (growing into the matrix runner: capacity placement, interleaved reps, every-cell check, resume) and `scenario` (service fixtures) on the supervisor |
+| RH9 | resource leases on shared hosts (ports outside the ephemeral range, subnets, compose projects under a host lock), exact teardown, and hosts.toml's `reserve`/`flags`/`never_touch` |
 | RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
 | RH5 | **done**: one ssh policy for both callers (RH1's `SshBackend` and RH4's `--migrate`), the operator's own ssh material never read, `hosts.toml` read strictly with a per-host `path` list, and `~/.ssh` a hard refusal for every tool |
 | HT | **done**: the `hosts` tool — which machines are declared, and which is least loaded, read at the call rather than frozen in a prompt; the remote checkout's own job directory kept out of `git status`; and, for every ssh operation that is not a command, a wall clock that kills the local ssh rather than waiting |
