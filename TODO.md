@@ -165,6 +165,41 @@ it: if no card appears, (1) is not built.
 
 ---
 
+## R99 — Every daemon shares ONE ssh master per host, and sshd's MaxSessions=10 refuses the eleventh — **OPEN, filed 2026-10-27, high: it truncates files and fails placements**
+
+`remote::control_path` gives every daemon the same `ControlPath` for a host
+(`$XDG_RUNTIME_DIR/letibot/ssh-<host>.sock`), so all package daemons placed on lab2x1 — plus
+their job polls and each one's file writes — multiplex over ONE ssh connection, and OpenSSH's
+default `MaxSessions` is 10 per connection. MEASURED 2026-10-27 with five or six packages on
+lab2x1:
+
+* two new placements failed writing the 19 MB git bundle: `Ssh::write_once` sends it as ~400
+  separate 48 KiB `printf %s '<base64>' | base64 -d >> tmp` calls, one was refused part-way,
+  and `incoming.bundle.letibot-<pid>` stopped at 2.8 MB;
+* FB's note (`.letibot/notes/a-write-through-the-git-placement-can-leave-a-file-empty.md`): an
+  edit through the placement left a file at **0 bytes** twice, with
+  `mm_send_fd: sendmsg(1): Message too long` and *"the process did not start … .pid was not
+  written within 2 s"* in the same minutes;
+* retried one at a time, both placements succeeded.
+
+**Build** (one package; the failure is load-dependent, so prove each part with a forcing test):
+1. A ControlMaster per daemon (the pid is already passed to `control_path`; use it), or a
+   bounded pool per host that never asks one master for more than `MaxSessions - 2` sessions.
+   Say which and why (connection setup cost on a 32-core LAN box vs. the session limit).
+2. A refused mux session (`mux_client_request_session: session request failed`,
+   `sendmsg … Message too long`, `channel … open failed`) is recognised as a TRANSIENT transport
+   failure and retried on a fresh connection, never reported as the command's own failure.
+3. Large writes are ONE call streaming stdin (`cat > tmp` with the bytes on stdin, or
+   `base64 -d > tmp` fed by stdin), not N argv chunks; then `mv` into place only after the size
+   (and a checksum) on the far side matches. A failed write leaves the target untouched — and the
+   edit path that produced FB's 0-byte file is found and made to obey the same rule.
+4. Tests with a fake ssh that refuses the Nth session and one that drops a stream mid-write.
+
+**Done when**: six packages placed on lab2x1 at once all place, and a forced mid-write drop leaves
+the target byte-identical. **Still open?** `grep -n "ssh-{short}.sock" crates/tools/src/remote.rs`.
+
+---
+
 ## The review of 2026-10-12 — five read-only reviews of main at `50b3e55`, filed as R89–R93
 
 The operator's ask: *"start review subagents - we need to find edge cases, ux inconsistencies,
