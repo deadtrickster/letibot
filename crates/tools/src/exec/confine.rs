@@ -988,14 +988,36 @@ impl Boundary {
     /// ([`crate::backend::HostBackend::confined`]), and a remote one is placed by a backend
     /// whose jobs are its own process group. A session with no reaper has no boundary at all,
     /// so the two arrive together or not at all.
+    ///
+    /// **Under [`Mechanism::Policy`]** (macOS's Seatbelt) there are no namespaces to enter, so
+    /// the same claim is asked of the property table instead: every [`Prop::REQUIRED_POLICY`]
+    /// held, egress denied, and each seal held **or** not applicable on this platform. A seal
+    /// macOS cannot have (`no-new-privs`) is not a seal that was tested and failed, and
+    /// counting it as missing would keep D16 off the one platform R98 built it for; a seal that
+    /// is `Unverified` or `Open` still keeps the command asking, as it does on Linux.
     pub fn encloses(&self) -> bool {
-        Namespace::REQUIRED
-            .iter()
-            .all(|n| self.ns.get(n).map(|s| s.entered()).unwrap_or(false))
-            && self.egress == Egress::Denied
-            && SealKind::ALL
-                .iter()
-                .all(|k| self.seals.get(k).map(|s| s.held()).unwrap_or(false))
+        let inside = match self.platform {
+            Mechanism::Namespaces => {
+                Namespace::REQUIRED
+                    .iter()
+                    .all(|n| self.ns.get(n).map(|s| s.entered()).unwrap_or(false))
+                    && SealKind::ALL
+                        .iter()
+                        .all(|k| self.seals.get(k).map(|s| s.held()).unwrap_or(false))
+            }
+            Mechanism::Policy => {
+                Prop::REQUIRED_POLICY
+                    .iter()
+                    .all(|p| self.props.get(p).map(|s| s.held()).unwrap_or(false))
+                    && SealKind::ALL.iter().all(|k| {
+                        self.seals
+                            .get(k)
+                            .map(|s| s.held() || matches!(s, Seal::NotApplicable { .. }))
+                            .unwrap_or(false)
+                    })
+            }
+        };
+        inside && self.egress == Egress::Denied
     }
 
     /// Something was asked for and did not happen, or could not be confirmed.

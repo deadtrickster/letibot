@@ -111,10 +111,12 @@ fn measured_boundary() -> crate::exec::Boundary {
     }
     crate::exec::Boundary {
         mechanism: "bubblewrap 0.11.1 (fixture)".into(),
+        platform: crate::exec::confine::Mechanism::Namespaces,
         view: ViewSpec::project_only("/w"),
         egress: Egress::Denied,
         ns,
         seals,
+        props: std::collections::BTreeMap::new(),
         measured_at: std::time::SystemTime::now(),
     }
 }

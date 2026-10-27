@@ -1362,6 +1362,24 @@ probe nonsense whatever
             measured_at: SystemTime::now(),
         };
         assert!(b.complete(), "{}", b.describe());
+        // D16 applies here too: every required property held, egress denied, and the one
+        // seal macOS cannot have is not applicable rather than missing.
+        assert!(
+            b.encloses(),
+            "a measured Seatbelt boundary is D16's: {}",
+            b.describe()
+        );
+        let mut shaky = b.clone();
+        shaky.props.insert(
+            Prop::FileView,
+            PropState::Unverified {
+                why: "the probe could not tell (fixture)".into(),
+            },
+        );
+        assert!(
+            !shaky.encloses(),
+            "an unverified property keeps the command asking, as an unverified seal does on Linux"
+        );
         assert!(
             !b.partial(),
             "an OS that cannot give a property is not a defect"
