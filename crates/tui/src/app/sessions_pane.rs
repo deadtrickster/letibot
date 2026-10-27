@@ -159,14 +159,19 @@ impl Host {
             user_config_dir().as_deref(),
             Arc::new(RanoLoader),
         );
-        // **The built-in scope at the bottom of the stack.** Its failure is not fatal here: a head
-        // whose built-ins did not load draws its own list.
-        let _ = letibot_builtins::install(&mut stack);
+        // **The built-in scope at the bottom of the stack, and a failure here is SAYABLE.**
+        //
+        // The head still draws its own list when a built-in will not load — that is the way out
+        // (`docs/plugins-plan.md` §7 step 10's last paragraph) — but it must not be SILENT: a
+        // binary whose own layer is broken is a defect, and the person opening the list is owed
+        // the sentence. It is recorded once, at build time, because a layer that never loads is
+        // never asked and so has no call to fail in.
+        let problem = install_builtins(&mut stack);
         Host {
             stack,
             cache: Mutex::new(Cached::default()),
             state: Mutex::new(None),
-            problem: Mutex::new(None),
+            problem: Mutex::new(problem),
             workspace: workspace.to_path_buf(),
         }
     }
@@ -217,10 +222,32 @@ impl Host {
             cache.answer = resolved.answer.clone();
         }
         if let (Some(said), Ok(mut slot)) = (why.as_ref(), self.problem.lock()) {
-            *slot = Some(said.clone());
+            *slot = Some(format!(
+                "a plugin layer could not draw the session list, so it is drawn from below it: \
+                 {said}"
+            ));
         }
         Answered { view }
     }
+}
+
+/// **Put the binary's own layers at the bottom of `stack`, and say so when one will not go.**
+///
+/// Every failure is answered as one sentence naming the layer and the reason, or `None` when the
+/// whole table installed. A build cannot produce an empty table (`crates/builtins/build.rs` stops
+/// with a sentence rather than shipping one), so a failure here means a module the engine refused
+/// at load — which a person has to be told, because what they will see otherwise is a list that
+/// quietly stopped being the layer's.
+fn install_builtins(stack: &mut Stack) -> Option<String> {
+    let failed = letibot_builtins::install(stack);
+    if failed.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "this binary's built-in plugin layer could not be loaded — {} — so the session list is \
+         drawn by the head itself",
+        failed.join("; ")
+    ))
 }
 
 /// The session's own plugin directory, where a session-scope layer lives.
@@ -300,13 +327,13 @@ impl App {
     /// **The sentence a layer's failure owes the person**, once — taken by whoever opens the list.
     ///
     /// Taken rather than drawn: the picker is a list, and a failure line in a list of sessions is a
-    /// row nobody asked for. It goes where every other one-off sentence in this head goes.
+    /// row nobody asked for. It goes where every other one-off sentence in this head goes. Two
+    /// kinds arrive here and each says what it is: a layer that failed a call (and was skipped for
+    /// the one below) and a built-in that would not load at all (and was skipped for the head's own
+    /// list) — see [`install_builtins`].
     pub(crate) fn take_sessions_failure(&mut self) -> Option<String> {
         let slot = self.sessions_host.get_mut().as_ref()?;
-        let said = slot.problem.lock().ok().and_then(|mut p| p.take())?;
-        Some(format!(
-            "a plugin layer could not draw the session list, so it is drawn from below it: {said}"
-        ))
+        slot.problem.lock().ok().and_then(|mut p| p.take())
     }
 
     /// The folder a session's layers are found under — the one it is wired to, or this process's
@@ -367,7 +394,9 @@ impl App {
         json!({
             "sessions": sessions,
             "here": self.session_id,
-            "home": std::env::var("HOME").unwrap_or_default(),
+            // **The one home the head shortens against** — the same value its own list uses, so
+            // a plugin's rows and the head's rows cannot disagree about what `~` means.
+            "home": self.home,
         })
     }
 
@@ -724,7 +753,29 @@ mod tests {
         assert_eq!(
             host.take_problem(),
             None,
-            "the built-in answered, so nothing failed"
+            "every built-in installed, so there is nothing to say"
         );
+    }
+
+    /// **A built-in that will not load is SAID, not silently skipped.** The head still falls back
+    /// to its own list — that is the way out — but a binary whose own layer is broken is a defect,
+    /// and the sentence names the layer and the reason. (A build cannot ship an EMPTY table: the
+    /// build script stops with one sentence, which its own run demonstrates.)
+    #[test]
+    fn a_builtin_that_cannot_load_is_a_sentence_and_not_a_silence() {
+        struct Refuses;
+        impl Loader for Refuses {
+            fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+                Err(format!("no engine here: {}", wasm.display()))
+            }
+        }
+        let mut stack = Stack::discover(None, None, None, Arc::new(Refuses));
+        let said = install_builtins(&mut stack).expect("a refusal is a sentence");
+        assert!(said.contains("built-in plugin layer"), "{said}");
+        assert!(said.contains("sessions"), "the layer is named: {said}");
+        assert!(said.contains("drawn by the head itself"), "{said}");
+        // And a stack whose built-ins DID install says nothing at all.
+        let mut good = Stack::discover(None, None, None, Arc::new(RanoLoader));
+        assert_eq!(install_builtins(&mut good), None);
     }
 }

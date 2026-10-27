@@ -174,7 +174,7 @@ impl App {
                         workspace: if s.wiring.workspace.is_empty() {
                             String::new()
                         } else {
-                            tilde(&s.wiring.workspace)
+                            self.tilde_path(&s.wiring.workspace)
                         },
                     })
                 })

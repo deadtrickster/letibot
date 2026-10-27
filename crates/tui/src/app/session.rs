@@ -472,6 +472,21 @@ impl App {
         out
     }
 
+    /// **A path with `$HOME` written as `~`**, against THIS head's home and not the environment's.
+    ///
+    /// The shortening is a fact about the head (`App::home`), and it is one function: the session
+    /// list's rows, the plugin's feed and the status line all read it here. Two readers of the
+    /// environment is how a picture came to depend on which process drew it.
+    pub(crate) fn tilde_path(&self, path: &str) -> String {
+        let home = self.home.as_str();
+        match path.strip_prefix(home) {
+            Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+                format!("~{rest}")
+            }
+            _ => path.to_string(),
+        }
+    }
+
     /// **The session a typed number names — the n-th SESSION, not the n-th row.**
     ///
     /// The list's numbers are its sessions': a group's line takes none, because a number is

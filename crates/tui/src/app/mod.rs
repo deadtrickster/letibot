@@ -275,6 +275,15 @@ pub struct App {
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
     pub(crate) picker_sel: usize,
+    /// **The home this head shortens paths against** — `$HOME`, read once at construction.
+    ///
+    /// One value, because three places draw a path and a fourth hands one to a plugin: a head
+    /// that asked the environment per frame would be answering one question twice, and a picture
+    /// that changes because the process that drew it had a different `HOME` is a picture no test
+    /// can pin (`app::tests::sessions_list` was red on a runner whose `HOME` was `/home/dead` and
+    /// green on one whose was not). A test sets this field; production reads the environment once,
+    /// in `App::new`.
+    pub(crate) home: String,
     /// **The head's stack for the session list's pane** — the built-in `sessions` layer and
     /// whatever a project or the operator put above it (`crate::app::sessions_pane`). Built on the
     /// first draw and kept: discovering layers reads the disk.
@@ -1942,6 +1951,7 @@ impl App {
             plugin_detail: None,
             plugin_sent: None,
             picker_sel: 0,
+            home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
             picker_folds: std::collections::BTreeMap::new(),
             sessions_event: std::cell::RefCell::new(None),

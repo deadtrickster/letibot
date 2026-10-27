@@ -29,6 +29,11 @@ use letibot_sessionlog::{NagPause, SessionOrigin};
 fn the_daemon() -> App {
     let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
     let mut a = app();
+    // **The head's home is the FIXTURE's, not the runner's.** Paths are drawn as `~/…` against
+    // the home the head holds (`App::home`, which production reads from the environment once), so
+    // a picture is reproducible on a box whose `HOME` is `/home/dead` and on one whose is not —
+    // which is the difference that made these two tests red in the gate and green here.
+    a.home = HOME.to_string();
     let mut habr = brief("s-habr", "the habr article", true);
     habr.slug = "habr".into();
     habr.stored_items = 412;
@@ -74,6 +79,10 @@ fn the_daemon() -> App {
     a.push_surface(Surface::Picker);
     a
 }
+
+/// **The home this fixture's daemon is read under** — deliberately not whatever `$HOME` the test
+/// process happens to have: the picture must be the same file on every runner.
+const HOME: &str = "/home/dead";
 
 /// The list as a person reads it, one line per drawn row, at `w` columns.
 fn drawn(a: &App, w: usize) -> String {
@@ -125,6 +134,30 @@ fn the_session_list_looks_like_this_with_every_fold_open() {
     let now = drawn(&a, 100);
     assert_eq!(golden("sessions-list-open.txt", now.clone()), now);
     assert!(now.contains("read the repo"), "{now}");
+}
+
+/// **The drawn picture does not depend on the runner's `HOME`.** The rows say `~/Projects/letibot`
+/// because THIS head's home is the one the fixture set, whatever the process was started with —
+/// the defect that made these tests green here and red in the gate, where `HOME` was `/home/dead`.
+#[test]
+fn the_workspace_is_shortened_against_the_heads_own_home() {
+    let a = the_daemon();
+    let text = drawn(&a, 100);
+    assert!(
+        text.contains("s-habr  ~/Projects/letibot"),
+        "the fixture's home is the one paths are shortened against:\n{text}"
+    );
+    assert!(
+        !text.contains("/home/dead/Projects/letibot"),
+        "and never the absolute path when the head's own home prefixes it:\n{text}"
+    );
+    // A workspace OUTSIDE that home is drawn whole — the other half of the rule.
+    let mut a = the_daemon();
+    a.home = "/somewhere/else".into();
+    assert!(
+        drawn(&a, 100).contains("s-habr  /home/dead/Projects/letibot"),
+        "a path under another home is not shortened"
+    );
 }
 
 /// **The head's own list IS the plugin's list** — one row per row, the same order, the same words,
