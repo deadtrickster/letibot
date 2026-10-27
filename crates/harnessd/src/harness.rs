@@ -3782,7 +3782,7 @@ impl Harness {
                          not be built: {e}\n\nWhat that means here, in the words the gate uses: \
                          a command that runs code (a test runner, a build) is decided per \
                          command by the operator, because nothing else is stopping what that \
-                         code can read. `docs/boundary-and-adjudication.md` §4j says what the \
+                         code can read. `docs/boundary-and-adjudication.md` §4k says what the \
                          boundary would have given and why the probe refused."
                     );
                     eprintln!("letibot: {said}");

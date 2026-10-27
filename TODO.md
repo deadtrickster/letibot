@@ -126,7 +126,7 @@ Two halves, the first smaller and first:
    (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
    corpus replay (how many past grants would no longer settle) before landing. — **STILL OPEN.**
 2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
-   written up in `docs/boundary-and-adjudication.md` §4j. Seatbelt (`sandbox-exec -f <profile>`)
+   written up in `docs/boundary-and-adjudication.md` §4k. Seatbelt (`sandbox-exec -f <profile>`)
    renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
    it from inside: the deny list beating an allow (a canary inside a writable `$HOME`), a write
    outside the checkout refused, a write inside it succeeding, fork/exec, a nested `sh -c` denied

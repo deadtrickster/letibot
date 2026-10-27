@@ -77,7 +77,7 @@
 //! MEASURED 2026-10-27 on the operator's Mac (arm64, macOS 26.7.1): **100 `true` calls cost
 //! 0.30 s unconfined and 0.41 s under `sandbox-exec`** — about **1.1 ms per call**, which is
 //! `execve` plus the kernel evaluating the policy, and it does not grow with the profile's
-//! length in any way a tool call notices. `docs/boundary-and-adjudication.md` §4j has the
+//! length in any way a tool call notices. `docs/boundary-and-adjudication.md` §4k has the
 //! measurement, the rule-count and what it cost to build.
 
 use std::collections::BTreeMap;
