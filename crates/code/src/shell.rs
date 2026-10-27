@@ -598,6 +598,13 @@ pub struct Normalised {
     /// stages" over 0 bytes and "0 stages" over 4 KiB are different facts, and an
     /// empty command must not read as a clean one.
     pub bytes: usize,
+    /// **The loop variables an unrolled `for` has bound**, so the body reads `$f` as the
+    /// value the shell gives it on that pass — see [`unrolled_for`].
+    ///
+    /// A state of the WALK rather than a fact about the command, which is why it is private
+    /// and why it is empty when [`normalise`] returns: the bindings are pushed and popped
+    /// around one iteration of one body.
+    binds: Vec<(String, String)>,
 }
 
 impl Normalised {
@@ -738,6 +745,7 @@ pub fn normalise(source: &str) -> Normalised {
         unresolved: Vec::new(),
         partial: false,
         bytes: source.len(),
+        binds: Vec::new(),
     };
 
     let mut stream = Stream::new(Lang::Bash);
@@ -909,7 +917,14 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
                 }
             }
         }
-        "for_statement" | "c_style_for_statement" | "while_statement" | "until_statement" => {
+        "for_statement" => {
+            // A `for` over a list the command spells out is N commands, not one command
+            // whose variable nobody can know — see [`unrolled_for`].
+            if !unrolled_for(node, source, ctx, out) {
+                push_walk(node, source, ctx, out, Context::Loop);
+            }
+        }
+        "c_style_for_statement" | "while_statement" | "until_statement" => {
             push_walk(node, source, ctx, out, Context::Loop)
         }
         "if_statement" | "elif_clause" | "else_clause" | "case_statement" | "case_item" => {
@@ -950,6 +965,72 @@ fn push_walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normal
         walk(child, source, ctx, out);
     }
     ctx.pop();
+}
+
+/// **A `for` whose list is in the text is that many commands, not one unreadable one.**
+///
+/// MEASURED 2026-10-26, the operator's three corpora (161,099 bash decisions): the loop
+/// variable was the second-largest unresolved name after `$?` — `$f` alone appeared in
+/// 1,615 commands and was the ONLY reason 759 of them were unread — and every one of them
+/// was a list the command itself spells: `for f in a.rs b.rs`, `for f in crates/tools`.
+/// What `$f` holds on a pass is not a mystery; it is the next word of a list written three
+/// lines above. The body is walked once per value with the variable bound, so every stage,
+/// region, intent and shape is the one that will actually run.
+///
+/// # What is NOT unrolled, and each is a real `for` in that corpus
+///
+/// * a list with a glob (`for f in *.rs`) — the FILE SET is not in the text;
+/// * a list with an expansion (`for f in $FILES`, `for f in $(ls)`) — the value is not;
+/// * a value the shell would deliver as several words (`for f in "a b"`) — `$f` unquoted is
+///   two arguments on that pass, and one binding cannot stand for two words;
+/// * more than `MOST_ITERATIONS` values — a thousand stages is a script, and this is the
+///   reading of one command.
+///
+/// Certainty stays [`Certainty::Conditional`]: the body is still a loop body, so nothing
+/// here promotes a stage to "always runs".
+fn unrolled_for(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) -> bool {
+    const MOST_ITERATIONS: usize = 32;
+    let Some(var) = child_field(node, "variable").map(|n| src(n, source).to_string()) else {
+        return false;
+    };
+    let Some(body) = child_field(node, "body") else {
+        return false;
+    };
+    let mut values: Vec<String> = Vec::new();
+    for child in kids(node) {
+        if child.field.as_deref() != Some("value") {
+            continue;
+        }
+        let Resolved::Literal(v) = resolve(child, source, &out.binds) else {
+            return false;
+        };
+        if !one_word(&v) {
+            return false;
+        }
+        values.push(v);
+    }
+    if values.is_empty() || values.len() > MOST_ITERATIONS {
+        return false;
+    }
+    for v in values {
+        out.binds.push((var.clone(), v));
+        push_walk(body, source, ctx, out, Context::Loop);
+        out.binds.pop();
+    }
+    true
+}
+
+/// Whether a bound loop value can stand for ONE word in the body.
+///
+/// Whitespace would be field splitting (two arguments where the text has one word) and a
+/// glob character would be pathname expansion (a file set). Both are things the shell does
+/// to an unquoted expansion that a single [`Word::Literal`] cannot say — so a loop over
+/// such a list is left unresolved rather than read as something narrower than it is.
+fn one_word(v: &str) -> bool {
+    !v.is_empty()
+        && !v
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '['))
 }
 
 /// One member of a pipeline: a command, or a redirected command, or something
@@ -1476,7 +1557,7 @@ fn word_of(
             .collect();
         return Word::Array(parts);
     }
-    match resolve(node, source) {
+    match resolve(node, source, &out.binds) {
         Resolved::Literal(s) => Word::Literal(s),
         Resolved::Glob(s) => Word::Glob(s),
         Resolved::Blocked {
@@ -1557,7 +1638,7 @@ enum Resolved<'t> {
     },
 }
 
-fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
+fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Resolved<'t> {
     match node.kind.as_str() {
         "word" => {
             let (text, glob) = unescape(src(node, source));
@@ -1598,6 +1679,12 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
                     "string_content" => lit.push_str(src(c, source)),
                     "escape_sequence" => lit.push_str(src(c, source)),
                     other => {
+                        // A loop variable the walk has bound: `for f in a b` makes `$f`
+                        // THIS value on this pass, inside quotes as much as outside.
+                        if let Some(v) = bound(c, source, binds) {
+                            lit.push_str(&v);
+                            continue;
+                        }
                         let construct = construct_of(other);
                         return match construct {
                             Some(construct) => Resolved::Blocked {
@@ -1619,11 +1706,27 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
             // Quoted: globbing does not apply.
             Resolved::Literal(lit)
         }
+        // **A loop variable this walk bound** (`for f in a b; do …`). The value is not a
+        // hole: it is the word the list spelled for this pass.
+        "simple_expansion" | "expansion" => match bound(node, source, binds) {
+            Some(v) => Resolved::Literal(v),
+            None => Resolved::Blocked {
+                construct: named(
+                    Construct::ParameterExpansion {
+                        name: String::new(),
+                    },
+                    node,
+                    source,
+                ),
+                prefix: None,
+                at: node,
+            },
+        },
         "concatenation" => {
             let mut lit = String::new();
             let mut glob = false;
             for c in kids(node) {
-                match resolve(c, source) {
+                match resolve(c, source, binds) {
                     Resolved::Literal(s) => lit.push_str(&s),
                     Resolved::Glob(s) => {
                         lit.push_str(&s);
@@ -1677,6 +1780,30 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
             },
         },
     }
+}
+
+/// The value a bound loop variable gives this expansion — **when the expansion is exactly
+/// that variable and nothing done to it**.
+///
+/// The name is read from the TEXT (`$f`, `${f}`), not from the grammar's `variable_name`,
+/// because that field cannot tell `${f}` from `${#f}` or `${!f}`: measured 2026-10-26, both
+/// of the latter report the name `f` beside an `operator` child. Reading the text means a
+/// transform simply does not match a bound name, which is the fail-closed direction.
+fn bound(node: &Node, source: &str, binds: &[(String, String)]) -> Option<String> {
+    if binds.is_empty() {
+        return None;
+    }
+    let text = src(node, source);
+    let name = match text.strip_prefix("${").and_then(|t| t.strip_suffix('}')) {
+        Some(inner) => inner,
+        None => text.strip_prefix('$')?,
+    };
+    binds
+        .iter()
+        .rev()
+        .find(|(b, _)| b == name)
+        .map(|(_, v)| v.clone())
+        .filter(|v| one_word(v))
 }
 
 /// The construct a node kind stands for, or `None` for "this code does not know
@@ -1787,6 +1914,105 @@ mod tests {
 
     fn n(s: &str) -> Normalised {
         normalise(s)
+    }
+
+    /// **A `for` over a list the command spells is that many passes, not one hole.**
+    ///
+    /// The shape is from the corpus (`for f in <literal> <literal>; do grep … $f; done`,
+    /// 1,615 commands, 759 of them unread for the loop variable alone); the literals are
+    /// written here.
+    #[test]
+    fn a_for_over_a_literal_list_is_unrolled_into_its_passes() {
+        let x = n("for f in /w/a.rs /w/b.rs; do grep -n x $f; done");
+        assert!(x.is_resolved(), "{:?}", x.unresolved);
+        assert_eq!(x.binaries(), vec!["grep", "grep"]);
+        assert_eq!(
+            x.stages[0].argv,
+            vec!["-n".into(), "x".into(), "/w/a.rs".into()]
+                .into_iter()
+                .map(Word::Literal)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            x.stages[1].argv.last(),
+            Some(&Word::Literal("/w/b.rs".into())),
+            "the second pass carries the second value"
+        );
+        // A loop body is a loop body: nothing here is promoted to "always runs".
+        assert!(
+            x.stages
+                .iter()
+                .all(|s| s.certainty == Certainty::Conditional),
+            "{:?}",
+            x.stages.iter().map(|s| s.certainty).collect::<Vec<_>>()
+        );
+        // And the passes are in the shape, because they are what will run.
+        assert_eq!(shape(&x), "grep -n <args> ; grep -n <args>");
+
+        // A bound value is a word of the body wherever it appears — inside a
+        // concatenation and inside double quotes as much as on its own.
+        let x = n("for f in /w/a /w/b; do cp $f $f.bak; echo \"done $f\"; done");
+        assert!(x.is_resolved(), "{:?}", x.unresolved);
+        assert_eq!(
+            x.stages[0].argv,
+            vec!["/w/a".into(), "/w/a.bak".into()]
+                .into_iter()
+                .map(Word::Literal)
+                .collect::<Vec<_>>()
+        );
+        // Four stages: two per pass, in pass order.
+        assert_eq!(x.stages.len(), 4);
+        assert_eq!(x.stages[3].argv[0], Word::Literal("done /w/b".into()));
+    }
+
+    /// **A list the command does not spell is not unrolled**, and each of these is a real
+    /// `for` from the same corpus.
+    #[test]
+    fn a_for_whose_list_is_not_in_the_text_stays_one_unread_pass() {
+        for cmd in [
+            // The file set is not in the text.
+            "for f in *.rs; do grep -n x $f; done",
+            // The value is not.
+            "for f in $FILES; do grep -n x $f; done",
+            "for f in $(ls); do grep -n x $f; done",
+            // Two words from one: a single binding cannot stand for both.
+            "for f in \"a b\"; do grep -n x $f; done",
+            // A number of passes nobody wrote down.
+            "for f in {a,b}.txt; do grep -n x $f; done",
+        ] {
+            let x = n(cmd);
+            assert!(!x.is_resolved(), "{cmd} was unrolled: {:?}", x.stages);
+        }
+        // The body is still read, once — unrolling is the extra, not the reading.
+        let x = n("for f in *.rs; do grep -n x $f; done");
+        assert_eq!(x.binaries(), vec!["grep"]);
+    }
+
+    /// **A transform of the loop variable is not the variable** — the same rule the
+    /// intent layer keeps for `${#X}` (measured 2026-10-26: the grammar reports the name
+    /// `f` for all of `$f`, `${f}`, `${#f}` and `${!f}`).
+    #[test]
+    fn a_transform_of_a_loop_variable_is_not_the_variable() {
+        for cmd in [
+            "for f in /w/a; do echo ${#f}; done",
+            "for f in /w/a; do echo ${f%.*}; done",
+            "for f in /w/a; do echo ${!f}; done",
+            "for f in /w/a; do echo ${f[0]}; done",
+        ] {
+            assert!(!n(cmd).is_resolved(), "{cmd} was read as the variable");
+        }
+        // The braced spelling of the value itself is the value.
+        assert!(n("for f in /w/a; do echo ${f}; done").is_resolved());
+    }
+
+    /// **A binding lives for one body.** `$f` after the `done` is the empty string, which
+    /// this module does not know and must not claim.
+    #[test]
+    fn a_loop_binding_does_not_leak_past_its_body() {
+        let x = n("for f in /w/a; do echo $f; done; echo $f");
+        assert!(!x.is_resolved());
+        assert_eq!(x.unresolved.len(), 1);
+        assert_eq!(x.unresolved[0].construct.as_str(), "parameter_expansion");
     }
 
     #[test]
