@@ -21,6 +21,7 @@
 //! | [`notice`] | `notice_<the notice's kind>` | when the harness is about to tell the model something | the sentence, reworded — or dropped |
 //! | [`tool_result`] | `on_tool_result` | on a successful tool result, before the model reads it | a rewritten result, a suffix, monitors to arm |
 //! | [`tool_call`] | `on_tool_call` | on a proposed call, **before the gate** | run it, run it with these arguments, refuse it, or answer it |
+//! | [`condition`] | `condition_<name>` | when a monitor polls | what to look at next, and whether it fired |
 //!
 //! The other kinds of `docs/plugins-plan.md` §4 arrive one package at a time, each with the host
 //! wiring that gives it a place in a turn; a kind is not declared here before the host runs it,
@@ -55,6 +56,7 @@
 /// (§1 principle 6); an added field is not a version.
 pub const V: u32 = 1;
 
+pub mod condition;
 pub mod notice;
 pub mod tool_call;
 pub mod tool_result;
@@ -111,6 +113,7 @@ mod tests {
     fn every_kinds_hook_name_is_one_the_host_finds() {
         assert!(admitted(tool_call::HOOK), "{}", tool_call::HOOK);
         assert!(admitted(tool_result::HOOK), "{}", tool_result::HOOK);
+        assert!(admitted(&condition::hook("coderabbit")));
         for kind in notice::KINDS {
             let hook = notice::hook(kind);
             assert!(admitted(&hook), "{hook}");

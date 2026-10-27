@@ -77,7 +77,9 @@ impl Tool for Monitor {
              review). Optionally `owner` to say which scope reaps it (`turn`, \
              `session` — the default — or a named scope that already exists), \
              `ttl_ms`, which is capped, and `repeat`; `action: \"renew\"` extends it \
-             and `action: \"retire\"` ends it. `job_list` shows every monitor, who \
+             and `action: \"retire\"` ends it. Or `plugin` — a condition a layer answers \
+             (`{\"plugin\": \"coderabbit\", \"args\": {\"pr\": \"o/r#24\"}}`), whose look, \
+             interval and firing are the layer's. `job_list` shows every monitor, who \
              declared it, how long it has left, and for the ones that ended, which of \
              the four endings it was and why.",
             serde_json::json!({
@@ -95,6 +97,8 @@ impl Tool for Monitor {
                     "process": {"type": "string", "description": "Watch every process of this user whose command line contains this string leave. Found once, now, never including this daemon or its ancestors; then watched by handle. Fires when all are gone."},
                     "command": {"type": "string", "description": "Watch a command: fire when it exits (any exit code). A health check, not a shell you run work in."},
                     "github": {"type": "object", "description": "Watch a GitHub pull request or issue through the operator's `gh`: {\"url\": \"https://github.com/OWNER/REPO/pull/N\", \"until\": \"closed\"|\"merged\"|\"checks\"|\"review\"|\"comment\"|\"coderabbit\"} (or `repo` with `pr`/`issue` instead of `url`); `until` may be a list — ONE watch per pull request, one look, for all of them: a second watch on the same one is refused — optionally `every_s` (how often it looks, default 90, at least 30). A review, comment or CodeRabbit pass counts only after the watch is armed; a state already true (merged, checks done) fires at once. Lives a day by default, up to a week; with `repeat` it fires again for the next one (the next push's checks, the next review).", "properties": {"url": {"type": "string"}, "repo": {"type": "string"}, "pr": {"type": "integer"}, "issue": {"type": "integer"}, "until": {"anyOf": [{"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}, {"type": "array", "items": {"type": "string", "enum": ["closed", "merged", "checks", "review", "comment", "coderabbit"]}}]}, "every_s": {"type": "integer"}}},
+                    "plugin": {"type": "string", "description": "Watch a condition a plugin layer answers: the name after `condition_` in its export (a layer exporting `condition_coderabbit` is armed with `\"plugin\": \"coderabbit\"`). `args` is handed to its hook, and the layer decides what to look at, how often, and what a firing is — see the `plugin_hooks` tool for the contract."},
+                    "args": {"type": "object", "description": "plugin: the arguments the condition's hook is handed, in its own vocabulary, e.g. {\"pr\": \"o/r#24\"}."},
                     "owner": {"type": "string", "description": "Which scope reaps this monitor: `turn`, `session` (the default), or the name of a scope that already exists."},
                     "ttl_ms": {"type": "integer", "description": "How long it watches before it expires without firing. Capped; a larger value is refused rather than quietly reduced."},
                     "repeat": {"type": "boolean", "description": "Continuous rather than one-shot: after it fires it re-arms and keeps watching for the next occurrence (a path changing again, a port flapping, a timer on an interval). A one-shot monitor settles the first time its condition is met."}
@@ -189,24 +193,12 @@ impl Tool for Monitor {
 
         // --- declare -------------------------------------------------------
 
-        let ttl = match if args.get("github").is_some() {
-            ttl_within(
-                args,
-                crate::exec::github::GITHUB_DEFAULT_TTL,
-                crate::exec::github::GITHUB_MAX_TTL,
-            )
-        } else {
-            ttl_of(args)
-        } {
-            Ok(t) => t,
-            Err(inv) => return *inv,
-        };
-
-        // Exactly one condition. Two would be one monitor with one firing for two
-        // questions, which is `job_wait`'s job/scope rule and the same reasoning:
-        // a single answer to two questions tells you neither.
+        // **The ttl is settled AFTER the watch**, because a plugin condition's cap comes out of
+        // the answer that arms it (§4.4's `max_ttl_s`): a watch for a review that takes days is
+        // capped by the plugin's own word, inside the tree's own week.
         let asked: Vec<&str> = [
             "job", "scope", "path", "port", "timer_ms", "command", "pid", "process", "github",
+            "plugin",
         ]
         .into_iter()
         .filter(|k| args.get(*k).is_some())
@@ -225,13 +217,16 @@ impl Tool for Monitor {
                  file or directory), `port` (a loopback TCP port), `timer_ms` (a \
                  timer), `command` (a command whose exit is the condition), `pid` (a \
                  process by pid), `process` (processes found by a string in their \
-                 command line, once, never this daemon) or `github` (a pull request or issue). \
+                 command line, once, never this daemon), `github` (a pull request or issue) or \
+                 `plugin` (a condition a layer answers: the name of its `condition_<name>`). \
                  Nothing was declared.",
             );
         }
 
         let mut notes: Vec<String> = Vec::new();
         let mut job_handle = None;
+        // **What a plugin condition said its own cap is**, when the watch is one.
+        let mut plugin_cap: Option<Duration> = None;
         let watch = if let Some(id) = args.get("job").and_then(|v| v.as_str()) {
             let jid = JobId(id.to_string());
             // Resolved to a live handle here, so a monitor can never be declared
@@ -351,6 +346,31 @@ impl Tool for Monitor {
                 return inv;
             }
             w
+        } else if let Some(p) = args.get("plugin").and_then(|v| v.as_str()) {
+            // **A condition a layer answers** (`docs/plugins-plan.md` §4.4). The arming call is
+            // the host's: `PluginCondition::arm` asks the hook once with no look, so a plugin that
+            // traps is a refusal here rather than a monitor that explodes on its first poll, and
+            // the watch's own cap comes from the answer. Nothing about the look, the interval or
+            // the firing is this tool's decision once the layer has spoken.
+            let Some(conditions) = monitors.plugin_conditions() else {
+                return Invocation::failed(
+                    "this session cannot arm a plugin condition",
+                    "the daemon wires the plugin stack into its monitors when it opens a session \
+                     it serves; this one has none, so `plugin {\"action\":\"stack\"}` would list \
+                     nothing either. Nothing was declared.",
+                );
+            };
+            let watch_args = args.get("args").cloned().unwrap_or(Value::Null);
+            match conditions.arm(p, watch_args) {
+                Ok(armed) => {
+                    plugin_cap = armed.condition.max_ttl();
+                    if let Some(note) = armed.note {
+                        notes.push(note);
+                    }
+                    Watch::Custom(CustomWatch(armed.condition))
+                }
+                Err(why) => return Invocation::failed(why.why, why.detail),
+            }
         } else if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
             let argv: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
             if argv.is_empty() {
@@ -439,6 +459,23 @@ impl Tool for Monitor {
         }
 
         let declared_by = format!("turn {}", ctx.turn_id());
+        // **The ttl, now that the watch is known.** A plugin condition's own cap (`max_ttl_s` in
+        // the answer that armed it) governs its watch, and a `github` watch keeps its days; every
+        // other condition keeps the monitors' ordinary hour.
+        let ttl = match if let Some(cap) = plugin_cap {
+            ttl_within(args, cap, cap)
+        } else if args.get("github").is_some() {
+            ttl_within(
+                args,
+                crate::exec::github::GITHUB_DEFAULT_TTL,
+                crate::exec::github::GITHUB_MAX_TTL,
+            )
+        } else {
+            ttl_of(args)
+        } {
+            Ok(t) => t,
+            Err(inv) => return *inv,
+        };
         let repeat = args
             .get("repeat")
             .and_then(|v| v.as_bool())
@@ -519,10 +556,10 @@ fn already_watched(
         let (t, theirs) = m.watch.github()?;
         (t == target && m.name != name).then(|| (m.name.clone(), theirs))
     })?;
-    let mut all: Vec<&str> = theirs.clone();
+    let mut all: Vec<String> = theirs.clone();
     for u in &mine {
         if !all.contains(u) {
-            all.push(u);
+            all.push(u.clone());
         }
     }
     let mut github = args.get("github").cloned().unwrap_or_default();

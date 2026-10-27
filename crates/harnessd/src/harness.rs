@@ -5122,9 +5122,10 @@ impl Harness {
             .with_spiller(spiller)
             .with_gate(gate)
             // **And the plugin layer that sees a call before the gate** (`docs/plugins-plan.md`
-            // §4.1). Backed by the same slot the `plugin` tool asks through, because the runtime is
-            // built here and the host when the DAEMON opens the session; a session nobody fills the
-            // slot for — a subagent — runs its calls exactly as it always did.
+            // §4.1), and the one a `monitor` call can arm a condition from (§4.4). Both are backed
+            // by the same slot the `plugin` tool asks through: the runtime is built here and the
+            // host when the DAEMON opens the session, so a session nobody fills the slot for — a
+            // subagent — runs its calls and its monitors exactly as it always did.
             .with_call_hook(std::sync::Arc::new(crate::plugins::CallHooks::new(
                 plugin_slot.clone(),
                 hub.clone(),
@@ -5176,6 +5177,19 @@ impl Harness {
                     },
                 )
             });
+
+        // **And the plugin conditions this session's monitors may arm** (`docs/plugins-plan.md`
+        // §4.4). Installed on the process host's own `Monitors`, because that is what the `monitor`
+        // tool asks for everything else it needs — and a session whose host cannot start processes
+        // has no monitors to install into, which is the same sentence a `monitor` call already gets.
+        if let Some(processes) = runtime.backend.processes()
+            && let Some(monitors) = processes.monitors()
+        {
+            monitors.set_plugin_conditions(crate::plugins::conditions::HostConditions::new(
+                plugin_slot.clone(),
+                hub.clone(),
+            ));
+        }
 
         let mut engine = TurnEngine::new(
             parts.vocab.clone(),

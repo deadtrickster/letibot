@@ -55,6 +55,7 @@ use letibot_sessionlog::pane::{Block, Line, LookSpec, Panel, Role, Unavailable, 
 use letibot_sessionlog::registry::PaneDriver;
 use serde_json::{Value, json};
 
+pub mod conditions;
 pub mod contract;
 pub mod desk;
 pub mod look;
@@ -889,23 +890,26 @@ impl PluginHost {
             .manifest
             .hooks
             .iter()
-            .filter(|h| h.starts_with("pane_"))
+            .filter(|h| letibot_plugins::is_hook_kind(h))
             .cloned()
             .collect();
         if hooks.is_empty() {
             return Err(Refused::new(
-                format!("`{name}` answers no pane"),
+                format!("`{name}` answers no hook this host runs"),
                 format!(
-                    "its plugin.toml declares {:?}, and a pane hook is one named `pane_<something>` \
-                     (docs/plugins-slice1.md C3)",
-                    cand.manifest.hooks
+                    "its plugin.toml declares {:?}, and the kinds are {}",
+                    cand.manifest.hooks,
+                    contract::KINDS.join(", ")
                 ),
             ));
         }
         let mut said = Vec::new();
         for hook in &hooks {
             let mut inputs = rec.inputs(hook).to_vec();
-            inputs.push(synthetic_pane_input());
+            // **A layer nobody has asked has no recorded inputs**, so one of its own kind's
+            // first frames goes too — that is what makes `load` a proof that the layer runs at all
+            // rather than a check on an empty replay.
+            inputs.push(synthetic_for(hook));
             for input in inputs {
                 let resolved = shadow.call(hook, &input);
                 let wrong: Vec<String> = resolved
@@ -920,7 +924,7 @@ impl PluginHost {
                         format!(
                             "`{hook}` was asked {} and did not answer: {}\n\nthe version that was \
                              answering before is still answering.",
-                            describe_input(&input),
+                            describe_any_input(&input),
                             wrong.join("; ")
                         ),
                     ));
@@ -928,19 +932,18 @@ impl PluginHost {
                 let Some(answer) = resolved.answer else {
                     said.push(format!(
                         "`{hook}` answers nothing for {} — it passes, and no layer below it \
-                         answers, so the pane would draw nothing",
-                        describe_input(&input)
+                         answers, so it does nothing",
+                        describe_any_input(&input)
                     ));
                     continue;
                 };
                 let by = resolved.by.clone().unwrap_or_else(|| name.to_string());
                 let fuel = shadow.fuel(&by).unwrap_or(0);
-                match validated(&answer, name, &by) {
-                    Ok(view) => said.push(format!(
-                        "`{hook}` answers a view the host can drive for {}{} — \"{}\"",
-                        describe_input(&input),
-                        fuel_note(fuel),
-                        view.title
+                match accepted(hook, &answer) {
+                    Ok(what) => said.push(format!(
+                        "`{hook}` for {}{} — {what}",
+                        describe_any_input(&input),
+                        fuel_note(fuel)
                     )),
                     Err(why) => {
                         return Err(Refused::new(
@@ -949,7 +952,7 @@ impl PluginHost {
                             ),
                             format!(
                                 "`{hook}` on {}: {why}\n\nthe answer was: {}",
-                                describe_input(&input),
+                                describe_any_input(&input),
                                 answer
                             ),
                         ));
@@ -1136,18 +1139,20 @@ impl PluginHost {
         ))
     }
 
-    /// **`plugin test`** — one hook called with one input, and the whole answer reported: the view,
-    /// the layer that answered, the fuel, and any trap.
+    /// **`plugin test`** — one hook called with one input, and the whole answer reported: what it
+    /// answered, the layer that answered, the fuel, any trap, and whether the host would accept it.
     ///
     /// A PANE ID is asked through the whole stack, because that is the question a head asks. A
     /// LAYER id is asked with every other disk layer disabled, because that is the question a bisect
     /// asks — *what does MY layer say* — and the answer says which of the two was asked.
     pub fn test(&self, what: Option<&str>, input: Option<&Value>) -> Result<String, Refused> {
-        let input = input.cloned().unwrap_or_else(synthetic_pane_input);
         let (hook, only, label) = {
             let inner = self.lock();
             self.resolve_hook(&inner.stack, what)?
         };
+        // **The synthetic input is of the HOOK's kind**, not a pane's: a `condition` handed a C3
+        // first frame would answer nothing and read as a broken layer.
+        let input = input.cloned().unwrap_or_else(|| synthetic_for(&hook));
         let (stack, rec) = {
             let inner = self.lock();
             (inner.stack.clone(), inner.rec.clone())
@@ -1193,26 +1198,34 @@ impl PluginHost {
                         None => String::new(),
                     }
                 ));
-                match validated(answer, &hook, &by) {
-                    Ok(view) => {
-                        out.push_str("\nthe view it answered (a C3 view this host can drive):\n");
+                match accepted(&hook, answer) {
+                    Ok(what) => {
+                        out.push_str(&format!("\nit answers — {what}:\n"));
                         out.push_str(
                             &serde_json::to_string_pretty(answer)
                                 .unwrap_or_else(|_| answer.to_string()),
                         );
                         out.push('\n');
-                        if let Some(spec) = &view.look {
-                            out.push_str(&format!(
-                                "\nit asks the host for a look: {} — a head runs it and calls the \
-                                 pane again with the result, so this frame is the one that asks.\n",
-                                serde_json::to_string(spec).unwrap_or_default()
-                            ));
+                        // A pane that asks for a look is the frame that asks; say so, because an
+                        // answer with no numbers in it otherwise reads as a broken dashboard.
+                        if hook.starts_with("pane_") {
+                            if let Ok(view) = validated(answer, &hook, &by) {
+                                if let Some(spec) = &view.look {
+                                    out.push_str(&format!(
+                                        "\nit asks the host for a look: {} — a head runs it and \
+                                         calls the pane again with the result, so this frame is \
+                                         the one that asks.\n",
+                                        serde_json::to_string(spec).unwrap_or_default()
+                                    ));
+                                }
+                            }
                         }
                     }
                     Err(why) => {
                         out.push_str(&format!(
-                            "\n**The host would REFUSE this answer**, so a head would draw the \
-                             refusal instead: {why}\n\nthe answer was:\n{}\n",
+                            "\n**The host would REFUSE this answer**, so the session would go on \
+                             without it (a pane draws the refusal instead): {why}\n\nthe answer \
+                             was:\n{}\n",
                             serde_json::to_string_pretty(answer)
                                 .unwrap_or_else(|_| answer.to_string())
                         ));
@@ -1258,12 +1271,16 @@ impl PluginHost {
                     .manifest
                     .hooks
                     .iter()
-                    .find(|h| h.starts_with("pane_"))
+                    .find(|h| letibot_plugins::is_hook_kind(h))
                     .cloned()
                     .ok_or_else(|| {
                         Refused::new(
-                            format!("layer `{}` answers no pane hook", layer.id),
-                            format!("its plugin.toml declares {:?}", layer.manifest.hooks),
+                            format!("layer `{}` answers no hook this host runs", layer.id),
+                            format!(
+                                "its plugin.toml declares {:?}; the kinds are {}",
+                                layer.manifest.hooks,
+                                contract::KINDS.join(", ")
+                            ),
                         )
                     })?;
                 Ok((
@@ -1284,12 +1301,27 @@ impl PluginHost {
                         format!("through the whole stack (`{}` is the only pane)", panes[0]),
                     ))
                 }
-                0 => Err(Refused::new(
-                    "this session has no pane to test",
-                    "`plugin scaffold` writes one, `plugin build` compiles it, and `plugin load` \
-                     puts it in force; or name a layer by id",
-                )),
-                _ => Err(Refused::new("name the pane to test", pane_list(&panes))),
+                _ => {
+                    let all: Vec<String> = stack
+                        .layers()
+                        .iter()
+                        .flat_map(|l| l.manifest.hooks.clone())
+                        .collect();
+                    Err(Refused::new(
+                        if all.is_empty() {
+                            "this session has no hook to test".to_string()
+                        } else {
+                            "name the hook to test".to_string()
+                        },
+                        if all.is_empty() {
+                            "`plugin scaffold` writes one, `plugin build` compiles it, and \
+                             `plugin load` puts it in force; or name a layer by id"
+                                .to_string()
+                        } else {
+                            format!("the hooks of this session are: {}", all.join(", "))
+                        },
+                    ))
+                }
             },
         }
     }
@@ -1299,6 +1331,97 @@ impl PluginHost {
 /// looked at, nothing pressed, no state.
 fn synthetic_pane_input() -> Value {
     input_value(&None, &Req::fresh(), (SIZE_W, SIZE_H))
+}
+
+/// **The first frame of any hook**, for `plugin test` and for `load`'s replay of a layer nobody has
+/// asked yet: the SDK's own synthetic example of that kind, which is also what `plugin_hooks`
+/// prints. A layer that cannot answer this one traps on its own first frame, the cheapest defect to
+/// find — and each kind's example is the plan's own.
+fn synthetic_for(hook: &str) -> Value {
+    use letibot_plugin::{condition, notice, tool_call, tool_result};
+    let value = if hook.starts_with("pane_") {
+        return synthetic_pane_input();
+    } else if hook == tool_call::HOOK {
+        serde_json::to_value(tool_call::ToolCallIn::synthetic())
+    } else if hook == tool_result::HOOK {
+        serde_json::to_value(tool_result::ToolResultIn::synthetic())
+    } else if hook.starts_with(condition::PREFIX) {
+        serde_json::to_value(condition::ConditionIn::synthetic())
+    } else {
+        serde_json::to_value(notice::Notice::synthetic())
+    };
+    value.unwrap_or(Value::Null)
+}
+
+/// **Would the host accept this answer for `hook`?** — the same parse the running host does, in one
+/// place, so `plugin test` and `load` cannot disagree with what a session would live with.
+///
+/// `Ok` is the one line a person reads (what the answer WOULD do); `Err` is the refusal.
+fn accepted(hook: &str, answer: &Value) -> Result<String, String> {
+    use letibot_plugin::{condition, notice, tool_call, tool_result};
+    if hook.starts_with("pane_") {
+        let view = validated(answer, hook, hook)?;
+        return Ok(format!("a view the host can drive — \"{}\"", view.title));
+    }
+    if hook == tool_call::HOOK {
+        let out: tool_call::ToolCallOut = serde_json::from_value(answer.clone())
+            .map_err(|e| format!("not a call's verdict ({e})"))?;
+        return Ok(match out.verdict() {
+            tool_call::Verdict::Pass => "it lets the call run as the model proposed it".into(),
+            tool_call::Verdict::Rewrite(args) => {
+                format!("it runs the call with these arguments instead: {args}")
+            }
+            tool_call::Verdict::Refuse(why) => format!("it refuses the call: {why}"),
+            tool_call::Verdict::Answer(text) => {
+                format!("it answers the call without running it: {text}")
+            }
+        });
+    }
+    if hook == tool_result::HOOK {
+        let out: tool_result::ToolResultOut = serde_json::from_value(answer.clone())
+            .map_err(|e| format!("not a tool result ({e})"))?;
+        let mut said = Vec::new();
+        if out.payload.is_some() {
+            said.push("it replaces the result".to_string());
+        }
+        if let Some(append) = &out.append {
+            said.push(format!("it appends {append:?}"));
+        }
+        for arm in &out.arm {
+            said.push(format!("it arms a `{}` watch on {}", arm.plugin, arm.args));
+        }
+        return Ok(if said.is_empty() {
+            "it leaves the result alone".to_string()
+        } else {
+            said.join("; ")
+        });
+    }
+    if hook.starts_with(condition::PREFIX) {
+        let out: condition::ConditionOut =
+            serde_json::from_value(answer.clone()).map_err(|e| format!("not a condition ({e})"))?;
+        let mut said = Vec::new();
+        if let Some(look) = &out.look {
+            said.push(format!("it looks at {look:?}"));
+        }
+        if let Some(every) = out.every_s {
+            said.push(format!("every {every}s"));
+        }
+        if let Some(fired) = &out.fired {
+            said.push(format!("and it fires: {fired}"));
+        }
+        return Ok(if said.is_empty() {
+            "it watches nothing yet".to_string()
+        } else {
+            said.join(", ")
+        });
+    }
+    let out: notice::NoticeOut =
+        serde_json::from_value(answer.clone()).map_err(|e| format!("not a notice ({e})"))?;
+    Ok(match out.said() {
+        notice::Said::Unchanged => "it leaves the harness's own sentence".to_string(),
+        notice::Said::Text(text) => format!("it would say: {text}"),
+        notice::Said::Drop => "it asks for the notice to be dropped".to_string(),
+    })
 }
 
 /// **One layer, by id, by manifest name, or by pane id** — and never a guess between two.
@@ -1347,6 +1470,31 @@ fn one_layer<'a>(stack: &'a Stack, what: &str) -> Result<&'a letibot_plugins::La
             ),
         )),
     }
+}
+
+/// How an input reads in a sentence, whatever kind it is: a pane's frame, a notice, a call, a
+/// result, or a watch — the fields the reader needs to recognise WHICH input went wrong.
+fn describe_any_input(input: &Value) -> String {
+    if input.get("size").is_some() || input.get("event").is_some() {
+        return describe_input(input);
+    }
+    if let Some(kind) = input.get("kind").and_then(|k| k.as_str()) {
+        return format!("a `{kind}` notice");
+    }
+    if let Some(call) = input.get("call") {
+        let name = call.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        return match input.get("outcome").and_then(|o| o.as_str()) {
+            Some(outcome) => format!("the result of `{name}` ({outcome})"),
+            None => format!("a `{name}` call"),
+        };
+    }
+    if input.get("args").is_some() {
+        return match input.get("look") {
+            Some(look) if !look.is_null() => "a look's result".to_string(),
+            _ => "the arming call".to_string(),
+        };
+    }
+    "this input".to_string()
 }
 
 /// How an input reads in a sentence: which frame it is, said the way a person would say it.
@@ -1600,6 +1748,27 @@ pub fn arm_call(arm: &letibot_plugin::tool_result::Arm) -> letibot_transcript::T
 }
 
 impl PluginHost {
+    /// The capabilities the layer that answers `hook` declared — what a look runs under.
+    ///
+    /// The topmost ENABLED layer that exports the hook, which is the one the stack would ask
+    /// first: a look a lower layer declared is only run when the upper one asked below, and then
+    /// the upper one's capabilities are still the ones in force for the answer that came back.
+    pub fn capabilities_for(&self, hook: &str) -> Vec<Capability> {
+        let inner = self.lock();
+        inner
+            .stack
+            .layers()
+            .iter()
+            .find(|l| !l.disabled && l.manifest.hooks.iter().any(|h| h == hook))
+            .map(|l| l.manifest.capabilities.clone())
+            .unwrap_or_default()
+    }
+
+    /// The tree a look resolves against — the session's own workspace.
+    pub fn workspace(&self) -> PathBuf {
+        self.workspace.clone()
+    }
+
     /// **One result through the `on_tool_result` hook** (`docs/plugins-plan.md` §4.2): the call,
     /// how it ended, and what the model would read.
     ///
@@ -3056,5 +3225,163 @@ mod tests {
         assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
         assert!(host.lock().rec.inputs("on_tool_call").is_empty());
         assert!(hub.retained().is_empty());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `condition` (§4.4): a monitor whose policy is a layer
+    // ---------------------------------------------------------------------------------------
+
+    /// The daemon's half, over this test's host — the real look runner and the real stack.
+    fn conditions(host: &Arc<PluginHost>) -> Arc<conditions::HostConditions> {
+        conditions::HostConditions::new(
+            Arc::new(Mutex::new(Some(host.clone()))),
+            Hub::new("s-plugins"),
+        )
+    }
+
+    /// **A layer's condition arms, and its answer is what the watch follows** — the arming call,
+    /// the interval, the cap, and the state, through the seam the daemon fills.
+    #[test]
+    fn a_layers_condition_arms_with_its_own_interval_and_cap() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("condition-arm");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "coderabbit",
+            &[(
+                "condition_coderabbit",
+                says(json!({
+                    "look": {"read": "status.json"},
+                    "every_s": 90,
+                    "max_ttl_s": 604800,
+                    "state": {"armed": true}
+                })),
+            )],
+        );
+        std::fs::write(root.join("status.json"), "{\"reviews\":3}").expect("a status file");
+        let host = Arc::new(table_host(&root, &table));
+        let armed = conditions(&host)
+            .arm("coderabbit", json!({"pr": "o/r#24"}))
+            .expect("the layer arms it");
+        assert_eq!(
+            armed.condition.max_ttl(),
+            Some(Duration::from_secs(604800)),
+            "the plugin's own cap, inside the tree's week"
+        );
+        assert!(armed.condition.describe().contains("coderabbit"));
+        // The read look ran under the layer's `read` capability and is now ready to hand over —
+        // which is the half that proves the seam reaches the workspace.
+        assert_eq!(
+            armed.condition.met(),
+            None,
+            "a file look has no firing of its own"
+        );
+        let seen = host.lock().rec.inputs("condition_coderabbit").to_vec();
+        assert!(!seen.is_empty(), "the arming call was recorded");
+        assert_eq!(seen[0]["args"], json!({"pr": "o/r#24"}));
+        assert!(seen[0]["look"].is_null(), "arming asks with no look");
+    }
+
+    /// **A watch nobody answers is refused by name**, and so is one whose layer is off — the two
+    /// are the same sentence to a model, and it names the hook.
+    #[test]
+    fn a_condition_nobody_answers_is_refused() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("condition-none");
+        let table = Table::new();
+        let host = Arc::new(table_host(&root, &table));
+        let why = match conditions(&host).arm("coderabbit", json!({})) {
+            Ok(_) => panic!("nothing answers it"),
+            Err(why) => why,
+        };
+        assert!(
+            why.why.contains("no layer answers `condition_coderabbit`"),
+            "{}",
+            why.why
+        );
+
+        // And a layer that IS there but switched off answers nothing either.
+        let root = tempdir("condition-disabled");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "coderabbit",
+            &[("condition_coderabbit", says(json!({"every_s": 30})))],
+        );
+        let host = Arc::new(table_host(&root, &table));
+        let id = host.lock().stack.layers()[0].id.clone();
+        host.lock().stack.set_disabled(&id, true).expect("disable");
+        assert!(conditions(&host).arm("coderabbit", json!({})).is_err());
+    }
+
+    /// **A condition layer that traps falls to the one below**, which is how a session fixes a
+    /// broken watch without deleting it.
+    #[test]
+    fn a_trapping_condition_layer_falls_down() {
+        use letibot_tools::exec::monitor::Condition as _;
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("condition-trap");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-working",
+            &[("condition_coderabbit", says(json!({"every_s": 30})))],
+        );
+        table.layer(&root, "z-broken", &[("condition_coderabbit", vec![None])]);
+        let host = Arc::new(table_host(&root, &table));
+        let armed = conditions(&host)
+            .arm("coderabbit", json!({}))
+            .expect("the layer below arms it");
+        assert!(armed.condition.describe().contains("coderabbit"));
+        assert!(
+            host.take_notices()
+                .iter()
+                .any(|n| n.contains("the layer below it answered")),
+            "and the trap is said to the model"
+        );
+    }
+
+    /// **An `exec` look the layer did not declare runs nothing, and says which capability it
+    /// wanted** — the enforcement point §3 names, exercised through a real armed watch.
+    #[test]
+    fn an_exec_look_without_the_capability_is_refused() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("condition-exec");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "shell",
+            &[(
+                "condition_shell",
+                vec![
+                    Some(json!({"look": {"exec": ["true"]}, "every_s": 5})),
+                    Some(json!({"fired": "the look came back"})),
+                ],
+            )],
+        );
+        let host = Arc::new(table_host(&root, &table));
+        let armed = conditions(&host).arm("shell", json!({})).expect("armed");
+        // The first tick hands the refusal over, and the layer answers it.
+        assert_eq!(
+            armed.condition.met(),
+            Some("the look came back".to_string())
+        );
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
+        assert_eq!(
+            handed["look"]["exit"],
+            json!(126),
+            "a program the layer did not declare is not run: {handed}"
+        );
+        assert!(
+            handed["look"]["stderr"]
+                .as_str()
+                .is_some_and(|s| s.contains("exec:true")),
+            "and the refusal names the capability: {handed}"
+        );
     }
 }

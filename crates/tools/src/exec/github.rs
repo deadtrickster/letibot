@@ -662,10 +662,10 @@ impl Condition for GithubCondition {
         Some(GITHUB_MAX_TTL)
     }
 
-    fn github(&self) -> Option<(String, Vec<&'static str>)> {
+    fn github(&self) -> Option<(String, Vec<String>)> {
         Some((
             format!("{}#{}", self.target.repo, self.target.number),
-            self.untils.iter().map(|u| u.key()).collect(),
+            self.untils.iter().map(|u| u.key().to_string()).collect(),
         ))
     }
 }

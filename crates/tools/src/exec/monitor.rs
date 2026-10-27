@@ -85,6 +85,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::jobs::{Job, JobId};
+use super::plugin_condition::PluginConditions;
 use super::scope::ScopeId;
 
 /// The longest a monitor may live without being renewed. **One hour.**
@@ -188,7 +189,7 @@ pub trait Condition: Send + Sync {
     /// **The GitHub pull request or issue this watches, and for what** — `("owner/repo#N",
     /// ["checks", …])` — so a second watch on the same one can be refused in favour of one watch
     /// for all of it. `None` for everything that is not a GitHub watch.
-    fn github(&self) -> Option<(String, Vec<&'static str>)> {
+    fn github(&self) -> Option<(String, Vec<String>)> {
         None
     }
 }
@@ -249,7 +250,7 @@ impl Watch {
     }
 
     /// The GitHub target and conditions of this watch, when it is one ([`Condition::github`]).
-    pub fn github(&self) -> Option<(String, Vec<&'static str>)> {
+    pub fn github(&self) -> Option<(String, Vec<String>)> {
         match self {
             Watch::Custom(c) => c.0.github(),
             _ => None,
@@ -714,7 +715,7 @@ impl std::error::Error for MonitorError {}
 ///
 /// **Listable by construction** (T24 requirement 2): there is no way to declare a
 /// monitor that this does not hold, so there is no monitor a listing cannot show.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Monitors {
     inner: Mutex<Registry>,
     /// Woken when a monitor settles. **This is the wake seam** — see
@@ -724,6 +725,9 @@ pub struct Monitors {
     /// instead of waiting out [`TICK`]. Guarded by [`Monitors::wake_guard`].
     wake: Condvar,
     wake_guard: Mutex<()>,
+    /// **The plugin conditions this session may arm** (`docs/plugins-plan.md` §4.4), wired by the
+    /// daemon. `None` in a test or a daemon that serves no plugins.
+    plugins: Mutex<Option<Arc<dyn PluginConditions>>>,
 }
 
 #[derive(Debug, Default)]
@@ -741,13 +745,43 @@ struct Registry {
     polling: bool,
 }
 
+impl std::fmt::Debug for Monitors {
+    /// Not derived, because the plugin seam is a `dyn` trait with no `Debug` — and a listing that
+    /// printed it would be printing the daemon's wiring rather than a monitor.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Monitors")
+            .field("registry", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Monitors {
+    /// **The plugin conditions this session may arm**, once the daemon has wired them.
+    ///
+    /// A field rather than a parameter on every call, because the monitor tool asks `Monitors`
+    /// for everything else it needs (`world`, `workspace`, `protected`) and a plugin condition is
+    /// the same kind of fact: something only the host it opened inside can answer. `None` — every
+    /// test, and a daemon that serves no plugins — means a `plugin` monitor is refused by name
+    /// rather than declared and never polled.
+    pub fn plugin_conditions(&self) -> Option<Arc<dyn PluginConditions>> {
+        self.plugins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Wire the seam. Idempotent: a daemon that opens a session twice wires the same one.
+    pub fn set_plugin_conditions(&self, conditions: Arc<dyn PluginConditions>) {
+        *self.plugins.lock().unwrap_or_else(|e| e.into_inner()) = Some(conditions);
+    }
+
     pub fn new() -> Monitors {
         Monitors {
             inner: Mutex::new(Registry::default()),
             settled: Condvar::new(),
             wake: Condvar::new(),
             wake_guard: Mutex::new(()),
+            plugins: Mutex::new(None),
         }
     }
 

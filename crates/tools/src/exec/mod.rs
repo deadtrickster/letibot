@@ -87,6 +87,7 @@ pub mod host;
 pub mod jobs;
 pub mod memory;
 pub mod monitor;
+pub mod plugin_condition;
 pub mod predicate;
 pub mod procs;
 pub mod pty;
@@ -113,6 +114,7 @@ pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,
 };
+pub use plugin_condition::{Look, LookChild, NotArmed, PluginCondition, PluginStack};
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use pty::Pty;
 #[cfg(target_os = "macos")]
