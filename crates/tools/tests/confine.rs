@@ -356,7 +356,15 @@ fn the_backend_disclosure_no_longer_hard_codes_a_confinement_claim() {
                 "a confined backend must not describe itself as unconfined: {d}"
             );
             assert!(d.contains("confined"), "{d}");
-            assert!(d.contains("bubblewrap"), "the mechanism, named: {d}");
+            // **The mechanism, named — and which mechanism is a platform fact.** Linux enters
+            // namespaces through `bwrap`; macOS applies a Seatbelt profile through
+            // `sandbox-exec` (`crate::exec::seatbelt`, `docs/boundary-and-adjudication.md` §4j).
+            // What this asserts is that the disclosure names the thing that did it rather than
+            // a constant, so it takes either, and neither is a hole in the sentence.
+            assert!(
+                d.contains("bubblewrap") || d.contains("sandbox-exec"),
+                "the mechanism, named: {d}"
+            );
         }
         Err(e) => {
             let m = format!("{e}");

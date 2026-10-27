@@ -1015,6 +1015,15 @@ impl HubSteering {
 /// The warning code for a session whose workspace no longer exists (R92.24).
 const WORKSPACE_GONE: &str = "workspace_gone";
 
+/// **The warning code for a session that asked for a boundary and got a whole-host shell**
+/// (TODO R98).
+///
+/// Said once, at open, on the session's own hub and in the daemon's log. It exists because the
+/// consequence is invisible from the inside: D16 admits a command without a card only *inside a
+/// measured boundary*, so a session without one asks the operator about every `cargo test` — and
+/// an operator who is not told that would read the cards as the gate being broken.
+const BOUNDARY_ABSENT: &str = "boundary_absent";
+
 /// The warning code for a session whose tools run on another machine — where its tree is,
 /// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
 const REMOTE_PLACEMENT: &str = "remote_placement";
@@ -3700,29 +3709,72 @@ impl Harness {
             })?;
             b
         } else if cfg.seat.needs_exec_backend() && may_exec {
-            HostBackend::confined_granting(
+            let built = HostBackend::confined_granting(
                 &cfg.workspace,
                 confined_grants(&cfg, cfg.landing_root.as_deref()),
-            )
-            .map_err(|e| {
-                HarnessError::Setup(format!(
-                    "the `{}` role needs a confined execution backend and one could not be \
-                     built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
-                     alternative is `HostBackend::executable`, which gives a process the \
-                     cgroup that bounds its lifetime and NO boundary on what it can read \
-                     — the operator's whole filesystem, with a banner that would have to \
-                     say so. Two things it needs and the error above says which is \
-                     missing: a delegated cgroup v2 subtree, and a usable unprivileged \
-                     namespace boundary (bwrap). A third thing the message above may \
-                     name instead: the project root itself. Both `runner` and `coder` \
-                     root their view at the workspace, so a workspace that is a file, \
-                     a dangling symlink or absent fails here and no boundary is the \
-                     wrong thing to blame. Seat `--role orchestrator` for a session \
-                     with no exec path at all.",
-                    cfg.seat.as_str(),
-                    cfg.workspace
-                ))
-            })?
+            );
+            match built {
+                Ok(b) => b,
+                // **A Mac whose boundary could not be built is unconfined and says so.**
+                //
+                // On Linux this arm is a refusal and stays one: `bwrap` is installable and a
+                // delegated cgroup is provisionable, so a host without them is a host to fix.
+                // macOS is different in one specific way — Seatbelt needs no provisioning and
+                // no privilege, so its probe failing means `sandbox-exec` is missing or the
+                // policy did not take, and the fallback below is what an operator on this box
+                // has had all along (`leticode`'s whole-host shell). Doing it *silently* would
+                // be the banner defect; doing it without saying which half failed would leave
+                // every `cargo test` on this Mac asking the operator for a card and nobody
+                // knowing why. So: the old behaviour, plus the sentence, on the session's own
+                // hub and in the daemon's log.
+                #[cfg(target_os = "macos")]
+                Err(e) => {
+                    let said = format!(
+                        "this session is UNCONFINED, and its commands run with this user's \
+                         rights over this whole host. A macOS boundary was asked for and could \
+                         not be built: {e}\n\nWhat that means here, in the words the gate uses: \
+                         a command that runs code (a test runner, a build) is decided per \
+                         command by the operator, because nothing else is stopping what that \
+                         code can read. `docs/boundary-and-adjudication.md` §4j says what the \
+                         boundary would have given and why the probe refused."
+                    );
+                    eprintln!("letibot: {said}");
+                    hub.publish(SessionEvent::Warning {
+                        code: BOUNDARY_ABSENT.into(),
+                        detail: said,
+                        compaction: None,
+                    });
+                    let b = if cfg.allow_bash {
+                        HostBackend::executable("/")
+                    } else {
+                        HostBackend::writable("/")
+                    }
+                    .map_err(|e| HarnessError::Setup(format!("whole-host backend: {e}")))?;
+                    b.with_cwd(&cfg.workspace).map_err(|e| {
+                        HarnessError::Setup(format!("workspace {:?} as cwd: {e}", cfg.workspace))
+                    })?
+                }
+                #[cfg(not(target_os = "macos"))]
+                Err(e) => {
+                    return Err(HarnessError::Setup(format!(
+                        "the `{}` role needs a confined execution backend and one could not be \
+                         built over {:?}: {e}.\n\nThis is a refusal, not a degradation: the \
+                         alternative is `HostBackend::executable`, which gives a process the \
+                         cgroup that bounds its lifetime and NO boundary on what it can read \
+                         — the operator's whole filesystem, with a banner that would have to \
+                         say so. Two things it needs and the error above says which is \
+                         missing: a delegated cgroup v2 subtree, and a usable unprivileged \
+                         namespace boundary (bwrap). A third thing the message above may \
+                         name instead: the project root itself. Both `runner` and `coder` \
+                         root their view at the workspace, so a workspace that is a file, \
+                         a dangling symlink or absent fails here and no boundary is the \
+                         wrong thing to blame. Seat `--role orchestrator` for a session \
+                         with no exec path at all.",
+                        cfg.seat.as_str(),
+                        cfg.workspace
+                    )));
+                }
+            }
         } else if cfg.seat.needs_writable_backend() && may_write {
             HostBackend::writable(&cfg.workspace)
                 .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?

@@ -131,7 +131,7 @@ settled.
 
 ---
 
-## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **OPEN, filed 2026-10-27**
+## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 2 BUILT 2026-10-27 (branch `mac-seatbelt`), half 1 OPEN**
 
 D16 admits a command without a card only inside a measured boundary, and its amendment says
 that on a raw host a command that executes code the agent wrote (a test runner) must keep
@@ -147,21 +147,34 @@ Two halves, the first smaller and first:
    `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
    durable grant when the backend is unconfined; it asks every time, and the card says why
    (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
-   corpus replay (how many past grants would no longer settle) before landing.
-2. **Give the Mac a boundary**, so the asks in (1) can go away: either macOS's own sandbox
-   (`sandbox-exec` with a generated profile: the checkout writable, the toolchain read-only,
-   `~/.ssh` and profiles absent, network denied; it is deprecated but present and used by
-   other tools) with cgroup-equivalent reaping by process group, or running the session's
-   commands in a firecode VM by default. Write the comparison (what each hides, what each costs
-   per call, what breaks) and build the chosen one behind `confine.rs`'s measured-boundary
-   contract, so D16's admit applies to it unchanged.
+   corpus replay (how many past grants would no longer settle) before landing. — **STILL OPEN.**
+2. **Give the Mac a boundary** — **BUILT 2026-10-27**, `crates/tools/src/exec/seatbelt.rs`, and
+   written up in `docs/boundary-and-adjudication.md` §4j. Seatbelt (`sandbox-exec -f <profile>`)
+   renders the same `ViewSpec` the Linux side renders as a bubblewrap argv, and the probe measures
+   it from inside: the deny list beating an allow (a canary inside a writable `$HOME`), a write
+   outside the checkout refused, a write inside it succeeding, fork/exec, a nested `sh -c` denied
+   the same path, `kill -0` on the launcher `EPERM`, and both egress subjects refused when egress
+   is denied. `confine::probe` chooses the mechanism by platform, so `HostBackend::confined`, the
+   session's `/tmp` and every grant re-probe through one dispatch, and a Mac session's `bash`,
+   jobs and persistent shell all run inside it. A Mac that cannot measure one is **unconfined and
+   says so** (`boundary_absent` on the session's log, with the refusal's own words).
+
+   The measured cost: **+5.1 ms per exec** (100 `true` calls: 1.28 → 6.41 ms/call), +4.5 ms on a
+   real `cargo --version`, and it does not grow with the command's work. What macOS cannot give —
+   a PID namespace, so processes are unreachable but not absent, and no `PR_SET_NO_NEW_PRIVS` —
+   is printed on the boundary's own description as `ABSENT` / `NOT APPLICABLE`, never omitted.
+   Reaping stays the process-group tree (`exec::scope::ProcessGroups`), as it already was.
 
 **Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
 session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
-from, and D16 admits them there.
+from, and D16 admits them there. — **(2) is done**: they are *denied* rather than absent (macOS
+has no mount namespace to make them absent), the probe measures the denial, and the description
+says which of the two it is holding. (1) is not built.
 
-**Still open?** run `cargo test` in a macOS session at writes-allowed with a session grant for
-it: if no card appears, (1) is not built.
+**Still open?** (1) run `cargo test` in a macOS session at writes-allowed with a session grant
+for it: if no card appears, (1) is not built — and on this branch that is expected, since (1) is
+the half nobody has written. (2) `cargo test -p letibot-tools --test seatbelt` on the Mac: seven
+real measurements, no skip.
 
 ---
 

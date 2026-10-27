@@ -1116,6 +1116,161 @@ class to settle the third row, and the instrument itself only reads the tree. Th
 deliberate limit of `gate_corpus` — a sweep that spawned a process per corpus row would be
 an instrument whose measurement is about this box.
 
+## 4j. The Mac gets a measured boundary: Seatbelt
+
+**Built 2026-10-27 (TODO R98 half 2), `crates/tools/src/exec/seatbelt.rs`.** D16 admits a command
+without a card *inside a measured boundary*, and until this section existed macOS had no such
+thing: a Mac session was either a firecode VM (slow, and a Linux guest) or an unconfined
+whole-host shell, in which case every `cargo test` had to be asked about — the operator's own
+complaint, *"will make me run things in allow-all everytime"*.
+
+macOS has no namespaces, no cgroups and no `unshare`. What it has is **Seatbelt**:
+`sandbox-exec -f <profile>`, a mandatory-access policy the kernel evaluates on every file, mach,
+network and process operation the process and everything it execs performs. Deprecated, present,
+and what Chrome ships to three hundred million people. `crate::exec::confine::probe` now answers
+with a namespace boundary on Linux and a policy boundary here, and both are the same contract: a
+[`ViewSpec`](crate::exec::confine::ViewSpec) in, a measured `Boundary` out.
+
+### One policy, two renderings
+
+The view decides **what is inside** — the project read-write at its own path, the system roots
+read-only, the toolchain read-only (`.cargo`, `.rustup`, `.local/bin`, the mise trees,
+`Projects/llama.cpp`, `models`, `.gitconfig`, out of the *operator's* home because the session's
+home is fresh and holds no toolchain), `$HOME` and `/tmp` the session's own directories, egress a
+decision. `confine::pieces_of` renders it as a bubblewrap argv; `seatbelt::render_profile` renders
+the same view as SBPL text. Neither reads the other, and a field added to the view breaks both or
+neither — which is what keeps the two platforms from drifting apart.
+
+```
+(deny default)
+(allow process*) (allow sysctl-read) (allow signal (target self))
+(allow mach-lookup (global-name "com.apple.system.logger") …)   ; six, measured
+(allow file-read* (literal "/") (subpath "/usr") …)             ; system + toolchain + view
+(allow file-write* (subpath <checkout>) (subpath <session home>) …)
+(deny network*)                                                  ; or (allow network*) — the decision
+(deny file-read* file-write* (subpath "~/.ssh") …)              ; AFTER every allow, on purpose
+```
+
+Three details in that text are measurements rather than taste:
+
+* **`(literal "/")` is load-bearing.** A profile that allows `file-read*` on `/usr` and the rest
+  but not on `/` itself makes *every* process abort with `SIGABRT` before `main` — something in
+  libsystem reads the root directory at start-up and the sandbox's check-in dies of the refusal.
+  Found by bisecting a profile that aborted `true`.
+* **The deny block is emitted last**, because SBPL is last-match-wins. That is the one place this
+  weaker mechanism is *stricter* than the mount namespace: a grant of the whole home directory
+  widens the view (the operator's `--grant-ro ~`), and on Linux a bind mount cannot exclude a path
+  inside itself — here the deny rule still wins, so a widened view still cannot read `~/.ssh`,
+  the keychains, the shell profiles or letibot's own store. The probe measures exactly that: a
+  canary written inside a directory the profile allows read-write, denied by name.
+* **`(subpath "<TMPDIR>/xcrun_db")`** — the only thing in the per-user temp directory the profile
+  reaches. `git`, `make` and `/usr/bin/python3` are `xcrun` shims that `dlopen` a cache into
+  `confstr(_CS_DARWIN_USER_TEMP_DIR)`, which is *not* `TMPDIR` and so cannot be redirected into
+  the session's own directory; without the two lines every one of those commands prints
+  `xcrun: error: couldn't create cache file`.
+
+### What the probe measures, and what it refuses on
+
+`Seatbelt::probe` runs one shell script **inside the profile** and reads `probe <name> <outcome>`
+lines back — the same rule `Bwrap::probe` follows (*guard the fact, not the proxy*):
+
+| subject | must be | the refusal if not |
+|---|---|---|
+| the canary, inside a writable part of the view | unreadable | the deny list does not win → **nothing runs** |
+| a write to a path outside the checkout | `EPERM` | a write outside succeeded → nothing runs |
+| a write inside the checkout | succeeds | the boundary forbids the session's own work → nothing runs |
+| `sh -c true` | runs | fork/exec failed inside → nothing runs |
+| a nested `sh -c` reading the canary | unreadable | a child strips the boundary → nothing runs |
+| `kill -0 <this process's pid>`, from inside | `EPERM` | a signal reaches out of the boundary — recorded as `Absent`, not refused |
+| a connect to `127.0.0.1:1` and to `192.0.2.1:80` | `EPERM` **when egress is denied** | an egress decision that did not take → nothing runs |
+
+Nothing is sent anywhere: the loopback subject is a port nothing listens on and the external one
+is TEST-NET-1 (RFC 5737, reserved for documentation and routed nowhere), and `nc -z` closes as
+soon as the answer arrives.
+
+### What macOS cannot give, and how the description says it
+
+The boundary's property table (`confine::Prop`) is how a mechanism without namespaces describes
+itself. Three properties are **required**; the fourth is reported as `ABSENT — this OS cannot give
+it` and is printed in full rather than omitted:
+
+| property | measured | how it differs from Linux |
+|---|---|---|
+| `file-view` | **held** — the canary is unreadable over a writable home, a write outside fails, a write inside succeeds | **denied, not absent**: the file is there and `open` answers `EPERM`, where a mount namespace makes it not-there. `absence_notes` is written for each: `Operation not permitted` is the boundary on a Mac, and a note that only knew `ENOENT` would say nothing at all |
+| `process-isolation` | **held** — `kill -0` on a process outside is `EPERM`; `ps` is refused; a child *inside* is still killable, so job control works | no PID namespace |
+| `nested` | **held** — a child `sh -c` inherits the profile and is denied the same path | the policy is applied at `exec` and inherited, so there is nothing to `unshare` out of |
+| `process-absence` | **ABSENT** — macOS has no PID namespace | a process outside is unreachable, not invisible; a lookup by pid still finds it, and `/proc` does not exist |
+
+And two seals, one of them `NOT APPLICABLE on this platform`: `no-new-privs` has no macOS
+counterpart (`PR_SET_NO_NEW_PRIVS` is a Linux prctl; what macOS gives instead is that the kernel
+applies the policy at `exec`, so a setuid program inside inherits it — measured, and stated as
+the substitute rather than as the property). `no cgroup`: the lifetime half is
+`exec::scope::ProcessGroups`, which reaps by process group and says in its own docs that a group
+can be left with `setsid` and that a group id is a reused pid.
+
+**Does that count as measured for D16?** My reading, written here because it is the argument the
+decision now rests on: **yes for the half the operator's rule is about.** D16's sentence is *"the
+agent can write any code in the test file and then do the test … the only real defense is cgroups
+and namespaces"* — the consequence being guarded against is what a program the agent wrote can
+**read** and **send**, because those are what outlive the session. The file and network halves are
+measured holding, per process and inherited by every child. What macOS does not give is process
+*absence*, and a command that signals the daemon is a denial of service on this box rather than a
+disclosure of the operator's data — it is printed as `ABSENT` on the boundary's own description,
+and the reaping half is the process-group tree that macOS already had. A reader who disagrees has
+the sentence in front of them, which is the point of the table.
+
+### What it costs, measured
+
+MEASURED 2026-10-27 on this Mac (arm64, macOS 26.7.1), one profile of **87 lines, 11 rules, 61
+path filters**:
+
+| | plain | inside the boundary | added |
+|---|---|---|---|
+| 100 × `/usr/bin/true` | 0.128 s (1.28 ms/call) | 0.641 s (6.41 ms/call) | **+5.1 ms/call** |
+| `cargo --version`, 10 calls | 14.0 ms | 18.6 ms | +4.5 ms |
+| `git --version`, 10 calls | 7.7 ms | 12.3 ms | +4.6 ms |
+| `cargo check --offline` on a crate with one registry dependency | works | works (0.78 s warm) | — |
+
+The cost is a **fixed ~5 ms per exec** — `sandbox-exec` applying the policy in the child, plus the
+profile being read — and it does not grow with what the command does. A session's `cargo test`
+pays it once. The other cost is stated in the module: the toolchain is read-only, so a build that
+needs a **new** dependency cannot fetch it into the registry from inside the boundary and fails
+saying so.
+
+### What is wired
+
+* `HostBackend::confined` / `confined_granting` ask `confine::probe`, so on macOS a `coder` or
+  `runner` session gets the policy boundary and `backend_confined` is true — which is what makes
+  **`allow-all` available on a Mac at all** (D13's `Prereq::Confinement`). Sessions that
+  already run unconfined (`leticode`) are untouched.
+* Every widening re-probes through the same dispatch: `with_session_tmp` (the session's `/tmp`)
+  and `grant_into_view_impl` (`--grant-ro`, the landing tree, a path the operator admitted) each
+  build a new view, a new profile and a new measurement, so what is described is what runs.
+* `bash`, background jobs and the persistent shell all go through `Confinement::wrap`, which for
+  this mechanism is `sandbox-exec -f <profile> /bin/sh -c 'export HOME=… TMPDIR=…; exec "$@"'`.
+  The shim exists because a profile cannot set an environment variable and `wrap` returns an
+  argv: `HOME` must be the session's own directory (or `cargo`, `git` and `ssh` write into the
+  operator's, where the deny list refuses them), `TMPDIR` the session's own, and
+  `CARGO_HOME`/`RUSTUP_HOME` the operator's **read-only** toolchain, since the session's home has
+  none.
+* If `sandbox-exec` is missing or the probe refuses, the daemon **seats an unconfined whole-host
+  session, says so on the session's log as `boundary_absent`, and prints the refusal's own words**
+  — the old behaviour, told out loud. On Linux the same failure is still a refusal, because
+  `bwrap` and a delegated cgroup are things a host can be given.
+
+### What is still open
+
+* **The profile is written per probe and never removed** — `$TMPDIR/letibot-seatbelt-<pid>/profile-<n>.sb`,
+  one per session plus one per widening. It is outside every checkout on purpose (a policy the
+  command can edit is not a policy) and it is debris a per-user temp directory already holds.
+* **`mach-lookup` is a six-name list, not a filter over everything.** A program needing a service
+  not on it fails with the service's name and the fix is one line in `seatbelt::MACH_SERVICES`;
+  a session that meets one has found a gap this section does not know about.
+* **`sandbox-exec` is deprecated.** It has been deprecated for a decade and is still present in
+  macOS 26; the day it goes, `probe` refuses by name and every session falls back to the
+  `boundary_absent` sentence above. A replacement would be an Endpoint Security client or a
+  firecode VM, and neither is this change.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,

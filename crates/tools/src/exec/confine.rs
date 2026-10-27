@@ -272,6 +272,12 @@ pub enum Seal {
     /// The test could not be run from inside, so the property is unknown — and an
     /// unknown property is reported as unknown, never as held.
     Unverified { why: String },
+    /// **This mechanism has no such property to test.** Not `Held` (that would be a claim
+    /// about a mechanism that is not there), not `Unverified` (it is not that the test was
+    /// missed), and not `Open` (there is nothing to step through). macOS has no
+    /// `PR_SET_NO_NEW_PRIVS`, so a policy boundary reports that seal here with what it has
+    /// instead.
+    NotApplicable { why: String },
 }
 
 impl Seal {
@@ -283,6 +289,150 @@ impl Seal {
             Seal::Held { how } => format!("held ({how})"),
             Seal::Open { why } => format!("**OPEN** — {why}"),
             Seal::Unverified { why } => format!("UNVERIFIED — {why}"),
+            Seal::NotApplicable { why } => format!("NOT APPLICABLE on this platform — {why}"),
+        }
+    }
+}
+
+/// **Which family of machinery a measured boundary is made of.**
+///
+/// The two are not interchangeable and neither is a worse copy of the other: a
+/// namespace boundary makes what is outside it **absent**, and a policy boundary
+/// makes it **denied**. Both are measured before a command is run inside one, both
+/// answer [`Boundary::complete`], and the difference is printed rather than averaged
+/// away — see [`Boundary::describe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Mechanism {
+    /// Linux namespaces, entered through bubblewrap: `/proc/self/ns/*` read from
+    /// inside, compared with the harness's own inodes, and the seals functionally
+    /// tested. [`super::Bwrap`].
+    Namespaces,
+    /// A mandatory-access policy the kernel applies to the process: macOS's Seatbelt,
+    /// through `sandbox-exec -f <profile>`. [`super::seatbelt::Seatbelt`].
+    Policy,
+}
+
+impl Mechanism {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Mechanism::Namespaces => "namespaces",
+            Mechanism::Policy => "policy",
+        }
+    }
+}
+
+impl std::fmt::Display for Mechanism {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// **A property a boundary can have that is not a namespace.**
+///
+/// The namespace table is the whole answer on Linux and no answer at all on macOS,
+/// which has none — so a policy boundary describes itself with this instead. Both
+/// families are asked the same questions, which is what stops one platform's
+/// disclosure from being a claim the other platform never makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Prop {
+    /// A file outside the view cannot be reached. On Linux the mount namespace makes
+    /// it **absent**; under a policy it is **denied**, and that difference is the one
+    /// [`Boundary::describe`] says out loud rather than in a footnote.
+    FileView,
+    /// A process outside the boundary cannot be reached — a signal, or a lookup that
+    /// would find it.
+    ProcessIsolation,
+    /// A process outside the boundary is **not there at all**. A PID namespace buys
+    /// this; nothing on macOS does.
+    ProcessAbsence,
+    /// Egress is a decision rather than a default.
+    Egress,
+    /// A child cannot step out of the boundary its parent is in.
+    Nested,
+}
+
+impl Prop {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Prop::FileView => "file-view",
+            Prop::ProcessIsolation => "process-isolation",
+            Prop::ProcessAbsence => "process-absence",
+            Prop::Egress => "egress",
+            Prop::Nested => "nested",
+        }
+    }
+
+    /// What holding this buys, in the words a disclosure uses — the same question
+    /// [`Namespace::buys`] answers, so the two tables read alike.
+    pub fn buys(&self) -> &'static str {
+        match self {
+            Prop::FileView => {
+                "the operator's credentials and profiles cannot be read, and a write outside \
+                 the checkout cannot happen"
+            }
+            Prop::ProcessIsolation => {
+                "the command cannot signal the daemon, the model server, or a sibling job"
+            }
+            Prop::ProcessAbsence => {
+                "a process outside the boundary does not appear in a listing at all"
+            }
+            Prop::Egress => "egress is a decision rather than a default",
+            Prop::Nested => {
+                "a child cannot strip the boundary its parent is in, so wrapping a command is \
+                 enough"
+            }
+        }
+    }
+
+    /// The three a policy boundary is not a boundary without. [`Prop::ProcessAbsence`]
+    /// is deliberately **not** among them: no OS is allowed to be refused for a property
+    /// it does not have the kernel for, and refusing it would make the honest answer
+    /// (*disclosed, absent*) unspellable on the platform that has to give it.
+    pub const REQUIRED_POLICY: [Prop; 3] = [Prop::FileView, Prop::ProcessIsolation, Prop::Nested];
+
+    /// Every property a policy boundary reports, in the order a disclosure lists them.
+    pub const ALL: [Prop; 5] = [
+        Prop::FileView,
+        Prop::ProcessIsolation,
+        Prop::ProcessAbsence,
+        Prop::Egress,
+        Prop::Nested,
+    ];
+}
+
+impl std::fmt::Display for Prop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What one [`Prop`] measured, and the third variant is the important one.
+///
+/// [`PropState::Absent`] is **not** a failure: it is an OS that cannot give the
+/// property at all, named so a reader is not left to infer it from a silence. It is
+/// kept apart from [`PropState::Unverified`] for exactly the reason
+/// `apparatus::applies` is kept apart from `apparatus::present` — one is *somebody
+/// could have done this and did not*, the other is *nobody could*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropState {
+    /// Measured holding, from inside, with how it was measured.
+    Held { how: String },
+    /// This operating system cannot give it, with what the kernel is missing.
+    Absent { why: String },
+    /// It could have been measured and was not. Reported as unknown, never as held.
+    Unverified { why: String },
+}
+
+impl PropState {
+    pub fn held(&self) -> bool {
+        matches!(self, PropState::Held { .. })
+    }
+
+    pub fn line(&self) -> String {
+        match self {
+            PropState::Held { how } => format!("held ({how})"),
+            PropState::Absent { why } => format!("**ABSENT — this OS cannot give it**: {why}"),
+            PropState::Unverified { why } => format!("UNVERIFIED — {why}"),
         }
     }
 }
@@ -740,28 +890,73 @@ impl ViewSpec {
 pub struct Boundary {
     /// What did it, with its version. `bubblewrap 0.11.1`, not `namespaces`.
     pub mechanism: String,
+    /// Which family of machinery the rest of this record is written in, so that a
+    /// reader knows whether the namespace table or the property table is the answer.
+    pub platform: Mechanism,
     pub view: ViewSpec,
     pub egress: Egress,
-    /// One entry per [`Namespace::ALL`], read back from inside.
+    /// One entry per [`Namespace::ALL`], read back from inside. Empty under
+    /// [`Mechanism::Policy`], which has no namespaces to enter.
     pub ns: BTreeMap<Namespace, NsState>,
     /// One entry per [`SealKind::ALL`], **functionally tested** from inside.
     pub seals: BTreeMap<SealKind, Seal>,
+    /// One entry per [`Prop::ALL`], measured from inside. Empty under
+    /// [`Mechanism::Namespaces`], whose namespace table says the same things by name.
+    pub props: BTreeMap<Prop, PropState>,
     pub measured_at: SystemTime,
 }
 
 impl Boundary {
-    /// Every required namespace entered **and no seal measured open**. The only
-    /// honest success test, and the mirror of [`super::Reaping::clean`].
+    /// **An all-namespace boundary**, with no property table — the shape bubblewrap's
+    /// probe fills in. A constructor so that adding a field to this record does not
+    /// mean touching every test that builds one.
+    pub fn namespaces(
+        mechanism: impl Into<String>,
+        view: ViewSpec,
+        egress: Egress,
+        ns: BTreeMap<Namespace, NsState>,
+        seals: BTreeMap<SealKind, Seal>,
+    ) -> Boundary {
+        Boundary {
+            mechanism: mechanism.into(),
+            platform: Mechanism::Namespaces,
+            view,
+            egress,
+            ns,
+            seals,
+            props: BTreeMap::new(),
+            measured_at: SystemTime::now(),
+        }
+    }
+
+    /// Every required property of this boundary's own mechanism held, **and no seal
+    /// measured open**. The only honest success test, and the mirror of
+    /// [`super::Reaping::clean`].
+    ///
+    /// What "required" means is the mechanism's: three namespaces on Linux, three
+    /// properties under a policy. Asking a policy boundary for a PID namespace would
+    /// be asking it for something no OS gives it and calling the answer a defect.
     ///
     /// A seal that could not be tested does not fail this — it makes the boundary
     /// *partial*, which is a different sentence in the disclosure. A seal measured
     /// **open** does fail it, because a boundary a child can `unshare` its way out
     /// of is the "silently is not there" case wearing the right flags.
     pub fn complete(&self) -> bool {
-        Namespace::REQUIRED
-            .iter()
-            .all(|n| self.ns.get(n).map(|s| s.entered()).unwrap_or(false))
-            && !self.seals.values().any(|s| matches!(s, Seal::Open { .. }))
+        let sealed = !self.seals.values().any(|s| matches!(s, Seal::Open { .. }));
+        match self.platform {
+            Mechanism::Namespaces => {
+                Namespace::REQUIRED
+                    .iter()
+                    .all(|n| self.ns.get(n).map(|s| s.entered()).unwrap_or(false))
+                    && sealed
+            }
+            Mechanism::Policy => {
+                Prop::REQUIRED_POLICY
+                    .iter()
+                    .all(|p| self.props.get(p).map(|s| s.held()).unwrap_or(false))
+                    && sealed
+            }
+        }
     }
 
     /// Something was asked for and did not happen, or could not be confirmed.
@@ -769,12 +964,21 @@ impl Boundary {
     /// partial in a namespace that is not required, or in a seal that could not be
     /// tested from inside, and still confine.
     ///
+    /// A [`PropState::Absent`] is deliberately not partial. It is an OS that cannot
+    /// give the property, it is printed in full by [`Boundary::describe`], and
+    /// counting it here would make "this machine has no PID namespace" read as the
+    /// same finding as "the probe could not tell".
+    ///
     /// `Egress::Host` is deliberately not partial — that is a decision, and
     /// collapsing the two would report an authorised `git push` as a defect.
     pub fn partial(&self) -> bool {
         self.ns
             .values()
             .any(|s| matches!(s, NsState::NotEntered { .. }))
+            || self
+                .props
+                .values()
+                .any(|s| matches!(s, PropState::Unverified { .. }))
             || self
                 .seals
                 .values()
@@ -804,6 +1008,8 @@ impl Boundary {
             "confined"
         } else if self.complete() {
             "confined, PARTIALLY — something that was asked for is missing or could not be confirmed"
+        } else if self.platform == Mechanism::Policy {
+            "NOT CONFINED — a required property is not held or a seal is open; a command here is refused"
         } else {
             "NOT CONFINED — a required namespace is missing or a seal is open; a command here is refused"
         };
@@ -814,16 +1020,40 @@ impl Boundary {
             });
             s.push_str(&format!("\n  seal {k}: {} — {}", seal.line(), k.buys()));
         }
-        for n in Namespace::ALL {
-            let state = self.ns.get(&n).cloned().unwrap_or(NsState::NotEntered {
-                why: "never measured".into(),
-            });
-            let req = if Namespace::REQUIRED.contains(&n) {
-                " [required]"
-            } else {
-                ""
-            };
-            s.push_str(&format!("\n  {n}{req}: {} — {}", state.line(), n.buys()));
+        match self.platform {
+            // The namespace table, by name — the whole answer on Linux.
+            Mechanism::Namespaces => {
+                for n in Namespace::ALL {
+                    let state = self.ns.get(&n).cloned().unwrap_or(NsState::NotEntered {
+                        why: "never measured".into(),
+                    });
+                    let req = if Namespace::REQUIRED.contains(&n) {
+                        " [required]"
+                    } else {
+                        ""
+                    };
+                    s.push_str(&format!("\n  {n}{req}: {} — {}", state.line(), n.buys()));
+                }
+            }
+            // The property table, which is what a mechanism without namespaces has to
+            // say instead — including the properties it cannot have.
+            Mechanism::Policy => {
+                for p in Prop::ALL {
+                    let state = self
+                        .props
+                        .get(&p)
+                        .cloned()
+                        .unwrap_or(PropState::Unverified {
+                            why: "never measured".into(),
+                        });
+                    let req = if Prop::REQUIRED_POLICY.contains(&p) {
+                        " [required]"
+                    } else {
+                        ""
+                    };
+                    s.push_str(&format!("\n  {p}{req}: {} — {}", state.line(), p.buys()));
+                }
+            }
         }
         s.push_str(&format!("\n  view: {}", self.view.summary()));
         s.push_str(&format!(
@@ -856,11 +1086,7 @@ impl Boundary {
     pub fn outside_paths(&self, output: &str) -> Vec<PathBuf> {
         let mut outside: Vec<PathBuf> = Vec::new();
         for line in output.lines() {
-            if !(line.contains("No such file or directory")
-                || line.contains("ENOENT")
-                || line.contains("not found")
-                || line.contains("cannot find"))
-            {
+            if !self.boundary_refusal(line) {
                 continue;
             }
             for tok in absolute_paths(line) {
@@ -877,15 +1103,58 @@ impl Boundary {
         outside
     }
 
+    /// **The words in a command's output that mean *the boundary refused this***, which
+    /// are not the same words on both kinds of boundary.
+    ///
+    /// A path outside a mount view is **absent**, so the command's own answer is
+    /// `No such file or directory`. A path outside a policy boundary is **denied**, and
+    /// the answer is `Operation not permitted` — so a rule-4 note written only for
+    /// `ENOENT` says nothing at all on the Mac, which is where the note is needed most
+    /// (the command saw `EPERM` and the model reads *a permission problem in the
+    /// checkout*).
+    ///
+    /// A shell's own missing-binary words are included on both, because `sh` says
+    /// `not found` for a program that is not in the view.
+    fn boundary_refusal(&self, line: &str) -> bool {
+        let absent = line.contains("No such file or directory")
+            || line.contains("ENOENT")
+            || line.contains("not found")
+            || line.contains("cannot find");
+        match self.platform {
+            Mechanism::Namespaces => absent,
+            Mechanism::Policy => {
+                absent
+                    || line.contains("Operation not permitted")
+                    || line.contains("Permission denied")
+            }
+        }
+    }
+
+    /// What the boundary *does* to a path outside the view, in the words the note uses.
+    ///
+    /// One sentence per mechanism, because the two are different facts: a mount
+    /// namespace does not contain the path (no spelling reaches it), a policy denies the
+    /// access (the path is there and the kernel refuses). A policy's version also says
+    /// how to tell it apart from an ordinary permission problem, which is the thing a
+    /// model gets wrong on a Mac.
+    fn refusal_clause(&self) -> &'static str {
+        match self.platform {
+            Mechanism::Namespaces => {
+                "a path list is not what is stopping it — the mount namespace does not \
+                 contain it"
+            }
+            Mechanism::Policy => {
+                "the policy denies the path rather than hiding it, so this `Operation not \
+                 permitted` is the boundary and not a file permission in the checkout"
+            }
+        }
+    }
+
     pub fn absence_notes(&self, output: &str) -> Vec<String> {
         let mut outside: Vec<PathBuf> = Vec::new();
         let mut replaced: Vec<(PathBuf, &'static str)> = Vec::new();
         for line in output.lines() {
-            if !(line.contains("No such file or directory")
-                || line.contains("ENOENT")
-                || line.contains("not found")
-                || line.contains("cannot find"))
-            {
+            if !self.boundary_refusal(line) {
                 continue;
             }
             for tok in absolute_paths(line) {
@@ -913,16 +1182,16 @@ impl Boundary {
                 .join(", ");
             notes.push(format!(
                 "{list} {} not in this session's filesystem view, so the command saw \
-                 {} as absent. That `ENOENT` is the boundary, NOT an answer about \
+                 {} as absent. That failure is the boundary, NOT an answer about \
                  whether anything is there: this session's view is {}. Nothing \
-                 outside it can be reached by another spelling of the path, and a \
-                 path list is not what is stopping it — the mount namespace does not \
-                 contain it. If the work genuinely needs a path outside the view, the \
-                 operator is being asked to grant it in — re-running before they \
-                 answer will not change it.",
+                 outside it can be reached by another spelling of the path, and {}. \
+                 If the work genuinely needs a path outside the view, the operator is \
+                 being asked to grant it in — re-running before they answer will not \
+                 change it.",
                 if outside.len() == 1 { "is" } else { "are" },
                 if outside.len() == 1 { "it" } else { "them" },
                 self.view.summary().lines().next().unwrap_or("the project"),
+                self.refusal_clause(),
             ));
         }
         if !replaced.is_empty() {
@@ -1247,75 +1516,26 @@ impl Bwrap {
     /// Refuses rather than degrading, at four points, and each names what was
     /// missing: no helper; the helper would not run; the readback could not be
     /// parsed; a required namespace was not entered.
-    pub fn probe(mut view: ViewSpec, egress: Egress) -> Result<Bwrap, ExecError> {
+    pub fn probe(view: ViewSpec, egress: Egress) -> Result<Bwrap, ExecError> {
         // **No bubblewrap on macOS, and no installing one**: it is a front end to Linux
         // namespaces, which Darwin does not have. Said by name, with what a Mac does have,
         // rather than through the Linux sentence below and its `apt install`.
         #[cfg(target_os = "macos")]
         {
-            let _ = (&mut view, egress);
+            let _ = (&view, egress);
             return Err(ExecError::NoConfinement(
                 "macOS has no namespace boundary: bubblewrap is a front end to Linux \
-                 namespaces and cannot be installed here. A confined session on a Mac runs \
-                 in a firecode VM instead (`letibot --vm`, which needs firecode's macOS \
-                 build), or seat `leticode` for an unconfined session on this host — its \
-                 banner says it is unconfined. Nothing was run, and nothing was run \
-                 unconfined."
+                 namespaces and cannot be installed here. A Mac's boundary is a policy one \
+                 (`super::seatbelt::Seatbelt`, `sandbox-exec -f <profile>`), which \
+                 `confine::probe` chooses on this platform; ask for that rather than for \
+                 this. Nothing was run, and nothing was run unconfined."
                     .to_string(),
             ));
         }
         #[allow(unreachable_code)]
         let helper = find_helper()?;
         let mechanism = version_of(&helper);
-
-        // Canonicalise the project root before anything compares against it.
-        // [`ViewSpec::outside`] is lexical, and a lexical comparison against a path
-        // holding a symlink is wrong in the direction that matters: `/tmp/x` when
-        // `/tmp` is a link to `/private/tmp` would put the whole project outside its
-        // own view and refuse every command with a boundary message.
-        if let Ok(c) = view.project.canonicalize() {
-            view.project = c;
-        }
-
-        if !view.project.is_absolute() {
-            return Err(ExecError::NoConfinement(format!(
-                "the project root `{}` is not absolute; a mount view is built from \
-                 absolute host paths and a relative root would bind whatever the \
-                 daemon's cwd happens to be",
-                view.project.display()
-            )));
-        }
-        if !view.project.is_dir() {
-            return Err(ExecError::NoConfinement(format!(
-                "the project root `{}` is not a directory, so there is nothing to \
-                 root the view at",
-                view.project.display()
-            )));
-        }
-        if let HomeView::Dir(d) = &view.home
-            && let Err(e) = std::fs::create_dir_all(d)
-        {
-            return Err(ExecError::NoConfinement(format!(
-                "`$HOME` was declared as `{}` and it could not be created ({e}). A \
-                 confined command needs a writable `$HOME` that is NOT the \
-                 operator's home.",
-                d.display()
-            )));
-        }
-        // **The session's `/tmp` is made here, once, because a `--bind` of a path that is not
-        // there is a helper failure at every spawn and not a setup error at the one place that
-        // could explain it.** It is not created empty-and-then-forgotten: this is the directory
-        // a session's scratch files live in, and [`TmpView::Session`] is why it exists.
-        if let TmpView::Session(d) = &view.tmp
-            && let Err(e) = std::fs::create_dir_all(d)
-        {
-            return Err(ExecError::NoConfinement(format!(
-                "this session's `/tmp` was declared as `{}` and it could not be created \
-                 ({e}). Without it every command would fail at the helper's own bind, \
-                 which is a boundary failure and not the command's answer.",
-                d.display()
-            )));
-        }
+        let view = prepared(view)?;
 
         // Read the harness's own namespace inodes FIRST. These are the denominator:
         // without them, an inode read from inside proves nothing, because the
@@ -1389,14 +1609,7 @@ impl Bwrap {
             );
         }
 
-        let boundary = Boundary {
-            mechanism,
-            view,
-            egress,
-            ns,
-            seals: parse_seals(&text),
-            measured_at: SystemTime::now(),
-        };
+        let boundary = Boundary::namespaces(mechanism, view, egress, ns, parse_seals(&text));
         judged(helper, boundary)
     }
 
@@ -1729,23 +1942,115 @@ pub fn measured_from_probe(
             ),
         );
     }
-    let boundary = Boundary {
-        mechanism: if probe.version.is_empty() {
+    // **The egress as asked for, and the network namespace as measured.** The two are
+    // kept apart on purpose: if a run asked for the host's network and came back with a
+    // network namespace of its own, the [`NsState`] says `entered` and a reader sees that
+    // the decision did not take — where rewriting the egress here would hide it.
+    let boundary = Boundary::namespaces(
+        if probe.version.is_empty() {
             "bubblewrap (version unknown)".to_string()
         } else {
             probe.version.clone()
         },
-        // **The egress as asked for, and the network namespace as measured.** The two are
-        // kept apart on purpose: if a run asked for the host's network and came back with a
-        // network namespace of its own, the [`NsState`] says `entered` and a reader sees that
-        // the decision did not take — where rewriting the egress here would hide it.
-        egress,
         view,
+        egress,
         ns,
-        seals: probe.seals.clone(),
-        measured_at: SystemTime::now(),
-    };
+        probe.seals.clone(),
+    );
     Bwrap::measured_on_a_host(PathBuf::from(probe.helper.trim()), boundary)
+}
+
+/// **Prepare a view for any mechanism**: the project canonicalised, and the directories a
+/// view may only have asked for abstractly made real.
+///
+/// Shared by both renderings, which is the point: a `Tmpfs` `$HOME` is a directory on macOS
+/// and a tmpfs in a mount namespace, but *whether the directory exists* and *whether the
+/// project root is a directory at all* are the same questions on both, and a second copy of
+/// them would be a second answer.
+pub(crate) fn prepared(mut view: ViewSpec) -> Result<ViewSpec, ExecError> {
+    // Canonicalise the project root before anything compares against it.
+    // [`ViewSpec::outside`] is lexical, and a lexical comparison against a path
+    // holding a symlink is wrong in the direction that matters: `/tmp/x` when
+    // `/tmp` is a link to `/private/tmp` would put the whole project outside its
+    // own view and refuse every command with a boundary message.
+    if let Ok(c) = view.project.canonicalize() {
+        view.project = c;
+    }
+
+    if !view.project.is_absolute() {
+        return Err(ExecError::NoConfinement(format!(
+            "the project root `{}` is not absolute; a view is built from absolute host \
+             paths and a relative root would bind whatever the daemon's cwd happens to be",
+            view.project.display()
+        )));
+    }
+    if !view.project.is_dir() {
+        return Err(ExecError::NoConfinement(format!(
+            "the project root `{}` is not a directory, so there is nothing to root the \
+             view at",
+            view.project.display()
+        )));
+    }
+    if let HomeView::Dir(d) = &view.home
+        && let Err(e) = std::fs::create_dir_all(d)
+    {
+        return Err(ExecError::NoConfinement(format!(
+            "`$HOME` was declared as `{}` and it could not be created ({e}). A confined \
+             command needs a writable `$HOME` that is NOT the operator's home.",
+            d.display()
+        )));
+    }
+    // **The session's `/tmp` is made here, once, because a `--bind` of a path that is not
+    // there is a helper failure at every spawn and not a setup error at the one place that
+    // could explain it.** It is not created empty-and-then-forgotten: this is the directory
+    // a session's scratch files live in, and [`TmpView::Session`] is why it exists.
+    if let TmpView::Session(d) = &view.tmp
+        && let Err(e) = std::fs::create_dir_all(d)
+    {
+        return Err(ExecError::NoConfinement(format!(
+            "this session's `/tmp` was declared as `{}` and it could not be created ({e}). \
+             Without it every command would fail at the helper's own bind, which is a \
+             boundary failure and not the command's answer.",
+            d.display()
+        )));
+    }
+    Ok(view)
+}
+
+/// **The boundary this platform can measure for `view`, or the refusal that says what
+/// is missing.**
+///
+/// The one place a caller asks for *a boundary* rather than for a particular mechanism.
+/// Linux answers with [`Bwrap`]; macOS answers with [`super::seatbelt::Seatbelt`], which
+/// is a mandatory-access policy rather than a set of namespaces. What the two share is
+/// the whole contract: the view is the same [`ViewSpec`], the egress decision is the same
+/// [`Egress`], and the result is a [`Boundary`] that was measured from inside rather than
+/// asserted.
+///
+/// **A boxed trait object, deliberately.** The callers that widen a view
+/// (`HostBackend::with_session_tmp`, `HostBackend::grant_into_view_impl`) hold whatever
+/// the first probe produced and replace it with whatever the next one produces; naming
+/// [`Bwrap`] in those places is what would make a Mac session silently lose its boundary
+/// on the second probe.
+pub fn probe(view: ViewSpec, egress: Egress) -> Result<Box<dyn Confinement>, ExecError> {
+    #[cfg(target_os = "macos")]
+    {
+        super::seatbelt::Seatbelt::probe(view, egress).map(|s| Box::new(s) as Box<dyn Confinement>)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Bwrap::probe(view, egress).map(|b| Box::new(b) as Box<dyn Confinement>)
+    }
+}
+
+/// Can this platform build a boundary at all, without asking what the view is?
+///
+/// `false` on a platform that has no mechanism to offer, so that a caller which has to
+/// behave differently when there is none (the daemon, on a Mac, seats an unconfined
+/// session and says so) can ask before it tries. The answer is a compile-time fact, not a
+/// probe: whether `sandbox-exec` is *there* is what [`probe`] answers.
+pub fn available() -> bool {
+    cfg!(target_os = "macos") || cfg!(target_os = "linux")
 }
 
 impl Confinement for Bwrap {
@@ -2339,10 +2644,12 @@ mod tests {
         }
         Boundary {
             mechanism: "bubblewrap 0.0.0 (fixture)".into(),
+            platform: Mechanism::Namespaces,
             view: ViewSpec::project_only("/proj"),
             egress: Egress::Denied,
             ns,
             seals,
+            props: BTreeMap::new(),
             measured_at: SystemTime::now(),
         }
     }

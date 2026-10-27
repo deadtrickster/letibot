@@ -417,6 +417,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // **A session's workspace is gone** (R92.24) — said when it opens or wakes on a directory
     // that no longer exists. A Failure: nothing the session runs can work until somebody acts.
     ("workspace_gone", Class::Failure),
+    // **A session asked for a boundary and got an unconfined shell** (TODO R98) — the one
+    // place a session opens unconfined on a platform that could have confined it, and it is
+    // said because everything downstream depends on it: D16 admits a command without a card
+    // *inside a measured boundary*, so without one every command that runs code is decided
+    // per command, and this row is why. A Failure and not a routine report: the fix is the
+    // operator's (install the helper, read why the probe refused, or accept the asks), and a
+    // head that does not draw it leaves the operator guessing at a card printer.
+    ("boundary_absent", Class::Failure),
     // **A file the operator chipped into a prompt was not there when it was sent** — protocol 50,
     // `harnessd::attachments`. A Failure and not a routine hiccup: the message went out, the
     // model read a sentence naming a file it was never given, and the answer is about something
@@ -1262,10 +1270,13 @@ mod the_register_census {
         //   · **163, not 162**: `plugin_look` (Routine) — a look a plugin layer declared that the
         //     gate would not run: adjudicated without asking, said once per
         //     (layer, program, reason). See `crates/harnessd/src/plugins/conditions.rs`.
-        assert_eq!(TABLE.len(), 163, "the table's size");
+        //   · **164, not 163**: `boundary_absent` (Failure) — R98's macOS half: a session that
+        //     asked for a boundary and got an unconfined shell, because the boundary is what D16
+        //     admits a command inside of.
+        assert_eq!(TABLE.len(), 164, "the table's size");
         assert_eq!(count(Class::Routine), 64);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 86);
+        assert_eq!(count(Class::Failure), 87);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

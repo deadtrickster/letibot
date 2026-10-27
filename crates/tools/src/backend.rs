@@ -503,9 +503,9 @@ impl HostBackend {
         let widened = boundary
             .view
             .with_tmp(crate::exec::TmpView::Session(dir.clone()));
-        let confine = crate::exec::Bwrap::probe(widened, boundary.egress)
+        let confine = crate::exec::confine::probe(widened, boundary.egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;
-        host.replace_confinement(Box::new(confine));
+        host.replace_confinement(confine);
         self.session_tmp = Some(dir);
         Ok(self)
     }
@@ -591,6 +591,17 @@ impl HostBackend {
     /// v2 subtree (a process with no owner), or no usable boundary (a command that
     /// would read the operator's disk while a disclosure said otherwise). Neither
     /// falls back to [`HostBackend::executable`].
+    ///
+    /// # Which mechanism is a fact about the platform
+    ///
+    /// `crate::exec::confine::probe` decides it and this constructor does not: Linux
+    /// enters namespaces through `bwrap`, macOS applies a Seatbelt profile through
+    /// `sandbox-exec` (`crate::exec::seatbelt::Seatbelt`), and what a caller gets either way
+    /// is a measured [`crate::exec::Boundary`] whose `describe` says what it is and what it
+    /// could not give. What the Mac's version buys in *this* paragraph's terms: the operator's
+    /// `~/.ssh`, keychains and shell profiles are **denied** rather than absent, egress is a
+    /// decision, a process outside the boundary cannot be signalled — and there is no PID
+    /// namespace and no cgroup, which its description says on its own lines.
     pub fn confined(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         Self::confined_granting(root, Vec::new())
     }
@@ -615,9 +626,9 @@ impl HostBackend {
         for g in grants {
             view = view.granting(g);
         }
-        let confine = crate::exec::Bwrap::probe(view, crate::exec::confine::Egress::Denied)
+        let confine = crate::exec::confine::probe(view, crate::exec::confine::Egress::Denied)
             .map_err(|e| BackendError::Io(e.to_string()))?;
-        let host = crate::exec::HostProcesses::confined(base.root.clone(), Box::new(confine))
+        let host = crate::exec::HostProcesses::confined(base.root.clone(), confine)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         Ok(HostBackend {
             processes: Some(std::sync::Arc::new(host)),
@@ -679,10 +690,10 @@ impl HostBackend {
             }
         };
         let widened = view.granting(g);
-        let confine = crate::exec::Bwrap::probe(widened, crate::exec::confine::Egress::Denied)
+        let confine = crate::exec::confine::probe(widened, crate::exec::confine::Egress::Denied)
             .map_err(|e| BackendError::Io(e.to_string()))?;
-        let described = crate::exec::Confinement::describe(&confine);
-        host.replace_confinement(Box::new(confine));
+        let described = crate::exec::Confinement::describe(&*confine);
+        host.replace_confinement(confine);
         Ok(described)
     }
 
