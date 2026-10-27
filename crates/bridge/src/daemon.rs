@@ -628,8 +628,6 @@ mod tests {
     /// drives, not what the daemon does once it is up.
     #[test]
     fn a_daemon_the_bridge_started_is_reaped_when_it_exits() {
-        use std::os::unix::fs::PermissionsExt;
-
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -639,10 +637,19 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let script = dir.join("harnessd");
         // Two seconds: long enough to be seen alive and in its own session, short enough not to
-        // hold the suite.
-        std::fs::write(&script, "#!/bin/sh\nsleep 2\n").expect("write the script");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("make the script executable");
+        // hold the suite — **and nothing at all when the script is run with no arguments**, which
+        // is the probe `write_stub` runs before it hands the file back.
+        //
+        // **Written through that helper, because writing an executable and then starting it is a
+        // race against every other test in this binary.** A child forked while the write
+        // descriptor is open holds it until its own exec, and the `spawn` below in that window is
+        // `ETXTBSY`: MEASURED in the gate under load, `starting
+        // /tmp/letibot-reap-…/harnessd: Text file busy (os error 26)`, which reads as a broken
+        // bridge and is a fact about the fixture's own process. One successful exec is the proof
+        // that nobody holds a write descriptor any more, and nobody can get one after it. The
+        // probe's `argv` is EMPTY and the daemon's own is never (`daemon_args`), so the two cannot
+        // be mistaken for each other.
+        letibot_tools::testing::write_stub(&script, "#!/bin/sh\n[ $# -eq 0 ] && exit 0\nsleep 2\n");
 
         let d = Daemon {
             workspace: dir.clone(),

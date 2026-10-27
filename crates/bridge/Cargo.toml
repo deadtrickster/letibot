@@ -38,6 +38,11 @@ sha2 = "0.10"
 libc = "0.2"
 
 [dev-dependencies]
+# **The fixture that writes an executable needs `write_stub`**, which is the one place in this tree
+# that closes the `ETXTBSY` window a written-then-exec'd file has (`crates/tools/src/testing.rs`,
+# and `daemon::tests`' reaper test is the caller). Asking for the feature HERE rather than on the
+# dependency above is the tree's shape for that: a bridge binary has no use for a fixture.
+letibot-tools = { workspace = true, features = ["testing"] }
 # **A real daemon, in this process.** The end-to-end test is the daemon's own
 # `Daemon::serve` over a `Registry` plus `Sessions::open_first`, exactly as harnessd's
 # integration tests build one — so the protocol the bridge speaks in the test is the
