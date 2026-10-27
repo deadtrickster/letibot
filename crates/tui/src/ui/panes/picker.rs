@@ -9,6 +9,7 @@ use rano::agent::picker::{
     SessionGroup as PickGroup, SessionItem, SessionPicker, SessionRow as PickRow, SettingPicker,
     SettingValue,
 };
+use rano::agent::tree_list::Fold;
 
 impl App {
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
@@ -89,9 +90,19 @@ impl App {
                             // fourteen rows to scroll past.
                             count: groups.iter().filter(|g| **g == row.group).count(),
                             // **`mine` is never folded** — its rows are why the list is open —
-                            // and a group this head is standing in opens itself, which is what
-                            // `group_open` answers (the same rule `session_rows` enumerated by).
-                            open: self.group_open(row.group, &groups),
+                            // and it says so in DATA (`Fold::Fixed`) rather than by claiming to
+                            // be open: a group written `open: true` was one rano drew a `-` on
+                            // and wrote *enter folds it away* about, on a row where Enter does
+                            // nothing. Every other group folds, and one this head is standing in
+                            // opens itself — `group_open`'s rule, the same rule `session_rows`
+                            // enumerated by.
+                            fold: if row.group.is_mine() {
+                                Fold::Fixed
+                            } else if self.group_open(row.group, &groups) {
+                                Fold::Open
+                            } else {
+                                Fold::Closed
+                            },
                             // What the group IS, one line: the header is a word like `packages`
                             // and a reader cannot be expected to know what a package is.
                             note: row.group.legend().to_string(),

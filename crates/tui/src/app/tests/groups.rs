@@ -338,12 +338,14 @@ fn a_click_on_a_groups_line_folds_it() {
 }
 
 /// **The bar says what Enter does on the row under the cursor** — `switches` on a session,
-/// `unfolds it` / `folds it away` on a group's line, and the truth on `mine`, where Enter does
-/// nothing at all.
+/// `unfolds it` / `folds it away` on a group's line, and nothing at all on `mine`, where Enter
+/// does nothing.
 ///
-/// The picker's footer used to say *enter switches* over a group, because the sentence was written
-/// once for the list instead of once for the row the cursor is on. This is that sentence read off
-/// the row (`Surface::row_says`), the way the subagents and jobs panes already read theirs.
+/// The words are **rano's** (`SessionPicker::hint_text`, rano `bf3fa48`): the same sentence the
+/// list itself draws from the row the cursor is on. This head used to spell that sentence a
+/// second time in `row_says`, which is how a picker footer came to say *enter switches* over a
+/// group in the first place — and the `mine` half is the one the primitive grew `Fold::Fixed`
+/// for: a group that cannot fold carries no fold action, so its hint cannot offer one.
 #[test]
 fn the_bar_follows_the_cursor_onto_a_groups_line() {
     /// The drawn row of a title, or of a group's `[name]`.
@@ -368,12 +370,19 @@ fn the_bar_follows_the_cursor_onto_a_groups_line() {
         .push(letibot_sessionlog::SessionGroup::Subagents);
     let bar = a.hint_bar(200);
     assert!(bar.contains("enter folds it away"), "{bar}");
-    // `mine` is the row where nothing happens, and the bar does not pretend otherwise.
+    // `mine` is the row where nothing happens, and the bar does not pretend otherwise: it is
+    // `Fold::Fixed`, so it carries no fold action and no `enter …` sentence comes out of it.
     a.picker_sel = row_of(&a, "[mine]");
     let bar = a.hint_bar(200);
     assert!(
-        bar.contains("on mine does nothing"),
-        "the one row Enter cannot act on says so: {bar}"
+        !bar.contains("enter switches")
+            && !bar.contains("enter folds")
+            && !bar.contains("enter unfolds"),
+        "the one row Enter cannot act on offers no fold key: {bar}"
+    );
+    assert!(
+        bar.contains("↑↓ moves"),
+        "and it still says how to move: {bar}"
     );
 }
 

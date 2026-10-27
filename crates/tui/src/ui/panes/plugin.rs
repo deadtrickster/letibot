@@ -433,32 +433,25 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
 /// leaves `children` empty", which is this caller exactly.
 ///
 /// `cursor` is where THIS pane's cursor sits among the tree's own stops, or `None` when it is on
-/// another block. **Rano's list always marks its selected stop and has no way to say *nothing is
-/// selected***, so a block the cursor is not in is handed over with its ids cleared: it draws the
-/// same rows and marks none of them, while the pane's own stop-ness stays C3's (`Item::stop`) and
-/// its stop RECORD is written by the caller, from the same ids, not read back out of the list.
+/// another block. **`None` is rano's *nothing is selected***: the rows keep their ids — they are
+/// still stops, and the pane's click map is written from the same ids — and the list draws no
+/// mark, no inverse row and no row's actions in its hint. The version before this one handed the
+/// list its rows with the ids CLEARED, which suppressed the mark by throwing away the stop-ness
+/// the host's clicks read; the primitive grew the state so the host would not have to.
 ///
 /// One line per row, which is what makes the caller's splice exact: the list is given no title, no
 /// detail and no frame lines.
 fn tree_lines(depth_first: &[(usize, &pv::Row)], cursor: Option<usize>, w: usize) -> PaneLines {
     let rows: Vec<TreeRow> = depth_first
         .iter()
-        .map(|&(depth, r)| {
-            let mut row = tree_row(depth, r);
-            if cursor.is_none() {
-                row.id = None;
-            }
-            row
-        })
+        .map(|&(depth, r)| tree_row(depth, r))
         .collect();
     let drawn = rows.len();
     let list = TreeList {
         // The pane draws the panel's title itself; the list is the rows.
         title: String::new(),
         rows,
-        // Clamped by the list: with nothing selected the ids are already gone, so the clamp
-        // lands on a row that draws no mark.
-        selected: cursor.unwrap_or(0),
+        selected: cursor,
         empty: String::new(),
         // No fold column: see [`tree_row`].
         fold_column: false,

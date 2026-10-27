@@ -537,34 +537,24 @@ impl App {
     /// **The words for a row-dependent binding**, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
-            // **What Enter does on the session under the cursor** — and it is two different
-            // things, which is why this is read off the row: a session's row switches to it, and
-            // a group's line opens or closes the group. The picker's footer used to say *enter
-            // switches* over a group, because the sentence was written once for the list instead
-            // of once for the row the cursor is on.
+            // **What Enter does on the session under the cursor is rano's sentence, not this
+            // head's** — a picker's footer is a function of the row the cursor is on, and this
+            // head used to spell that function a second time here, which is how the two drifted
+            // apart. `SessionPicker::hint_text()` (rano `bf3fa48`) is the same sentence the list
+            // itself draws; the bar reads its FIRST segment and nothing else, because the rest
+            // of it (↑↓, the typed path, esc) is this table's own bindings below.
             //
-            // **`mine` is the row where Enter does nothing**, and the bar says so rather than
-            // offering a fold that cannot happen: `toggle_group` refuses it, and a key that does
-            // nothing and says nothing is indistinguishable from a broken one.
-            (Surface::Picker, Act::Open) => {
-                let rows = self.session_rows();
-                let at = self.picker_sel.min(rows.len().saturating_sub(1));
-                Some(
-                    match rows.get(at) {
-                        Some(r) if r.idx.is_none() => {
-                            if r.group.is_mine() {
-                                "on mine does nothing — it is always open"
-                            } else if self.open_groups.contains(&r.group) {
-                                "folds it away"
-                            } else {
-                                "unfolds it"
-                            }
-                        }
-                        _ => "switches",
-                    }
-                    .to_string(),
-                )
-            }
+            // **And `mine` is the row where Enter says nothing** — it is `Fold::Fixed`, so no
+            // `enter …` segment comes out of rano at all, and the binding is dropped from the
+            // bar. A key that does nothing and says nothing is a broken key; a key that does
+            // nothing and is not offered is the truth.
+            (Surface::Picker, Act::Open) => self
+                .session_picker()
+                .hint_text()
+                .as_deref()
+                .and_then(|said| said.split(" · ").next())
+                .and_then(|first| first.strip_prefix("enter "))
+                .map(str::to_string),
             // **Said only on a row that waits on something** — `w` is not on the bar over a
             // row it would do nothing on.
             (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {
