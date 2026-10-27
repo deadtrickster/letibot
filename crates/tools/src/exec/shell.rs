@@ -767,7 +767,17 @@ impl ShellSession {
         // The mark the trailer's function reads. In the environment rather than in the
         // definition, so the line the shell echoes carries the *name* and not the value.
         cmd.env("LETIBOT_MARK", &mark);
+        // **No inherited shell options.** `SHELLOPTS=xtrace` turns on tracing before the rc
+        // runs, and the trace of the trailer's own functions then lands INSIDE the trailer,
+        // so the environment report is `+ for n in $(compgen -e)` instead of `NAME=value;`.
+        // MEASURED 2026-10-27 in gate-stack11: `host.rs`'s BASH_ENV test sets it for the whole
+        // test process. Filtered from `cfg.env` too, as `host.rs` filters a spawn's: a caller
+        // naming one must not re-arm what this removes. The operator's rc still runs after.
+        cmd.env_remove("SHELLOPTS").env_remove("BASHOPTS");
         for (k, v) in &cfg.env {
+            if k == "SHELLOPTS" || k == "BASHOPTS" {
+                continue;
+            }
             cmd.env(k, v);
         }
         // **A terminal on all three**, which is the difference between this and the row path:
@@ -1273,6 +1283,30 @@ mod tests {
         assert!(
             report.split(';').any(|p| p == "LT_CARRIED=carried"),
             "the exported value is not in the trailer: {report}"
+        );
+    }
+
+    /// **A shell option asked for cannot trace the trailer.** Through `cfg.env` rather than
+    /// the process environment, so this test cannot do to its neighbours what `host.rs`'s
+    /// `SHELLOPTS=xtrace` did to `an_export_a_function_and_an_alias_survive`.
+    #[test]
+    fn shellopts_xtrace_does_not_reach_the_trailer() {
+        let dir = tmp("xtrace");
+        let mut cfg = config(&dir);
+        cfg.env.push(("SHELLOPTS".into(), "xtrace".into()));
+        cfg.env.push(("LT_PLAIN".into(), "plain".into()));
+        let mut s = ShellSession::open(&cfg).expect("a shell session");
+
+        let t = s.run("printf 'ok'", LONG).expect("a turn");
+        assert!(!text(&t).contains("+ printf"), "traced: {:?}", text(&t));
+        let report = s.env().expect("a report");
+        assert!(
+            !report.contains('+'),
+            "the trace is in the trailer: {report}"
+        );
+        assert!(
+            report.split(';').any(|p| p == "LT_PLAIN=plain"),
+            "the report lost the plain value: {report}"
         );
     }
 
