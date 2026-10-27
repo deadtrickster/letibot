@@ -803,7 +803,9 @@ line) read a decision export and re-run today's `Baseline`, `shell::shape` and g
 over every `bash` command in it. Nothing in the tree points at where the exports live; the
 paths are arguments, because they hold the operator's own sessions. The sweep streams the
 file (the largest export is 184 MiB), never reads a script off disk, and prints counts —
-`LETIBOT_CORPUS_SHOW=n` adds request ids and readings, never command text.
+`LETIBOT_CORPUS_SHOW=n` adds request ids and readings, never command text. It also groups the
+`parse_error` commands by cause ([`parse_cause`], which is 4i.7's table), because "the grammar
+could not read this" is a bucket rather than a fact.
 
 Two things about the export had to be got right before any number meant anything:
 
@@ -818,35 +820,51 @@ Two things about the export had to be got right before any number meant anything
 
 ### 4i.2 Before and after, per host
 
-161,099 `bash` decisions: lab2x1 134,428, mac 26,180, lubuntu1 489.
+161,097 `bash` decisions: lab2x1 134,428, mac 26,180, lubuntu1 489.
 
 | | lab2x1 | mac | lubuntu1 | total |
 |---|---|---|---|---|
 | unread at G3's tip | 14,285 | 3,210 | 60 | 17,555 |
-| unread after | **7,633** | **2,402** | **30** | **10,065** |
-| — as a share | 10.6% → 5.7% | 12.3% → 9.2% | 12.3% → 6.1% | 10.9% → 6.2% |
-| commands that became readable | 11,091 | 1,719 | 35 | 12,845 |
+| unread after G4 | 7,633 | 2,402 | 30 | 10,065 |
+| unread now | **7,533** | **2,353** | **30** | **9,916** |
+| — as a share | 10.6% → 5.7% → **5.6%** | 12.3% → 9.2% → **9.0%** | 12.3% → 6.1% → **6.1%** | 10.9% → 6.2% → **6.2%** |
+| commands that became readable | 11,091 → **11,191** | 1,719 → **1,768** | 35 | 12,845 → **12,994** |
 | commands that stopped being readable | **0** | **0** | **0** | **0** |
 
-By construct, commands it appears in / commands it is the only reason for:
+So this change read **149 more commands** (100 / 49 / 0) and made none of them unread —
+the LAST row is what it is measured by, and it is zero on every host in every run, as 4i.3's
+`Brace` note says about the first cut that got it wrong.
 
-| construct | lab2x1 before | lab2x1 after | mac before | mac after |
-|---|---|---|---|---|
-| `parameter_expansion` | 11,870 / 8,691 | 3,999 / 1,827 | 2,792 / 2,359 | 1,880 / 1,526 |
-| `command_substitution_value` | 4,793 / 1,910 | 4,998 / 2,667 | 738 / 334 | 758 / 422 |
-| `parse_error` | 541 / 188 | 577 / 294 | 64 / 26 | 64 / 26 |
-| `arithmetic_expansion` | 440 / 34 | 486 / 136 | 24 / 3 | 26 / 5 |
-| `process_substitution_path` | 254 / 151 | 254 / 191 | 17 / 11 | 17 / 14 |
-| `brace_expansion` | 36 / 31 | 36 / 32 | 38 / 22 | 42 / 29 |
-| `ansi_c_escapes` | 24 / 9 | 24 / 11 | 16 / 13 | 16 / 13 |
+By construct, commands it appears in / commands it is the only reason for, **G3's tip →
+after G4 → now**:
 
-**Two constructs grew, and neither is a reading getting worse.** `parse_error` gains 36 on
-lab2x1 because G3's resolver used to splice a *transform* of a variable away as if it were
-the value — `${X%…}`, `${#X}` — and in 36 commands that hid the fact that the text does
-not parse at all (see 4i.3). The substitutions and the arithmetic grow for the same reason:
-what was spliced away is now read, so the construct inside it is reported instead of being
-silently correct. A count that falls because a construct was thrown away is the number this
-section exists to avoid.
+| construct | lab2x1 | mac |
+|---|---|---|
+| `parameter_expansion` | 11,870 / 8,691 → 3,999 / 1,827 → 3,999 / 1,831 | 2,792 / 2,359 → 1,880 / 1,526 → 1,879 / 1,551 |
+| `command_substitution_value` | 4,793 / 1,910 → 4,998 / 2,667 → 4,985 / 2,725 | 738 / 334 → 758 / 422 → 755 / 425 |
+| `parse_error` | 541 / 188 → 577 / 294 → **425 / 235** | 64 / 26 → 64 / 26 → **34 / 19** |
+| `arithmetic_expansion` | 440 / 34 → 486 / 136 → 486 / 139 | 24 / 3 → 26 / 5 → 27 / 5 |
+| `process_substitution_path` | 254 / 151 → 254 / 191 → 254 / 197 | 17 / 11 → 17 / 14 → 17 / 15 |
+| `brace_expansion` | 36 / 31 → 36 / 32 → **0 / 0** | 38 / 22 → 42 / 29 → **0 / 0** |
+| `ansi_c_escapes` | 24 / 9 → 24 / 11 → **0 / 0** | 16 / 13 → 16 / 13 → **0 / 0** |
+| `compound_argument` (new) | — → — → 27 / 7 | — → — → 2 / 2 |
+| `expanded_heredoc` | 5 / 1 → 5 / 1 → 5 / 1 | — |
+
+lubuntu1 has no row in this table: its 489 commands never had a brace, an ANSI-C string or a
+parse error, and its 18 + 15 + 1 of the three that are left are unchanged.
+
+**Three constructs moved in a direction that is not a reading getting worse, and each for its
+own reason.** `parse_error` fell by 152 because a quarter of it was never the grammar (4i.7).
+`command_substitution_value` fell by 13 on lab2x1 because of `$(pwd)` — and its `alone` column
+ROSE by 58, which is the same fact seen from the other side: a command that was unread for a
+parse error and a `$(date)` is now unread for the `$(date)` alone, so *"`command_substitution_
+value:date`, alone"* goes 92 → 156. A count that falls because a construct was thrown away is
+the number this section exists to avoid; a count that rises because the thing underneath it
+became visible is the number it is for.
+
+The workspace assumption: `--home /home/dead --workspace /home/dead/Projects/letibot`. The
+region-set comparison depends on it, so 4i.5's region row is measured under it and moved from
+1,512 to 1,212 when it changed — this change moved it by **0**.
 
 ### 4i.3 What was fixed, and why each is safe
 
@@ -881,6 +899,58 @@ offsets, so `$?` in a body was reported once per pass against one place in the t
 substitution that would make a command *less* parseable than it was is abandoned whole — the
 command keeps its constructs and stays unread.
 
+**Brace expansion, ANSI-C quoting and `$(pwd)`** — the three 4i.6 called *decidable and
+next*. Each is a reading rather than a loosening, and each keeps its own refusals.
+
+* **A brace expansion is the words bash makes of it.** `{a,b}` and `{1..3}` are decided by
+the text, and the words are expanded in bash's own order — leftmost outermost, rightmost
+fastest (`x{1,2}{3,4}` is `x13 x14 x23 x24`) — with bash's own corners, each of them measured
+on this box: an empty alternative makes no word (`echo {a,,b}` is two arguments), a nested
+pair expands inside its alternative (`pre{a,{b,c}}post` is three words), `{{a,b}}` is `{a}`
+and `{b}`, and `{-01..3}` pads to the sign (`-01 000 001 002 003`). Bounded at 32 words like
+the `for` pass count — a thousand arguments is a script, not a reading — and past the bound
+the word is **unread**, which is a change of mind from the first cut: it called `{1..100}` a
+literal, and a literal here claims the program receives braces it does not. Still unread: an
+alternative holding an expansion (`{$a,$b}`), one holding whitespace (`{a b,c}` — field
+splitting makes more words than the braces did), a quoted alternative, and `{,}` (whose
+argument vanishes). 36/31 → **0** on lab2x1 and 38/22 → **0** on the mac.
+* **`$'…'` is decoded into the bytes the program receives.** `\n`, `\t`, `\xHH`, `\NNN`,
+`\uHHHH`, `\UHHHHHHHH` and `\cX`, each arm taken from `od -tx1` of what bash 5.2 delivered
+rather than from the manual — which is how the odd ones were got right: `\x` with no digit
+keeps its backslash, `\x4` is `0x04` (one digit is a number), `\1011` is `A1` (three octal
+digits at most), and `\c?` is DEL. An escape whose bytes are not a string this can carry (a
+lone `\xff`, a NUL, a code point past `U+10FFFF`) stays unread. 24/11 → **0** on lab2x1 and
+16/13 → **0** on the mac.
+* **`$(pwd)` is `$PWD`.** The one substitution whose value is in the text, and the idiom
+agents write (`cd "$(pwd)/…"`). Only that spelling: `$(pwd -P)`, `$(cd x && pwd)` and
+`$(dirname $(pwd))` stay unread, and the inner command is still listed as its own stage.
+Small — `command_substitution_value` 4,998 → 4,985 on lab2x1 — and 4i.6 said so before it was
+built.
+
+**And four shapes the census found were ours, not the grammar's.** The first two were
+reported as *parse errors* about trees with no error in them, and together they were a
+quarter of that class (4i.7):
+
+* **A `$` that ends a word.** This grammar wraps `$?`, `$#` and `$$` in a `simple_expansion`
+  when something follows them, but a `$` in the LAST position of a word comes back as the
+  bare token — `echo x$$`, `cargo nextest -E run=^$` — and the resolver had no arm for it. A
+  lone `$` is a literal dollar; `$$` is a pid and goes to the resolver as one of the shell's
+  numbers. 133 commands on lab2x1.
+* **A bare `variable_name` in an argument position.** `export SKIP_SLT` and `declare -x FOO`
+  put the NAME where the resolver expected a value. 24 commands, every one of them an
+  `export NAME` in a gate script.
+* **A whole command in an argument position** (`time ( … )`, `! ( … )`): the grammar hangs
+  the compound off the `command` node, and reading it as one opaque argument meant its
+  commands were **never walked** — `time (cargo test …)` produced no stage for `cargo` and no
+  redirect for its log. It is walked now and named `compound_argument` (27 on lab2x1, 2 on
+  the mac); the command stays unread, because how a compound's value relates to the stage's
+  argv is not stateable.
+* **A brace inside quotes.** A `gh api graphql query='{repository(owner:"x",…)}'` is one
+  concatenation of `query=` and a quoted string, and the brace check ran on the MERGED text —
+  where its GraphQL braces looked like an expansion. 28 commands on the mac were refused for
+  that, every one a query bash passes through untouched; the check now runs on the text with
+  every quoted character blanked.
+
 ### 4i.4 What is still unread, and why it stays that way
 
 * **`$PATH` — the largest thing left, and deliberately not done** (527 commands on lab2x1,
@@ -889,39 +959,57 @@ command keeps its constructs and stays unread.
   `export PATH=…:$PATH` would let a shape or a session grant settle a command whose later
   stages may run a different binary than the one the table names. That is a rule about what
   runs unasked, which is the operator's to change — see 4i.6.
-* **`$(…)`** (4,793 → 4,998 on lab2x1; 738 → 758 on the mac). The command inside is read and
-  listed; the bytes it will produce are not in the text. `$(pwd)` is the one exception that
-  could be done safely — it is exactly `$PWD`, which already resolves — and it is small
-  enough that it buys nothing today.
+* **`$(…)`** (4,793 → 4,998 → 4,985 on lab2x1; 738 → 758 → 755 on the mac). The command
+  inside is read and listed; the bytes it will produce are not in the text. `$(pwd)` is the
+  one exception, and it is done (4i.3) — it was always exactly `$PWD`, which already
+  resolves. 4i.6 was right that it is small: 13 commands on lab2x1.
 * **Variables a *previous* command assigned** (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …,
   ~500 commands). These need a session-scoped environment, which is a design decision rather
   than a parser gap — see 4i.6.
-* **`parse_error`** (577 on lab2x1). The grammar's own limits: a here-document operator
-  followed by `&& for`, a `;` after a heredoc, missing nodes at line ends. Not fixable here.
+* **`parse_error`** (425 on lab2x1, 34 on the mac): the grammar's own limits, by cause — a
+  read-write redirect `<>` (207), a here-document operator followed by another operator on
+  its line (122), and 96 that are mostly text bash itself refuses. **4i.7 is the census**, and
+  the two upstream reproductions are there too.
 * **`process_substitution_path`** — the shell invents `/dev/fd/N` at runtime; the inner
   command is already read and listed.
-* **`arithmetic_expansion`**, **`brace_expansion`**, **`ansi_c_escapes`**. Brace expansion
-  and ANSI-C quoting are decidable from the text and are the next two parser-side wins
-  (36 and 24 commands on lab2x1, 38 and 16 on the mac); arithmetic reads variables.
+* **`arithmetic_expansion`** (486 on lab2x1), **`compound_argument`** (27 on lab2x1, 2 on the
+  mac — a `time ( … )` whose commands ARE now walked, and whose value is not stateable), and
+  **`expanded_heredoc`** (5). Arithmetic reads variables; the other two are named rather than
+guessed.
+* **Nothing is left in this list that the text decides.** `brace_expansion` and
+  `ansi_c_escapes` were the last two, and both are at **0** on every host. What remains is a
+  value nobody wrote down (`$PATH`, a previous command's variable, `$(…)`'s output), a
+  construct the grammar cannot take (`<>`, a heredoc's second redirect), or a command that is
+  not a command at all.
 
 ### 4i.5 What this did for a person, and for the oracle
 
-| | lab2x1 before | lab2x1 after | mac before | mac after |
+| | lab2x1 at G4 | lab2x1 now | mac at G4 | mac now |
 |---|---|---|---|---|
 | human answers | 542 | 542 | 251 | 251 |
-| …a standing approval would now settle | 167 | **192** | 72 | **78** |
-| oracle decisions whose command was never read | 215 | — | 0 | — |
-| …readable now | 4 | **151** | — | — |
-| oracle rows whose intent set differs from the recorded brief | 128 | 136 | 0 | 0 |
-| …whose region set differs | 1,508 | 1,512 | 0 | 0 |
+| …a standing approval would now settle | 192 | **202** | 78 | **81** |
+| oracle decisions whose command was never read | 215 | 215 | 0 | 0 |
+| …readable now | 151 | **151** | — | — |
+| oracle rows whose intent set differs from the recorded brief | 136 | 136 | 0 | 0 |
+| …whose region set differs | 1,212 | 1,212 | 0 | 0 |
 
-**The 1,512 region diffs are drift, not a fault, and the number is not a claim about this
-change.** The `baseline` column is what the oracle was shown *when the decision was taken*,
-by whatever build was running then; the sweep compares it with today's reading, so the count
-carries every parser change since each row was written, plus the workspace assumption above.
-What this change moved it by is the delta: +4 region sets and +8 intent sets on lab2x1. The
-row that is about *this* work is the one above it — **215 decisions were taken on a command
-nobody could read, and 151 of them are readable now.**
+**Ten more past approvals would settle a command now** (and three on the mac), which is this
+package's whole point from a person's side: an unresolved action can never be covered by a
+grant taken over its neighbours, so every command 4i.3 taught the parser to read makes the
+answers already given reach further. The upper bound is `any` — grant, shape or the point
+combined — 192 → **202** on lab2x1 and 78 → **81** on the mac.
+
+**And this change moved no oracle reading, which is worth stating rather than leaving as a
+zero.** 215 decisions were taken on a command nobody could read and 151 of them are readable
+now — the same 151 before this package as after, because not one of the 149 commands it read
+had a model in the loop. Rows differ 136 intents and 1,212 regions both before and after.
+
+**The region count is drift, not a fault, and the number is not a claim about this change.**
+The `baseline` column is what the oracle was shown *when the decision was taken*, by whatever
+build was running then; the sweep compares it with today's reading, so the count carries
+every parser change since each row was written, plus the workspace assumption above. G4's
+number was 1,512 under a different `--workspace` and is 1,212 under this one, measured with
+G4's own code (4i.2 says which).
 
 ### 4i.6 Recommendations, which are the operator's to take
 
@@ -937,13 +1025,96 @@ nobody could read, and 151 of them are readable now.**
    boundary, never read from the environment. That turns `cd $d && …` into a readable
    command; the cost is that a value can be changed by something the transcript did not see,
    so it must be recorded on the card as a value the session's own gate read.
-3. **Brace expansion and ANSI-C quoting** are decidable from the text (36 + 24 commands on
-   lab2x1, 38 + 16 on the mac) and would be the next two parser changes.
+3. ~~**Brace expansion and ANSI-C quoting** are decidable from the text and would be the next
+   two parser changes.~~ **Done** — both are at 0 on every host (4i.3), and nothing that the
+   text decides is left in the unread list (4i.4). What is left is a value nobody wrote down
+   or a construct the grammar cannot take.
 4. **The one place a decision moves is `reads_only`.** `echo "exit=$?"` now places its
    argument as `Region::None` instead of `Region::Unbounded`, so a command whose only intent
    is to print becomes a read and is admitted by the point (R21). That is the ruling of
    2026-10-02 finally taking effect, and it is still a change to what runs unasked: the
    count is in 4i.5, and the tier table and the oracle's prompt are untouched by this work.
+5. **The three grammar reproductions in 4i.7 are worth filing upstream**, and they are not
+   filed: `3<>file`, a here-document followed by a second redirect and a pipe, and `%(…)` in
+   a word. Two of them retire 78% of what lab2x1 still cannot read, and none of the three is
+   a decision anyone here can make.
+
+### 4i.7 The parse errors, by cause — three are the grammar's, and the rest were ours
+
+A `parse_error` is the one construct whose count alone says nothing: it is the resolver's
+catch-all for *the grammar could not read this*, and after 4i.3 it was the third-largest
+reason a command was unread while nobody had ever asked **what was in it**. So it is a
+counted thing now — `corpus_replay::parse_cause`, printed by the sweep under the construct
+table — and this section is that table, with the verdict on each class.
+
+The first thing the census says is that **a quarter of the class was not the grammar at
+all**. `partial == false` means the tree has no `ERROR` node and no `MISSING` one: the
+grammar read every byte, and the command was called a parse error by the resolver's own
+fall-through for a node kind it does not name. That is this crate's bug, in two spellings,
+both fixed in 4i.3 — a `$` that ends a word (`x$$`, `-E run=^$`, 133 commands on lab2x1) and
+a bare `variable_name` in an argument position (`export SKIP_SLT`, 24 more). Between them
+**152 commands left this class**: 577 → 425 on lab2x1, 64 → 34 on the mac. (The two
+spellings count 157 between them and the class fell by 152 because a command can carry two
+parse errors and counts once.)
+
+| cause | lab2x1 | mac | lubuntu1 | whose |
+|---|---|---|---|---|
+| a read-write redirect `<>` | 207 | 8 | 0 | the grammar |
+| a here-document followed by another operator on its line | 122 | 4 | 0 | the grammar |
+| the text is not a command this grammar reads | 96 | 22 | 0 | see below |
+| a token the resolver does not name | **0** | **0** | **0** | ours — fixed |
+| **total** | **425** | **34** | **0** | |
+
+One class left this table without being fixed, and it is worth naming: a whole command in an
+argument position (`time ( … )`, `! ( … )`) was ALSO counted here, and it is not a parse
+error either — the tree is whole, the compound is hanging off the `command` node, and its
+commands were never walked at all. It has its own construct now (`compound_argument`, 27 on
+lab2x1 and 2 on the mac), and 4i.3 says what it cost.
+
+#### The grammar's three, each reproduced minimally and **not filed**
+
+```sh
+# 1. The read-write redirect. This grammar's `file_redirect` has < > >> <& >& &> &>> and no
+#    <>, so the operator recovers as an ERROR on one of the two characters and the command
+#    is unread. Measured: the ERROR node is sometimes the `>` and sometimes the `<`.
+exec 3<>/dev/tcp/127.0.0.1/5432
+
+# 2. A here-document operator followed by ANOTHER redirect and then a pipe. `cat <<'EOF' |
+#    tail` parses (the pipeline is nested inside `heredoc_redirect`); `cat <<'EOF' 2>&1 |
+#    tail` does not — the file_redirect's pipe lands as an ERROR.
+cat <<'EOF' 2>&1 | tail -3
+x
+EOF
+
+# 3. `%(…)` in a word: a MISSING `;` is inserted at the end of the command.
+git for-each-ref --format=%(refname)
+```
+
+Each is one node away from a class of commands rather than one command: `3<>/dev/tcp` is how
+this operator probes whether a port is open (207 of 425 on lab2x1), and `<<'SQL' 2>&1 | head`
+is how they run a query and look at its head (122). A fix upstream would retire 78% of what
+is left on lab2x1, and it is a grammar change rather than a reading: the operator is real,
+bash accepts all three, and recovery hides it behind a plausible-looking tree.
+
+#### The third row, which is neither the grammar's fault nor stateable as one
+
+96 on lab2x1 and 22 on the mac, and `bash -n` splits them: **63 of the 96 and 11 of the 22
+are text bash itself refuses** — a truncated command (an unbalanced quote), Lisp source
+inside a single-quoted argument, a heredoc terminator that never comes. For those the gate
+is right and the count is a fact about the corpus, not about the parser.
+
+The rest bash accepts, and inspection found two more shapes: `%(…)` in a word (2), and a
+pair of backquotes inside an **unquoted** here-document body (the body is prose the shell
+would expand, so the grammar parses it as a command substitution and the prose is not one).
+Neither is worth a parser change: the first needs a grammar fix (row above), the second is a
+command whose here-document would be mangled at RUN time as well.
+
+#### What this census does not do
+
+It does not run a shell: `bash -n` was run **once, by hand**, over every command in the
+class to settle the third row, and the instrument itself only reads the tree. That is a
+deliberate limit of `gate_corpus` — a sweep that spawned a process per corpus row would be
+an instrument whose measurement is about this box.
 
 ## 5. Open
 
