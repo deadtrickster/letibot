@@ -296,6 +296,24 @@ fn mode_of(socket: &Path, session: &str) -> String {
     mode
 }
 
+/// **The mode once it has settled on `want`, or the last reading when the patience runs out.**
+///
+/// A `Mode` frame is queued like a prompt and takes effect from the session's next call, so the
+/// first `Settings` a probe gets can still carry the point the session opened at — MEASURED in
+/// the merge gate on a loaded lab2x1 (load 26): `always-ask` where `writes allowed` was coming.
+/// Asking again until the answer is the one expected cannot hide a wrong move: a point that went
+/// somewhere else never becomes `want`, and its reading is what the assertion then reports.
+fn mode_reaches(socket: &Path, session: &str, want: &str) -> String {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let now = mode_of(socket, session);
+        if now == want || Instant::now() >= deadline {
+            return now;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     let world = World::start();
@@ -313,7 +331,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     // --- a point that needs nobody is applied at once -------------------------
     let plain = start("mode-marker: the point nobody has to confirm");
     assert_eq!(
-        mode_of(&world.socket, &plain),
+        mode_reaches(&world.socket, &plain, OPENING_MODE),
         OPENING_MODE,
         "a session opens at the point it was started with"
     );
@@ -324,7 +342,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     assert_eq!(moved["answer"], json!("nobody"), "{moved}");
     assert_eq!(moved["mode"], json!("read-only"), "{moved}");
     assert_eq!(
-        mode_of(&world.socket, &plain),
+        mode_reaches(&world.socket, &plain, "read-only"),
         "read-only",
         "the daemon's own row says the point moved: {moved}"
     );
@@ -343,7 +361,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
         "and names the session: {refused}"
     );
     assert_eq!(
-        mode_of(&world.socket, &alone),
+        mode_reaches(&world.socket, &alone, OPENING_MODE),
         OPENING_MODE,
         "a refused request changed nothing"
     );
@@ -381,7 +399,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
         "and the daemon's own sentence says where it stands: {yes}"
     );
     assert_eq!(
-        mode_of(&world.socket, &watched),
+        mode_reaches(&world.socket, &watched, CONSENTED),
         CONSENTED,
         "the daemon's row agrees with the answer: {yes}"
     );
@@ -411,7 +429,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
         "{no}"
     );
     assert_eq!(
-        mode_of(&world.socket, &declined),
+        mode_reaches(&world.socket, &declined, OPENING_MODE),
         OPENING_MODE,
         "a person's no leaves the session where it was: {no}"
     );
@@ -453,5 +471,8 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
         .set_mode(&plain, "not-a-point")
         .expect_err("an unknown point is refused");
     assert!(refused.contains("not-a-point"), "{refused}");
-    assert_eq!(mode_of(&world.socket, &plain), "read-only");
+    assert_eq!(
+        mode_reaches(&world.socket, &plain, "read-only"),
+        "read-only"
+    );
 }
