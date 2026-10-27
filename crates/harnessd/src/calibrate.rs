@@ -551,6 +551,11 @@ fn req_intents(
             how: "a replay measures the classifier as it is configured to run".into(),
         },
         seen_hosts: Default::default(),
+        // A replay of rows, not a session: nothing observed an environment, and the
+        // filesystem a bare name would have run in is not the one this box has today.
+        session: Default::default(),
+        programs: Default::default(),
+        shell_path: None,
     };
     let b = match (access, args.get("command").and_then(|v| v.as_str())) {
         (Access::Exec, Some(cmd)) => letibot_tools::intent::Baseline::of_command(cmd, &sur),

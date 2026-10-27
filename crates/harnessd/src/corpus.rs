@@ -329,6 +329,11 @@ mod shape_cache_tests {
                 how: "test fixture".into(),
             },
             seen_hosts: Default::default(),
+            // A replay of recorded rows: nothing observed an environment, and the disk a
+            // bare name would have run in is not this one.
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 

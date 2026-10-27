@@ -464,6 +464,11 @@ mod tests {
             workspace: Some("/w".into()),
             shell: letibot_tools::intent::ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            // A corpus replay, not a live session: nothing observed an environment and the
+            // disk a bare name would have run in is not this one.
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         };
         let r = report(&path, &env, 100).unwrap();
         assert_eq!(r.rows, 4);

@@ -23021,15 +23021,63 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     // bare command name resolves through a pinned PATH either way, and the
     // `Unknown` that refused `echo` was the wrong claim for an unconfined seat.
     let may_exec = !cfg.downgrade.denies(letibot_tools::schema::Access::Exec);
-    if (cfg.seat.needs_exec_backend() || (cfg.unconfined && cfg.allow_bash)) && may_exec {
-        env.with_pinned_shell(
+    let pinned = (cfg.seat.needs_exec_backend() || (cfg.unconfined && cfg.allow_bash)) && may_exec;
+    if pinned {
+        env = env.with_pinned_shell(
             "the exec backend spawns /bin/sh -c, non-interactive, with the \
              environment cleared before its own pairs; PATH is the one fixed at \
              seat time and BASH_ENV, ENV, SHELLOPTS, BASHOPTS are never set",
-        )
-    } else {
-        env
+        );
     }
+    // **The environment every command of this session really gets** — D14/R95. It is read
+    // from the same two places `HostProcesses::spawn` reads them: the `PATH` this process
+    // pins on every child after `env_clear()`, and the pairs the daemon puts beside it
+    // (`HOME`, and `Config::build_env`'s `CARGO_TARGET_DIR`). Nothing here is inferred from a
+    // command's text, which is what makes a reading that rests on it true of the real spawn.
+    //
+    // **And what this gate can see of the disk** — D15/R96's second half. `Host` only where
+    // the command runs in this process's own filesystem view: a `firecode` VM and a remote
+    // placement are different disks, and a *confined* session is a different view of this one
+    // (`/tmp` inside the boundary is the session's, not the box's), so naming a file there
+    // would be naming the wrong file. `None` leaves a `PATH` the command sets unresolved,
+    // which is exactly what it was before this existed.
+    if pinned {
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
+        let mut pairs: Vec<(String, String)> = vec![("PATH".to_string(), path.clone())];
+        if let Some(home) = &env.home {
+            pairs.push(("HOME".to_string(), home.clone()));
+        }
+        pairs.extend(cfg.build_env.iter().cloned());
+        // **And the keep-list a boundary passes through.** `exec::confine::KEEP_ENV` is what
+        // a bwrap'd command keeps from THIS process (`--clearenv` then `--setenv` each), so
+        // those values are what the command really starts with — for a local placement. A
+        // remote or VM placement reads its keep-list on the FAR side (`EnvSource::Remote`),
+        // and seeding this box's `LANG` for it would be a claim about another machine.
+        if matches!(
+            cfg.placement,
+            letibot_tools::builtins::task::Placement::Host
+        ) {
+            for name in letibot_tools::exec::confine::KEEP_ENV {
+                if *name == "PATH" {
+                    continue;
+                }
+                if let Ok(value) = std::env::var(name) {
+                    pairs.push(((*name).to_string(), value));
+                }
+            }
+        }
+        env.session = letibot_tools::intent::env::SessionEnv::seeded(pairs);
+        env.shell_path = Some(path);
+        if !cfg.seat.needs_exec_backend()
+            && matches!(
+                cfg.placement,
+                letibot_tools::builtins::task::Placement::Host
+            )
+        {
+            env.programs = letibot_tools::intent::ProgramLookup::Host;
+        }
+    }
+    env
 }
 
 fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {

@@ -174,6 +174,12 @@ fn surroundings(workspace: &str) -> Surroundings {
             how: "the session this decision was taken in".into(),
         },
         seen_hosts: Default::default(),
+        // **Empty, and that is the honest answer for a replay.** These rows were decided by
+        // a daemon that tracked no environment, and the filesystem a bare name would have run
+        // in is not the one this box has today — so nothing here resolves from either.
+        session: Default::default(),
+        programs: Default::default(),
+        shell_path: None,
     }
 }
 
