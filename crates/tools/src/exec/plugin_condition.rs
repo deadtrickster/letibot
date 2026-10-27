@@ -309,16 +309,11 @@ impl Condition for PluginCondition {
         }
         let finished = {
             let mut st = self.lock();
-            match st.child.as_mut() {
-                Some(child) => match child.poll() {
-                    Some(result) => {
-                        st.child = None;
-                        Some(result)
-                    }
-                    None => return None,
-                },
-                None => None,
+            let result = st.child.as_mut().and_then(|child| child.poll());
+            if result.is_some() {
+                st.child = None;
             }
+            result
         };
         if let Some(result) = finished {
             return self.advance(Some(result));

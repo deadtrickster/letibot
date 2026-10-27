@@ -354,13 +354,15 @@ fn scaffolding_the_same_name_twice_is_refused_and_names_the_one_that_is_there() 
 #[test]
 fn a_hook_kind_this_host_does_not_run_is_refused_with_the_one_it_does() {
     let rig = Rig::new("hook-kind");
+    // **`condition` is a kind now** (2b): a layer that answers it is scaffolded, and its hook is
+    // named after the subject, not the kind alone.
+    let said = rig.ok(r#"{"action":"scaffold","name":"watch","purpose":"x","hook":"condition"}"#);
+    assert!(said.contains("answers `condition_watch`"), "{said}");
+    // And a kind this host does not run is refused with the ones it does.
     let refused =
-        rig.refused(r#"{"action":"scaffold","name":"watch","purpose":"x","hook":"condition"}"#);
-    assert!(
-        refused.contains("`condition` is not a hook kind"),
-        "{refused}"
-    );
-    assert!(refused.contains("pane"), "{refused}");
+        rig.refused(r#"{"action":"scaffold","name":"digest-it","purpose":"x","hook":"digest"}"#);
+    assert!(refused.contains("`digest` is not a hook kind"), "{refused}");
+    assert!(refused.contains("on_tool_call"), "{refused}");
 }
 
 /// **`build` compiles the layer and installs the artifact** — and a failed build hands back the
@@ -412,7 +414,7 @@ fn load_applies_a_good_plugin_and_publishes_its_pane() {
     let said = rig.ok(r#"{"action":"load","name":"deploy"}"#);
     assert!(said.contains("loaded `deploy` as layer `s1`"), "{said}");
     assert!(
-        said.contains("answers a view the host can drive"),
+        said.contains("a view the host can drive"),
         "the shadow's own call is reported: {said}"
     );
     let panes = rig.panes();
@@ -521,7 +523,7 @@ fn test_names_the_view_the_layer_and_the_fuel() {
     assert!(said.contains("answered by `s1`"), "{said}");
     assert!(said.contains("4242 fuel units"), "the cost: {said}");
     assert!(said.contains("the deploy queue"), "the view: {said}");
-    assert!(said.contains("a C3 view this host can drive"), "{said}");
+    assert!(said.contains("a view the host can drive"), "{said}");
 }
 
 /// **A view the host would refuse is REPORTED as refused**, not hidden: `test` is where a model
@@ -588,7 +590,11 @@ fn disable_takes_a_layer_out_and_enable_puts_it_back() {
     // Nothing answered while it was off: the pane is not on the session's list, and saying which
     // is better than answering with the view of a layer somebody switched off.
     let refused = rig.refused(r#"{"action":"test"}"#);
-    assert!(refused.contains("no pane to test"), "{refused}");
+    assert!(refused.contains("name the hook to test"), "{refused}");
+    assert!(
+        refused.contains("pane_deploy"),
+        "the miss names the hooks there are: {refused}"
+    );
     let said = rig.ok(r#"{"action":"enable","name":"deploy"}"#);
     assert!(said.contains("is on"), "{said}");
     let said = rig.ok(r#"{"action":"test"}"#);
@@ -630,10 +636,19 @@ fn plugin_hooks_is_the_hosts_own_contract_with_a_worked_example() {
         serde_json::from_value(example).expect("the example is a view");
     view.validate()
         .expect("the example is one the host accepts");
-    // And a kind this host does not run is refused with the one it does.
-    let (outcome, said) = rig.call("plugin_hooks", r#"{"hook":"condition"}"#);
+    // And a kind this host does not run is refused with the ones it does.
+    let (outcome, said) = rig.call("plugin_hooks", r#"{"hook":"digest"}"#);
     assert!(matches!(outcome, ToolOutcome::Failed { .. }), "{said}");
-    assert!(said.contains("`condition` is not a hook kind"), "{said}");
+    assert!(said.contains("`digest` is not a hook kind"), "{said}");
+    // **The four patch points are pages of their own**, each built from the SDK's types.
+    let (outcome, said) = rig.call("plugin_hooks", r#"{"hook":"condition"}"#);
+    assert!(matches!(outcome, ToolOutcome::Ok), "{said}");
+    for field in ["look", "every_s", "max_ttl_s", "fired", "state", "github"] {
+        assert!(
+            said.contains(field),
+            "the condition page never names `{field}`"
+        );
+    }
 }
 
 /// **A session with no host behind the tool says which** — never an absence reading as a missing
