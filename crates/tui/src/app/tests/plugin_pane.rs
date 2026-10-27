@@ -64,6 +64,40 @@ fn holding(view: serde_json::Value) -> App {
     a
 }
 
+/// **A pane whose one block is a TREE** — C3's nesting, which is the block a plan is written
+/// as: a root with two children, one of them a child in its own right.
+///
+/// Written as JSON, like every fixture here, because a tree is what a plugin sends and not
+/// what a test would build out of the host's types: the row's `cells`, its `id`, its `role`,
+/// its `detail` and its `actions` are all fields of the wire's own shape.
+fn treed() -> serde_json::Value {
+    serde_json::json!({
+        "title": "a plan",
+        "panels": [{"id": "plan", "key": "p", "title": "plan", "summary": [
+            {"tree": {"rows": [
+                {"id": "root", "cells": ["the plan", "2/3"],
+                 "detail": "the plan's own words",
+                 "actions": [{"key": "s", "label": "start", "say": "start the plan"}]},
+                {"id": "a", "cells": ["step a", "done"], "role": "success",
+                 "detail": "step a's words"},
+                {"id": "b", "cells": ["step b", "blocked"], "role": "attention",
+                 "detail": "step b's words",
+                 "actions": [{"key": "e", "label": "escalate", "event": "escalate"}],
+                 "children": [
+                    {"id": "b/1", "cells": ["the reason", "io"]}
+                 ]}
+            ]}}
+        ]}]
+    })
+}
+
+/// The tree pane, open.
+fn tree_opened() -> App {
+    let mut a = holding(treed());
+    a.command(&format!("pane {PANE}"));
+    a
+}
+
 /// A head with the pane open, which is the state every act below starts from.
 fn opened() -> App {
     let mut a = holding(dashboard());
@@ -478,4 +512,68 @@ fn the_wheel_over_the_pane_scrolls_the_pane() {
         before,
         a.pane_scroll
     );
+}
+
+/// **A tree block draws its rows indented under their parent** — the snapshot this port has to
+/// keep: what a plan's rows read like, before rano's own tree list draws them.
+///
+/// A snapshot and not a set of `contains` assertions, because the port replaces the drawing
+/// function wholesale: the indent, the mark, the columns and the break between one cell and the
+/// next are exactly what changes when a private renderer becomes a primitive's, and a test that
+/// only asked *is `step a` on the screen* would stay green through all of it.
+#[test]
+fn a_tree_block_draws_its_rows_indented_under_their_parent() {
+    let mut a = tree_opened();
+    assert_eq!(
+        a.plugin_lines(60),
+        vec![
+            "a plan",
+            "",
+            "p plan",
+            "▸ the plan  2/3",
+            "  step a  done",
+            "  step b  blocked",
+            "    the reason  io",
+        ]
+    );
+}
+
+/// **A tree's rows are its stops, in reading order** — and the selected row's two acts still
+/// work: Enter reads it whole, and its own letter is sent back to the plugin that drew it.
+///
+/// The other half of the snapshot above. The port moves the drawing into rano's tree list, and
+/// the list also owns the stops (`TreeList::stops`) — so the count, the order, the detail an
+/// Enter opens and the `item` an action names are all one reading, and a port that changed any
+/// of them would be a pane whose keys act on a different row than the mark is on.
+#[test]
+fn a_trees_rows_are_its_stops_and_their_detail_and_actions_work() {
+    let mut a = tree_opened();
+    a.screen(110, 40);
+    a.take_actions();
+    assert_eq!(
+        a.plugin_stops().len(),
+        4,
+        "the root, two children, a grandchild"
+    );
+    // ↓ twice: the root, then `step a`, then `step b` — reading order, not tree order.
+    a.key(Key::Down);
+    a.key(Key::Down);
+    let screen = a.screen(110, 40).join("\n");
+    assert!(
+        screen.contains("▸ step b"),
+        "the mark walked down: {screen}"
+    );
+    assert_eq!(
+        a.key(Key::Char('e')),
+        Some(Action::PaneAction {
+            pane: PANE.into(),
+            item: "b".into(),
+            action: "escalate".into(),
+        }),
+        "the selected row's action letter names its own row"
+    );
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.top_surface(), Some(Surface::PluginDetail));
+    let detail = a.screen(110, 40).join("\n");
+    assert!(detail.contains("step b's words"), "{detail}");
 }
