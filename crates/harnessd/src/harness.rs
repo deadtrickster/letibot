@@ -4286,6 +4286,29 @@ impl Harness {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
             .map_err(|e| HarnessError::Setup(format!("registering the exec tools: {e}")))?;
+        // **Work across hosts** (RH8): `fanout` and `scenario`, with the daemon's own process book
+        // behind them. The book is what makes a branch on ANOTHER machine a supervised process —
+        // `JobRecorder` writes that record for a job of this host and nothing writes it for a job of
+        // one this session is merely reaching — so a restart finds it and a session's close kills
+        // it there (RH7's teardown-follows-ownership). A session with no store gets the tool that
+        // works and writes nothing, which is the truth for a run with no daemon behind it.
+        let process_book: std::sync::Arc<dyn letibot_tools::fleet::ProcessBook> = match &cfg.store {
+            Some(path) => std::sync::Arc::new(crate::supervise::StoreBook::new(
+                path.clone(),
+                cfg.session_id.clone(),
+            )),
+            None => std::sync::Arc::new(letibot_tools::fleet::NoBook),
+        };
+        registry
+            .register(Box::new(
+                letibot_tools::builtins::fanout::Fanout::new().with_book(process_book.clone()),
+            ))
+            .and_then(|_| {
+                registry.register(Box::new(
+                    letibot_tools::builtins::scenario::Scenario::new().with_book(process_book),
+                ))
+            })
+            .map_err(|e| HarnessError::Setup(format!("registering the fleet tools: {e}")))?;
         let mut registry = letibot_tools::external_tools(registry, &external).map_err(|e| {
             HarnessError::Setup(format!("registering the outside-world tools: {e}"))
         })?;
@@ -22369,11 +22392,13 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
         Seat::Leticode => {
             let mut r = roles::leticode();
             if !cfg.allow_bash {
-                // The whole exec surface is behind the flag: `bash` and the job
-                // verbs it feeds, and `monitor` which watches processes a shell
-                // starts. A session with no shell has nothing to wait on, read,
-                // kill or watch, and seating those would be a capability claim the
-                // backend refuses.
+                // **The whole exec surface is behind the flag**: `bash` and the job
+                // verbs it feeds, `monitor` which watches processes a shell
+                // starts, and — since RH8 — `fanout` and `scenario`, which start
+                // commands on other machines. A session with no shell has nothing to wait on,
+                // read, kill or watch, and nothing it may start elsewhere either: a verb that
+                // could run a command on a host while its own seat cannot run one here would be
+                // the flag's whole point walked around.
                 r.tools.retain(|t| {
                     !matches!(
                         t.as_str(),
@@ -22385,6 +22410,8 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
                             | "monitor"
                             | "pkill"
                             | "ps"
+                            | "fanout"
+                            | "scenario"
                     )
                 });
             }

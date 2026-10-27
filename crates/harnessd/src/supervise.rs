@@ -383,7 +383,11 @@ impl Supervisor {
     }
 }
 
-/// **The exit file a remote job's log implies**, or `None` for a local job.
+/// **The daemon's half of the tool crate's process book** — where a `fanout` branch or a
+/// `scenario` role is written into the supervisor's table. See [`book`].
+pub use book::StoreBook;
+
+/// The exit file a remote job's log implies, or `None` for a local job.
 ///
 /// A remote job's record keeps its output file — `<jobs>/<id>.out` — and the exit beside it is
 /// `<jobs>/<id>.exit`, the job directory's own convention (`RemoteProcesses`). Reading it out of the
@@ -400,7 +404,7 @@ pub fn expired_by() -> &'static str {
     "its deadline"
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -876,3 +880,8 @@ pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessi
 
 #[cfg(test)]
 mod tests;
+
+/// **Where a fanout's and a scenario's processes are written down** — the daemon's half of
+/// `letibot_tools::fleet::ProcessBook`. A module of this file's own because it is the same table
+/// and the same supervisor, one writer further out.
+mod book;

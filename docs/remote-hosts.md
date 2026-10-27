@@ -713,3 +713,143 @@ drift again.
 its store was not opened. `j13281` may have been named by its slug, or by nothing at all — the
 second would mean the model expected a wake the plan never asked for, which is a different defect
 (the delivery rule's, not the activity's) and is not fixed here.
+
+## As built (RH8): `fanout`, `scenario`, and the process book they share
+
+Written 2026-10-26. The two tools the contract asked for, and the one new seam under them. Everything
+here is code that runs on the box the tools run on; a test never contacts another machine.
+
+```text
+crates/tools/src/fleet.rs                the engine: hosts, legs, cells, readiness, the book seam
+crates/tools/src/builtins/fanout.rs      `fanout`  — one command per host, one row per host
+crates/tools/src/builtins/scenario.rs    `scenario` — roles, a run, and a teardown that happens
+crates/harnessd/src/supervise/book.rs    `StoreBook` — the daemon's half of the process book
+```
+
+### One branch is a job, and a job is a record
+
+Neither tool invents a way to run something. A leg — a fanout branch, a scenario role, a scenario's
+run — is `spawn`ed through that host's own [`ProcessHost`]: `RemoteProcesses` for a name in
+`hosts.toml`, the session's own backend for `local`. So the launcher, the `setsid` process group, the
+pid file, the exit file and the group kill are RH1's code, and a fanout branch dies the way a
+`bash` background job dies.
+
+On top of that each start is **written down**, through a seam this slice adds:
+
+* `letibot_tools::fleet::ProcessBook` — `started(&ProcessNote)` and `ended(handle, state, exit)`.
+  `NoBook` writes nothing (a run with no store says so); the daemon registers
+  `supervise::StoreBook` bound to its own session and store, so every branch and every role is a row
+  in the `process` table (schema 34) with its host, its pid, its identity, its deadline and the path
+  of its output file.
+* **Why it had to be written**: `JobRecorder` writes that row for a job of *this* host, and a branch
+  of a fanout is a job of a host the session is merely reaching. Nothing else would have written it,
+  and the two holes that leaves are the ones RH7 exists to close — a daemon that restarted mid-fanout
+  would find no process to adopt, and a session's close would kill nothing on the machines it
+  reached.
+* **What the record gives, measured through RH7's supervisor**: one liveness check per host per tick
+  (`SshProbe` reads the exit file first, then `ps -p … -o command=` against the `cmd:` marker), the
+  record's own wall-clock deadline (a branch whose model turn is long gone is still killed), and
+  `teardown_session` on a session's close or the daemon's stop. The record's identity is `cmd:<the
+  command>` on a host and `start:<n>` here — the two spellings `supervise` already reads.
+
+### `fanout`
+
+`{hosts: [names] | {name: command}, command?, deadline_s?, cwd?}`. One leg per host; the list form
+takes the shared command, the object form carries a per-host one. `local` is the session's own box
+and needs no ssh at all.
+
+* **The row, and the three fates.** `exited N · 1.2s · tail: …`, or `stopped · the deadline passed`,
+  or `never ran — <why>`. The three never collapse: an exit status is the command's own answer, a
+  kill is something this tool did, and *never ran* is a host that could not be used. A non-zero exit
+  is a **row's** business and not the call's, so four hosts out of five still report.
+* **The count is the table's shape.** The answer is `crate::fleet::cells(plan, done)` — the plan,
+  each leg with a row, and a leg with no result is a row saying it never ran. The Stroppy session's
+  own fleet runner skipped cells and never noticed; here the omission is unspellable.
+* **An unknown host is a row with the names the file has** (`there is no host `nope` in … — it
+  knows: fake1`), and an unreachable one carries ssh's own sentence (`Could not resolve hostname …`).
+  The breaker's refusal, when it is open, is a row too.
+* **`deadline_s`** (default 600, ceiling 3600) is the call's wall. It is enforced twice and the
+  duplicate is deliberate: this loop kills a leg that outlived it and writes `stopped`, and the
+  **record** carries the same instant so a daemon that outlives the call still ends it. A branch that
+  exits at 0.4 s of a 600 s deadline costs nothing.
+* **Starts are sequential, the work is not.** Each launch waits for its own pid (that is RH1's
+  `launch`), so N hosts cost N launch round trips; the commands then run concurrently. Making the
+  waits concurrent is a change to `RemoteProcesses`, not to this tool.
+* **One card, naming everything.** `Access::Exec`, and the call's arguments are the hosts and the
+  commands — which is what the adjudicator's brief carries. Nothing here is a second gate.
+* **Every branch is addressable in its own host's table** (`jN` on that machine) and the row names
+  the file its output went to, `<root>/fanout-<call>/.letibot-remote/jobs/<n>.out`.
+
+### `scenario`
+
+`{roles: {name: {host, command, ready?, after?, deadline_s?, ready_deadline_s?, cwd?}}, run?,
+deadline_s?}`.
+
+* **Three readiness checks, asked on the role's own host** — `{port: N}` (a TCP connect there),
+  `{log: "<regex>"}` over the tail of that role's own output, `{check: "<cmd>"}` as a short job of its
+  own whose exit 0 is the answer. Each has its own deadline (default 30 s) and every wait is capped
+  by the whole scenario's. A role **that has already died is known not to be becoming ready**, and
+  the row says that instead of waiting out the deadline.
+* **`after` is a dependency, not a sequence**: a role starts when the roles it names are READY.
+  The order is Kahn's, one role at a time, and ties follow the order the caller wrote them in —
+  `serde_json` keeps a call's key order, and a `BTreeMap`'s is alphabetical, which is a plan nobody
+  wrote. A cycle, an `after` naming no role, and a role called `run` are refused **before anything
+  starts**.
+* **`${role.host}` and `${role.port}`** are substituted into a role's command and into the run's.
+  `host` is the `hosts.toml` name (which is also what ssh connects to unless the file says
+  otherwise); `port` exists only for a role that declares `ready: {port: N}` — a `log` or `check`
+  readiness check names no port, and asking for one is refused rather than spliced as empty, because
+  `host:` in a client fails thirty seconds later with no breadcrumb.
+* **The teardown is not optional**, and it is one place: after the run, after a role that never came
+  up, after a role that could not start, and on any early refusal. Every started role is stopped on
+  its own host, in reverse start order, and its row says what it was before: a role that had already
+  died says `exited N`; one that was still up says `stopped · the scenario ended` (or `the scenario
+  failed: …`). **An interrupt is the supervisor's**: the roles are `process` records owned by the
+  session, so a session's close or the daemon's stop ends them through `teardown_session` — the same
+  list, from the store, rather than a `Drop` this build would have to trust.
+* **A row per role and one for the run**: `web on fake1 · stopped · 0.5s · the scenario ended · ready
+  after 0.0s · tail: …`. *Ready after* is how long the readiness check took to answer — the number a
+  person asks for when a fixture is slow.
+
+### Seams, and the two things they cost
+
+* **`ProcessHost::job_log`** — a default method, `None` by every implementation but
+  `RemoteProcesses`, which answers the job directory's `<n>.out`. It is not `JobView::output_file`,
+  and the difference is the reader: that field is a path *this* box can open, and this one is a path
+  the *host* would open (the supervisor derives the exit file beside it). One fact, two readers, two
+  fields.
+* **`remote::expand_root`** — a host's `root` as the far shell must spell it, `~` expanded THERE
+  once. The rake RH1 hit and RH4 hit again, in one function so a third caller cannot hit it a third
+  time: `mkdir -p '~/letibot-remote'` makes a directory called `~`.
+
+### What this slice does not do, said plainly
+
+* **`fanout` is not itself a background job whose settlement wakes the model.** It blocks for its
+  answer, bounded by `deadline_s`. The reason is structural: a settlement is delivered by
+  `jobwatch`, which waits on `ProcessHost::wait_job` for a handle in **this session's** job table,
+  and a fanout's branches are jobs of other machines' tables. Giving the fanout its own settlement
+  means the session's process host becomes a composite of the hosts it can reach, so that
+  `wait_job(fanout)` blocks on N branches — a restructure of `HostProcesses`/`RemoteProcesses` and
+  `JobRecorder`, not a tool. Until then a long fanout holds its turn; `deadline_s` is what bounds it.
+* **Consequently `job_output` and `job_kill` do not reach a branch.** Its handle is in that host's
+  table, and the row names the output file. `job_kill` on the fanout's own handle cannot stop a
+  branch either; the call's deadline can.
+* **The matrix half of RH8 is not built**: capacity placement from `hosts {probe}`, interleaved
+  repetitions, resume from a plan file, and the merged result set. `fanout` is the shape those grow
+  from and its cell accounting is the audit they need.
+* **No per-host trust.** Every card is the session's own, and a fanout's card names the hosts because
+  its arguments do. A `trust = "allow-all"` per host is a later decision (the contract says so too).
+
+### Rakes, measured here
+
+* **A `case` glob over `$*` is not a host test.** The fake ssh that refuses one host matched `*gone*`
+  anywhere in its argv — and the first fanout test named its work directory `fanout-gone`, so a
+  healthy host was reported unreachable for a reason that lived in the test. It matches
+  `*gone.invalid*` now, which is the destination.
+* **A job that exits within the launch's pid poll has pid 0.** `RemoteProcesses::launch` polls for
+  the pid and stops early when the exit file is already there, so a five-millisecond command reports
+  `pid: 0`. Harmless — the exit file is the settlement and nothing signals pid 0 — but a test that
+  wants to look at the process has to give it a moment.
+* **`mise exec -C` must point at a directory that exists**, so a host's work directory
+  (`<root>/fanout-<call>`) is made with a plain step *before* the connection is told to use it as its
+  `-C`. RH6 measured the refusal; this is the order that avoids it.
