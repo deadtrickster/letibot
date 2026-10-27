@@ -3793,7 +3793,13 @@ impl Gate for AdjudicatedGate {
         // says what it says — the question there is answered by a model, not a card, so what
         // D16 removes for the operator is the interruption that point does not have; and the
         // two `allow-all` coordinates already admit exec unasked by their own definition.
-        if admits_inside_the_boundary(self.boundary.as_ref(), self.mode, access, &baseline)
+        // **Not for an unasked call.** D16 admits because the command runs INSIDE the boundary,
+        // and a plugin's `exec` look — the one caller of `admit_unasked` — does not: the
+        // daemon spawns it on its own host, outside every namespace this boundary measured.
+        // Admitting it here would hand a layer's `make` the defence the boundary gives the
+        // model's, with no boundary around it (and say so every ninety seconds).
+        if !self.unasked
+            && admits_inside_the_boundary(self.boundary.as_ref(), self.mode, access, &baseline)
             && let Some(boundary) = &self.boundary
         {
             let basis = format!(

@@ -731,3 +731,35 @@ fn a_rung_the_ladder_did_not_offer_is_refused_for_a_runner() {
     );
     assert_eq!(g.grants().len(), 1, "`cargo fmt` may still be granted");
 }
+
+/// **A plugin's look is not admitted by a boundary it does not run inside.** D16's admit is the
+/// boundary's, and `admit_unasked`'s one caller — a condition layer's `exec` look — is spawned by
+/// the daemon on its own host. So the same `cargo test` the model's call gets without a card is
+/// *would need your approval* for the look, and nothing is told as admitted.
+#[test]
+fn an_unasked_call_is_not_admitted_by_the_boundary() {
+    let told = Told::default();
+    let mut g = gate_at(
+        Box::new(Nobody),
+        crate::mode::Mode::WRITES_ALLOWED,
+        Some(measured_and_closed()),
+    )
+    .with_admission_sink(Box::new(Told(told.0.clone())));
+    let args = json!({ "command": "cargo test --offline -p letibot-tools" });
+    match g.admit_unasked(&bash(&args)) {
+        GateDecision::Refuse {
+            outcome: ToolOutcome::NotRun { why },
+            ..
+        } => assert!(
+            why.starts_with("would need your approval:"),
+            "the look is refused as a question nobody was put: {why}"
+        ),
+        other => panic!("a look outside the boundary was admitted by it: {other:?}"),
+    }
+    assert!(
+        told.0.lock().unwrap().is_empty(),
+        "nothing was admitted, so nothing is told as admitted"
+    );
+    // The model's own call, which does run inside, is unchanged.
+    assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+}
