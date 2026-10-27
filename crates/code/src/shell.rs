@@ -1476,9 +1476,9 @@ fn stage(
                     tails.push(child);
                 }
             }
-            _ if !child.named => {}
+            _ if !child.named && child.kind != "$" => {}
             _ => {
-                argv.push(word_of(child, source, out, Decides::Argument, Some(index)));
+                argv.extend(argument(child, source, out, index));
             }
         }
     }
@@ -1533,6 +1533,19 @@ fn assignment(node: &Node, source: &str, out: &mut Normalised, stage: Option<usi
         name,
         value,
         span: Span::of(node),
+    }
+}
+
+/// One argument — or the several a brace expansion makes of it.
+///
+/// A [`Stage`]'s `argv` is the list the program will be handed, so a word the shell turns
+/// into four arguments has to arrive as four. `decides` is fixed to `Argument`: a brace in
+/// the command-name position is left unread ([`Word::Unresolved`]), because one `Stage` has
+/// one program and `{a,b}/x` runs two.
+fn argument(node: &Node, source: &str, out: &mut Normalised, stage: usize) -> Vec<Word> {
+    match brace_words(node, source) {
+        Some(words) => words,
+        None => vec![word_of(node, source, out, Decides::Argument, Some(stage))],
     }
 }
 
@@ -1649,6 +1662,21 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
                     at: node,
                 };
             }
+            // **A brace with no partner is a fragment of something the grammar split.**
+            // MEASURED 2026-10-27: `echo {a b,c}` arrives as the TWO words `{a` and `b,c}` —
+            // the space ended a word — and each of them reads as a literal, which claims the
+            // program receives two arguments where bash delivers `a b c`. Nothing here can
+            // say what a lone `{` is part of, so a word whose braces do not pair up stays
+            // unread. The cost is named: `echo a{b` is a literal to bash and is refused here,
+            // which is a question asked about a rare spelling rather than an answer about a
+            // command nobody wrote.
+            if brace_fragment(&text) {
+                return Resolved::Blocked {
+                    construct: Construct::BraceExpansion,
+                    prefix: None,
+                    at: node,
+                };
+            }
             if glob {
                 Resolved::Glob(text)
             } else {
@@ -1665,10 +1693,47 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
             )
         }
         "number" | "test_operator" | "regex" => Resolved::Literal(src(node, source).to_string()),
-        "ansi_c_string" => Resolved::Blocked {
-            construct: Construct::AnsiCEscapes,
-            prefix: None,
-            at: node,
+        // **A `$` that ENDS a word is an anonymous token here.** This grammar wraps `$?`,
+        // `$#`, `$@` and even `$$` in a `simple_expansion` when something follows them, but
+        // a `$` (or `$$`) in the last position of a word — `echo x$$`, `cargo nextest
+        // -E run=^$` — comes back as the token itself, with no wrapper at all. MEASURED
+        // 2026-10-27 on the operator's corpora: 133 commands on lab2x1 and 25 on the mac
+        // were reported as a PARSE ERROR because of this, and not one of them is a parse
+        // error — the tree is whole, and these are bash's own pid and a literal dollar.
+        "$" => match src(node, source) {
+            // A lone `$` is a literal dollar to the shell: `echo x$` prints `x$`.
+            "$" => Resolved::Literal("$".to_string()),
+            // `$$` is a pid, so it goes to the resolver as the shell's own number rather
+            // than being read as a value (`intent/parameters.rs`'s `NUMERIC`).
+            "$$" => Resolved::Blocked {
+                construct: Construct::ParameterExpansion {
+                    name: "$".to_string(),
+                },
+                prefix: None,
+                at: node,
+            },
+            // Nothing else is known to arrive as this token, and an unknown spelling is
+            // not a literal.
+            _ => Resolved::Blocked {
+                construct: Construct::ParseError,
+                prefix: None,
+                at: node,
+            },
+        },
+        // `$'…'`: the escapes are the shell's, so the word the program receives is the
+        // DECODED bytes and not the text between the quotes. Reporting it undecoded would
+        // be a claim about a command nobody wrote — `$'a\tb'` is one argument holding a tab
+        // and not one holding backslash-t.
+        "ansi_c_string" => match decode_ansi_c(src(node, source)) {
+            Some(s) => Resolved::Literal(s),
+            // The bytes are not a string this can carry (a lone `\xff`, a NUL, a code point
+            // past `U+10FFFF`, an escape bash refuses to finish): stay unread rather than
+            // guess what the program receives.
+            None => Resolved::Blocked {
+                construct: Construct::AnsiCEscapes,
+                prefix: None,
+                at: node,
+            },
         },
         "string" | "translated_string" => {
             // A double-quoted string is literal only if every part of it is.
@@ -1751,7 +1816,7 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
             }
             // The braces of `{a,b}.txt` arrive as three separate `word` children, so
             // this is the only place the pattern is visible.
-            if has_brace_expansion(&lit) {
+            if has_brace_expansion(&lit) || brace_fragment(&lit) {
                 return Resolved::Blocked {
                     construct: Construct::BraceExpansion,
                     prefix: None,
@@ -1816,6 +1881,11 @@ fn construct_of(kind: &str) -> Option<Construct> {
         "command_substitution" => Construct::CommandSubstitutionValue,
         "process_substitution" => Construct::ProcessSubstitutionPath,
         "arithmetic_expansion" => Construct::ArithmeticExpansion,
+        // `{1..3}` arrives as its OWN node kind, and it used to fall through the arm below —
+        // which reports `parse_error`, i.e. "the grammar could not read this" about a tree
+        // with no error in it. MEASURED 2026-10-27: a word that is a numeric range and is
+        // left unread (too many values) named the wrong construct.
+        "brace_expression" => Construct::BraceExpansion,
         "string_expansion" => Construct::AnsiCEscapes,
         "ERROR" => Construct::ParseError,
         _ => return None,
@@ -1840,14 +1910,31 @@ fn named(construct: Construct, node: &Node, source: &str) -> Construct {
     }
 }
 
-/// Remove backslash escapes and report whether an **unescaped** glob metacharacter
-/// survived.
+/// Whether this word looks like a FRAGMENT of a brace expansion the grammar split at a
+/// space: it opens a brace it never closes, or closes one it never opened.
 ///
-/// The escaping matters twice: `e\ f.txt` is one argument whose bytes are `e f.txt`,
-/// and `\*` is a literal asterisk rather than a pattern. Getting the second wrong in
-/// the safe direction would call every escaped star a glob; getting it wrong in the
-/// unsafe direction would call `rm \*` a single-file delete when it is one, and
-/// `rm *` a single-file delete when it is not.
+/// The signature of `{a b,c}`, which arrives as the two words `{a` and `b,c}` — see the
+/// `word` arm of [`resolve`]. Deliberately narrow:
+///
+/// * a LONE `{` or `}` is a literal to bash (`echo {` prints `{`) and is what the grammar
+///   hands over for each of `{a}`'s three children;
+/// * `a{b,c` is a literal to bash and stays one here: it keeps its unbalanced brace in the
+///   MIDDLE, so it cannot be the wreckage of a split — both halves of a split are at an
+///   edge.
+///
+/// A *quoted* brace never reaches here: a `string` node's own text is not checked, so `"{a"`
+/// stays the literal it is.
+fn brace_fragment(s: &str) -> bool {
+    if s == "{" || s == "}" {
+        return false;
+    }
+    let (opens, closes) = (s.matches('{').count(), s.matches('}').count());
+    if opens == closes {
+        return false;
+    }
+    s.starts_with('{') || s.ends_with('}')
+}
+
 /// Does this text contain a brace expansion the shell will turn into several words?
 ///
 /// Bash needs a comma or a `..` range inside the braces, which is what separates
@@ -1883,6 +1970,420 @@ fn has_brace_expansion(s: &str) -> bool {
     false
 }
 
+/// **How many words one word may become.**
+///
+/// The same 32 as [`unrolled_for`]'s passes, for the same reason: a thousand arguments is a
+/// script, and this is the reading of one command. Above it the word stays unread, which is
+/// the direction that costs a question and not an answer.
+const MOST_WORDS: usize = 32;
+
+/// **A brace expansion, expanded into the words bash produces** — or `None` when the text
+/// does not decide it.
+///
+/// MEASURED 2026-10-27 against the operator's three corpora (161,099 bash decisions): 36
+/// commands on lab2x1 and 38 on the mac had a brace expansion and no other reason to be
+/// unread, and every one of them is decidable from the text — `{a,b}`, `{1..3}`, `f{1,2}.rs`.
+/// That is the whole point of the split this function makes: unlike `$(…)`, a brace list is
+/// not a runtime fact.
+///
+/// # What is refused, and each of these is a real word in that corpus
+///
+/// * **a quoted or escaped brace** — the quote removal that makes `"{a,b}"` one literal is
+///   not modelled here, and a brace expansion never spans one in bash either;
+/// * **an alternative holding an expansion** (`{$a,$b}`, `{a,$(x)}`) — the value is not in
+///   the text, which is the whole difference between this and `$(pwd)`;
+/// * **an alternative holding whitespace** (`{a b,c}`) — bash field-splits it into more
+///   words than the expansion produced, which one [`Word`] cannot state;
+/// * **more than [`MOST_WORDS`] words**;
+/// * **an expansion that makes no word at all** (`{,}`) — bash drops the empty word, and
+///   nothing here can say "this argument vanished".
+///
+/// Quoting also stops a brace expanding in bash, so `"{a,b}"` is one literal argument and
+/// `has_brace_expansion` never sees it: the text of a `string` node is not reached here.
+fn brace_words(node: &Node, source: &str) -> Option<Vec<Word>> {
+    if !matches!(
+        node.kind.as_str(),
+        "word" | "concatenation" | "brace_expression" | "number"
+    ) {
+        return None;
+    }
+    let text = src(node, source);
+    if text.is_empty()
+        || text
+            .chars()
+            .any(|c| matches!(c, '\'' | '"' | '\\' | '$' | '`'))
+        || !has_brace_expansion(text)
+    {
+        return None;
+    }
+    let mut out = Vec::new();
+    for w in expand_braces(text)? {
+        // **An empty alternative makes no word**: measured, `echo {a,,b}` is two arguments,
+        // `echo {a,}` one, and `echo {,}` none at all.
+        if w.is_empty() {
+            continue;
+        }
+        if w.chars().any(char::is_whitespace) {
+            return None;
+        }
+        out.push(if w.chars().any(|c| matches!(c, '*' | '?' | '[')) {
+            // Pathname expansion runs over each word the braces produced, so `{*,x}` is a
+            // pattern and a name. A pattern is not a value — the same distinction
+            // [`Word::Glob`] already makes for `*.rs`.
+            Word::Glob(w)
+        } else {
+            Word::Literal(w)
+        });
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// What one brace pair is, as far as the text decides.
+///
+/// **The difference between the last two is the whole safety property.** `{a}` and `{1..a}`
+/// are not expansions — bash hands the braces to the program as characters — so a word made
+/// of one is a literal. `{1..100}` IS an expansion whose words are more than [`MOST_WORDS`],
+/// and calling that literal would claim the program receives `{1..100}`, which it does not.
+/// MEASURED, and it was a wrong reading in the first cut of this code: the two arrived at the
+/// caller as the same `None`, and 33 values read as one literal argument.
+enum Brace {
+    /// Not an expansion at all: `{a}`, `{}`, `{1..a}`, `{1..3..x}`.
+    Literal,
+    /// The words the shell makes of it.
+    Words(Vec<String>),
+    /// An expansion over the bound. The word stays unread.
+    TooMany,
+}
+
+/// The words bash makes of one word, by its own rule: find the first brace pair a comma or a
+/// range can expand, replace it with each alternative in turn — **leftmost is the outermost,
+/// rightmost varies fastest** (`x{1,2}{3,4}` is `x13 x14 x23 x24`) — and expand each result
+/// again, because an alternative may hold another pair (`pre{a,{b,c}}post` is three words).
+///
+/// `None` means the text did not decide it, and the caller keeps the word unread.
+fn expand_braces(text: &str) -> Option<Vec<String>> {
+    const MOST_DEPTH: usize = 8;
+    fn at(text: &str, depth: usize) -> Option<Vec<String>> {
+        if depth > MOST_DEPTH {
+            return None;
+        }
+        let b = text.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] != b'{' {
+                i += 1;
+                continue;
+            }
+            let Some(close) = matching_brace(b, i) else {
+                i += 1;
+                continue;
+            };
+            let alts = match alternatives(&text[i + 1..close]) {
+                Brace::Words(w) => w,
+                Brace::TooMany => return None,
+                // `{a}`, `{}` and `{1..a}` are not expansions, and bash keeps looking to the
+                // right: `{{a,b}}` is `{a}` and `{b}`, because the inner pair is the one that
+                // expands.
+                Brace::Literal => {
+                    i += 1;
+                    continue;
+                }
+            };
+            let (pre, post) = (&text[..i], &text[close + 1..]);
+            let mut out: Vec<String> = Vec::new();
+            for alt in alts {
+                out.extend(at(&format!("{pre}{alt}{post}"), depth + 1)?);
+                if out.len() > MOST_WORDS {
+                    return None;
+                }
+            }
+            return Some(out);
+        }
+        Some(vec![text.to_string()])
+    }
+    at(text, 0)
+}
+
+/// The index of the `}` that closes the `{` at `open`, counting nesting.
+fn matching_brace(b: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (j, c) in b.iter().enumerate().skip(open) {
+        match c {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What one brace pair expands to: the alternatives of a comma list, or the words of a
+/// range.
+fn alternatives(inner: &str) -> Brace {
+    let b = inner.as_bytes();
+    let mut parts: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut comma = false;
+    for (i, c) in b.iter().enumerate() {
+        match c {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            // A comma inside a NESTED pair belongs to the nested expansion, which the
+            // recursion reaches; `{a,{b,c}}` is three words and not a two-way split.
+            b',' if depth == 0 => {
+                comma = true;
+                parts.push(inner[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if comma {
+        parts.push(inner[start..].to_string());
+        return Brace::Words(parts);
+    }
+    brace_range(inner)
+}
+
+/// `{1..3}`, `{-2..2..2}`, `{01..10}`, `{a..e..2}` — bash's own arithmetic, including its
+/// zero padding: **an endpoint written with a leading zero pads every word to the wider
+/// endpoint** (`{001..3}` is `001 002 003`), and neither a mixed pair (`{1..a}`) nor a step
+/// that is not a number is a range at all.
+fn brace_range(inner: &str) -> Brace {
+    let mut parts = inner.split("..");
+    let (Some(lo), Some(hi)) = (parts.next(), parts.next()) else {
+        return Brace::Literal;
+    };
+    let step = match parts.next() {
+        None => 1i64,
+        Some(t) => match t.parse::<i64>() {
+            Ok(n) => n,
+            // `{1..3..x}` is not a range: measured, bash hands it through as characters.
+            Err(_) => return Brace::Literal,
+        },
+    };
+    if parts.next().is_some() {
+        return Brace::Literal;
+    }
+    // Bash takes the MAGNITUDE of the step and the direction from the endpoints: measured,
+    // `{1..3..-1}` is `1 2 3` and `{a..e..-1}` is `a b c d e`.
+    let step = step.unsigned_abs().max(1) as u64;
+    let (Ok(a), Ok(b)) = (lo.parse::<i64>(), hi.parse::<i64>()) else {
+        return char_range(lo, hi, step);
+    };
+    // **The padding is bash's, and it counts the sign.** Measured: `{-01..3}` is `-01 000 001
+    // 002 003` — the width is the wider endpoint INCLUDING its minus sign — while `{8..10}`
+    // is `8 9 10` and `{001..3}` is `001 002 003`.
+    let width = lo.len().max(hi.len());
+    let leading_zero = |s: &str| {
+        let d = s.trim_start_matches('-');
+        d.len() > 1 && d.starts_with('0')
+    };
+    let pad = leading_zero(lo) || leading_zero(hi);
+    let mut out = Vec::new();
+    let mut n = a;
+    loop {
+        out.push(if pad {
+            format!("{n:0width$}")
+        } else {
+            n.to_string()
+        });
+        if out.len() > MOST_WORDS {
+            return Brace::TooMany;
+        }
+        if n == b {
+            return Brace::Words(out);
+        }
+        if a <= b {
+            n += step as i64;
+            if n > b {
+                return Brace::Words(out);
+            }
+        } else {
+            n -= step as i64;
+            if n < b {
+                return Brace::Words(out);
+            }
+        }
+    }
+}
+
+/// `{a..e}`, `{a..e..2}`: both endpoints ONE character, and bash walks the code points
+/// between them. `{1..a}` is not a range — measured, bash leaves it literal.
+fn char_range(lo: &str, hi: &str, step: u64) -> Brace {
+    let (mut a, mut b) = (
+        lo.chars().collect::<Vec<_>>(),
+        hi.chars().collect::<Vec<_>>(),
+    );
+    if a.len() != 1 || b.len() != 1 {
+        return Brace::Literal;
+    }
+    let (start, end) = (a.remove(0) as u32, b.remove(0) as u32);
+    // A digit endpoint means the pair is MIXED (`{1..a}`), which bash leaves literal.
+    if matches!(start, 0x30..=0x39) || matches!(end, 0x30..=0x39) {
+        return Brace::Literal;
+    }
+    let mut out = Vec::new();
+    let mut n = start;
+    loop {
+        match char::from_u32(n) {
+            Some(c) => out.push(c.to_string()),
+            None => return Brace::Literal,
+        }
+        if out.len() > MOST_WORDS {
+            return Brace::TooMany;
+        }
+        if n == end {
+            return Brace::Words(out);
+        }
+        if start <= end {
+            n += step as u32;
+            if n > end {
+                return Brace::Words(out);
+            }
+        } else {
+            n = n.saturating_sub(step as u32);
+            if n < end {
+                return Brace::Words(out);
+            }
+        }
+    }
+}
+
+/// **The bytes `$'…'` delivers**, with bash's own escape decoding — or `None` when they
+/// are not a string this can carry.
+///
+/// MEASURED 2026-10-27 against `bash` 5.2 on this box, one escape per row, so each arm below
+/// is the shell's answer and not a reading of the manual: `\x` with no digit and `\u` with
+/// no digit keep their backslash; `\x4` is `0x04` (ONE hex digit is a number); `\1011` is
+/// `A1` (three octal digits at most); `\cZ` is `0x1a` and `\c?` is `0x7f`; `\U110000` is
+/// four raw bytes and not a character at all; `$'\0'` makes a NUL, which no argv can hold, so
+/// the word a shell passes on is empty — three facts that say *stay unread* rather than
+/// guess.
+///
+/// # Why the refusal cases are refusals
+///
+/// A [`Word`] is a `String`, so a byte sequence that is not UTF-8 (a lone `\xff`), a NUL, a
+/// code point past `U+10FFFF` and a surrogate all have no [`Word`] to be. Each of them is a
+/// real escape bash accepts and produces bytes for; the shell's argv is a byte list and this
+/// is not. Reporting the undecoded text instead would be the wrong claim, and reporting a
+/// replacement character would be a worse one.
+fn decode_ansi_c(text: &str) -> Option<String> {
+    let inner = text.strip_prefix("$'")?.strip_suffix('\'')?;
+    let mut out: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut it = inner.chars().peekable();
+    let hex = |it: &mut std::iter::Peekable<std::str::Chars<'_>>, most: usize| -> Option<u32> {
+        let mut n = 0u32;
+        let mut digits = 0usize;
+        while digits < most {
+            let Some(d) = it.peek().and_then(|c| c.to_digit(16)) else {
+                break;
+            };
+            it.next();
+            n = n.checked_mul(16)?.checked_add(d)?;
+            digits += 1;
+        }
+        (digits > 0).then_some(n)
+    };
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        let Some(e) = it.next() else {
+            // A trailing backslash cannot happen inside `$'…'` (the quote follows), but a
+            // guess about one is not worth making.
+            return None;
+        };
+        let simple = match e {
+            'a' => Some(0x07),
+            'b' => Some(0x08),
+            'e' | 'E' => Some(0x1b),
+            'f' => Some(0x0c),
+            'n' => Some(0x0a),
+            'r' => Some(0x0d),
+            't' => Some(0x09),
+            'v' => Some(0x0b),
+            '\\' => Some(b'\\'),
+            '\'' => Some(b'\''),
+            '"' => Some(b'"'),
+            '?' => Some(b'?'),
+            _ => None,
+        };
+        if let Some(b) = simple {
+            out.push(b);
+            continue;
+        }
+        match e {
+            // A hex BYTE. One or two digits, and `\x` with none keeps the backslash.
+            'x' => match hex(&mut it, 2) {
+                Some(n) if n <= 0xff => out.push(n as u8),
+                Some(_) => return None,
+                None => out.extend_from_slice(b"\\x"),
+            },
+            // A hex CODE POINT, decoded to UTF-8 — `\u00e9` is two bytes, not one.
+            'u' | 'U' => match hex(&mut it, if e == 'u' { 4 } else { 8 }) {
+                Some(n) => {
+                    let ch = char::from_u32(n)?;
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                }
+                None => out.extend_from_slice(if e == 'u' { b"\\u" } else { b"\\U" }),
+            },
+            // Up to three OCTAL digits: `\0123` is a newline and a `3`.
+            '0'..='7' => {
+                let mut n = e.to_digit(8)?;
+                for _ in 0..2 {
+                    let Some(d) = it.peek().and_then(|c| c.to_digit(8)) else {
+                        break;
+                    };
+                    it.next();
+                    n = n * 8 + d;
+                }
+                if n > 0xff {
+                    return None;
+                }
+                out.push(n as u8);
+            }
+            // A control character: `\cZ` is `0x1a`, and `\c?` is DEL, which is bash's own
+            // exception rather than arithmetic.
+            'c' => match it.next() {
+                Some(x) if x == '?' => out.push(0x7f),
+                Some(x) if (x as u32) < 0x80 => out.push((x as u8) & 0x1f),
+                Some(_) => return None,
+                None => out.extend_from_slice(b"\\c"),
+            },
+            // Measured: an escape bash does not know keeps its backslash AND the character.
+            other => {
+                out.push(b'\\');
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    if out.contains(&0) {
+        // `$'\0'` is a NUL, and a NUL cannot be an argv word: bash itself delivers the
+        // empty string. Neither is a claim this can make.
+        return None;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Remove backslash escapes and report whether an **unescaped** glob metacharacter
+/// survived.
+///
+/// The escaping matters twice: `e\ f.txt` is one argument whose bytes are `e f.txt`,
+/// and `\*` is a literal asterisk rather than a pattern. Getting the second wrong in
+/// the safe direction would call every escaped star a glob; getting it wrong in the
+/// unsafe direction would call `rm \*` a single-file delete when it is one, and
+/// `rm *` a single-file delete when it is not.
 fn unescape(s: &str) -> (String, bool) {
     let mut out = String::with_capacity(s.len());
     let mut glob = false;
@@ -2308,6 +2809,223 @@ mod tests {
         assert_eq!(shape(&n("cat a $X b")), "cat <args> <?> <args>");
         // A count flag stays a count, as it did before the run was collapsed.
         assert_eq!(shape(&n("head -26 f")), "head -<n> <args>");
+    }
+
+    /// The words stage 0 hands its program, for a test that is about an expansion.
+    fn argv(cmd: &str) -> Vec<String> {
+        n(cmd)
+            .stages
+            .first()
+            .map(|s| {
+                s.argv
+                    .iter()
+                    .map(|w| match w {
+                        Word::Literal(l) => l.clone(),
+                        Word::Glob(g) => format!("{g}*"),
+                        other => format!("{other:?}"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **A brace expansion is the words bash makes of it, in bash's order.**
+    ///
+    /// MEASURED 2026-10-27 against bash 5.2 on this box: every expectation below is what
+    /// `printf '<%s>' <the word>` printed, not what the manual says. That matters for the
+    /// three details a reader would get wrong: the empty alternative makes no word
+    /// (`{a,,b}` is two arguments), a nested pair is the one that expands (`{{a,b}}` is
+    /// `{a}` and `{b}`), and the zero padding counts the sign (`{-01..3}` is `-01 000 001
+    /// 002 003`).
+    #[test]
+    fn a_brace_expansion_is_the_words_the_shell_makes() {
+        assert_eq!(argv("echo {a,b}"), ["a", "b"]);
+        assert_eq!(argv("echo {1..3}"), ["1", "2", "3"]);
+        assert_eq!(argv("echo {a..e}"), ["a", "b", "c", "d", "e"]);
+        // Prefix and suffix land on every word.
+        assert_eq!(argv("echo f{1,2}.rs"), ["f1.rs", "f2.rs"]);
+        // **Leftmost outermost, rightmost fastest.**
+        assert_eq!(
+            argv("echo x{1,2}{3,4}"),
+            ["x13", "x14", "x23", "x24"],
+            "the order is bash's product order"
+        );
+        // A nested pair expands inside its alternative.
+        assert_eq!(
+            argv("echo pre{a,{b,c}}post"),
+            ["preapost", "prebpost", "precpost"]
+        );
+        // `{{a,b}}` is `{a}` and `{b}`: the inner pair is the one bash expands.
+        assert_eq!(argv("echo {{a,b}}"), ["{a}", "{b}"]);
+        // Ranges: descending, stepped, zero-padded, and signed.
+        assert_eq!(argv("echo {5..1}"), ["5", "4", "3", "2", "1"]);
+        assert_eq!(argv("echo {a..e..2}"), ["a", "c", "e"]);
+        assert_eq!(argv("echo {01..03..2}"), ["01", "03"]);
+        assert_eq!(argv("echo {001..3}"), ["001", "002", "003"]);
+        assert_eq!(
+            argv("echo {-01..3}"),
+            ["-01", "000", "001", "002", "003"],
+            "the padding width counts the minus sign"
+        );
+        // A step's SIGN is dropped and its magnitude kept: measured, both of these ascend.
+        assert_eq!(argv("echo {1..3..-1}"), ["1", "2", "3"]);
+        // **The empty alternative makes no word**, and a comma pair can still be one word.
+        assert_eq!(argv("echo {a,}"), ["a"]);
+        assert_eq!(argv("echo {a,,b}"), ["a", "b"]);
+        assert_eq!(argv("echo a{,}b"), ["ab", "ab"]);
+        // A glob the braces produce is a PATTERN, exactly as `*.rs` is.
+        assert_eq!(argv("echo {*,x}"), ["**", "x"]);
+        // And the whole thing is a reading, not a hole.
+        assert!(n("echo f{1,2}.rs").is_resolved());
+        assert_eq!(shape(&n("rm -f f{1,2}.rs")), "rm -f <args>");
+    }
+
+    /// **The braces bash leaves alone stay one literal word** — and each of these is a word
+    /// that really occurs (a `find -exec` terminator, a `{}` in a commit message).
+    #[test]
+    fn a_brace_the_shell_leaves_alone_stays_one_literal_word() {
+        assert_eq!(argv("echo {a}"), ["{a}"]);
+        assert_eq!(argv("echo {}"), ["{}"]);
+        // A quoted brace is not expanded, so it is one literal — and never refused.
+        assert_eq!(argv("echo \"{a,b}\""), ["{a,b}"]);
+        assert_eq!(argv("echo '{a,b}'"), ["{a,b}"]);
+        // A mixed pair and a step that is not a number are not ranges.
+        assert_eq!(argv("echo {1..a}"), ["{1..a}"]);
+        assert_eq!(argv("echo {1..3..x}"), ["{1..3..x}"]);
+        // No closing brace, no expansion.
+        assert_eq!(argv("echo a{b,c"), ["a{b,c"]);
+        // The `find -exec` terminator, which is why `{}` had to stay literal.
+        assert!(n("find . -name x -exec rm -f {} ;").is_resolved());
+        // `${a,b}` is a parameter expansion and not a brace expansion: the `$` decides it.
+        assert!(!n("echo ${a,b}").is_resolved());
+    }
+
+    /// **A brace expansion the text does not decide stays unread** — the direction that
+    /// costs a question rather than giving a wrong answer.
+    #[test]
+    fn a_brace_no_longer_readable_than_it_is_stays_unread() {
+        for cmd in [
+            // An alternative whose value is not in the text.
+            "echo {$a,$b}",
+            "echo {a,$(x)}",
+            // Field splitting would make more words than the braces did.
+            "echo {a b,c}",
+            // More words than the bound, and the bound is the point: without it the word
+            // would have to be called a literal, which claims the program gets `{1..100}`.
+            "echo {1..100}",
+            "echo f{1..33}",
+            // An expansion that makes no word at all: `echo {,}` is `echo` with nothing.
+            "echo {,}",
+        ] {
+            assert!(!n(cmd).is_resolved(), "{cmd} was read: {:?}", argv(cmd));
+        }
+        // 32 values is inside the bound and 33 is not.
+        assert!(n("echo f{1..32}").is_resolved());
+        // The refusal names the construct it is about, not "the grammar could not read this".
+        assert!(
+            n("echo {1..100}")
+                .unresolved
+                .iter()
+                .any(|u| u.construct == Construct::BraceExpansion),
+            "{:?}",
+            n("echo {1..100}").unresolved
+        );
+    }
+
+    /// **`$'…'` is decoded into the bytes the program receives.**
+    ///
+    /// MEASURED 2026-10-27, one escape per row against bash 5.2 on this box — `od -tx1` of
+    /// what the shell delivered, so the odd corners are the shell's answer: `\x` with no
+    /// digits keeps its backslash, `\x4` is `0x04` (one digit is a number), `\1011` is `A1`
+    /// (three octal digits at most), and `\c?` is DEL rather than arithmetic.
+    #[test]
+    fn an_ansi_c_string_is_decoded_into_the_bytes_the_program_gets() {
+        assert_eq!(argv("echo $'a\\tb'"), ["a\tb"]);
+        assert_eq!(argv("echo $'a\\nb'"), ["a\nb"]);
+        assert_eq!(argv("echo $'\\r'"), ["\r"]);
+        assert_eq!(argv("echo $'\\a\\b\\f\\v'"), ["\u{7}\u{8}\u{c}\u{b}"]);
+        assert_eq!(argv("echo $'\\e'"), ["\u{1b}"]);
+        assert_eq!(argv("echo $'\\E'"), ["\u{1b}"]);
+        assert_eq!(argv("echo $'\\\\'"), ["\\"]);
+        assert_eq!(argv("echo $'\\''"), ["'"]);
+        assert_eq!(argv("echo $'\\\"'"), ["\""]);
+        // Hex: two digits, one digit, and none at all.
+        assert_eq!(argv("echo $'\\x41'"), ["A"]);
+        assert_eq!(argv("echo $'\\x4'"), ["\u{4}"]);
+        assert_eq!(argv("echo $'\\x'"), ["\\x"]);
+        // Octal, at most three digits: `\0123` is a newline and a `3`.
+        assert_eq!(argv("echo $'\\101'"), ["A"]);
+        assert_eq!(argv("echo $'\\0123'"), ["\n3"]);
+        // A code point is decoded to UTF-8, and a byte is one byte.
+        assert_eq!(argv("echo $'\\u00e9'"), ["é"]);
+        assert_eq!(argv("echo $'\\U0001F600'"), ["😀"]);
+        assert_eq!(argv("echo $'\\x41\\102'"), ["AB"]);
+        // Control characters.
+        assert_eq!(argv("echo $'\\cA'"), ["\u{1}"]);
+        assert_eq!(argv("echo $'\\cZ'"), ["\u{1a}"]);
+        assert_eq!(argv("echo $'\\c?'"), ["\u{7f}"]);
+        // An escape bash does not know keeps its backslash AND the character.
+        assert_eq!(argv("echo $'a\\zb'"), ["a\\zb"]);
+        // A decoded quote is a QUOTE: the delimiter cannot reappear in the word, and a
+        // decoded tab is a tab inside one argument rather than a field break.
+        assert_eq!(argv("echo $'a\\'b'"), ["a'b"]);
+        assert_eq!(n("echo pre$'\\t'post").stages[0].argv.len(), 1);
+        // A `$'…'` next to ordinary text is still one word.
+        assert_eq!(argv("echo pre$'\\t'post"), ["pre\tpost"]);
+        assert!(n("echo $'a\\tb'").is_resolved());
+    }
+
+    /// **An escape whose bytes are not a string this can carry stays unread.**
+    ///
+    /// Each one is a real `$'…'` a shell accepts; none of them has a [`Word`] to be, and a
+    /// replacement character or the undecoded text would both be wrong claims.
+    #[test]
+    fn an_ansi_c_string_that_is_not_a_string_stays_unread() {
+        for cmd in [
+            "echo $'\\xff'",     // a byte that is not UTF-8
+            "echo $'\\0'",       // a NUL, which no argv can hold
+            "echo $'\\U110000'", // past the last code point
+        ] {
+            let x = n(cmd);
+            assert!(!x.is_resolved(), "{cmd} was read as {:?}", argv(cmd));
+            assert!(
+                x.unresolved
+                    .iter()
+                    .any(|u| u.construct == Construct::AnsiCEscapes),
+                "{cmd}: {:?}",
+                x.unresolved
+            );
+        }
+    }
+
+    /// **A `$` at the end of a word is not a parse error.**
+    ///
+    /// MEASURED 2026-10-27: this grammar wraps `$?`, `$#` and even `$$` in a
+    /// `simple_expansion` when something follows them, but a `$` in the LAST position of a
+    /// word comes back as the bare token — and the resolver had no arm for it, so it fell
+    /// through to "an unrecognised node kind" and the command was reported as a parse
+    /// error. 133 commands on lab2x1 were unread for this alone and not one of them is a
+    /// parse error: the tree is whole.
+    #[test]
+    fn a_dollar_that_ends_a_word_is_the_pid_or_a_literal_and_not_a_parse_error() {
+        for cmd in ["echo x$$", "echo a$$b", "echo $$", "echo x$ y$$"] {
+            let x = n(cmd);
+            assert!(x.partial == false, "{cmd}");
+            assert!(
+                !x.unresolved
+                    .iter()
+                    .any(|u| u.construct == Construct::ParseError),
+                "{cmd} was reported as a parse error: {:?}",
+                x.unresolved
+            );
+        }
+        // A bare `$` is a literal dollar to the shell — `--run=^$` is a regex, not a hole —
+        // and a `$$` is a pid, which the intent layer reads as one of the shell's numbers.
+        assert_eq!(argv("echo x$"), ["x$"]);
+        assert_eq!(argv("cargo nextest -E run=^$"), ["nextest", "-E", "run=^$"]);
+        assert_eq!(n("echo $$").stages[0].argv.len(), 1);
+        // The `$` is not silently dropped from the argument list either.
+        assert_eq!(n("echo x$$").stages[0].argv.len(), 1);
     }
 }
 
