@@ -2696,12 +2696,16 @@ impl SshBackend {
         // can read it. `git bundle` fails on a repository with no commits, and that
         // failure is worth its own sentence: an empty repository is a real answer.
         //
-        // The staging file is unique per call — a nanosecond and the pid — because two
-        // sessions placing at once in one daemon would otherwise write one bundle and meet
-        // each other's `.lock`.
+        // The staging file is unique per call — the pid, a per-process counter and a timestamp —
+        // because two sessions placing at once in one daemon would otherwise write one bundle and
+        // meet each other's `.lock`. **The counter is the part that guarantees it.** A clock alone
+        // did not: macOS's has microsecond resolution, and two placements in one test binary got
+        // the same name (MEASURED 2026-10-27, the Mac gate: `….bundle.lock': File exists`).
+        static PLACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let staging = std::env::temp_dir().join(format!(
-            "letibot-remote-{}-{}-{}.bundle",
+            "letibot-remote-{}-{}-{}-{}.bundle",
             std::process::id(),
+            PLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             short,
             SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
