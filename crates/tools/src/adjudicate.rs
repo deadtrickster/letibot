@@ -1956,6 +1956,20 @@ pub struct AdjudicatedGate {
     /// Where corpus rows go so they outlive this process. `None` means the corpus is
     /// being discarded, and the disclosure says so rather than implying it is kept.
     corpus_sink: Option<std::sync::Arc<dyn crate::authorise::CorpusSink>>,
+    /// **Set for the one call that is adjudicated and may not ask** — [`Gate::admit_unasked`],
+    /// which is how a look a plugin layer declared meets this gate.
+    ///
+    /// `docs/plugins-plan.md` §1 principle 2 puts every look a plugin declares through the same
+    /// gate the model's own calls meet, and §4.4's `exec` look runs on the session's **monitor
+    /// thread**: a card raised there parks that thread — and the watch with it — until a person
+    /// answers, which for a watch is forever. So the ladder runs and the ask does not: a step that
+    /// would put the call to somebody answers *would need your approval* instead.
+    ///
+    /// It is a field rather than a second entry point's own body because the ladder above the ask
+    /// is seven hundred lines of short-circuits, and a copy of it is the second policy this flag
+    /// exists to avoid. Set by [`Gate::admit_unasked`], cleared by it, and read in exactly two
+    /// places: [`AdjudicatedGate::advise_on_a_settled_call`] and the ask itself.
+    unasked: bool,
 }
 
 impl AdjudicatedGate {
@@ -1987,6 +2001,7 @@ impl AdjudicatedGate {
             advisor: None,
             supervise: false,
             corpus_sink: None,
+            unasked: false,
         }
     }
 
@@ -2744,6 +2759,13 @@ impl AdjudicatedGate {
     /// spending an oracle round trip on a call a rule already settled would be the
     /// gate paying latency for a row nobody asked for.
     fn advise_on_a_settled_call(&mut self, req: &AdjudicationRequest, why: String) {
+        // **An unasked call consults no model, even here.** Every settled path asks the guard
+        // because its verdict on a call the operator does not see is a labelled example worth
+        // having; a look a plugin declared is polled on a watch's clock, and an inference per
+        // firing on somebody's `exec` look is a cost nobody chose. See the field.
+        if self.unasked {
+            return;
+        }
         self.advice = self.ask_the_advisor(req);
         if self.advice.is_some() {
             self.standing = Some(why);
@@ -3042,6 +3064,35 @@ impl AdjudicatedGate {
 }
 
 impl Gate for AdjudicatedGate {
+    /// **The ladder, stopped where a card would be raised** — `docs/plugins-plan.md` §1
+    /// principle 2, for a look a plugin layer declared.
+    ///
+    /// The same body as [`Gate::admit`], with three things switched off and nothing else:
+    ///
+    /// * **the adjudicator**, which is the only thing that can put a question to a person —
+    ///   reached only past the point this returns at, so a look never blocks on a head;
+    /// * **the guard model**, which every settled path consults for its own sake
+    ///   (`advise_on_a_settled_call`) — an inference per firing of somebody's watch is a cost
+    ///   nobody chose, and its verdict would change no outcome;
+    /// * **the circuit breaker.** It is taken and put back, because a refusal counts: three
+    ///   consecutive ones open it for that direction and *only the operator lifts that*. A
+    ///   condition that polls a program the gate refuses would then have closed the session's
+    ///   gate to its own model's calls within three firings — a watch changing what the session
+    ///   may do, which is the one thing a look must never be able to do.
+    ///
+    /// What stays on is everything a reader would call the decision: the audit row (a look the
+    /// gate judged is a decision worth having), the denial notice (a refusal is news when it
+    /// happens), and the grants and shapes — read, never written: the write sites are all past
+    /// the ask.
+    fn admit_unasked(&mut self, call: &GateCall<'_>) -> GateDecision {
+        let breaker = std::mem::take(&mut self.breaker);
+        self.unasked = true;
+        let decision = self.admit(call);
+        self.unasked = false;
+        self.breaker = breaker;
+        decision
+    }
+
     /// **How this session stands**, for the `on_tool_call` hook: the mode's own word and the id
     /// the session is known by. Read from here because the mode is this gate's field — it moves at
     /// runtime (`/mode`) and a copy anywhere else would be a second answer to *how much may this
@@ -3695,6 +3746,28 @@ impl Gate for AdjudicatedGate {
             self.breaker.admitted(&direction);
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
+        }
+
+        // **4.0 — the call that is adjudicated and may not ask** (`Gate::admit_unasked`).
+        //
+        // Everything above this line is the ladder: layer A's reading, the never-write list, the
+        // operator's `permission` rules, the point this session sits at, the shapes it approved,
+        // the grants it gave. Everything below is the person (and, when supervised, the model
+        // first). A plugin's look gets the ladder and stops here, because it is running on the
+        // session's monitor thread and a card would park that thread until somebody answered.
+        //
+        // The outcome is `NotRun` — nobody decided — and not `Denied`, which is somebody saying
+        // no. A look the gate would have asked about is a look that did not run, and the two must
+        // not read alike: `Denied` tells a plugin its program is refused here, and this tells it
+        // the program needs a person the look cannot reach.
+        if self.unasked {
+            let why = format!("would need your approval: {}", req.summary);
+            let tell = format!(
+                "{why}\n\nThe gate puts this to the operator before running it, and nothing is \
+                 put to anybody from here: this is a look a plugin layer declared, adjudicated \
+                 without asking, on the thread that polls the watch. Nothing ran."
+            );
+            return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
 
         // 4. Ask — and when supervision is on, ask the model FIRST.

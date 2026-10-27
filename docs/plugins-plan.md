@@ -159,8 +159,13 @@ it. The steps, first failure stops:
    its recorded hook inputs, its monitors as data) and apply the change there. The shadow has **no
    effects**: no model is called, no notice reaches anyone, no monitor is armed for real, and a
    look a hook declares is answered from the recorded look results where they exist and otherwise
-   run only if it is read-only (`read`; `exec` against an allowlist of reading commands such as
-   `gh pr view`, `git log`), else answered *skipped*.
+   run only if it is a **reading** one. *Reading* is not a list this step keeps: it is the gate's
+   own answer to *would this run without putting a question to anybody* —
+   `letibot_tools::Gate::admit_unasked`, the ladder §4.4's `exec` look goes through — so the shadow
+   and the live stack cannot disagree about which command is a read. A look it refuses is answered
+   *skipped*. (Built? No: `crates/plugins`'s gate runs **no** look at all today — its step 3 says
+   so — so there is no allowlist to retire yet, and the day a shadow runs looks it calls that same
+   entry rather than inventing a second rule.)
 4. **Replay** — every recorded input of every hook the change touches, through the live stack and
    the shadow stack. Traps, fuel exhausted, malformed output and contract violations fail; outputs
    are diffed.
@@ -629,14 +634,29 @@ reseat, a queue verdict, the workspace's state, a salvage — may be reworded an
 while a firing and a nudge may be dropped. A layer's own failure notice never passes through the
 hook: a layer that traps must not be able to trap again about its own trap.
 
-**What is deliberately left open.** An `exec` look runs under the answering layer's
-`exec:<program>` capability and does **not** go through the adjudicator — §1 principle 2 wants it
-to, and a look that raised a card would be the session's one monitor thread waiting for a person.
-The capability is the consent for now (a project layer's is reviewed with the merge; a session
-layer's is the operator's), and that sentence is written in
-`crates/harnessd/src/plugins/conditions.rs` where the gap is rather than only here. `github` in a
-condition's answer takes part in the one-watch-per-pull-request rule, but the GitHub family itself
-is still built in (§7 step 3).
+**What is decided about an `exec` look.** An `exec` look runs under the answering layer's
+`exec:<program>` capability (the capability is checked first: a program the layer did not declare
+is not a call anybody adjudicates) **and through the adjudicator** — §1 principle 2, so a plugin
+can do nothing the model could not. It goes through it **without asking**: the look runs on the
+session's monitor thread, so a card would park that thread — and the watch with it — until a person
+answered. `letibot_tools::Gate::admit_unasked` is therefore the entry, and it is the same ladder as
+`admit` stopped at the card:
+
+* **admitted** by a `permission` rule, a standing grant, the point the session sits at, or a
+  measured boundary (D16) → the look runs, as it always did;
+* **a call that would have been put to a person** → it does not run; the layer is handed a look
+  result saying *would need your approval* and the card's own reason, and the session is told
+  **once** per (layer, program, reason) — not once per firing;
+* **denied by a rule the operator wrote** → it does not run, and the layer is told *denied* rather
+  than *would ask*, because those are two different facts;
+* and a session with no gate at all runs nothing: *no gate* is not *every gate open*.
+
+A look moves nothing on the gate itself: it consults no guard model, writes no grant, and leaves
+the consecutive-refusal breaker exactly where it was — a watch polling a refused program must not
+be able to close the session's own gate. `crates/harnessd/src/plugins/conditions.rs` is where that
+is, and `docs/plugins-plan.md` §2.4 step 3 reads *reading command* as this same entry rather than
+a list of its own. `github` in a condition's answer still takes part in the one-watch-per-pull-
+request rule, and the GitHub family itself is still built in (§7 step 3).
 
 ## 6. The harness butler
 

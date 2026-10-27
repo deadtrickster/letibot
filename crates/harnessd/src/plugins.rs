@@ -1747,21 +1747,78 @@ pub fn arm_call(arm: &letibot_plugin::tool_result::Arm) -> letibot_transcript::T
     }
 }
 
+/// **The layer that answers a hook, as a look needs it**: its id, the name its `plugin.toml`
+/// declares, the scope it came from, and what it said it may look at.
+///
+/// A name AND an id because the two are read by different readers: the id (`s3`, `b-github-pr`) is
+/// what `plugin stack`, `set_disabled` and every message about a layer use, and the name is what a
+/// person wrote in the manifest — the one a sentence to a model should carry, since `s3` means
+/// nothing without the stack beside it.
+pub struct Answering {
+    pub id: String,
+    pub name: String,
+    pub scope: Scope,
+    pub capabilities: Vec<Capability>,
+}
+
+/// The same layer, as a sentence a model reads: `name (scope)`.
+impl std::fmt::Display for Answering {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.name, self.scope)
+    }
+}
+
 impl PluginHost {
-    /// The capabilities the layer that answers `hook` declared — what a look runs under.
-    ///
-    /// The topmost ENABLED layer that exports the hook, which is the one the stack would ask
-    /// first: a look a lower layer declared is only run when the upper one asked below, and then
-    /// the upper one's capabilities are still the ones in force for the answer that came back.
-    pub fn capabilities_for(&self, hook: &str) -> Vec<Capability> {
+    /// **The layer that answers `hook`** — the topmost ENABLED layer that exports it, which is the
+    /// one the stack would ask first: a look a lower layer declared is only run when the upper one
+    /// asked below, and then the upper one's capabilities are still the ones in force for the
+    /// answer that came back.
+    pub fn answering(&self, hook: &str) -> Option<Answering> {
         let inner = self.lock();
         inner
             .stack
             .layers()
             .iter()
             .find(|l| !l.disabled && l.manifest.hooks.iter().any(|h| h == hook))
-            .map(|l| l.manifest.capabilities.clone())
+            .map(|l| Answering {
+                id: l.id.clone(),
+                name: l.manifest.name.clone(),
+                scope: l.scope,
+                capabilities: l.manifest.capabilities.clone(),
+            })
+    }
+
+    /// The capabilities the layer that answers `hook` declared — what a look runs under.
+    pub fn capabilities_for(&self, hook: &str) -> Vec<Capability> {
+        self.answering(hook)
+            .map(|l| l.capabilities)
             .unwrap_or_default()
+    }
+
+    /// **A look the gate would not run**, said **once** — per layer, program and reason, because
+    /// the sentence names all three and it is the dedup key.
+    ///
+    /// A condition polls: `every_s` is ninety seconds or more, and a refusal that repeated itself
+    /// every firing would be the same warning forever, which is how a model learns to skip them.
+    /// A refusal that CHANGES — the operator granted the program, the layer declared another one,
+    /// the gate's own reason moved — is a different sentence and is news again. That is the rule
+    /// `complain` follows for a layer's malformed answer, and the reason is the same.
+    ///
+    /// It reaches the session's log and the model's queue both: the model is the one that can
+    /// change the layer, and the operator is the one who can grant what the look needs.
+    pub fn look_refused(&self, hub: &Arc<Hub>, said: String) {
+        {
+            let mut inner = self.lock();
+            if !inner.said.insert(said.clone()) {
+                return;
+            }
+            inner.notices.push(said.clone());
+        }
+        hub.publish(SessionEvent::Warning {
+            code: "plugin_look".into(),
+            detail: said,
+            compaction: None,
+        });
     }
 
     /// The tree a look resolves against — the session's own workspace.
@@ -1896,6 +1953,7 @@ impl PluginHost {
 mod tests {
     use super::*;
     use letibot_plugins::{BuildError, Manifest, Module};
+    use letibot_tools::runtime::GateDecision;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A module that answers from a file beside it, so a test can change what a layer says by
@@ -2477,6 +2535,18 @@ mod tests {
 
         /// Write one layer: its manifest, a module, and its answers.
         fn layer(self: &Table, root: &Path, name: &str, hooks: &[(&str, Script)]) -> PathBuf {
+            self.layer_with_caps(root, name, &[], hooks)
+        }
+
+        /// The same layer with **capabilities declared** — the only thing §3's enforcement and the
+        /// gate behind it can be asked about, since a look is checked against this list.
+        fn layer_with_caps(
+            self: &Table,
+            root: &Path,
+            name: &str,
+            caps: &[&str],
+            hooks: &[(&str, Script)],
+        ) -> PathBuf {
             let dir = root.join(".letibot/plugins").join(name);
             std::fs::create_dir_all(&dir).expect("the layer dir");
             let declared = hooks
@@ -2484,11 +2554,16 @@ mod tests {
                 .map(|(h, _)| format!("\"{h}\""))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let capabilities = caps
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
             std::fs::write(
                 dir.join("plugin.toml"),
                 format!(
                     "name = \"{name}\"\npurpose = \"one hook, answered from a table\"\n\
-                     hooks = [{declared}]\ncapabilities = []\ncontract = 1\n"
+                     hooks = [{declared}]\ncapabilities = [{capabilities}]\ncontract = 1\n"
                 ),
             )
             .expect("a manifest");
@@ -3232,10 +3307,22 @@ mod tests {
     // ---------------------------------------------------------------------------------------
 
     /// The daemon's half, over this test's host — the real look runner and the real stack.
+    ///
+    /// No gate: these tests are about the condition's shape (the interval, the state, the look
+    /// results), and an `exec` look here is refused for want of one. The tests that DO adjudicate
+    /// one pass their own [`Gate`](conditions::Unasked); see `an_exec_look_goes_through_the_gate`.
     fn conditions(host: &Arc<PluginHost>) -> Arc<conditions::HostConditions> {
+        conditions_with(host, None)
+    }
+
+    fn conditions_with(
+        host: &Arc<PluginHost>,
+        gate: Option<Arc<dyn conditions::Unasked>>,
+    ) -> Arc<conditions::HostConditions> {
         conditions::HostConditions::new(
             Arc::new(Mutex::new(Some(host.clone()))),
             Hub::new("s-plugins"),
+            gate,
         )
     }
 
@@ -3361,7 +3448,12 @@ mod tests {
             )],
         );
         let host = Arc::new(table_host(&root, &table));
-        let armed = conditions(&host).arm("shell", json!({})).expect("armed");
+        // **The gate is never reached.** The capability is checked first, because a program the
+        // layer never declared is not a call anybody adjudicates — so this probe must stay empty.
+        let probe = Arc::new(ProbeGate::admitting());
+        let armed = conditions_with(&host, Some(probe.clone()))
+            .arm("shell", json!({}))
+            .expect("armed");
         // The first tick hands the refusal over, and the layer answers it.
         assert_eq!(
             armed.condition.met(),
@@ -3382,6 +3474,315 @@ mod tests {
                 .as_str()
                 .is_some_and(|s| s.contains("exec:true")),
             "and the refusal names the capability: {handed}"
+        );
+        assert!(
+            probe.seen().is_empty(),
+            "the gate was asked about an undeclared program: {:?}",
+            probe.seen()
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // An `exec` look goes through the adjudicator (§1 principle 2), without asking
+    // ---------------------------------------------------------------------------------------
+
+    /// **A gate a test answers with, and what it was asked.** The seam's own fixture: one
+    /// decision, and every command line the look offered it, so a test can say both what the gate
+    /// would do and whether it was consulted at all.
+    struct ProbeGate {
+        answer: fn() -> GateDecision,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl ProbeGate {
+        fn admitting() -> ProbeGate {
+            ProbeGate {
+                answer: || GateDecision::Admit,
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn refusing(answer: fn() -> GateDecision) -> Arc<ProbeGate> {
+            Arc::new(ProbeGate {
+                answer,
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen(&self) -> Vec<String> {
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    impl conditions::Unasked for ProbeGate {
+        fn admit_unasked(&self, call: &letibot_tools::GateCall<'_>) -> GateDecision {
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).push(
+                call.args["command"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            (self.answer)()
+        }
+    }
+
+    /// The warnings one session's log holds under a code.
+    fn warned(hub: &Arc<Hub>, code: &str) -> Vec<String> {
+        hub.retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning {
+                    code: c, detail, ..
+                } if c == code => Some(detail.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A layer whose one look is `exec:<program>`, and what it answers once the look is in.
+    fn shell_layer(root: &Path, program: &str, argv: Value) -> Table {
+        let table = Table::new();
+        table.layer_with_caps(
+            root,
+            "shell",
+            &[&format!("exec:{program}")],
+            &[(
+                "condition_shell",
+                vec![
+                    Some(json!({"look": {"exec": argv}, "every_s": 5})),
+                    Some(json!({"fired": "the look came back"})),
+                ],
+            )],
+        );
+        table
+    }
+
+    /// **Run the watch until it fires, with a deadline** — a look that is a real child is polled
+    /// on the next tick, so a test that called `met()` once would be racing the process.
+    fn until_fired(condition: &Arc<dyn letibot_tools::exec::monitor::Condition>) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(said) = condition.met() {
+                return said;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the look never came back"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// **A look the gate admits RUNS** — and what the gate was asked is the call a `bash` of that
+    /// argv would have been, every word quoted.
+    #[test]
+    fn an_exec_look_the_gate_admits_runs() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-admitted");
+        let table = shell_layer(&root, "true", json!(["true", "--a b", "$HOME"]));
+        let host = Arc::new(table_host(&root, &table));
+        let probe = Arc::new(ProbeGate::admitting());
+        let armed = conditions_with(&host, Some(probe.clone()))
+            .arm("shell", json!({}))
+            .expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        let asked = probe.seen();
+        assert!(
+            !asked.is_empty(),
+            "the gate is what decides whether an `exec` look runs"
+        );
+        assert!(
+            asked.iter().all(|c| c == "true '--a b' '$HOME'"),
+            "the gate reads the argv, quoted — not a shell line anybody could re-split: {asked:?}"
+        );
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
+        assert_eq!(
+            handed["look"]["exit"],
+            json!(0),
+            "an admitted look runs: {handed}"
+        );
+    }
+
+    /// **A look the gate would have ASKED about does not run**, the layer is told why, and the
+    /// session is told once.
+    #[test]
+    fn an_exec_look_the_gate_would_ask_about_does_not_run() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-asks");
+        // A program whose running leaves a file behind, so "did not run" is a fact and not a
+        // reading of the refusal.
+        let marker = root.join("ran");
+        let script = format!("touch {}", marker.display());
+        let table = shell_layer(&root, "sh", json!(["sh", "-c", script]));
+        let host = Arc::new(table_host(&root, &table));
+        let hub = Hub::new("s-plugins");
+        let probe = ProbeGate::refusing(|| {
+            GateDecision::refuse_and_tell(
+                letibot_transcript::ToolOutcome::NotRun {
+                    why: "would need your approval: `bash` wants exec access to `sh -c …`".into(),
+                },
+                "nothing ran",
+            )
+        });
+        let armed = conditions::HostConditions::new(
+            Arc::new(Mutex::new(Some(host.clone()))),
+            hub.clone(),
+            Some(probe.clone()),
+        )
+        .arm("shell", json!({}))
+        .expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        assert!(
+            !marker.exists(),
+            "a look the gate would ask about must not run"
+        );
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
+        assert_eq!(handed["look"]["exit"], json!(126), "{handed}");
+        let why = handed["look"]["stderr"].as_str().unwrap_or_default();
+        assert!(why.contains("would need your approval"), "{why}");
+        assert!(why.contains("`sh`"), "the program is named: {why}");
+        let said = warned(&hub, "plugin_look");
+        assert_eq!(said.len(), 1, "the session is told once: {said:?}");
+        assert!(said[0].contains("shell (project)"), "{}", said[0]);
+    }
+
+    /// **A look a rule of the operator's denies does not run either**, and the sentence is the
+    /// other class: somebody said no.
+    #[test]
+    fn an_exec_look_the_gate_denies_does_not_run() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-denied");
+        let table = shell_layer(&root, "true", json!(["true"]));
+        let host = Arc::new(table_host(&root, &table));
+        let probe = ProbeGate::refusing(|| {
+            GateDecision::refuse_and_tell(
+                letibot_transcript::ToolOutcome::Denied {
+                    req_id: "adj-1-0001".into(),
+                },
+                "REFUSED by the permission config",
+            )
+        });
+        let armed = conditions_with(&host, Some(probe.clone()))
+            .arm("shell", json!({}))
+            .expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
+        let why = handed["look"]["stderr"].as_str().unwrap_or_default();
+        assert!(why.contains("the gate denied it"), "{why}");
+        assert!(why.contains("REFUSED by the permission config"), "{why}");
+    }
+
+    /// **The notice is once per (layer, program, reason)** — a watch polls every ninety seconds,
+    /// and the same refusal is not news the second time. A refusal that CHANGES is.
+    #[test]
+    fn a_refused_look_is_said_once_until_it_changes() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-once");
+        // One answer that both asks for the look and fires on it, so every arming asks the gate
+        // exactly once — the shape a watch repeating its interval has.
+        let table = Table::new();
+        table.layer_with_caps(
+            &root,
+            "shell",
+            &["exec:true"],
+            &[(
+                "condition_shell",
+                says(json!({
+                    "look": {"exec": ["true"]},
+                    "every_s": 5,
+                    "fired": "the look came back"
+                })),
+            )],
+        );
+        let host = Arc::new(table_host(&root, &table));
+        let hub = Hub::new("s-plugins");
+        let probe = ProbeGate::refusing(|| {
+            GateDecision::refuse_and_tell(
+                letibot_transcript::ToolOutcome::NotRun {
+                    why: "would need your approval: the first reason".into(),
+                },
+                "nothing ran",
+            )
+        });
+        let conditions = conditions::HostConditions::new(
+            Arc::new(Mutex::new(Some(host.clone()))),
+            hub.clone(),
+            Some(probe.clone()),
+        );
+        for _ in 0..3 {
+            conditions.arm("shell", json!({})).expect("armed");
+        }
+        assert_eq!(
+            probe.seen().len(),
+            3,
+            "each arming asked the gate, which is what makes the count below mean something"
+        );
+        assert_eq!(
+            warned(&hub, "plugin_look").len(),
+            1,
+            "three firings of one refusal are one warning: {:?}",
+            warned(&hub, "plugin_look")
+        );
+
+        // **And a reason that changed is news again** — the layer is fixed, or the gate's own
+        // reason moved, and silence would leave the session believing the first sentence. The
+        // same host, so the only thing that differs is the sentence.
+        let other = ProbeGate::refusing(|| {
+            GateDecision::refuse_and_tell(
+                letibot_transcript::ToolOutcome::NotRun {
+                    why: "would need your approval: a different reason".into(),
+                },
+                "nothing ran",
+            )
+        });
+        let same = conditions::HostConditions::new(
+            Arc::new(Mutex::new(Some(host.clone()))),
+            hub.clone(),
+            Some(other),
+        );
+        let armed = same.arm("shell", json!({})).expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        assert_eq!(
+            warned(&hub, "plugin_look").len(),
+            2,
+            "a second reason is a second sentence: {:?}",
+            warned(&hub, "plugin_look")
+        );
+    }
+
+    /// **A session with no gate runs no program a layer declared** — *no gate* is not *every gate
+    /// open*, which is the direction the whole entry fails in.
+    #[test]
+    fn a_session_with_no_gate_runs_no_exec_look() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-no-gate");
+        let table = shell_layer(&root, "true", json!(["true"]));
+        let host = Arc::new(table_host(&root, &table));
+        let armed = conditions(&host).arm("shell", json!({})).expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .expect("the look's result was handed back");
+        assert_eq!(handed["look"]["exit"], json!(126), "{handed}");
+        assert!(
+            handed["look"]["stderr"]
+                .as_str()
+                .is_some_and(|s| s.contains("no gate")),
+            "{handed}"
         );
     }
 }

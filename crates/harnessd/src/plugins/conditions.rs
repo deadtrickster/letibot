@@ -14,17 +14,34 @@
 //! it once — a session nobody fills the slot for refuses a `plugin` monitor by name rather than
 //! accepting one that will never be polled.
 //!
-//! # The look, and the one thing this cannot do yet
+//! # The look, and the gate it goes through
 //!
 //! A `read` look runs under the answering layer's `read` capability, confined to the workspace,
 //! through the same [`crate::plugins::look`] a pane's does. An `exec` look runs the declared argv
 //! under that layer's `exec:<program>` capability — no shell, so nothing a plugin wrote can be
 //! re-split into more commands — with its output redirected to files so the poller never waits on
-//! a pipe. **The exec look does not go through the adjudicator**: the capability is the consent
-//! (a project layer's is reviewed with the merge, a session layer's is the operator's), and a
-//! look that raised a card would be a poller waiting for a person. `docs/plugins-plan.md` §1
-//! principle 2 wants the gate here too, and that is written down as the gap it is rather than
-//! quietly skipped.
+//! a pipe.
+//!
+//! **And it goes through the same gate the model's calls meet** (`docs/plugins-plan.md` §1,
+//! principle 2): *a plugin can do nothing the model could not.* The call the gate judges is the
+//! one a `bash` of that argv would be — the argv rendered as a command line whose every word is
+//! quoted, so the gate reads the words the layer declared and no shell could have made them into
+//! anything else. What it may not do is **ask**: a look runs on the session's monitor thread, and
+//! a card would park that thread — and the watch with it — until a person answered. So
+//! [`letibot_tools::Gate::admit_unasked`] is the entry, and it is the same ladder stopped at the
+//! card:
+//!
+//! * **admitted** (a `permission` rule, a standing grant, a point that admits the class, a D16
+//!   measured boundary) → the look runs, exactly as it did before there was a gate here;
+//! * **would have been put to somebody** → it does not run, the layer is handed a look result that
+//!   says *would need your approval* and why, and the session is told **once** per (layer,
+//!   program, reason) — a watch polling every ninety seconds is not ninety seconds of the same
+//!   warning;
+//! * **denied by a rule the operator wrote** → it does not run, and the layer is told that instead,
+//!   because *somebody said no* and *nobody could be asked* are different sentences.
+//!
+//! The capability is checked **first**, before the gate: a program the layer did not declare is
+//! not a call to adjudicate at all.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -38,19 +55,49 @@ use letibot_tools::exec::monitor::Condition;
 use letibot_tools::exec::plugin_condition::{
     Armed, Look, LookChild, NotArmed, PluginCondition, PluginConditions, PluginStack,
 };
+use letibot_tools::runtime::{GateCall, GateDecision};
+use letibot_tools::{Access, ToolRuntime, command_of_argv};
+use letibot_transcript::ToolOutcome;
 use serde_json::Value;
 
 use crate::plugins::{PluginHost, look};
+
+/// **The gate, as a look asks it**: one question, and it may not raise a card.
+///
+/// A trait rather than the runtime itself so the daemon can hand over its own gate and a test can
+/// answer without building one — the same seam [`PluginStack`] is, one layer down. The single
+/// implementation that matters is [`ToolRuntime`]'s, because *the* gate is the session's.
+pub trait Unasked: Send + Sync {
+    /// What the gate would do with this call if nobody could be asked. See
+    /// [`letibot_tools::Gate::admit_unasked`].
+    fn admit_unasked(&self, call: &GateCall<'_>) -> GateDecision;
+}
+
+impl Unasked for ToolRuntime {
+    fn admit_unasked(&self, call: &GateCall<'_>) -> GateDecision {
+        self.gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit_unasked(call)
+    }
+}
 
 /// **One session's conditions, over its plugin stack.** The `PluginConditions` the monitors hold.
 pub struct HostConditions {
     slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
     hub: Arc<Hub>,
+    /// The session's gate, for an `exec` look. `None` is a session nobody built one for, and a look
+    /// it declared for a program then runs nothing: *no gate* is not *every gate open*.
+    gate: Option<Arc<dyn Unasked>>,
 }
 
 impl HostConditions {
-    pub fn new(slot: Arc<Mutex<Option<Arc<PluginHost>>>>, hub: Arc<Hub>) -> Arc<HostConditions> {
-        Arc::new(HostConditions { slot, hub })
+    pub fn new(
+        slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
+        hub: Arc<Hub>,
+        gate: Option<Arc<dyn Unasked>>,
+    ) -> Arc<HostConditions> {
+        Arc::new(HostConditions { slot, hub, gate })
     }
 }
 
@@ -70,6 +117,7 @@ impl PluginConditions for HostConditions {
         let stack = Arc::new(StackOver {
             host,
             hub: Arc::clone(&self.hub),
+            gate: self.gate.clone(),
         });
         let condition = PluginCondition::arm(stack, plugin, args)?;
         let note = Some(format!(
@@ -88,6 +136,7 @@ impl PluginConditions for HostConditions {
 struct StackOver {
     host: Arc<PluginHost>,
     hub: Arc<Hub>,
+    gate: Option<Arc<dyn Unasked>>,
 }
 
 impl PluginStack for StackOver {
@@ -112,6 +161,9 @@ impl PluginStack for StackOver {
                         "an `exec` look needs a program to run",
                     ));
                 };
+                // **The capability first**, because it is not the gate's question: a program this
+                // layer never declared is not a call anybody adjudicates, it is a layer reaching
+                // past what its `plugin.toml` says.
                 if !caps
                     .iter()
                     .any(|c| matches!(c, Capability::Exec(p) if p == program))
@@ -121,12 +173,103 @@ impl PluginStack for StackOver {
                          run — a capability is declared in plugin.toml and enforced here"
                     )));
                 }
+                if let Some(refused) = self.adjudicate(hook, program, argv, &workspace) {
+                    return Look::Done(refused);
+                }
                 match ChildLook::spawn(argv, &workspace) {
                     Ok(child) => Look::Running(Box::new(child)),
                     Err(why) => Look::Done(letibot_plugin::condition::LookResult::refused(why)),
                 }
             }
         }
+    }
+}
+
+impl StackOver {
+    /// **The gate's half of an `exec` look**, or `None` when it may run.
+    ///
+    /// The call is the one a `bash` of this argv would be: the same tool name, the same declared
+    /// access, and a `command` built from the argv with every word quoted — so a `permission` rule
+    /// written for the model's `gh pr view` covers the plugin's identical look, and one written
+    /// against a *different* command does not. `turn_id` and `call_id` are empty because no turn
+    /// and no call own a watch's look; the audit row says so rather than borrowing an id.
+    fn adjudicate(
+        &self,
+        hook: &str,
+        program: &str,
+        argv: &[String],
+        workspace: &std::path::Path,
+    ) -> Option<letibot_plugin::condition::LookResult> {
+        let Some(gate) = self.gate.as_deref() else {
+            let why = format!(
+                "`{program}` was not run: this session has no gate, so nothing could judge whether \
+                 a program a plugin declared may run"
+            );
+            self.say(hook, &why);
+            return Some(letibot_plugin::condition::LookResult::refused(why));
+        };
+        let args = serde_json::json!({ "command": command_of_argv(argv) });
+        // The scripts a look would run are not read: a `read`/`exec` look is a program the layer
+        // declared, and the reader for the gate's brief is the runtime's, which this is not. A
+        // look that names a script is judged on the words, and the capability says which program.
+        let scripts: [letibot_tools::runtime::ScriptSource; 0] = [];
+        let workspace = workspace.display().to_string();
+        let call = GateCall {
+            name: "bash",
+            access: Access::Exec,
+            args: &args,
+            turn_id: "",
+            call_id: "",
+            workspace: &workspace,
+            target_exists: None,
+            scripts: &scripts,
+        };
+        let GateDecision::Refuse { outcome, tell } = gate.admit_unasked(&call) else {
+            return None;
+        };
+        let why = format!("`{program}`: {}", said(&outcome, &tell));
+        self.say(hook, &why);
+        Some(letibot_plugin::condition::LookResult::refused(why))
+    }
+
+    /// **Said once per (layer, program, reason)** — the layer is told through its look result, and
+    /// the session is told through the host's once-only channel.
+    fn say(&self, hook: &str, why: &str) {
+        let layer = self
+            .host
+            .answering(hook)
+            .map(|l| format!("{} ({})", l.name, l.scope))
+            .unwrap_or_else(|| "a layer".to_string());
+        self.host.look_refused(
+            &self.hub,
+            format!(
+                "the plugin layer `{layer}` declared a look the gate would not run: {why} — the \
+                 look did not run, and its monitor keeps asking until the layer changes it"
+            ),
+        );
+    }
+}
+
+/// **What the gate's refusal means, in the sentence the layer is handed.**
+///
+/// The two classes are two different facts and a plugin acts differently on each: `NotRun` is
+/// *this needed a person and a look cannot reach one* — the program may be fine, and the operator
+/// could grant it — while `Denied` is *a rule says no*, and no grant taken from here would be
+/// honoured.
+fn said(outcome: &ToolOutcome, tell: &str) -> String {
+    match outcome {
+        ToolOutcome::NotRun { why } => why.clone(),
+        ToolOutcome::Denied { .. } => {
+            let tell = tell.trim();
+            if tell.is_empty() {
+                "the gate denied it".to_string()
+            } else {
+                format!("the gate denied it — {tell}")
+            }
+        }
+        // Neither class, which a gate of this tree does not produce for a look and a hand-written
+        // one might: the outcome speaks for itself rather than being folded into one of the two.
+        other => format!("the gate refused it: {other:?}"),
     }
 }
 
@@ -173,8 +316,8 @@ impl ChildLook {
             .spawn()
             .map_err(|e| {
                 format!(
-                    "`{}` could not be run ({e}) — the look declared it and the layer holds the \
-                     capability, but the program is not on this machine",
+                    "`{}` could not be run ({e}) — the look declared it, the layer holds the \
+                     capability and the gate admitted it, but the program is not on this machine",
                     argv[0]
                 )
             })?;

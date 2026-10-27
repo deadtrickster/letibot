@@ -1306,8 +1306,10 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
 
 /// Single-quote one argv element for a shell, the only way that is total: close
 /// the quote, escape the quote, reopen. Used solely by [`ExecBackend::run`], whose
-/// contract is argv and whose substrate takes a command string.
-fn shell_quote(s: &str) -> String {
+/// contract is argv and whose substrate takes a command string — and, since a plugin's
+/// `exec` look goes through the gate as a command line, by
+/// [`crate::runtime::command_of_argv`].
+pub(crate) fn shell_quote(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || "._-/=:,+@".contains(c))

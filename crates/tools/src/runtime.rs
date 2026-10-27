@@ -655,6 +655,26 @@ pub struct GateCall<'a> {
     pub scripts: &'a [ScriptSource],
 }
 
+/// **The command line the gate reads for an argv somebody declared** — one word per element, every
+/// word quoted so nothing can be re-split or expanded.
+///
+/// `docs/plugins-plan.md` §3 gives a layer `exec:<program>` and means the ARGV: no shell, so
+/// nothing a plugin wrote can become two commands. The gate's ladder is nonetheless written over a
+/// command *string* — layer A parses one with the grammar, a `permission` rule matches segments of
+/// one, and R21 decides from one whether the call only reads — so a look that wants the gate's own
+/// answer has to hand it a command. The quoting is what makes the two the same thing: each element
+/// is one single-quoted word, so the shell the grammar describes could neither split a word nor
+/// expand anything inside it, and what the gate reads is exactly the argv.
+///
+/// The caller still owns the rest of the call — the tool's name and its declared access — because
+/// those are what it is standing in for. There is no such thing as a gate call the host invents.
+pub fn command_of_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|word| crate::backend::shell_quote(word))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// One script an execution vehicle was handed, as the adjudicator will see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptSource {
@@ -834,6 +854,28 @@ impl GateCall<'_> {
 /// the bound down, and every implementation in the tree already satisfies it.
 pub trait Gate: Send + Sync {
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision;
+
+    /// **The same decision, for a call nobody may be asked about** — `docs/plugins-plan.md` §1,
+    /// principle 2.
+    ///
+    /// A look a plugin declares goes through the same gate the model's own calls meet, and
+    /// `docs/plugins-plan.md` §4.4's `exec` look runs on the session's **monitor thread**: a card
+    /// raised there would park that thread, and the watch with it, until a person answered. So a
+    /// look is adjudicated and never asked, and this is the one entry both halves use — the ladder
+    /// that settles a call without a person (a `permission` rule, a point that admits the class, a
+    /// standing grant, the always-ask tier's own refusals) runs, and the ask does not.
+    ///
+    /// `Admit` means *run it*; `Refuse` means *do not*, and its class says which: `NotRun` is
+    /// **it would have been put to somebody** and `Denied` is **somebody's rule says no**. A caller
+    /// that told those two apart by nothing would be telling a plugin its program is forbidden when
+    /// what it needs is a person.
+    ///
+    /// The default is [`Gate::admit`], which is right for every gate with nobody behind it —
+    /// `NoBoundary` refuses, an allow-all admits, and a gate that can ask overrides this with the
+    /// front half of its own ladder.
+    fn admit_unasked(&mut self, call: &GateCall<'_>) -> GateDecision {
+        self.admit(call)
+    }
 
     /// **How this session stands**, for a hook that must be told: the session's id and the mode's
     /// own word. The default is an empty [`Standing`], which is every test's `NoBoundary` — a

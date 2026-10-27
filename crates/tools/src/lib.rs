@@ -158,7 +158,7 @@ pub use intent::{
 pub use result::{Envelope, Propagation, ToolResult, propagate};
 pub use runtime::{
     DEFAULT_MAX_TOOLS, Gate, GateCall, GateDecision, Invocation, InvokeCtx, Limits, NoBoundary,
-    RegisterError, Registry, Role, RoleError, Tool, ToolRuntime, roles,
+    RegisterError, Registry, Role, RoleError, Tool, ToolRuntime, command_of_argv, roles,
 };
 pub use schema::{Access, DescriptionFinding, ToolSchema, lint_description};
 pub use spill::{

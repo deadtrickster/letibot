@@ -20,7 +20,10 @@
 //!    *"a bad candidate never replaces the good one"* (§2.3). The shadow has no effects, and it
 //!    never runs a look a hook declares: a look is the host's act on the world, and §2.4 step 3
 //!    says a dry run runs only what is read-only. This crate does not run looks at all — the
-//!    `look` field in an answer is data a caller acts on later.
+//!    `look` field in an answer is data a caller acts on later. **And `reading` is not a list here
+//!    either**: when a shadow does run one, the question *is this a read* is
+//!    `letibot_tools::Gate::admit_unasked`'s — the ladder §4.4's live `exec` look goes through —
+//!    so a dry run and the real one cannot disagree about which command is a read.
 //! 4. **replay** — every recorded input of every hook the candidate exports, through the live
 //!    stack and the shadow stack. A trap, exhausted fuel or malformed output that the live stack
 //!    did not also produce is a failure; the answers are diffed.

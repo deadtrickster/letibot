@@ -154,6 +154,12 @@ pub const TABLE: &[(&str, Class)] = &[
     ("plugin_refused", Class::Routine),
     ("plugin_view_refused", Class::Routine),
     ("model_refused_images", Class::Routine),
+    // **A look a plugin declared that the gate would not run** (PG, `docs/plugins-plan.md` §1
+    // principle 2): the layer is told through its look result, and the session is told once per
+    // (layer, program, reason). Routine by the same rule as the four above — the gate did its job
+    // and the layer is the one that has to change — and deduped at the source, so it cannot become
+    // the same warning every polling interval.
+    ("plugin_look", Class::Routine),
     // **The fold saying what it is doing while it does it** — *"compacting half 1 of 2: the
     // most recent exchanges — 348 item(s), 940612 token(s) to read"*, and then what the half
     // answered. Routine by the same rule as the four above: the operation the operator is
@@ -1253,8 +1259,11 @@ mod the_register_census {
         //     (a program asked and there was no head to put it in front of), `mode_unconfirmed` is
         //     a Failure (a yes the session could not carry) and `mode_consent_refused` is Refused
         //     (an answer from a head that was not asked).
-        assert_eq!(TABLE.len(), 162, "the table's size");
-        assert_eq!(count(Class::Routine), 63);
+        //   · **163, not 162**: `plugin_look` (Routine) — a look a plugin layer declared that the
+        //     gate would not run: adjudicated without asking, said once per
+        //     (layer, program, reason). See `crates/harnessd/src/plugins/conditions.rs`.
+        assert_eq!(TABLE.len(), 163, "the table's size");
+        assert_eq!(count(Class::Routine), 64);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 86);
         // A code with an id is read by its family.

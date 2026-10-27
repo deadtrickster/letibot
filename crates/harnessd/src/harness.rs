@@ -5182,12 +5182,22 @@ impl Harness {
         // §4.4). Installed on the process host's own `Monitors`, because that is what the `monitor`
         // tool asks for everything else it needs — and a session whose host cannot start processes
         // has no monitors to install into, which is the same sentence a `monitor` call already gets.
+        //
+        // **The runtime is shared from here on**, because the gate inside it is what a look is now
+        // adjudicated by the ladder of — without asking (`Gate::admit_unasked`), so a watch can
+        // neither park its own thread on a card nor do what the model could not. Wrapping it here,
+        // rather than at the `Harness` literal below, is what lets the monitors hold the same gate
+        // the session's calls do: two gates would be two answers to *what may run*.
+        let runtime = std::sync::Arc::new(runtime);
         if let Some(processes) = runtime.backend.processes()
             && let Some(monitors) = processes.monitors()
         {
+            let look_gate: std::sync::Arc<dyn crate::plugins::conditions::Unasked> =
+                runtime.clone();
             monitors.set_plugin_conditions(crate::plugins::conditions::HostConditions::new(
                 plugin_slot.clone(),
                 hub.clone(),
+                Some(look_gate),
             ));
         }
 
@@ -5974,7 +5984,7 @@ impl Harness {
             engine,
             note_vocab: parts.vocab.clone(),
             session,
-            runtime: std::sync::Arc::new(runtime),
+            runtime,
             hub,
             store,
             corpus: corpus_sink,
