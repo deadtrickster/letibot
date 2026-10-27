@@ -1474,6 +1474,12 @@ pub struct HostProbe {
 /// * `.gitconfig` — a commit made inside the boundary is recorded under the identity in this
 ///   file; without it every `git commit` on a remote session fails with *Author identity
 ///   unknown*, and the branch that comes back is the whole deliverable.
+/// * `Projects/llama.cpp` and `models` — what this tree's own build and its vocabulary tests
+///   need on a build machine: the llama.cpp source and headers `letibot-llama`'s build script
+///   compiles against, and the GGUF vocabularies the tests load. MEASURED 2026-10-27: without
+///   them a package placed on lab2x1 could not build `letibot-harnessd` with default features,
+///   and the vocabulary tests returned early — the vacuous green `LETIBOT_REQUIRE_APPARATUS`
+///   exists to refuse. Read-only, and bound only where they exist.
 pub const GRANT_CANDIDATES: &[&str] = &[
     "$HOME/.cargo",
     "$HOME/.rustup",
@@ -1482,6 +1488,8 @@ pub const GRANT_CANDIDATES: &[&str] = &[
     "$HOME/.local/state/mise",
     "$HOME/bin",
     "$HOME/.gitconfig",
+    "$HOME/Projects/llama.cpp",
+    "$HOME/models",
 ];
 
 /// The globbed candidate, kept separate because it is one: a fixed prefix and a `*`, never a
