@@ -3836,6 +3836,37 @@ impl RemoteProcesses {
                 code: code.parse().unwrap_or(-1),
             });
         } else if alive.trim() == "0" && job.pid() != 0 {
+            // **A second look at the status file, before this is called a kill.** The poll asked
+            // the exit file first and the pid second, and between the two there is a fork (the
+            // `cat`) and a round trip — so a job that finished while the question was in flight
+            // answers *status empty* at the first read and *pid gone* at the second, which reads
+            // exactly like a job something killed. Measured 2026-10-27 on the Mac at `bb66c6b1`,
+            // `cargo test -p letibot-tools --test scenario`: the `client` role of
+            // `after_orders_the_starts_and_a_roles_facts_resolve` finished (its 19 bytes of
+            // output were there, and its own `.exit` file says `0`) and the row still read
+            // *killed by something on the remote ended it and it wrote no exit status* — one run
+            // in six with its siblings beside it, never alone.
+            //
+            // The launcher writes the status BEFORE it exits, so a pid that is gone cannot be
+            // about to write one: an empty answer here is the whole truth, and a status found
+            // here is the job's own ending.
+            let again = self.ssh.sh_step_within(
+                "reading the exit status one more time",
+                &format!("cat {} 2>/dev/null || true", quote(&job.exit)),
+                self.ssh.poll_bound(),
+            );
+            let Ok((said, _, _)) = again else {
+                // A look that did not answer is not evidence either way; the next tick asks
+                // again. Settling here would be inventing a kill out of a dropped connection.
+                return;
+            };
+            let again = said.trim();
+            if !again.is_empty() {
+                job.settle(JobState::Exited {
+                    code: again.parse().unwrap_or(-1),
+                });
+                return;
+            }
             // No exit file, and the pid we saw is gone: something on that machine ended
             // it and it never wrote a status. Said as that, not as a graceful exit it
             // did not make.
@@ -4139,6 +4170,12 @@ impl RemoteProcesses {
             pid.to_string()
         };
         let started = Instant::now();
+        // **Who is ending it, recorded before the signal** — the field's own purpose (it is how a
+        // deadline kill is said as one), asked here of an explicit kill too. The settle loop below
+        // takes a poll while the signal lands, and without this a `job_kill` this daemon sent is
+        // recorded as *something on the remote ended it*: a mystery where the truth is the
+        // caller's own sentence.
+        *job.armed_kill.lock().unwrap_or_else(|e| e.into_inner()) = Some(by.to_string());
         // **A signal is not idempotent here in the sense that matters** — sending `kill -TERM`
         // twice to a group is harmless, but a second one after a timeout could reach a pid the
         // first one ended and something else reused. Asked once, and a failure is reported by the
@@ -4950,5 +4987,161 @@ user     = "root"
         assert_eq!(names, vec!["b.txt", "sub", "a.txt"], "{names:?}");
         assert_eq!(entries[0].bytes, 2, "the file's size, not a directory's");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The fake remote of [`a_poll_that_finds_the_pid_gone_looks_at_the_status_file_again`]: its
+    /// own directory, and a job table that answers from two files the test writes.
+    struct PollRig {
+        dir: PathBuf,
+        ssh: PathBuf,
+        /// Its answers, in order, one line per call.
+        log: PathBuf,
+        /// What the job's `.exit` file holds; empty is a job that wrote no status.
+        status: PathBuf,
+        /// Present once the job's pid is to be reported GONE.
+        gone: PathBuf,
+        jobs: String,
+    }
+
+    impl PollRig {
+        fn new(tag: &str, status: &str) -> PollRig {
+            let dir = std::env::temp_dir().join(format!(
+                "letibot-poll-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            let rig = PollRig {
+                ssh: dir.join("ssh"),
+                log: dir.join("ssh.log"),
+                status: dir.join("status"),
+                gone: dir.join("gone"),
+                jobs: dir.join("remote").display().to_string(),
+                dir,
+            };
+            std::fs::create_dir_all(&rig.dir).expect("the fixture directory");
+            std::fs::write(&rig.status, status).expect("the status file");
+            rig
+        }
+
+        /// **The ssh, answering three commands and running everything else here.** The poll is
+        /// answered from [`PollRig::gone`], the status from [`PollRig::status`], and the launch is
+        /// acknowledged without starting anything — a real launcher would write files of its own
+        /// and there would be nothing left for the answers to be about.
+        fn written(self) -> PollRig {
+            let script = format!(
+                "#!/bin/bash\n\
+                 printf '%s\\n' \"$*\" >> {log}\n\
+                 for last; do :; done\n\
+                 case \"$last\" in\n\
+                 \x20 *'echo started'*) echo started; exit 0;;\n\
+                 \x20 *\"lc 'e=;\"*)\n\
+                 \x20   if [ -f {gone} ]; then printf '\\t0\\t19\\n'; \\\n\
+                 \x20   else printf '\\t4242\\t19\\n'; fi; exit 0;;\n\
+                 \x20 *'.exit 2>/dev/null || true'*) cat {status} 2>/dev/null; exit 0;;\n\
+                 esac\n\
+                 exec bash -lc \"$last\"\n",
+                log = quote(&self.log.display().to_string()),
+                gone = quote(&self.gone.display().to_string()),
+                status = quote(&self.status.display().to_string()),
+            );
+            crate::testing::write_stub(&self.ssh, &script);
+            self
+        }
+
+        /// Every ssh call this rig answered, in order.
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        /// **A host wired to this rig**, and the job table over it.
+        fn host(&self, tag: &str) -> RemoteProcesses {
+            let (_, paths) = paths_for(tag, "fake", "fake.invalid");
+            let host = Host {
+                name: "fake".into(),
+                hostname: "fake.invalid".into(),
+                user: Some("tester".into()),
+                key: None,
+                path: Vec::new(),
+                root: "~/letibot-remote".into(),
+                mise: Some(Mise::Off),
+                ..Host::default()
+            };
+            let ssh =
+                Ssh::connect(host, Some(self.ssh.clone()), paths).expect("the connection opens");
+            RemoteProcesses::new(ssh, "fake".into(), self.jobs.clone())
+        }
+    }
+
+    /// **A job whose pid is gone, as a view of it** — started (so it has a pid), then the pid is
+    /// reported gone, then asked. The status file is whatever the rig was built with.
+    fn started_then_gone(rig: &PollRig, tag: &str) -> JobView {
+        let host = rig.host(tag);
+        let job = host
+            .spawn(&SpawnRequest {
+                command: "true".into(),
+                slug: None,
+                cwd: String::new(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: Vec::new(),
+                tty: false,
+                memory: None,
+            })
+            .expect("the job starts");
+        // **The finish the poll used to read as a kill**: the status file is already written and
+        // the pid is gone by the time the next question is asked.
+        std::fs::write(&rig.gone, b"").expect("the pid is gone");
+        host.job(&job).expect("the job")
+    }
+
+    /// **A poll that comes back *no status and the pid gone* reads the status file once more**,
+    /// and the window is forced here rather than raced.
+    ///
+    /// The two answers the poll gives are read in one round trip, and between them sits a fork (the
+    /// `cat`) — so a job that finishes while the question is in flight answers *no status* at the
+    /// first read and *pid gone* at the second, which is exactly what a job something killed answers
+    /// too. Measured 2026-10-27 on the Mac at `bb66c6b1` in `cargo test -p letibot-tools --test
+    /// scenario`: one run in six, the `client` role of
+    /// `after_orders_the_starts_and_a_roles_facts_resolve` was reported as *killed by something on
+    /// the remote ended it and it wrote no exit status* with its own `.exit` file saying `0`.
+    ///
+    /// The launcher writes the status BEFORE it exits, so a pid that is gone cannot be about to
+    /// write one: the second look is the whole difference between a finished job and a killed one.
+    #[test]
+    fn a_poll_that_finds_the_pid_gone_looks_at_the_status_file_again() {
+        let exited = PollRig::new("status", "0\n").written();
+        let view = started_then_gone(&exited, "poll-status");
+        assert_eq!(
+            view.state,
+            JobState::Exited { code: 0 },
+            "a status file that is there is the job's own ending, whatever the pid did: {view:?}"
+        );
+        assert!(
+            exited
+                .calls()
+                .iter()
+                .any(|c| c.contains(".exit 2>/dev/null || true")),
+            "the status file was asked for a second time: {:?}",
+            exited.calls()
+        );
+        std::fs::remove_dir_all(&exited.dir).ok();
+
+        // **And an empty status file is still a killing**: the second look must not turn every
+        // dead pid into a graceful exit.
+        let nothing = PollRig::new("nothing", "").written();
+        let view = started_then_gone(&nothing, "poll-nothing");
+        assert!(
+            matches!(&view.state, JobState::Killed { by } if by.contains("wrote no exit status")),
+            "a pid that went away and wrote nothing is still a kill: {view:?}"
+        );
+        std::fs::remove_dir_all(&nothing.dir).ok();
     }
 }

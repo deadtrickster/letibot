@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::exec::ProcessHost;
+use crate::exec::{JobState, ProcessHost};
 use crate::fleet::{self, Cell, Fate, Fleet, LOCAL, Leg, ProcessBook, Ready, Running};
 use crate::lease::Blocks;
 use crate::remote::Paths;
@@ -971,11 +971,25 @@ fn run(
         // one that was still up was stopped by this call — and the two are not the same sentence.
         let before = fleet.settled(&running);
         fleet.stop(&running, &by);
+        // **A role can end by itself in the moment between the question and the kill**, and then
+        // `before` is a snapshot of a still-running process and the row says *stopped* about a leg
+        // the teardown did not stop. The status file is the role's own account — the launcher
+        // writes it before it exits, and a signal this call sent can only leave it absent — so an
+        // `exited` state found *after* the kill is a leg that finished on its own.
+        //
+        // Measured 2026-10-27 on the Mac at `bb66c6b1`, `cargo test -p letibot-tools --test
+        // scenario`, one run in six with the binary's siblings beside it: the `client` role of
+        // `after_orders_the_starts_and_a_roles_facts_resolve` wrote its 19 bytes and its `0` — the
+        // trace shows the poll before the teardown answering *alive*, the `ps` in the kill
+        // answering *not there* — and the row still read `stopped · the scenario ended · 0.4s`.
         let fate = match before {
             Some((state, took)) => Fate::Ended { state, took },
-            None => Fate::Stopped {
-                why: by.clone(),
-                took: running.started.elapsed(),
+            None => match fleet.settled(&running) {
+                Some((state @ JobState::Exited { .. }, took)) => Fate::Ended { state, took },
+                _ => Fate::Stopped {
+                    why: by.clone(),
+                    took: running.started.elapsed(),
+                },
             },
         };
         fleet.record_end(&running, &fate);
